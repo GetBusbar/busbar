@@ -219,9 +219,12 @@ fn decl(code: u16, severity: &str) -> DiagnosticDecl {
 #[test]
 fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
     use busbar_contract::diagnostic::{Class, Severity};
-    use busbar_kernel::diagnostics::{by_code, REGISTRY};
+    use busbar_kernel::diagnostics::{Catalogue, REGISTRY};
     let release = test_plugins::key(7);
-    assert!(by_code(6990).is_none(), "the witness code must be free");
+    assert!(
+        Catalogue::NEUTRAL.by_code(6990).is_none(),
+        "the witness code must be free"
+    );
     let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
     let declared = declared_diagnostics(&registry, &[]).expect("a first-party declaration joins");
     assert_eq!(declared.len(), 1);

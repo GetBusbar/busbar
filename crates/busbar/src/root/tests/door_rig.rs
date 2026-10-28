@@ -397,6 +397,7 @@ impl EgressRig {
                 crate::LINKED.auths,
                 None,
                 ConnTable::Host(table),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns,
             stream_ceiling_secs: 600,

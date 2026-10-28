@@ -849,6 +849,7 @@ fn resolve_upgrading(
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
@@ -1495,6 +1496,7 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
         None,
         crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
             as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     )
 }
 
@@ -2581,6 +2583,7 @@ pub(crate) mod tool_door {
                 crate::root::loader::dispatch::ConnTable::Host(
                     Arc::clone(&tokens) as Arc<dyn DeclaredConns>
                 ),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             );
             let reach = crate::root::door_steps::DoorReach {
                 providers: &providers,
@@ -7283,6 +7286,7 @@ fn own_reach() -> super::DoorReach<'static> {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
@@ -9034,6 +9038,7 @@ fn serving_a_style_binds_only_the_linked_row_that_states_it() {
         linked,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let served = auths
         .serving("bearer", &serde_json::json!({}))
@@ -9117,6 +9122,7 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
         &[],
         Some(registry),
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let stating: Vec<String> = auths.stating(&style).map(|r| r.name.clone()).collect();
     assert_eq!(

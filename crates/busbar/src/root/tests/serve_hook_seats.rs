@@ -1155,6 +1155,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools.clone(),

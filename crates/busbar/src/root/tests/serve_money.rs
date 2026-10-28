@@ -852,6 +852,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
         models: None,
