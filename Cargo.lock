@@ -482,8 +482,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
- "bytes",
- "futures",
 ]
 
 [[package]]

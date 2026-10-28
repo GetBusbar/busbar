@@ -250,6 +250,51 @@ Retired names (`redis` → valkey, `tokens`/`static-tokens`) and migrations for 
 in the build (1.4.x `governance.db_path` → sqlite) live in the root migration table,
 `[package.metadata.busbar.migration]`, generated from `plugins.yaml`.
 
+**Config migration: each plugin migrates itself (OWNER 2026-10-27).** `busbar --migrate-config`
+migrates core's own keys and nothing inside a plugin's settings section. Core holds no knowledge of
+any plugin key, old or new. Its role is limited to four things:
+1. Migrate core's keys.
+2. Resolve each configured plugin to its build for this core, and call that plugin's own `migrate`.
+3. Apply only the needs the plugin explicitly raises against core-owned keys.
+4. Print every report line, prefixed with the plugin's name.
+
+- *The entry.* `migrate` is an optional, kind-neutral lifecycle op: one lifecycle for every kind.
+  It rides the door's append-only tail after `ready` (`Door::migrate`; `abi::mechanism::lifecycle`,
+  MIGRATE). It is not a table slot: a lifecycle slot may not be NULL, and a new slot would move
+  every kind op's index. A door without it loads exactly as before, and its section passes through
+  unchanged.
+  - It is called with no instance and `Ticket::NONE` (it may not pend), on `ValidateIn`:
+    - `settings`: the section as written;
+    - `head.extensions`: the busbar version the configuration came from;
+    - `err_buf`: the host's answer buffer.
+  - On READY the plugin answers, in `err_buf` and named by `head.error`, one JSON object:
+    `{settings, report[], needs[]}`.
+  - The one need today is `{"allow_destination": "<host>"}`. Core adds exactly that host to
+    `advanced.allow_destinations` and never turns `block_private_addresses` off.
+  - The SDK's `Migrator<M>` states it over a plugin's own `Migrate`
+    (`plugin_door! { …, migrate: Migrator<M>, … }`).
+- *What a plugin's migrate owns.* Every change inside its section belongs to the plugin's
+  `migrate`: renames, removed keys, new required keys, and defaults that keep the old behaviour.
+  At normal boot core hands the section through untouched. A plugin that keeps reading an old key
+  for a while does so in its own `open`, and logs its own deprecation line. The declarative
+  renames (`REWRITE_RENAMED`, #1781) are withdrawn.
+- *Finding the build.* The root (`root::config_migrate`) looks, in order:
+  1. among the doors the build links;
+  2. in the configuration's plugins directory;
+  3. otherwise, at the release the **release index** names for this core. That release is
+     downloaded and verified like any dropped-in plugin.
+
+  The release index is `plugin-index.json`: this release's own asset, or `BUSBAR_PLUGIN_INDEX`.
+  It lists each plugin's repository, former repositories, kind, the words it answers to, and its
+  releases with the ABI version each was built for. The release for this core is the newest whose
+  ABI version is the one this core speaks for the kind. The same lookup rewrites a
+  `plugins.fetch` GitHub pin that names another release, dropping its `sha256`. It also pins a
+  configured plugin no build here serves. No plugin name is written in core.
+- *At boot.* An older build of a plugin beside a newer build of the same plugin (same kind, whose
+  manifest name or former names include the old name) is skipped with one warning, not refused.
+  A `plugins.fetch` GitHub pin downloads the release's per-target asset
+  (`<repo>-<version>-<target>.tar.gz`) when `<repo>.tar.gz` is not published.
+
 **No legacy loading (§11.8).** A published 1.5.5 JSON-contract plugin does not load: boot refuses it
 with a message naming the rebuild against the 1.6.0 SDK. The loader accepts only the current version
 of each kind and refuses newer-than-host. ~~**Published 1.5.5 plugins keep loading** through the
@@ -1299,7 +1344,7 @@ dispatcher that is the thread's default only while the body runs, fed `log` reco
 `tracing-log`'s `LogTracer` (the plugin image installs it, and so does the host). The capture lives
 in one slot per thread per plugin image. The host bounds each reply at 128 records and 64 KiB; the
 rest, plus whatever the plugin's own capture could not carry, is one counted line. It filters by
-the instance's level and writes `<dir>/<instance>.log`, one record per line (`time LEVEL instance
+the instance's level and writes `<dir>/<section>.<instance>.log`, the instance named after its kind's config section (`export.metrics.log`, `store.memory.log`, `identity-providers.memory.log`; instance names are unique only within a kind, a plane's instance is its own section), one record per line (`time LEVEL instance
 kind target: message`), rotating by its rename rule. The keys are `plugins.logs`: `dir`, `level`,
 `levels`, `rotate_mb` and `keep`, set live through `POST /config/apply`. A plugin never writes to
 stdout, stderr, a file or a global logger itself. What it writes outside a call (from another
@@ -3547,6 +3592,7 @@ The loader checks in this order:
   - plane records;
   - the ten 1.6.0 ledger ops: `append_batch`, `reserve`, `slice_release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`, `record_scan`, with the semantics in `store_adapter.rs` documented per slot (constant slice epoch, replay cache `REPLAY_TTL_SECS` surviving a restore, shipping ack);
   - batch slots `add_usage_batch`, `add_metering_batch`, `append_audit_batch`.
+- **An empty record put removes the row** (ARCHITECT 2026-10-21, store kind, record leg). A `record_put` whose value is empty REMOVES the `(schema, key)` row: `record_get` answers absent and `record_scan` never returns it. No new slot; the store ABI stays v3 and the layout is unchanged. The host writes every strike (a swept work handle, a dropped chain, a tombstone) as an empty put and reads empty as absent; journal parts are never empty. The store conformance script holds it for every backend.
 - **Writes.** Every additive or appending write carries `op_id` and is deduped, and uses the `write_behind` class.
 - **Kernel side.** The migration read (`migration_audit_head`, `migration_cells_read`) and the marker run in the kernel over `StoreClient`; the `store-persist` cell proves them. ITEM-580 closes: the store's own declared version is read.
 - **Tail:** `ephemeral`, `durable_plane`, `fork_refusal` (Q79). [STATUS 2026-10-14: `ephemeral` is a Statement mark (`MARK_EPHEMERAL`, abi/sdk/door.rs); the tail holds `durable_plane` and `fork_refusal` (`crates/busbar-contract/src/abi/store/mod.rs:238-253`)]

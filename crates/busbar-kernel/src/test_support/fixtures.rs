@@ -39,8 +39,6 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         error_map,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -50,6 +48,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         anthropic_adaptive_thinking: None,
         native_structured_output: None,
         model_capabilities: Vec::new(),
+        options: Default::default(),
     };
     let mut providers = std::collections::HashMap::new();
     providers.insert(
