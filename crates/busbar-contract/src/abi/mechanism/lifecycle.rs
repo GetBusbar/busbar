@@ -16,6 +16,13 @@
 //! is at slot index [`LIFECYCLE_SLOTS`]` + k`. [`OpsHead::slots`] and [`OpsHead::size`] must EQUAL
 //! the host's values for that kind's ABI version, or the load is refused.
 //!
+//! WHICH KINDS THE HOST REFRESHES. The host calls `refresh` on an `auth` and a `plane` instance,
+//! on a configuration apply. A `store`, `secret`, `hook`, `export` or `transport` instance is
+//! never refreshed: a changed configuration reaches it through a fresh instance (a reload that
+//! replaces it, or a restart), opened over the new settings. Its `refresh` slot must still be
+//! present (every slot is), and the SDK's default answers it; nothing a plugin of those kinds
+//! does in `refresh` reaches an operator.
+//!
 //! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
 //! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's
 //! table and no kind op's index moves. A plugin that must reach the network before it serves (a

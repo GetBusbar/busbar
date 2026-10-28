@@ -527,7 +527,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 /// THE HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
 /// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
 /// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
-/// LINKED (the former names the root's legacy table gives a linked row). RED ARMS, in the same
+/// LINKED (the former names the root's migration table gives a linked row). RED ARMS, in the same
 /// test: without the former names neither way answers the old name.
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
@@ -723,6 +723,70 @@ async fn a_wedged_trial_holds_no_other_caller() {
     );
     let (ready, served) = trial.await.unwrap();
     assert!(ready, "the trial's fresh instance serves: {served}");
+    assert!(!instance.quarantined());
+}
+
+/// RED (hook ABI defect 2): a quarantine's trial opens its fresh instance over the settings the
+/// hook was opened with, then pushes the last `configure` the hook acknowledged, so an
+/// acknowledged commit outlives the faulted instance. Before, the trial's instance served the
+/// first-open settings and the commit was silently lost.
+#[tokio::test]
+async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
+    use super::{HookInstance, State};
+    use crate::dispatch::{ConnTable, NoSink};
+    use busbar_contract::hook_calls::HookCalls;
+    let axis = rows(
+        hook_door_plugin::configurable::door,
+        "hook_door",
+        Way::Linked,
+    );
+    let c = axis
+        .find(hook_door_plugin::CONFIGURABLE_NAME)
+        .expect("the linked row")
+        .clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.tuned",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let instance = HookInstance::open(
+        bind().expect("the hook binds"),
+        Arc::clone(&dispatcher),
+        br#"{"reject_over_messages": 3}"#,
+        bind,
+    )
+    .expect("the hook opens");
+    let rejects = |a: &Answered<busbar_contract::abi::hook::DecideOut>| matches!(a, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS);
+    assert!(!rejects(&instance.decide(frame(2), BUDGET).await));
+    instance
+        .configure("tuned", r#"{"reject_over_messages": 1}"#, 2, BUDGET)
+        .await
+        .expect("the hook acknowledges version 2");
+    let a = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        rejects(&a),
+        "the acknowledged settings gate: {}",
+        decided(2, &a)
+    );
+    // Faulted, its trial window open now.
+    *instance.inner.lock() = State::Quarantined {
+        trial_at: std::time::Instant::now(),
+        window: super::QUARANTINE_FIRST,
+    };
+    let a = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        rejects(&a),
+        "the trial's instance lost the acknowledged settings: {}",
+        decided(2, &a)
+    );
     assert!(!instance.quarantined());
 }
 

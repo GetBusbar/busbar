@@ -231,6 +231,10 @@ impl<'r> ExportRows<'r> {
 
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
+    ///
+    /// `check` runs on an instance opened for it alone, over the settings of the first instance
+    /// that opens. An instance whose settings do not open is already refused by its own probe, and
+    /// the checks across the others still run.
     #[must_use]
     pub fn check(
         &self,
@@ -239,27 +243,29 @@ impl<'r> ExportRows<'r> {
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
         let row = self.row(module)?;
-        let first = instances
-            .first()
-            .map_or_else(|| "{}".to_string(), |(_, s)| s.to_string());
-        let named = instances.first().map_or(module, |(n, _)| n.as_str());
-        match self.load(row, &label(named), None) {
-            Ok(p) => {
-                let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), first.as_bytes())
-                else {
-                    return Some(Vec::new());
-                };
-                let listed: Vec<(String, Vec<u8>)> = instances
-                    .iter()
-                    .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
-                    .collect();
-                Some(
-                    export_door::check(opened.plugin(), phase, &listed)
-                        .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
-                )
-            }
-            Err(_) => Some(Vec::new()),
+        let listed: Vec<(String, Vec<u8>)> = instances
+            .iter()
+            .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
+            .collect();
+        let none = [(module.to_string(), b"{}".to_vec())];
+        let candidates = if listed.is_empty() {
+            &none[..]
+        } else {
+            &listed[..]
+        };
+        for (named, settings) in candidates {
+            let Ok(p) = self.load(row, &label(named), None) else {
+                return Some(Vec::new());
+            };
+            let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), settings) else {
+                continue;
+            };
+            return Some(
+                export_door::check(opened.plugin(), phase, &listed)
+                    .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+            );
         }
+        Some(Vec::new())
     }
 
     /// OPEN one instance of `module` with `settings` under the host's instance `label`.

@@ -23,7 +23,9 @@
 //! [`RefreshIn`](super::mechanism::lifecycle::RefreshIn). The auth tail carries nothing for them.
 //!
 //! VERDICTS ARE ALWAYS `READY`. `FAILED` on `verify` is a module failure: the chain's error path,
-//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
+//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is a module failure too, and the host
+//! declines the login fail-closed, as 1.5.5 refused a login plugin that failed: an identity
+//! provider that could not answer is a READY [`LOGIN_OUTAGE`], never a `FAILED`. Both exclude the
 //! short-buffer answer ([`IdentifyOut`]).
 //!
 //! `verify` ON THE SPOT. The host may call `verify` TICKET-LESS (`Ticket::NONE`, on its own
