@@ -1064,6 +1064,11 @@ plane_behaviour! {
     >,
 }
 
+/// The test registration's former path, which the pinned plane repos' root tests still name; it
+/// goes when they are re-pinned onto [`crate::test_support::planes`].
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::test_support::planes::{register_test_plane, TestRegistryIsolation};
+
 #[cfg(test)]
 #[path = "tests/registry_memo_tests.rs"]
 mod registry_memo_tests;
