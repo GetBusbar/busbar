@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The neutral `IrHandle`s for the two protocol-surface operations, `Invoke` and `Subscribe` (G6 A4b
-//! dissolve). Their `InvokeReq`/`SubscribeReq` types live beside them (`ir::invoke`/`ir::subscribe`);
+//! The neutral `IrHandle`s for the two protocol-surface operations, `Invoke` and `Subscribe`. Their `InvokeReq`/`SubscribeReq` types live beside them (`ir::invoke`/`ir::subscribe`);
 //! the handles wrap them and use the trait DEFAULTS for everything except `verb`, `facts`
 //! (request-side projection) and `billing` (`Billing::Flat` — a tool call / subscription is
 //! flat-metered, one call one unit). No cross-protocol prep or write: these operations are

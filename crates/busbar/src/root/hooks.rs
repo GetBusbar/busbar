@@ -37,7 +37,7 @@ pub fn axis(registry: &Arc<dyn PluginRows>) -> Result<Arc<dyn HookAxis>, String>
         registry_of(registry.as_ref()),
         crate::root::dispatch::dispatcher(),
     )?
-    .with_former_names(busbar_kernel::config::legacy::former_names)?
+    .with_former_names(busbar_kernel::config::migration_table::former_names)?
     .with_logs(crate::root::boot::plugin_logs().clone())
     .with_conns(conns);
     Ok(Arc::new(rows))

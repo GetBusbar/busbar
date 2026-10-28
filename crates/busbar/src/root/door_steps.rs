@@ -612,6 +612,9 @@ struct DoorUnit {
     /// A `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the plane answers it
     /// there, with no route walked.
     resolved: Option<String>,
+    /// A `ROUTE_SCOPE` or `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the
+    /// entry its gate-first hooks bind over ([`DriverSteps::scope_entry`]).
+    scope_entry: Option<String>,
     /// The counterparty its `arrive` stated among its trust facts: the entry it is addressed to.
     counterparty: Option<Vec<u8>>,
 }
@@ -1031,12 +1034,16 @@ impl DriverSteps for DoorSteps<'_> {
                 // 2026-10-07): resolved as a scope's, and routed nowhere (no pool, no breaker, no
                 // egress), as predev answered its local verbs at the agent `select` chose before
                 // any pool was read (receive.rs:1257-1279, :1559-1593, before `pool_of` :1839).
-                [one] if class == ROUTE_SCOPE_LOCAL => u.resolved = Some(one.clone()),
+                [one] if class == ROUTE_SCOPE_LOCAL => {
+                    u.resolved = Some(one.clone());
+                    u.scope_entry = Some(one.clone());
+                }
                 // The one entry, routed as an addressed unit naming it is: over the pool of
                 // members each admitted on their own grant that it is a member of, else directly
                 // (predev's unaddressed request reached the same pool walk as an addressed one,
                 // receive.rs:1262-1268 converging at :1839 and :1916).
                 [one] => {
+                    u.scope_entry = Some(one.clone());
                     u.named = Some(match self.pools.member_pool(one) {
                         Some(pool) => (ROUTE_POOL, Some(pool.as_bytes().to_vec())),
                         None => (ROUTE_DIRECT, Some(one.as_bytes().to_vec())),
@@ -1332,6 +1339,10 @@ impl DriverSteps for DoorSteps<'_> {
 
     fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
         self.lock().resolved.clone().map(String::into_bytes)
+    }
+
+    fn scope_entry(&self) -> Option<Vec<u8>> {
+        self.lock().scope_entry.clone().map(String::into_bytes)
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
@@ -1969,7 +1980,7 @@ pub fn kernel_sections(
     // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
     // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
     let required = |key: &'static str| {
-        busbar_kernel::plane::registry::plane_decls()
+        busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .any(|d| d.required_config_sections.contains(&key))
     };
@@ -2404,30 +2415,14 @@ impl OutboundAuths {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
-        self.serving_with(style, settings, None)
-    }
-
-    /// [`Self::serving`], with `presented` the Basic value a token endpoint's userinfo spelled
-    /// when the host stripped it before the settings reached a plane (row 74, F25): presented on the
-    /// mint exactly as one [`endpoint_userinfo`] reads off the settings is.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::serving`].
-    pub fn serving_with(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        presented: Option<crate::root::userinfo::UserinfoBasic>,
-    ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         // A token endpoint spelled `user:pass@` (row 74, F25): the plugin is opened over, and its
         // binding handed, the stripped endpoint, and the userinfo rides its mint as 1.5.5 sent it
-        // ([`endpoint_userinfo`]); or the host already stripped it and hands its Basic value here.
+        // ([`endpoint_userinfo`]).
         let endpoint = endpoint_userinfo(settings);
         let (stated, userinfo) = match &endpoint {
-            Some((stripped, userinfo)) => (stripped, userinfo.clone().or(presented)),
-            None => (settings, presented),
+            Some((stripped, userinfo)) => (stripped, userinfo.clone()),
+            None => (settings, None),
         };
         for row in self.stating(style) {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
@@ -2769,6 +2764,10 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.inner
             .declare_member_programs(owner, need, spec, programs)
+    }
+
+    fn forget(&self, owner: busbar_contract::conn::InstanceId) {
+        self.inner.forget(owner);
     }
 }
 

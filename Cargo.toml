@@ -18,6 +18,7 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/plugin-loader",
+    "crates/busbar-test-kit",
     # Neutral stub plugins of each kind the loader is tested against (seeded from the reference
     # plugins; core never tests a real plugin).
     "crates/plugin-loader/stubs/*/logic",
