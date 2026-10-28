@@ -810,7 +810,7 @@ members = ["."]
 
 [workspace.dependencies]
 # THE LLM PLANE, pinned from its own repo like every other plane.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "bb66a830bb4bb9ecbf737765fa330c06766a8c7d" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "a1b3ef5dd57ff4cf9c0383a0a2711a6516afb220" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "b1337ce8805b1f9ee2e3f83bbf907e232559191f" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "b1337ce8805b1f9ee2e3f83bbf907e232559191f" }
