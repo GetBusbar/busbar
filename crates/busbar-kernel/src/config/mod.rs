@@ -39,6 +39,8 @@ pub mod patch;
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
 pub mod secret;
+/// The settings each plugin declares public; every other plugin setting is sensitive.
+pub mod settings_public;
 /// The ONE config-mutation choke point (`config_transaction`), relocated out of
 /// `admin::v1::json::txn` (1.6.0 de-alias, stage 2a): core config-apply infrastructure that
 /// `auth::self_keys` (core) now calls directly instead of reaching into `admin::`. See the module
