@@ -2693,6 +2693,7 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             statement: st,
             ops: std::ptr::null(),
             ready: None,
+            layout: KindCode::Transport.layout_fingerprint(),
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -2768,6 +2769,7 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
             statement: st,
             ops: std::ptr::null(),
             ready: None,
+            layout: KindCode::Plane.layout_fingerprint(),
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -3574,6 +3576,7 @@ fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
             statement: Box::leak(Box::new(statement)),
             ops: whole_table::<K>(),
             ready: None,
+            layout: kind.layout_fingerprint(),
         })
     }
 }
@@ -3713,6 +3716,95 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
             host: ANSWER_LAYOUT,
         }
     );
+}
+
+// ── R5: every kind refuses a door built against another layout of its shapes ──────────────────
+
+/// RED (R5, status row 188): a door of `kind` over the host's whole table of `K` that states
+/// another layout fingerprint than the host's for `kind` (one bit off, and `0`: a door that
+/// predates the word) is refused at load with [`LoadError::KindLayout`], naming the plugin, the
+/// kind and both numbers; the same door at the host's own fingerprint is not refused for its
+/// layout.
+fn another_layout_is_refused<K: Kind>(kind: KindCode) {
+    let host = kind.layout_fingerprint();
+    let own = door_over::<K>(
+        kind,
+        Statement {
+            size: std::mem::size_of::<Statement>() as u32,
+            kind: kind as u32,
+            kind_abi: kind.abi_version(),
+            ..busbar_contract::abi::sdk::door::statement("laid", "1.0.0", 1)
+        },
+    );
+    assert_eq!(
+        own.layout(),
+        host,
+        "{kind:?}: the door states the host's fingerprint"
+    );
+    assert!(
+        !matches!(
+            validate_door::<K>(&own).map(|_| ()),
+            Err(LoadError::KindLayout { .. })
+        ),
+        "{kind:?}: a door at the host's fingerprint is not refused for its layout"
+    );
+    for stated in [host ^ 1, 0] {
+        // SAFETY: the door's own parts, its layout word restated.
+        let other = unsafe {
+            Door::__from_parts(DoorParts {
+                layout: stated,
+                ..own.parts()
+            })
+        };
+        let refused = validate_door::<K>(&other)
+            .map(|_| ())
+            .expect_err("a door at another layout is refused");
+        assert_eq!(
+            refused,
+            LoadError::KindLayout {
+                plugin: "laid".into(),
+                kind,
+                stated,
+                host,
+            },
+            "{kind:?} at {stated:#018x}"
+        );
+    }
+}
+
+#[test]
+fn a_store_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::store::Store>(KindCode::Store);
+}
+
+#[test]
+fn a_secret_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::secret::Secret>(KindCode::Secret);
+}
+
+#[test]
+fn an_auth_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::auth::Auth>(KindCode::Auth);
+}
+
+#[test]
+fn a_hook_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::hook::Hook>(KindCode::Hook);
+}
+
+#[test]
+fn an_export_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::export::Export>(KindCode::Export);
+}
+
+#[test]
+fn a_plane_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::plane::Plane>(KindCode::Plane);
+}
+
+#[test]
+fn a_transport_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::transport::Transport>(KindCode::Transport);
 }
 
 // ── the client-drop `cancel` names the unit its op serves ──────────────────────────────────────

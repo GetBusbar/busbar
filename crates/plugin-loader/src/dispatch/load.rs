@@ -9,8 +9,9 @@
 //! compiled-in row's door. Both answer the same [`Plugin`]. The door is refused — never guessed,
 //! never a panic — for: a wrong magic, a mechanism or kind ABI version older OR newer than the
 //! host's, an unknown kind or another kind than `K`, a door that does not reach its table, a NULL table,
-//! a table whose `slots`/`size` differ from the host's table of `K`, any NULL slot, or a Statement
-//! that is missing, short, disagrees with the door or points at NULL arrays.
+//! a table whose `slots`/`size` differ from the host's table of `K`, any NULL slot, a Statement
+//! that is missing, short, disagrees with the door or points at NULL arrays, or a door whose kind
+//! layout fingerprint is not the host's (status row 188).
 
 use std::fmt;
 use std::mem::size_of;
@@ -500,6 +501,20 @@ pub enum LoadError {
     BadStatement(String),
     /// The Statement's `kind_tail` is malformed.
     KindTail(String),
+    /// A door was built against other shapes of its kind: it states another layout fingerprint
+    /// ([`Door::layout`]) than this host's for its kind (`0`: a door that predates the word), so
+    /// every struct crossing its table would be read and written at another layout. The same
+    /// refusal for every kind, compiled in and dropped in (status row 188).
+    KindLayout {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// The kind.
+        kind: KindCode,
+        /// The door's.
+        stated: u64,
+        /// The host's.
+        host: u64,
+    },
     /// A transport's frame pieces are not the host's: its tail states another
     /// `size_of::<FramePiece>()` than this host's (`0`: a tail that predates the word), so every
     /// piece it writes would be read at the wrong stride.
@@ -609,6 +624,16 @@ impl fmt::Display for LoadError {
             }
             Self::BadStatement(e) => write!(f, "the Statement is malformed: {e}"),
             Self::KindTail(e) => write!(f, "the Statement's kind tail is malformed: {e}"),
+            Self::KindLayout {
+                plugin,
+                kind,
+                stated,
+                host,
+            } => write!(
+                f,
+                "{kind:?} plugin '{plugin}' was built against {kind:?} layout {stated:#018x}; this \
+                 host reads {kind:?} layout {host:#018x} — rebuild against this busbar-contract"
+            ),
             Self::FramePieceSize {
                 plugin,
                 stated,
@@ -1049,6 +1074,7 @@ pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
     // SAFETY: a door's Statement is `'static` plugin data; every list is checked before it is read.
     unsafe { check_statement(&st) }
         .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
+    kind_layout(door, &st)?;
     for i in 0..st.families_len {
         // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
         let fam: MetricFamily = unsafe { st.families.add(i).read_unaligned() };
@@ -1069,6 +1095,29 @@ pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
     }
     kind_tail(&st)?;
     Ok(st)
+}
+
+/// THE KIND LAYOUT (status row 188): the door states the layout fingerprint of its kind's shapes as
+/// it was built ([`Door::layout`]), and the host reads every struct crossing that kind's table at
+/// its own layout, so a door stating another number (one built against another contract, or one
+/// that predates the word and states `0`) is refused here, for every kind and both origins, never
+/// loaded and misread. The Statement is read first only to name the plugin.
+fn kind_layout(door: &DoorParts, st: &Statement) -> Result<(), LoadError> {
+    let Some(kind) = KindCode::from_raw(door.kind) else {
+        return Err(LoadError::UnknownKind(door.kind));
+    };
+    let host = kind.layout_fingerprint();
+    if door.layout == host {
+        return Ok(());
+    }
+    Err(LoadError::KindLayout {
+        plugin: super::plugin::str_bytes(st.name)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_default(),
+        kind,
+        stated: door.layout,
+        host,
+    })
 }
 
 /// A Statement's kind tail, at admit: its head states at least itself, a plane's tail states the
