@@ -1579,13 +1579,13 @@ fn either_carrier_reaches_the_loop_as_the_credential_itself() {
     );
 }
 
-/// These three verbs and no others land on the store.
+/// These two verbs and no others land on the store.
 ///
 /// Written from this side as well as the verbs unit's, because the split is a fact two crates
 /// have to agree about: a verb added to the unit's store methods without a row here would go
 /// back to the governance seam and its 404, silently.
 #[test]
-fn exactly_three_verbs_land_on_the_store() {
+fn exactly_two_verbs_land_on_the_store() {
     let landing: Vec<KernelVerb> = NEW_VERBS
         .iter()
         .copied()
