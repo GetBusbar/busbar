@@ -1369,7 +1369,7 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             need.0,
             desc.target.to_owned(),
             desc.head_target.to_vec(),
-            String::from_utf8_lossy(desc.body).into_owned(),
+            String::from_utf8_lossy(&desc.body).into_owned(),
         ));
         let n = opened.len();
         let body = match self.answer {
