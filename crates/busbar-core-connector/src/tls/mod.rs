@@ -24,7 +24,7 @@
 //!
 //! The operator's binding config is the source of truth for whether a binding is TLS.
 //! [`prepare`] reconciles it against the transport's declared
-//! [`busbar_contract::transport::TransportMeta::WRAPPABLE_BYTE_STREAM`] capability:
+//! wrappable-byte-stream capability:
 //!
 //! * config plaintext (`tls: None`) ⇒ the [`Identity`] wrap (a byte-for-byte no-op).
 //! * config TLS + a capable transport ⇒ the material is resolved and a [`Tls`] wrap is built and
@@ -376,7 +376,7 @@ impl ConnectionSecurity for Tls {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailClosed {
     /// The binding's `tls:` config demands TLS but the transport it would be served over has not
-    /// declared [`busbar_contract::transport::TransportMeta::WRAPPABLE_BYTE_STREAM`]. Serving it in
+    /// declared a wrappable byte stream. Serving it in
     /// plaintext instead would be exactly the silent downgrade this seam exists to rule out.
     IncapableTransport {
         /// The label (listener address, or similar) the caller passed to [`prepare`], for the
