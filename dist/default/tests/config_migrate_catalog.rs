@@ -46,7 +46,9 @@ fn a_stray_catalog_key_is_removed_into_a_catalog_the_migrated_config_names() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(out.status.code(), Some(0), "migrates; stderr:\n{stderr}");
     assert!(
-        stderr.contains("mock.notes: removed (a catalog entry does not read this key: 1.5.5 ignored it"),
+        stderr.contains(
+            "mock.notes: removed (a catalog entry does not read this key: 1.5.5 ignored it"
+        ),
         "one line names the stray key and why; stderr:\n{stderr}"
     );
     let migrated = std::fs::read_to_string(dir.join("providers.migrated.yaml"))
