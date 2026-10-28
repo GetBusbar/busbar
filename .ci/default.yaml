@@ -335,7 +335,7 @@ checks:
   oracle:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
-    requires: [cc, docker]
+    requires: [cc, docker, large]
     tools: [busbar-oracle-judge]
     baseline: target
     inputs:
