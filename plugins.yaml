@@ -82,7 +82,7 @@
 #                  manifest name (`legacy:`'s `name_1_5_5.<repo>` rows) that this list does not carry
 #   retired        the `module:` spellings this plugin answered to in an earlier release and no longer
 #                  does [none]. Each is a `retired.<kind>.<word>` row of the root legacy table
-#                  (`[package.metadata.busbar.legacy]` in crates/busbar/Cargo.toml), beside the plugin's
+#                  (`[package.metadata.busbar.legacy]` in dist/default/Cargo.toml), beside the plugin's
 #                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
 #                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
 #   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
@@ -119,7 +119,7 @@ excluded_repos:
 # THE ROOT LEGACY TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
 # 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot
 # refusals print. These rows, then every entry's `retired:` rows, are the root legacy table,
-# `[package.metadata.busbar.legacy]` (crates/busbar/Cargo.toml), which the composition root hands to the
+# `[package.metadata.busbar.legacy]` (dist/default/Cargo.toml), which the composition root hands to the
 # kernel; crates/busbar/src/root/tests/legacy.rs renders it from here and is red on drift (printing the
 # table to paste). Every row cites the v1.5.5 tag line it is verbatim from; a value never changes.
 legacy:
@@ -453,7 +453,6 @@ plugins:
     # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
-    pending_crate: true
   - repo: busbar-plane-mcp
     kind: plane
     alias: mcp

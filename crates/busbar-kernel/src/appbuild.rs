@@ -15,10 +15,7 @@ use crate::diagnostics::{
     PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{
-    build_secret_resolver, plugins_preflight, resolve_admin_token, resolve_signing_key,
-    validate_secret_refs,
-};
+use crate::preflight::{build_secret_resolver, resolve_admin_token, resolve_signing_key};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -673,9 +670,6 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
-    // The root's rules of this configuration, before any part of it is built or installed: a
-    // refusal leaves the running generation as it is.
-    rules.check(&cfg)?;
     // The planes this configuration writes that the process did not open at boot: restart-to-apply,
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
@@ -688,16 +682,6 @@ pub fn build_app_from_config(
     // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
     let app_config_version = prior.map_or(0, |p| p.config_version.wrapping_add(1));
-    // Semantic validation — the same gate boot has always had, now on the ONE construction path
-    // so an apply/reload validates identically and an invalid config changes nothing. It runs
-    // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
-    // refusal keeps the running generation").
-    if let Err(validation_errors) = config_validate::validate(&cfg) {
-        return Err(format!(
-            "config validation failed:\n  - {}",
-            validation_errors.join("\n  - ")
-        ));
-    }
     // THE CANDIDATE'S OPERATIONAL LIMITS, VISIBLE TO THIS BUILD ONLY. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites the
     // build reaches (the routing policy timeout, the probe fallbacks, the upstream body cap a binding
@@ -707,7 +691,9 @@ pub fn build_app_from_config(
     // (`AppHandle::swap` / `InstalledLimits::keep` publish them). BUSBAR-1.6.0.md THE DESIGN §6 item
     // 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
     // serving, if any check fails" — so a build refused at ANY subsequent step (plugin fetch, pre-flight,
-    // secret refs, store open, the root's persist) never had its limits in force anywhere.
+    // secret refs, store open, the root's persist) never had its limits in force anywhere. The
+    // semantic pass and the root's rules (the one validator below) run inside this scope too;
+    // neither reads `limits::installed()`, so entering it first changes nothing they decide.
     let _limits_scope = busbar_kernel::config::limits::BuildScope::enter(&cfg.limits);
     // The resolved `export:` block drives the built-in exporters' plugin-route table below. Captured
     // before `cfg`'s fields are consumed by the `App` struct literal.
@@ -723,7 +709,7 @@ pub fn build_app_from_config(
     // `build_app_from_config`, preserving its zero-side-effect/no-network contract), and NEVER
     // per-request. `prior.is_none()` is the boot(fatal-on-miss) vs reload(warn-on-miss) discriminator.
     // Signature verification stays the trust gate below; fetch is integrity/cache + delivery only.
-    if plugins_cfg.enabled && !plugins_cfg.fetch.is_empty() {
+    let fetch = || -> Result<(), String> {
         let targets = plugins_cfg.fetch_targets()?;
         let dir = std::path::Path::new(&plugins_cfg.dir).to_path_buf();
         // Ensure the target dir exists so the atomic rename has a home.
@@ -758,33 +744,39 @@ pub fn build_app_from_config(
                 }
             }
         }
-    }
+        Ok(())
+    };
 
-    // PLUGIN PRE-FLIGHT (the ONE shared pipeline; see the fn doc). Run UP FRONT so the secret
-    // resolver - and the store open below - both draw on the same validated registry. A non-memory
-    // store, an unresolvable secret plugin, or any invalid tarball fails boot here.
-    let plugin_registry = plugins_preflight(
-        cfg.store.as_ref(),
-        cfg.auth.as_ref(),
-        &cfg.identity_providers,
-        &cfg.hooks,
-        &plugins_cfg,
-        &cfg.export,
-    )?;
+    // THE ONE VALIDATOR (`config_validate::check`), the same sequence `--validate` and the admin
+    // dry run run: the semantic pass, the root's rules, the fetch above, the plugin pre-flight and
+    // every secret module/reference against the registry it builds. A refusal at any step leaves
+    // the running generation serving (BUSBAR-1.6.0.md §3: "A validation refusal keeps the running
+    // generation"); the store open and the secret resolver below draw on the validated registry.
+    let root_rules = |c: &config::RootCfg| rules.check(c);
+    let wants_fetch = plugins_cfg.enabled && !plugins_cfg.fetch.is_empty();
+    let plugin_registry = config_validate::check(
+        &cfg,
+        config_validate::Check {
+            plugins: &plugins_cfg,
+            unset_env_vars: &[],
+            root: &root_rules,
+            fetch: wants_fetch.then_some(&fetch as &dyn Fn() -> Result<(), String>),
+            resolve_builtins: false,
+        },
+    )
+    .map_err(|refused| match refused {
+        config_validate::Refusal::Config(errors) => {
+            format!("config validation failed:\n  - {}", errors.join("\n  - "))
+        }
+        config_validate::Refusal::Root(e)
+        | config_validate::Refusal::Plugins(e)
+        | config_validate::Refusal::Unresolved(e) => e,
+    })?;
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
         admit(&plugin_registry)?;
     }
-
-    // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
-    // `kind: secret` plugin — the deferred half of the check `config_validate::validate` cannot do
-    // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
-    // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
-    // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
-    validate_secret_refs(plugin_registry.as_ref(), &cfg)?;
-    // A secret reference in a plugin's settings at a field the plugin did not declare secret.
-    crate::config_validate::undeclared_secret_refs(plugin_registry.as_ref(), &cfg)?;
 
     // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or

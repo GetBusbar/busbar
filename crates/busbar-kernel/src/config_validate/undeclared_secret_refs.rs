@@ -13,8 +13,8 @@
 //! identity provider's `token:` and `browser_login.client_secret`, …) are not plugin settings and
 //! are not looked at here.
 //!
-//! Self-contained: the registry's declared paths and the config in, the first refusal out. Boot
-//! (`appbuild`) and every `--validate`/dry-run (`preflight_plugins_and_secrets`) call it.
+//! Self-contained: the registry's declared paths and the config in, the first refusal out. The one
+//! validator (`config_validate::check`) runs it on every path: boot, `--validate` and the dry run.
 
 use busbar_contract::plugin_rows::PluginRows;
 use busbar_contract::secret_fields::{undeclared_reference, undeclared_refusal};
