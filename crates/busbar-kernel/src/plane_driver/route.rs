@@ -405,7 +405,9 @@ pub(crate) fn lend_piece(input: &mut Vec<u8>, piece: &mut FarPiece) {
 impl PieceBufs {
     pub(crate) fn new(caps: &BufferCaps, body: bytes::Bytes) -> Self {
         let mut bufs = PieceBufs {
-            reply: vec![0; caps.reply],
+            // The window is the default plus the arrival's length, so the request the plane binds
+            // from the caller's body crosses back once, not once per default window.
+            reply: vec![0; caps.reply + body.len()],
             units: Vec::new(),
             records: Vec::new(),
             fields: Vec::new(),
