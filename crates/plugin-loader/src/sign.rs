@@ -140,10 +140,7 @@ pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
                 Some(*id),
                 public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
             ),
-            [id, "p256", _] => (
-                Some(*id),
-                Err("RED: p256 keys are not read yet".to_string()),
-            ),
+            [id, "p256", hex_key] => (Some(*id), ReleaseKey::p256_from_hex(hex_key)),
             [_, alg, _] => (
                 None,
                 Err(format!("algorithm '{alg}' is not one of ed25519, p256")),

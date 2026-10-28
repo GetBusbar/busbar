@@ -383,13 +383,6 @@ pub fn verify_release(
     checks: Checks,
 ) -> Result<Verified, SealRefusal> {
     let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
-    #[allow(unreachable_code)]
-    if true {
-        return Err(SealRefusal::Malformed {
-            doc: "keys document",
-            why: "RED: the release trust chain is not verified yet".into(),
-        });
-    }
 
     // ROOT -> KEYS DOCUMENT.
     let keys = wire::read_keys(seal.keys).map_err(malformed("keys document"))?;
