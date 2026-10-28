@@ -848,3 +848,18 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
         "only WARN and ERROR lines are copied to busbar's log: {ours:?}"
     );
 }
+
+/// The busbar.log copy of a plugin line carries no `diag=` field: 1.5.5 printed the line with none
+/// (the oracle's `export|request-log-webhook|loopback-refused` cell holds it byte for byte).
+#[test]
+fn the_busbar_log_copy_carries_no_diag_field() {
+    assert_eq!(
+        super::without_diag_field("x must be https (got 'h'); disabling it diag=BUSBAR-7070"),
+        "x must be https (got 'h'); disabling it"
+    );
+    assert_eq!(
+        super::without_diag_field("a diag=BUSBAR-7070 detail=\"high\""),
+        "a detail=\"high\""
+    );
+    assert_eq!(super::without_diag_field("no field here"), "no field here");
+}
