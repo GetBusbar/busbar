@@ -7,15 +7,11 @@ use busbar_kernel::test_support::{LaneSpec, TestApp};
 
 /// The served breaker port over `app`'s lane store, each of `pools` a cell under the default ladder.
 fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells {
-    cells_routing(app, pools, &[])
+    cells_routing(LiveApp::fixed(app), pools, &[])
 }
 
 /// [`cells_over`], with each of `direct` a model a route names directly.
-fn cells_routing(
-    app: Arc<busbar_kernel::state::App>,
-    pools: &[&str],
-    direct: &[&str],
-) -> WalkCells {
+fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
     let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = pools
         .iter()
         .map(|pool| {
@@ -275,7 +271,7 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     let app = TestApp::new()
         .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
         .build();
-    let cells = cells_routing(Arc::clone(&app), &[], &["m0"]);
+    let cells = cells_routing(LiveApp::fixed(Arc::clone(&app)), &[], &["m0"]);
     let token = busbar_kernel::test_support::tokens::pass();
     let now = wall_secs();
 
@@ -304,5 +300,46 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         app.store.error_rate_in("m0", 0, now),
         None,
         "no cell is kept under the model's own name"
+    );
+}
+
+/// A WALK THAT SPANS A CONFIG APPLY RECORDS INTO THE NEW STORE: the walk's breaker resolves the live
+/// App once at its start, and a swap mid-walk moves its next record onto the App the live
+/// configuration answers then, as a breaker that read the live App on every call did. One transient
+/// lands on the first App's lane store; after the swap, the next lands on the second App's, and
+/// the first's window holds no more than its one.
+/// RED: a walk pinned to the App it started on records the second fault into the retired store.
+#[test]
+fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
+    let generation = || {
+        TestApp::new()
+            .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
+            .pool("p", &[(0, 1)])
+            .build()
+    };
+    let (first, second) = (generation(), generation());
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
+    let live = Arc::new(std::sync::OnceLock::new());
+    let _ = live.set(Arc::clone(&handle));
+    let cells = cells_routing(LiveApp::new(live, Arc::clone(&first)), &["p"], &[]);
+    let dest = DestinationId::new(0);
+    let token = busbar_kernel::test_support::tokens::pass();
+    let now = wall_secs();
+    let fault = Outcome::Transient { retry_after: None };
+
+    cells.observe("p", dest, fault, now, &token);
+    assert_eq!(first.store.error_rate_in("p", 0, now), Some(1.0));
+
+    handle.swap(Arc::clone(&second));
+    cells.observe("p", dest, fault, now, &token);
+    assert_eq!(
+        second.store.error_rate_in("p", 0, now),
+        Some(1.0),
+        "the record after the apply lands on the new generation's store"
+    );
+    assert_eq!(
+        first.store.error_rate_in("p", 0, now),
+        Some(1.0),
+        "the retired store took nothing after the apply"
     );
 }

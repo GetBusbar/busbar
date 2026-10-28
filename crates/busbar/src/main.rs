@@ -897,16 +897,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             .into_iter()
             .map(|(model, lane)| (model.to_string(), lane))
             .collect(),
-        app: {
-            let (live, boot) = (
-                std::sync::Arc::clone(&door_live_handle),
-                std::sync::Arc::clone(&app),
-            );
-            std::sync::Arc::new(move || {
-                live.get()
-                    .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load())
-            })
-        },
+        app: root::model_egress::LiveApp::new(
+            std::sync::Arc::clone(&door_live_handle),
+            std::sync::Arc::clone(&app),
+        ),
     };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
@@ -1107,14 +1101,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                     .into_iter()
                     .map(|(model, lane)| (model.to_string(), lane))
                     .collect(),
-                app: {
-                    let (live, fallback) =
-                        (std::sync::Arc::clone(&live), std::sync::Arc::clone(next));
-                    std::sync::Arc::new(move || {
-                        live.get()
-                            .map_or_else(|| std::sync::Arc::clone(&fallback), |h| h.load())
-                    })
-                },
+                app: root::model_egress::LiveApp::new(
+                    std::sync::Arc::clone(&live),
+                    std::sync::Arc::clone(next),
+                ),
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,

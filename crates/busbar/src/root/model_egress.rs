@@ -32,8 +32,46 @@ use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool};
 use crate::root::adapters;
 
 /// The kernel's App, as the live configuration answers it (a config apply rebuilds it, its lane
-/// store and its telemetry bank with it).
-pub type AppSource = Arc<dyn Fn() -> Arc<busbar_kernel::state::App> + Send + Sync>;
+/// store and its telemetry bank with it): the swap handle once boot has made one, the App the
+/// egress was composed with until then.
+#[derive(Clone)]
+pub struct LiveApp {
+    handle: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
+    fallback: Arc<busbar_kernel::state::App>,
+}
+
+impl LiveApp {
+    /// The live App: `handle`'s once it is set, `fallback` until then.
+    #[must_use]
+    pub fn new(
+        handle: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
+        fallback: Arc<busbar_kernel::state::App>,
+    ) -> Self {
+        LiveApp { handle, fallback }
+    }
+
+    /// One App, never swapped.
+    #[must_use]
+    pub fn fixed(app: Arc<busbar_kernel::state::App>) -> Self {
+        LiveApp::new(Arc::default(), app)
+    }
+
+    /// The live App, owned.
+    #[must_use]
+    pub fn load(&self) -> Arc<busbar_kernel::state::App> {
+        self.handle
+            .get()
+            .map_or_else(|| Arc::clone(&self.fallback), |h| h.load())
+    }
+
+    /// Whether `app` is still the live App: a borrow of the handle's pointer, no refcount.
+    fn is_current(&self, app: &Arc<busbar_kernel::state::App>) -> bool {
+        match self.handle.get() {
+            Some(h) => Arc::ptr_eq(&h.snapshot(), app),
+            None => Arc::ptr_eq(&self.fallback, app),
+        }
+    }
+}
 
 /// One configured pool: its members (model, weight, attempt timeout), failover bounds and
 /// exhaustion terminal.
@@ -253,8 +291,8 @@ pub struct ModelServing {
     pub pools: ModelPools,
     /// Each model's lane index.
     pub lanes: HashMap<String, usize>,
-    /// The kernel's App, read on every call: its lane store and its telemetry bank.
-    pub app: AppSource,
+    /// The kernel's App: its lane store and its telemetry bank.
+    pub app: LiveApp,
 }
 
 impl std::fmt::Debug for ModelServing {
@@ -350,7 +388,7 @@ impl LatencyReservoir {
 /// where its `max_concurrent` is stated, the lane's otherwise), the remaining lifetime budget, the
 /// breaker state and error rate in the routing pool, and the lane's p95 reservoir.
 pub struct ModelSignals {
-    app: AppSource,
+    app: LiveApp,
     permits: Arc<crate::root::egress_ports::MemberPermits>,
     reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
 }
@@ -361,7 +399,7 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
         pool: &str,
         destination: DestinationId,
     ) -> busbar_kernel::plane_driver::MemberStanding {
-        let (app, lane) = ((self.app)(), lane_of(destination));
+        let (app, lane) = (self.app.load(), lane_of(destination));
         let store = &app.store;
         let state = match store.breaker_state_snapshot_in(pool, lane) {
             busbar_kernel::store::BreakerState::Closed => "closed",
@@ -401,23 +439,50 @@ struct CellPlan {
     direct: HashSet<String>,
 }
 
-/// The kernel's breaker port over one App's lane store, bound for one walk (the walk asks the live
-/// configuration for its App once, at its start): a model-named direct route is mapped onto the
-/// lane-default cell, every read is the lane store's breaker unit's own, and every outcome is
-/// recorded through the store's own record calls (the lane's counters move with its cells).
-struct WalkCells {
+/// One App and its lane store's breaker unit, resolved together.
+struct Bound {
     app: Arc<busbar_kernel::state::App>,
     unit: Arc<busbar_kernel_breaker::BreakerUnit>,
+}
+
+impl Bound {
+    fn of(app: Arc<busbar_kernel::state::App>) -> Arc<Self> {
+        Arc::new(Bound {
+            unit: app.store.breaker_unit(),
+            app,
+        })
+    }
+}
+
+/// The kernel's breaker port over the live App's lane store, for one walk: a model-named direct
+/// route is mapped onto the lane-default cell, every read is the lane store's breaker unit's own,
+/// and every outcome is recorded through the store's own record calls (the lane's counters move
+/// with its cells). The App is resolved once at the walk's start and kept while it is the live
+/// one; a config apply mid-walk is seen at the next call, which moves to the new App, so every
+/// call lands on the store the live configuration answers then.
+struct WalkCells {
+    live: LiveApp,
+    bound: arc_swap::ArcSwap<Bound>,
     plan: Arc<CellPlan>,
 }
 
 impl WalkCells {
-    fn over(app: Arc<busbar_kernel::state::App>, plan: Arc<CellPlan>) -> Self {
+    fn over(live: LiveApp, plan: Arc<CellPlan>) -> Self {
         WalkCells {
-            unit: app.store.breaker_unit(),
-            app,
+            bound: arc_swap::ArcSwap::new(Bound::of(live.load())),
+            live,
             plan,
         }
+    }
+
+    /// The App and unit this call lands on: the walk's, unless the live App has moved since.
+    fn bound(&self) -> arc_swap::Guard<Arc<Bound>> {
+        let bound = self.bound.load();
+        if self.live.is_current(&bound.app) {
+            return bound;
+        }
+        self.bound.store(Bound::of(self.live.load()));
+        self.bound.load()
     }
 
     fn cell<'p>(&self, pool: &'p str) -> &'p str {
@@ -441,15 +506,15 @@ impl Breaker for WalkCells {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        adapters::try_admit(&self.unit, self.cell(pool), destination, now)
+        adapters::try_admit(&self.bound().unit, self.cell(pool), destination, now)
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
-        adapters::ready(&self.unit, self.cell(pool), destination, now, token)
+        adapters::ready(&self.bound().unit, self.cell(pool), destination, now, token)
     }
 
     fn admissible(&self, destination: DestinationId) -> bool {
-        adapters::admissible(&self.unit, destination)
+        adapters::admissible(&self.bound().unit, destination)
     }
 
     fn cooldown_remaining(
@@ -459,7 +524,7 @@ impl Breaker for WalkCells {
         now: u64,
         token: &Pass<Route>,
     ) -> u64 {
-        adapters::cooldown_remaining(&self.unit, self.cell(pool), destination, now, token)
+        adapters::cooldown_remaining(&self.bound().unit, self.cell(pool), destination, now, token)
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
@@ -490,7 +555,8 @@ impl Breaker for WalkCells {
         _token: &Pass<Route>,
     ) -> bool {
         let cell = self.cell(pool);
-        let (store, lane) = (&self.app.store, lane_of(destination));
+        let bound = self.bound();
+        let (store, lane) = (&bound.app.store, lane_of(destination));
         // The caller's own fault (the one answer the far end records as nothing): counted on the
         // lane, its breaker untouched, whatever its pool configured (1.5.5's `record_outcome`
         // `ClientFault` arm). The far end records through this call alone, so the count is here.
@@ -541,10 +607,12 @@ impl Breaker for WalkCells {
             // The previous release's rate-limit record: its own ladder step, the far end's wait
             // honoured.
             (Outcome::Transient { retry_after }, Some(429)) => match self.plan.records.get(cell) {
-                Some(cfg) => self
-                    .app
-                    .store
-                    .record_rate_limit_in(cell, lane, now, cfg, retry_after),
+                Some(cfg) => {
+                    self.bound()
+                        .app
+                        .store
+                        .record_rate_limit_in(cell, lane, now, cfg, retry_after)
+                }
                 None => false,
             },
             // The caller's own fault is counted by `observe`, the one call the far end records
@@ -555,7 +623,10 @@ impl Breaker for WalkCells {
     }
 
     fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
-        self.app.store.lane_needs_probe(lane_of(destination), now)
+        self.bound()
+            .app
+            .store
+            .lane_needs_probe(lane_of(destination), now)
     }
 
     /// A health probe's answer, recorded as 1.5.5's prober recorded it (`engine/health.rs`): a
@@ -564,7 +635,8 @@ impl Breaker for WalkCells {
     /// cell; a client fault records nothing. Every write is at the walk's `now`, the one clock the
     /// walk's own records and reads take (BUSBAR-1.6.0.md l.161).
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, _token: &Pass<Route>) {
-        let (store, lane) = (&self.app.store, lane_of(destination));
+        let bound = self.bound();
+        let (store, lane) = (&bound.app.store, lane_of(destination));
         match outcome {
             Outcome::Success => {
                 if store.lane_needs_probe(lane, now) {
@@ -594,15 +666,17 @@ impl Breaker for WalkCells {
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
-        self.unit.release_probe(self.cell(pool), destination, epoch);
+        self.bound()
+            .unit
+            .release_probe(self.cell(pool), destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
-        self.unit.spend_budget(destination)
+        self.bound().unit.spend_budget(destination)
     }
 
     fn refund_budget(&self, destination: DestinationId) {
-        self.unit.refund_budget(destination);
+        self.bound().unit.refund_budget(destination);
     }
 }
 
@@ -610,7 +684,7 @@ impl Breaker for WalkCells {
 /// them: each member by its lane index, under the pool label the walk names (a pool, or the model a
 /// direct route names); the wait-terminal depth as the root's walk counters keep it.
 struct ModelTelemetry {
-    app: AppSource,
+    app: LiveApp,
     queued: crate::root::egress_ports::WalkTelemetry,
     /// Each lane's p95 reservoir, fed only while the generation declares the signal.
     reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
@@ -618,12 +692,12 @@ struct ModelTelemetry {
 
 impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     fn upstream_attempt(&self, pool: &str, destination: DestinationId) {
-        busbar_kernel::telemetry::upstream_attempt(&(self.app)(), pool, lane_of(destination));
+        busbar_kernel::telemetry::upstream_attempt(&self.app.load(), pool, lane_of(destination));
     }
 
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str) {
         busbar_kernel::telemetry::upstream_failure(
-            &(self.app)(),
+            &self.app.load(),
             pool,
             lane_of(destination),
             disposition,
@@ -631,17 +705,17 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     }
 
     fn failover(&self, pool: &str, reason: &'static str) {
-        busbar_kernel::telemetry::failover(&(self.app)(), pool, reason);
+        busbar_kernel::telemetry::failover(&self.app.load(), pool, reason);
     }
 
     fn breaker_trip(&self, pool: &str, destination: DestinationId) {
-        busbar_kernel::telemetry::breaker_trip(&(self.app)(), pool, lane_of(destination));
+        busbar_kernel::telemetry::breaker_trip(&self.app.load(), pool, lane_of(destination));
     }
 
     fn upstream_latency(&self, destination: DestinationId, ms: f64) {
         // The lane's latency signal (the admin pool listing's `latency_ms`, the `fastest` order's
         // input), as 1.5.5's served attempt recorded it.
-        let app = (self.app)();
+        let app = self.app.load();
         let lane = lane_of(destination);
         app.store.record_latency_in("", lane, ms);
         // The same sample into the lane's p95 reservoir, ONLY while the generation declares the
@@ -768,7 +842,7 @@ pub fn compose(
     let shown = ModelShown {
         described: plan.meta.clone(),
         signals: Arc::new(ModelSignals {
-            app: Arc::clone(&serving.app),
+            app: serving.app.clone(),
             permits: Arc::clone(&permits),
             reservoirs: Arc::clone(&reservoirs),
         }),
@@ -777,10 +851,10 @@ pub fn compose(
         records: plan.records.clone(),
         direct,
     });
-    let app = Arc::clone(&serving.app);
+    let app = serving.app.clone();
     let breaker: busbar_kernel::plane_driver::BreakerSource =
         Arc::new(move || -> Arc<dyn Breaker> {
-            Arc::new(WalkCells::over(app(), Arc::clone(&cells)))
+            Arc::new(WalkCells::over(app.clone(), Arc::clone(&cells)))
         });
     Ok((
         busbar_kernel::plane_driver::Egress {
@@ -791,7 +865,7 @@ pub fn compose(
             clock,
             journal,
             telemetry: Arc::new(ModelTelemetry {
-                app: Arc::clone(&serving.app),
+                app: serving.app.clone(),
                 queued: crate::root::egress_ports::WalkTelemetry::new(names),
                 reservoirs,
             }),
