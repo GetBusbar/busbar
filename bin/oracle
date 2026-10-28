@@ -779,6 +779,42 @@ sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
   [ "$fail" = 0 ] && { echo "oracle fetch-selftest: the judge is the pinned digest's, or there is none"; exit 0; }
   echo "oracle fetch-selftest: FAILED"; exit 1
 fi
+# release-key-selftest: the judge's .sig is checked against busbar-release's TRUSTED release keys
+# (busbar-release-cli update.rs RELEASE_KEYS, same keys, same order): the owner's 2026-10-28 key,
+# which signs, and the earlier key, kept so what it already signed still verifies. A .sig by a listed
+# key verifies; one by any other key is refused.
+if [ "${1:-}" = "release-key-selftest" ]; then
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT; fail=0
+  ok() { echo "  [ok]     $1"; }; bad() { echo "  [FAILED] $1"; fail=1; }
+  new='MCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs='
+  old='MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU='
+  case "${ORACLE_RELEASE_KEY_PEMS[0]:-}" in *"$new"*) ok "the owner's 2026-10-28 key is trusted, and first (it signs)" ;; *) bad "the owner's 2026-10-28 key is not the first trusted key" ;; esac
+  case "${ORACLE_RELEASE_KEY_PEMS[*]:-}" in *"$old"*) ok "the earlier key stays trusted (what it signed still verifies)" ;; *) bad "the earlier key is not trusted" ;; esac
+  if command -v openssl >/dev/null 2>&1 \
+     && openssl genpkey -algorithm ed25519 -out "$st/a.pem" 2>/dev/null && openssl pkey -in "$st/a.pem" -pubout -out "$st/a.pub" 2>/dev/null \
+     && openssl genpkey -algorithm ed25519 -out "$st/u.pem" 2>/dev/null && openssl pkey -in "$st/u.pem" -pubout -out "$st/u.pub" 2>/dev/null; then
+    name="busbar-oracle-linux-aarch64-$(printf 'a%.0s' $(seq 1 40))"; hex="$(printf 'b%.0s' $(seq 1 64))"
+    printf '%s\n%s\n' "$name" "$hex" >"$st/msg"
+    for k in a u; do
+      openssl pkeyutl -sign -inkey "$st/$k.pem" -rawin -in "$st/msg" -out "$st/$k.bin" 2>/dev/null
+      base64 <"$st/$k.bin" | tr -d '\n' >"$st/$k.sig"
+    done
+    if verify_judge_sig "$name" "$hex" "$st/a.sig" "$(cat "$st/u.pub")" "$(cat "$st/a.pub")" 2>/dev/null; then
+      ok "a .sig by the second listed key verifies"
+    else bad "a .sig by a listed key was refused"; fi
+    if verify_judge_sig "$name" "$hex" "$st/u.sig" "$(cat "$st/a.pub")" 2>/dev/null; then
+      bad "a .sig by a key not on the list verified"
+    else ok "a .sig by a key not on the list is refused"; fi
+    if verify_judge_sig "$name" "$hex" "$st/u.sig" "${ORACLE_RELEASE_KEY_PEMS[@]}" 2>/dev/null; then
+      bad "busbar-release's trusted keys accepted a .sig by an unknown key"
+    else ok "busbar-release's trusted keys refuse a .sig by an unknown key"; fi
+    if verify_judge_sig "$name" "$hex" "$st/a.sig" 2>/dev/null; then
+      bad "a .sig verified against no key at all"
+    else ok "no trusted key verifies nothing"; fi
+  else bad "no openssl with Ed25519 here: the .sig check cannot be proven"; fi
+  [ "$fail" = 0 ] && { echo "oracle release-key-selftest: the judge verifies with busbar-release's trusted keys and no other"; exit 0; }
+  echo "oracle release-key-selftest: FAILED"; exit 1
+fi
 # `judge-pin`: the pin text the judge would be fetched by, or the refusal.
 if [ "${1:-}" = "judge-pin" ]; then rc=0; judge_pin_text "$here" || rc=$?; exit "$rc"; fi
 if [ "${1:-}" = "ci-token-selftest" ]; then
