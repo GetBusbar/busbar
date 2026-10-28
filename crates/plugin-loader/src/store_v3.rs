@@ -1815,10 +1815,13 @@ impl StoreCalls for LoadedStore {
         boxed(async move {
             let r = fixed::<_, CountOut>(
                 slot::PURGE_PLANE_RECORDS_BEFORE,
+                // The age rule, as the bridge's `purge_plane_records_before` states it.
                 owned_in(|o, head| KindBeforeIn {
                     head,
                     kind: o.text(kind),
                     before,
+                    retention: Retention::Age.code(),
+                    _reserved: 0,
                 }),
             );
             let (ran, _) = run!(self, submit, r);
