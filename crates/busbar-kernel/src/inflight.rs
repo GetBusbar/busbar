@@ -229,6 +229,8 @@ pub struct UnitSlot {
     cancel: CancelToken,
     marked: AtomicBool,
     last_progress: AtomicU64,
+    /// Whether it holds one of the table's counted slots (an exempt origin holds none).
+    counted: bool,
 }
 
 impl UnitSlot {
@@ -376,7 +378,10 @@ pub struct Enter {
 #[derive(Debug)]
 pub struct InFlight {
     shards: Vec<Mutex<HashMap<UnitKey, Arc<UnitSlot>>>>,
+    /// The units holding a counted slot: what the cap is measured against.
     count: AtomicUsize,
+    /// The exempt units (administrative listener, heartbeat and sweep): live, never counted.
+    exempt: AtomicUsize,
     cap: usize,
 }
 
@@ -386,13 +391,14 @@ impl InFlight {
         InFlight {
             shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
             count: AtomicUsize::new(0),
+            exempt: AtomicUsize::new(0),
             cap,
         }
     }
 
-    /// How many units are live.
+    /// How many units are live, counted and exempt alike.
     pub fn len(&self) -> usize {
-        self.count.load(Ordering::Acquire)
+        self.count.load(Ordering::Acquire) + self.exempt.load(Ordering::Acquire)
     }
 
     /// Whether the node is doing nothing at all.
@@ -419,7 +425,7 @@ impl InFlight {
     pub fn admits(&self, request: &Enter) -> bool {
         match self.ceiling(request) {
             None => true,
-            Some(ceiling) => self.len() < ceiling,
+            Some(ceiling) => self.count.load(Ordering::Acquire) < ceiling,
         }
     }
 
@@ -427,7 +433,7 @@ impl InFlight {
     fn claim_slot(&self, ceiling: Option<usize>) -> bool {
         match ceiling {
             None => {
-                self.count.fetch_add(1, Ordering::AcqRel);
+                self.exempt.fetch_add(1, Ordering::AcqRel);
                 true
             }
             Some(ceiling) => self
@@ -472,7 +478,8 @@ impl InFlight {
                 hold: request.arrival,
             });
         }
-        if !self.claim_slot(self.ceiling(&request)) {
+        let ceiling = self.ceiling(&request);
+        if !self.claim_slot(ceiling) {
             return Err(CapRefused {
                 step: cap_refusal_step(request.origin),
                 reason: ReasonCode::InFlightCap,
@@ -489,6 +496,7 @@ impl InFlight {
             cancel: CancelToken::new(),
             marked: AtomicBool::new(false),
             last_progress: AtomicU64::new(request.now),
+            counted: ceiling.is_some(),
         });
         shard.insert(request.key, Arc::clone(&slot));
         Ok(slot)
@@ -511,8 +519,13 @@ impl InFlight {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&key);
-        if removed.is_some() {
-            self.count.fetch_sub(1, Ordering::AcqRel);
+        if let Some(slot) = &removed {
+            let held = if slot.counted {
+                &self.count
+            } else {
+                &self.exempt
+            };
+            held.fetch_sub(1, Ordering::AcqRel);
         }
         removed
     }

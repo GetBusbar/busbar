@@ -155,6 +155,9 @@ pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
 // Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub use store_chain::ACK_DEADLINE;
+// The admin record sink's one wait on the store (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
+pub(crate) use store_chain::{off_runtime, wait_for};
 // What the tests read the store's rows back by.
 #[cfg(test)]
 pub use store_chain::{part_key, JOURNAL_SCHEMA};

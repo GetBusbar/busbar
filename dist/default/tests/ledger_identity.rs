@@ -905,7 +905,8 @@ fn repo_root() -> PathBuf {
 /// The oracle shim, warmed so the pinned ENGINE is built and verified before anything depends on
 /// it. Returns the shim's path; the caller spawns leaf tools through it.
 ///
-/// PHASE C: the oracle is the native Rust `busbar-oracle` engine (`testing/shadow-oracle/oracle-rust.pin`),
+/// PHASE C: the oracle is the native Rust `busbar-oracle` engine the branch file's
+/// `BUSBAR_ORACLE_*` env names,
 /// not the old Python package. `bin/oracle` obtains that engine — a prebuilt binary, a local
 /// busbar-release checkout, or a `cargo build --release` of the pinned ref — and forwards any
 /// unrecognised subcommand straight to it, so the shim stays the ONE place that knows how the judge
