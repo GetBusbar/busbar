@@ -1300,14 +1300,62 @@ macro_rules! plugin_door {
 ///   [`HookOpen`](crate::abi::sdk::hook::HookOpen) `P`, every slot the SDK's own
 ///   ([`abi::sdk::hook`](crate::abi::sdk::hook)).
 ///
+/// * `plane: P, statement: S, [ready: R,] kind_ops: { .. }` — a plane over its
+///   [`PlaneLife`](crate::abi::sdk::plane_life::PlaneLife) `P` (`lifecycle: plane_life(P)`; its
+///   `cancel` stays its own). The kind ops in table order; `serve`, `hydrate` and `start` may be
+///   left out: `serve` is then [`NoServe`](crate::abi::sdk::plane_life::NoServe) (REFUSED), and
+///   `hydrate`/`start` [`Inert`](crate::abi::sdk::plane_life::Inert) (READY). `catalog` left out
+///   is absent, as in `plugin_door!`.
+///
 /// ```ignore
 /// busbar_contract::export_plugin! {
 ///     hook: MyOpen,
 ///     statement: busbar_contract::abi::sdk::door::statement("my-hook", "1.0.0", 64),
 /// }
+/// busbar_contract::export_plugin! {
+///     plane: MyPlane,
+///     statement: busbar_contract::abi::sdk::door::statement("my-plane", "1.0.0", 64),
+///     kind_ops: { arrive: A, on_piece: O, refusal: R, project: P },
+/// }
 /// ```
 #[macro_export]
 macro_rules! export_plugin {
+    // A kind op the arm names none for: its default, else the one named.
+    (@or $default:ty) => { $default };
+    (@or $default:ty, $given:ty) => { $given };
+    (
+        plane: $plane:ty,
+        statement: $statement:expr,
+        $(ready: $ready:ty,)?
+        kind_ops: {
+            arrive: $arrive:ty,
+            on_piece: $on_piece:ty,
+            refusal: $refusal:ty,
+            $(serve: $serve:ty,)?
+            $(hydrate: $hydrate:ty,)?
+            $(start: $start:ty,)?
+            project: $project:ty
+            $(, catalog: $catalog:ty)?
+            $(,)?
+        } $(,)?
+    ) => {
+        $crate::plugin_door! {
+            ops: $crate::abi::plane::Ops,
+            statement: $statement,
+            lifecycle: plane_life($plane)
+            $(, ready: $ready)?,
+            kind_ops: {
+                arrive: $arrive,
+                on_piece: $on_piece,
+                refusal: $refusal,
+                serve: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::NoServe $(, $serve)?),
+                hydrate: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::Inert $(, $hydrate)?),
+                start: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::Inert $(, $start)?),
+                project: $project,
+                $(catalog: $catalog,)?
+            },
+        }
+    };
     (hook: $open:ty, statement: $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::hook::Ops,

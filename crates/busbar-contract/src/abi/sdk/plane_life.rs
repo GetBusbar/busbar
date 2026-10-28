@@ -16,14 +16,16 @@
 //! * `release` and `close` answer READY: a plane answers under no lease, and the SDK drops the state
 //!   and every snapshot it still holds.
 
+use std::ffi::c_void;
 use std::marker::PhantomData;
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome};
 use crate::abi::mechanism::lifecycle::{GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn};
 use crate::abi::plane::{
     PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, PlaneSnapshot,
+    PlaneRefreshOut, PlaneSnapshot, ServeIn, ServeOut,
 };
+use crate::abi::sdk::door::Slot;
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::life::{settings_object, Refusal};
 use crate::abi::sdk::out::Out;
@@ -227,6 +229,32 @@ plane_slot!(
     /// `close`: READY; the SDK drops the state and every snapshot it still holds.
     Close(InHead => OutHead) |_, _, _out| { Outcome::Ready }
 );
+
+/// `hydrate` or `start` for a plane that names none (`export_plugin!`'s `plane` arm): READY, there
+/// is nothing to warm or start.
+#[derive(Debug)]
+pub struct Inert;
+
+impl Slot for Inert {
+    type In = GenIn;
+    type Out = OutHead;
+    fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+        Outcome::Ready
+    }
+}
+
+/// `serve` for a plane that names none (`export_plugin!`'s `plane` arm): REFUSED, a plane with no
+/// routes serves no request (never an open default).
+#[derive(Debug)]
+pub struct NoServe;
+
+impl Slot for NoServe {
+    type In = ServeIn;
+    type Out = ServeOut;
+    fn call(_: *mut c_void, _: &ServeIn, _: &mut ServeOut) -> Outcome {
+        Outcome::Refused
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/plane_life_tests.rs"]
