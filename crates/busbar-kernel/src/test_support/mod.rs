@@ -790,7 +790,7 @@ pub type BuiltApp = crate::state::App;
 /// seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    Some(crate::plane::registry::default_section_plane_test_runtime())
+    Some(crate::plane_driver::registry::default_section_plane_test_runtime())
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
@@ -909,7 +909,7 @@ pub struct TestApp {
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
     /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
-    plane_dispatch: crate::plane::PlaneDispatch,
+    plane_dispatch: crate::plane_driver::dispatch::PlaneDispatch,
     /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
     /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
     /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
@@ -991,7 +991,7 @@ impl TestApp {
             disk_paths: None,
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
-            plane_dispatch: crate::plane::PlaneDispatch::default(),
+            plane_dispatch: crate::plane_driver::dispatch::PlaneDispatch::default(),
             container_hooks: std::collections::BTreeMap::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
@@ -1028,7 +1028,7 @@ impl TestApp {
     pub fn admit_plane(
         &mut self,
         key: &'static str,
-        admission: busbar_kernel::plane::PlaneAdmission,
+        admission: busbar_kernel::plane_driver::dispatch::PlaneAdmission,
     ) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
         self.plane_dispatch = d.admit(key, admission);
@@ -1574,7 +1574,7 @@ impl TestApp {
         // build seeds none. With no plane registered for the section, nothing is seeded. The decl
         // key comes from the registry, never spelled as a literal.
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+        if let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = seeded_section_plane_runtime() {
@@ -1609,7 +1609,7 @@ impl TestApp {
             &ts_pools,
             &ts_by_model,
             |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-            crate::plane::fallback_key(),
+            crate::plane_driver::dispatch::fallback_key(),
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
@@ -1620,13 +1620,13 @@ impl TestApp {
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
         // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
-        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
+        // resolved decl ([`crate::plane_driver::dispatch::fallback_decl`]), never from `fallback_key()`: that degrades to
         // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
         // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
         // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
         // registers and a decl read after it named two different planes — the LLM runtime then landed
         // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
-        let fallback = crate::plane::fallback_decl();
+        let fallback = crate::plane_driver::dispatch::fallback_decl();
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
@@ -1740,7 +1740,9 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) =
+                    crate::plane_driver::registry::plane_decl_for_config_section(section)
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1782,7 +1784,9 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) =
+                    crate::plane_driver::registry::plane_decl_for_config_section(section)
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1846,7 +1850,7 @@ impl TestApp {
                 .plane_pools_by_section
                 .into_iter()
                 .filter_map(|(section, pools)| {
-                    crate::plane::registry::plane_decl_for_config_section(section)
+                    crate::plane_driver::registry::plane_decl_for_config_section(section)
                         .map(|decl| (decl.key, pools))
                 })
                 .collect(),

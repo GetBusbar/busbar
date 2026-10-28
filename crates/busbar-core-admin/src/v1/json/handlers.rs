@@ -3961,7 +3961,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
     // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
     // pass, which looks each path up by the key inserted here.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
                 for (path, item) in obj {
@@ -4714,7 +4714,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
     // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
     // those calls had.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {
             schemas(&mut gen, &mut req_gen, &mut paths);
         }
@@ -5061,7 +5061,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // document still describes every operation this BUILD can serve — one static document, served
     // identically whatever the deployment configured — and the mark is how a reader tells "present
     // on every node" from "present on a node that configured `<section>:`".
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if decl.openapi.is_none() && decl.named_def_list.is_none() {
             continue;
         }
@@ -5269,7 +5269,7 @@ pub(crate) async fn openapi(
     // client.
     let served = tokio::task::spawn_blocking(move || {
         let configured = |section: &str| {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
                 .is_some_and(|decl| app.plane_configured(decl))
         };
         let committed = openapi_json();

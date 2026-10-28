@@ -29,8 +29,8 @@
 use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
-use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::PlaneDeclaration;
+use busbar_kernel::plane_driver::registry::PlaneDecl;
+use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -73,7 +73,8 @@ pub struct Linked {
         &'static str,
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
+    pub protocols:
+        &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -373,12 +374,12 @@ pub struct BookCtx<'a> {
 /// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
 /// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
+    let installed: Vec<&'static busbar_kernel::ingress::protocols::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    busbar_kernel::proto::install_protocols(installed);
+    busbar_kernel::ingress::protocols::install_protocols(installed);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -522,7 +523,7 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 /// whichever door it came in by, before any listener binds.
 pub fn register_planes(linked: &Linked) {
     match plane_rows(linked) {
-        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Ok(rows) => busbar_kernel::plane_driver::registry::install_planes(rows.leak()),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
