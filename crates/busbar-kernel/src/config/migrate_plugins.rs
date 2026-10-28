@@ -29,7 +29,7 @@ pub const FROM_DEFAULT: &str = "1.5.5";
 /// What the composition root answers for the migration: the plugins, and the release index.
 pub trait MigrateHost {
     /// The busbar version the configuration came from.
-    fn from_version(&self) -> &str {
+    fn migrating_from(&self) -> &str {
         FROM_DEFAULT
     }
 
@@ -108,7 +108,7 @@ struct Site {
 
 /// Run every plugin's own migration over `root`, then the release lookups.
 pub(super) fn migrate(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
-    let from = host.from_version().to_string();
+    let from = host.migrating_from().to_string();
     let mut wanted: Vec<(String, String)> = Vec::new();
     for site in sites(root) {
         wanted.push((site.kind.clone(), site.module.clone()));
@@ -201,7 +201,7 @@ fn plane_sections(d: &crate::plane::registry::PlaneDecl) -> Vec<&'static str> {
     let mut all = vec![d.config_section];
     for s in d.owned_config_sections {
         if !all.contains(s) {
-            all.push(s);
+            all.push(*s);
         }
     }
     all

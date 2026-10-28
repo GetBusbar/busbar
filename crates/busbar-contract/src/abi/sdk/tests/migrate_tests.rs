@@ -57,7 +57,7 @@ fn call(settings: &[u8], from: &'static [u8], buf: &mut [u8]) -> (Outcome, Vec<u
     } else {
         assert_eq!(
             out.error.ptr,
-            buf.as_ptr().cast_const(),
+            buf.as_ptr(),
             "the answer is in the host's buffer"
         );
         buf[..out.error.len].to_vec()
