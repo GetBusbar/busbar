@@ -25,6 +25,9 @@ use crate::ids::StreamId;
 use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
 
+/// The frozen bytes an [`OpenDesc`] carries its body in.
+pub use bytes::Bytes;
+
 /// A plugin instance, as the host numbers it. Never stated by a plugin: the host reads it off the
 /// instance's own context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -42,14 +45,15 @@ pub struct ConnId(pub u64);
 /// What opening a connection asks for: where, the head fields and body to open with (a framed
 /// transport sends them as its first message; a raw byte stream takes none), and how long the open
 /// may take.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpenDesc<'a> {
     /// The target, as the operator's settings spell it (the need's `target_from`).
     pub target: &'a str,
     /// Head fields, in order.
     pub fields: &'a [(&'a str, &'a [u8])],
-    /// The body sent with the opening message.
-    pub body: &'a [u8],
+    /// The body sent with the opening message: frozen once by the opener, so a connector that
+    /// keeps it (and a retry that opens again) takes a reference, never a copy.
+    pub body: Bytes,
     /// Milliseconds the open may take; `0` = the host's default.
     pub timeout_ms: u64,
     /// The opening message's method, a head word (`RequestPiece::method`); empty = none. A framer

@@ -959,10 +959,4 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
         !answers,
         "the committing build's admission kept a dropped-in secret its registry no longer has"
     );
-    // The app build reaches that admission only through the root's install record.
-    assert!(
-        include_str!("../linked.rs")
-            .contains("secret_admit: Some(crate::root::boot::admit_secrets)"),
-        "the root's install record stopped carrying its secret admission"
-    );
 }

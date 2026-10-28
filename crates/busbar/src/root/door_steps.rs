@@ -2617,7 +2617,7 @@ impl busbar_contract::conn::Conns for PresentingConns {
             &busbar_contract::conn::OpenDesc {
                 target: &target,
                 fields,
-                ..*desc
+                ..desc.clone()
             },
         )
     }

@@ -830,7 +830,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             .chain
             .iter()
             .chain(auth.admin_auth.iter())
-            .map(|e| e.module.as_str())
+            // A binding is looked up by the PROVIDER NAME the verdict carries
+            // (`AuthChainEntry::name`); the module word is accepted as 1.5.5 accepted it.
+            .flat_map(|e| [e.module.as_str(), e.name.as_str()])
             .chain(auth.methods.keys().map(String::as_str))
             .collect();
 
@@ -2173,6 +2175,16 @@ fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)
     })
 }
 
+/// Why a metadata host-list entry names no host the destination guard judges, or `None` when it
+/// names one or is a `/` entry (refused on its own, as 1.5.5 refused it): the one predicate
+/// startup judges these lists by, which `busbar --migrate-config` drops such an entry by.
+pub(crate) fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
+    if entry.contains('/') {
+        return None;
+    }
+    unmappable_metadata_entry(entry).map(|(why, _)| why)
+}
+
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of
 /// truth `ssrf_blocked_host` enforces, surfaced for the `--print-metadata-blocklist` CLI flag and the
 /// startup count so `main.rs` does NOT duplicate the list. The CIDR / individual literals are spelled
@@ -2205,9 +2217,11 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
+mod undeclared_secret_refs;
 #[cfg(test)]
 pub(crate) use secret_refs::registry_refusal;
 pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
+pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 /// The one validator every caller runs.
 mod check;
 pub use check::{check, no_root_rules, Check, Refusal};

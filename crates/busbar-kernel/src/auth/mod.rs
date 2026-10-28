@@ -701,6 +701,8 @@ impl AdminAuthChain {
                     let name = entry.name.as_str();
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -824,6 +826,8 @@ impl AuthMiddleware {
                     // dangling reference.
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )

@@ -40,7 +40,19 @@ use busbar_contract::records::{
 
 use super::{now, MemoryStore, NAME};
 
-busbar_contract::store_door!(MemoryStore, NAME, env!("CARGO_PKG_VERSION"), 1024);
+/// [`super::SECRET_REF_PATHS`], as the door's Statement states them.
+const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
+    &[busbar_contract::abi::sdk::door::abi_str(
+        super::SECRET_REF_PATHS[0],
+    )];
+
+busbar_contract::store_door!(
+    MemoryStore,
+    NAME,
+    env!("CARGO_PKG_VERSION"),
+    1024,
+    secret_refs: SECRET_REFS
+);
 
 /// A slot key owned by the store: `(bucket, pool, dimension, class_key, window_start)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
