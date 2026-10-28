@@ -42,7 +42,8 @@
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
-//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
+//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran; [`proxy_route`] is the
+//!   choice it fills, which proxy (if any) a dial goes through.
 //!
 //! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
 //! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
@@ -76,6 +77,7 @@ pub mod pool;
 pub mod process;
 mod program;
 pub mod proxy;
+pub mod proxy_route;
 pub mod registry;
 pub mod socket;
 pub mod spawn_env;

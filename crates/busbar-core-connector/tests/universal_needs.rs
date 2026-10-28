@@ -17,7 +17,7 @@
 //! `Connector` as the host (`tests/support/conformance_host.rs`, rendered by the fleet template):
 //! its `http` need is dialled through the connector to a real TLS far end, every `dialing_steps`
 //! step of its `conformance.json` must resume on its ticket
-//! (`busbar_plugin_loader::conformance::resumed`), and the suite's RED arms are kept. plugin-ci
+//! (`busbar_test_kit::conformance::resumed`), and the suite's RED arms are kept. plugin-ci
 //! runs it on every change to that repo.
 
 use std::sync::OnceLock;

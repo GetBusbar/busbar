@@ -181,14 +181,17 @@ impl CredentialProvider for BoundCredential {
         // place. A plugin that cannot answer now (a token refreshing after it expired) presents
         // nothing for this request, as 1.5.5's lane did while its refresh was failing.
         let answered = self.auth.fields_now(self.handle, &self.request(key, ctx));
+        // Every field the plugin answers is credential material: its header is marked sensitive,
+        // so `http`'s `Debug` never prints it and an h2 encoder never indexes it in HPACK. The
+        // bytes are unchanged. The dialect's statics below are not credentials and stay unmarked.
         let mut headers: Vec<(HeaderName, HeaderValue)> = match answered {
             Some(Fields::Ready(fields)) => fields
                 .into_iter()
                 .filter_map(|f| {
-                    Some((
-                        HeaderName::from_bytes(&f.name).ok()?,
-                        HeaderValue::from_bytes(f.value.expose(&crate::seal::lend())).ok()?,
-                    ))
+                    let mut value =
+                        HeaderValue::from_bytes(f.value.expose(&crate::seal::lend())).ok()?;
+                    value.set_sensitive(true);
+                    Some((HeaderName::from_bytes(&f.name).ok()?, value))
                 })
                 .collect(),
             _ => Vec::new(),
@@ -402,3 +405,7 @@ fn percent_decoded(text: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "tests/bound_credential_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/bound_credential_sensitive_tests.rs"]
+mod sensitive_tests;
