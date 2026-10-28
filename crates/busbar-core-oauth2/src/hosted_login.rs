@@ -292,7 +292,7 @@ async fn callback(
     };
     let principal = match login_step(app, &cookie.method, LoginStep::Complete(request)).await {
         LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage => return clear_and(provider_unreachable()),
+        LoginOutcome::Outage => return clear_and(provider_unavailable(&cookie.method)),
         // The IdP's answer failed the login's security check: 1.5.5's verification page, the one
         // the state mismatch renders.
         LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
@@ -441,7 +441,7 @@ async fn credential_submit(
     let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
     let principal = match outcome {
         LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage => return clear_and(provider_unreachable()),
+        LoginOutcome::Outage => return clear_and(provider_unavailable(&cookie.method)),
         LoginOutcome::Reject => {
             return clear_and(error_page(
                 StatusCode::UNAUTHORIZED,
@@ -655,15 +655,37 @@ const COPY_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="tr
 /// The door/arrow-out glyph shown on the quiet "Sign out" link of the key-issued page.
 const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 2.5H4A1.5 1.5 0 002.5 4v8A1.5 1.5 0 004 13.5h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 10.5L12.5 8 10 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
-/// 1.5.5's page for an identity provider that could not be reached: a login plugin that answered
-/// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
+/// The page for an identity provider that could not answer: a login plugin that answered
+/// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]), for an IdP that was unreachable or answered 5xx or
+/// 429. 503, so the client may retry (owner ruling 2026-10-27; 1.5.5 answered 502), and the
+/// refusal is logged with its cause and the login method.
+fn provider_unavailable(method: &str) -> Response {
+    tracing::warn!(
+        method = %method,
+        cause = "identity provider unavailable",
+        "sign-in refused (503, retryable): the login plugin answered that the identity provider \
+         could not answer"
+    );
+    provider_unreachable()
+}
+
+/// How long [`provider_unavailable`]'s `Retry-After` asks the client to wait, in seconds.
+pub const PROVIDER_RETRY_AFTER_SECS: u64 = 5;
+
+/// The page [`provider_unavailable`] renders: 503 with `Retry-After`. It never counts as a failed
+/// login: nothing was declined.
 fn provider_unreachable() -> Response {
-    error_page(
-        StatusCode::BAD_GATEWAY,
+    let mut page = error_page(
+        StatusCode::SERVICE_UNAVAILABLE,
         "Couldn't reach your provider",
         "We couldn't reach your identity provider to finish signing you in. Please try again \
          shortly.",
-    )
+    );
+    page.headers_mut().insert(
+        header::RETRY_AFTER,
+        header::HeaderValue::from(PROVIDER_RETRY_AFTER_SECS),
+    );
+    page
 }
 
 /// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as

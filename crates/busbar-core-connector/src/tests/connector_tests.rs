@@ -4117,3 +4117,141 @@ fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_ne
         );
     });
 }
+
+/// The test carrier, with a `dial` that HANGS once armed: it says it is inside the crossing, then
+/// does not come back until the test lets it.
+struct HangingDial {
+    inner: TestDoor,
+    gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl FramerDoor for HangingDial {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Dial(..)) {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// RED before a held connection's dial crossed with its judgement's lock let go (`BUSBAR-1.6.0.md`
+/// §11: no plugin code runs under a host lock): `settle` held that lock across the carrier's
+/// `dial` and the early writes' framing, so a write or a wait on the connection beside a dial that
+/// hung waited on the plugin for as long as it hung. Now both answer PENDING at once, and the wait
+/// is woken once the dial came to its end.
+#[test]
+fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
+    let rt = worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(s);
+        });
+        let door = Arc::new(HangingDial {
+            inner: TestDoor::identity("bytes"),
+            gate: std::sync::Mutex::new(None),
+        });
+        // A judge that pends, answered by hand once the connection is open.
+        let pending: Arc<std::sync::Mutex<Option<crate::Judged>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let slot = Arc::clone(&pending);
+        let judge = move |_: &str, _: u32, done: crate::Judged| {
+            *slot.lock().unwrap() = Some(done);
+            None
+        };
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&wakes);
+        let c = Arc::new(Connector::serving(
+            Transports::new(vec![Entry {
+                door: Arc::clone(&door) as Arc<dyn FramerDoor>,
+                alpn: Vec::new(),
+            }])
+            .unwrap(),
+            Arc::new(judge),
+            None,
+            Arc::new(move |_, _| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let port = far.rsplit(':').next().unwrap().to_owned();
+        let target = format!("localhost:{port}");
+        let desc = OpenDesc {
+            target: &target,
+            ..OpenDesc::default()
+        };
+        let id = c
+            .open(OWNER, NeedId(0), &desc)
+            .expect("opens, judgement pending");
+        let done = pending
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the judgement pended");
+        done(Ok(far.parse().unwrap()));
+
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *door.gate.lock().unwrap() = Some((entered_tx, held_back));
+        let reading = Arc::clone(&c);
+        let on = handle.clone();
+        let first = std::thread::spawn(move || {
+            let _rt = on.enter();
+            let mut buf = [0_u8; 64];
+            let _ = reading.read(OWNER, id, 7, &mut buf);
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the read's settle reaches the carrier's dial");
+        let (beside_tx, beside) = std::sync::mpsc::channel();
+        let also = Arc::clone(&c);
+        let second = std::thread::spawn(move || {
+            let wrote = also.write(OWNER, id, b"x", true, false);
+            let waited = also.landed(OWNER, id, 8);
+            beside_tx.send((wrote, waited)).unwrap();
+        });
+        let (wrote, waited) = beside
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a write and a wait beside a hung carrier dial returned while it still hangs");
+        assert_eq!(wrote, Err(ConnError::Pending), "the write is re-offered");
+        assert_eq!(
+            waited,
+            Err(ConnError::Pending),
+            "the landing waits on the dial"
+        );
+        let before = wakes.load(Ordering::SeqCst);
+        release.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert!(
+            wakes.load(Ordering::SeqCst) > before,
+            "the landing wait that found the dial crossing is woken once it came to its end"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}

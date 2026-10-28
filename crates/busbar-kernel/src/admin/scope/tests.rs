@@ -126,7 +126,7 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
 /// (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`): `(method, path, x-busbar-required-scope)`.
 fn operations_1_5_5() -> Vec<(String, String, Scope)> {
     const OPENAPI_1_5_5: &str =
-        include_str!("../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
+        include_str!("../../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
     let doc: serde_json::Value =
         serde_json::from_str(OPENAPI_1_5_5).expect("the 1.5.5 admin document is JSON");
     let paths = doc["paths"].as_object().expect("the document has paths");

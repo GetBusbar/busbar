@@ -81,14 +81,9 @@ pub(crate) async fn list_groups(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
-    let start = match cursor_offset(&q) {
-        Ok(n) => n,
-        Err(resp) => return resp,
+    let (start, limit) = match page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT) {
+        Ok(page) => page,
+        Err(resp) => return *resp,
     };
     let version = handle.load().config_version;
     with_config_etag(
@@ -248,13 +243,9 @@ pub(crate) async fn inspect_plugin(
     body: axum::body::Bytes,
 ) -> Response {
     use base64::Engine as _;
-    let req: InspectPluginReq = match serde_json::from_slice(&body) {
+    let req: InspectPluginReq = match json_body(&body, "plugin") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed plugin body: {e}"
-            )));
-        }
+        Err(resp) => return *resp,
     };
     let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
     {
@@ -459,13 +450,9 @@ pub(crate) async fn rollback_plugin(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: PluginRollbackReq = match serde_json::from_slice(&body) {
+    let req: PluginRollbackReq = match json_body(&body, "rollback") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed rollback body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     let resource = format!("plugin:{}", req.file);
     let file = req.file.clone();
@@ -729,9 +716,9 @@ pub(crate) async fn register_hook(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: RegisterHookReq = match serde_json::from_slice(&body) {
+    let req: RegisterHookReq = match json_body(&body, "hook") {
         Ok(r) => r,
-        Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
+        Err(resp) => return *resp,
     };
     let name = req.name.clone();
     let resource = format!("hook:{name}");
@@ -748,10 +735,7 @@ pub(crate) async fn register_hook(
         // transport (e.g. point a base `pii-guard` gate at a hostile socket). Edit config.yaml for base
         // hooks.
         if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("hook", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -842,9 +826,9 @@ pub(crate) async fn put_hook(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: PutHookReq = match serde_json::from_slice(&body) {
+    let req: PutHookReq = match json_body(&body, "hook") {
         Ok(r) => r,
-        Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
+        Err(resp) => return *resp,
     };
     let resource = format!("hook:{name}");
     let cfg = req.config;
@@ -858,10 +842,7 @@ pub(crate) async fn put_hook(
             return Err(AdminError::not_found(format!("hook `{txn_name}`")));
         }
         if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("hook", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -943,10 +924,7 @@ pub(crate) async fn delete_hook(
         // prior order returned `version_conflict` for a stale-ETag DELETE on a base hook, trapping an
         // auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal error.
         if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("hook", &txn_name));
         }
         // Optimistic concurrency: DELETE honors `If-Match` like every other config-plane
         // mutation (it previously had NO guard — the one mutation verb missing it).
@@ -1029,13 +1007,9 @@ pub(crate) async fn register_group(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: RegisterGroupReq = match serde_json::from_slice(&body) {
+    let req: RegisterGroupReq = match json_body(&body, "group") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     let name = req.name.clone();
     let resource = format!("group:{name}");
@@ -1047,10 +1021,7 @@ pub(crate) async fn register_group(
         // narrow token must not silently redirect a base group's limits. Edit config.yaml. (Mirrors
         // hooks.)
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1119,13 +1090,9 @@ pub(crate) async fn put_group(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: PutGroupReq = match serde_json::from_slice(&body) {
+    let req: PutGroupReq = match json_body(&body, "group") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     let resource = format!("group:{name}");
     let cfg = req.config;
@@ -1136,10 +1103,7 @@ pub(crate) async fn put_group(
             return Err(AdminError::not_found(format!("group `{txn_name}`")));
         }
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1217,10 +1181,7 @@ pub(crate) async fn patch_group(
             return Err(AdminError::not_found(format!("group `{txn_name}`")));
         };
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1304,10 +1265,7 @@ pub(crate) async fn delete_group(
         // an auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal
         // error.
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_owned("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1733,14 +1691,9 @@ fn record_group_version(installed: &Arc<busbar_kernel::state::App>, actor: &str,
 pub(crate) async fn get_audit(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
-    let start = match cursor_offset(&q) {
-        Ok(n) => n,
-        Err(resp) => return resp,
+    let (start, limit) = match page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT) {
+        Ok(page) => page,
+        Err(resp) => return *resp,
     };
     let action = q.get("action").map(String::as_str);
     let resource = q.get("resource").map(String::as_str);
@@ -1764,14 +1717,9 @@ pub(crate) async fn list_config_versions(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
-    let start = match cursor_offset(&q) {
-        Ok(n) => n,
-        Err(resp) => return resp,
+    let (start, limit) = match page_window(&q, crate::v1::contract::VERSIONS_LIMIT_DEFAULT) {
+        Ok(page) => page,
+        Err(resp) => return *resp,
     };
     let mut versions = handle.load().versions().list(start, limit + 1);
     let next_cursor = page_cursor(&mut versions, start, limit);
@@ -1942,13 +1890,9 @@ pub(crate) async fn rollback_config(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: RollbackReq = match serde_json::from_slice(&body) {
+    let req: RollbackReq = match json_body(&body, "rollback") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed rollback body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     let resource = format!("config:v{}", req.version);
     let want = req.version;
@@ -2463,13 +2407,9 @@ pub(crate) async fn apply_config(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: ApplyConfigReq = match serde_json::from_slice(&body) {
+    let req: ApplyConfigReq = match json_body(&body, "config") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     // A first section of a plane this process did not load is refused whole, before the parse and
     // before anything is built, in the running generation's root rules' words (Law 7).
@@ -2992,13 +2932,9 @@ pub(crate) async fn put_config_settings(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let mut raw: serde_json::Value = match serde_json::from_slice(&body) {
+    let mut raw: serde_json::Value = match json_body(&body, "config settings") {
         Ok(v) => v,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config settings body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
         None => false,
@@ -3228,13 +3164,9 @@ pub(crate) async fn patch_hook_settings(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: PatchSettingsReq = match serde_json::from_slice(&body) {
+    let req: PatchSettingsReq = match json_body(&body, "settings") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed settings body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     // BOUND the settings map. It is persisted verbatim into the config overlay AND re-sent to the hook
     // as the configure preamble on EVERY (re)connection, so an unbounded map amplifies both the
@@ -5199,43 +5131,12 @@ pub(crate) fn openapi_json() -> String {
     out
 }
 
-/// Does this request's `Accept-Encoding` permit a gzip response body? Conservative token scan
-/// over every `Accept-Encoding` value: an entry whose coding is `gzip` (case-insensitive) counts,
-/// unless its `q` parameter is an explicit zero. No header, an unparsable value, or `*` all
-/// answer NO — identity is always the safe fallback (a client that did not ask for gzip gets the
-/// same inflated JSON it always got).
-fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
-    headers
-        .get_all(axum::http::header::ACCEPT_ENCODING)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .any(|entry| {
-            let mut parts = entry.split(';');
-            let coding = parts.next().unwrap_or("").trim();
-            if !coding.eq_ignore_ascii_case("gzip") {
-                return false;
-            }
-            // `gzip;q=0` (any zero spelling: 0, 0.0, 0.00, 0.000) is an explicit refusal.
-            let q_zero = parts.any(|p| {
-                let p = p.trim();
-                p.strip_prefix("q=")
-                    .or_else(|| p.strip_prefix("Q="))
-                    .is_some_and(|q| q.parse::<f32>().is_ok_and(|q| q == 0.0))
-            });
-            !q_zero
-        })
-}
-
 /// `GET /api/v1/admin/openapi.json` — the OpenAPI 3.1 schema of the v1 surface (the discovery contract).
-/// Serves the committed, typed document verbatim as `application/json` (no runtime generation —
-/// see [`openapi_json`]). A client whose `Accept-Encoding` allows gzip (virtually every one) gets
-/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` when nothing is filtered — no
-/// retained 366 KB+ string, byte-identical after the client's transparent decode. Deciding whether
-/// anything IS filtered inflates and parses the document per request, so that work runs on a
-/// blocking thread, never the async worker. `Vary: Accept-Encoding` because the body differs by
-/// that header. No axum compression layer exists on this router (checked), so nothing
-/// double-compresses.
+/// Serves the committed, typed document as `application/json` (no runtime generation — see
+/// [`openapi_json`]), identity-encoded with no `Vary`, the answer 1.5.5 gave (the oracle's
+/// `crosscut.traps|openapi-info-version` and `neutrality|routes|admin-openapi-paths`). The document
+/// is inflated from the embedded gzip and filtered per request on a blocking thread, never the
+/// async worker.
 ///
 /// FILTERED TO THE CONFIGURED PLANES (Law 7). The committed document describes every operation the
 /// BUILD can serve — it is what SDK and provider generation read. What a NODE serves is that
@@ -5244,57 +5145,26 @@ fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
 /// running a 1.5.5 config describes no plane surface it does not mount. The check is the core's one
 /// generic `App::plane_configured`; this names no plane. When every marked plane is configured
 /// nothing is dropped and the committed bytes are served exactly as before.
-pub(crate) async fn openapi(
-    State(handle): State<Arc<AppHandle>>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
-    /// What the blocking build settled on serving.
-    enum Served {
-        /// A JSON body: the document filtered to this node's planes, or the committed one inflated
-        /// for an identity-only client.
-        Json(String),
-        /// The embedded gzip bytes, unchanged.
-        Gzip,
-    }
+pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
     let app = handle.load();
-    let gzip = accept_encoding_allows_gzip(&headers);
-    // OFF THE ASYNC WORKER: deciding what to serve inflates the embedded document, parses all of it
-    // and walks it for the operations of planes this node does not configure — on a node running a
-    // 1.5.5 config, on every request. That is a blocking thread's work, never the worker's the data
-    // plane shares. The document is inflated once and the inflated text reused for an identity-only
-    // client.
+    // OFF THE ASYNC WORKER: serving inflates the embedded document, parses all of it and walks it
+    // for the operations of planes this node does not configure — on a node running a 1.5.5
+    // config, on every request. That is a blocking thread's work, never the worker's the data
+    // plane shares.
     let served = tokio::task::spawn_blocking(move || {
         let configured = |section: &str| {
             busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
                 .is_some_and(|decl| app.plane_configured(decl))
         };
         let committed = openapi_json();
-        match openapi_for_configured_planes(&committed, configured) {
-            Some(filtered) => Served::Json(filtered),
-            None if gzip => Served::Gzip,
-            None => Served::Json(committed),
-        }
+        openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
     })
     .await;
     match served {
-        Ok(Served::Json(body)) => (
+        Ok(body) => (
             StatusCode::OK,
-            [
-                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
-                VARY,
-            ],
+            [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
             body,
-        )
-            .into_response(),
-        Ok(Served::Gzip) => (
-            StatusCode::OK,
-            [
-                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
-                (axum::http::header::CONTENT_ENCODING, "gzip"),
-                VARY,
-            ],
-            OPENAPI_JSON_GZ,
         )
             .into_response(),
         Err(join_err) => {
@@ -5422,13 +5292,9 @@ pub(crate) async fn validate_config(
     State(handle): State<Arc<AppHandle>>,
     body: axum::body::Bytes,
 ) -> Response {
-    let req: ValidateConfigReq = match serde_json::from_slice(&body) {
+    let req: ValidateConfigReq = match json_body(&body, "config") {
         Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config body: {e}"
-            )))
-        }
+        Err(resp) => return *resp,
     };
     // The dry run judges what an apply would: a first section of an unloaded plane is refused.
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
