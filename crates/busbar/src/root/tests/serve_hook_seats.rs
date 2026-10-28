@@ -861,7 +861,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+        services.served(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(pools_door()).expect("the door states itself");

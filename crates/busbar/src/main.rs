@@ -360,7 +360,7 @@ fn main() {
         eprintln!("busbar: {e}");
         std::process::exit(1);
     }
-    let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
+    let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
     root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per

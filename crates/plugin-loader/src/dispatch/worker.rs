@@ -61,7 +61,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
-use super::services::{HostServices, Served, ServiceStore};
+use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
 use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
@@ -222,9 +222,9 @@ pub(crate) struct Env {
     pub(crate) stats: Arc<Stats>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
-    /// What the host services are served from; `None` = the host bound none, and every service
-    /// answers REFUSED.
-    pub(crate) provider: Option<Arc<dyn HostServices>>,
+    /// What the host services are served from, installed late ([`ServicesSlot`]); serving none,
+    /// every service answers REFUSED.
+    pub(crate) provider: Arc<ServicesSlot>,
     /// THE PROCESS'S RUNTIME, the reactor a plugin's connection is registered on: a crossing on a
     /// worker runs inside it, so a dial the connector makes on the worker (a plugin's `exchange`)
     /// lands on a reactor that is always driven (THE DESIGN, the connections section). INSTALLED,
@@ -891,7 +891,7 @@ impl WakeRoute for Pool {
     fn services(&self) -> Option<Served> {
         Some(Served {
             store: Arc::clone(&self.env.services),
-            provider: Arc::clone(self.env.provider.as_ref()?),
+            provider: Arc::clone(self.env.provider.get()?),
         })
     }
 
@@ -1945,27 +1945,36 @@ impl Dispatcher {
     ///
     /// # Panics
     ///
-    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
+    /// As [`Dispatcher::new`].
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
+        Self::with_slot(config, ServicesSlot::of(provider))
     }
 
-    /// [`Dispatcher::try_new`], serving `provider`.
+    /// Workers and a watchdog, per `config`, serving whatever the host installs into `slot`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_slot`] answers the refusal instead.
+    pub fn with_slot(config: DispatchConfig, slot: Arc<ServicesSlot>) -> Self {
+        Self::try_with_slot(config, slot).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Dispatcher::try_new`], serving `slot`.
     ///
     /// # Errors
     ///
     /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
-    pub fn try_with_services(
+    pub fn try_with_slot(
         config: DispatchConfig,
-        provider: Arc<dyn HostServices>,
+        slot: Arc<ServicesSlot>,
     ) -> Result<Self, super::LoadError> {
         let key = super::handle::ticket_key()?;
-        Ok(Self::build(config, Some(provider), key))
+        Ok(Self::build(config, Some(slot), key))
     }
 
     fn build(
         config: DispatchConfig,
-        provider: Option<Arc<dyn HostServices>>,
+        provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         let built = Self::build_unlent(config, provider, ticket_key);
@@ -1985,7 +1994,7 @@ impl Dispatcher {
 
     fn build_unlent(
         config: DispatchConfig,
-        provider: Option<Arc<dyn HostServices>>,
+        provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
@@ -1997,7 +2006,7 @@ impl Dispatcher {
             stats: Arc::default(),
             inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
             services,
-            provider,
+            provider: provider.unwrap_or_default(),
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             observing: Arc::default(),
@@ -2060,10 +2069,10 @@ impl Dispatcher {
         &self.pool.env.services
     }
 
-    /// The host services this dispatcher serves; `None` when it was built with none, and then
-    /// every service answers REFUSED.
+    /// The host services this dispatcher serves now; `None` when it serves none, and then every
+    /// service answers REFUSED.
     pub fn host_services(&self) -> Option<&Arc<dyn HostServices>> {
-        self.pool.env.provider.as_ref()
+        self.pool.env.provider.get()
     }
 
     fn worker(&self, worker: u32) -> Option<Arc<Worker>> {
