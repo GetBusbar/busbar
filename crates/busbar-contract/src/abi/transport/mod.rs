@@ -150,6 +150,7 @@ pub mod datagram;
 pub mod fields;
 pub mod route;
 
+pub use check::check_answer;
 pub use datagram::{
     DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
     FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,

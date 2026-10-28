@@ -17,6 +17,10 @@ use super::route::{
     PATH_EXACT,
 };
 use super::{
+    slot, AcceptIn, AdoptIn, ArrivalIn, BeginIn, EncodeIn, FramerSink, FramingIn, IngestIn,
+    ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+};
+use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
@@ -34,10 +38,11 @@ use super::{
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
-    bits, bounded, code, fault, first, listed, range, result, results, texts, within, Dim,
-    MAX_BYTES,
+    bits, bounded, code, fault, first, listed, range, reported, result, results, texts, within,
+    Dim, MAX_BYTES,
 };
-use crate::abi::mechanism::decl::abi_op;
+use crate::abi::mechanism::decl::{abi_answers, abi_op};
+use crate::abi::mechanism::lifecycle::{slot as life, CancelOut};
 
 /// The most frame pieces one framer answer may produce.
 pub const MAX_PIECES: u64 = 4096;
@@ -841,6 +846,129 @@ pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
         }
     }
     Ok(())
+}
+
+/// A framer answer: its pieces over the host's `sink.pieces`, every cap from the op's `sink`; a
+/// field block's bytes are the only frame bytes read ([`check_framer_fields`]).
+///
+/// # Safety
+/// `sink` is the op's own `in`: each of its buffers is the host's, of its stated capacity.
+unsafe fn framer(outcome: Outcome, o: &FramerOut, sink: FramerSink) -> Result<(), Fault> {
+    let pieces_cap = sink.pieces_cap as u64;
+    // SAFETY: `sink.pieces` is the host's own buffer of `pieces_cap` `FramePiece`s, named by this
+    // op's `in`.
+    let pieces = unsafe {
+        reported(
+            sink.pieces.cast_const(),
+            u64::from(o.yielded.pieces_len),
+            pieces_cap,
+            "framer.pieces_len",
+        )
+    }?;
+    check_framer(
+        outcome,
+        o,
+        pieces,
+        sink.wire_cap as u64,
+        sink.frame_cap as u64,
+        pieces_cap,
+    )?;
+    // Only a field block's bytes are read here; payload never is.
+    if pieces.iter().any(|p| p.flags & PIECE_FIELDS != 0) {
+        // SAFETY: `sink.frame` is the host's own buffer of `frame_cap` bytes; `check_framer` held
+        // `frame_len` within it.
+        let frame = unsafe {
+            reported(
+                sink.frame.cast_const(),
+                o.yielded.frame_len,
+                sink.frame_cap as u64,
+                "framer.frame_len",
+            )
+        }?;
+        check_framer_fields(pieces, frame)?;
+    }
+    let heads_cap = sink.heads_cap as u64;
+    // SAFETY: `sink.heads` is the host's own buffer of `heads_cap` `HeadSlots`s (NULL with a
+    // capacity of `0` on a host that takes none).
+    let heads = unsafe {
+        reported(
+            sink.heads.cast_const(),
+            u64::from(o.yielded.heads_len),
+            heads_cap,
+            "framer.heads_len",
+        )
+    }?;
+    check_head_slots(o, heads, heads_cap)
+}
+
+// THE TRANSPORT KIND'S ANSWERS (`check_answer`), each op's frames in the order the loader reads
+// them. `dial`, `flush`, `shut` and the other lifecycle answers state no rule beyond the
+// mechanism's, and pass here.
+abi_answers! {
+    cx: ();
+    slot::LISTEN => listen(out ListenOut, in ListenIn) |_, i, o, _| {
+        check_listen(o, i.addr_cap as u64)
+    }
+    slot::ACCEPT => accept(out AcceptOut, in AcceptIn) |_, i, o, _| {
+        check_accept(o, i.peer_cap as u64)
+    }
+    slot::READ => read(out IoOut, in ReadIn) |_, i, o, _| {
+        check_io(o, i.cap as u64)
+    }
+    slot::WRITE => write(out IoOut, in WriteIn) |_, i, o, _| {
+        check_io(o, i.len as u64)
+    }
+    slot::ARRIVAL => arrival(out ArrivalOut, in ArrivalIn) |outcome, i, o, _| {
+        check_arrival(outcome, o, i.peer_cap as u64)
+    }
+    slot::LOCATE => locate(in LocateIn, out LocateOut) |outcome, i, o, _| {
+        let offer: &[u8] = if outcome == Outcome::Ready {
+            // SAFETY: `alpn_buf` is the host's own buffer of `alpn_cap` bytes, named by this
+            // op's `in`.
+            unsafe {
+                reported(i.alpn_buf.cast_const(), o.alpn_written, i.alpn_cap as u64, "locate.alpn")
+            }?
+        } else {
+            &[]
+        };
+        check_locate(
+            outcome,
+            o,
+            i.authority_cap as u64,
+            i.name_cap as u64,
+            i.alpn_cap as u64,
+            offer,
+            i.defaults_cap as u64,
+        )
+    }
+    // SAFETY (each framer op below): `check_answer`'s contract; the sink is the op's own `in`.
+    slot::BEGIN => begin(in BeginIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::INGEST => ingest(in IngestIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::EMIT => emit(in EmitIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::ENCODE => encode(in EncodeIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::REFUSE => refuse(in RefuseIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::FINISH => finish(in FinishIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::DETACH | slot::TIMER => framing(in FramingIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::ADOPT => adopt(in AdoptIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    life::CANCEL => cancel(out CancelOut) |outcome, _, o, _| {
+        check_cancel(outcome, o.disposition)
+    }
 }
 
 #[cfg(test)]

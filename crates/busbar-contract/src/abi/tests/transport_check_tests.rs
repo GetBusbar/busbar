@@ -1151,3 +1151,100 @@ fn every_declared_transport_field_rule_is_red() {
     // setting 3, route 3, route field 3.
     assert_eq!(cases, 32);
 }
+
+/// `check_answer` for a transport slot over an `in` and an `out` of the stated sizes.
+fn answer<I, O>(
+    slot: u32,
+    outcome: Outcome,
+    input: &I,
+    in_size: usize,
+    out: &O,
+    out_size: usize,
+) -> Result<(), Fault> {
+    // SAFETY: both frames are live locals of at least the sizes stated, each leading with its
+    // head; every buffer they lend is NULL with a capacity of `0`, or a live local.
+    unsafe {
+        check_answer(
+            slot,
+            outcome,
+            (&raw const *input).cast(),
+            in_size,
+            (&raw const *out).cast(),
+            out_size,
+            &(),
+        )
+    }
+}
+
+/// THE KIND'S ANSWER CHECK: `listen` reads its `out` first, `locate` and every framer op their
+/// `in` first (a frame smaller than its struct is FOREIGN, the first read naming it); caps come
+/// from the `in`; a framer's pieces are read only up to the host's capacity; a slot with no
+/// answer rule passes.
+#[test]
+fn check_answer_reads_the_frames_in_the_loaders_order_then_judges_the_op() {
+    use std::mem::size_of;
+    let mut listen_in: ListenIn = z();
+    listen_in.addr_cap = 4;
+    let mut listen_out: ListenOut = z();
+    let (li, lo) = (size_of::<ListenIn>(), size_of::<ListenOut>());
+    assert_eq!(
+        answer(slot::LISTEN, Ready, &listen_in, li, &listen_out, lo),
+        Ok(())
+    );
+    assert_eq!(
+        answer(slot::LISTEN, Ready, &listen_in, li - 1, &listen_out, lo - 1),
+        f(Rule::Foreign, "out")
+    );
+    listen_out.addr_written = 5;
+    assert_eq!(
+        answer(slot::LISTEN, Ready, &listen_in, li, &listen_out, lo),
+        f(Rule::OverCap, "listen.addr_written")
+    );
+
+    let locate_in: LocateIn = z();
+    let locate_out: LocateOut = z();
+    let (ci, co) = (size_of::<LocateIn>(), size_of::<LocateOut>());
+    assert_eq!(
+        answer(slot::LOCATE, Ready, &locate_in, ci, &locate_out, co),
+        Ok(())
+    );
+    assert_eq!(
+        answer(slot::LOCATE, Ready, &locate_in, ci - 1, &locate_out, co - 1),
+        f(Rule::Foreign, "in")
+    );
+
+    let begin_in: BeginIn = z();
+    let mut framer_out: FramerOut = z();
+    let (bi, fo) = (size_of::<BeginIn>(), size_of::<FramerOut>());
+    assert_eq!(
+        answer(slot::BEGIN, Ready, &begin_in, bi, &framer_out, fo),
+        Ok(())
+    );
+    assert_eq!(
+        answer(slot::BEGIN, Ready, &begin_in, bi - 1, &framer_out, fo - 1),
+        f(Rule::Foreign, "in")
+    );
+    // Pieces the host gave no room for are refused before any slice exists.
+    framer_out.yielded.pieces_len = 1;
+    assert_eq!(
+        answer(slot::BEGIN, Ready, &begin_in, bi, &framer_out, fo),
+        f(Rule::OverCap, "framer.pieces_len")
+    );
+
+    let mut cancel: crate::abi::mechanism::lifecycle::CancelOut = z();
+    cancel.disposition = 7;
+    let hs = size_of::<crate::abi::mechanism::call::InHead>();
+    let cs = size_of::<crate::abi::mechanism::lifecycle::CancelOut>();
+    assert_eq!(
+        answer(
+            crate::abi::mechanism::lifecycle::slot::CANCEL,
+            Pending,
+            &begin_in,
+            hs,
+            &cancel,
+            cs
+        ),
+        f(Rule::Contradiction, "cancel.disposition")
+    );
+    assert_eq!(answer(slot::DIAL, Ready, &begin_in, 0, &cancel, 0), Ok(()));
+}
