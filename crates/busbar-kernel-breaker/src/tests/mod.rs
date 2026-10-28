@@ -22,8 +22,6 @@ const NOW: u64 = 1_700_000_000;
 /// where the token comes from the kernel's test token helper.
 mod probe;
 
-// ── Not ported ───────────────────────────────────────────────────────────────────────────────────
-//
 // Some upstream suites reach a breaker assertion only after dispatching through a full routing
 // walk (live transport mocking, config parsing, member selection). None of that harness exists in
 // this crate — the routing, selection, and transport scaffolding is another unit's, not the
@@ -32,8 +30,6 @@ mod probe;
 // `cell.rs`'s doc-derived arithmetic. Concretely not reproduced: the mock transport setup, the
 // config parsing, and any assertion about the selection order or the concurrency semaphore
 // (another unit's scope).
-
-// ── New: state-machine behavior the task calls for ──────────────────────────────────────────────
 
 fn consecutive_cfg(base_cooldown_secs: u64, max_cooldown_secs: u64) -> BreakerCfg {
     BreakerCfg {
@@ -209,8 +205,6 @@ fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
         "the same cell armed from the same `now` must arm the same cooldown a second later"
     );
 }
-
-// ── A failure reports what it did to the cell ────────────────────────────────────────────────────
 
 /// `record_failure` says which arm it took, so a caller never has to guess from a state it read
 /// beforehand.
@@ -413,8 +407,6 @@ fn a_negative_cap_is_unlimited_and_never_an_admissible_budget_that_refuses_every
     assert!(unit.spend_budget(d));
 }
 
-// ── The DEFAULT trip mode's decision table ───────────────────────────────────────────────────────
-//
 // Every state-machine case above configures `TripMode::Consecutive`, so the mode a
 // `BreakerCfg::default()` cell actually evaluates — `ErrorRate`, with its `min_requests` floor and
 // its `>=` threshold comparison — was driven by nothing. These three cases walk the table
@@ -537,8 +529,6 @@ fn outcomes_that_have_aged_out_of_the_window_do_not_count_toward_a_trip() {
     );
 }
 
-// ── Backoff saturation at a long failure streak ──────────────────────────────────────────────────
-
 #[test]
 fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero() {
     // An EVEN base is the whole point: `base << 63` on a u64 discards the set bit and leaves zero,
@@ -605,8 +595,6 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
     );
 }
 
-// ── Item 142: the kernel's admission path runs on this state machine ─────────────────────────
-
 /// The consecutive-failure streak bump happens UNDER the transition lock, serialized with the
 /// trip/cooldown read — never before it, where concurrent failures over-counted the streak and
 /// inflated the first trip's cooldown. Moved here from the kernel's store tests with the state
@@ -661,8 +649,6 @@ fn streak_bump_is_serialized_under_the_transition_lock() {
     assert!((36..=44).contains(&remaining), "got {remaining}s");
 }
 
-// ── A won probe given back ───────────────────────────────────────────────────────────────────────
-
 /// Park the default cell of `d` as a WON probe, exactly as an admission leaves it after winning the
 /// single-flight race: expired-Open, then the mutating admission moves it Open to HalfOpen. Answers
 /// the epoch the win was taken at.
@@ -681,7 +667,6 @@ fn win_probe(unit: &BreakerUnit, d: DestinationId) -> u64 {
         .expect("precondition: this caller must WIN the single-flight probe")
 }
 
-/// F25 row 568: rehomed from the retired engine crate's src/engine/tests/probe_guard_tests.rs::dropping_armed_guard_releases_probe.
 /// A won probe given back without a dispatch (what an armed guard's drop does; the egress unit's
 /// `ProbeGuard` making exactly this call is pinned in busbar-kernel
 /// `src/tests/members/egress/route/probe_tests.rs`) releases it on the REAL breaker: the cell goes
@@ -711,7 +696,6 @@ fn dropping_armed_guard_releases_probe() {
     );
 }
 
-/// F25 row 570: rehomed from the retired engine crate's src/engine/tests/probe_guard_tests.rs::stalled_guard_does_not_release_a_newer_probe.
 /// A STALLED guard (it won an earlier probe, whose outcome was since recorded, and a newer probe
 /// was won on the re-opened cell) drops late: its owner-checked release is a no-op, and the current
 /// owner keeps its HalfOpen cell and its probe.

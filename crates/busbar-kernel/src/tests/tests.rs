@@ -388,8 +388,8 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
 
 /// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
 /// which is the arm these vendor-envelope assertions are about.
-fn residual_planes() -> crate::plane::PlaneDispatch {
-    crate::plane::PlaneDispatch::default()
+fn residual_planes() -> crate::plane_driver::dispatch::PlaneDispatch {
+    crate::plane_driver::dispatch::PlaneDispatch::default()
 }
 
 // THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
@@ -529,7 +529,7 @@ async fn test_reshape_oversized_413_passthrough() {
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         [(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+            axum::http::HeaderValue::from_static(busbar_contract::protocol::APPLICATION_JSON),
         )],
         r#"{"error":{"type":"request_too_large","message":"native"}}"#,
     )
@@ -1862,7 +1862,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
 /// store open), and no error path used to put the previous values back. A `POST /config/apply` that
 /// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
-/// `busbar_kernel::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// `busbar_kernel_egress::upstream::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
 /// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
 /// requests and failing larger cross-protocol completions.
 ///
@@ -1896,7 +1896,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
         "the build failed for the expected reason: {err}"
     );
     assert_ne!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         ILLEGAL,
         "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
          live signed-ingress and cross-protocol translate body caps"
@@ -2483,16 +2483,19 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 #[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
     const SECTION: &str = "pending-red";
-    static PENDING: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
-            key: "pending-red-plane",
-            fallback: false,
-            config_section: SECTION,
-            ..crate::test_support::NEUTRAL_FALLBACK.declaration
-        },
-        build: |_| Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
-        ..crate::test_support::NEUTRAL_FALLBACK
-    };
+    static PENDING: crate::plane_driver::registry::PlaneDecl =
+        crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
+                key: "pending-red-plane",
+                fallback: false,
+                config_section: SECTION,
+                ..crate::test_support::NEUTRAL_FALLBACK.declaration
+            },
+            build: |_| {
+                Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+            },
+            ..crate::test_support::NEUTRAL_FALLBACK
+        };
     struct Unopened;
     impl crate::appbuild::RootRules for Unopened {
         fn check(&self, _cfg: &crate::config::RootCfg) -> Result<(), String> {
@@ -2506,7 +2509,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             }
         }
     }
-    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = crate::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);
@@ -2680,8 +2683,8 @@ fn live_limits() -> (Option<String>, usize, usize) {
     std::thread::spawn(|| {
         (
             crate::config::limits::installed().map(|l| format!("{l:?}")),
-            busbar_kernel::proxy::max_translate_body_bytes(),
-            busbar_kernel::proxy::hook_content_max_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            crate::hooks::hook_content_max_bytes(),
         )
     })
     .join()
@@ -2963,7 +2966,7 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
         &residual_planes(),
         "/api/v1/admin/info",
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        busbar_contract::protocol::KIND_API_ERROR,
         "internal error",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
@@ -3152,10 +3155,10 @@ pub(crate) fn frozen_str(key: &str) -> String {
 /// dialect's error headers (the content type is the only header).
 #[tokio::test]
 async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
-    let resp = crate::proxy::ingress_error(
+    let resp = crate::ingress::ingress_error(
         "no-such-protocol",
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        crate::proxy::KIND_OVERLOADED,
+        busbar_contract::protocol::KIND_OVERLOADED,
         "everything is on fire",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
@@ -3180,7 +3183,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON envelope");
     assert_eq!(
         v["error"]["type"],
-        crate::proxy::KIND_OVERLOADED,
+        busbar_contract::protocol::KIND_OVERLOADED,
         "the kernel's envelope states the agnostic kind verbatim"
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
