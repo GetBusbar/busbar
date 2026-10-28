@@ -83,7 +83,7 @@ pub(crate) async fn list_groups(
 ) -> Response {
     let (start, limit) = match page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT) {
         Ok(page) => page,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let version = handle.load().config_version;
     with_config_etag(
@@ -245,7 +245,7 @@ pub(crate) async fn inspect_plugin(
     use base64::Engine as _;
     let req: InspectPluginReq = match json_body(&body, "plugin") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
     {
@@ -452,7 +452,7 @@ pub(crate) async fn rollback_plugin(
     };
     let req: PluginRollbackReq = match json_body(&body, "rollback") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let resource = format!("plugin:{}", req.file);
     let file = req.file.clone();
@@ -718,7 +718,7 @@ pub(crate) async fn register_hook(
     };
     let req: RegisterHookReq = match json_body(&body, "hook") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let name = req.name.clone();
     let resource = format!("hook:{name}");
@@ -828,7 +828,7 @@ pub(crate) async fn put_hook(
     };
     let req: PutHookReq = match json_body(&body, "hook") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let resource = format!("hook:{name}");
     let cfg = req.config;
@@ -1009,7 +1009,7 @@ pub(crate) async fn register_group(
     };
     let req: RegisterGroupReq = match json_body(&body, "group") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let name = req.name.clone();
     let resource = format!("group:{name}");
@@ -1092,7 +1092,7 @@ pub(crate) async fn put_group(
     };
     let req: PutGroupReq = match json_body(&body, "group") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let resource = format!("group:{name}");
     let cfg = req.config;
@@ -1693,7 +1693,7 @@ pub(crate) async fn get_audit(
 ) -> Response {
     let (start, limit) = match page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT) {
         Ok(page) => page,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let action = q.get("action").map(String::as_str);
     let resource = q.get("resource").map(String::as_str);
@@ -1719,7 +1719,7 @@ pub(crate) async fn list_config_versions(
 ) -> Response {
     let (start, limit) = match page_window(&q, crate::v1::contract::VERSIONS_LIMIT_DEFAULT) {
         Ok(page) => page,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let mut versions = handle.load().versions().list(start, limit + 1);
     let next_cursor = page_cursor(&mut versions, start, limit);
@@ -1892,7 +1892,7 @@ pub(crate) async fn rollback_config(
     };
     let req: RollbackReq = match json_body(&body, "rollback") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let resource = format!("config:v{}", req.version);
     let want = req.version;
@@ -2409,7 +2409,7 @@ pub(crate) async fn apply_config(
     };
     let req: ApplyConfigReq = match json_body(&body, "config") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     // A first section of a plane this process did not load is refused whole, before the parse and
     // before anything is built, in the running generation's root rules' words (Law 7).
@@ -2934,7 +2934,7 @@ pub(crate) async fn put_config_settings(
     };
     let mut raw: serde_json::Value = match json_body(&body, "config settings") {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
         None => false,
@@ -3166,7 +3166,7 @@ pub(crate) async fn patch_hook_settings(
     };
     let req: PatchSettingsReq = match json_body(&body, "settings") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     // BOUND the settings map. It is persisted verbatim into the config overlay AND re-sent to the hook
     // as the configure preamble on EVERY (re)connection, so an unbounded map amplifies both the
@@ -5356,7 +5356,7 @@ pub(crate) async fn validate_config(
 ) -> Response {
     let req: ValidateConfigReq = match json_body(&body, "config") {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     // The dry run judges what an apply would: a first section of an unloaded plane is refused.
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {

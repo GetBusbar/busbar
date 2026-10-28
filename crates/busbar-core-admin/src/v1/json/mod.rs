@@ -497,12 +497,13 @@ fn base_owned(kind: &str, name: &str) -> AdminError {
     ))
 }
 
-/// `body` as the JSON a mutation takes, or the 400 that names it a `malformed <what> body`.
-fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Response> {
+/// `body` as the JSON a mutation takes, or the 400 that names it a `malformed <what> body`
+/// (boxed: the ready-to-return `Response` is large, and the happy path should not carry it).
+fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Box<Response>> {
     serde_json::from_slice(body).map_err(|e| {
-        err_json(&AdminError::Validation(format!(
+        Box::new(err_json(&AdminError::Validation(format!(
             "malformed {what} body: {e}"
-        )))
+        ))))
     })
 }
 
@@ -511,13 +512,13 @@ fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<
 fn page_window(
     q: &std::collections::HashMap<String, String>,
     default: usize,
-) -> Result<(usize, usize), Response> {
+) -> Result<(usize, usize), Box<Response>> {
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(default)
         .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
-    Ok((cursor_offset(q)?, limit))
+    Ok((cursor_offset(q).map_err(Box::new)?, limit))
 }
 
 /// Given a slice fetched with `limit + 1` starting at `start`, trim it IN PLACE to `limit` and return
