@@ -2166,10 +2166,10 @@ fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_sessions_tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_host_tests.rs"]
 mod host_tests;

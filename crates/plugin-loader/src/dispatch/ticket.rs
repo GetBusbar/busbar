@@ -177,7 +177,8 @@ impl Waking {
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
 /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
 /// worker, which alone knows the generation).
-pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
     // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
     // counted by the worker, never silently lost here.
     // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes
