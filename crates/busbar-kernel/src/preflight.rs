@@ -334,14 +334,14 @@ pub fn root_rows() -> RootInstall {
     unsafe { *ptr }
 }
 
-/// The install record before any is installed: none in any build but the kernel's own unit-test
-/// binary, which has no root and reads its stand-in rows.
+/// The install record before any is installed: none in a shipped build; a test build, which has no
+/// root, reads its stand-in rows until it publishes its own.
 fn unset() -> RootInstall {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         crate::test_support::root::STAND_IN
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     {
         RootInstall::default()
     }
