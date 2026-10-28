@@ -115,22 +115,6 @@ pub mod rows;
 
 pub use sign::EgressPolicy;
 
-impl LinkedPlugin {
-    /// A FIRST-PARTY memory-ABI plugin a build links: `name` aliased `alias`, of `kind`, at this
-    /// loader's one version of the kind, published by busbar — the manifest its release tarball
-    /// states — over its `door` (`plugin_door!`): the same door its `cdylib` exports.
-    pub fn first_party_door(
-        kind: &str,
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        let mut row = LinkedPlugin::door_of_kind(kind, name, door);
-        row.manifest.alias = alias.into();
-        row
-    }
-}
-
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use registry::{

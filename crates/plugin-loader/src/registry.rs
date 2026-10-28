@@ -265,16 +265,6 @@ impl LinkedPlugin {
         }
     }
 
-    /// The build's in-process STORE named `name` (its own alias), at the store kind's one version:
-    /// its store v3 `door`, and whether what it holds is lost on restart.
-    pub fn store(
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-        ephemeral: bool,
-    ) -> Self {
-        Self::store_named(name, name, door, ephemeral)
-    }
-
     /// The build's in-process STORE under its CANONICAL `name` (the manifest name its release
     /// tarball carries, plugins.yaml `manifest_name`), answering also to `alias`, the key the
     /// composition root's table names it by and every surface prints ([`LoadablePlugin::key`]).
@@ -287,12 +277,6 @@ impl LinkedPlugin {
         let abi = busbar_contract::abi::store::ABI_VERSION;
         let entry = LinkedEntry::Store { door };
         Self::built_in(name, &[alias], kind::STORE, abi, entry, ephemeral)
-    }
-
-    /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
-    /// crate's `plugin_door!` door, the same door its dropped-in build exports.
-    pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        Self::auth_door_named(name, name, door)
     }
 
     /// A linked AUTH plugin under its CANONICAL `name`, answering also to `alias`, its key
@@ -323,63 +307,6 @@ impl LinkedPlugin {
             LinkedEntry::Door(door),
             false,
         )
-    }
-
-    /// [`Self::door`] over a test's raw door (a NULL or restated one).
-    #[cfg(test)]
-    pub(crate) fn door_raw(
-        manifest: Manifest,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        // A test's own door, answering NULL or a door it laid out: every entry into it runs the
-        // loader's checks.
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Door(door),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
-    }
-
-    /// [`Self::auth_door`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn auth_door_raw(
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, name, door)
-    }
-
-    /// [`Self::auth_door_named`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn auth_door_named_raw(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, alias, door)
-    }
-
-    /// [`Self::door_of_kind`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn door_of_kind_raw(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind).first().copied().unwrap_or_default();
-        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
-    }
-
-    /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
-    pub fn door_of_kind(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind).first().copied().unwrap_or_default();
-        let entry = LinkedEntry::Door(crate::dispatch::load::raw(door));
-        Self::built_in(name, &[], kind, abi, entry, false)
     }
 
     /// The row a built-in states: the manifest a first-party tarball of `kind` would carry, named
@@ -421,6 +348,77 @@ impl LinkedPlugin {
             keyed_by_alias: alias != name,
         };
         row.with_former_names(aliases.iter().skip(1))
+    }
+}
+
+/// THE TESTS' ROWS: each its own alias, or over a test's raw door (a NULL or restated one, every
+/// entry into which runs the loader's checks).
+#[cfg(test)]
+impl LinkedPlugin {
+    /// The build's in-process STORE named `name` ([`Self::store_named`] under its own alias).
+    pub(crate) fn store(
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+        ephemeral: bool,
+    ) -> Self {
+        Self::store_named(name, name, door, ephemeral)
+    }
+
+    /// A linked AUTH plugin named `name` ([`Self::auth_door_named`] under its own alias).
+    pub(crate) fn auth_door(
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        Self::auth_door_named(name, name, door)
+    }
+
+    /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
+    pub(crate) fn door_of_kind(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        Self::door_of_kind_raw(kind, name, crate::dispatch::load::raw(door))
+    }
+
+    /// [`Self::door`] over a raw door.
+    pub(crate) fn door_raw(
+        manifest: Manifest,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
+            ephemeral: false,
+            keyed_by_alias: false,
+        }
+    }
+
+    /// [`Self::auth_door`] over a raw door.
+    pub(crate) fn auth_door_raw(
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, name, door)
+    }
+
+    /// [`Self::auth_door_named`] over a raw door.
+    pub(crate) fn auth_door_named_raw(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, alias, door)
+    }
+
+    /// [`Self::door_of_kind`] over a raw door.
+    pub(crate) fn door_of_kind_raw(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 }
 
