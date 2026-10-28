@@ -26,6 +26,11 @@ pub mod transport;
 // every slot a catch_unwind trampoline (`plugin_door!` / `export_door!`).
 pub mod door;
 pub mod hook;
+// THE EXPORT KIND'S SHARED SINK PIECES: its tail, the push sink's refused `scrape`/`serve`, a quiet
+// `status` and the `one_instance` check.
+pub mod export;
+// A URL AS A LOG LINE MAY NAME IT: userinfo and secret-looking query values masked.
+pub mod mask;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;

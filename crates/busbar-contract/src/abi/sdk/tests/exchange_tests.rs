@@ -1252,3 +1252,69 @@ fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
     let clear = go(&free, "http://far/hook");
     assert_eq!(clear.answered.expect("no requirement").status, 200);
 }
+
+/// One READ_CHUNK of body: a reply that plays it without end passes [`REPLY_MAX`].
+static HUGE: [u8; READ_CHUNK] = [b'x'; READ_CHUNK];
+
+/// A 2xx head, then body pieces with no end: the scripted host plays the last piece on every read
+/// after the script, so the body runs on for as long as the exchange reads.
+fn head_then_endless_body() -> Vec<Scripted> {
+    vec![
+        piece(REPLY_HEAD, 200, b"OK", b"x-a: 1\r\n", b""),
+        piece(REPLY_BODY, 0, b"", b"", &HUGE),
+    ]
+}
+
+/// RED: a HEAD-ONLY exchange is judged on the reply's head, as 1.5.5 judged a webhook delivery. A
+/// 2xx head followed by a slow or huge body that never ends answers status 200 on the head read
+/// alone: no body is read or buffered, no `REPLY_OVER_BOUND`, and the stream is closed. Every entry
+/// after the head replays its read, and the replayed head ends the reads too; no service runs
+/// twice. An observing head-only exchange reads its facts before the close.
+#[test]
+fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reads = |ops: &[u32]| ops.iter().filter(|&&o| o == service::READ_REPLY).count();
+    let r = run(
+        head_then_endless_body(),
+        false,
+        Exchange::request(post()).expect("a request").head_only(),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    let reply = r.answered.expect("the head judges the exchange");
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.reason.as_deref(), Some(&b"OK"[..]));
+    assert_eq!(reply.fields, vec![(b"x-a".to_vec(), b"1".to_vec())]);
+    assert!(reply.body.is_empty(), "no body is read");
+    assert_eq!(reads(&r.ops), 1, "the head is the only piece read");
+    assert_eq!(r.ops.last(), Some(&service::CLOSE), "the stream is closed");
+    // establish, head, body, end, one read, close: six services, each run once.
+    assert_eq!(r.runs.len(), 6, "{:?}", r.runs);
+    assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
+    assert_eq!(r.entries, 7);
+
+    let observed = run(
+        head_then_endless_body(),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .observing()
+            .head_only(),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    assert_eq!(observed.answered.expect("the head judges it").status, 200);
+    let facts = observed.state.observed().expect("the facts were read");
+    assert_eq!(facts.peer_key_pin.as_deref(), Some(OBSERVED_PIN));
+    assert_eq!(reads(&observed.ops), 1);
+    assert_eq!(observed.ops.last(), Some(&service::CLOSE));
+    // establish, head, body, end, one read, facts, close.
+    assert_eq!(observed.runs.len(), 7, "{:?}", observed.runs);
+    assert!(
+        observed.runs.values().all(|&n| n == 1),
+        "{:?}",
+        observed.runs
+    );
+}
