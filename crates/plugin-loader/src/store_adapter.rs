@@ -615,19 +615,6 @@ impl SliceStore for StoreAdapter {
     }
 }
 
-/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter (status row 187,
-/// ARCHITECT 2026-10-20): the slice epoch this node serves at, which `reseal_epoch_floor` puts in
-/// the store as the floor and the boot compares with the floor the store holds. It is the door the
-/// root reads it through, so the money-slice seam stays named only here and in its defining module.
-impl StoreAdapter {
-    /// This node's slice epoch, as a number: the value the epoch floor is resealed to and checked
-    /// against.
-    #[must_use]
-    pub fn recovery_epoch(&self) -> u64 {
-        SliceStore::epoch(self).0
-    }
-}
-
 /// THE SEALED NEW-VERB REPLAY CACHE, which the composition root's verb store answers through this
 /// adapter (`busbar_contract::verb_store::Store::replay_new_verb` and `commit_new_verb_replay`).
 impl StoreAdapter {
