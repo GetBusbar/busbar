@@ -5502,7 +5502,7 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     .collect();
     gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
     gov.record_lane_metering(&k.id, "m", Some("p"), &units, AT);
-    gov.flush_metering();
+    gov.deliver_usage();
     let rows = store.list_metering(metering_bucket(AT)).unwrap();
     let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
     assert_eq!(
