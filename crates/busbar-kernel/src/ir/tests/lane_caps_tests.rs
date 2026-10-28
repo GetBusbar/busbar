@@ -146,6 +146,7 @@ mod provider_entry {
             anthropic_adaptive_thinking: None,
             native_structured_output: None,
             model_capabilities: Vec::new(),
+            options: Default::default(),
         }
     }
 
