@@ -468,7 +468,13 @@ macro_rules! hyper_io {
                 class_of: impl Fn(u16) -> u8,
                 fault_of: impl Fn(u16) -> u8,
             ) {
-                $crate::abi::sdk::transport::sink::fill(&mut Owing(f), sink, o, class_of, fault_of);
+                $crate::abi::sdk::transport::sink::fill::<Buf, _>(
+                    &mut Owing(f),
+                    sink,
+                    o,
+                    class_of,
+                    fault_of,
+                );
             }
 
             /// `headers` as a field block (`busbar_contract::abi::transport::fields`):

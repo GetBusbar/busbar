@@ -66,7 +66,7 @@ fn fill_into(f: &mut Framing, wire: usize, frame: usize, pieces: usize, heads: u
     // SAFETY: every buffer the sink names is a live `Vec` of its stated capacity, borrowed for the
     // call.
     let lent = unsafe { Lent::new(&sink) };
-    fill(
+    fill::<Vec<u8>, _>(
         f,
         lent,
         &mut Out::new(&mut out),
