@@ -67,10 +67,10 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # loader refuses a door built against another layout, so these nine rows are each plugin's r5-repin
 # branch built against #1845 (584b6cefb9): the store rows above merged onto it (31 slots), the vault
 # answering into the host-lent buffer (#1704).
-store-sqlite	src:528d9d87b4738e32ef15098f8df028d2dd3fb5ba	build:busbar-store-sqlite	-	1.6
-store-postgres	src:212b3948a8f0433b36a7551c5ac30ea92703d3d2	build:busbar-store-postgres	-	1.6
-store-valkey	src:9521c329c304f2761dc5c510fb5974cdb900ae3a	build:busbar-store-valkey	-	1.6
-store-mysql	src:b674cb5156069301013df82e51df869da3edd8f7	build:busbar-store-mysql	-	1.6
+store-sqlite	src:02a88002f7621249d0094d923b79447f7fc8d9b7	build:busbar-store-sqlite	-	1.6
+store-postgres	src:81cf067664241eafc90b3969484081523fdb2341	build:busbar-store-postgres	-	1.6
+store-valkey	src:d268f18bbd017180bd7aa950411cb8900017f822	build:busbar-store-valkey	-	1.6
+store-mysql	src:fa940df4b6e0e1d6e01997a56407be46cef2bfad	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:04627d7cb87de9f0e5b32e3fcfd2fd2ecaf69920	build:busbar-secret-vault	-	1.6
 auth-oidc	src:3988527ad269cb6d936bbaaad24d8dd774ca1f33	build:busbar-auth-oidc	-	1.6
 auth-github	src:54424a6f0880f581bdcf0e9bb3263c9f7afec69a	build:busbar-auth-github	-	1.6
