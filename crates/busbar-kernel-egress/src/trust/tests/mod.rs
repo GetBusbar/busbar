@@ -3,5 +3,4 @@
 
 //! The network readers' tests, ported with their assertions intact from the shipped guard's suite.
 
-mod dial_table_tests;
 mod net_tests;

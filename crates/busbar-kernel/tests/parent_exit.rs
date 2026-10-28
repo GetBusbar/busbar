@@ -18,9 +18,7 @@ use busbar_contract::caps::{
     PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, StepName, VerifiedDestination, Verify,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
-use busbar_kernel::teller::{
-    exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx, Units,
-};
+use busbar_kernel::teller::{exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx};
 
 use common::{cell, ctx, principal, Door, TestUnits};
 
@@ -51,6 +49,7 @@ impl ParentExitsMidRoute<'_> {
                 gauge: &gauge,
                 canary: &Canary::new(),
                 meter: &meter,
+                taps: None,
             },
             Outcome::Completed,
             true,
@@ -59,16 +58,19 @@ impl ParentExitsMidRoute<'_> {
     }
 }
 
-impl Units for ParentExitsMidRoute<'_> {
+impl busbar_kernel::teller::DoorSeats for ParentExitsMidRoute<'_> {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.child.arrival(token, ctx)
     }
+
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
         self.child.decode(token, ctx)
     }
+
     fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
         self.child.authenticate(token, ctx)
     }
+
     fn verify(
         &self,
         token: &Pass<Verify>,
@@ -78,6 +80,7 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Verify> {
         self.child.verify(token, trust, ctx, principal)
     }
+
     fn approve(
         &self,
         token: &Pass<Approve>,
@@ -87,6 +90,7 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Approve> {
         self.child.approve(token, ctx, principal, destinations)
     }
+
     fn admit(
         &self,
         token: &Pass<Admit>,
@@ -99,6 +103,9 @@ impl Units for ParentExitsMidRoute<'_> {
         self.child
             .admit(token, admit, ctx, principal, destinations, leases)
     }
+}
+
+impl busbar_kernel::teller::UnitEnds for ParentExitsMidRoute<'_> {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -109,6 +116,7 @@ impl Units for ParentExitsMidRoute<'_> {
         self.parent_exits();
         routed
     }
+
     fn meter(
         &self,
         token: &Pass<Meter>,
@@ -120,9 +128,11 @@ impl Units for ParentExitsMidRoute<'_> {
         self.child
             .meter(token, usage, ctx, provisional, destinations)
     }
+
     fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
         self.child.audit(token, ctx, outcome)
     }
+
     fn audit_refused(
         &self,
         token: &Pass<Audit>,
@@ -131,6 +141,7 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Audit> {
         self.child.audit_refused(token, ctx, refusal)
     }
+
     fn encode(
         &self,
         token: &Pass<Encode>,
@@ -139,9 +150,11 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Encode> {
         self.child.encode(token, ctx, outcome)
     }
+
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         self.child.evidence(ctx)
     }
+
     fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
         match self.door_backs {
             None => Ok(()),
@@ -187,6 +200,7 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     assert_eq!(parent.state(), HoldCellState::Taken, "the parent exited");
@@ -265,6 +279,7 @@ fn run_on(
             gauge: &gauge,
             canary,
             meter: &units.meter,
+            taps: None,
         },
     )
 }

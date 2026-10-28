@@ -68,6 +68,7 @@ pub mod boot;
 pub mod card_history;
 pub mod card_store;
 pub mod cli;
+pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
 pub mod dispatch;

@@ -236,6 +236,7 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
         &route,
     ));
@@ -321,6 +322,7 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
         &route,
     ));
@@ -396,6 +398,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
         &route,
     ));
@@ -442,6 +445,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     assert!(matches!(

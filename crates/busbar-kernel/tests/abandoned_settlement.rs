@@ -78,6 +78,7 @@ fn one_unit(went_away: bool) -> Figures {
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
 
     let mut books: Figures = (0, 0);
