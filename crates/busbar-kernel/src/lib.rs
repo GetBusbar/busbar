@@ -242,7 +242,6 @@ pub mod ir;
 pub mod host_services;
 pub mod json;
 pub mod limits;
-pub mod lineage;
 pub mod oauth_as;
 pub mod observability;
 pub mod snapshot;
