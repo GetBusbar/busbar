@@ -272,7 +272,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -335,6 +334,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -419,7 +419,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -503,14 +502,6 @@ dependencies = [
  "ring",
  "serde",
  "sha2",
-]
-
-[[package]]
-name = "busbar-kernel-scope"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
 ]
 
 [[package]]

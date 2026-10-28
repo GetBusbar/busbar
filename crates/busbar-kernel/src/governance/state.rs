@@ -502,12 +502,12 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    pub fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
-        let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
+    pub fn card_issuer(&self) -> Option<crate::plane_driver::registry::CardIssuer> {
+        let decl = crate::plane_driver::registry::plane_decl_for_config_section("agents")?;
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
-        Some(crate::plane::registry::CardIssuer {
+        Some(crate::plane_driver::registry::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
             issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
         })
@@ -524,8 +524,8 @@ impl GovState {
     // host names no plane feature; the card-signing domain is resolved from the registry.
     #[allow(dead_code)]
     pub fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        let domain =
-            crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
+        let domain = crate::plane_driver::registry::plane_decl_for_config_section("agents")?
+            .card_signing_domain?;
         let m = self.signing_material()?;
         Some(m.signer.sign_with_card_subkey(domain, signing_input))
     }
@@ -591,6 +591,23 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
+        self.record_usage_served(cost, key, pool, model, None, units, now);
+    }
+
+    /// [`GovState::record_usage`] for a unit whose serving member's `provider` is known: a pools
+    /// lane's classes mirror onto the `(model, provider)` metering row its request meters on
+    /// ([`GovState::record_lane_metering`]), never onto an unattributed `(model, "")` row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_usage_served(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        model: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+    ) {
         if units.values().all(|v| *v == 0) {
             return; // nothing to ledger
         }
@@ -600,7 +617,7 @@ impl GovState {
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
         // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
         // lands — so the admin usage read prices exactly the counts this book prices.
-        self.meter_classes(&key.id, model, units, era, now);
+        self.meter_classes(&key.id, model, provider, units, era, now);
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
         let chain = match cost.chain_for(key) {
@@ -626,7 +643,10 @@ impl GovState {
     /// THE ROW IS THE ONE THE PLANE'S OWN SERIES ROW IS KEYED BY. A plane-qualified lane
     /// `"<plane>\u{1f}<subject>"` lands on `(model: <subject>, provider: <plane>)` — the row a plane's
     /// metered request already writes, whose provider column names the plane — and a plane's fee lane
-    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>, "")`.
+    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>,
+    /// <provider>)`, the serving member's provider, the row its request meters on: spend is always
+    /// attributed. Only a count with no serving member at all (no attempt committed) keeps an empty
+    /// provider, so it is never dropped.
     ///
     /// NOTHING IS COUNTED TWICE. On an unqualified lane the four reserved token tiers are left off:
     /// the same response's `record_metering` carries them in the row's token columns. Every other
@@ -636,6 +656,7 @@ impl GovState {
         &self,
         key_id: &str,
         lane: &str,
+        provider: Option<&str>,
         units: &std::collections::BTreeMap<String, u64>,
         priced_from_ms: u64,
         now: u64,
@@ -654,7 +675,7 @@ impl GovState {
             return;
         }
         let (model, provider) = if plane.is_empty() {
-            (lane, "")
+            (lane, provider.unwrap_or(""))
         } else {
             (subject, plane)
         };
@@ -1598,7 +1619,7 @@ impl GovState {
     }
 
     /// How many times the money view has priced a bucket on this node. Test-only.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn money_view_pricings(&self) -> u64 {
         self.money_view.pricings()
     }
