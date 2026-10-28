@@ -235,8 +235,7 @@ pub fn wire_formats(key: &str) -> usize {
 /// `_ => None` as "several", so the plane silently stopped being labelled at the ingress boundary
 /// with no statement that anyone had decided that. The answer is STILL `None` — a plane with no
 /// dialect has nothing to label a request with — but it is now a signed decision with a test
-/// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` above: zero wire
-/// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
+/// (`plane/tests/`), not a match arm's accident.
 pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
     match names {
         // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.

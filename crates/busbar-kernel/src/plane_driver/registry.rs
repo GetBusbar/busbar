@@ -766,8 +766,7 @@ plane_behaviour! {
     /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
-    /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
-    /// the superset-IR rule remains a rule rather than a fact about today's planes.
+    /// `Plane::wire_formats` stays DERIVED from this list.
     wire_format_names: fn() -> &'static [&'static str],
 
     /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
