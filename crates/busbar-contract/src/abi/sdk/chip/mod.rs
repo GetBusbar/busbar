@@ -10,12 +10,13 @@
 
 pub(crate) mod digests;
 mod jws;
+pub(crate) mod rsa;
 mod scheme;
 
 use base64::Engine as _;
 use zeroize::Zeroizing;
 
-use crate::abi::sdk::cred::{Cred, Held, Seal};
+use crate::abi::sdk::cred::{Cred, Held, PgAuth, Seal};
 use crate::abi::sdk::hmac::hmac_sha256;
 
 /// Why a recipe refused: a sentence with no material in it.
@@ -29,6 +30,44 @@ impl core::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// RULING S4: a Postgres server asked for the password in clear.
+pub const PG_CLEARTEXT_REFUSED: Refused = Refused(
+    "the server asked for the password in clear (AuthenticationCleartextPassword), which the \
+     operator's connection string does not allow: busbar sends only SCRAM-SHA-256 unless \
+     `require_auth` allows the weaker method (add `require_auth=password`, or use SCRAM on the \
+     server)",
+);
+
+/// RULING S4: a Postgres server asked for MD5.
+pub const PG_MD5_REFUSED: Refused = Refused(
+    "the server asked for MD5 password authentication, which the operator's connection string \
+     does not allow: busbar sends only SCRAM-SHA-256 unless `require_auth` allows the weaker \
+     method (add `require_auth=md5`, or set the role's password with SCRAM on the server)",
+);
+
+/// The operator's `require_auth` leaves SCRAM-SHA-256 out (libpq's rule).
+pub const PG_SCRAM_REFUSED: Refused = Refused(
+    "the server asked for SCRAM-SHA-256, which the operator's `require_auth` does not name",
+);
+
+/// RULING S4: a MySQL server asked for `mysql_clear_password`.
+pub const MYSQL_CLEAR_REFUSED: Refused = Refused(
+    "the server asked for mysql_clear_password (the password in clear), which the operator's URL \
+     does not allow: add `enable_cleartext_plugin=true` to allow it",
+);
+
+/// RULING S4: a MySQL server asked for `mysql_old_password`.
+pub const MYSQL_OLD_REFUSED: Refused = Refused(
+    "the server asked for mysql_old_password (the pre-4.1 scramble), which the operator's URL \
+     does not allow: add `secure_auth=false` to allow it",
+);
+
+/// RULING S5: the server's RSA key is not the one the operator pinned.
+pub const MYSQL_RSA_PIN_MISMATCH: Refused = Refused(
+    "the MySQL server's RSA public key does not match the operator's `server_public_key_sha256` \
+     pin, so the password was not sent: check the pin against the server's key",
+);
 
 type Bytes = Zeroizing<Vec<u8>>;
 
@@ -264,20 +303,37 @@ impl Cred {
         String::from_utf8(out).unwrap_or_else(|_| "[redacted]".to_owned())
     }
 
+    fn pg_allows(&self, method: PgAuth, refused: Refused) -> Result<(), Refused> {
+        if self.floor().pg().allows(method) {
+            Ok(())
+        } else {
+            Err(refused)
+        }
+    }
+
     /// Postgres `PasswordMessage` carrying the password in clear (AuthenticationCleartextPassword).
-    pub fn pg_password_message(&self) -> Seal {
-        pg_message(self, self.wire())
+    ///
+    /// # Errors
+    /// [`PG_CLEARTEXT_REFUSED`]: the operator's `require_auth` does not allow `password` (ruling
+    /// S4; none written allows only SCRAM-SHA-256).
+    pub fn pg_password_message(&self) -> Result<Seal, Refused> {
+        self.pg_allows(PgAuth::Password, PG_CLEARTEXT_REFUSED)?;
+        Ok(pg_message(self, self.wire()))
     }
 
     /// Postgres `PasswordMessage` for AuthenticationMD5Password:
     /// `"md5" + hex(md5(hex(md5(password + user)) + salt))`.
-    pub fn pg_md5_message(&self, user: &str, salt: [u8; 4]) -> Seal {
+    ///
+    /// # Errors
+    /// [`PG_MD5_REFUSED`]: the operator's `require_auth` does not allow `md5` (ruling S4).
+    pub fn pg_md5_message(&self, user: &str, salt: [u8; 4]) -> Result<Seal, Refused> {
+        self.pg_allows(PgAuth::Md5, PG_MD5_REFUSED)?;
         let inner = digests::md5(&[self.wire(), user.as_bytes()]);
         let inner_hex = Zeroizing::new(hex::encode(&inner[..]).into_bytes());
         let outer = digests::md5(&[&inner_hex, &salt]);
         let mut body = Zeroizing::new(b"md5".to_vec());
         body.extend_from_slice(hex::encode(&outer[..]).as_bytes());
-        pg_message(self, &body)
+        Ok(pg_message(self, &body))
     }
 
     /// Postgres `SASLResponse` carrying the SCRAM-SHA-256 client-final message (RFC 5802, 7677),
@@ -287,13 +343,14 @@ impl Cred {
     ///
     /// # Errors
     /// The server's message is malformed, does not extend the client nonce, or names an iteration
-    /// count outside 4096..=1000000.
+    /// count outside 4096..=1000000; or the operator's `require_auth` leaves SCRAM-SHA-256 out.
     pub fn pg_scram_sha256(
         &self,
         client_first_bare: &str,
         server_first: &str,
         channel_binding: &[u8],
     ) -> Result<(Seal, ScramLink), Refused> {
+        self.pg_allows(PgAuth::ScramSha256, PG_SCRAM_REFUSED)?;
         let (client_final, link) =
             self.scram_sha256(client_first_bare, server_first, channel_binding)?;
         Ok((pg_message_raw(self, &client_final), link))
@@ -386,6 +443,27 @@ impl Cred {
         self.seal(out)
     }
 
+    /// RULING S4: `mysql_old_password` and `mysql_clear_password` only as the operator allowed.
+    fn mysql_allows(&self, auth: MysqlAuth) -> Result<(), Refused> {
+        let floor = self.floor();
+        match auth {
+            MysqlAuth::Old if !floor.mysql_old() => Err(MYSQL_OLD_REFUSED),
+            MysqlAuth::Clear if !floor.mysql_clear() => Err(MYSQL_CLEAR_REFUSED),
+            _ => Ok(()),
+        }
+    }
+
+    /// A seal of the password in clear (or encrypted to a key nobody pinned): it goes out in the
+    /// open only when `open` (the operator's socket, pin or switch), else only secured (ruling S5).
+    fn mysql_seal(&self, bytes: Bytes, open: bool) -> Seal {
+        let seal = self.seal(bytes);
+        if open {
+            seal
+        } else {
+            seal.require_secure()
+        }
+    }
+
     fn mysql_scramble(&self, auth: MysqlAuth, nonce: &[u8]) -> Bytes {
         let pw = self.wire();
         if pw.is_empty() {
@@ -420,8 +498,11 @@ impl Cred {
     /// A MySQL `HandshakeResponse41` packet, whole, header included.
     ///
     /// # Errors
-    /// The packet would not fit one MySQL packet.
+    /// The packet would not fit one MySQL packet; or it answers `mysql_old_password` or
+    /// `mysql_clear_password` and the operator did not allow it ([`MYSQL_OLD_REFUSED`],
+    /// [`MYSQL_CLEAR_REFUSED`]).
     pub fn mysql_handshake_response(&self, h: &MysqlHandshake<'_>) -> Result<Seal, Refused> {
+        self.mysql_allows(h.auth)?;
         let mut caps = h.capabilities | CLIENT_PLUGIN_AUTH;
         if h.database.is_some() {
             caps |= CLIENT_CONNECT_WITH_DB;
@@ -482,13 +563,16 @@ impl Cred {
     /// A MySQL auth-switch response packet for `auth` over the switch request's `nonce`, whole.
     ///
     /// # Errors
-    /// Never in practice (the scramble is at most 32 bytes).
+    /// `mysql_old_password` or `mysql_clear_password` the operator did not allow
+    /// ([`MYSQL_OLD_REFUSED`], [`MYSQL_CLEAR_REFUSED`]); else never in practice (the scramble is at
+    /// most 32 bytes).
     pub fn mysql_auth_switch_response(
         &self,
         seq: u8,
         auth: MysqlAuth,
         nonce: &[u8],
     ) -> Result<Seal, Refused> {
+        self.mysql_allows(auth)?;
         let scramble = self.mysql_scramble(auth, nonce);
         mysql_packet(seq, &scramble).map(|b| self.seal(b))
     }
@@ -496,12 +580,63 @@ impl Cred {
     /// A MySQL packet carrying the password in clear, NUL-terminated: `caching_sha2_password` full
     /// authentication over a secured or unix-socket link, or `mysql_clear_password`, whole.
     ///
+    /// RULING S5: it goes out in the open only over the unix socket the operator's URL names, or
+    /// when the operator enabled the cleartext plugin; otherwise the seal goes out only where the
+    /// host connector reports the connection secured ([`Seal::secure_required`]).
+    ///
     /// # Errors
     /// The password does not fit one MySQL packet.
     pub fn mysql_clear_packet(&self, seq: u8) -> Result<Seal, Refused> {
         let mut p = Zeroizing::new(self.wire().to_vec());
         p.push(0);
-        mysql_packet(seq, &p).map(|b| self.seal(b))
+        let floor = self.floor();
+        mysql_packet(seq, &p).map(|b| self.mysql_seal(b, floor.local() || floor.mysql_clear()))
+    }
+}
+
+impl Cred {
+    /// A MySQL packet for `caching_sha2_password` full authentication on a link with no TLS: the
+    /// password (NUL-terminated) XORed with the `nonce`, RSA-OAEP-encrypted to the server's PEM
+    /// public key, whole.
+    ///
+    /// RULING S5: the key comes from the server on a link with no TLS, so it is trusted only when
+    /// the operator pinned it (`server_public_key_sha256`). With no pin the seal goes out in the
+    /// open only over the operator's unix socket, else only where the host connector reports the
+    /// connection secured ([`Seal::secure_required`]).
+    ///
+    /// # Errors
+    /// An empty nonce, a key that does not parse, a key that is not the pinned one
+    /// ([`MYSQL_RSA_PIN_MISMATCH`]), a password too long for the key, or no randomness for the
+    /// OAEP seed.
+    pub fn mysql_rsa_packet(
+        &self,
+        seq: u8,
+        nonce: &[u8],
+        server_key_pem: &[u8],
+    ) -> Result<Seal, Refused> {
+        if nonce.is_empty() {
+            return Err(Refused("the server sent no nonce"));
+        }
+        let floor = self.floor();
+        let pinned = match floor.rsa_pin() {
+            Some(pin) => {
+                let key = rsa::key_sha256(server_key_pem)?;
+                if !crate::constant_time_eq(&key[..], &pin[..]) {
+                    return Err(MYSQL_RSA_PIN_MISMATCH);
+                }
+                true
+            }
+            None => false,
+        };
+        let mut seed = Zeroizing::new([0_u8; 20]);
+        getrandom::fill(&mut seed[..]).map_err(|_| Refused("no randomness for the OAEP seed"))?;
+        let mut plain = Zeroizing::new(self.wire().to_vec());
+        plain.push(0);
+        for (i, b) in plain.iter_mut().enumerate() {
+            *b ^= nonce[i % nonce.len()];
+        }
+        let ct = rsa::oaep_sha1(&plain, server_key_pem, &seed)?;
+        mysql_packet(seq, &ct).map(|b| self.mysql_seal(b, pinned || floor.local()))
     }
 }
 

@@ -33,3 +33,5 @@ pub mod test_issuer;
 /// plugin's own tests.
 #[allow(unsafe_code)] // REVIEWED: the one read of each kind a plugin test needs, once
 pub mod test_support;
+/// An in-memory log double: the WARN-and-above events a test's code emitted.
+pub mod warn_capture;

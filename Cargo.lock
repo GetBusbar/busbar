@@ -300,7 +300,9 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "http",
  "hyper",
@@ -309,6 +311,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
+ "num-bigint",
  "proc-macro2",
  "quote",
  "ring",
@@ -479,8 +482,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "bytes",
- "futures",
 ]
 
 [[package]]
@@ -701,6 +702,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "zeroize",
 ]
 

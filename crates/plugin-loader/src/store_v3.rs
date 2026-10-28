@@ -40,9 +40,7 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn, LIFECYCLE_SLOTS,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, LIFECYCLE_SLOTS};
 use busbar_contract::abi::store::{
     self as st, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
     HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords, IdIn, IdReasonIn,
@@ -60,6 +58,7 @@ use busbar_contract::records::{
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
 use crate::dispatch::kinds::store::{Store, StoreFacts};
+use crate::dispatch::lifecycle::{self, open_frame, validate_call};
 use crate::dispatch::{
     in_head, now_ns, out_head, Dispatcher, Frame, InFrame, Lent, OutFrame, Plugin,
 };
@@ -114,23 +113,7 @@ impl LoadedStore {
         let settings: Arc<Vec<u8>> = Arc::new(settings.to_vec());
         // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
         // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
-        let o = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: octets(&settings),
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let o = open_frame(octets(&settings));
         let c = Self::open_on_ticket(&plugin, &dispatcher, o, settings);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
@@ -197,17 +180,7 @@ impl LoadedStore {
     /// # Errors
     /// The store's refusal of its settings.
     pub fn validate(plugin: &Plugin<Store>, settings: &[u8]) -> Result<(), String> {
-        let mut v = Frame::new(
-            ValidateIn {
-                head: in_head(),
-                settings: octets(settings),
-                // The dispatcher lends the reason buffer at the crossing.
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            out_head(),
-        );
-        let c = plugin.call(life::VALIDATE, &mut v);
+        let c = validate_call(plugin, octets(settings));
         match (c.outcome, c.error) {
             (Outcome::Ready, _) => Ok(()),
             // The store's own words reach the operator VERBATIM (1.5.5 printed the plugin's text).
@@ -237,17 +210,7 @@ impl LoadedStore {
     }
 
     fn release(&self, lease: u64) {
-        if lease == 0 {
-            return;
-        }
-        let mut f = Frame::new(
-            ReleaseIn {
-                head: in_head(),
-                lease,
-            },
-            out_head(),
-        );
-        let _ = self.plugin.call(life::RELEASE, &mut f);
+        lifecycle::release(&self.plugin, lease);
     }
 
     // ── the two runners ──────────────────────────────────────────────────────────────────────
@@ -405,8 +368,7 @@ impl Drop for LoadedStore {
     /// The handle is the instance's owner: dropping it (a reload's retired store, a test's) closes
     /// the instance, so what it holds (its kept connections) goes with it.
     fn drop(&mut self) {
-        let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
-        let _ = self.plugin.call(life::CLOSE, &mut f);
+        lifecycle::close(&self.plugin);
     }
 }
 
@@ -1165,6 +1127,166 @@ impl StoreCalls for LoadedStore {
         })
     }
 
+    fn put_key<'a>(&'a self, key: &'a VirtualKey) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::PUT_KEY,
+                owned_in(|o, head| BlobIn {
+                    head,
+                    record: o.json(to_json(key)),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<VirtualKey>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedBlobOut>(
+                slot::GET_KEY,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(id),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.record(ran)
+        })
+    }
+
+    fn list_keys(&self) -> StoreCall<'_, Vec<VirtualKey>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(slot::LIST_KEYS, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::DELETE_KEY,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(id),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a VirtualKey,
+        secret: &'a CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::PUT_KEY_WITH_CREDENTIAL,
+                owned_in(|o, head| KeyWithCredentialIn {
+                    head,
+                    key: o.json(to_json(key)),
+                    credential: o.secret_json(to_json(secret)),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn list_credentials<'a>(&'a self, key_id: &'a str) -> StoreCall<'a, Vec<CredentialMeta>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_CREDENTIALS,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(key_id),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::REVOKE_CREDENTIAL,
+                owned_in(|o, head| IdReasonIn {
+                    head,
+                    id: o.text(id),
+                    reason: o.text(reason),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn list_credentials_since(&self, since: u64) -> StoreCall<'_, Vec<CredentialSecret>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_CREDENTIALS_SINCE,
+                bare(in_of(|head| U64In { head, value: since })),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::ADD_DENYLIST,
+                owned_in(|o, head| IdReasonIn {
+                    head,
+                    id: o.text(sub),
+                    reason: o.text(reason),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedStrListOut>(slot::LIST_DENYLIST, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
+            self.read_strs(ran)
+        })
+    }
+
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<MeteringRow>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_METERING,
+                bare(in_of(|head| U64In {
+                    head,
+                    value: bucket,
+                })),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn list_audit(&self) -> StoreCall<'_, Vec<AuditRecord>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(slot::LIST_AUDIT, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<AuditRecord>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_AUDIT_TAIL,
+                bare(in_of(|head| U64In { head, value: limit })),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         boxed(async move {
             let r = fixed::<_, OutHead>(
@@ -1259,6 +1381,35 @@ impl StoreCalls for LoadedStore {
             let (ran, _) = run!(self, submit, r);
             ran.ok()?;
             Ok(ran.out.verdict == VERDICT_YES)
+        })
+    }
+
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedStrListOut>(
+                slot::LIST_PLANE_RECORD_PARENTS,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(kind),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.read_strs(ran)
+        })
+    }
+
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        boxed(async move {
+            let r = fixed::<_, CountOut>(
+                slot::PURGE_PLANE_RECORDS_BEFORE,
+                owned_in(|o, head| KindBeforeIn {
+                    head,
+                    kind: o.text(kind),
+                    before,
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            ran.ok().map(|()| ran.out.count)
         })
     }
 }

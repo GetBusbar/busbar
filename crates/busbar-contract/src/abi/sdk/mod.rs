@@ -31,6 +31,9 @@ pub mod hook;
 pub mod export;
 // A URL AS A LOG LINE MAY NAME IT: userinfo and secret-looking query values masked.
 pub mod mask;
+// A CONFIGURED URL'S CREDENTIAL, KEPT TO ITS ONE USE: its Basic header, the ambiguous-url refusal,
+// and the scrub of a text that may quote it.
+pub mod url;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;
@@ -92,6 +95,9 @@ pub use publish::{Generations, Keyed};
 pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
+// THE PLUGIN'S OWN CONFIG MIGRATION, ONCE FOR EVERY KIND: the door's optional `migrate` over a
+// plugin's `Migrate`, and the answer core reads (`abi::mechanism::lifecycle`, MIGRATE).
+pub mod migrate;
 // THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine slots over a plane's `PlaneLife`.
 pub mod plane_life;
 // THE TEST KIT'S HALF THAT MUST LIVE IN THE CONTRACT (all-zero values, lending pairs; `chip` behind

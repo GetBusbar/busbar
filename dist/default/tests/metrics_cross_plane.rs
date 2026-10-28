@@ -28,12 +28,12 @@ use busbar_kernel::governance::{
     GovState, MemoryStore, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
     RecordStoreResult,
 };
-use busbar_kernel::ingress::protocols::PROTO_OPENAI;
 use busbar_kernel::snapshot::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
 };
 use busbar_kernel::store::{now, LaneRuntime};
+use busbar_kernel::test_support::protocols::PROTO_OPENAI;
 use busbar_kernel::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
 
