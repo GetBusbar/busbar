@@ -24,11 +24,12 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SCOPE_SEPARATOR};
+use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{DriverSteps, FarEnd, PlaneUnits};
+use super::entry::{bound_entry, scoped_entry};
 use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
@@ -333,89 +334,6 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }
         Ok(())
     }
-}
-
-/// THE ENTRY A GATE-FIRST UNIT'S HOOKS ARE BOUND OVER: the one its `arrive` named and the kernel
-/// recorded at decode (`Decoded::pool`; none named is the empty entry). The plane's `project`
-/// states an entry too, and it must be the same one: a projection naming another is the plane's
-/// fault and refuses the unit, so the gates the operator attached to the routed entry can never be
-/// traded for another entry's by the plane's later word (audit kernel-K2 leftover A4; ARCHITECT
-/// 2026-10-07). Two units bind otherwise:
-///
-/// - a unit routed over a POOL (`ROUTE_POOL`, a pool named) recorded the pool, and hooks are
-///   attached to its members: the entry is the member the plane's projection names, as 1.5.5
-///   bound its hooks, admitted only when it is a member of the recorded pool (`holds`, the
-///   generation's own record of the pool's members); any other entry, the empty one included,
-///   refuses the unit (THE DESIGN §1 l.183-187: the hook gate applies to every plane the same
-///   way);
-/// - a projection that names no entry and states no body (a task's continuation, whose call was
-///   screened at the unit that created the task) has nothing for a gate to screen: `None`, nothing
-///   is bound.
-fn bound_entry<'v>(
-    recorded: Option<&'v [u8]>,
-    route: u8,
-    view: &'v Projection,
-    holds: impl Fn(&[u8], &str) -> bool,
-) -> Result<Option<&'v str>, Stopped> {
-    if view.pool.is_empty() && view.projected.is_none() {
-        return Ok(None);
-    }
-    let recorded = recorded.unwrap_or_default();
-    if route == busbar_contract::abi::plane::ROUTE_POOL && !recorded.is_empty() {
-        if view.pool.is_empty() || !holds(recorded, view.pool.as_str()) {
-            return Err(Stopped::Unreadable);
-        }
-        return Ok(Some(&view.pool));
-    }
-    if recorded != view.pool.as_bytes() {
-        return Err(Stopped::Unreadable);
-    }
-    std::str::from_utf8(recorded)
-        .map(Some)
-        .map_err(|_| Stopped::Unreadable)
-}
-
-/// THE ENTRY A GATE-FIRST UNIT ROUTED BY SCOPE (`ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`) IS BOUND OVER:
-/// the ONE entry the kernel's Verify resolved its scope to (`resolved`), never an entry the
-/// plane's projection names. Its `arrive` recorded no entry: `candidates` is the plane's CANDIDATE
-/// LIST joined by `ROUTE_SCOPE_SEPARATOR` (`None` or empty = every entry is a candidate), and the
-/// plane's `project` cannot know which one the scope resolves to, so it names none. The binding
-/// guarantee of [`bound_entry`] holds the same way:
-///
-/// - the resolved entry must be one the recorded candidate list holds (a whole member, never a
-///   widening of the list); any other refuses the unit;
-/// - a projection may name no entry, or the resolved one; naming any other refuses the unit, so
-///   the plane's later word never trades the resolved entry's gates for another's;
-/// - a scope that resolved no entry (zero or several reach) binds nothing: the door refuses that
-///   unit `no_destination` before anything is admitted (`abi::plane::ROUTE_SCOPE`), so no hop runs
-///   ungated; a projection naming an entry for it is still refused;
-/// - a projection that names no entry and states no body binds nothing, as for any route.
-fn scoped_entry<'v>(
-    candidates: Option<&[u8]>,
-    resolved: Option<&'v [u8]>,
-    view: &Projection,
-) -> Result<Option<&'v str>, Stopped> {
-    if view.pool.is_empty() && view.projected.is_none() {
-        return Ok(None);
-    }
-    let Some(resolved) = resolved else {
-        if view.pool.is_empty() {
-            return Ok(None);
-        }
-        return Err(Stopped::Unreadable);
-    };
-    let entry = std::str::from_utf8(resolved).map_err(|_| Stopped::Unreadable)?;
-    let candidates = candidates.unwrap_or_default();
-    if !candidates.is_empty() {
-        let candidates = std::str::from_utf8(candidates).map_err(|_| Stopped::Unreadable)?;
-        if !candidates.split(ROUTE_SCOPE_SEPARATOR).any(|c| c == entry) {
-            return Err(Stopped::Unreadable);
-        }
-    }
-    if entry.is_empty() || (!view.pool.is_empty() && view.pool != entry) {
-        return Err(Stopped::Unreadable);
-    }
-    Ok(Some(entry))
 }
 
 /// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the

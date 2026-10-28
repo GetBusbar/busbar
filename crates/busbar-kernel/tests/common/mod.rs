@@ -518,6 +518,10 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
         self.resolved.clone()
     }
 
+    fn scope_entry(&self) -> Option<Vec<u8>> {
+        self.resolved.clone()
+    }
+
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
         self.tap_faults.lock().unwrap().push((dialect, reason));
         busbar_kernel::handlers::usage_tap_fault(TAP_FAULT_PROTOCOL, reason);

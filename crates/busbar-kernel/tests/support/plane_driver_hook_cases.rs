@@ -1252,3 +1252,133 @@ async fn the_stage_reports_a_hook_that_failed_as_failed() {
         }],
     );
 }
+
+// ── per-entry hooks under the routed order (E1a) ────────────────────────────────────────────────
+
+/// A ROUTED-order binder over a plane whose entry `entry` carries `hooks` (an MCP server's
+/// `tools.servers.X.hooks`, an A2A agent's `agents.X.hooks`): entry-scoped, binding them only to a
+/// unit whose recorded entry is that one, and recording the entry each bind named.
+struct EntryAttached {
+    entry: &'static str,
+    hooks: BoundHooks,
+    asked: Mutex<Vec<Option<String>>>,
+}
+
+impl busbar_kernel::plane_driver::HookBinder for EntryAttached {
+    fn entry_scoped(&self) -> bool {
+        true
+    }
+
+    fn bind(
+        &self,
+        bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push(bind.entry.map(str::to_string));
+        if bind.entry != Some(self.entry) {
+            return None;
+        }
+        busbar_kernel::plane_driver::HookBinder::bind(&self.hooks, bind)
+    }
+}
+
+/// [`EntryAttached`] over `entry`, its gate refusing every unit at 451.
+fn entry_gate(entry: &'static str) -> Arc<EntryAttached> {
+    let (_, refuses) = gate(Some((451, "refused at the entry")));
+    Arc::new(EntryAttached {
+        entry,
+        hooks: bound(Vec::new(), vec![(0, refuses)]),
+        asked: Mutex::new(Vec::new()),
+    })
+}
+
+/// Drive one unit of `target` under `binder` with `steps`: its outcome, the status it was answered
+/// with (where it was refused), and how many requests reached the far end.
+async fn drive_entry(
+    binder: Arc<EntryAttached>,
+    steps: &TestUnits,
+    target: &str,
+) -> (Outcome, Option<u32>, usize) {
+    let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+    let driver = r.driver.with_hooks(binder);
+    let (far, caller) = (Far::new(&["ok"], &[b"done"]), Caller::default());
+    let units = driver.unit(steps, &far, &caller, arrival(target, b"user:hello"), 0);
+    let outcome = drive(&units).await;
+    let status = units.take_rendered().map(|r| r.status);
+    (outcome, status, far.sent().len())
+}
+
+/// RED (E1a; THE DESIGN section 1: "the hook tap and gate ... apply to every plane the same way"):
+/// under the ROUTED order, an MCP-shaped unit (a tool call routed DIRECT to its server) is refused
+/// by the gate attached to that server, at the gate's own status, nothing sent; a unit routed to
+/// another server binds none of it. RED before: the routed binder was never told the unit's entry,
+/// so the server's gate never fired and the call reached the far end.
+#[tokio::test]
+async fn a_routed_direct_unit_is_refused_by_its_entrys_gate() {
+    let binder = entry_gate("srv-a");
+    let (outcome, status, sent) =
+        drive_entry(Arc::clone(&binder), &TestUnits::passing(), "/entry/srv-a").await;
+    assert!(
+        matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+        "{outcome:?}"
+    );
+    assert_eq!(status, Some(451));
+    assert_eq!(sent, 0, "nothing reached the far end");
+    assert_eq!(
+        *binder.asked.lock().unwrap(),
+        vec![Some("srv-a".to_string())]
+    );
+
+    let (outcome, _, sent) =
+        drive_entry(entry_gate("srv-a"), &TestUnits::passing(), "/entry/srv-b").await;
+    assert!(
+        !matches!(outcome, Outcome::Refused(..) | Outcome::Failed(..)),
+        "another server's gate bound: {outcome:?}"
+    );
+    assert!(sent > 0, "the unrelated call was served");
+}
+
+/// RED (E1a): under the ROUTED order, an A2A-shaped unit (routed BY SCOPE over its candidate
+/// agents) is refused by the gate attached to the ONE agent the kernel's Verify resolved its scope
+/// to. RED before: the routed binder bound no agent's hooks.
+#[tokio::test]
+async fn a_routed_scope_unit_is_refused_by_its_resolved_entrys_gate() {
+    let steps = TestUnits {
+        resolved: Some(b"agent-a".to_vec()),
+        ..TestUnits::passing()
+    };
+    let binder = entry_gate("agent-a");
+    let (outcome, status, sent) = drive_entry(Arc::clone(&binder), &steps, "/scope/agent-a").await;
+    assert!(
+        matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+        "{outcome:?}"
+    );
+    assert_eq!(status, Some(451));
+    assert_eq!(sent, 0, "nothing reached the far end");
+    assert_eq!(
+        *binder.asked.lock().unwrap(),
+        vec![Some("agent-a".to_string())]
+    );
+}
+
+/// The binding guarantee under the ROUTED order (audit kernel-K2 leftover A4): a projection naming
+/// an entry other than the one the kernel recorded refuses the unit before any hook binds, so the
+/// plane's later word never trades the recorded entry's hooks for another's.
+#[tokio::test]
+async fn a_routed_projection_naming_another_entry_is_refused_unbound() {
+    let binder = entry_gate("srv-a");
+    let (outcome, _, sent) = drive_entry(
+        Arc::clone(&binder),
+        &TestUnits::passing(),
+        "/entry/srv-a/as/srv-b",
+    )
+    .await;
+    assert!(
+        matches!(outcome, Outcome::Failed(..) | Outcome::Refused(..)),
+        "{outcome:?}"
+    );
+    assert_eq!(sent, 0, "nothing reached the far end");
+    assert!(binder.asked.lock().unwrap().is_empty(), "no hook was bound");
+}

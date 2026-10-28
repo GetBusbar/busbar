@@ -780,6 +780,19 @@ impl PlaneCalls for Double {
                     out.route_flags = ROUTE_SESSION;
                     vec![estimate(0)]
                 }
+                t if t.starts_with(b"/entry/") || t.starts_with(b"/scope/") => {
+                    // A unit routed DIRECT over the entry `/entry/<entry>[/as/<named>]` names, or
+                    // BY SCOPE over the candidate list `/scope/<candidates>` names.
+                    let (route, rest) = match t.strip_prefix(b"/entry/") {
+                        Some(rest) => (busbar_contract::abi::plane::ROUTE_DIRECT, rest),
+                        None => (busbar_contract::abi::plane::ROUTE_SCOPE, &t[7..]),
+                    };
+                    let end = rest.iter().position(|b| *b == b'/').unwrap_or(rest.len());
+                    let kept: &'static [u8] = Box::leak(rest[..end].to_vec().into_boxed_slice());
+                    out.route = route;
+                    out.pool = AbiStr::over(kept);
+                    vec![estimate(input.body.len as u64)]
+                }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
                 _ => vec![estimate(input.body.len as u64)],
@@ -1044,7 +1057,16 @@ impl PlaneCalls for Double {
                 turns.push((role.to_string(), text.to_string()));
             }
         }
-        let mut strings: Vec<&[u8]> = vec![b"", b"test-dialect"];
+        // The entry the view names: an entry-routed unit's (`/entry/<entry>`), or the one its
+        // target says the projection names instead (`/entry/<entry>/as/<named>`); none otherwise.
+        let named: &[u8] = match target.strip_prefix(b"/entry/") {
+            Some(rest) => match rest.windows(4).position(|w| w == b"/as/") {
+                Some(at) => &rest[at + 4..],
+                None => rest,
+            },
+            None => b"",
+        };
+        let mut strings: Vec<&[u8]> = vec![named, b"test-dialect"];
         strings.push(system.as_deref().unwrap_or("").as_bytes());
         strings.push(user.as_deref().unwrap_or("").as_bytes());
         for (role, text) in &turns {

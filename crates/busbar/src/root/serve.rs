@@ -1284,6 +1284,10 @@ impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
         self.current().bind(bind)
     }
 
+    fn entry_scoped(&self) -> bool {
+        self.current().entry_scoped()
+    }
+
     fn denied(&self, dialect: u32, status: u16) {
         self.current().denied(dialect, status);
     }

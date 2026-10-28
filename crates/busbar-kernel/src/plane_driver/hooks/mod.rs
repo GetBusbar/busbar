@@ -89,6 +89,14 @@ pub trait HookBinder: Send + Sync {
         None
     }
 
+    /// Whether this plane's units bind hooks attached to their ENTRY (`entry.rs`): the
+    /// deployment attached hooks to this plane's section or its entries. Such a unit's entry is
+    /// read off its first projection before its hooks are bound ([`Bind::entry`]); every other
+    /// plane's units are bound as before, with no entry.
+    fn entry_scoped(&self) -> bool {
+        false
+    }
+
     /// A unit refused at authentication: the `response` stage taps see the previous release's
     /// synthetic `rejected_by_auth` completion, under the status the caller was answered with, in
     /// the zeroed shape (no body was read), labelled with the dialect (the index into the plane's
@@ -176,6 +184,10 @@ pub struct Bind<'a> {
     /// The unit's correlation id, where its host minted one (`DriverSteps::request_span`); the
     /// binder mints one from the process's counter where it is `None`.
     pub request_id: Option<u64>,
+    /// The entry the kernel recorded for the unit (`entry.rs`), asked only of an entry-scoped
+    /// binder ([`HookBinder::entry_scoped`]): the hooks attached to it bind in place of the
+    /// section's own attach, which they carry. `None` = no entry.
+    pub entry: Option<&'a str>,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -494,16 +506,32 @@ impl HookBinder for HostHooks {
             .unwrap_or_default()
     }
 
+    fn entry_scoped(&self) -> bool {
+        !self.plane_key.is_empty() && self.host.plane_attaches(&self.plane_key)
+    }
+
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
         let h = &*self.host;
-        // THE SECTION'S OWN ATTACH, then the pool's: one scope after the globals.
+        // THE ENTRY'S OWN ATTACH (which carries the section's, `attach_list`) where the unit names
+        // an entry the deployment attached hooks to, else THE SECTION'S OWN ATTACH; then the
+        // pool's: one scope after the globals. An entry's chain resolves empty exactly when the
+        // section's does too (the section's list is a part of the entry's), so each falls back
+        // to the section's on its own.
         let (mut rewrites, mut gates) = if self.plane_key.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            (
-                h.plane_rewrites_of(&self.plane_key, crate::hooks::SECTION_SCOPE),
-                h.plane_gates_of(&self.plane_key, crate::hooks::SECTION_SCOPE),
-            )
+            let entry = bind.entry.filter(|e| !e.is_empty());
+            let rewrites = entry
+                .map(|e| h.plane_rewrites_of(&self.plane_key, e))
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| {
+                    h.plane_rewrites_of(&self.plane_key, crate::hooks::SECTION_SCOPE)
+                });
+            let gates = entry
+                .map(|e| h.plane_gates_of(&self.plane_key, e))
+                .filter(|g| !g.is_empty())
+                .unwrap_or_else(|| h.plane_gates_of(&self.plane_key, crate::hooks::SECTION_SCOPE));
+            (rewrites, gates)
         };
         rewrites.extend(h.pool_rewrites(bind.pool).iter().cloned());
         gates.extend(h.pool_gates(bind.pool).iter().cloned());
@@ -766,6 +794,8 @@ pub(crate) struct Veto {
     /// The vetoing hook's name, where a named hook vetoed (handed to the plane's `refusal`).
     pub hook: Option<String>,
 }
+
+mod entry;
 
 #[path = "../gated.rs"]
 pub mod gated;
@@ -1525,11 +1555,22 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             let st = self.lock();
             (st.decoded.as_ref().map_or(0, |d| d.dialect), st.request_id)
         };
+        // AN ENTRY-SCOPED PLANE (`entry.rs`) projects first: a pool unit's entry is the member
+        // its projection names, and a projection naming an entry other than the recorded one
+        // refuses the unit before any hook binds. Every other plane binds first, as before.
+        let (pre, entry) = if binder.entry_scoped() {
+            let first = self.project(None, false);
+            let entry = self.recorded_entry(&first)?;
+            (Some(first), entry)
+        } else {
+            (None, None)
+        };
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
             dialect,
             request_id,
+            entry: entry.as_deref(),
         }) else {
             return Ok(());
         };
@@ -1541,8 +1582,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
         // shared 500 and no hook is invoked.
         let faultable = !hooks.rewrites.is_empty();
+        // The projection an entry-scoped plane already answered is the first one: a FAULT where a
+        // rewrite is now bound is the shared 500, as a faultable `project` answers it.
+        let first = match pre {
+            Some(Err(Stopped::Unparseable { .. })) if faultable => Err(fault_veto()),
+            Some(first) => first,
+            None => self.project(None, faultable),
+        };
         // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
-        let first = self.project(None, faultable).map_err(|e| match e {
+        let first = first.map_err(|e| match e {
             Stopped::Unparseable { marked: false } => Stopped::Unreadable,
             other => other,
         });
@@ -2176,6 +2224,9 @@ impl SessionStage {
                     principal: self.principal.as_deref(),
                     dialect: self.arrived_in,
                     request_id: None,
+                    // The entry the kernel resolved for the unit: an entry-scoped plane's
+                    // sub-operations bind the hooks attached to it, as its request stage did.
+                    entry: b.entry_scoped().then_some(self.container.as_str()),
                 })
             })
             .as_ref()

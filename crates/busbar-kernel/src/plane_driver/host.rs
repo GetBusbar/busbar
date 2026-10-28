@@ -97,6 +97,11 @@ pub trait EngineHost: Send + Sync {
         Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     )>;
 
+    /// Whether the deployment attached any hook to the plane `plane_key`'s section or entries this
+    /// generation: its units bind the hooks of the entry the kernel recorded for them
+    /// ([`super::HookBinder::entry_scoped`]).
+    fn plane_attaches(&self, plane_key: &str) -> bool;
+
     /// The gate's INCREMENTAL-SCAN substrate under the operator's opt-in: the node's session store
     /// and the hook-config generation a clearance is bound to; `None` = every request is screened
     /// whole.
@@ -241,6 +246,16 @@ impl EngineHost for EngineHostImpl {
             .and_then(|m| m.get(container))
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn plane_attaches(&self, plane_key: &str) -> bool {
+        self.app
+            .plane_gates(plane_key)
+            .is_some_and(|m| !m.is_empty())
+            || self
+                .app
+                .plane_rewrites(plane_key)
+                .is_some_and(|m| !m.is_empty())
     }
 
     fn gate_scan(&self) -> Option<(Arc<crate::session::SessionStore>, u64)> {
