@@ -63,7 +63,6 @@ use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::caps::IdempotencyKey;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
     merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
     Stored,
@@ -554,10 +553,9 @@ fn trust_unread(why: String) -> AdmitRefused {
     AdmitRefused::TrustUnread(why)
 }
 
-/// The stores the records services reach.
+/// The store the records services reach: its typed records and its single-use redemption.
 struct Records {
     reads: Arc<dyn RecordRows>,
-    claims: Arc<dyn RecordStore>,
 }
 
 /// The wall clock, in milliseconds since the Unix epoch.
@@ -807,19 +805,19 @@ impl KernelServices {
         self
     }
 
-    /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
-    /// single-use redemption). Without them they are REFUSED.
+    /// Serve the records services over `reads` (the store's typed record reads and its single-use
+    /// redemption). Without them they are REFUSED.
     #[must_use]
-    pub fn with_records(self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> Self {
-        self.attach_records(reads, claims);
+    pub fn with_records(self, reads: Arc<dyn RecordRows>) -> Self {
+        self.attach_records(reads);
         self
     }
 
-    /// Serve the records services over `reads` and `claims` (see [`Self::with_records`]), attached
-    /// late, once: the configured store is opened after the services are installed (the composition
-    /// root's late attach). `false` when a record store was already bound.
-    pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
-        self.records.set(Records { reads, claims }).is_ok()
+    /// Serve the records services over `reads` (see [`Self::with_records`]), attached late, once:
+    /// the configured store is opened after the services are installed (the composition root's
+    /// late attach). `false` when a record store was already bound.
+    pub fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
+        self.records.set(Records { reads }).is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -1681,10 +1679,10 @@ impl HostServices for KernelServices {
         let now = now_ms / 1000;
         let expires_at = expires_ms.div_ceil(1000);
         let token = claim_token(&caller.instance, kind, key);
-        let claims = Arc::clone(&records.claims);
+        let rows = Arc::clone(&records.reads);
         let kind = kind.to_string();
         submit(pool, later, move || {
-            match claims.redeem_plane_token(&kind, &token, expires_at, now) {
+            match rows.claim(&kind, &token, expires_at, now) {
                 Ok(true) => Stored::ready(svc::CLAIM_WON),
                 Ok(false) => Stored::ready(svc::CLAIM_TAKEN),
                 Err(_) => failed(STORE_FAILED),

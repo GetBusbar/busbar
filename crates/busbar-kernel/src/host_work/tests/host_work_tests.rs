@@ -66,7 +66,7 @@ fn rig_over(store: Arc<MemoryStore>, bounds: WorkBounds) -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&store))))
         .with_pool(Arc::new(Inline))
         .with_work_bounds(bounds)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
