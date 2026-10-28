@@ -110,6 +110,9 @@ pub struct Adjustment<'a> {
     /// THE ENTRY: the era of the segment, the `effective_from` of the card entry the counts were
     /// priced with.
     pub entry_era: u64,
+    /// THE CARD EPOCH: the corrected unit's arrival instant in milliseconds, whose card its counts
+    /// price at.
+    pub card_epoch_ms: u64,
     /// The signed delta per class. Zero deltas are ignored.
     pub delta: &'a BTreeMap<String, i64>,
     /// The instant the correction lands at, wall seconds: picks each bucket's current window.

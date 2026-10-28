@@ -85,6 +85,7 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
             pool: &c.pool,
             model: &c.lane,
             entry_era: era,
+            card_epoch_ms: busbar_kernel::store::now_ms(),
             delta: &c.delta,
             now: busbar_kernel::store::now(),
         };

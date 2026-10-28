@@ -2564,6 +2564,7 @@ mod dated_rate_card_history {
                     pool: "",
                     model: LANE,
                     entry_era: era,
+                    card_epoch_ms: now * 1_000,
                     delta: &delta,
                     now,
                 },

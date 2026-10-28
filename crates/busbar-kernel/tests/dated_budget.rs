@@ -456,3 +456,230 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
          newest card)"
     );
 }
+
+/// The metered view's row of `n` input tokens for `key_id` on `m`, on the UTC day holding `at`
+/// (unix seconds), dated `era`: what the metering flush lands for a unit served then. An adjustment
+/// is refused unless the metered view carries the counts it moves.
+fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
+    store
+        .add_metering(&busbar_contract::records::MeteringDelta {
+            key_id: key_id.to_string(),
+            bucket: busbar_kernel::governance::metering_bucket(at),
+            model: "m".to_string(),
+            provider: String::new(),
+            tokens_input: n,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
+            priced_from_ms: era,
+            usage_units: Default::default(),
+        })
+        .unwrap();
+}
+
+/// A key `id` in the `team` group, persisted in `store`.
+fn team_key(store: &dyn RecordStore, id: &str) -> VirtualKey {
+    let key = VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("hash-{id}"),
+        name: id.to_string(),
+        enabled: true,
+        group: Some("team".to_string()),
+        ..Default::default()
+    };
+    store.put_key(&key).unwrap();
+    key
+}
+
+/// **A CORRECTION LANDS IN ITS UNIT'S OWN WINDOW AND CARD ENTRY** (Q128 arch u32 #18, on the one
+/// ledger): money is the ledger's counts x the card in effect at the ledgered unit's time, so a
+/// correction made after a card edit moves the counts of the unit it names, where that unit was
+/// ledgered, and is priced at that unit's card — never at the card or the window current when the
+/// correction is made.
+///
+/// Yesterday 300,000 tokens were served under card A (20 micro-units a token). Today card B (10) is
+/// in force and 100,000 more are served. Today the operator corrects yesterday's unit by -100,000:
+/// yesterday's team window reads 200,000 at A (400), today's keeps its 100,000 at B (100), and the
+/// key reads 200,000 at A plus 100,000 at B (500, never 600 — the correction taken off B's
+/// segment). The metered view carries the correction on yesterday's day, beside the row it corrects.
+///
+/// RED on the current-window adjust: it looked for the unit on TODAY's metering day and in today's
+/// windows, so it refused a correction of yesterday's unit, or moved today's counts.
+#[test]
+fn a_correction_lands_in_its_units_own_window_and_card_entry() {
+    use busbar_kernel::governance::{metering_bucket, Adjustment, UsageAdjustment};
+    let (holder, _serial) = holder_opening(history_card(20.0));
+
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let key = team_key(store.as_ref(), "vk_own_epoch");
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let today = busbar_kernel::store::now();
+    let yesterday = today - 86_400;
+
+    // THE UNIT: yesterday, under card A (the opening entry, effective from zero).
+    let card_a = cost(20.0, 1_000_000);
+    gov.record_usage(&card_a, &key, "", "m", &input(300_000), yesterday);
+    metered(store.as_ref(), &key.id, yesterday, 300_000, 0);
+    gov.flush_budgets();
+
+    // THE EDIT: card B prices at 10 from this instant; today's traffic is served under it.
+    let edit_ms = busbar_kernel::store::now_ms();
+    {
+        let mut history = holder.0.lock().unwrap();
+        let mut next = History::clone(&history);
+        next.append(CardEntryDraft {
+            effective_from: edit_ms,
+            effective_until: None,
+            card: history_card(10.0),
+            appended_at: edit_ms,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        *history = Arc::new(next);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let card_b = cost(10.0, 1_000_000);
+    gov.record_usage(&card_b, &key, "", "m", &input(100_000), today);
+    metered(store.as_ref(), &key.id, today, 100_000, edit_ms);
+
+    // THE CORRECTION, made today under card B, of yesterday's unit.
+    let delta = BTreeMap::from([("input".to_string(), -100_000i64)]);
+    let correction = Adjustment {
+        key_id: &key.id,
+        pool: "",
+        model: "m",
+        entry_era: 0,
+        card_epoch_ms: yesterday * 1_000,
+        delta: &delta,
+        now: today,
+    };
+    gov.adjust_usage(&card_b, &correction)
+        .expect("the store reads")
+        .expect("the correction lands in its unit's own window and card entry");
+    gov.flush_budgets();
+
+    let team = &card_b.group_named("team").expect("configured").buckets[0];
+    let window = |at: u64| {
+        let read = gov
+            .derived_bucket_usage(&card_b, &team.bucket_id, team.window, true, at)
+            .expect("priced");
+        (read.tokens, read.spend_cents)
+    };
+    assert_eq!(
+        window(yesterday),
+        (200_000, 400),
+        "yesterday's window holds the corrected unit, priced at A"
+    );
+    assert_eq!(
+        window(today),
+        (100_000, 100),
+        "today's window is not the unit's: untouched"
+    );
+    let key_read = gov
+        .usage_for(&card_b, &key.id, today)
+        .expect("priced")
+        .expect("the key exists");
+    assert_eq!(
+        (key_read.tokens, key_read.spend_cents),
+        (300_000, 500),
+        "200,000 at A and 100,000 at B (600 = the correction taken off B's segment)"
+    );
+    assert_eq!(
+        gov.usage_adjustments(metering_bucket(yesterday)).unwrap(),
+        vec![UsageAdjustment {
+            key_id: key.id.clone(),
+            lane: "m".to_string(),
+            era: 0,
+            delta: BTreeMap::from([("input".to_string(), -100_000)]),
+        }],
+        "the metered view carries the correction on the unit's own day"
+    );
+    assert!(
+        gov.usage_adjustments(metering_bucket(today))
+            .unwrap()
+            .is_empty(),
+        "and nothing on today's"
+    );
+}
+
+/// **A CORRECTION WITH NOWHERE TO LAND IS REFUSED, AND MOVES NOTHING** (Q128 arch u32 #18: a
+/// correction that cannot be placed fails closed). The metered view still shows yesterday's unit,
+/// but the team window holding its epoch holds none of its counts any more. Placing the correction
+/// in today's window instead would take today's unit's counts for yesterday's: it is refused, the
+/// refusal says why, and no count, window or metered row moves.
+///
+/// RED on the current-window adjust: today's window held enough counts of the same lane and card
+/// entry, so it took the correction there.
+#[test]
+fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_nothing() {
+    use busbar_kernel::governance::{metering_bucket, Adjustment};
+    let (_holder, _serial) = holder_opening(history_card(20.0));
+
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let key = team_key(store.as_ref(), "vk_gone_epoch");
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let today = busbar_kernel::store::now();
+    let yesterday = today - 86_400;
+    let card = cost(20.0, 1_000_000);
+
+    // Yesterday's unit is on the metered view; its team window holds nothing of it.
+    metered(store.as_ref(), &key.id, yesterday, 1_000, 0);
+    // Today's unit, same lane, same card entry.
+    gov.record_usage(&card, &key, "", "m", &input(1_000), today);
+    metered(store.as_ref(), &key.id, today, 1_000, 0);
+
+    let team = &card.group_named("team").expect("configured").buckets[0];
+    let reads = |gov: &GovState| {
+        let key_read = gov
+            .usage_for(&card, &key.id, today)
+            .expect("priced")
+            .expect("the key exists");
+        let team_read = gov
+            .derived_bucket_usage(&card, &team.bucket_id, team.window, true, today)
+            .expect("priced");
+        (key_read.tokens, team_read.tokens, team_read.spend_cents)
+    };
+    assert_eq!(reads(&gov), (1_000, 1_000, 2));
+
+    let delta = BTreeMap::from([("input".to_string(), -500i64)]);
+    let correction = Adjustment {
+        key_id: &key.id,
+        pool: "",
+        model: "m",
+        entry_era: 0,
+        card_epoch_ms: yesterday * 1_000,
+        delta: &delta,
+        now: today,
+    };
+    let refused = gov
+        .adjust_usage(&card, &correction)
+        .expect("the store reads")
+        .expect_err("a correction with nowhere to land in its own window is refused");
+    let why = refused.to_string();
+    assert!(
+        why.contains(&team.bucket_id)
+            && why.contains("may not take the \"input\" count below zero"),
+        "the refusal names the bucket and why: {why}"
+    );
+
+    gov.flush_budgets();
+    assert_eq!(reads(&gov), (1_000, 1_000, 2), "no count moved");
+    let gone = store
+        .get_usage(&team.bucket_id, budget_window(team.window, yesterday))
+        .unwrap();
+    assert!(
+        gone.models.is_empty(),
+        "yesterday's window gained nothing: {gone:?}"
+    );
+    for day in [yesterday, today] {
+        assert!(
+            gov.usage_adjustments(metering_bucket(day))
+                .unwrap()
+                .is_empty(),
+            "no metered adjustment row was written"
+        );
+    }
+}

@@ -1389,6 +1389,7 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         pool: "",
         model: "m",
         entry_era: era_now(),
+        card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
     };
@@ -1428,6 +1429,7 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         pool: "",
         model: "m",
         entry_era: era_now(),
+        card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
     };
@@ -1495,6 +1497,7 @@ fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool,
         pool: "",
         model: "m",
         entry_era: era_now(),
+        card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
     };
@@ -1565,6 +1568,7 @@ fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&st
         pool: pool.unwrap_or(""),
         model: "m",
         entry_era: era_now(),
+        card_epoch_ms: now * 1_000,
         delta: &delta,
         now,
     };
