@@ -1275,9 +1275,8 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
 /// seconds) is priced elsewhere and never counts as a token.
 #[test]
 fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
-        &TOKEN_FAMILY_PLANE,
-    ]);
+    let _iso =
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&TOKEN_FAMILY_PLANE]);
     let g = gov();
     let cm = model(&[(
         "g",

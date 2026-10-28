@@ -985,7 +985,7 @@ fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     init();
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         &GAUGE_FALLBACK_PLANE,
         &GAUGE_AUDIO_PLANE,
     ]);
@@ -1053,7 +1053,7 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     init();
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         &GAUGE_FALLBACK_PLANE,
         &GAUGE_AUDIO_PLANE,
     ]);

@@ -991,6 +991,39 @@ summary = "The auth chain is empty (either explicitly, or because the `auth:` bl
 action = "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot."
 
 [[diagnostic]]
+name = "CREDENTIAL_AT_REST_UNOPENABLE"
+doc = "A stored recoverable credential opens under neither at-rest key, so it does not authenticate."
+code = 8023
+class = "Governance"
+slug = "credential-at-rest-unopenable"
+title = "A stored recoverable credential opens under neither at-rest key (it does not authenticate)"
+severity = "Actionable"
+summary = "A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid."
+action = "Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it."
+
+[[diagnostic]]
+name = "CREDENTIAL_AT_REST_REWRAP_PENDING"
+doc = "Recoverable credentials still need re-sealing under the current at-rest key."
+code = 8024
+class = "Governance"
+slug = "credential-at-rest-rewrap-pending"
+title = "Recoverable credentials are not yet re-sealed under the current at-rest key"
+severity = "Actionable"
+summary = "A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under."
+action = "Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes."
+
+[[diagnostic]]
+name = "CREDENTIAL_AT_REST_LEGACY_PLAIN"
+doc = "A recoverable credential written before 1.6.0 is stored in the clear."
+code = 8025
+class = "Governance"
+slug = "credential-at-rest-legacy-plain"
+title = "A recoverable credential written before 1.6.0 is stored in the clear"
+severity = "Actionable"
+summary = "A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key."
+action = "Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear."
+
+[[diagnostic]]
 name = "STORE_SECRET_REF_UNRESOLVED"
 doc = "A store settings SecretRef does not resolve at boot; restart-to-apply, so it WILL fail next restart."
 code = 8015
