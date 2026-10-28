@@ -60,13 +60,15 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # 2026-10-26 (busbar #1667, the store table at 31 slots): the four store rows are each plugin's dev head,
 # the first commits holding both its version-1.6.0 merge and its money-slots-out PR (sqlite #38,
 # postgres #47, valkey #46, mysql #45) that speaks the 31-slot store table; a 47-slot build is refused at load.
-# store-sqlite is a4b1316 (pin-1667-refs-2): that row's 31-slot table (71ba326) on 5d345fd, which
-# declares `secret_refs: *` because busbar #1699 resolves a store setting's reference only where the
-# Statement declares one, and 1.5.5 resolved every top-level setting (BOOT-170).
-store-sqlite	src:a4b1316ffafd99742eac3f053af145a1f0899c9c	build:busbar-store-sqlite	-	1.6
-store-postgres	src:87fb8172f1d07dda5cfa622a87990bdfacbddb6b	build:busbar-store-postgres	-	1.6
-store-valkey	src:b4f09028d7937ee9c0a8daeabcd29b8400408c2d	build:busbar-store-valkey	-	1.6
-store-mysql	src:412a49c08f5891aa4498c3076c7dac31edb45f54	build:busbar-store-mysql	-	1.6
+# 2026-10-28 (G14: each plugin declares its secret fields; busbar #1699 resolves a store setting's
+# reference only where the Statement declares one): each store row is its 31-slot table plus its real
+# secret field, on branch pin-1667-secret-fields. store-sqlite dea3565 (a4b1316 with `license_key`, the
+# reference BOOT-170 holds), store-postgres 5684356, store-valkey 8e68f61 and store-mysql f1a05c7 (87fb817,
+# b4f0902, 412a49c repinned to busbar 1f834fcaf3, with `url`, which carries a 1.5.5 config's credentials).
+store-sqlite	src:dea3565e64488076ea055fe55645342611578998	build:busbar-store-sqlite	-	1.6
+store-postgres	src:5684356d4b189efc1005246b1f512856afb8b8b1	build:busbar-store-postgres	-	1.6
+store-valkey	src:8e68f617f232730331eb48bb1dcaef66c7f36417	build:busbar-store-valkey	-	1.6
+store-mysql	src:f1a05c7d88b0ef64bbc98d9128b6c69f98b5142a	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
 auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
 auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
