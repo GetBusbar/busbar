@@ -50,7 +50,9 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::StoreCalls;
 
-use super::{crossings_of, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
+use super::{
+    answer, crossings_of, dispatcher, facts, load, ready_step, Fold, Leg, Recorder, Subject,
+};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
@@ -131,24 +133,11 @@ fn mint_at<const N: usize>() -> OpId {
     OpId::from_parts(slot.node.load(Relaxed), slot.next.fetch_add(1, Relaxed) + 1)
 }
 
-const MINTS: [busbar_contract::store_calls::OpIdMint; FOLDS] = [
-    mint_at::<0>,
-    mint_at::<1>,
-    mint_at::<2>,
-    mint_at::<3>,
-    mint_at::<4>,
-    mint_at::<5>,
-    mint_at::<6>,
-    mint_at::<7>,
-    mint_at::<8>,
-    mint_at::<9>,
-    mint_at::<10>,
-    mint_at::<11>,
-    mint_at::<12>,
-    mint_at::<13>,
-    mint_at::<14>,
-    mint_at::<15>,
-];
+macro_rules! mints {
+    ($($n:literal)*) => { [$(mint_at::<$n>),*] };
+}
+const MINTS: [busbar_contract::store_calls::OpIdMint; FOLDS] =
+    mints!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
 
 /// ONE FOLD'S OP-ID ALLOCATOR (`LoadedStore::open`'s mint), held until it drops: keep it alive
 /// for as long as the store it minted for.
@@ -370,13 +359,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let held = Arc::clone(&p.inner);
     let mut r = Recorder::new(crossings_of(&held));
     r.line("facts", 0, || {
-        format!(
-            "{:?} {} max_inflight={} {:?}",
-            p.kind(),
-            p.name(),
-            p.max_inflight(),
-            p.context::<StoreFacts>()
-        )
+        format!("{} {:?}", facts(&p), p.context::<StoreFacts>())
     });
     r.line("refused as another kind", 0, || {
         let refused = load::<Hook>(s, leg, s.bind(&d, "wrong-kind")).err();
@@ -695,12 +678,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// op_id is `STORE_OPID_CONFLICT`), tombstones and forks refused, a token redeemed once, the ledger counting each write once, and a key handed
 /// back byte-identically whatever scope kinds it carries.
 fn contract(fold: &Fold, i: &Inputs<'_>) {
-    let at = |label: &str| {
-        fold.iter()
-            .find(|s| s.label == label)
-            .map(|s| s.answer.as_str())
-            .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
-    };
+    let at = |label: &str| answer(fold, label);
     let tail = |label: &str| at(label).split_once(' ').map_or("", |x| x.1);
     for s in fold {
         assert!(!s.answer.contains("faulted"), "{}: {}", s.label, s.answer);

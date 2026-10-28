@@ -20,19 +20,11 @@ use busbar_contract::abi::mechanism::call::{Outcome, BLOB_SECRET};
 use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut};
 
 use super::{
-    called, close, crossings, dispatcher, input, json, load, open, output, ready_step, refresh,
-    release, tick, validate, Fold, Leg, Recorder, Subject,
+    answer, asis, called, closed, crossings, dispatcher, facts, input, input_text, json, listed,
+    load, open, opened, output, refreshed, refused_settings, release, Fold, Leg, Script, Subject,
 };
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{Dispatcher, Frame, Plugin};
-
-fn text(v: &serde_json::Value) -> Vec<u8> {
-    match v {
-        serde_json::Value::String(s) => s.as_bytes().to_vec(),
-        serde_json::Value::Null => panic!("conformance.json: a secret input is missing"),
-        other => other.to_string().into_bytes(),
-    }
-}
 
 /// One `resolve`, AS THE HOST'S SECRET ROWS RESOLVE (`secret_calls`): on a ticket of `d`'s, so a
 /// networked secret's resolve (a vault read through the host's exchange) that waits on the network
@@ -88,16 +80,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("secret");
     assert!(k.is_object(), "conformance.json has no `secret` inputs");
     let settings = leg.settings(s);
-    let bad: Vec<Vec<u8>> = k["bad_settings"]
-        .as_array()
-        .expect("conformance.json: secret.bad_settings must be an array")
+    let text = |v: &serde_json::Value| input_text(v, "a secret");
+    let bad: Vec<Vec<u8>> = listed(k, "secret", "bad_settings")
         .iter()
         .map(text)
         .collect();
-    assert!(
-        !bad.is_empty(),
-        "conformance.json: secret.bad_settings is empty"
-    );
     let known = text(&k["known"]["resolve"]);
     let material = text(&k["known"]["material"]);
     let unknown = text(&k["unknown"]);
@@ -105,29 +92,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     let d = dispatcher();
     let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
-    let mut r = Recorder::new(crossings(&p));
-    r.line("facts", 0, || {
-        format!(
-            "{:?} {} max_inflight={}",
-            p.kind(),
-            p.name(),
-            p.max_inflight()
-        )
-    });
-    for (i, b) in bad.iter().enumerate() {
-        r.line(&format!("validate bad #{i}"), 1, || {
-            called(&validate(&p, b))
-        });
-    }
-    r.line("validate", 1, || called(&validate(&p, &settings)));
+    let mut r = Script::new(crossings(&p));
+    r.line("facts", 0, || facts(&p));
+    refused_settings(&mut r, &p, &bad, &asis);
     // The host refuses an op on an unopened instance before the crossing (`Instance::refuse`).
     r.line("resolve unopened", 0, || {
         resolve(&p, &d, &known, &material).0
     });
-    r.line("open", 1, || called(&open(&p, &settings)));
+    opened(&mut r, (s, &p, &d), &settings, &asis);
     // The host refuses a second `open` of an open instance before the crossing.
     r.line("open again", 0, || called(&open(&p, &settings)));
-    ready_step(&mut r, s, &p, &d);
     let first = r.step("resolve known", 1, || resolve(&p, &d, &known, &material));
     let second = r.step("resolve known again", 1, || {
         resolve(&p, &d, &known, &material)
@@ -144,17 +118,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("release", 1, || called(&release(&p, first)));
     r.line("release again", 1, || called(&release(&p, first)));
     r.line("release second", 1, || called(&release(&p, second)));
-    r.line("tick", 1, || {
-        let (c, next) = tick(&p, 1);
-        format!("{} next={next}", called(&c))
-    });
-    r.line("refresh bad", 1, || called(&refresh(&p, &bad[0])));
-    r.line("refresh", 1, || called(&refresh(&p, &settings)));
+    refreshed(&mut r, &p, Some(&bad[0]), &settings, &asis);
     let after = r.step("resolve after refresh", 1, || {
         resolve(&p, &d, &known, &material)
     });
     r.line("release after refresh", 1, || called(&release(&p, after)));
-    r.line("close", 1, || called(&close(&p)));
+    closed(&mut r, &p, &asis);
     r.line("resolve after close", 0, || {
         resolve(&p, &d, &known, &material).0
     });
@@ -167,22 +136,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// is READY with its material, leased and flagged secret; an unknown one is NOT_FOUND, a malformed
 /// one INVALID, neither leased; a refused `validate` names why; an instance opens once; a closed
 /// instance serves nothing. (A `refresh` over the bad settings is recorded, not judged: a plugin
-/// whose settings carry nothing it reads may accept them.)
+/// whose settings carry nothing it reads may accept them.) `validate`, `open`, `refresh` and
+/// `close` answering READY are the shared steps' ([`super::opened`], [`super::refreshed`]).
 fn contract(fold: &Fold) {
-    let at = |label: &str| {
-        fold.iter()
-            .find(|s| s.label == label)
-            .map(|s| s.answer.as_str())
-            .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
-    };
-    for label in [
-        "validate",
-        "open",
-        "release",
-        "release second",
-        "refresh",
-        "close",
-    ] {
+    let at = |label: &str| answer(fold, label);
+    for label in ["release", "release second"] {
         assert!(at(label).starts_with("Ready "), "{label}: {}", at(label));
     }
     let known = format!(

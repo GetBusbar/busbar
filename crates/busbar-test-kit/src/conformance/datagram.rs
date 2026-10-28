@@ -42,19 +42,15 @@
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
-    slot, BeginIn, ConnFacts, DatagramLane, DatagramRoute, EncodeIn, FinishIn, FramePiece,
-    FramerOut, FramerSink, IngestIn, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE,
-    LANE_RENDEZVOUS, PIECE_END_OF_FRAME, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
-    YIELD_MORE,
+    slot, BeginIn, ConnFacts, DatagramLane, DatagramRoute, EncodeIn, FinishIn, FramerOut,
+    FramerSink, IngestIn, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_RENDEZVOUS,
+    PIECE_END_OF_FRAME, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
 };
 
-use super::transport::{carrier_line, carrier_ops, contract, locate, text, Want};
-use super::{
-    close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick, validate,
-    Fold, Leg, Recorder, Subject,
-};
-use crate::dispatch::kinds::transport::{Transport, TransportFacts};
-use crate::dispatch::{Called, Frame, InFrame, OutFrame, Plugin};
+use super::transport::{facts_line, framer_closed, framer_opened, go, loaded, locate, text, Sink};
+use super::{crossings, dispatcher, input, Fold, Leg, Script, Subject, Want};
+use crate::dispatch::kinds::transport::Transport;
+use crate::dispatch::{Called, Plugin};
 
 /// Each buffer of the host's sink, and the routes the lane has room for.
 const AMPLE: usize = 16 * 1024;
@@ -83,48 +79,22 @@ fn abi(s: &[u8]) -> AbiStr {
     }
 }
 
-/// The host's buffers and lane for one framer op.
+/// The host's buffers (the stream script's [`Sink`], ample) and lane for one framer op.
 struct Host {
-    wire: Vec<u8>,
-    frame: Vec<u8>,
-    pieces: Vec<FramePiece>,
+    sink: Sink,
     routes: Vec<DatagramRoute>,
 }
 
 impl Host {
     fn new() -> Self {
-        let piece = FramePiece {
-            stream: 0,
-            offset: 0,
-            len: 0,
-            code: 0,
-            status_class: 0,
-            fault: 0,
-            flags: 0,
-            retry_after_secs: 0,
-            declared_len: 0,
-        };
         Self {
-            wire: vec![0; AMPLE],
-            frame: vec![0; AMPLE],
-            pieces: vec![piece; PIECES],
+            sink: Sink::new(AMPLE, AMPLE, PIECES),
             routes: vec![DatagramRoute::default(); ROUTES],
         }
     }
 
     fn sink(&mut self) -> FramerSink {
-        FramerSink {
-            wire: self.wire.as_mut_ptr(),
-            wire_cap: self.wire.len(),
-            frame: self.frame.as_mut_ptr(),
-            frame_cap: self.frame.len(),
-            pieces: self.pieces.as_mut_ptr(),
-            pieces_cap: self.pieces.len(),
-            now_monotonic_ns: 1,
-            now_unix_ns: 1,
-            heads: std::ptr::null_mut(),
-            heads_cap: 0,
-        }
+        self.sink.raw()
     }
 
     /// The lane of a call carrying bytes on `lane` (`0`: none), nothing heard, bound or verified.
@@ -154,13 +124,14 @@ impl Host {
             Ok(()) => "ok".to_owned(),
             Err(f) => format!("{:?} at {}", f.rule, f.field),
         };
-        let n = (o.yielded.pieces_len as usize).min(self.pieces.len());
-        let pieces: Vec<String> = self.pieces[..n]
+        let n = (o.yielded.pieces_len as usize).min(self.sink.pieces.len());
+        let pieces: Vec<String> = self.sink.pieces[..n]
             .iter()
             .map(|p| {
                 let at = usize::try_from(p.offset).unwrap_or(usize::MAX);
                 let len = usize::try_from(p.len).unwrap_or(usize::MAX);
                 let bytes = self
+                    .sink
                     .frame
                     .get(at..at.saturating_add(len))
                     .unwrap_or_default();
@@ -177,12 +148,6 @@ impl Host {
             o.datagram.terms.role
         )
     }
-}
-
-fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (Called, O) {
-    let mut f = Frame::new(i, output::<O>());
-    let c = p.call(s, &mut f);
-    (c, f.out)
 }
 
 /// What the inputs state, read once.
@@ -386,61 +351,29 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let inputs = Inputs::read(s.kind_inputs("transport"));
     let settings = leg.settings(s);
     let d = dispatcher();
-    let p = load::<Transport>(s, leg, s.bind(&d, "transport")).expect("the transport door loads");
-    let facts = p
-        .context::<TransportFacts>()
-        .cloned()
-        .expect("a transport states its tail");
-    let mut want: Vec<(String, Want)> = Vec::new();
-    let mut r = Recorder::new(crossings(&p));
+    let (p, facts) = loaded(s, leg, s.bind(&d, "transport"));
+    let mut sc = Script::new(crossings(&p));
+    let begin_dial = || begin(&p, &inputs, SIDE_DIAL, true, &[]).0;
 
-    // ── the Statement, and an op before `open` ──
-    r.line("facts", 0, || {
-        format!(
-            "{:?} {} max_inflight={} role={} claims={:?} composes_over={:?} datagram={}",
-            p.kind(),
-            p.name(),
-            p.max_inflight(),
-            facts.role,
-            facts.claims,
-            facts.composes_over,
-            facts.datagram
-        )
+    // ── the Statement, an op before `open`, the lifecycle, `ready`, the role it does not play ──
+    let line = format!("{} datagram={}", facts_line(&p, &facts), facts.datagram);
+    framer_opened(&mut sc, (s, &p, &d), &settings, line, &begin_dial);
+
+    // ── the framer ops a datagram framer has no use for ──
+    sc.judged("locate", 1, Want::Starts(starts(inputs.locate)), || {
+        locate(&p, b"conformance", AMPLE).0
     });
-    r.line("begin unopened", 0, || {
-        begin(&p, &inputs, SIDE_DIAL, true, &[]).0
-    });
-    want.push(("begin unopened".into(), Want::Starts("Refused ")));
-
-    // ── lifecycle, then `ready` right after `open` answered READY ──
-    r.line("validate", 1, || super::called(&validate(&p, &settings)));
-    r.line("open", 1, || super::called(&open(&p, &settings)));
-    for l in ["validate", "open"] {
-        want.push((l.into(), Want::Starts("Ready ")));
-    }
-    ready_step(&mut r, s, &p, &d);
-
-    // ── the role it does not play, and the framer ops a datagram framer has no use for ──
-    r.line("carrier ops", 8, || carrier_line(&carrier_ops(&p)));
-    want.push((
-        "carrier ops".into(),
-        Want::Is(carrier_line(&[Outcome::Refused; 8])),
-    ));
-    r.line("locate", 1, || locate(&p, b"conformance", AMPLE).0);
-    want.push(("locate".into(), Want::Starts(starts(inputs.locate))));
-    r.line("encode", 1, || {
+    sc.judged("encode", 1, Want::Starts(starts(inputs.encode)), || {
         let mut host = Host::new();
         let mut e: EncodeIn = input();
         e.sink = host.sink();
         super::called(&go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0)
     });
-    want.push(("encode".into(), Want::Starts(starts(inputs.encode))));
 
     // ── a datagram framer reads its lane ──
-    r.line("begin without a lane", 1, || {
+    sc.judged("begin without a lane", 1, Want::Starts("Failed "), || {
         begin(&p, &inputs, SIDE_DIAL, false, &[]).0
     });
-    want.push(("begin without a lane".into(), Want::Starts("Failed ")));
 
     // ── dialled over a lane: its opening, at once; a rendezvous that is no description fails the
     //    framing, which is then forgotten ──
@@ -449,73 +382,45 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .as_ref()
         .map(|(_, c)| c.clone())
         .unwrap_or_default();
-    let dialled = r.step("begin dial", 1, || {
-        begin(&p, &inputs, SIDE_DIAL, true, &offered)
-    });
     let pieces: Vec<String> = inputs
         .offer
         .as_ref()
         .map(|(flags, _)| vec![described(*flags)])
         .unwrap_or_default();
-    want.push((
-        "begin dial".into(),
-        Want::Is(ready_line(Some(true), &pieces, 0, HANDSHAKE_NONE)),
-    ));
+    let want = Want::Is(ready_line(Some(true), &pieces, 0, HANDSHAKE_NONE));
+    let dialled = sc.step_judged("begin dial", 1, want, || {
+        begin(&p, &inputs, SIDE_DIAL, true, &offered)
+    });
     for step in ["rendezvous junk", "rendezvous after failure"] {
-        r.line(step, 1, || {
+        sc.judged(step, 1, Want::Starts("Failed "), || {
             ingest(&p, &inputs, dialled, LANE_RENDEZVOUS, &inputs.junk, &[])
         });
-        want.push((step.into(), Want::Starts("Failed ")));
     }
 
     // ── accepted: it waits for the far end's description, answers it when the inputs give one,
     //    and ends when finished ──
-    let accepted = r.step("begin accept", 1, || {
+    let want = Want::Is(ready_line(Some(true), &[], 0, HANDSHAKE_NONE));
+    let accepted = sc.step_judged("begin accept", 1, want, || {
         begin(&p, &inputs, SIDE_ACCEPT, true, &[])
     });
-    want.push((
-        "begin accept".into(),
-        Want::Is(ready_line(Some(true), &[], 0, HANDSHAKE_NONE)),
-    ));
     if let Some((description, flags, role)) = &inputs.rendezvous {
-        r.line("rendezvous", 1, || {
+        let want = Want::Is(ready_line(None, &[described(*flags)], 0, *role));
+        sc.judged("rendezvous", 1, want, || {
             ingest(&p, &inputs, accepted, LANE_RENDEZVOUS, description, &[])
         });
-        want.push((
-            "rendezvous".into(),
-            Want::Is(ready_line(None, &[described(*flags)], 0, *role)),
-        ));
     }
-    r.line("finish", 1, || finish(&p, &inputs, accepted));
-    want.push((
-        "finish".into(),
-        Want::Is(ready_line(None, &[], YIELD_ENDED, HANDSHAKE_NONE)),
-    ));
-    r.line("finish again", 1, || finish(&p, &inputs, accepted));
-    want.push(("finish again".into(), Want::Starts("Failed ")));
-    r.line("ingest on no framing", 1, || {
+    let want = Want::Is(ready_line(None, &[], YIELD_ENDED, HANDSHAKE_NONE));
+    sc.judged("finish", 1, want, || finish(&p, &inputs, accepted));
+    sc.judged("finish again", 1, Want::Starts("Failed "), || {
+        finish(&p, &inputs, accepted)
+    });
+    sc.judged("ingest on no framing", 1, Want::Starts("Failed "), || {
         ingest(&p, &inputs, u64::MAX, LANE_RENDEZVOUS, &inputs.junk, &[])
     });
-    want.push(("ingest on no framing".into(), Want::Starts("Failed ")));
 
     // ── the rest of the lifecycle; a closed instance serves nothing ──
-    r.line("tick", 1, || {
-        let (c, next) = tick(&p, 1);
-        format!("{} next={next}", super::called(&c))
-    });
-    r.line("refresh", 1, || super::called(&refresh(&p, &settings)));
-    r.line("close", 1, || super::called(&close(&p)));
-    for l in ["refresh", "close"] {
-        want.push((l.into(), Want::Starts("Ready ")));
-    }
-    r.line("begin after close", 0, || {
-        begin(&p, &inputs, SIDE_DIAL, true, &[]).0
-    });
-    want.push(("begin after close".into(), Want::Starts("Fault ")));
-
-    let fold = r.fold();
-    contract(&fold, &want);
-    fold
+    framer_closed(&mut sc, &p, &settings, &begin_dial);
+    sc.fold()
 }
 
 /// The start of a refusal's line.
