@@ -285,6 +285,9 @@ struct InFlight<I, O> {
     done: Option<Done<I, O>>,
 }
 
+// Nothing in it is structurally pinned: the answer's frame is a plain copy, never polled.
+impl<I, O> Unpin for InFlight<I, O> {}
+
 fn answered<I, O>(d: &Done<I, O>) -> Answered {
     Answered {
         outcome: d.outcome,
@@ -315,7 +318,7 @@ impl<I: InFrame, O: OutFrame> InFlight<I, O> {
     fn answer_out(&self) -> Option<O> {
         self.done
             .as_ref()
-            .and_then(|d| d.frame.as_deref())
+            .and_then(|d| d.frame.as_ref())
             .map(|f| f.out)
     }
 }

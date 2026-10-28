@@ -468,7 +468,7 @@ store_slots! {
     39 SESSIONS_FOR sessions_for SessionsForIn, HostListOut, Request, Call, HostCap,
         "`sessions_for` (kinds.rs:351). In [`SessionsForIn`], out [`HostListOut`] (rows into [`HostSessions`]). B.1 ledger op.";
     40 RECORD_PUT record_put RecordPutIn, OutHead, Request, Call, PerRecord(MAX_RECORD_BYTES),
-        "`record_put` (kinds.rs:355). In [`RecordPutIn`], out [`OutHead`]. B.1 ledger op; an upsert on (schema, key).";
+        "`record_put` (kinds.rs:355). In [`RecordPutIn`], out [`OutHead`]. B.1 ledger op; an upsert on (schema, key). An EMPTY value removes the row: `record_get` then answers absent and `record_scan` never returns it.";
     41 RECORD_GET record_get RecordGetIn, HostBytesOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
         "`record_get` (kinds.rs:363). In [`RecordGetIn`], out [`HostBytesOut`]. B.1 ledger op.";
     42 RECORD_SCAN record_scan RecordScanIn, HostListOut, Request, Call, PerRecord(MAX_RECORD_BYTES),

@@ -30,8 +30,12 @@
 //!   sequence and the previous digest. A node that loses the claim, or finds the slot already
 //!   holding a record (its cached position is stale: another node wrote there), forgets its
 //!   position, resumes from the store's tail and seals again, so two nodes appending to one chain
-//!   continue each other's records instead of overwriting them. The chain's LIFE is how many
-//!   tombstones its scope holds, so a chain dropped and begun again never meets its old claims.
+//!   continue each other's records instead of overwriting them. The chain's LIFE is a counter the
+//!   store keeps under the host's own record kind ([`CHAIN_LIFE_SCHEMA`], never a plane's, so a scan
+//!   of the plane's kind never meets it): every drop raises it before striking the chain's rows, and
+//!   a resume reads it, so a chain dropped and begun again, on this node or any other, never meets
+//!   its old claims. (A drop's strikes REMOVE its rows, slot 40's rule, so nothing in the plane's
+//!   kind is left to count.)
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -48,7 +52,7 @@ use busbar_contract::services::{chain_key, chain_key_parts};
 use crate::audit::journal::NeutralRecord;
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord, Framing};
-use crate::host_records::{record_key, RecordRows, WRITE_FAILED};
+use crate::host_records::{record_key, RecordRows, CLAIM_KIND, WRITE_FAILED};
 
 /// The refusal of a chained write whose key is no scope: empty, not UTF-8, or ending in what a
 /// listed record key ends in.
@@ -73,6 +77,10 @@ pub const POSITIONS_CAP: usize = 65_536;
 
 /// How long a position's claim is held, in seconds: it only has to outlive the write it guards.
 const CLAIM_SECS: u64 = 60;
+
+/// The record kind every chain's LIFE is kept under: the host's own, never one a plane declares, so
+/// a scan of a plane's kind never answers it.
+pub const CHAIN_LIFE_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-chain-life");
 
 /// How many times an append resumes from the store's tail after losing its position to another
 /// writer before it answers [`WRITE_FAILED`].
@@ -166,7 +174,8 @@ type Position = (Arc<str>, String, String);
 /// One stored row, `(key, bytes)`.
 type Row = (Vec<u8>, Vec<u8>);
 
-/// A chain's position and its life (how many tombstones its scope held when it was resumed).
+/// A chain's position and its life (how many times the chain had been dropped when it was resumed,
+/// as the store's [`CHAIN_LIFE_SCHEMA`] row held it).
 type Held = (Chain<StreamRecord>, u64);
 
 /// Every chain's position, the least recently written first.
@@ -262,7 +271,7 @@ impl ChainBook {
             let token = position_token(instance, schema, scope, life, &record);
             let won = self.holds(&token)
                 || rows
-                    .claim(&token, now.saturating_add(CLAIM_SECS), now)
+                    .claim(CLAIM_KIND, &token, now.saturating_add(CLAIM_SECS), now)
                     .map_err(|_| WRITE_FAILED)?;
             let ours = won
                 && rows
@@ -292,12 +301,13 @@ impl ChainBook {
         Err(WRITE_FAILED)
     }
 
-    /// DROP `instance`'s chain `scope` of `schema`: a tombstone over each of its records, and its
-    /// position forgotten, so its next append starts again at sequence `1`.
+    /// DROP `instance`'s chain `scope` of `schema`: its life raised in the store, a strike over
+    /// each of its records, and its position forgotten, so its next append starts again at
+    /// sequence `1` in a life whose claims no earlier record took.
     ///
     /// # Errors
     ///
-    /// [`WRITE_FAILED`] when the store refused the read or a tombstone.
+    /// [`WRITE_FAILED`] when the store refused the life, the read or a strike.
     pub(crate) fn drop_chain(
         &self,
         rows: &dyn RecordRows,
@@ -310,7 +320,10 @@ impl ChainBook {
             schema.as_str().to_string(),
             scope.to_string(),
         );
-        let dropped = tombstone(rows, instance, schema, scope);
+        // The life is raised FIRST: a strike that fails leaves a chain that is resumed in the new
+        // life, never a chain begun again in the old one.
+        let dropped = raise_life(rows, instance, schema, scope)
+            .and_then(|()| tombstone(rows, instance, schema, scope));
         self.lock().shift_remove(&at);
         dropped
     }
@@ -341,6 +354,48 @@ fn tombstone(
     Ok(())
 }
 
+/// Where the store keeps the life of `instance`'s chain `scope` of `schema`, under
+/// [`CHAIN_LIFE_SCHEMA`]: the kind and the scope, each length-prefixed, scoped by the instance.
+pub(crate) fn life_key(instance: &str, schema: RecordSchemaId, scope: &str) -> Vec<u8> {
+    let mut key = Vec::new();
+    for field in [schema.as_str(), scope] {
+        key.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        key.extend_from_slice(field.as_bytes());
+    }
+    record_key(instance, &key)
+}
+
+/// The life of `instance`'s chain `scope` of `schema` as the store keeps it: how many times it was
+/// dropped, `0` for a chain never dropped.
+fn life_of(
+    rows: &dyn RecordRows,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+) -> Result<u64, &'static str> {
+    let held = rows
+        .record_get(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope))
+        .map_err(|_| WRITE_FAILED)?;
+    Ok(held
+        .and_then(|life| <[u8; 8]>::try_from(life.as_slice()).ok())
+        .map_or(0, u64::from_be_bytes))
+}
+
+/// Raise the life of `instance`'s chain `scope` of `schema` by one, in the store. Two drops racing
+/// may both write the same next life; either way the chain begun again is in a life above every
+/// one its old claims were taken in.
+fn raise_life(
+    rows: &dyn RecordRows,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+) -> Result<(), &'static str> {
+    let next = life_of(rows, instance, schema, scope)?.saturating_add(1);
+    let body = RecordBytes::new(next.to_be_bytes().to_vec()).map_err(|_| WRITE_FAILED)?;
+    rows.record_put(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope), &body)
+        .map_err(|_| WRITE_FAILED)
+}
+
 /// The store's rows under `instance`'s chain `scope` (and any chain whose scope it prefixes).
 fn held(
     rows: &dyn RecordRows,
@@ -356,7 +411,7 @@ fn held(
 
 /// The claim token of the position `record` takes in `instance`'s chain `scope` of `schema`, in its
 /// life `life`: every field length-prefixed, then digested.
-fn position_token(
+pub(crate) fn position_token(
     instance: &str,
     schema: RecordSchemaId,
     scope: &str,
@@ -375,7 +430,7 @@ fn position_token(
 
 /// RESUME `instance`'s chain `scope` from the store: its records read back, VERIFIED, and the
 /// position taken from the tail; a break is reported and the chain continued from its tail. Beside
-/// it, the chain's life: how many tombstones its scope holds.
+/// it, the chain's life, as the store keeps it ([`life_of`]).
 fn resume(
     rows: &dyn RecordRows,
     instance: &str,
@@ -390,7 +445,7 @@ fn resume(
         .filter(|(k, _)| chain_key_parts(k).is_some_and(|(s, _)| s == scope.as_bytes()))
         .collect();
     stored.sort();
-    let life = stored.iter().filter(|(_, body)| body.is_empty()).count() as u64;
+    let life = life_of(rows, instance, schema, scope)?;
     let records: Vec<StreamRecord> = decoded(instance, schema, scope, &stored, f)
         .into_iter()
         .map(|(_, r)| r)
