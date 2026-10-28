@@ -168,6 +168,14 @@ pub struct RoleBindingCfg {
 /// The `verbs:` spelling that grants EVERY admin verb — exactly `admin_scope: full` (#77(9)).
 pub const ALL_ADMIN_VERBS: &str = "*";
 
+/// THE UNGOVERNED ROLE: `role_bindings.<provider>."*"` binds the principals 1.5.5 admitted with no
+/// grant — a principal that asserts no roles, or, when the provider's table binds no other role,
+/// every principal the provider identifies. It grants what its binding states, as any role does;
+/// a principal whose asserted roles a named binding of the table grants is judged by those alone,
+/// and one asserting only roles the table does not name is still refused. `busbar
+/// --migrate-config` writes it to keep a 1.5.5 deployment's access, with a warning.
+pub const UNGOVERNED_ROLE: &str = "*";
+
 /// One role binding's `verbs:` grant, read off the value the operator wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerbGrant {
