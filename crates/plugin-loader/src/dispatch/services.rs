@@ -310,7 +310,8 @@ pub(crate) struct Served {
 
 // ── the answer ─────────────────────────────────────────────────────────────────────────────────
 
-/// A service's answer, before it is written into the caller's `out`.
+/// A service's answer, before it is written into the caller's `out` ([`write_out`]): the one
+/// answer every slot table's frame writes (the host services, the connector's, the host I/O's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Answered {
     /// The outcome.
@@ -325,12 +326,15 @@ pub struct Answered {
     pub needed_bytes: u64,
     /// On a short answer: the full span count.
     pub needed_items: u64,
+    /// `ServiceOut::exited`: `1` only for `io.ends` on a program that has exited.
+    pub exited: u8,
     /// The reason, for FAILED/REFUSED.
     pub error: &'static str,
 }
 
 impl Answered {
-    fn bare(outcome: Outcome, error: &'static str) -> Self {
+    /// `outcome`, with `error` its reason and nothing else.
+    pub(crate) const fn bare(outcome: Outcome, error: &'static str) -> Self {
         Self {
             outcome,
             value: 0,
@@ -338,21 +342,57 @@ impl Answered {
             items: 0,
             needed_bytes: 0,
             needed_items: 0,
+            exited: 0,
             error,
         }
     }
 
-    const fn fault() -> Self {
+    /// The one fault answer: FAULT, no text.
+    pub(crate) const fn fault() -> Self {
+        Self::bare(Outcome::Fault, "")
+    }
+
+    /// READY, with its scalar `value` and `len` bytes written.
+    pub(crate) const fn ready(value: u64, len: u64) -> Self {
         Self {
-            outcome: Outcome::Fault,
-            value: 0,
-            len: 0,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
-            error: "",
+            value,
+            len,
+            ..Self::bare(Outcome::Ready, "")
         }
     }
+}
+
+/// Write `a` into the caller's `out` (none for a NULL `out`), as far as the caller stated it:
+/// the `lent` bytes [`svc::lent_out`] read (an `out` grows by appending, so an older caller's
+/// smaller one is never overrun); its outcome.
+///
+/// # Safety
+/// A non-NULL `out` is the caller's, writable for the `lent` bytes it stated.
+pub(crate) unsafe fn write_out(out: *mut ServiceOut, a: &Answered, lent: usize) -> RawOutcome {
+    if !out.is_null() {
+        let o = ServiceOut {
+            size: size_of::<ServiceOut>() as u32,
+            outcome: RawOutcome::of(a.outcome),
+            exited: a.exited,
+            _reserved: [0; 2],
+            value: a.value,
+            len: a.len,
+            items: a.items,
+            needed_bytes: a.needed_bytes,
+            needed_items: a.needed_items,
+            error: AbiStr {
+                ptr: if a.error.is_empty() {
+                    std::ptr::null()
+                } else {
+                    a.error.as_ptr()
+                },
+                len: a.error.len(),
+            },
+        };
+        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
+        unsafe { svc::write_out(out, o, lent) };
+    }
+    RawOutcome::of(a.outcome)
 }
 
 /// Write `stored` into the caller's buffers, or answer the short FAILED when it does not fit.
@@ -387,6 +427,7 @@ unsafe fn deliver(stored: &Stored, into: Option<&ServiceBufs>) -> Result<Answere
         items: stored.spans.len() as u64,
         needed_bytes: 0,
         needed_items: 0,
+        exited: 0,
         error: stored.error,
     })
 }
@@ -687,30 +728,9 @@ fn framed(
         body(head)
     }))
     .unwrap_or_else(|_| Answered::fault());
-    if !out.is_null() {
-        let o = ServiceOut {
-            size: size_of::<ServiceOut>() as u32,
-            outcome: RawOutcome::of(a.outcome),
-            exited: 0,
-            _reserved: [0; 2],
-            value: a.value,
-            len: a.len,
-            items: a.items,
-            needed_bytes: a.needed_bytes,
-            needed_items: a.needed_items,
-            error: AbiStr {
-                ptr: if a.error.is_empty() {
-                    std::ptr::null()
-                } else {
-                    a.error.as_ptr()
-                },
-                len: a.error.len(),
-            },
-        };
-        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
-        unsafe { svc::write_out(out, o, lent) };
-    }
-    RawOutcome::of(a.outcome)
+    // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
+    // stated.
+    unsafe { write_out(out, &a, lent) }
 }
 
 extern "C" fn clock_now(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
