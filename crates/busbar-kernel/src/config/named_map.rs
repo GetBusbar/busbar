@@ -41,7 +41,7 @@ pub enum NamedMapSection {
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
     /// A PLANE-OWNED named-definition map, carrying the owning plane's declared config-section key
-    /// ([`PlaneDeclaration::config_section`](crate::plane::registry::PlaneDeclaration::config_section)) as OPAQUE
+    /// ([`PlaneDeclaration::config_section`](crate::plane_driver::registry::PlaneDeclaration::config_section)) as OPAQUE
     /// DATA. `tools:` (server NAME → `{url, pin, tools_allow, …}`) and `agents:`
     /// (agent NAME → `{url, pin, reverify_ttl, …}`) are its two 1.6.0 instances, each declared by a
     /// different registered plane, and a registered plane declaring a `named_def_list` is another. The
@@ -71,7 +71,7 @@ impl NamedMapSection {
     /// [`busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane::registry::plane_decls() {
+        for decl in crate::plane_driver::registry::plane_decls() {
             if decl.named_def_list.is_some() {
                 out.push(NamedMapSection::Plane(decl.config_section));
             }
@@ -99,7 +99,7 @@ impl NamedMapSection {
     /// Singular human noun for messages and audit resources (`identity-provider:corp-ad`).
     ///
     /// The two 1.5.3-native sections carry their noun as a literal; a PLANE section reads it from the
-    /// owning plane's [`PlaneDeclaration::admin_noun`](crate::plane::registry::PlaneDeclaration::admin_noun) via the
+    /// owning plane's [`PlaneDeclaration::admin_noun`](crate::plane_driver::registry::PlaneDeclaration::admin_noun) via the
     /// registry, so core stamps a registered plane's audit/error noun without a hard-coded plane
     /// literal. With the owning plane compiled out (no registered decl) `singular` is never reached —
     /// a definition on an absent plane is refused before any noun is stamped — but it still answers
@@ -109,7 +109,7 @@ impl NamedMapSection {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
             NamedMapSection::Plane(_) => {
-                crate::plane::registry::plane_decl_for_config_section(self.key())
+                crate::plane_driver::registry::plane_decl_for_config_section(self.key())
                     .map(|d| d.admin_noun)
                     .unwrap_or_else(|| self.key())
             }
@@ -239,7 +239,9 @@ impl NamedMapSection {
             //
             // With the owning plane compiled out the section is an unknown key ([`unknown_section`]).
             NamedMapSection::Plane(_) => {
-                if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
+                if crate::plane_driver::registry::plane_decl_for_config_section(self.key())
+                    .is_none()
+                {
                     return Err(unknown_section(self.key()));
                 }
                 plane_config_validate(self, name, def)?;
@@ -314,7 +316,7 @@ impl NamedMapSection {
 }
 
 /// Validate a named-definition write through the OWNING PLANE's
-/// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
+/// [`config_validate`](crate::plane_driver::registry::PlaneDecl::config_validate) seam, resolved by config
 /// section — so core routes a plane-section write to the plane's own validator without naming a
 /// plane-specific validate function — after the kernel's own per-registration judgement
 /// ([`crate::config::plane_sections::validate_plane_entry`]). A section whose plane declares no validator (none of
@@ -325,7 +327,8 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section.key()) else {
+    let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(section.key())
+    else {
         return Ok(());
     };
     // The kernel's own judgement of the definition first, exactly as boot runs it on a section

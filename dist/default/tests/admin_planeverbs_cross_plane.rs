@@ -54,7 +54,7 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
     ];
 
     let mut actual: Vec<(String, String, String)> = Vec::new();
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         let Some(admin_routes) = decl.admin_routes else {
             continue;
         };
@@ -102,9 +102,9 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
 }
 
 /// Every linked plane that mounts admin trust verbs, read back from the registry.
-fn verb_planes() -> Vec<&'static busbar_kernel::plane::registry::PlaneDecl> {
+fn verb_planes() -> Vec<&'static busbar_kernel::plane_driver::registry::PlaneDecl> {
     register_planes();
-    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
+    let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .copied()
         .filter(|d| d.admin_routes.is_some())
@@ -152,7 +152,7 @@ fn the_audit_naming_is_derived_from_the_plane() {
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(
-            busbar_kernel::plane::plane_decl(decl.key).audit_kind,
+            busbar_kernel::plane_driver::dispatch::plane_decl(decl.key).audit_kind,
             decl.audit_kind,
             "the registry resolves `{}` to its own declaration",
             decl.key

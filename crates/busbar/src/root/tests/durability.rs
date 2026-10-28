@@ -2924,7 +2924,7 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
             1,
             "every plane linked: one declares itself the fallback"
         );
-        busbar_kernel::plane::door::fold(fallbacks.remove(0)).expect("the door folds")
+        busbar_kernel::plane_driver::door::fold(fallbacks.remove(0)).expect("the door folds")
     };
     let open: Vec<&str> = fallback
         .billable_classes
