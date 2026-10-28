@@ -309,6 +309,17 @@ impl LinkedPlugin {
         )
     }
 
+    /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
+    pub fn door_of_kind(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        let entry = LinkedEntry::Door(crate::dispatch::load::raw(door));
+        Self::built_in(name, &[], kind, abi, entry, false)
+    }
+
     /// The row a built-in states: the manifest a first-party tarball of `kind` would carry, named
     /// `name` (its canonical name) and answering also to `aliases` — the first is its alias, any
     /// further one a former name ([`Manifest::former_names`]); none: it is its own alias. A row given
@@ -370,15 +381,6 @@ impl LinkedPlugin {
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> Self {
         Self::auth_door_named(name, name, door)
-    }
-
-    /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
-    pub(crate) fn door_of_kind(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-    ) -> Self {
-        Self::door_of_kind_raw(kind, name, crate::dispatch::load::raw(door))
     }
 
     /// [`Self::door`] over a raw door.
