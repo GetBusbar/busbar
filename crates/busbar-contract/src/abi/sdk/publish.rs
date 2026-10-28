@@ -504,7 +504,7 @@ fn keyed_lock<K, V>(shard: &Mutex<BTreeMap<K, V>>) -> std::sync::MutexGuard<'_, 
 
 /// The shard a key of a [`Keyed::sharded`] map lives in: its hash's remainder.
 fn keyed_shard<K: std::hash::Hash>(key: &K) -> usize {
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     key.hash(&mut h);
     // The remainder is below `KEYED_SHARDS`, so it fits a `usize`.
