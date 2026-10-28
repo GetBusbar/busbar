@@ -286,12 +286,6 @@ impl StoreCalls for OneStore {
     ) -> StoreCall<'a, bool> {
         not_this()
     }
-    fn list_plane_record_parents<'a>(&'a self, _: &'a str) -> StoreCall<'a, Vec<String>> {
-        not_this()
-    }
-    fn purge_plane_records_before<'a>(&'a self, _: &'a str, _: u64) -> StoreCall<'a, u64> {
-        not_this()
-    }
 }
 
 fn now_secs() -> u64 {

@@ -169,11 +169,26 @@ pub trait StoreCalls: Send + Sync {
         expires_at: u64,
         now: u64,
     ) -> StoreCall<'a, bool>;
-    /// `list_plane_record_parents`: every distinct parent `kind`'s records name.
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>>;
+    /// `list_plane_record_parents`: every distinct parent `kind`'s records name. An implementation
+    /// that does not serve it REFUSES it.
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        let _ = kind;
+        not_served("list_plane_record_parents")
+    }
     /// `purge_plane_records_before`: `kind`'s records older than `before` removed, as the store's
-    /// retention rule for the kind reads it; how many went.
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64>;
+    /// retention rule for the kind reads it; how many went. An implementation that does not serve
+    /// it REFUSES it.
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        let _ = (kind, before);
+        not_served("purge_plane_records_before")
+    }
+}
+
+/// The answer of a [`StoreCalls`] op an implementation does not serve: REFUSED, naming the op.
+fn not_served<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
+    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
+        "this store does not serve {op}"
+    )))))
 }
 
 // THE STORE AXIS (WIRE-STORE Q8/Q9: the kernel receives the store kind's axis from the
