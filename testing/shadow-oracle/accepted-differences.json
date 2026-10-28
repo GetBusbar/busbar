@@ -2829,8 +2829,8 @@
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.",
       "by": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING (registered under a standing ruling; no owner signature on this entry); signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
-      "cells": "^egress\\.image-detail\\|high\\|(anthropic|bedrock|gemini)$",
-      "expected_cells": 3,
+      "cells": "^egress\\.image-detail\\|high\\|(anthropic|gemini)$",
+      "expected_cells": 2,
       "classes": [
         "body"
       ],
@@ -2875,6 +2875,55 @@
           [
             "(configure a durable store plugin for persistence)\\z",
             "\\1\\n<TS>  WARN dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\""
+          ]
+        ]
+      }
+    },
+    {
+      "id": "PLANELOG-BEDROCK the llm plane's warnings on the Bedrock image-detail cell are written to its own plugin log file (split out of PLANELOG)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.",
+      "by": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING (registered under a standing ruling; no owner signature on this entry); signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
+      "cells": "^egress\\.image-detail\\|high\\|bedrock$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "egress.image-detail|high|bedrock",
+            "body_contains": "\"status\":200"
+          },
+          {
+            "not": {
+              "cell": "egress.image-detail|high|bedrock",
+              "body_contains": "dropping image_url.detail"
+            }
+          },
+          {
+            "not": {
+              "cell": "egress.image-detail|high|bedrock",
+              "body_contains": "could not derive AWS region"
+            }
+          }
+        ]
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING",
+        "when": "2026-10-04",
+        "ruling": "OWNER SIGNED 2026-10-04 (PLANELOG): the llm plane's warnings move to its own plugin log file per the 2026-09-28 PLUGIN LOGGING amendment, #85 'log changes from 1.5.5' (BUSBAR-1.6.0.md)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "SPLIT 2026-10-27 out of PLANELOG (same signature, strictly less forgiven): on the Bedrock cell 1.5.5's busbar.log carries TWO llm-plane warnings after the store line, the image_url.detail drop and the plane's SigV4 region default (plane-llm codec/bedrock), and both now go to the plane's own log (PLANELOG's signed move). The transform reads a busbar.log that ends at the store warning as ending with exactly those two 1.5.5 lines; the upstream request, the status and every other line stay judged.",
+      "transform": {
+        "candidate": [
+          [
+            "(configure a durable store plugin for persistence)\\z",
+            "\\1\\n<TS>  WARN dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\"\\n<TS>  WARN could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host) host=127.0.0.1:<PORT>"
           ]
         ]
       }
