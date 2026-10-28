@@ -11053,3 +11053,72 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
     assert!(body["token"].is_string(), "{body}");
     assert!(moved, "the rotate retired the previous generation");
 }
+
+/// A ROTATE REFUSED BY THE MINT CEILING RELEASES ITS STORE CLAIM. The refusal changed nothing, so
+/// a retry under the same `Idempotency-Key` (here after a restart: a fresh replay cache over the
+/// same store) is judged again and refused again by the ceiling, not answered 409 "in flight" for
+/// a rotate that never ran.
+///
+/// RED while the past-ceiling arm left the claim unsettled: the retry was refused as in flight
+/// until the claim lapsed.
+#[tokio::test]
+async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
+    busbar_kernel::snapshot::init();
+    let principal = busbar_kernel::auth::Principal {
+        id: "delegated-admin".to_string(),
+        name: None,
+        roles: vec!["app-admin".to_string()],
+        ttl_secs: None,
+    };
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (key, _token) = gov
+        .create_key(
+            NewKeySpec {
+                name: "svc".to_string(),
+                allowed_pools: None,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        busbar_kernel::governance::mint_policy::RoleCeiling {
+            max_ttl_secs: None,
+            allowed_pools: Some(vec!["pool-ok".to_string()]),
+            binding_modes: None,
+        },
+    );
+    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
+        self_mint: None,
+        block_max_ttl_secs: None,
+        block_binding_modes: None,
+        ceilings,
+    };
+    let app = crate::new_test_app()
+        .governance(gov.clone())
+        .mint_policy(policy)
+        .build();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "idempotency-key",
+        axum::http::HeaderValue::from_static("past-ceiling"),
+    );
+    for attempt in ["first", "retry after a restart"] {
+        let resp = super::rotate_key(
+            busbar_kernel::state::CurrentApp(app.clone()),
+            axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
+            axum::extract::Path(key.id.clone()),
+            headers.clone(),
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
+        )
+        .await;
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "the {attempt} rotate is refused by the ceiling, not as in flight"
+        );
+    }
+}

@@ -1666,6 +1666,7 @@ pub(crate) async fn rotate_key(
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
+            settle_in_store(replay_store, claim, Settled::Released).await;
             key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields)
         }
         Ok(Err(e)) => {
