@@ -403,9 +403,15 @@
 # ModernCI (busbar-release judge-bin-aarch64, static musl; busbar-release's GitHub Actions is down for billing) and
 # carries no .sig yet; ModernCI compute is aarch64 only, so x86_64 keeps the 151ad095 digest and has no d12a08c7
 # judge. The digests equal BUSBAR_ORACLE_* in modernci-config 6bcf561cd0.
+#
+# 2026-10-27 (ORACLE-116 review): moved d12a08c7d716 -> 00aee90be084 (busbar-release dev: #441, precise
+# `values` acceptance: one pointer, an exact golden value, an exact candidate value; #443, a spec set judged
+# on the recorded candidate). The aarch64 judge was built by ModernCI (busbar-release judge-bin-aarch64, static
+# musl, measured on #443's head) and uploaded to dev-bin (asset 683369818), unsigned like d12a08c7's; x86_64 keeps
+# the 151ad095 digest. The digests equal BUSBAR_ORACLE_* in modernci-config.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=d12a08c7d716434d082375085acaeeb0bc051d39
+release_ref=00aee90be0847fe17163efe6565acfb647237bd0
 sha256_linux_x86_64=0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-sha256_linux_aarch64=432a2fb7619bce915cf5fcfbe17ace614792639e80bd9dfdabf81afb19f6effd
+sha256_linux_aarch64=09e2bdb10da505aa07ea422a2be9307613a2637cd12bc86f6e8e1c0773cf6845
 crate=busbar-release-oracle
 bin=busbar-oracle
