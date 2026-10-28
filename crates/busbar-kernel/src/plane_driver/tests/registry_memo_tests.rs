@@ -8,8 +8,10 @@
 
 use super::*;
 
-static ONE: PlaneDecl = crate::plane::neutral_sibling_decl("memo-one", "memo-one-section", "one");
-static TWO: PlaneDecl = crate::plane::neutral_sibling_decl("memo-two", "memo-two-section", "two");
+static ONE: PlaneDecl =
+    crate::plane_driver::dispatch::neutral_sibling_decl("memo-one", "memo-one-section", "one");
+static TWO: PlaneDecl =
+    crate::plane_driver::dispatch::neutral_sibling_decl("memo-two", "memo-two-section", "two");
 
 fn keys() -> Vec<&'static str> {
     plane_decls().iter().map(|d| d.key).collect()

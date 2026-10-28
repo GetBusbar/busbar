@@ -167,15 +167,10 @@ impl AdminTransport for JsonV1 {
             // vendor-native shaping.
             .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
-        // TEST-SUPPORT: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees
-        // the `MatchedPath` (the operation) alongside the tag `err_json` stamped on the response —
-        // the join `err_json` alone cannot make. Every test in the suite is therefore a driver for
-        // the class-level drift check (see `contract::taxonomy::observed`). Present under the whole
-        // `any(test, feature = "test-support")` surface — not `cfg(test)` alone — so when an extracted
-        // plane crate builds ITS router through this same `build_router` (a `test-support` build of
-        // busbar-core as its dependency), the plane trust verbs' emissions are recorded into the
-        // process-wide substrate witness ledger the cross-plane drift audit reads.
-        #[cfg(any(test, feature = "test-support"))]
+        // This crate's tests only: the taxonomy under-claim check. `Router::layer` runs AFTER
+        // routing, so it sees the `MatchedPath` (the operation) alongside the tag `err_json` stamped
+        // on the response.
+        #[cfg(test)]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
         // THE KEY MUTATIONS' REPLAY CACHE rides in as a request extension (the composition root
         // inserts the node's one, built for the life of the process). A mount that inserts none
@@ -203,10 +198,9 @@ async fn supply_replay_cache(
     next.run(req).await
 }
 
-/// TEST-ONLY recording layer (see `JsonV1::router`). For every response carrying a taxonomy tag it
-/// (a) PANICS when the endpoint's `declared_errors` does not list that emission — an UNDER-CLAIM,
-/// failing the very test that triggered it, with no test-ordering dependency — and (b) witnesses the
-/// emission so the class test can prove no declared entry is an OVER-CLAIM.
+/// TEST-ONLY under-claim check (see `JsonV1::router`). For every response carrying a taxonomy tag it
+/// PANICS when the endpoint's `declared_errors` does not list that emission, failing the very test
+/// that triggered it.
 ///
 /// The under-claim comparison runs at the SAME `(operation, ErrKind, Cond)` granularity the
 /// over-claim direction does, whenever the emission names its condition (`err_json_cond`). It used
@@ -217,7 +211,7 @@ async fn supply_replay_cache(
 /// `PATCH /keys/{id}` (declared nowhere, but Conflict was declared for `GovernanceOff`) and the
 /// delegated-mint 400 on `POST /keys` (which additionally reused the wrong `Cond`, so its
 /// openapi.json prose described the rebind target instead). Both now fail the build at emission.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 async fn record_declared_error(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -245,8 +239,7 @@ async fn record_declared_error(
         // GRANULARITY. A `err_json_cond` emission names its condition, so it is matched on the FULL
         // `(kind, cond)` pair — matching on `kind` alone would let a new condition hide behind a
         // declared sibling of the same kind, which is exactly the hole this guard is for. An
-        // untagged emission (`err_json`) can only be matched on `kind`; that residual weakness is
-        // what `COND_WITNESS_DEBT` ledgers and shrinks from the over-claim side.
+        // untagged emission (`err_json`) can only be matched on `kind`.
         let declared = taxonomy::declared_errors(method, rel);
         let matched_decl = match tag.cond {
             Some(cond) => declared
@@ -268,7 +261,6 @@ async fn record_declared_error(
             tag.kind.code(),
             tag.kind.status(),
         );
-        crate::witness::record(rel, method, tag);
     }
     resp
 }
@@ -312,7 +304,7 @@ pub(crate) mod named_map;
 /// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
 /// unit placeholder satisfies the signature.
 fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(admin_routes) = decl.admin_routes {
             for spec in admin_routes(&() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl, spec);
@@ -336,16 +328,16 @@ async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
 /// (the router fallback's `404`), so a 1.5.5 config sees 1.5.5's surface. `None` = serve it.
 pub(crate) fn unconfigured_plane(
     handle: &AppHandle,
-    decl: Option<&busbar_kernel::plane::registry::PlaneDecl>,
+    decl: Option<&busbar_kernel::plane_driver::registry::PlaneDecl>,
 ) -> Option<Response> {
     if decl.is_none_or(|d| handle.load().plane_configured(d)) {
         return None;
     }
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
+    #[cfg_attr(not(test), allow(unused_mut))]
     let mut resp = err_json(&AdminError::not_found("resource"));
     // The unmounted path's answer is no operation's emission, exactly as the router fallback's (which
     // matches no route) never is: it carries no taxonomy tag for the recording layer to attribute.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     resp.extensions_mut()
         .remove::<crate::v1::contract::taxonomy::observed::Tag>();
     Some(resp)
@@ -360,7 +352,7 @@ pub(crate) fn unconfigured_plane(
 /// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
 fn mount_one_admin_spec(
     router: Router<Arc<AppHandle>>,
-    decl: &'static busbar_kernel::plane::registry::PlaneDecl,
+    decl: &'static busbar_kernel::plane_driver::registry::PlaneDecl,
     spec: busbar_kernel::admin_verbs::AdminRouteSpec,
 ) -> Router<Arc<AppHandle>> {
     let plane = decl.key;

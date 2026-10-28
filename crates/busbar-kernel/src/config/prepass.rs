@@ -54,7 +54,7 @@ use super::DeployCfg;
 // Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
 // machinery names no concrete plane (DECISIONS #1).
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
-use crate::plane::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
+use crate::plane_driver::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
 
 /// HOW `cargo xtask gate config-schema` ties a carrier to its key. The gate reads this from source:
 /// a carrier is matched by its field's own name unless it says otherwise.
@@ -169,7 +169,7 @@ fn lift_table() -> Vec<(&'static str, Dest)> {
         (LIFTED_TOP_LEVEL_KEYS[0], Dest::OauthAs),
         (LIFTED_TOP_LEVEL_KEYS[1], Dest::Credentials),
     ];
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::registry::plane_decls() {
         let decl: &PlaneDeclaration = &decl.declaration;
         for &key in std::iter::once(&decl.config_section).chain(decl.owned_config_sections) {
             let fresh = !CORE_OWNED_CONCRETE_SECTIONS.contains(&key)
@@ -302,7 +302,7 @@ fn plane_remainder<'de, D: Deserializer<'de>>(
     lifted: &mut Lifted,
 ) -> Result<serde_yaml::Value, D::Error> {
     let [card_key, fees_key] = PLANE_CARD_KEYS;
-    let decl = crate::plane::registry::plane_decl_for_config_section(section_key);
+    let decl = crate::plane_driver::registry::plane_decl_for_config_section(section_key);
     // An entry named after a reserved key is refused here, at its own position, before anything is
     // lifted (spec :567; Q-STEP9-a).
     let noun = decl.map_or("entry", |d| d.subject_noun);
@@ -553,7 +553,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         let mut lifted = Lifted::default();
         lifted.watch.push(NESTED_TOP_LEVEL_KEY);
-        for d in crate::plane::registry::plane_decls() {
+        for d in crate::plane_driver::registry::plane_decls() {
             lifted.watch.extend(d.required_config_sections);
         }
         let table = lift_table();

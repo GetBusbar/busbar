@@ -2023,7 +2023,7 @@ pub fn kernel_sections(
     // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
     // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
     let required = |key: &'static str| {
-        busbar_kernel::plane::registry::plane_decls()
+        busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .any(|d| d.required_config_sections.contains(&key))
     };

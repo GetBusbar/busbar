@@ -89,17 +89,14 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
-pub mod registry;
-/// The door-plane registry fold at its former path: the pinned `busbar-plane-a2a` root suite
-/// (compiled into this workspace's root tests) names `busbar_kernel::plane::door` until its next pin.
-pub use crate::plane_driver::door;
+use super::registry;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
 // in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that
 // owns it, backed by the generic neutral `PlaneRecord` store. Core names none of it.
 
 // THE WIRE FORMAT NAMES the mounted planes speak moved DOWN into the neutral `busbar-substrate`
 // crate in Phase-B B0-b, so a plane crate can name them without reaching into core. They are the
-// same three canonical spellings, re-exported here unchanged so every `crate::plane::WIRE_*` call
+// same three canonical spellings, re-exported here unchanged so every `crate::plane_driver::dispatch::WIRE_*` call
 // site is untouched:
 //
 //   WIRE_JSONRPC   — the wire format multiple mounted planes may speak. Read twice as a
@@ -356,7 +353,7 @@ struct Claim {
 // point. An audience-bound ingress is a general shape (OAuth 2.1 resource servers all have one);
 // one plane is merely the first to mount one, and another plane will mount a second with different
 // strings and no new code here. Phase-C config-seam relocated this POD to the neutral
-// [`busbar_kernel::plane::PlaneAdmission`] so a plane crate contributes its admission across the
+// [`busbar_kernel::plane_driver::dispatch::PlaneAdmission`] so a plane crate contributes its admission across the
 // mount seam without naming a core type; core re-exports it here so its own call sites are unchanged.
 
 impl PlaneDispatch {
@@ -521,7 +518,7 @@ impl PlaneDispatch {
             // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
             // `None` for a path that names no dialect — an honest answer the old classifier could
             // not give, because it always spent that case on one hard-coded dialect.
-            None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
+            None => Ingress::Fallback(crate::ingress::protocols::residual_dialect_for_path(path)),
         }
     }
 
@@ -812,7 +809,7 @@ impl<T> PlaneSections<T> {
 /// backs `static` initializers: a function POINTER is a compile-time constant regardless of what
 /// the function body does, so the closures below cost nothing to name here.
 #[cfg(test)]
-const fn neutral_sibling_decl(
+pub(crate) const fn neutral_sibling_decl(
     key: &'static str,
     config_section: &'static str,
     subject_noun: &'static str,
@@ -901,7 +898,7 @@ pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsol
 }
 
 #[cfg(test)]
-#[path = "tests/sections_tests.rs"]
+#[path = "tests/dispatch_sections_tests.rs"]
 mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
@@ -916,13 +913,13 @@ mod sections_tests;
 // `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait and the
 // `BootHook` alias. Relocated here so an extracted plane crate constructs its own
 // `PlaneDecl` and every seam type its fields name without a path back to core. Core re-exports each
-// from `busbar_kernel::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
+// from `busbar_kernel::plane_driver::registry`, and keeps the population glue + the concrete `BootCtx` (which
 // borrows the core-live `App`) that implements `PlaneBootCtx`.
 
 /// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
 /// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
 /// a plane crate contributes its admission across the mount seam without naming a core type; core
-/// re-exports it, so `busbar_kernel::plane::PlaneAdmission` still resolves there.
+/// re-exports it, so `busbar_kernel::plane_driver::dispatch::PlaneAdmission` still resolves there.
 ///
 /// The confused-deputy defence (RFC 8707) is "a token minted for someone else must not be spendable
 /// here". Keeping the audience beside the MOUNT (not in a handler) means the check is a property of
@@ -945,5 +942,5 @@ pub struct PlaneAdmission {
 /// `Transport::name` as well as by the declarations here — one spelling for the metric label, the
 /// plane's wire-format list and the served card's `protocolBinding`, which is the entire reason they
 /// are constants — so they moved into the values crate with the transport axis. Nothing about them
-/// changed: `busbar_kernel::plane::WIRE_JSONRPC` and its siblings still resolve to these strings.
+/// changed: `busbar_kernel::plane_driver::dispatch::WIRE_JSONRPC` and its siblings still resolve to these strings.
 pub use busbar_contract::transport::transport::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};

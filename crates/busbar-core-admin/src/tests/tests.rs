@@ -4599,7 +4599,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     crate::ensure_seam();
     // Every plane configured: the served document is then unfiltered (Law 7 filters only
     // unconfigured planes) and every plane admin route answers instead of its 404 gate.
-    let every_plane: Vec<&'static str> = busbar_kernel::plane::registry::plane_decls()
+    let every_plane: Vec<&'static str> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .map(|d| d.config_section)
         .collect();
@@ -5368,7 +5368,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         };
         let resp = req
             .header("x-admin-token", "admintok")
-            .header("content-type", busbar_kernel::proxy::APPLICATION_JSON)
+            .header("content-type", busbar_contract::protocol::APPLICATION_JSON)
             .body(malformed.clone())
             .send()
             .await
@@ -10829,7 +10829,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 /// linked test planes by its `fallback` flag, never by name.
 fn free_open_units() -> serde_json::Value {
     crate::ensure_seam();
-    busbar_kernel::plane::registry::plane_decls()
+    busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .find(|decl| decl.fallback)
         .expect("the linked test planes carry the fallback plane")
