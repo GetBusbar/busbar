@@ -68,13 +68,6 @@ impl std::fmt::Display for StoreFailure {
 
 impl std::error::Error for StoreFailure {}
 
-/// The answer of a 1.5.5 [`StoreCalls`] op an implementation does not serve: REFUSED, naming it.
-fn unserved<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
-    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
-        "this store does not serve {op}"
-    )))))
-}
-
 /// ONE STORE INSTANCE'S CALLS, as the kernel makes them: the store v3 slots, typed.
 pub trait StoreCalls: Send + Sync {
     /// `reserve`: one all-or-nothing draw.
@@ -309,4 +302,11 @@ pub trait StoreAxis: Send + Sync {
     /// Why it will not open: the door refused the load, or the store refused its settings (in the
     /// store's own words).
     fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String>;
+}
+
+/// The answer of a 1.5.5 [`StoreCalls`] op an implementation does not serve: REFUSED, naming it.
+fn unserved<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
+    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
+        "this store does not serve {op}"
+    )))))
 }
