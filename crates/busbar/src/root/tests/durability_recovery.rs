@@ -316,16 +316,22 @@ fn the_v3_plane_parents_and_purge_answer_as_the_op_set_did() {
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
     const KIND: &str = "c6-probe";
     let store = ephemeral_store();
-    let row = |id: &str, parent: &str, ts: u64| PlaneRecord {
+    // A parented row is placed by `(parent, seq)`, so two rows under one parent take two seqs: at
+    // one seq the second would be the first rewritten, and the store would hold two rows, not three.
+    let row = |id: &str, parent: &str, seq: u64, ts: u64| PlaneRecord {
         kind: KIND.to_string(),
         id: id.to_string(),
         parent: Some(parent.to_string()),
-        seq: 0,
+        seq,
         ts,
         disposition: PlaneDisposition::Terminal,
         body: b"{}".to_vec(),
     };
-    for r in [row("a", "p1", 10), row("b", "p2", 20), row("c", "p2", 30)] {
+    for r in [
+        row("a", "p1", 0, 10),
+        row("b", "p2", 0, 20),
+        row("c", "p2", 1, 30),
+    ] {
         wait_for(store.calls.upsert_plane_record(r.view())).expect("the store takes the row");
     }
     let mut v3 = wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents");
