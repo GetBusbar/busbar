@@ -248,7 +248,7 @@ impl Door {
     /// Each field's name and offset, in order: the layout golden's record of the sealed door.
     #[doc(hidden)]
     #[must_use]
-    pub const fn __layout() -> [(&'static str, usize); 9] {
+    pub const fn __layout() -> [(&'static str, usize); 10] {
         use core::mem::offset_of;
         [
             ("magic", offset_of!(Door, magic)),
