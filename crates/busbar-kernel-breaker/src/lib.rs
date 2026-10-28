@@ -518,7 +518,7 @@ impl BreakerUnit {
             }
             Outcome::Transient { retry_after } => {
                 for (pool, cell) in cells() {
-                    if let Some(cfg) = cfg_of(&*pool) {
+                    if let Some(cfg) = cfg_of(&pool) {
                         let _ = cell.record_failure(
                             now,
                             &cfg,
