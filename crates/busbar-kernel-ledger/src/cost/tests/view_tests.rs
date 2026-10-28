@@ -138,6 +138,33 @@ fn publishing_a_card_leaves_every_prior_posting_byte_identical() {
     assert_eq!(priced_before.micros(), 23_440);
 }
 
+/// THE CARD IN EFFECT AT THE LEDGERED ITEM'S TIME (owner ruling 2026-10-27), at the edge: card B
+/// takes effect at `T` = 1,000,000. An item ledgered at `T - 1` costs card A's price, one at `T`
+/// and one at `T + 1` card B's, even though the history read holds both cards.
+#[test]
+fn an_item_costs_the_card_in_effect_at_its_own_instant_on_either_side_of_a_price_change() {
+    const T: u64 = 1_000_000;
+    let at = |instant: u64| {
+        price_ledger(
+            &[LedgerEntry::new(LANE, instant).with_whole(INPUT, 1_000)],
+            &known_history(),
+        )
+        .expect("prices")
+        .micros()
+    };
+    assert_eq!(
+        at(T - 1),
+        3_000,
+        "before the change: card A, 3 micro-units a token"
+    );
+    assert_eq!(
+        at(T),
+        1_000,
+        "from the change: card B, 1 micro-unit a token"
+    );
+    assert_eq!(at(T + 1), 1_000, "after the change: card B");
+}
+
 #[test]
 fn pricing_flat_at_the_newest_card_is_a_different_and_wrong_figure() {
     // THE DIVERGENCE, with numbers. `get_group_usage`, `GET /keys/{id}/usage` and the

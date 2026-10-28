@@ -30,7 +30,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
         // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
         // so this resolves to the same default dialect the literal named.
-        protocol: crate::proto::residual_default_dialect()
+        protocol: crate::ingress::protocols::residual_default_dialect()
             .expect("a residual-default protocol (the neutral test dialect) must be registered")
             .into(),
         base_url: "https://api.example.com".into(),
@@ -110,60 +110,61 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // production. Every hook is `None`/no-op: this stands for "a plane is installed", never for what a
 // plane does. Idempotent (`register_test_plane` dedupes by key) and NOT isolated — a test that also
 // asserts against the registered SET (or needs a plane-free registry) wraps its own body in
-// `crate::plane::registry::TestRegistryIsolation::empty()` around this call, the same as any other
+// `crate::plane_driver::registry::TestRegistryIsolation::empty()` around this call, the same as any other
 // `register_test_plane` caller.
-static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl = NEUTRAL_FALLBACK;
+static NEUTRAL_FALLBACK_PLANE: crate::plane_driver::registry::PlaneDecl = NEUTRAL_FALLBACK;
 
 /// The neutral fallback plane's row, as a value a test's own neutral plane can extend.
-pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "neutral-test-fallback",
-        fallback: true,
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "pool",
-        admin_noun: "pool",
-        audit_kind: "pool_request",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
-    // lane names one the boot accepts.
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "neutral-test-fallback",
+            fallback: true,
+            config_section: "pools",
+            scope_kinds: &["pool"],
+            subject_noun: "pool",
+            admin_noun: "pool",
+            audit_kind: "pool_request",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: || &[],
+        // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
+        // lane names one the boot accepts.
+        provider_dialects: crate::ingress::protocols::known_protocols,
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
 
 /// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config
 /// resolution has somewhere to put a `pools:`/fallback section rather than refusing with "no plane is
@@ -172,12 +173,12 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
 /// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
-    crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
+    crate::plane_driver::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
 
 /// The neutral fallback plane [`register_neutral_test_plane`] registers, for a test that seeds an
 /// ISOLATED registry (`TestRegistryIsolation::seeded`) instead of adding to the shared one.
-pub fn neutral_fallback_plane() -> &'static crate::plane::registry::PlaneDecl {
+pub fn neutral_fallback_plane() -> &'static crate::plane_driver::registry::PlaneDecl {
     &NEUTRAL_FALLBACK_PLANE
 }
 
@@ -328,7 +329,11 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
         TestApp::mount_plane(self, key, path, wire);
     }
 
-    fn admit_plane(&mut self, key: &'static str, admission: busbar_kernel::plane::PlaneAdmission) {
+    fn admit_plane(
+        &mut self,
+        key: &'static str,
+        admission: busbar_kernel::plane_driver::dispatch::PlaneAdmission,
+    ) {
         TestApp::admit_plane(self, key, admission);
     }
 

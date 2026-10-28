@@ -1645,7 +1645,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if chosen.is_some() {
                             route_policy_fields(
                                 &mut fields,
-                                crate::proxy::route_policy_headers_enabled(),
+                                route_policy_headers_enabled(),
                                 chosen.as_deref(),
                                 &bufs.member,
                             );
@@ -1701,6 +1701,22 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     }
 }
 
+/// The `x-busbar-route-policy` transparency response header: the policy that chose the member.
+pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+/// The `x-busbar-route-target` transparency response header: the chosen member.
+pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// The operator's `advanced.response_headers.route_policy` opt-in, set once at boot.
+pub fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
 /// THE ROUTE-POLICY TRANSPARENCY FIELDS (opt-in, `advanced.response_headers.route_policy`), as
 /// 1.5.5's `maybe_attach_route_policy_gated` gated them: the pair goes after the plane's own fields
 /// only when the operator opted in (`enabled`, the outer gate) AND a non-default policy chose the
@@ -1714,13 +1730,10 @@ fn route_policy_fields(
 ) {
     if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
         fields.push((
-            crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+            HDR_ROUTE_POLICY.as_bytes().to_vec(),
             name.as_bytes().to_vec(),
         ));
-        fields.push((
-            crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
-            member.to_vec(),
-        ));
+        fields.push((HDR_ROUTE_TARGET.as_bytes().to_vec(), member.to_vec()));
     }
 }
 
