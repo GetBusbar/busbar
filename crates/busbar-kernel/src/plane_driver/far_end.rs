@@ -1408,8 +1408,13 @@ impl EgressFarEnd<'_> {
                 target: &url,
                 fields: &borrowed,
                 // A TEXT message rides no opening: the connection opens bare and the message is
-                // written to it as text once open (the opening carries no text bit).
-                body: if request.text { &[] } else { &request.body },
+                // written to it as text once open (the opening carries no text bit). Any other body
+                // is frozen here, once: the connector keeps it without a copy.
+                body: if request.text {
+                    bytes::Bytes::new()
+                } else {
+                    std::mem::take(&mut request.body).into()
+                },
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
