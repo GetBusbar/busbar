@@ -891,6 +891,10 @@ impl GovState {
     /// gate: [`PendingMetering::drain`] `mem::take`s each shard under its own lock (an atomic
     /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
     /// between them by construction and cannot double-send. Returns the number of deltas written.
+    pub fn flush_metering_final(&self) -> usize {
+        self.flush_metering()
+    }
+
     pub fn flush_metering(&self) -> usize {
         let taken = self.pending_metering.drain();
         let mut flushed = 0usize;
@@ -2408,6 +2412,10 @@ impl GovState {
     /// its window, so a store outage across a boundary is retried, not dropped. Snapshotting under
     /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
     /// deltas flushed.
+    pub fn flush_budgets_final(&self) -> usize {
+        self.flush_budgets()
+    }
+
     pub fn flush_budgets(&self) -> usize {
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.

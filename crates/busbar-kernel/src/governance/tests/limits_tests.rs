@@ -1822,6 +1822,7 @@ fn the_estimate_is_never_billed_or_held() {
 struct FlakyStore {
     inner: MemoryStore,
     down: std::sync::atomic::AtomicBool,
+    meter_down: std::sync::atomic::AtomicBool,
     before_add: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -1830,6 +1831,7 @@ impl FlakyStore {
         Self {
             inner: MemoryStore::new(),
             down: std::sync::atomic::AtomicBool::new(false),
+            meter_down: std::sync::atomic::AtomicBool::new(false),
             before_add: std::sync::Mutex::new(None),
         }
     }
@@ -1868,6 +1870,9 @@ impl RecordStore for FlakyStore {
         self.inner.add_usage(bucket_id, window, d)
     }
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+        if self.meter_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RecordStoreError("the metering store is down".to_string()));
+        }
         self.inner.add_metering(delta)
     }
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
@@ -2086,4 +2091,113 @@ fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
         "W keeps A's request slot; A's fee came back from W"
     );
     assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
+}
+
+// ---- core-shrink A1c: nothing silent -------------------------------------------------------------
+
+/// Run `f` under a debug-capturing subscriber and hand back the captured lines.
+fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let cap = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let r = tracing::subscriber::with_default(subscriber, f);
+    (r, cap.messages())
+}
+
+/// Metering overflow coalescing past the cap is a WARN, once per window, naming the count.
+#[test]
+fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
+    crate::snapshot::init();
+    let pending = PendingMetering::new();
+    let ((), lines) = captured(|| {
+        // One key id lands in one shard; fill it, then push three more distinct cells past the cap.
+        for i in 0..(MAX_PENDING_METERING_PER_SHARD + 3) {
+            let key: MeterKey = ("vk_over".into(), 1, format!("m{i}"), "p".into(), 0);
+            pending.accrue(key, MeterCounts::default());
+        }
+    });
+    let warns: Vec<_> = lines
+        .iter()
+        .filter(|l| l.contains("metering accumulator at cap"))
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "exactly one line for three coalesces: {lines:?}"
+    );
+    assert!(
+        warns[0].contains("coalesced=1") || warns[0].contains("1 cell"),
+        "the line names how many cells were coalesced: {}",
+        warns[0]
+    );
+    assert!(
+        crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED.severity
+            == crate::diagnostics::Severity::Actionable
+    );
+}
+
+/// Deleting a group drops no unflushed spend: its dirty cells wait for the flush.
+#[test]
+fn deleting_a_group_keeps_its_unflushed_spend_until_the_flush() {
+    let store = Arc::new(MemoryStore::new());
+    let g = GovState::new(store.clone(), None).expect("memory store constructs");
+    let cm = minute_fee_model();
+    let k = key("vk_reclaim", Some("g"));
+    let w = 1_700_000_040;
+    g.try_admit(&cm, &k, "", w).expect("admits");
+    g.record_usage(&cm, &k, "", "m", &toks(1_000, 200), w);
+
+    g.reclaim_group_cells("g");
+    g.flush_budgets();
+
+    assert_eq!(
+        minute_row(store.as_ref(), "group:g@minute", w),
+        (1, 1, 1_000, 200),
+        "the deleted group's usage row is complete"
+    );
+}
+
+/// The shutdown flush against a down store says what was lost, once, as an error, and not
+/// "will retry next tick".
+#[test]
+fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
+    let store = Arc::new(FlakyStore::new());
+    let g = GovState::new(store.clone(), None).expect("store constructs");
+    let cm = minute_fee_model();
+    let k = key("vk_shutdown", Some("g"));
+    let w = 1_700_000_040;
+    g.try_admit(&cm, &k, "", w).expect("admits");
+    g.record_usage(&cm, &k, "", "m", &toks(10, 2), w);
+    store.set_down(true);
+    store
+        .meter_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let (_, lines) = captured(|| {
+        g.flush_budgets_final();
+        g.flush_metering_final();
+    });
+    let errs: Vec<_> = lines
+        .iter()
+        .filter(|l| l.contains("shutdown") && l.contains("group:g@minute"))
+        .collect();
+    assert_eq!(
+        errs.len(),
+        1,
+        "one shutdown error naming the bucket: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("will retry next tick")),
+        "the shutdown path never promises a retry: {lines:?}"
+    );
+
+    // The periodic path is unchanged.
+    let (_, lines) = captured(|| {
+        g.flush_budgets();
+    });
+    assert!(
+        lines.iter().any(|l| l.contains("will retry next tick")),
+        "{lines:?}"
+    );
 }
