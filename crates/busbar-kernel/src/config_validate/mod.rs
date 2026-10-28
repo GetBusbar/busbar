@@ -131,6 +131,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
+    // A provider URL the destination guard will refuse is named now, not on its first request.
+    warn_refused_provider_destinations(cfg);
+
     // Collect provider names for pool-name conflict check and member resolution
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
 
@@ -2187,6 +2190,95 @@ pub(crate) fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> 
         return None;
     }
     unmappable_metadata_entry(entry).map(|(why, _)| why)
+}
+
+/// THE 1.5.5 UPGRADE'S PRIVATE PROVIDER (owner ruling 2026-10-27): a provider URL (`base_url`,
+/// `token_url`) naming a private or loopback host is refused by the destination guard on every
+/// request while `advanced.block_private_addresses` holds (the default) and
+/// `advanced.allow_destinations` does not name it. 1.5.5 had no such guard, so such a provider
+/// worked there. `--validate` and the boot name each such URL in one warning line
+/// ([`crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED`]) so it is never discovered only at request time. A
+/// name is judged as written; `--validate` resolves nothing. Cloud metadata keeps its own refusal.
+fn warn_refused_provider_destinations(cfg: &RootCfg) {
+    if !cfg.guard.block_private_addresses {
+        return;
+    }
+    let mut providers: Vec<(&String, &crate::config::ResolvedProvider)> =
+        cfg.providers.iter().collect();
+    providers.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, p) in providers {
+        let urls = [
+            ("base_url", Some(p.base_url.as_str())),
+            ("token_url", p.token_url.as_deref()),
+        ];
+        for (key, url) in urls {
+            let Some(host) = url.and_then(refused_private_host) else {
+                continue;
+            };
+            if destination_allowed(&cfg.guard.allow, &host) {
+                continue;
+            }
+            diag_warn!(
+                crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
+                "provider '{name}' {key} names the private or loopback host '{host}': with \
+                 advanced.block_private_addresses on (the default) the destination guard refuses \
+                 every request to it. Add '{host}' to advanced.allow_destinations (busbar \
+                 --migrate-config adds the hosts a provider's plane reports), or set \
+                 advanced.block_private_addresses: false to admit every private address"
+            );
+        }
+    }
+}
+
+/// The host of `url` when it is a private or loopback host the guard refuses for a provider (and
+/// not cloud metadata, which has its own refusal), as the guard reads it.
+fn refused_private_host(url: &str) -> Option<String> {
+    let host = busbar_contract::net::url_host(url)?;
+    let host = busbar_contract::net::judged_host(&host).ok()?;
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    (busbar_contract::net::host_is_private_or_loopback(&host)
+        && !busbar_contract::net::host_is_cloud_metadata(&host))
+    .then_some(host)
+}
+
+/// Whether an `advanced.allow_destinations` entry admits `host`, as the guard reads the list: an
+/// exact host, a `*.domain` wildcard (names under it, never the apex), an IP, or a CIDR.
+fn destination_allowed(allow: &[String], host: &str) -> bool {
+    let ip = busbar_contract::net::host_ip(host);
+    allow.iter().any(|entry| {
+        let entry = entry.trim();
+        if entry.eq_ignore_ascii_case(host) {
+            return true;
+        }
+        if let Some(domain) = entry.strip_prefix("*.") {
+            let lower = host.to_ascii_lowercase();
+            return lower.ends_with(&format!(".{}", domain.to_ascii_lowercase()));
+        }
+        let Some(ip) = ip else { return false };
+        match entry.split_once('/') {
+            None => busbar_contract::net::host_ip(entry) == Some(ip),
+            Some((net, bits)) => match (busbar_contract::net::host_ip(net), bits.parse::<u32>()) {
+                (Some(std::net::IpAddr::V4(n)), Ok(b)) if b <= 32 => match ip {
+                    std::net::IpAddr::V4(a) => {
+                        let mask = u32::MAX.checked_shl(32 - b).unwrap_or(0);
+                        u32::from(a) & mask == u32::from(n) & mask
+                    }
+                    std::net::IpAddr::V6(_) => false,
+                },
+                (Some(std::net::IpAddr::V6(n)), Ok(b)) if b <= 128 => match ip {
+                    std::net::IpAddr::V6(a) => {
+                        let mask = u128::MAX.checked_shl(128 - b).unwrap_or(0);
+                        u128::from(a) & mask == u128::from(n) & mask
+                    }
+                    std::net::IpAddr::V4(_) => false,
+                },
+                _ => false,
+            },
+        }
+    })
 }
 
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of

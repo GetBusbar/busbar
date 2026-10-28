@@ -7094,3 +7094,67 @@ fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_pa
     );
     assert!(!refused.contains("secret-name"), "{refused}");
 }
+
+/// THE 1.5.5 UPGRADE'S PRIVATE PROVIDER (owner ruling 2026-10-27): a provider at a private or
+/// loopback host still VALIDATES (E1 parity, above), and `--validate` now NAMES it, in one warning
+/// line per URL (BUSBAR-3025), while `advanced.block_private_addresses` holds and
+/// `advanced.allow_destinations` does not admit it: the guard refuses every request to it, so it
+/// must never be discovered only at request time. An allowlist entry that admits the host (exact,
+/// IP or CIDR) or the guard turned off says nothing; a public host says nothing. RED: nothing named
+/// it before.
+#[test]
+fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    crate::test_support::register_neutral_test_plane();
+    let warned = |base_url: &str, block: bool, allow: &[&str]| -> Vec<String> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "local".to_string(),
+            make_provider(proto_a(), base_url, "API_KEY"),
+        );
+        let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        cfg.guard.block_private_addresses = block;
+        cfg.guard.allow = allow.iter().map(|s| s.to_string()).collect();
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+        assert!(result.is_ok(), "it still validates: {base_url}: {result:?}");
+        cap.messages()
+            .into_iter()
+            .filter(|m| m.contains("names the private or loopback host"))
+            .collect()
+    };
+    for (url, host) in [
+        ("http://127.0.0.1:11434", "127.0.0.1"),
+        ("http://10.1.2.3/", "10.1.2.3"),
+        ("http://localhost:8080/v1", "localhost"),
+        ("http://[::1]:8080", "::1"),
+    ] {
+        let lines = warned(url, true, &[]);
+        assert_eq!(lines.len(), 1, "one line for {url}: {lines:?}");
+        assert!(
+            lines[0].starts_with(&format!(
+                "provider 'local' base_url names the private or loopback host '{host}': "
+            )) && lines[0].contains(&format!("Add '{host}' to advanced.allow_destinations"))
+                && lines[0].contains("diag=BUSBAR-3025"),
+            "{}",
+            lines[0]
+        );
+    }
+    for allow in [&["10.1.2.3"][..], &["10.0.0.0/8"][..], &["10.1.2.3/32"][..]] {
+        assert!(
+            warned("http://10.1.2.3/", true, allow).is_empty(),
+            "{allow:?}"
+        );
+    }
+    assert!(warned("http://10.1.2.3/", true, &["10.2.0.0/16"]).len() == 1);
+    assert!(
+        warned("http://10.1.2.3/", false, &[]).is_empty(),
+        "the guard is off"
+    );
+    assert!(
+        warned("https://api.example.com", true, &[]).is_empty(),
+        "a public host"
+    );
+}
