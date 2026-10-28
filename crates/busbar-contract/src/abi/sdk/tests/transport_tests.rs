@@ -16,8 +16,9 @@ use crate::abi::sdk::test_support::{zeroed, DoorView};
 use crate::abi::sdk::{Lent, Out, Safe, SafeSlot};
 use crate::abi::transport::{slot, ConnIn, Ops, ShutIn};
 
-/// The probe carrier: it holds nothing and reads one setting.
-struct Probe;
+/// The probe carrier: it holds nothing and reads one setting. `pub`: the stubs `not_served!`
+/// states are `pub`, as a transport's are, so their state is too.
+pub struct Probe;
 
 impl Life for Probe {
     const CANCEL: u32 = 0;
