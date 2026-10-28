@@ -3,18 +3,18 @@
 
 //! THE PLUGINS' SETTING RENAMES, handed to the kernel (`busbar_kernel::config::plugin_renames`)
 //! before the first configuration is read: every rename each loadable plugin's Statement declares
-//! (`REWRITE_RENAMED`, with its `REWRITE_RENAMED_SINCE`), linked or dropped in, under every word a
-//! `module:` may name it by (its Statement name, its aliases, its linked row's key).
+//! (`REWRITE_RENAMED`, with its `REWRITE_RENAMED_SINCE`, read by the loader's `setting_renames`),
+//! linked or dropped in, under every word a `module:` may name it by (its Statement name, its
+//! aliases, its linked row's key).
 
 use std::collections::BTreeSet;
 
-use busbar_contract::abi::mechanism::door::{renamed_settings, DoorFn, REWRITE_ALIAS};
-use busbar_contract::abi::mechanism::rendering::{read, Read};
+use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::plugin::Kind;
 use busbar_kernel::config::plugin_renames::{SettingRename, SettingRenames};
 
 use super::linked::Linked;
-use super::loader::boot::kind_of;
+use super::loader::boot::{kind_of, setting_renames};
 use super::loader::PluginRegistry;
 
 /// One plugin's renames, by kind and the words it answers to.
@@ -42,38 +42,17 @@ impl SettingRenames for Table {
 }
 
 /// The row `stated` (a Statement rendering) declares, answering also to `words`; `None` when it
-/// renames nothing.
+/// renames nothing (the loader's [`setting_renames`]).
 ///
 /// # Errors
-/// A rendering that does not read back, or a rename declaration [`renamed_settings`] refuses,
-/// naming the plugin.
+/// As [`setting_renames`].
 fn row(stated: &[u8], words: &[&str]) -> Result<Option<Row>, String> {
-    let r: Read = read(stated)
-        .map_err(|e| format!("a Statement rendering does not read back at byte {}", e.at))?;
-    let renames = renamed_settings(&r.rewrites)
-        .map_err(|e| format!("plugin '{}' declares a settings rename badly: {e}", r.name))?;
-    if renames.is_empty() {
-        return Ok(None);
-    }
-    let Some(code) = busbar_contract::abi::mechanism::KindCode::from_raw(r.kind) else {
-        return Ok(None);
-    };
-    let mut answers: Vec<String> = std::iter::once(r.name.clone())
-        .chain(
-            r.rewrites
-                .iter()
-                .filter(|(class, _, _)| *class == REWRITE_ALIAS)
-                .map(|(_, from, _)| from.clone()),
-        )
-        .chain(words.iter().map(|w| (*w).to_string()))
-        .collect();
-    answers.sort();
-    answers.dedup();
-    Ok(Some(Row {
-        name: r.name.clone(),
-        kind: kind_of(code),
-        words: answers,
-        renames: renames
+    Ok(setting_renames(stated, words)?.map(|r| Row {
+        name: r.name,
+        kind: kind_of(r.kind),
+        words: r.words,
+        renames: r
+            .renames
             .into_iter()
             .map(|(from, to, since)| SettingRename { from, to, since })
             .collect(),

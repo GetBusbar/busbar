@@ -1154,7 +1154,59 @@ fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
     })
 }
 
+/// The settings renames one plugin declares (its Statement's `REWRITE_RENAMED` with their
+/// `REWRITE_RENAMED_SINCE`), and every word a `module:` may name it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingRenames {
+    /// The plugin's Statement name.
+    pub name: String,
+    /// Its kind.
+    pub kind: KindCode,
+    /// Its Statement name, its aliases and `words`, sorted.
+    pub words: Vec<String>,
+    /// `(from, to, since)`, in declaration order.
+    pub renames: Vec<(String, String, String)>,
+}
+
+/// What `stated` (a Statement rendering) declares about its settings renames, answering also to
+/// `words` (a linked row's key, a manifest's aliases); `None` when it renames nothing.
+///
+/// # Errors
+/// A rendering that does not read back, or a rename declared badly, naming the plugin.
+pub fn setting_renames(stated: &[u8], words: &[&str]) -> Result<Option<SettingRenames>, String> {
+    use busbar_contract::abi::mechanism::door::{renamed_settings, REWRITE_ALIAS};
+    let r: Read = read(stated)
+        .map_err(|e| format!("a Statement rendering does not read back at byte {}", e.at))?;
+    let renames = renamed_settings(&r.rewrites)
+        .map_err(|e| format!("plugin '{}' declares a settings rename badly: {e}", r.name))?;
+    let Some(kind) = KindCode::from_raw(r.kind).filter(|_| !renames.is_empty()) else {
+        return Ok(None);
+    };
+    let mut answers: Vec<String> = std::iter::once(r.name.clone())
+        .chain(
+            r.rewrites
+                .iter()
+                .filter(|(class, _, _)| *class == REWRITE_ALIAS)
+                .map(|(_, from, _)| from.clone()),
+        )
+        .chain(words.iter().map(|w| (*w).to_string()))
+        .collect();
+    answers.sort();
+    answers.dedup();
+    Ok(Some(SettingRenames {
+        name: r.name,
+        kind,
+        words: answers,
+        renames,
+    }))
+}
+
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors
 #[path = "tests/boot_tests.rs"]
 mod tests;
+
+/// A stub plugin that renamed a settings key, read through [`setting_renames`].
+#[cfg(test)]
+#[path = "tests/setting_renames_tests.rs"]
+mod setting_renames_tests;
