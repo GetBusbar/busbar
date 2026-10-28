@@ -27,8 +27,8 @@ use busbar_contract::abi::auth::FACT_OPERATOR;
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_operator, with_tail, Answer, Strip, Verdict, VerifiedIdentity,
-    VerifyPlugin, VerifyView,
+    carrier, strip_field, verify_tail, with_operator, with_tail, Answer, Strip, Verdict,
+    VerifiedIdentity, VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest, Verifying};
@@ -42,6 +42,9 @@ const WORDS: busbar_kernel_identity::operator::OperatorWords =
 const AUTHORIZATION: &str = "authorization";
 /// The operator's own header carrier (1.5.5's admin header).
 const OPERATOR_HEADER: &str = "x-admin-token";
+
+/// The lines every verify names for the transport to strip.
+const STRIPS: &[Strip] = &[strip_field(AUTHORIZATION), strip_field(OPERATOR_HEADER)];
 
 /// A line's value as the admin door reads it (`HeaderValue::to_str`: visible ASCII and tab), or
 /// `None` for one that does not read as text, which the door treats as absent.
@@ -130,7 +133,7 @@ impl OperatorDouble {
             header,
         );
         Answer {
-            strips: vec![Strip::field(AUTHORIZATION), Strip::field(OPERATOR_HEADER)],
+            strips: STRIPS.into(),
             ..verdict.into()
         }
     }
@@ -223,7 +226,7 @@ impl OperatorCalls {
             Verdict::Pass => Verified::Pass,
         };
         VerifyAnswer {
-            strips,
+            strips: strips.into_owned(),
             ..VerifyAnswer::from(verified)
         }
     }
