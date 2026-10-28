@@ -4,18 +4,18 @@
 # and gives checks only the path, in $BUSBAR_ORACLE_JUDGE_PATH. No check ever holds the token.
 # These are busbar-release dev-bin's assets (asset ids: GitHub serves a private asset only from the
 # API URL, as octet-stream). aarch64 is the judge for BUSBAR_ORACLE_RELEASE_REF
-# d12a08c7d716434d082375085acaeeb0bc051d39 (busbar-release #434 + #435: the candidate is the default
-# distribution, dist/default), built by ModernCI (busbar-release judge-bin-aarch64, static musl) because
+# 0dac78dd0500eaaf8e6c312861761a173b156b8a (busbar-release #441/#443/#447 precise `values` acceptance and
+# #445 no cell straddles a UTC day, on top of #434/#435's dist/default candidate), built by ModernCI (busbar-release judge-bin-aarch64, static musl) because
 # busbar-release's GitHub Actions is down for billing; unsigned (no .sig) until re-signed with the
 # release key. x86_64 stays the 151ad095 judge: ModernCI compute is aarch64 only and no x86_64 build of
 # d12a08c7 exists. Each sha256 equals BUSBAR_ORACLE_SHA256_LINUX_<arch> in .ci/*.yaml, verified against
 # the downloaded assets 2026-10-26. Not a branch file (not .yaml).
 url:
   x86_64: https://api.github.com/repos/GetBusbar/busbar-release/releases/assets/660620261
-  aarch64: https://api.github.com/repos/GetBusbar/busbar-release/releases/assets/678955127
+  aarch64: https://api.github.com/repos/GetBusbar/busbar-release/releases/assets/683774262
 sha256:
   x86_64: 0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-  aarch64: 432a2fb7619bce915cf5fcfbe17ace614792639e80bd9dfdabf81afb19f6effd
+  aarch64: 811d1391344bae47b7774a2abb33ab074b07b0263cc47cb6cb3d8bc31226c809
 path: busbar-oracle
 auth: forge
 accept: application/octet-stream
