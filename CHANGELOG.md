@@ -659,6 +659,15 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   `auth.operator_pub` key is gone and the request's `operator_fingerprint` and `signature` members
   are not read. **Migration:** a config that set `auth.operator_pub` must drop it (it is now an
   unknown key, as it was in 1.5.5); a client stops signing corrections.
+- 1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs an at-rest key (`credentials.at_rest.key`); without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.
+  1.5.5 minted it and stored the secret access key in the clear. 1.6.0 stores it sealed
+  (AES-256-GCM) under `credentials.at_rest.key`, a secret reference that resolves to 32 random
+  bytes; `credentials.at_rest.previous` keeps a rotated-out key opening, and every row is re-sealed
+  under the current key at boot and on reload. A credential minted by 1.5.5 still authenticates and
+  is re-sealed once a key is configured. A bearer-only mint needs no at-rest key. **Migration:**
+  before minting AWS credentials, give every node that shares the store the same
+  `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }` (create the file
+  with `openssl rand -hex 32`).
 
 ### Deprecated env vars still honoured
 

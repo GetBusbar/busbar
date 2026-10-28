@@ -60,6 +60,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         // Left at its type default (unset).
         endpoint: Default::default(),
         oauth_as: None,
+        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
