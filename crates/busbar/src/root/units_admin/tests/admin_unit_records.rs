@@ -108,7 +108,7 @@ fn a_refused_admin_unit_seals_a_refused_record() {
 async fn the_live_record_sink_writes_through_the_store_calls() {
     busbar_kernel::snapshot::init();
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
-    use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
+    use busbar_contract::store_calls::StoreDoor;
     let opened = busbar_kernel::test_support::store_axis_stand_in()
         .open(
             StoreDoor::Linked(busbar_kernel::test_support::store_double::door),
