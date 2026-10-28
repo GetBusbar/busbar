@@ -546,7 +546,7 @@ fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) ->
             ..
         } => {
             f.input.out_buf = full;
-            let again = submit_verify(p, d, ticket, *f, &lend);
+            let again = submit_verify(p, d, ticket, f, &lend);
             submitted_answer(&lend, &again)
         }
         other => submitted_answer(&lend, &other),

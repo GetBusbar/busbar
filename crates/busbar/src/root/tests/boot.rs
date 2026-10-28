@@ -450,7 +450,7 @@ fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     info("under info");
     follow_plugin_logs(&logs, &words("warn"));
     info("under warn again");
-    let path = logs.path_for("applied");
+    let path = logs.path_for("applied", busbar_contract::abi::mechanism::KindCode::Hook);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let text = loop {
         let text = std::fs::read_to_string(&path).unwrap_or_default();

@@ -655,7 +655,7 @@ struct Pieced {
     called: Called,
     short: bool,
     piece: Arc<Piece>,
-    frame: Option<Box<Frame<OnPieceIn, OnPieceOut>>>,
+    frame: Option<Frame<OnPieceIn, OnPieceOut>>,
 }
 
 impl Pieced {
@@ -732,7 +732,7 @@ fn short_then(
         d,
         unit.ticket,
         slot::ON_PIECE,
-        *f,
+        f,
         (DeadlineClass::Stream, deadline()),
         Arc::clone(&first.piece) as Lent,
         Duration::ZERO,

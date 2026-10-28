@@ -32,6 +32,7 @@
 //! Every op holds one unit from submission to completion (driver tickets hold none); over the cap
 //! the op answers REFUSED and the plugin is never called.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::raw::c_void;
@@ -489,8 +490,8 @@ pub struct Instance {
     /// the op pends.
     #[doc(hidden)]
     pub resumes: AtomicU64,
-    /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
-    pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
+    /// The ticket-less crossings in progress, for the watchdog: `id -> (started, slot)`.
+    pub(crate) calls: Mutex<HashMap<u64, (Instant, u32)>>,
     next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
@@ -717,8 +718,17 @@ impl Instance {
         }
     }
 
-    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<(u64, Instant, u32)>> {
+    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, HashMap<u64, (Instant, u32)>> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `cross`, a ticket-less crossing of `s`, listed in [`Instance::calls`] while it runs.
+    fn watched<R>(&self, s: u32, cross: impl FnOnce() -> R) -> R {
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.lock_calls().insert(id, (Instant::now(), s));
+        let crossed = cross();
+        self.lock_calls().remove(&id);
+        crossed
     }
 
     /// Whether `close` answered READY or FAULT.
@@ -967,13 +977,12 @@ impl Instance {
         let mut frame = (self.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
-        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
-        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
-        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
-            self.cross(slot::CANCEL, input, out, out_size)
+        let crossed = self.watched(slot::CANCEL, || {
+            // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+            crate::ffi_thread::on_plugin_thread(|| unsafe {
+                self.cross(slot::CANCEL, input, out, out_size)
+            })
         });
-        self.lock_calls().retain(|c| c.0 != id);
         crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
@@ -1671,7 +1680,7 @@ impl<K: Kind> Plugin<K> {
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
                 resumes: AtomicU64::new(0),
-                calls: Mutex::new(Vec::new()),
+                calls: Mutex::new(HashMap::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
@@ -1802,7 +1811,7 @@ impl<K: Kind> Plugin<K> {
     /// crossing is recorded for the watchdog of the dispatcher that adopted the instance: past its
     /// budget the instance is faulted (the caller's thread cannot be replaced).
     pub fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
-        self.call_once(s, frame, false)
+        self.call_on(s, frame, Ticket::NONE, false)
     }
 
     /// THE ONE RE-CALL of a SHORT answer, spending its [`Recall`] token, with the caller's bigger
@@ -1817,7 +1826,11 @@ impl<K: Kind> Plugin<K> {
         if token.instance != self.instance_id() || token.slot != s {
             return Called::from(Crossed::host(Outcome::Refused));
         }
-        self.call_once(s, frame, true)
+        let called = self.call_on(s, frame, Ticket::NONE, false);
+        if called.recall.is_some() {
+            return Called::from(Crossed::host(Outcome::Fault));
+        }
+        called
     }
 
     /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
@@ -1845,7 +1858,7 @@ impl<K: Kind> Plugin<K> {
         if let Some(tickets) = &inline {
             tickets.starting(ticket, self.inner.instance, s, resume);
         }
-        let called = self.call_ticketed(s, frame, ticket, resume);
+        let called = self.call_on(s, frame, ticket, resume);
         if let Some(tickets) = &inline {
             tickets.ended(ticket, s, called.recall.is_some());
         }
@@ -1856,20 +1869,9 @@ impl<K: Kind> Plugin<K> {
         Arc::as_ptr(&self.inner) as usize
     }
 
-    fn call_once<I: InFrame, O: OutFrame>(
-        &self,
-        s: u32,
-        frame: &mut Frame<I, O>,
-        recall: bool,
-    ) -> Called {
-        let called = self.call_ticketed(s, frame, Ticket::NONE, false);
-        if recall && called.recall.is_some() {
-            return Called::from(Crossed::host(Outcome::Fault));
-        }
-        called
-    }
-
-    fn call_ticketed<I: InFrame, O: OutFrame>(
+    /// The one call on the caller's thread ([`Plugin::call`], [`Plugin::recall`],
+    /// [`Plugin::call_inline`]): `ticket` NONE for a ticket-less call.
+    fn call_on<I: InFrame, O: OutFrame>(
         &self,
         s: u32,
         frame: &mut Frame<I, O>,
@@ -1897,10 +1899,8 @@ impl<K: Kind> Plugin<K> {
             return Called::from(Crossed::host(Outcome::Refused));
         };
         let (i, o, out_size) = frame.heads();
-        let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
-        inst.lock_calls().push((id, Instant::now(), s));
         // SAFETY: the frame is ours for the call; its heads lead the structs.
-        let crossed = unsafe {
+        let crossed = inst.watched(s, || unsafe {
             let head = &mut *i;
             head.size = size_of::<I>() as u32;
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
@@ -1909,8 +1909,7 @@ impl<K: Kind> Plugin<K> {
             head.deadline_class = stamped_class::<K>(s, ticket) as u8;
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
-        };
-        inst.lock_calls().retain(|c| c.0 != id);
+        });
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
