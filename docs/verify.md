@@ -12,7 +12,8 @@ installer (`install.sh`) runs the binary check below for you.
 | Key | Signs | Where it lives | Where you get it |
 |---|---|---|---|
 | **Release key** `busbar-release-2026a`, plus backup `-2026b` | `SHA256SUMS`, `SHA256SUMS.plugins`, `IMAGES`, `release-evidence.json` (OpenSSH signatures, namespace `busbar-release`) | A FIDO2 hardware key the founder holds; it needs a physical touch. The backup is in a safe | [`release/allowed_signers`](../release/allowed_signers), `https://getbusbar.com/keys/allowed_signers`, and SECURITY.md. All three must match |
-| **Plugin keys** `busbar-plugins-2026a` (signing) and `-2026b` (sealed next key) | Every first-party plugin's manifest (Ed25519) | The founder's hardware key (PIV) | **Compiled into the busbar binary** (`BUSBAR_RELEASE_PUBKEY` in [`.cargo/config.toml`](../.cargo/config.toml), embedded verbatim, so `strings busbar \| grep busbar-plugins-` shows it) |
+| **Plugin root keys** `busbar-plugins-root` and `busbar-plugins-2026a` (ECDSA P-256) | Plugin **keys documents** only: each names the current plugin release signer, with an expiry and a version that only rises, and carries signed revocations | `busbar-plugins-root`: Cloud KMS at the HSM protection level, non-exportable. `busbar-plugins-2026a`: PIV slot 9C of the founder's YubiKey (PIN and touch on every signature) | **Compiled into the busbar binary** (`BUSBAR_RELEASE_PUBKEY` in [`.cargo/config.toml`](../.cargo/config.toml), embedded verbatim, so `strings busbar \| grep busbar-plugins-` shows it) |
+| **Plugin release signer** (named by the current keys document) | One **release manifest** per release, listing every first-party plugin artefact (name, version, target, SHA-256) | 1.6.0: an interim P-256 key in our CI's secret store, vouched for by a keys document that expires after 90 days. It is replaced by our CI's release-signing feature through a new keys document, with no new busbar binary | Inside every plugin tarball, in the keys document a root signed ([design](design/release-trust.md)) |
 
 **One key, two namespaces, never interchangeable.** The release key signs release *files* only
 under the OpenSSH signature namespace `busbar-release`. Every line of `allowed_signers` is limited to
@@ -22,9 +23,11 @@ namespace `busbar-release-statement`, and they are verified against a list restr
 namespace. A file signature can therefore never be replayed as a statement, nor a statement as a file
 signature.
 
-No key that signs a busbar release or a first-party plugin is held by any CI system, GitHub secret
-or cloud account. A stolen forge token, CI token or registry token cannot produce any of these
-signatures.
+No key that signs a busbar release file is held by any CI system, GitHub secret or cloud account.
+The plugin root keys are held in an HSM and on a hardware key; neither can be exported. The interim
+plugin release signer is held by our CI's secret store and signs only after every check is green; a
+stolen copy is bounded by its keys document's 90-day expiry and is revoked by the next keys document
+a root signs, with no new busbar binary.
 
 The keys above take effect with 1.6.0. Releases up to 1.5.5 trust an older plugin key,
 `b18395a3…`, which was held as a CI secret. 1.6.0 does not trust it. Upgrade rather than keep a 1.5.x
@@ -84,9 +87,13 @@ spec:
 
 ## A plugin
 
-**At load.** Busbar verifies every first-party plugin when it loads it, against the plugin keys
-compiled into the binary. A plugin that is unsigned, tampered with, or signed by any other key is
-refused, and the refusal names the reason. Nothing is configured for this, and turning on
+**At load.** Busbar verifies every first-party plugin when it loads it, through its chain: the
+plugin's keys document must be signed by a root key compiled into the binary, unexpired, and no
+older than one this deployment has accepted; the release manifest must be signed by the release
+signer that keys document names, and must list the plugin, for this binary's target, under its exact
+SHA-256. A plugin that is unsigned, tampered with, unlisted, built for another target, revoked, or
+signed by any other key is refused, and the refusal names the reason and its audit code
+([design](design/release-trust.md)). Nothing is configured for this, and turning on
 `plugins.trust.allow_unsigned` is the only way to load an unsigned plugin.
 
 **Offline, before you install:**
@@ -95,10 +102,11 @@ refused, and the refusal names the reason. Nothing is configured for this, and t
 # The plugin release lists its signed tarballs in SHA256SUMS(.sig), signed by the release key:
 ssh-keygen -Y verify -f allowed_signers -I busbar-release -n busbar-release -s SHA256SUMS.sig < SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
-# and the manifest signature, with the same code the loader runs:
+# and the plugin's chain (root -> keys document -> release manifest -> plugin), with the same code
+# the loader runs:
 busbar-plugin-pack verify busbar-store-sqlite-1.6.0-x86_64-unknown-linux-gnu.tar.gz \
   --keys "$(sed -n 's/^BUSBAR_RELEASE_PUBKEY = "\(.*\)"/\1/p' .cargo/config.toml)" \
-  --name busbar-store-sqlite --version 1.6.0
+  --target x86_64-unknown-linux-gnu --name busbar-store-sqlite --version 1.6.0
 ```
 
 `busbar-plugin-pack` is built from this repository:

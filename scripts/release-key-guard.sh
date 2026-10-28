@@ -48,7 +48,10 @@ MODE="${1:-}"
 # which is the same user-visible outcome as embedding nothing.
 # The list's shape is the one `parse_release_keys` (crates/plugin-loader/src/sign.rs) reads; it
 # refuses the ceremony placeholders, so a tree whose list was never filled in cannot ship.
-KEY_ENTRY='([a-z0-9]([a-z0-9-]*[a-z0-9])?:)?[0-9a-fA-F]{64}'
+# Each entry: `<id>:p256:04<128 hex>` (a P-256 root, its uncompressed SEC1 point), `<id>:ed25519:<64
+# hex>`, `<id>:<64 hex>` (ed25519), or a bare `<64 hex>` (an unnamed ed25519 run key).
+KEY_ID='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
+KEY_ENTRY="(${KEY_ID}:p256:04[0-9a-fA-F]{128}|(${KEY_ID}:(ed25519:)?)?[0-9a-fA-F]{64})"
 key_is_valid() {
   printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq "^${KEY_ENTRY}(,${KEY_ENTRY})*\$"
 }
@@ -100,7 +103,16 @@ if [ "${MODE}" = "--selftest" ]; then
   else
     nope "require REJECTED a well-formed key list — the guard would stop every release"
   fi
-  for bad_label in "unset|" "empty|" "short|abc123" "long|${GOOD_KEY}ff" "padded| ${GOOD_KEY} " "nonhex|${GOOD_KEY%??}zz" \
+  P256_POINT="04$(printf 'a%.0s' $(seq 1 127))b"
+  P256_LIST="busbar-plugins-root:p256:${P256_POINT},busbar-plugins-2026a:p256:04$(printf 'c%.0s' $(seq 1 128))"
+  if BUSBAR_RELEASE_PUBKEY="$P256_LIST" "$self" require >/dev/null 2>&1; then
+    ok "require accepts a well-formed P-256 root list"
+  else
+    nope "require REJECTED a well-formed P-256 root list — the guard would stop every release"
+  fi
+  for bad_label in "p256-compressed|r:p256:02${P256_POINT:2:64}" "p256-short|r:p256:${P256_POINT%??}" \
+      "p256-unnamed|p256:${P256_POINT}" "unknown-alg|r:rsa:${GOOD_KEY}" \
+      "unset|" "empty|" "short|abc123" "long|${GOOD_KEY}ff" "padded| ${GOOD_KEY} " "nonhex|${GOOD_KEY%??}zz" \
       "placeholder|plugins-2026a:CEREMONY-PLACEHOLDER-A" "trailing-comma|${GOOD_LIST}," "uppercase-id|Plugins:${GOOD_KEY}" \
       "one-bad-entry|${GOOD_LIST},plugins-2026c:abc"; do
     label="${bad_label%%|*}"; val="${bad_label#*|}"

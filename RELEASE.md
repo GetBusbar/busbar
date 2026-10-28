@@ -25,14 +25,16 @@ cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugi
 modernci call artifact --check candidate ...            # the judged candidate's outputs -> ./candidate
 G=scripts/release/publish_gate.py; T=~/.config/busbar-release/trust.json; P=target/release/busbar-plugin-pack
 python3 $G verify --candidate candidate --trust $T --pack $P --out out    # every rule; nothing signed
-python3 $G sign   --candidate candidate --trust $T --pack $P --out out --k1-sign-cmd <PIV cmd> --k2-key <sk handle>
+python3 $G sign   --candidate candidate --trust $T --pack $P --out out --k1-sign-cmd <release signer cmd> --k2-key <sk handle>
 python3 $G upload --candidate candidate --trust $T --pack $P --out out    # draft, Rekor, publish, verify, then latest
 ```
 
 `verify` refuses, one named line per rule, on:
 - any missing or undeclared artifact;
 - a digest mismatch;
-- a plugin not signed by a key in the compiled-in list;
+- a plugin tarball that is not an unsigned first-party build (`sign` then seals every plugin with ONE
+  release-manifest signature and refuses any tarball that does not verify through the chain to the
+  compiled-in roots: docs/design/release-trust.md);
 - a key list that differs from the owner's trust file;
 - a binary without the embedded key;
 - an image whose binary is not the built one;

@@ -9,9 +9,11 @@ run by the owner from his own clone at the release commit with his hardware keys
 
   verify    every rule below over the candidate and the owner's trust file. Offline apart from
             read-only GitHub and registry lookups. Writes `release-evidence.json`.
-  sign      verify again, then show the full commit, the key-list diff and the digests. K1 (the
-            plugin key, PIV Ed25519) signs every plugin's canonical bytes, and `busbar-plugin-pack
-            attach` inserts and verifies each signature. K2 (the release key, FIDO2 ed25519-sk)
+  sign      verify again, then show the full commit, the key-list diff and the digests. ONE
+            release manifest lists every plugin tarball (name, version, target, canonical sha256);
+            the release signer signs it ONCE (--release-sign-cmd), and `busbar-plugin-pack seal`
+            puts it, with the trust file's root-signed keys document, into each tarball and
+            verifies the chain (docs/design/release-trust.md). K2 (the release key, FIDO2 ed25519-sk)
             signs SHA256SUMS, SHA256SUMS.plugins, IMAGES and release-evidence.json, and each
             signature is checked against the trusted allowed_signers.
   upload    pushes the images by digest (untagged), cosign-signs and verifies them, creates the
@@ -59,6 +61,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -210,10 +213,17 @@ class Inputs:
 
 
 def load_trust(path: Path) -> dict:
+    """The owner-held trust file: `k1` (the ROOT key list busbar embeds, BUSBAR_RELEASE_PUBKEY),
+    `release_signer` (the release signer's public key, `p256:<hex>`), `keys_doc` (the path of the
+    current root-signed keys document naming it), `k2_allowed_signers`."""
     t = json.loads(path.read_text())
-    for k in ("k1", "k2_allowed_signers"):
+    for k in ("k1", "release_signer", "keys_doc", "k2_allowed_signers"):
         if k not in t:
             raise ValueError(f"trust file {path} has no `{k}`")
+    keys_doc = Path(t["keys_doc"]).expanduser()
+    if not keys_doc.is_absolute():
+        keys_doc = path.parent / keys_doc
+    t["keys_doc"] = str(keys_doc)
     return t
 
 
@@ -698,6 +708,54 @@ def k2_sign_and_check(inp: Inputs, key: str, files: list) -> None:
     signers.unlink()
 
 
+def seal_release(inp: Inputs, vd: Verdict, tarballs: list, out: Path, sign_cmd: str) -> None:
+    """ONE SIGNATURE PER RELEASE. `tarballs` is [(unsigned tarball, target, name, version)].
+    `busbar-plugin-pack release-manifest` writes the bytes of the one release manifest listing them
+    all; `sign_cmd` is called ONCE as `CMD <manifest-file> <sig-out>`; `envelope` wraps the
+    signature (refusing one that does not verify with the trust file's release signer); then each
+    tarball is sealed with the keys document and the release manifest into out/signed/ and
+    verified for its target. Writes out/release-manifest.json. The gate spells no byte of either
+    document: busbar-plugin-pack (release_trust::wire) does."""
+    keys_doc = Path(inp.trust["keys_doc"])
+    try:
+        expires = json.loads(keys_doc.read_text())["signed"]["expires"]
+    except (OSError, KeyError, ValueError, TypeError) as e:
+        vd.refuse("G-5", str(keys_doc), "the trust file's keys document", str(e), "Point keys_doc at the root-signed keys document.")
+        return
+    work = Path(tempfile.mkdtemp())
+    signed_bytes, sig, manifest = work / "release-manifest.signed", work / "release-manifest.sig", out / "release-manifest.json"
+    # The release manifest's version only rises: the signing time.
+    code, outp = pack_out(inp, ["release-manifest", "--version", str(int(time.time())), "--expires", expires,
+                                "--out", str(signed_bytes), *[f"{f}={t}" for f, t, _, _ in tarballs]])
+    if code != 0:
+        vd.refuse("G-5", "release manifest", "every plugin tarball listed", outp, "Rebuild the plugins slice.")
+        return
+    print(f"release manifest: {len(tarballs)} tarballs, {outp}")
+    print("release signer: sign the release manifest (once)")
+    p = run(["/bin/sh", "-c", f'{sign_cmd} "$0" "$1"', str(signed_bytes), str(sig)])
+    if p.returncode != 0 or not sig.is_file():
+        raise CannotRun(f"signing the release manifest failed: {p.stderr.decode(errors='replace').strip()}")
+    code, outp = pack_out(inp, ["envelope", "--signed", str(signed_bytes), "--key", inp.trust["release_signer"],
+                                "--signature", str(sig), "--out", str(manifest)])
+    if code != 0:
+        vd.refuse("G-5", "release manifest", "a signature by your release signer", outp, "Check the signer command and key.")
+        return
+    signed = out / "signed"
+    signed.mkdir(parents=True, exist_ok=True)
+    for f, target, name, version in tarballs:
+        code, outp = pack_out(inp, ["seal", str(f), "--keys-doc", str(keys_doc), "--release", str(manifest),
+                                    "--target", target, "--keys", inp.trust["k1"], "--out", str(signed / f.name)])
+        if code != 0:
+            vd.refuse("G-5", f.name, "sealed through the chain to your root list", outp, "Do not publish this plugin.")
+            continue
+        code, outp = pack_out(inp, ["verify", str(signed / f.name), "--keys", inp.trust["k1"], "--target", target,
+                                    "--name", name, "--version", version])
+        if code != 0:
+            vd.refuse("G-5", f.name, "VERIFIED", outp, "Do not publish this plugin.")
+        vd.ok("G-5")
+    shutil.rmtree(work)
+
+
 def cmd_sign(inp: Inputs, out: Path, k1_cmd: str, k2_key: str) -> int:
     vd, cj, rows = verify_all(inp)
     if vd.refusals:
@@ -711,36 +769,22 @@ def cmd_sign(inp: Inputs, out: Path, k1_cmd: str, k2_key: str) -> int:
     print(f"  v1.5.5  {m.group(1) if m else '(none)'}")
     print(f"artifacts {len(read_sums(inp.cand / 'SHA256SUMS'))} files; SHA256SUMS {sha256_file(inp.cand / 'SHA256SUMS')}")
     print(f"images    {read_images(inp.cand / 'IMAGES')}")
-    print(f"plugins   {len(rows)} tarballs to sign with K1")
+    print(f"plugins   {len(rows)} tarballs in ONE release manifest, signed once by {inp.trust['release_signer'][:24]}…")
     print("=============================================================")
     if input(f"Type the first 12 characters of the commit to sign: ").strip() != cj["commit"][:12]:
         print("publish-gate: not confirmed; nothing signed.")
         return EXIT_REFUSED
     signed = out / "signed"
     signed.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp())
+    versions = {p["repo"]: p["version"] for p in cj["plugins"]}
     for r in rows:
-        src = inp.cand / "plugins" / r["file"]
-        canon, sig = work / (r["file"] + ".canonical"), work / (r["file"] + ".sig")
-        code, outp = pack_out(inp, ["canonical", str(src), "--out", str(canon)])
-        if code != 0 or kv(outp).get("canonical-sha256") != r["canonical_sha256"] or sha256_file(canon) != r["canonical_sha256"]:
+        code, outp = pack_out(inp, ["canonical", str(inp.cand / "plugins" / r["file"])])
+        if code != 0 or kv(outp).get("canonical-sha256") != r["canonical_sha256"]:
             vd.refuse("G-5", r["file"], r["canonical_sha256"], outp, "The tarball changed after verify; start again.")
-            continue
-        p = run(["/bin/sh", "-c", f'{k1_cmd} "$0" "$1"', str(canon), str(sig)])
-        if p.returncode != 0 or not sig.is_file():
-            raise CannotRun(f"K1 signing of {r['file']} failed: {p.stderr.decode(errors='replace').strip()}")
-        code, outp = pack_out(inp, ["attach", str(src), "--signature", f"@{sig}", "--keys", inp.trust["k1"],
-                                    "--out", str(signed / r["file"])])
-        if code != 0:
-            vd.refuse("G-5", r["file"], "a signature verifying against your K1 list", outp, "Check the PIV slot and key.")
-            continue
-        version = next(p["version"] for p in cj["plugins"] if p["repo"] == r["repo"])
-        code, outp = pack_out(inp, ["verify", str(signed / r["file"]), "--keys", inp.trust["k1"],
-                                    "--name", r["repo"], "--version", version])
-        if code != 0:
-            vd.refuse("G-5", r["file"], "VERIFIED", outp, "Do not publish this plugin.")
-        vd.ok("G-5")
-    shutil.rmtree(work)
+    if vd.refusals:
+        return finish(vd)
+    seal_release(inp, vd, [(inp.cand / "plugins" / r["file"], r["target"], r["repo"], versions[r["repo"]]) for r in rows],
+                 out, k1_cmd)
     if vd.refusals:
         return finish(vd)
     write_sums(out / "SHA256SUMS.plugins", sorted(signed.iterdir()))
@@ -749,6 +793,8 @@ def cmd_sign(inp: Inputs, out: Path, k1_cmd: str, k2_key: str) -> int:
     ev = dict(vd.evidence)
     ev["plugins_signed_by_hardware_key"] = True
     ev["release_signed_by_hardware_key"] = True
+    ev["plugin_release_manifest"] = sha256_file(out / "release-manifest.json")
+    ev["plugin_keys_document"] = sha256_file(Path(inp.trust["keys_doc"]))
     ev["sha256sums"] = sha256_file(out / "SHA256SUMS")
     ev["sha256sums_plugins"] = sha256_file(out / "SHA256SUMS.plugins")
     ev["images"] = read_images(out / "IMAGES")
@@ -856,8 +902,8 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
 
 def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, plugins: Path, k1_cmd: str, k2_key: str) -> int:
     """One plugin between core releases. Its unsigned tarballs come from the candidate-plugins checks
-    (fetched with `modernci call artifact`). Then K1 signs, attach and verify run, K2 signs, and the
-    release is published."""
+    (fetched with `modernci call artifact`). One release manifest lists them, the release signer signs
+    it once, each tarball is sealed and verified, K2 signs, and the release is published."""
     vd = Verdict()
     g14_trust(inp, vd)
     if vd.refusals:
@@ -890,31 +936,18 @@ def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, plugins: Pat
         vd.refuse("G-3", n, "absent", "present", "Only declared targets ship.")
     if vd.refusals:
         return finish(vd)
-    signed = out / "signed"
-    signed.mkdir(exist_ok=True)
-    work = Path(tempfile.mkdtemp())
     for n in sorted(want):
-        canon, sig = work / (n + ".canonical"), work / (n + ".sig")
-        code, outp = pack_out(inp, ["canonical", str(dl / n), "--out", str(canon)])
+        code, outp = pack_out(inp, ["canonical", str(dl / n)])
         m = kv(outp)
         if code != 0 or m.get("name") != repo or m.get("version") != ver or m.get("publisher") != "busbar" or m.get("signed") != "false":
             vd.refuse("G-5", n, f"unsigned busbar plugin {repo} {ver}", outp, "Re-run the plugin's release workflow.")
-            continue
-        print(f"{n}: canonical-sha256 {m['canonical-sha256']}")
-        p = run(["/bin/sh", "-c", f'{k1_cmd} "$0" "$1"', str(canon), str(sig)])
-        if p.returncode != 0:
-            raise CannotRun(f"K1 signing of {n} failed: {p.stderr.decode(errors='replace').strip()}")
-        code, outp = pack_out(inp, ["attach", str(dl / n), "--signature", f"@{sig}", "--keys", inp.trust["k1"], "--out", str(signed / n)])
-        if code != 0:
-            vd.refuse("G-5", n, "a signature verifying against your K1 list", outp, "Check the PIV slot and key.")
-            continue
-        code, outp = pack_out(inp, ["verify", str(signed / n), "--keys", inp.trust["k1"], "--name", repo, "--version", ver])
-        if code != 0:
-            vd.refuse("G-5", n, "VERIFIED", outp, "Do not publish.")
-        vd.ok("G-5")
-    shutil.rmtree(work)
     if vd.refusals:
         return finish(vd)
+    out.mkdir(parents=True, exist_ok=True)
+    seal_release(inp, vd, [(dl / f"{repo}-{ver}-{t}.tar.gz", t, repo, ver) for t, _, _ in PLUGIN_TARGETS], out, k1_cmd)
+    if vd.refusals:
+        return finish(vd)
+    signed = out / "signed"
     sums = out / "SHA256SUMS"
     write_sums(sums, sorted(signed.iterdir()))
     k2_sign_and_check(inp, k2_key, [sums])
@@ -927,7 +960,9 @@ def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, plugins: Pat
     back = Path(tempfile.mkdtemp())
     run([tool("gh"), "release", "download", tag, "-R", f"GetBusbar/{repo}", "-D", str(back)], check=True)
     for n in sorted(want):
-        code, outp = pack_out(inp, ["verify", str(back / n), "--keys", inp.trust["k1"], "--name", repo, "--version", ver])
+        target = n[len(f"{repo}-{ver}-"):-len(".tar.gz")]
+        code, outp = pack_out(inp, ["verify", str(back / n), "--keys", inp.trust["k1"], "--target", target,
+                                    "--name", repo, "--version", ver])
         if code != 0:
             vd.refuse("G-5", f"published {n}", "VERIFIED", outp, "Pull the release back to draft at once.")
     vd.ok("G-7")
@@ -961,7 +996,8 @@ USAGE = """usage:
   publish_gate.py spot-rebuild    TARGET --candidate DIR --trust FILE --pack BIN --out DIR
 
 Run from your own clone at the release commit, with busbar-plugin-pack built there by you.
---k1-sign-cmd is called as `CMD <canonical-bytes-file> <signature-out>` (PLUGIN-KEY-CEREMONY.md).
+--k1-sign-cmd is the RELEASE SIGNER, called ONCE per release as `CMD <release-manifest-file> <signature-out>`;
+it writes the raw signature (DER for P-256): scripts/release/sign-*.sh (docs/design/release-trust.md).
 --k2-key is the ed25519-sk key handle (`ssh-keygen -K` writes it from the YubiKey)."""
 
 

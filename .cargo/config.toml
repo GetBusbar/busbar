@@ -1,13 +1,16 @@
-# The busbar first-party plugin key LIST (the repository variable BUSBAR_RELEASE_PUBKEY in CI; not a
-# secret): `<id>:<64-hex ed25519 public key>` entries, comma-separated. plugin-loader embeds it at
-# build time so a binary trusts first-party plugins with zero configuration. Set here so a local build
-# never silently lacks it: a keyless build refuses every published first-party plugin, which the
-# shadow oracle judges as a failed candidate at setup.
+# The busbar first-party plugin ROOT key LIST (the repository variable BUSBAR_RELEASE_PUBKEY in CI;
+# not a secret): comma-separated `<id>:p256:<130-hex uncompressed SEC1 point>` entries
+# (`<id>:ed25519:<64 hex>`, `<id>:<64 hex>` and a bare `<64 hex>` run key also parse). plugin-loader
+# embeds it at build time. A root signs only KEYS DOCUMENTS, which name the release signer; the
+# release signer signs one release manifest per release (docs/design/release-trust.md), so a new
+# signer needs a new keys document, never a new binary. A keyless build refuses every published
+# first-party plugin, which the shadow oracle judges as a failed candidate at setup.
 #
-# 1.6.0 trusts two hardware-held keys (PLUGIN-KEY-CEREMONY.md): `busbar-plugins-2026a` signs, and
-# `busbar-plugins-2026b` is the sealed next key. The retired 1.5 key (b18395a3…), whose seed lived in
-# a GitHub org secret, is NOT on the list. The two entries below are PLACEHOLDERS until the owner's
-# ceremony: they do not parse, so this tree embeds no key and
-# `the_default_release_key_input_is_the_real_release_key_list` stays red until they are replaced.
+# 1.6.0's roots (docs/design/release-trust.md): `busbar-plugins-root`, an ECDSA P-256 key in Cloud KMS
+# at the HSM protection level, and `busbar-plugins-2026a`, ECDSA P-256 in PIV slot 9C of the owner's
+# YubiKey. The retired 1.5 key (b18395a3…), whose seed lived in a GitHub org secret, is NOT on the
+# list. The entries below are PLACEHOLDERS until the keys exist: they do not parse, so this tree
+# embeds no key and `the_default_release_key_input_is_the_real_release_key_list` stays red until
+# they are replaced.
 [env]
-BUSBAR_RELEASE_PUBKEY = "busbar-plugins-2026a:CEREMONY-PLACEHOLDER-A,busbar-plugins-2026b:CEREMONY-PLACEHOLDER-B"
+BUSBAR_RELEASE_PUBKEY = "busbar-plugins-root:p256:CEREMONY-PLACEHOLDER-KMS,busbar-plugins-2026a:p256:CEREMONY-PLACEHOLDER-PIV"

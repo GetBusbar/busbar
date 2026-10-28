@@ -601,12 +601,14 @@ the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro
 signed manifest `needs` field. The core enforces the actual projection, so a plugin can never
 receive more than it declared.
 
-Every first-party plugin is published as `busbar` and signed offline, on a hardware key, with
-one of the first-party keys the busbar binary compiles in (`busbar-plugins-2026a`, with
-`busbar-plugins-2026b` as the next key). No first-party signing key is held in CI. A release packs
-the plugin unsigned, the owner signs the manifest's canonical bytes (`busbar-plugin-pack
-canonical`), and the publish step inserts that signature with `busbar-plugin-pack attach`. It
-refuses any signature that does not verify against the compiled-in list. The *release* a plugin
+Every first-party plugin is published as `busbar` and SEALED: one release manifest lists every
+plugin artefact of the release (name, version, target, SHA-256 of its canonical manifest), the
+release signer signs it once, and each tarball carries it with the keys document that names that
+signer, signed by one of the ROOT keys the busbar binary compiles in (`busbar-plugins-root`, Cloud KMS
+HSM, and `busbar-plugins-2026a`, a YubiKey PIV slot). A release packs every plugin unsigned;
+`busbar-plugin-pack release-manifest`, `envelope` and `seal` build the seal, and `seal` refuses any
+tarball that does not verify through the chain against the compiled-in roots. The design, formats
+and refusals are in [design/release-trust.md](design/release-trust.md). The *release* a plugin
 ships from depends on the plugin:
 
 - **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-mysql`,

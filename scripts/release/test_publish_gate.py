@@ -85,18 +85,33 @@ class World:
         self.keys = self.tmp / "keys"
         for d in (self.root, self.cand, self.keys):
             d.mkdir()
-        # K1: an Ed25519 key in a PEM (stand-in for the PIV key) and its raw public half.
-        sh("openssl", "genpkey", "-algorithm", "ed25519", "-out", str(self.keys / "k1.pem"))
-        der = sh("openssl", "pkey", "-in", str(self.keys / "k1.pem"), "-pubout", "-outform", "DER")
-        self.k1_list = f"busbar-plugins-2026a:{der[-32:].hex()}"
-        # The sign command is called as `CMD <in> <out>`: wrap so the second argument is -out.
-        (self.keys / "k1-sign").write_text(f'#!/bin/sh\nexec openssl pkeyutl -sign -inkey "{self.keys / "k1.pem"}" -rawin -in "$1" -out "$2"\n')
+        # K1, the ROOT: a P-256 key in a PEM (stand-in for the Cloud KMS root) and its SEC1 point.
+        # The release signer: another P-256 key (stand-in for the interim signer). The keys document
+        # the root signs names the signer; the sign command signs the release manifest once.
+        def p256(name):
+            sh("openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
+               "-out", str(self.keys / f"{name}.pem"))
+            der = sh("openssl", "pkey", "-in", str(self.keys / f"{name}.pem"), "-pubout", "-outform", "DER")
+            return f"p256:{der[-65:].hex()}"
+        root, self.release_signer = p256("root"), p256("signer")
+        self.k1_list = f"busbar-plugins-root:{root}"
+        spec = self.keys / "keys-spec.json"
+        spec.write_text(json.dumps({"version": 1, "expires": "2099-01-01T00:00:00Z", "signers": [self.release_signer]}))
+        sh(PACK, "keys-doc", "--spec", str(spec), "--out", str(self.keys / "keys.signed"))
+        sh("openssl", "dgst", "-sha256", "-sign", str(self.keys / "root.pem"), "-out", str(self.keys / "keys.sig"),
+           str(self.keys / "keys.signed"))
+        sh(PACK, "envelope", "--signed", str(self.keys / "keys.signed"), "--key", root,
+           "--signature", str(self.keys / "keys.sig"), "--out", str(self.keys / "keys.json"))
+        # The sign command is called ONCE as `CMD <release-manifest> <sig-out>` and writes DER.
+        (self.keys / "k1-sign").write_text(
+            f'#!/bin/sh\nexec openssl dgst -sha256 -sign "{self.keys / "signer.pem"}" -out "$2" "$1"\n')
         os.chmod(self.keys / "k1-sign", 0o755)
         # K2: a software ssh key (stand-in for ed25519-sk).
         sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "busbar-release-2026a", "-f", str(self.keys / "k2"))
         pub = (self.keys / "k2.pub").read_text().split()
         self.signer = f'busbar-release namespaces="busbar-release" {pub[0]} {pub[1]} busbar-release-2026a'
-        self.trust = {"k1": self.k1_list, "k2_allowed_signers": [self.signer],
+        self.trust = {"k1": self.k1_list, "release_signer": self.release_signer,
+                      "keys_doc": str(self.keys / "keys.json"), "k2_allowed_signers": [self.signer],
                       "cosign": {"identity": "release@getbusbar.com", "issuer": "https://accounts.google.com"}}
         self._repo()
         self._candidate()
@@ -318,7 +333,7 @@ class Gate(unittest.TestCase):
         self.assertTrue(any(x.startswith("REFUSED G-12") for x in r), r)
 
     def test_g14_key_list_not_in_the_owners_trust_file(self):
-        self.w.trust = dict(self.w.trust, k1="busbar-plugins-2026a:" + "ab" * 32)
+        self.w.trust = dict(self.w.trust, k1="busbar-plugins-root:" + "ab" * 32)
         self.refused("G-14", "BUSBAR_RELEASE_PUBKEY")
 
     def test_g14_k2_line_must_be_limited_to_the_file_namespace(self):
@@ -344,21 +359,29 @@ class Gate(unittest.TestCase):
         pg.g14_trust(inp, vd)
         self.assertTrue(any("hardware key type" in x for x in vd.refusals), vd.refusals)
 
-    def test_sign_attaches_k1_and_k2_and_everything_verifies(self):
+    def test_sign_seals_every_plugin_with_one_signature_and_everything_verifies(self):
         inp = self.w.inputs()
         orig = builtins.input
         builtins.input = lambda *_: self.w.commit[:12]
         try:
-            code = pg.cmd_sign(inp, self.w.out, str(self.w.keys / "k1-sign"), str(self.w.keys / "k2"))
+            calls = self.w.keys / "calls"
+            counting = self.w.keys / "k1-sign-counted"
+            counting.write_text(f'#!/bin/sh\necho x >> "{calls}"\nexec "{self.w.keys / "k1-sign"}" "$1" "$2"\n')
+            os.chmod(counting, 0o755)
+            code = pg.cmd_sign(inp, self.w.out, str(counting), str(self.w.keys / "k2"))
         finally:
             builtins.input = orig
         self.assertEqual(code, pg.EXIT_OK)
+        self.assertEqual(calls.read_text().count("x"), 1, "the release signer signs once per release")
+        self.assertTrue((self.w.out / "release-manifest.json").is_file())
         for n in ("SHA256SUMS", "SHA256SUMS.plugins", "IMAGES", "release-evidence.json"):
             self.assertTrue((self.w.out / (n + ".sig")).is_file(), n)
         signed = sorted((self.w.out / "signed").iterdir())
         self.assertEqual(len(signed), len(pg.PLUGIN_TARGETS))
         for f in signed:
-            p = subprocess.run([PACK, "verify", str(f), "--keys", self.w.k1_list, "--name", PLUGIN, "--version", PVER],
+            target = f.name[len(f"{PLUGIN}-{PVER}-"):-len(".tar.gz")]
+            p = subprocess.run([PACK, "verify", str(f), "--keys", self.w.k1_list, "--target", target,
+                                "--name", PLUGIN, "--version", PVER],
                                capture_output=True)
             self.assertEqual(p.returncode, 0, p.stdout)
         ev = json.loads((self.w.out / "release-evidence.json").read_text())
