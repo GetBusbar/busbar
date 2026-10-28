@@ -1004,6 +1004,12 @@ pub enum FirstPartyUnverified {
     Malformed(String),
     /// A well-formed signature that verifies against none of the keys: the id of every key tried.
     NoKey { trusted_keys: Vec<String> },
+    /// The manifest carries a RELEASE SEAL ([`crate::release_trust`]) whose chain does not hold:
+    /// the refusal, and the id of every root key this build trusts.
+    Release {
+        refusal: crate::release_trust::SealRefusal,
+        trusted_keys: Vec<String>,
+    },
 }
 
 impl FirstPartyUnverified {
@@ -1012,7 +1018,8 @@ impl FirstPartyUnverified {
     pub fn trusted_keys(&self) -> &[String] {
         match self {
             FirstPartyUnverified::Malformed(_) => &[],
-            FirstPartyUnverified::NoKey { trusted_keys } => trusted_keys,
+            FirstPartyUnverified::NoKey { trusted_keys }
+            | FirstPartyUnverified::Release { trusted_keys, .. } => trusted_keys,
         }
     }
 
@@ -1027,6 +1034,7 @@ impl FirstPartyUnverified {
                 "signature verifies against none of this build's first-party keys [{}]",
                 trusted_keys.join(", ")
             ),
+            FirstPartyUnverified::Release { .. } => self.to_string(),
         }
     }
 }
@@ -1038,23 +1046,37 @@ impl std::fmt::Display for FirstPartyUnverified {
         match self {
             FirstPartyUnverified::Malformed(reason) => f.write_str(reason),
             FirstPartyUnverified::NoKey { .. } => f.write_str("signature does not verify"),
+            FirstPartyUnverified::Release { refusal, .. } => {
+                write!(f, "release seal refused ({}): {refusal}", refusal.code())
+            }
         }
     }
 }
 
-/// WHICH first-party key signed `manifest` over `bytes`: the first of `keys` its signature
-/// verifies against (the same binding and strict check as every signature, [`signature_ok`]).
+/// WHICH first-party key vouches for `manifest` over `bytes`.
+///
+/// * A manifest carrying a RELEASE SEAL ([`crate::release_trust::wire::read_seal`]): the root of
+///   `keys` that signed the seal's keys document, once the whole chain holds
+///   ([`crate::release_trust::verify_release`], judged at `checks`) for this binary's target.
+/// * A per-plugin ed25519 `signature` (the pre-1.6.0 shape, a run key's): the first ed25519 key of
+///   `keys` it verifies against (the same binding and strict check as every signature,
+///   [`signature_ok`]).
 ///
 /// # Errors
 ///
 /// The library does not match the manifest or the signature is malformed
-/// ([`FirstPartyUnverified::Malformed`]), or it verifies against none of `keys`
-/// ([`FirstPartyUnverified::NoKey`], carrying every key id it tried).
+/// ([`FirstPartyUnverified::Malformed`]), a per-plugin signature verifies against none of `keys`
+/// ([`FirstPartyUnverified::NoKey`]), or a seal's chain does not hold
+/// ([`FirstPartyUnverified::Release`]); the last two carry every key id this build trusts.
 pub fn first_party_signer<'k>(
     manifest: &Manifest,
     bytes: &[u8],
     keys: &'k [FirstPartyKey],
+    checks: crate::release_trust::Checks,
 ) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
+    if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
+        return first_party_sealed(manifest, bytes, keys, checks, seal);
+    }
     let sig = bound_signature(manifest, bytes).map_err(FirstPartyUnverified::Malformed)?;
     let canonical = canonical_manifest_bytes(manifest);
     keys.iter()
@@ -1062,6 +1084,55 @@ pub fn first_party_signer<'k>(
         .ok_or_else(|| FirstPartyUnverified::NoKey {
             trusted_keys: keys.iter().map(|k| k.id.clone()).collect(),
         })
+}
+
+/// [`first_party_signer`] for a sealed manifest.
+fn first_party_sealed<'k>(
+    manifest: &Manifest,
+    bytes: &[u8],
+    keys: &'k [FirstPartyKey],
+    checks: crate::release_trust::Checks,
+    seal: Result<(Vec<u8>, Vec<u8>), String>,
+) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
+    use crate::release_trust::{verify_release, Seal, SealRefusal, Subject, PLUGIN_TARGET};
+    let trusted_keys = || keys.iter().map(|k| k.id.clone()).collect::<Vec<_>>();
+    let lib_sha256 = sha256_hex(bytes);
+    if lib_sha256 != manifest.sha256.to_ascii_lowercase() {
+        return Err(FirstPartyUnverified::Malformed(
+            "library hash does not match the manifest".to_string(),
+        ));
+    }
+    let (keys_doc, targets_doc) = seal.map_err(|why| FirstPartyUnverified::Release {
+        refusal: SealRefusal::Malformed {
+            doc: "release seal",
+            why,
+        },
+        trusted_keys: trusted_keys(),
+    })?;
+    let canonical = sha256_hex(&canonical_manifest_bytes(manifest));
+    let verified = verify_release(
+        keys,
+        Seal {
+            keys: &keys_doc,
+            targets: &targets_doc,
+        },
+        Subject {
+            name: &manifest.name,
+            version: &manifest.version,
+            target: PLUGIN_TARGET,
+            sha256: &canonical,
+            lib_sha256: &lib_sha256,
+        },
+        checks,
+    )
+    .map_err(|refusal| FirstPartyUnverified::Release {
+        refusal,
+        trusted_keys: trusted_keys(),
+    })?;
+    Ok(keys
+        .iter()
+        .find(|k| k.id == verified.root)
+        .expect("the vouching root is one of `keys`"))
 }
 
 /// The signature `manifest` carries, once its `sha256` is proven to bind `bytes`.
@@ -1283,6 +1354,18 @@ pub fn validate_abi(
     Ok(())
 }
 
+/// The reject kind of a seal refusal that no opt-in may relax: a revocation, or a keys-document
+/// rollback (anti-downgrade). `None` for every other refusal, which is a failed first-party
+/// signature like any other.
+fn hard_seal_refusal(r: &crate::release_trust::SealRefusal) -> Option<RejectKind> {
+    use crate::release_trust::SealRefusal as S;
+    match r {
+        S::DigestRevoked { .. } | S::SignerRevoked { .. } => Some(RejectKind::Revoked),
+        S::KeysRollback { .. } => Some(RejectKind::AntiDowngrade),
+        _ => None,
+    }
+}
+
 /// The untrusted category of an artifact that is NOT signed by a trusted key - decides which
 /// explicit opt-in flag (if any) could permit it.
 enum Untrusted {
@@ -1348,6 +1431,12 @@ pub fn evaluate(
     // Trust determination first: which key (if any) proves this manifest? A manifest with NO
     // signature at all is UNSIGNED regardless of its (unverifiable, self-declared) publisher -
     // only a PRESENT signature from a non-allowlisted publisher counts as third-party.
+    let checks = crate::release_trust::Checks {
+        now: policy
+            .release_clock
+            .unwrap_or_else(crate::release_trust::now),
+        keys_floor: policy.release_keys_floor,
+    };
     let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.signature.trim().is_empty() {
         Err(Untrusted::Unsigned {
             reason: "manifest carries no signature".to_string(),
@@ -1365,8 +1454,29 @@ pub fn evaluate(
                 trusted_keys: Vec::new(),
             })
         } else {
-            match first_party_signer(manifest, bytes, &policy.first_party_keys) {
+            match first_party_signer(manifest, bytes, &policy.first_party_keys, checks) {
                 Ok(_) => Ok(true),
+                // A revoked artefact or signer, or a rolled-back keys document: a hard reject no
+                // opt-in relaxes, exactly as the compiled-in revocation list and the floors are.
+                Err(FirstPartyUnverified::Release {
+                    refusal,
+                    trusted_keys,
+                }) if hard_seal_refusal(&refusal).is_some() => {
+                    let kind = hard_seal_refusal(&refusal).expect("matched");
+                    return Err(Rejected {
+                        trusted_keys,
+                        ..Rejected::new(
+                            kind,
+                            format!(
+                                "plugin '{}' version {}: first-party release seal refused ({}): \
+                                 {refusal}. No plugins.trust opt-in admits it.",
+                                manifest.name,
+                                manifest.version,
+                                refusal.code()
+                            ),
+                        )
+                    });
+                }
                 // `reason` is 1.5.5's bytes ("signature does not verify"); the key ids it tried
                 // travel structured, never in the reason the boot WARN line prints.
                 Err(unverified) => Err(Untrusted::Unsigned {

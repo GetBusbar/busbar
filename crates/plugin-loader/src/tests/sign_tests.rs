@@ -916,9 +916,14 @@ fn a_plugin_signed_by_any_listed_first_party_key_is_trusted() {
             "a manifest signed by {id} is first-party trusted"
         );
         assert_eq!(
-            first_party_signer(&m, b"lib", &pol.first_party_keys)
-                .unwrap()
-                .id,
+            first_party_signer(
+                &m,
+                b"lib",
+                &pol.first_party_keys,
+                crate::release_trust::tests::checks()
+            )
+            .unwrap()
+            .id,
             id
         );
     }
@@ -952,7 +957,13 @@ fn a_first_party_plugin_signed_by_an_unlisted_key_is_refused_naming_the_trusted_
         "the reason is 1.5.5's bytes, the key ids never in it"
     );
 
-    let unverified = first_party_signer(&m, b"lib", &pol.first_party_keys).unwrap_err();
+    let unverified = first_party_signer(
+        &m,
+        b"lib",
+        &pol.first_party_keys,
+        crate::release_trust::tests::checks(),
+    )
+    .unwrap_err();
     assert_eq!(unverified.to_string(), "signature does not verify");
     assert_eq!(
         unverified.naming_trusted_keys(),

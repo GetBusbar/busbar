@@ -37,6 +37,14 @@ pub const PLUGINS_ROLE: &str = "busbar-plugins";
 /// manifest lists and a plugin release asset is named for.
 pub const PLUGIN_TARGET: &str = env!("BUSBAR_PLUGIN_TARGET");
 
+/// Unix seconds now, from the system clock (a clock before 1970 reads as 0: everything expired).
+#[must_use]
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// A public key a root or a release signer holds.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ReleaseKey {
