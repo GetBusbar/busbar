@@ -1421,7 +1421,7 @@ plugins:
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
     acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
   logs:                         # every plugin instance's own log file
-    dir: logs/plugins           # <dir>/<instance>.log (default: logs/plugins)
+    dir: logs/plugins           # <dir>/<instance>.log, e.g. export.metrics.log (default: logs/plugins)
     level: info                 # off | error | warn | info | debug | trace (default: info)
     levels: { primary: debug }  # per-instance levels, by instance name
     rotate_mb: 64               # rotate past this size (default: never)
@@ -1439,7 +1439,7 @@ plugins:
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
 | `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
 | `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
-| `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<instance>.log`, the instance name with every character outside `[A-Za-z0-9._-]` written as `_`. This build accepts and checks the `logs` keys but writes no per-plugin file yet; plugin log lines reach the Busbar log, as in 1.5.5. |
+| `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<instance>.log`, the instance name with every character outside `[A-Za-z0-9._-]` written as `_`. An `export:` or `secrets:` instance is named with its section, so the `metrics` export writes `export.metrics.log`. |
 | `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
 | `logs.levels` | map | no | empty | Per-instance levels: instance name -> level word. |
 | `logs.rotate_mb` | integer | no | never | Past this size the file is renamed `<file>.1` (older archives shift up) and a new file begins, the request-log file's rotation. `0` is a boot error. |
