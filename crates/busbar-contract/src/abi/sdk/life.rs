@@ -434,8 +434,9 @@ pub trait Life: Send + Sync + Sized + 'static {
 }
 
 /// The diagnostic an `open` or `refresh` raised ([`Life::flagged`]), held by the instance until
-/// the host has copied the reply, as [`Reported`] is.
-struct Raised(Mutex<Option<(Flagged, Diag)>>);
+/// the host has copied the reply, as [`Reported`] is. BOXED: an `open` raises it before its state
+/// moves into the instance box, so the entry the envelope points to must not move with it.
+struct Raised(Mutex<Option<Box<(Flagged, Diag)>>>);
 
 // SAFETY: the entry's one pointer (`text`) points into the `Flagged` text held beside it.
 unsafe impl Send for Raised {}
@@ -522,7 +523,7 @@ fn raise<L: Life>(h: &Held<L>, head: &mut OutHead) {
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (flag, diag) = held.insert((flag, Diag::ZERO));
+    let (flag, diag) = &mut **held.insert(Box::new((flag, Diag::ZERO)));
     *diag = Diag {
         id_idx: flag.id_idx,
         severity: flag.severity,
@@ -582,10 +583,11 @@ life_slot!(
         match L::open(settings, &secrets(input.secrets()), input.generation) {
             Ok(life) => {
                 let host = input.host().map(|h| Host::of(&h));
-                instance.open(Held::new(life, host));
-                if let Some(h) = instance.get() {
-                    raise(h, &mut out.raw().head);
-                }
+                // Raised from the state before it is installed: the instance is not this
+                // call's to read until `open` returns (`Instance::get` answers `None` here).
+                let held = Held::new(life, host);
+                raise(&held, &mut out.raw().head);
+                instance.open(held);
                 Outcome::Ready
             }
             Err(r) => out.fail(r),
