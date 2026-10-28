@@ -97,8 +97,8 @@ pub(crate) fn find_verb<'p>(
 
 /// One row of the closed table, as the composition root reads it.
 ///
-/// This module's own [`VerbEntry`] stays crate-private because the table is entitled to change how
-/// it stores a row; what a root binds against is what a row MEANS. Four fields, all `&'static`: the
+/// The table's own [`VerbRow`] is entitled to change how it stores a row; what a root binds against
+/// is what a row MEANS. Four fields, all `&'static`: the
 /// operation's name, the method and templated path it was extracted under, and which side of the
 /// closed read-only/full split it falls on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
