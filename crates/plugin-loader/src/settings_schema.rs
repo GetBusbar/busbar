@@ -148,7 +148,7 @@ enum Position {
 /// credential ([`SECRET_NAME_HINTS`]) — a credential is never declared public.
 fn check_public(
     name: &str,
-    prop: &serde_json::Value,
+    prop: &serde_json::Map<String, serde_json::Value>,
     root: bool,
     secret: bool,
 ) -> Result<(), String> {
