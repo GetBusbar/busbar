@@ -846,12 +846,12 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             Some(source)
         }
         Err(e) => {
-            // The log line is 1.5.5's, frozen in the root legacy table (`snapshot_recorder_failed`):
+            // The log line is 1.5.5's, frozen in the root migration table (`snapshot_recorder_failed`):
             // 1.5.5's recorder carried its exporter's name, which the host does not spell.
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
                 "{}: {e}",
-                crate::config::legacy::text("snapshot_recorder_failed")
+                crate::config::migration_table::text("snapshot_recorder_failed")
             );
             None
         }

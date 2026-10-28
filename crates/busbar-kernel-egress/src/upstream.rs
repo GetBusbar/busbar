@@ -179,6 +179,40 @@ pub const ERR_NET_TIMEOUT: &str = "timeout";
 /// sent none (pinned by `a_clients_accept_encoding_never_goes_upstream`).
 pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
 
+/// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
+/// busbar sends no `accept-encoding`, so it never spends CPU or latency decoding what it reads to
+/// meter. A later config gate (gzip or br, with decompression limits) adds a variant here and its
+/// decoding on the answer side; every caller already asks [`upstream_encoding`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpstreamEncoding {
+    /// No content coding: no `accept-encoding` is sent.
+    Identity,
+}
+
+impl UpstreamEncoding {
+    /// The `accept-encoding` value busbar sends for this choice, or `None` to send none.
+    #[must_use]
+    pub const fn accept_encoding(self) -> Option<&'static str> {
+        match self {
+            Self::Identity => None,
+        }
+    }
+}
+
+/// THE ONE PLACE the upstream encoding is chosen. There is no gate in 1.6.0.
+#[must_use]
+pub const fn upstream_encoding() -> UpstreamEncoding {
+    UpstreamEncoding::Identity
+}
+
+/// Write busbar's own `accept-encoding` choice ([`upstream_encoding`]) onto an upstream head that
+/// [`strip_re_derived`] already cleared of the client's. Identity writes nothing.
+pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+    if let Some(value) = upstream_encoding().accept_encoding() {
+        fields.push((b"accept-encoding".to_vec(), value.as_bytes().to_vec()));
+    }
+}
+
 /// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
 pub const CONTROL_PREFIX: &str = "x-busbar-";
 
@@ -314,3 +348,7 @@ pub fn apply_client_headers(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/upstream_encoding_tests.rs"]
+mod upstream_encoding_tests;
