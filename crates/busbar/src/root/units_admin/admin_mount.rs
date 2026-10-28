@@ -69,7 +69,8 @@ impl AdminNode {
 
     /// Seal admin unit `key`'s record on the node's book: who the auth step resolved (or the
     /// arrival, for a unit refused before anybody was), the operation class its audit stated, how it
-    /// ended, and no amount: an admin unit counts nothing.
+    /// ended, and no amount: an admin unit counts nothing. Its card version and the policy
+    /// generation it ran under are read off one pin of the process's history, at its arrival.
     fn seal(
         &self,
         key: UnitKey,
@@ -79,6 +80,8 @@ impl AdminNode {
         ended: Outcome,
     ) {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        let arrived_ms = arrived_at.saturating_mul(1_000);
         let subject = principal.map_or(Subject::Arrival, |p| {
             Subject::PrincipalId(p.as_str().to_string())
         });
@@ -112,12 +115,15 @@ impl AdminNode {
                 tier_bp: 10_000,
                 fee_count: 0,
                 rate_card_version: crate::root::plane_node::card_in_force(
-                    crate::root::kernel::ROOT_CARD.pin().as_ref(),
-                    arrived_at.saturating_mul(1_000),
+                    card.as_ref(),
+                    arrived_ms,
                 ),
                 bucket_chain_ref: String::new(),
             },
-            controls: Controls::default(),
+            controls: Controls {
+                policy_epoch: crate::root::plane_node::policy_in_force(card.as_ref(), arrived_ms),
+                ..Controls::default()
+            },
             correlation_label: None,
         };
         let token = self.kernel.durability_token();
@@ -181,6 +187,9 @@ pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAns
     }
     if is_rate_refusal(ended) {
         return rate_limited_answer();
+    }
+    if let Some(explained) = explained_answer(request, ended) {
+        return explained;
     }
     answer_for(ended)
 }
@@ -359,6 +368,31 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: busbar_core_admin::admin_codec::refusal::envelope_of(code, message).into_bytes(),
     }
+}
+
+/// The path of the one verb whose unreadable body is answered with what the body must carry.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_PATH: &str = "/api/v1/admin/ledger/amend-rate-history";
+
+/// What `amend-rate-history` says when it cannot read the correction it was sent (OWNER
+/// 2026-10-27: every refusal explains itself). A bare `invalid_request` told an operator holding
+/// a pre-1.6.0 body nothing about why it was refused.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_SHAPE: &str = "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape";
+
+/// The refusal that names what was wrong, where the answer can say more than its code: an
+/// `amend-rate-history` body the verb could not read. `None` for every other ending.
+#[cfg(feature = "root-admin")]
+pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Option<AdminAnswer> {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    let unreadable = matches!(
+        outcome,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
+            if class_of(reason) == RefusalClass::Unreadable
+    );
+    let path = request.path.split('?').next().unwrap_or("");
+    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+        .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
 }
 
 /// What a node that cannot take the unit at all answers with.

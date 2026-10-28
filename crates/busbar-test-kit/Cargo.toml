@@ -26,6 +26,7 @@ ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # The counting allocator's own tests (`src/tests/alloc_counter_tests.rs`, run in busbar-contract's
