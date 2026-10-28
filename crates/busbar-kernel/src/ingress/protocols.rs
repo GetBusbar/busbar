@@ -8,44 +8,6 @@
 
 pub use busbar_contract::protocol::ProtocolDecl;
 
-#[cfg(any(test, feature = "test-support"))]
-static TEST_REGISTERED_PROTOCOLS: std::sync::Mutex<Vec<&'static ProtocolDecl>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// Register a protocol for a test, as production's [`install_protocols`] does. Idempotent by name;
-/// a protocol the root already installed is skipped.
-#[cfg(any(test, feature = "test-support"))]
-pub fn register_test_protocol(decl: &'static ProtocolDecl) {
-    let installed_already = INSTALLED
-        .get()
-        .is_some_and(|installed| installed.iter().any(|d| d.name == decl.name));
-    if installed_already {
-        return;
-    }
-    let mut reg = TEST_REGISTERED_PROTOCOLS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if !reg.iter().any(|d| d.name == decl.name) {
-        reg.push(decl);
-    }
-}
-
-/// [`register_test_protocol`] for each of `decls`, in order.
-#[cfg(any(test, feature = "test-support"))]
-pub fn register_test_protocols(decls: &[&'static ProtocolDecl]) {
-    for d in decls {
-        register_test_protocol(d);
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn test_registered_protocols() -> Vec<&'static ProtocolDecl> {
-    TEST_REGISTERED_PROTOCOLS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-}
-
 /// The declarations plus the aggregates folded from them. Built once; every field is derived from
 /// the declarations and from nothing else.
 pub struct Registry {
@@ -56,9 +18,6 @@ pub struct Registry {
     array_stream_shim_keys: &'static [&'static str],
     /// The protocols that ship a wire codec: the set a provider's `protocol:` may name.
     codec_protocols: &'static [&'static str],
-    /// Every verb any declared protocol serves, in declaration order, deduped.
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-    declared_verbs: &'static [busbar_contract::operation::OpVerb],
 }
 
 impl Registry {
@@ -72,7 +31,6 @@ impl Registry {
         let mut streaming_content_types: Vec<&'static str> = Vec::new();
         let mut array_stream_shim_keys: Vec<&'static str> = Vec::new();
         let mut codec_protocols: Vec<&'static str> = Vec::new();
-        let mut declared_verbs: Vec<busbar_contract::operation::OpVerb> = Vec::new();
         for d in &decls {
             head_keys.extend_from_slice(d.head_keys);
             head_keys.extend(d.array_stream_shim_key);
@@ -80,11 +38,6 @@ impl Registry {
             array_stream_shim_keys.extend(d.array_stream_shim_key);
             if d.codec.is_some() {
                 codec_protocols.push(d.name);
-            }
-            for v in d.verbs {
-                if !declared_verbs.contains(v) {
-                    declared_verbs.push(*v);
-                }
             }
         }
         for v in [
@@ -111,7 +64,6 @@ impl Registry {
             streaming_content_types: streaming_content_types.leak(),
             array_stream_shim_keys: array_stream_shim_keys.leak(),
             codec_protocols: codec_protocols.leak(),
-            declared_verbs: declared_verbs.leak(),
         }
     }
 
@@ -142,21 +94,34 @@ impl Registry {
     pub fn codec_protocols(&self) -> &'static [&'static str] {
         self.codec_protocols
     }
+}
 
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-    pub fn declared_verbs(&self) -> &'static [busbar_contract::operation::OpVerb] {
-        self.declared_verbs
+/// The process registry: null until the first read folds the installed declarations, or a
+/// registry [`publish_protocols`] set. Every pointer stored here comes from `Box::leak` and is never
+/// freed or written through, so a reader holds it for `'static`.
+static REGISTRY: std::sync::atomic::AtomicPtr<Registry> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// The registry behind a non-null [`REGISTRY`] pointer.
+#[allow(unsafe_code)]
+fn registry_at(ptr: *mut Registry) -> &'static Registry {
+    // SAFETY: `ptr` is non-null and was stored in `REGISTRY` from `Box::leak`, which is never freed
+    // or mutated; the Acquire load that read it pairs with the Release/AcqRel store that wrote it.
+    unsafe { &*ptr }
+}
+
+/// The boot fold's tail after the installed declarations: none in any build but the kernel's own
+/// unit-test binary, which folds its neutral synthetic set.
+fn builtins() -> &'static [&'static ProtocolDecl] {
+    #[cfg(test)]
+    {
+        crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
+    }
+    #[cfg(not(test))]
+    {
+        &[]
     }
 }
-
-/// Every verb any installed protocol serves.
-#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-pub fn declared_verbs() -> &'static [busbar_contract::operation::OpVerb] {
-    registry().declared_verbs()
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 
 /// Declarations the composition root installed before the registry was first read.
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
@@ -196,18 +161,10 @@ pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
     );
-    #[cfg(not(any(test, feature = "test-support")))]
     assert!(
-        REGISTRY.get().is_none(),
-        "install_protocols called after the protocol registry was first read; register in main \
-         before any config load or validation touches a protocol"
-    );
-    #[cfg(any(test, feature = "test-support"))]
-    assert!(
-        TEST_REGISTRY_MEMO
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none(),
+        REGISTRY
+            .load(std::sync::atomic::Ordering::Acquire)
+            .is_null(),
         "install_protocols called after the protocol registry was first read; register in main \
          before any config load or validation touches a protocol"
     );
@@ -234,55 +191,41 @@ pub fn merged_boot_decls(
     decls
 }
 
-/// The process registry. One acquire-load once initialized.
-#[cfg(not(any(test, feature = "test-support")))]
+/// The process registry. One acquire-load once set.
 pub fn registry() -> &'static Registry {
-    REGISTRY.get_or_init(|| {
-        let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
-        Registry::new(merged_boot_decls(installed, &[]))
-    })
-}
-
-#[cfg(any(test, feature = "test-support"))]
-static TEST_REGISTRY_MEMO: std::sync::Mutex<Option<(usize, &'static Registry)>> =
-    std::sync::Mutex::new(None);
-
-/// The kernel's own test binary folds the neutral synthetic protocol set as the boot-fold tail;
-/// every other build has none.
-#[cfg(any(test, feature = "test-support"))]
-fn test_builtins() -> &'static [&'static ProtocolDecl] {
-    #[cfg(test)]
-    {
-        crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
-    }
-    #[cfg(not(test))]
-    {
-        &[]
-    }
-}
-
-/// The process registry under the test-support surface: re-folds the registered set (and any
-/// installed set) ahead of the test built-ins whenever the set grows, leaking once per size.
-#[cfg(any(test, feature = "test-support"))]
-pub fn registry() -> &'static Registry {
-    let registered = test_registered_protocols();
-    let want =
-        registered.len() + INSTALLED.get().map(Vec::len).unwrap_or(0) + test_builtins().len();
-    let mut memo = TEST_REGISTRY_MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((n, reg)) = *memo {
-        if n == want {
-            return reg;
-        }
+    use std::sync::atomic::Ordering;
+    let ptr = REGISTRY.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        return registry_at(ptr);
     }
     let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
-    let mut all: Vec<&'static ProtocolDecl> = installed.to_vec();
-    all.extend(registered);
-    let reg: &'static Registry = Box::leak(Box::new(Registry::new(merged_boot_decls(
-        &all,
-        test_builtins(),
+    let fresh: *mut Registry = Box::leak(Box::new(Registry::new(merged_boot_decls(
+        installed,
+        builtins(),
     ))));
-    *memo = Some((want, reg));
-    reg
+    match REGISTRY.compare_exchange(
+        std::ptr::null_mut(),
+        fresh,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => registry_at(fresh),
+        // Another reader (or a publish) set the registry first: that one stands.
+        Err(set) => registry_at(set),
+    }
+}
+
+/// Set the process registry to the fold of the installed declarations plus `registered`,
+/// replacing any registry set before. The composition root never calls this: it installs once
+/// through [`install_protocols`]. A test binary that registers protocols as it goes publishes each
+/// registration set through it.
+#[doc(hidden)]
+pub fn publish_protocols(registered: &[&'static ProtocolDecl]) {
+    let mut all: Vec<&'static ProtocolDecl> = INSTALLED.get().cloned().unwrap_or_default();
+    all.extend_from_slice(registered);
+    let fresh: *mut Registry =
+        Box::leak(Box::new(Registry::new(merged_boot_decls(&all, builtins()))));
+    REGISTRY.store(fresh, std::sync::atomic::Ordering::Release);
 }
 
 /// The installed declaration named `name`.
@@ -350,20 +293,6 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
         .map(|d| d.auth_failure_message)
         .unwrap_or("authentication failed")
 }
-
-/// Canonical dialect names, for tests only: production names no dialect.
-#[cfg(any(test, feature = "test-support"))]
-pub const PROTO_ANTHROPIC: &str = "anthropic";
-#[cfg(any(test, feature = "test-support"))]
-pub const PROTO_OPENAI: &str = "openai";
-#[cfg(any(test, feature = "test-support"))]
-pub const PROTO_GEMINI: &str = "gemini";
-#[cfg(any(test, feature = "test-support"))]
-pub const PROTO_BEDROCK: &str = "bedrock";
-#[cfg(any(test, feature = "test-support"))]
-pub const PROTO_COHERE: &str = "cohere";
-#[cfg(any(test, feature = "test-support"))]
-pub const PROTO_RESPONSES: &str = "responses";
 
 #[cfg(test)]
 #[path = "tests/protocols_installed_tests.rs"]

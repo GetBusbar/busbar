@@ -4708,7 +4708,7 @@ pub(crate) mod door_boundary {
                 app.lane(
                     LaneSpec::new(
                         "test-model",
-                        busbar_kernel::ingress::protocols::PROTO_ANTHROPIC,
+                        busbar_kernel::test_support::protocols::PROTO_ANTHROPIC,
                         &base_url,
                     )
                     .api_key("busbar-upstream-key"),
