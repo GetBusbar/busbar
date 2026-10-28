@@ -2734,10 +2734,19 @@ pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
 /// hook runs, so the unit's first `project` is made before any rewrite hook is invoked) or the call
 /// carried a rewrite ([`ProjectIn::rewrite`] present):
 ///
-/// * READY: the view (and the rewritten body, when the plane applied the rewrite).
-/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. That is the
-///   rewriting hook's own failure, answered by its `on_error` (a load-bearing hook refuses the
-///   unit; any other proceeds with the request as it stood).
+/// * READY: the view, and the rewritten body ([`ProjectOut::rewritten`]) when the plane applied
+///   the rewrite. A READY answer to a call carrying a rewrite that names messages, with no
+///   rewritten body, is one of two things, told apart by
+///   [`PROJECT_REWRITE_NOT_APPLICABLE`] in `view.flags`:
+///   - the mark set: the rewrite does not apply to this unit (its operation has no conversation to
+///     frame one into). The kernel forwards the unit unmodified, records the hook a pass, and warns
+///     naming the hook and the entry;
+///   - the mark clear: the plane did not apply the rewrite. The kernel refuses the unit, as for
+///     REFUSED below.
+/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. The kernel
+///   REFUSES the unit and never forwards the body un-rewritten, whatever the hook's `on_error`
+///   says: a load-bearing hook (`on_error: reject`) with the shared 503 a failed call of it
+///   answers, any other with [`PROJECT_FAULT_STATUS`] and [`PROJECT_FAULT_MESSAGE`].
 /// * FAULT: the plane could not apply a rewrite it must not leave unapplied (a redaction whose
 ///   document the body does not parse into). The kernel ALWAYS answers
 ///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
@@ -2782,6 +2791,30 @@ pub const fn project_fault_unparseable(
         && out.head.outcome.0 == RawOutcome::of(Outcome::Fault).0
         && out.view.flags == PROJECT_FAULT_UNPARSEABLE
 }
+
+/// THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried
+/// a rewrite ([`ProjectIn::rewrite`]) and answers no rewritten body: the unit's operation has no
+/// conversation to frame a rewrite into (the plane may still project its content as a turn, so the
+/// gates screen it, but its body has nowhere a hook's messages could go), so the rewrite does not
+/// apply to it. The kernel forwards the unit unmodified, records the hook a pass (not failed), and
+/// warns naming the hook and the entry (see [`project_faults`]). Without the mark, a READY answer
+/// with no rewritten body is a rewrite the plane did not apply, and the kernel refuses the unit.
+///
+/// A plane never sets it for a unit whose operation frames a conversation, whatever kept the
+/// rewrite from applying there (a body the splice cannot place it in, a container the body lacks):
+/// that unit is refused. The mark means nothing on any other outcome, on a `project` that carried
+/// no rewrite, or beside a rewritten body.
+pub const PROJECT_REWRITE_NOT_APPLICABLE: u32 = 1 << 30;
+
+// The view flags a `project` answer may state are one bit each: the hook view's own, and the two
+// marks a plane states beside them.
+const _: () = assert!(one_bit_each(&[
+    super::hook::REQUEST_HAS_MAX_TOKENS,
+    super::hook::REQUEST_HAS_TOOLS,
+    super::hook::REQUEST_STREAM,
+    PROJECT_REWRITE_NOT_APPLICABLE,
+    PROJECT_FAULT_UNPARSEABLE,
+]));
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
 #[repr(C)]
@@ -2854,9 +2887,16 @@ pub struct ProjectOut {
     pub end_user: AbiStr,
     /// The rewritten body, in the arena, when [`ProjectIn::rewrite`] was given and the plane
     /// applied it: the body the kernel keeps and re-pushes on every attempt from now on. Empty
-    /// (or [`SPAN_ABSENT`]) = not applied: for a rewrite naming messages the kernel refuses the
-    /// unit (the hook's 503 under `on_error: reject`, [`PROJECT_FAULT_STATUS`] otherwise), never
-    /// forwarding the body un-rewritten; a rewrite naming no messages is no rewrite (1.5.5).
+    /// (or [`SPAN_ABSENT`]) = not applied. For a rewrite naming messages, that is either:
+    /// - a rewrite that does not apply to the unit, a dialect or operation with no conversation to
+    ///   frame it into, stated by [`PROJECT_REWRITE_NOT_APPLICABLE`] in `view.flags`: the audited
+    ///   pass-through, the unit forwarded unmodified with the hook on record as a pass and a
+    ///   warning naming it;
+    /// - any other unapplied rewrite (the mark clear): the kernel refuses the unit (the hook's 503
+    ///   under `on_error: reject`, [`PROJECT_FAULT_STATUS`] otherwise), never forwarding the body
+    ///   un-rewritten.
+    ///
+    /// A rewrite naming no messages is no rewrite (1.5.5).
     pub rewritten: Span,
     /// Short answer: the turns `messages_buf` needs.
     pub messages_needed: u32,

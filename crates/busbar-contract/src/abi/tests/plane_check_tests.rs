@@ -2732,6 +2732,18 @@ fn projected_view_flags_are_known() {
     );
 }
 
+/// A READY `project` that carried a rewrite and applied none may state
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`] beside the hook view's own flags: the plane's word that the
+/// unit's operation has no conversation to frame the rewrite into. RED: the mark refused as an
+/// unknown flag, so no plane could state it.
+#[test]
+fn a_projected_view_may_state_the_rewrite_not_applicable_mark() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.view.flags = PROJECT_REWRITE_NOT_APPLICABLE | crate::abi::hook::REQUEST_STREAM;
+    assert_eq!(project_as(Ready, &h, &o, true), Ok(()));
+}
+
 #[test]
 fn projected_strings_lie_inside_the_arena_written() {
     let h = host();

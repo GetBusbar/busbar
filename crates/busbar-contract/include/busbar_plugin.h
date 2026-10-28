@@ -475,6 +475,7 @@ extern "C" {
 #define BB_PLANE_PROJECT_FAULT_STATUS UINT16_C(500) /* The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite */
 #define BB_PLANE_PROJECT_FAULT_MESSAGE "request rewrite could not be applied" /* The words a FAULT `project` answers the caller with, byte for byte 1.5.5's. */
 #define BB_PLANE_PROJECT_FAULT_UNPARSEABLE UINT32_C(0x80000000) /* THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed */
+#define BB_PLANE_PROJECT_REWRITE_NOT_APPLICABLE UINT32_C(0x40000000) /* THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */

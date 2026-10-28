@@ -688,7 +688,12 @@ pub fn check_project(
     }
     bits(
         u64::from(v.flags),
-        u64::from(REQUEST_HAS_MAX_TOKENS | REQUEST_HAS_TOOLS | REQUEST_STREAM),
+        u64::from(
+            REQUEST_HAS_MAX_TOKENS
+                | REQUEST_HAS_TOOLS
+                | REQUEST_STREAM
+                | super::PROJECT_REWRITE_NOT_APPLICABLE,
+        ),
         "project.view.flags",
     )?;
     in_arena(v.pool, arena.0, out.arena_written, "project.view.pool")?;
