@@ -1636,3 +1636,118 @@ async fn a_served_units_usage_is_accrued_exactly_once() {
     );
     assert_eq!(far.served(), 1, "one far-end request served");
 }
+
+/// A far end on loopback answering every request with 200 and `body` (JSON), keeping each request's
+/// body as it arrived.
+async fn far_end_keeping_bodies(body: &'static str) -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port");
+    let port = listener.local_addr().expect("its address").port();
+    let bodies: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&bodies);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let kept = Arc::clone(&kept);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut got = Vec::new();
+                let request = loop {
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    let Some(at) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&got[..at]).to_string();
+                    let length = head
+                        .lines()
+                        .find_map(|l| {
+                            let (n, v) = l.split_once(':')?;
+                            n.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if got.len() >= at + 4 + length {
+                        break got[at + 4..at + 4 + length].to_vec();
+                    }
+                };
+                kept.lock().unwrap().push(request);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (port, bodies)
+}
+
+/// A RERANK UNDER THE GLOBAL REWRITE IS SERVED, ITS BODY UNMODIFIED (ruling (A) on #1709): the
+/// plane projects a rerank's query and documents into one turn so the gates screen them, but a
+/// rerank has no conversation a hook's messages could be framed into, and the plane says so
+/// (`PROJECT_REWRITE_NOT_APPLICABLE`). The rewrite seat runs, the caller is answered 200, and the
+/// far end receives exactly the bytes it receives from the same rerank with no rewrite seat
+/// installed: nothing of the rewrite reaches it.
+///
+/// RED before: the kernel read the plane's READY answer with no rewritten body as a failed splice
+/// and refused the rerank, 500 "request rewrite could not be applied", nothing sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() {
+    let _one = PUBLISHING.lock().await;
+    let request: serde_json::Value =
+        serde_json::from_str(word("rerank_body")).expect("the rerank body is JSON");
+    let mut forwarded = Vec::new();
+    for (instance, no_rewrite) in [
+        ("serve-hook-seats-rerank-rewrite", false),
+        ("serve-hook-seats-rerank-bare", true),
+    ] {
+        let _published = Published(instance);
+        let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_1")).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port, 1)],
+                dialect: Some(word("rerank_dialect")),
+                no_rewrite,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, answered) = rig
+            .send("POST", word("rerank_path"), Some(request.clone()))
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "{instance}: the rerank is served: {}",
+            String::from_utf8_lossy(&answered)
+        );
+        let log = rig.log.lock().unwrap().clone();
+        assert_eq!(
+            log.iter().any(|e| e.starts_with("rewrite:")),
+            !no_rewrite,
+            "{instance}: the rewrite seat ran exactly where it is installed; log: {log:?}"
+        );
+        let sent = bodies.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{instance}: dialled once");
+        forwarded.push(sent[0].clone());
+    }
+    let text = String::from_utf8_lossy(&forwarded[0]).to_string();
+    assert!(
+        !text.contains(REWRITTEN),
+        "nothing of the rewrite reaches the far end: {text}"
+    );
+    assert_eq!(
+        forwarded[0], forwarded[1],
+        "the rerank under the rewrite seat is forwarded byte for byte as with no seat installed"
+    );
+}

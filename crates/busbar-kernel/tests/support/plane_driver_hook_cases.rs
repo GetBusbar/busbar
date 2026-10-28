@@ -569,6 +569,163 @@ async fn a_gate_first_rewrite_the_plane_does_not_apply_is_refused_under_every_on
     }
 }
 
+// ── a rewrite that does not apply to the unit ──────────────────────────────────────────────────
+
+/// The words the kernel warns with when a rewrite does not apply to the unit.
+const NOT_APPLICABLE_WARN: &str = "rewrite not applicable to this request; forwarded unmodified";
+
+/// A capture of the kernel's warnings for the life of the guard, on this test's thread (the
+/// `#[tokio::test]` runtime is current-thread, so the unit's whole drive runs here).
+fn capture_warnings() -> (
+    busbar_kernel::test_support::warn_capture::WarnCapture,
+    tracing::subscriber::DefaultGuard,
+) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
+    (cap, guard)
+}
+
+/// The unit is on record once, the rewriting hook a pass that did not fail: it answered, and its
+/// rewrite had nothing to apply to.
+fn assert_passed_on_record(reports: &Reports, case: &str) {
+    let reports = reports.0.lock().unwrap().clone();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{case}: one record for the unit: {reports:?}"
+    );
+    assert_eq!(
+        reports[0]
+            .hooks
+            .iter()
+            .map(|h| (h.hook.as_str(), h.head, h.failed))
+            .collect::<Vec<_>>(),
+        vec![("rw", HookHead::Pass, false)],
+        "{case}: the hook is on record as a pass: {reports:?}"
+    );
+}
+
+/// A REWRITE THAT DOES NOT APPLY TO THE UNIT IS AN AUDITED PASS-THROUGH (ruling (A) on #1709): the
+/// plane answers READY with no rewritten body and states [`PROJECT_REWRITE_NOT_APPLICABLE`] (the
+/// unit's operation has no conversation to frame a rewrite into: a rerank's query and documents,
+/// an embedding's input). Under every `on_error`, the load-bearing hook's included, the unit goes
+/// upstream with the caller's own body, the hook is on the unit's record as a pass that did not
+/// fail, and the kernel warns naming the hook and the entry. The refusal of an unapplied rewrite
+/// without the mark is unchanged
+/// (`a_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error`).
+///
+/// RED before: the kernel could not tell the mark from a failed splice and refused the unit (the
+/// hook's 503 under `reject`, 1.5.5's 500 otherwise), nothing sent.
+///
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+#[tokio::test]
+async fn a_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_audited() {
+    for on_error in ["weighted", "first", "reject"] {
+        let (cap, _guard) = capture_warnings();
+        let mut r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(resolved_rewrite(on_error), Vec::new())),
+        );
+        let reports = Arc::new(Reports::default());
+        r.driver = r
+            .driver
+            .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/rewrite-not-applicable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        let case = format!("on_error: {on_error}");
+        assert!(matches!(outcome, Outcome::Completed), "{case}: {outcome:?}");
+        let projects = r.projects();
+        assert_eq!(projects.len(), 2, "{case}: the view, then the rewrite");
+        assert!(!projects[1].1.is_empty(), "{case}: the rewrite crossed");
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "{case}: the unit went upstream once");
+        assert_eq!(
+            sent[0].body, b"user:hello",
+            "{case}: the caller's own body, unmodified"
+        );
+        assert_passed_on_record(&reports, &case);
+        let warned: Vec<String> = cap
+            .messages()
+            .into_iter()
+            .filter(|m| m.contains(NOT_APPLICABLE_WARN))
+            .collect();
+        assert_eq!(warned.len(), 1, "{case}: one warning: {:?}", cap.messages());
+        assert!(
+            warned[0].contains("hook=rw") && warned[0].contains("pool="),
+            "{case}: the warning names the hook and the entry: {warned:?}"
+        );
+    }
+}
+
+/// The gate-first twin: the entry's rewrite that does not apply to the unit (READY, no rewritten
+/// body, [`PROJECT_REWRITE_NOT_APPLICABLE`]) is forwarded unmodified under every `on_error`, the
+/// hook on record as a pass that did not fail, the kernel warning naming the hook and the entry.
+/// RED before: refused at the screen, named for the hook, nothing sent.
+///
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+#[tokio::test]
+async fn a_gate_first_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_audited()
+{
+    for on_error in ["weighted", "first", "reject"] {
+        let (cap, _guard) = capture_warnings();
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let reports = Arc::new(Reports::default());
+        let driver = r
+            .driver
+            .with_hooks(Arc::new(GatedBinder {
+                gates: Vec::new(),
+                rewrites: resolved_rewrite(on_error),
+            }))
+            .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/rewrite-not-applicable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        let case = format!("gate-first on_error: {on_error}");
+        assert!(matches!(outcome, Outcome::Completed), "{case}: {outcome:?}");
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "{case}: the unit went upstream once");
+        assert_eq!(
+            sent[0].body, b"user:hello",
+            "{case}: the caller's own body, unmodified"
+        );
+        assert_passed_on_record(&reports, &case);
+        let warned: Vec<String> = cap
+            .messages()
+            .into_iter()
+            .filter(|m| m.contains(NOT_APPLICABLE_WARN))
+            .collect();
+        assert_eq!(warned.len(), 1, "{case}: one warning: {:?}", cap.messages());
+        assert!(
+            warned[0].contains("hook=rw") && warned[0].contains("entry="),
+            "{case}: the warning names the hook and the entry: {warned:?}"
+        );
+    }
+}
+
 /// RED (row 159, B1): a plane that answers FAULT to a `project` carrying a request-stage hook's
 /// rewrite (a redaction it cannot apply) is answered with the shared 500 and its words under EVERY
 /// `on_error`, never the hook's disposition, and the far end is never dialled.
