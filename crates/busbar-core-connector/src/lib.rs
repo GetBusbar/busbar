@@ -3035,6 +3035,11 @@ impl PollConns for Connector {
 #[path = "tests/connector_tests.rs"]
 mod tests;
 
+/// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/warn_capture.rs"]
+pub mod warn_capture;
+
 #[cfg(test)]
 #[path = "tests/trust_from_tests.rs"]
 mod trust_from_tests;

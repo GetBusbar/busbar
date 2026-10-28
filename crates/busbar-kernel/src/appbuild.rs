@@ -15,7 +15,9 @@ use crate::diagnostics::{
     PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{build_secret_resolver, resolve_admin_token, resolve_signing_key};
+use crate::preflight::{
+    build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
+};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -498,6 +500,36 @@ pub fn load_config_from_disk_judged(
 /// but does NOT invoke it (see the call site below for why). `Send` because it is carried across the
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
+
+/// RE-WRAP the stored recoverable credentials under the at-rest `key` just installed (boot, or a
+/// reload that changed the keys). Never fatal: a row it does not reach still opens under the key it
+/// was sealed under, so a store hiccup here costs a later pass, never a credential.
+fn rewrap_at_rest(gs: &governance::GovState) {
+    match gs.rewrap_credentials(busbar_kernel::store::now()) {
+        Ok(pass) if pass.pending > 0 => diag_warn!(
+            crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+            resealed = pass.resealed,
+            pending = pass.pending,
+            "{} recoverable credential(s) are still sealed under credentials.at_rest.previous (or \
+             stored in the clear): another node holds their re-wrap, or the store keeps no claims. \
+             They still authenticate; keep credentials.at_rest.previous configured until a boot \
+             or reload re-seals them all",
+            pass.pending
+        ),
+        Ok(pass) if pass.resealed > 0 => tracing::info!(
+            resealed = pass.resealed,
+            "recoverable credentials re-sealed under credentials.at_rest.key"
+        ),
+        Ok(_) => {}
+        Err(e) => diag_warn!(
+            crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+            error = %e,
+            "the recoverable credentials could not be re-sealed under credentials.at_rest.key; \
+             they still open under the key they were sealed under, and the next boot or reload \
+             retries"
+        ),
+    }
+}
 
 /// The operational limits a build resolved, still PROVISIONAL: nothing has published them.
 ///
@@ -1328,7 +1360,15 @@ pub fn build_app_from_config(
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
             };
-            if admin_token.is_some() || signer.is_some() {
+            // The AT-REST KEYS, on the same rule: re-resolved when this config declares
+            // `credentials.at_rest`, fail-closed. A rotation re-wraps the stored credentials under
+            // the new key once the swap commits; one that cannot completes at the next boot or
+            // reload, and until then every row still opens under `previous`.
+            let at_rest = match cfg.credentials.at_rest {
+                Some(_) => resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?,
+                None => None,
+            };
+            if admin_token.is_some() || signer.is_some() || at_rest.is_some() {
                 rotate_gov_credentials = Some(Box::new(move || {
                     if let Some(token) = admin_token {
                         gs.set_admin_token(
@@ -1339,6 +1379,11 @@ pub fn build_app_from_config(
                     }
                     if let Some(signer) = signer {
                         gs.set_signing_key(signer);
+                    }
+                    if let Some(keys) = at_rest {
+                        if gs.set_at_rest_keys(Some(keys)) {
+                            rewrap_at_rest(&gs);
+                        }
                     }
                 }));
             }
@@ -1419,6 +1464,9 @@ pub fn build_app_from_config(
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
         // provide it (shared) so every node verifies the same tokens.
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
+        // The AT-REST KEYS (`credentials.at_rest`): what a recoverable credential is sealed under.
+        // FAIL-CLOSED like the signing key; absent, the node mints no recoverable credential.
+        let at_rest = resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?;
         match governance::GovState::new_with_signer(
             store,
             admin_token
@@ -1432,6 +1480,11 @@ pub fn build_app_from_config(
                 // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
                 if let Some(calls) = store_calls {
                     gs.attach_store_calls(calls);
+                }
+                // Installed, then every stored credential not yet sealed under `key` (sealed under
+                // `previous`, or a pre-1.6.0 `v1:plain` row) is re-sealed under it.
+                if gs.set_at_rest_keys(at_rest) {
+                    rewrap_at_rest(&gs);
                 }
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
