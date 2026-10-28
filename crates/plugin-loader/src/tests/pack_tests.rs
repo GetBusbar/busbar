@@ -1413,3 +1413,39 @@ fn the_release_cli_reads_both_signature_files_and_names_the_canonical_bytes() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// THE PUBLIC DECLARATION (owner ruling 2026-10-27, sensitive by default): `x-busbar-public: true`
+/// on a plainly non-secret root setting packs; one on a credential-looking field, on a field also
+/// marked secret, below the root, or with any value but `true` is refused naming the field.
+#[test]
+fn pack_refuses_a_credential_declared_public() {
+    let schema = |properties: serde_json::Value| {
+        serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object", "properties": properties,
+        })
+    };
+    validate_secret_fields(&schema(serde_json::json!({
+        "url": {"type": "string", "x-busbar-public": true},
+        "timeout_ms": {"type": "integer", "x-busbar-public": true},
+    })))
+    .unwrap();
+    let refused = |properties: serde_json::Value| {
+        validate_secret_fields(&schema(properties)).expect_err("refused")
+    };
+    assert!(refused(serde_json::json!({
+        "api_token": {"type": "string", "x-busbar-public": true}
+    }))
+    .starts_with("field 'api_token' looks like a credential and cannot be declared"));
+    assert!(refused(serde_json::json!({
+        "dsn": {"type": "string", "x-busbar-secret": true, "x-busbar-public": true}
+    }))
+    .starts_with("field 'dsn' looks like a credential"));
+    assert!(refused(serde_json::json!({
+        "tls": {"type": "object", "properties": {"ca": {"type": "string", "x-busbar-public": true}}}
+    }))
+    .contains("only allowed on a direct root-level property"));
+    assert!(refused(serde_json::json!({
+        "url": {"type": "string", "x-busbar-public": "yes"}
+    }))
+    .contains("is `true` or absent"));
+}
