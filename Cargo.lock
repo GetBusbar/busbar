@@ -335,6 +335,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -698,6 +699,20 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-stub-transport",
+]
+
+[[package]]
+name = "busbar-test-kit"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
