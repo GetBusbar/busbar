@@ -596,6 +596,23 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
+        self.record_usage_served(cost, key, pool, model, None, units, now);
+    }
+
+    /// [`GovState::record_usage`] for a unit whose serving member's `provider` is known: a pools
+    /// lane's classes mirror onto the `(model, provider)` metering row its request meters on
+    /// ([`GovState::record_lane_metering`]), never onto an unattributed `(model, "")` row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_usage_served(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        model: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+    ) {
         if units.values().all(|v| *v == 0) {
             return; // nothing to ledger
         }
@@ -607,7 +624,7 @@ impl GovState {
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same
         // entry, mirrored onto the key's metering row by THIS accrual — the one place every
         // ledgered class lands — so the admin usage read prices exactly the counts this book prices.
-        self.meter_classes(&key.id, model, units, (era, seg), now);
+        self.meter_classes(&key.id, model, provider, units, (era, seg), now);
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
         let chain = match cost.chain_for(key) {
@@ -633,7 +650,10 @@ impl GovState {
     /// THE ROW IS THE ONE THE PLANE'S OWN SERIES ROW IS KEYED BY. A plane-qualified lane
     /// `"<plane>\u{1f}<subject>"` lands on `(model: <subject>, provider: <plane>)` — the row a plane's
     /// metered request already writes, whose provider column names the plane — and a plane's fee lane
-    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>, "")`.
+    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>,
+    /// <provider>)`, the serving member's provider, the row its request meters on: spend is always
+    /// attributed. Only a count with no serving member at all (no attempt committed) keeps an empty
+    /// provider, so it is never dropped.
     ///
     /// NOTHING IS COUNTED TWICE. On an unqualified lane the four reserved token tiers are left off:
     /// the same response's `record_metering` carries them in the row's token columns. Every other
@@ -643,6 +663,7 @@ impl GovState {
         &self,
         key_id: &str,
         lane: &str,
+        provider: Option<&str>,
         units: &std::collections::BTreeMap<String, u64>,
         (priced_from_ms, seg): (u64, super::Seg),
         now: u64,
@@ -661,7 +682,7 @@ impl GovState {
             return;
         }
         let (model, provider) = if plane.is_empty() {
-            (lane, "")
+            (lane, provider.unwrap_or(""))
         } else {
             (subject, plane)
         };

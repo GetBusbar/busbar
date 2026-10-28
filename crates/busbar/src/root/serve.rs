@@ -129,10 +129,7 @@ pub fn attach(
     // persist where the deployment's state does.
     if let Some(gov) = records {
         if let Some(calls) = gov.store_calls() {
-            kernel.attach_records(
-                Arc::new(busbar_kernel::host_records::StoreRows(calls)),
-                gov.store(),
-            );
+            kernel.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(calls)));
         }
     }
     if let Some(owner) = demotion_owner(planes) {

@@ -46,7 +46,7 @@ fn me() -> Caller {
 /// Services over `store`, with `inst` admitted declaring `ev` chained in `framing` with `flags`.
 fn services_over(store: &Arc<MemoryStore>, framing: u32, flags: u32) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(store))))
         .with_pool(Arc::new(Inline));
     s.admit(
         INST,
@@ -412,7 +412,7 @@ fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
 /// Services over `store` with `inst` admitted declaring `plain`, a kind it does not chain.
 fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(store))))
         .with_pool(Arc::new(Inline));
     s.admit(
         INST,
