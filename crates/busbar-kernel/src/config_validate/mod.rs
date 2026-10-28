@@ -2333,8 +2333,16 @@ fn validate_providers_with(
             }
         }
 
-        // The optional auth-style override (`bearer` / `api-key`) is now a `ProviderAuth` enum, so an
-        // invalid spelling is rejected at deserialize time — no hand-check needed here.
+        // The optional auth-style override is an opaque word a loaded auth plugin declares
+        // (`ProviderAuth`), so an undeclared spelling is rejected at deserialize time — no
+        // hand-check needed here. What the style needs is the flag its plugin declares beside it
+        // (`abi::auth::STYLE_ENDPOINT_*`), read once here; the kernel names no style.
+        let style = provider_cfg
+            .auth
+            .as_ref()
+            .map(crate::config::ProviderAuth::as_str);
+        let style_flags = style.map_or(0, crate::preflight::style_flags);
+        let style = style.unwrap_or_default();
 
         // The resolved base_url is the actual upstream target for signed (API-key-bearing) calls.
         // It is operator config (a client never chooses a provider URL — it picks a model NAME that
@@ -2472,19 +2480,17 @@ fn validate_providers_with(
                 }
             }
         }
-        // `oauth-client-credentials` needs a token endpoint + scope to run the exchange; without them
-        // a lane would boot but never mint a token (every request 401s). Fail at validate time. The
-        // token_url carries the client_secret, so it must be https for a public host (loopback/private
-        // may use http, mirroring base_url).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::OAuthClientCredentials)
-        ) {
+        // A style that sends its credential to the entry's token endpoint
+        // (`STYLE_ENDPOINT_TOKEN_URL`, the client-credentials exchange) needs a token endpoint +
+        // scope to run the exchange; without them a lane would boot but never mint a token (every
+        // request 401s). Fail at validate time. The token_url carries the client_secret, so it must
+        // be https for a public host (loopback/private may use http, mirroring base_url).
+        if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
             // A keyless declaration contradicts the grant: this flow MINTS its token FROM the
             // credential (`client_id:client_secret`), so `none` leaves it nothing to exchange.
             if provider_cfg.api_key.is_none() {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but declares \
+                    "provider '{provider_name}' uses auth: {style} but declares \
                      `api_key: none`; that grant mints its token FROM the credential \
                      (`client_id:client_secret`), so there is nothing to declare keyless"
                 ));
@@ -2497,7 +2503,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
+                    "provider '{provider_name}' uses auth: {style} but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
                 ));
             } else if let Some(tu) = &provider_cfg.token_url {
                 // token_url carries the client secret in the POST body, so it gets the SAME two guards
@@ -2547,7 +2553,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `scope`"
+                    "provider '{provider_name}' uses auth: {style} but has no `scope`"
                 ));
             }
             // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
@@ -2568,28 +2574,26 @@ fn validate_providers_with(
                     "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
-                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
+                for e in outbound_credential_refusals(style, &cred, &params) {
                     errors.push(format!(
-                        "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
                     ));
                 }
             }
         }
 
-        // jwt-bearer: dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check + token_uri
-        // SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise surfaces only
-        // at boot/apply. Validate it here IF the credential env var is actually set (an unset var can't
-        // be validated — it is checked at boot, where unset is a hard error).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::JwtBearer)
-        ) {
+        // A style that takes its token endpoint from its credential (`STYLE_ENDPOINT_FROM_CREDENTIAL`,
+        // the jwt-bearer grant): dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check
+        // + token_uri SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise
+        // surfaces only at boot/apply. Validate it here IF the credential env var is actually set (an
+        // unset var can't be validated — it is checked at boot, where unset is a hard error).
+        if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0 {
             // Same contradiction as the oauth arm above: this grant SIGNS its assertion with the
             // credential (the service-account JSON or key file), so `none` disarms it entirely.
             if provider_cfg.api_key.is_none() {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: jwt-bearer but declares \
+                    "provider '{provider_name}' uses auth: {style} but declares \
                      `api_key: none`; that grant signs its assertion WITH the credential (the \
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
@@ -2608,7 +2612,7 @@ fn validate_providers_with(
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
                 Err(e) => {
                     errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
                     ));
                     String::new()
@@ -2638,7 +2642,7 @@ fn validate_providers_with(
                             params.insert("scope".into(), serde_json::Value::String(scope.clone()));
                         }
                         outbound_credential_refusals(
-                            "jwt-bearer",
+                            style,
                             &cred,
                             &serde_json::Value::Object(params),
                         )
@@ -2646,7 +2650,7 @@ fn validate_providers_with(
                 };
                 for e in refusals {
                     errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
                     ));
                 }

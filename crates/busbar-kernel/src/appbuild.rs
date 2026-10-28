@@ -225,16 +225,10 @@ pub(crate) fn lane_token_endpoint(
     )
 }
 
-fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
-    match auth {
-        None => AuthStyleInput::Default,
-        Some(config::ProviderAuth::Bearer) => AuthStyleInput::Bearer,
-        Some(config::ProviderAuth::ApiKey) => AuthStyleInput::ApiKey,
-        Some(config::ProviderAuth::JwtBearer) => AuthStyleInput::JwtBearer,
-        Some(config::ProviderAuth::OAuthClientCredentials) => {
-            AuthStyleInput::OAuthClientCredentials
-        }
-    }
+fn auth_style_of(auth: Option<&config::ProviderAuth>) -> AuthStyleInput {
+    auth.map_or(AuthStyleInput::Default, |style| {
+        AuthStyleInput::Named(style.as_str().to_string())
+    })
 }
 
 /// Mirror a provider `health:` block into the neutral [`HealthInput`] carrier field.
@@ -1105,7 +1099,7 @@ pub fn build_app_from_config(
             path_base: provider_cfg.path_base.clone(),
             upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
-            auth_style: auth_style_of(provider_cfg.auth),
+            auth_style: auth_style_of(provider_cfg.auth.as_ref()),
             scope: provider_cfg.scope.clone(),
             token_url,
             token_userinfo,
