@@ -309,6 +309,52 @@ fn the_instance_level_filters_its_file() {
 
 /// The file rotates by the host's rule: past the size it is renamed `<file>.1`, and a new file
 /// begins. A line break inside a record stays inside its one line.
+/// TWO KINDS, ONE INSTANCE NAME, TWO FILES. Instance names are unique only within a kind (each is a
+/// key of its own config section), so a store and an auth provider may both be named `memory`. Each
+/// writes its own file, named with its kind's section, and neither's records reach the other's.
+/// RED before: both wrote `memory.log`, one file holding two plugins' records.
+#[test]
+fn a_store_and_an_auth_provider_of_one_name_log_to_two_files() {
+    use crate::dispatch::Diagnostic;
+    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO};
+    let dir = scratch("two-kinds");
+    let cfg = config(&dir, LogLevel::Info);
+    let store = cfg
+        .sink("memory", KindCode::Store, Arc::new(NoSink))
+        .expect("the store's sink opens");
+    let auth = cfg
+        .sink("memory", KindCode::Auth, Arc::new(NoSink))
+        .expect("the auth provider's sink opens");
+    assert_ne!(
+        store.path(),
+        auth.path(),
+        "a store and an auth provider named alike share one log file"
+    );
+    let line = |sink: &PluginLogSink, text: &str| {
+        sink.diag(Diagnostic {
+            id: DIAG_LOG,
+            name: &[],
+            severity: SEVERITY_INFO,
+            text: text.as_bytes(),
+        });
+        sink.flush();
+    };
+    line(&store, "the store's record");
+    line(&auth, "the auth provider's record");
+    let store_text = std::fs::read_to_string(store.path()).expect("the store's file");
+    let auth_text = std::fs::read_to_string(auth.path()).expect("the auth provider's file");
+    assert!(store_text.contains("the store's record"), "{store_text}");
+    assert!(
+        !store_text.contains("the auth provider's record"),
+        "{store_text}"
+    );
+    assert!(
+        auth_text.contains("the auth provider's record"),
+        "{auth_text}"
+    );
+    assert!(!auth_text.contains("the store's record"), "{auth_text}");
+}
+
 #[test]
 fn the_file_rotates_and_keeps_one_record_per_line() {
     use crate::dispatch::Diagnostic;
