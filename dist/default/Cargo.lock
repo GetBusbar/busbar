@@ -729,7 +729,6 @@ source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=74bbd10f864a54f1
 dependencies = [
  "busbar-contract",
  "bytes",
- "getrandom 0.3.4",
  "serde",
  "serde_json",
  "sonic-rs",
