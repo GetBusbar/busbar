@@ -394,15 +394,15 @@ impl MigrateHost for RootHost {
                 .migrate(settings, from)?
                 .map(|m| (row.manifest.name.clone(), m)));
         }
-        let fetched = self
-            .fetch(kind, module)
-            .map_err(|e| format!("no build of it is here, and its release for this busbar: {e}"))?;
-        let row = fetched
-            .resolve(module)
-            .filter(|r| r.manifest.kind == kind)
-            .ok_or_else(|| {
-                "its release for this busbar does not answer to this name".to_string()
-            })?;
+        // No build here, and none the release index can hand over (no index, no network, no
+        // release for this busbar): the section passes through as written, as `--migrate-config`
+        // always left it, and boot names the plugin that is missing, as it always has.
+        let Ok(fetched) = self.fetch(kind, module) else {
+            return Ok(None);
+        };
+        let Some(row) = fetched.resolve(module).filter(|r| r.manifest.kind == kind) else {
+            return Ok(None);
+        };
         Ok(row
             .migrate(settings, from)?
             .map(|m| (row.manifest.name.clone(), m)))
@@ -412,7 +412,10 @@ impl MigrateHost for RootHost {
         let Some((repo, _)) = github.split_once('@') else {
             return Ok(None);
         };
-        let index = self.index()?;
+        // An index that cannot be read changes nothing: the configuration is left as written.
+        let Ok(index) = self.index() else {
+            return Ok(None);
+        };
         Ok(index
             .by_repo(repo)
             .and_then(IndexPlugin::pin_for_this_core)
@@ -455,7 +458,10 @@ impl MigrateHost for RootHost {
         if kind == "plane" || self.served(kind, module) {
             return Ok(None);
         }
-        let index = self.index()?;
+        // An index that cannot be read changes nothing: the configuration is left as written.
+        let Ok(index) = self.index() else {
+            return Ok(None);
+        };
         Ok(index
             .by_module(kind, module)
             .and_then(IndexPlugin::pin_for_this_core))
