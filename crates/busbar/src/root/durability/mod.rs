@@ -59,14 +59,12 @@ use busbar_kernel_wal::{
 /// The journal kept in the configured store: its schema and keys, the boot's read-back and the
 /// host's write-behind lane. A private child module; its public items are re-exported here.
 mod store_chain;
-// The admin unit's ledger reads and its adjust reach the store off the runtime too.
-#[cfg(feature = "root-admin")]
-pub(crate) use store_chain::off_runtime;
 pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
 // Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub use store_chain::ACK_DEADLINE;
-// The admin record sink's one wait on the store (`units_admin`), compiled with `root-admin`.
+// The admin record sink's wait on the store, and the admin unit's ledger reads and adjust, reach
+// the store off the runtime (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub(crate) use store_chain::{off_runtime, wait_for};
 // What the tests read the store's rows back by.
