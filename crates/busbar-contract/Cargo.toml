@@ -7,41 +7,28 @@ rust-version = "1.97"
 description = "The plugin-visible contract: the traits, closed grammars and bounded types every busbar plugin is written against, and nothing else."
 license = "Apache-2.0"
 
-# The door macro's test plugin (`abi::sdk::door`), loaded by the dropped-in leg
-# `tests/sdk_door_cdylib.rs`. It is an example, not a crate: `cargo test` builds it and it never
-# ships. It lives under `tests/` because it is a test double (its lifecycle-only table is a shape no
-# kind ships).
 [[example]]
 name = "sdk_door_plugin"
 path = "tests/fixtures/sdk_door_plugin.rs"
 crate-type = ["cdylib"]
 
-# Its symbol baseline: the contract linked, neither macro invoked.
 [[example]]
 name = "sdk_door_baseline"
 path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
-# DEPENDENCY POLICY: this crate is the only busbar crate a plugin may name, so it names no other
-# busbar crate. Standard library, serde, and reviewed third-party crates only; only
-# `sha2 -> cpufeatures` reaches `libc` (the owner-ruled exemption in `qa/construction.toml`).
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-# The section-map split (`section`) reads a plane's section as YAML values, in insertion order.
 serde_yaml = { workspace = true }
 indexmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
-# The chip's RS256 recipe.
 ring = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-# `base64` renders the one document-fingerprint tag a plane writes, `sha256/<standard base64>`
-# (`abi::sdk::digest::sha256_tagged`; ARCHITECT card-fingerprint ruling option 1, 2026-10-01): a pure
-# leaf with no dependencies of its own, already in Cargo.lock, so a plane links no encoder.
 base64 = { workspace = true }
 http = { workspace = true }
 idna = { workspace = true }
@@ -50,47 +37,22 @@ tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-log = { workspace = true }
 
-# Tests only. The ABI types that seal into the policy journal are serialised by something, and a
-# test that asserts what a serialisation does NOT contain has to run a real serializer over it.
 [dev-dependencies]
-# The scanner budget test reads the scanning thread's CPU clock (already in the closure through
-# sha2 -> cpufeatures -> libc).
 libc = { workspace = true }
 serde_json = { workspace = true }
-# The `secret_ref` module's suite (merged in with the former `busbar-secret-ref` crate, DECISIONS
-# #83): it round-trips the same YAML shapes the engine accepts and checks `oneof_schema` against a
-# real JSON Schema validator. Test-only, so neither reaches a plugin's closure.
 serde_yaml = { workspace = true }
 jsonschema = { workspace = true }
-# THE `hyper_io!` SDK MACRO's own test (tests/sdk_hyper.rs) expands it as a framer does; the
-# expansion names `::hyper`, and the test names hyper's own buffer type. Dev-only: the shipped graph
-# does not name it.
 hyper = { workspace = true }
-# The C header generator (tests/abi_header) and the source rules (tests/source_rules) parse Rust.
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 
 [features]
-# The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED
-# `plugin::KernelSeal` that exists for fixtures rather than for the kernel, and it exists at all
-# because a PLANE crate may not name `caps` (section 1.2) and so cannot mint a real token for its
-# own harness. OFF by default and named only in `[dev-dependencies]`: no non-dev dependency edge in
-# this workspace enables it, so the type is absent from every release build.
+# Test-only; named only in [dev-dependencies], absent from release builds.
 test-seal = []
 
-# The TEST-ONLY shared host-services double (`services::double`, busbar #476 follow-up): a
-# `HostServices` with a refusing default per service, so a plugin's test double overrides only what
-# it serves and a service the host adds later is one edit here, not one per plugin repo. OFF by
-# default and named only in `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs`), so it is absent
-# from every release build; it switches on no dependency and no other feature.
+# Test-only; named only in [dev-dependencies], absent from release builds.
 services-double = []
 
-# The TEST-ONLY counting allocator (`alloc_counter`, ARCHITECT ruling 2026-10-21): the one
-# `GlobalAlloc` impl a plugin's allocation gates install as their test binary's
-# `#[global_allocator]`, so a plugin crate root keeps the literal `#![forbid(unsafe_code)]`
-# (BUSBAR-1.6.0.md l.273). OFF by default, never in `default`, and named only in
-# `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs` refuses any other edge and any `default`
-# that names it), so it is absent from every release build; it switches on no dependency and no
-# other feature.
+# Test-only; named only in [dev-dependencies], absent from release builds.
 alloc-counter = []

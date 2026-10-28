@@ -272,7 +272,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -418,7 +417,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -502,14 +500,6 @@ dependencies = [
  "ring",
  "serde",
  "sha2",
-]
-
-[[package]]
-name = "busbar-kernel-scope"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
 ]
 
 [[package]]
