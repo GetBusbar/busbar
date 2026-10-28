@@ -73,8 +73,6 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         error_map,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -84,6 +82,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         anthropic_adaptive_thinking: None,
         native_structured_output: None,
         model_capabilities: Vec::new(),
+        options: Default::default(),
     }
 }
 

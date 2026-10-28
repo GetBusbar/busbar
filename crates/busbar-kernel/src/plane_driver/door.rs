@@ -174,6 +174,30 @@ pub fn provider_keys() -> Option<&'static busbar_contract::provider_keys::Provid
         .find_map(|f| f.reg.provider_keys.as_ref())
 }
 
+/// THE JUDGE OF ONE PROVIDER ENTRY'S OPTIONS (`config::providers::judge_options`): the folded
+/// door whose tail flags the provider's dialect a provider dialect validates
+/// `{"providers": {<name>: <table>}}`, the entry as the plane receives it at open, and answers in
+/// its own words. `None` when no folded door speaks that dialect.
+#[must_use]
+pub fn judge_provider(
+    name: &str,
+    table: &crate::config::ProviderTable,
+) -> Option<Result<(), String>> {
+    let dialect = table
+        .get(busbar_contract::section::MODEL_PROTOCOL_KEYS[0])
+        .and_then(serde_json::Value::as_str)?;
+    let fold = DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find(|f| f.provider_dialects.contains(&dialect))?;
+    let blob = serde_json::json!({ "providers": { name: table } });
+    Some(
+        serde_json::to_vec(&blob)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| (fold.reg.validate)(&bytes)),
+    )
+}
+
 /// The folded door at `index`.
 fn door(index: usize) -> Option<&'static Folded> {
     DOORS.get(index).and_then(OnceLock::get)

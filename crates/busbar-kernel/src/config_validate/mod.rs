@@ -2256,6 +2256,11 @@ fn validate_providers_with(
         // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
         // the fail-OPEN answer), but it refuses ONCE and says why.
         validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
+        // The provider's options (every key that is not busbar's), judged by the plane that speaks
+        // its dialect against that dialect's list, in the plane's words.
+        if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
+            errors.push(refusal);
+        }
 
         // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
         // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/

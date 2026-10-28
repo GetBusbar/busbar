@@ -65,14 +65,6 @@ pub struct ProviderCfg {
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
     pub path_base: Option<String>,
-    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
-    /// and `project`), set on every upstream request from this config and never from the caller.
-    /// Absent: none is sent.
-    #[serde(default)]
-    pub organization: Option<String>,
-    /// See `organization`.
-    #[serde(default)]
-    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
@@ -116,6 +108,14 @@ pub struct ProviderCfg {
     /// (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
+    /// THE PROVIDER'S OPTIONS (owner ruling 2026-10-27): every key of the entry that is not one of
+    /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
+    /// ...), carried unread into the plane's table. The plane that speaks the provider's dialect
+    /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
+    /// Read by [`deployments`] beside the typed keys, so a typed key's refusal keeps its path and
+    /// position.
+    #[serde(skip)]
+    pub options: ProviderTable,
 }
 
 /// Active health-probe mode for a provider's lanes.
@@ -171,14 +171,6 @@ pub struct ProviderDef {
     /// /v1/projects/{project}/locations/{location}/publishers/google/models`.
     #[serde(default)]
     pub path_base: Option<String>,
-    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
-    /// and `project`), set on every upstream request from this config and never from the caller.
-    /// Absent: none is sent.
-    #[serde(default)]
-    pub organization: Option<String>,
-    /// See `organization`.
-    #[serde(default)]
-    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` — the URL busbar POSTs the client
     /// credentials to for a bearer. Required for that auth style; ignored otherwise. E.g. Azure Entra:
     /// `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`.
@@ -250,14 +242,6 @@ pub struct ProviderDeploy {
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
     pub path_base: Option<String>,
-    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
-    /// and `project`), set on every upstream request from this config and never from the caller.
-    /// Absent: none is sent.
-    #[serde(default)]
-    pub organization: Option<String>,
-    /// See `organization`.
-    #[serde(default)]
-    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
@@ -296,6 +280,14 @@ pub struct ProviderDeploy {
     /// `health` when set; this is the block the shipped `config.yaml` documents under a provider.
     #[serde(default)]
     pub health: Option<HealthCfg>,
+    /// THE PROVIDER'S OPTIONS (owner ruling 2026-10-27): every key of the entry that is not one of
+    /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
+    /// ...), carried unread into the plane's table. The plane that speaks the provider's dialect
+    /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
+    /// Read by [`deployments`] beside the typed keys, so a typed key's refusal keeps its path and
+    /// position.
+    #[serde(skip)]
+    pub options: ProviderTable,
 }
 
 /// Per-provider auth-style override. Closed set: the request is signed with the protocol's native
@@ -395,6 +387,146 @@ pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
     table
 }
 
+/// [`plane_table`] of `entry` with its [`ProviderDeploy::options`] laid in, each under the name the
+/// operator wrote.
+fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTable {
+    let mut table = plane_table(entry);
+    for (name, value) in options {
+        table.insert(name.clone(), value.clone());
+    }
+    table
+}
+
+/// THE KEYS A DEPLOYMENT'S TYPED GRAMMAR READS ([`ProviderDeploy`]), in its order; every other key
+/// of the entry is one of its [`ProviderDeploy::options`]. A test holds this list to the struct's.
+pub const DEPLOY_KEYS: &[&str] = &[
+    "api_key",
+    "protocol",
+    "base_url",
+    "error_map",
+    "path",
+    "path_base",
+    "token_url",
+    "scope",
+    "subject",
+    "auth",
+    "max_output_key",
+    "anthropic_adaptive_thinking",
+    "native_structured_output",
+    "model_capabilities",
+    "allow_metadata_hosts",
+    "health",
+];
+
+/// THE `providers:` SECTION OF `config.yaml`, read: each entry's typed keys ([`DEPLOY_KEYS`]) by its
+/// derived grammar, straight off the document so a refusal keeps its path and position, and every
+/// other key into its [`ProviderDeploy::options`], for the plane to judge.
+///
+/// # Errors
+///
+/// The typed grammar's, or a key written twice.
+pub fn deployments<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, ProviderDeploy>, D::Error> {
+    let entries: HashMap<String, Deployment> = HashMap::deserialize(de)?;
+    Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
+}
+
+/// One deployment entry read by [`deployments`].
+struct Deployment(ProviderDeploy);
+
+impl<'de> Deserialize<'de> for Deployment {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_map(DeploymentVisitor)
+    }
+}
+
+struct DeploymentVisitor;
+
+impl<'de> serde::de::Visitor<'de> for DeploymentVisitor {
+    type Value = Deployment;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("struct ProviderDeploy")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Deployment, A::Error> {
+        let mut options = ProviderTable::new();
+        let mut deploy = ProviderDeploy::deserialize(
+            serde::de::value::MapAccessDeserializer::new(OptionsAside {
+                inner: map,
+                options: &mut options,
+            }),
+        )?;
+        deploy.options = options;
+        Ok(Deployment(deploy))
+    }
+}
+
+/// A map read that hands the typed grammar only the keys it reads ([`DEPLOY_KEYS`]) and sets every
+/// other key, with its value, aside.
+struct OptionsAside<'a, A> {
+    inner: A,
+    options: &'a mut ProviderTable,
+}
+
+impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAside<'_, A> {
+    type Error = A::Error;
+
+    fn next_key_seed<K: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, A::Error> {
+        use serde::de::{Error, IntoDeserializer};
+        loop {
+            let Some(key) = self.inner.next_key::<String>()? else {
+                return Ok(None);
+            };
+            if DEPLOY_KEYS.contains(&key.as_str()) {
+                return seed
+                    .deserialize(IntoDeserializer::<A::Error>::into_deserializer(key))
+                    .map(Some);
+            }
+            let value: Value = self.inner.next_value()?;
+            if self.options.insert(key.clone(), value).is_some() {
+                return Err(<A::Error as Error>::custom(format!(
+                    "duplicate field `{key}`"
+                )));
+            }
+        }
+    }
+
+    fn next_value_seed<V: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, A::Error> {
+        self.inner.next_value_seed(seed)
+    }
+}
+
+/// THE OPTIONS OF ONE RESOLVED PROVIDER, judged by the plane that speaks its dialect: the folded
+/// door that states the provider keys (`plane_driver::door::provider_keys`) validates
+/// `{"providers": {<name>: <table>}}` and answers in its own words, which name the key and list
+/// the names the dialect accepts. `Ok` when the entry sets no option.
+///
+/// # Errors
+///
+/// The plane's refusal, or, when no loaded plane judges provider entries, the first option named.
+pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), String> {
+    let core = |k: &String| CORE_PROVIDER_KEYS.contains(&k.as_str());
+    let typed = |k: &String| DEPLOY_KEYS.contains(&k.as_str()) || core(k);
+    let Some(first) = provider.table.keys().find(|k| !typed(k)) else {
+        return Ok(());
+    };
+    match crate::plane_driver::door::judge_provider(name, &provider.table) {
+        Some(judged) => judged,
+        None => Err(format!(
+            "providers.{name}: unknown field `{first}`: no loaded plane speaks this provider's \
+             dialect, so it takes no option"
+        )),
+    }
+}
+
 /// Remove every `null` member, at every depth: an unset optional key is an absent one.
 fn drop_unset(table: &mut ProviderTable) {
     table.retain(|_, v| !v.is_null());
@@ -476,7 +608,7 @@ impl ResolvedProvider {
                 .allow_metadata_hosts
                 .clone()
                 .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-            table: merge_tables(plane_table(def), plane_table(deploy)),
+            table: merge_tables(plane_table(def), with_options(deploy, &deploy.options)),
         }
     }
 
@@ -507,7 +639,7 @@ impl ResolvedProvider {
 /// rest the table.
 impl From<ProviderCfg> for ResolvedProvider {
     fn from(p: ProviderCfg) -> Self {
-        let table = plane_table(&p);
+        let table = with_options(&p, &p.options);
         Self {
             base_url: p.base_url,
             api_key: p.api_key,
@@ -559,8 +691,6 @@ impl std::fmt::Debug for ProviderCfg {
             error_map,
             path,
             path_base,
-            organization,
-            project,
             token_url,
             scope,
             subject,
@@ -570,6 +700,7 @@ impl std::fmt::Debug for ProviderCfg {
             native_structured_output,
             model_capabilities,
             allow_metadata_hosts,
+            options,
         } = self;
         f.debug_struct("ProviderCfg")
             .field("protocol", protocol)
@@ -579,8 +710,6 @@ impl std::fmt::Debug for ProviderCfg {
             .field("error_map", error_map)
             .field("path", path)
             .field("path_base", path_base)
-            .field("organization", organization)
-            .field("project", project)
             .field("token_url", &printed_url(token_url.as_ref()))
             .field("scope", scope)
             .field("subject", subject)
@@ -590,6 +719,8 @@ impl std::fmt::Debug for ProviderCfg {
             .field("native_structured_output", native_structured_output)
             .field("model_capabilities", model_capabilities)
             .field("allow_metadata_hosts", allow_metadata_hosts)
+            // The names alone: a value is the plane's to judge, and is never printed.
+            .field("options", &options.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -603,8 +734,6 @@ impl std::fmt::Debug for ProviderDef {
             health,
             path,
             path_base,
-            organization,
-            project,
             token_url,
             scope,
             subject,
@@ -622,8 +751,6 @@ impl std::fmt::Debug for ProviderDef {
             .field("health", health)
             .field("path", path)
             .field("path_base", path_base)
-            .field("organization", organization)
-            .field("project", project)
             .field("token_url", &printed_url(token_url.as_ref()))
             .field("scope", scope)
             .field("subject", subject)
@@ -646,8 +773,6 @@ impl std::fmt::Debug for ProviderDeploy {
             error_map,
             path,
             path_base,
-            organization,
-            project,
             token_url,
             scope,
             subject,
@@ -658,6 +783,7 @@ impl std::fmt::Debug for ProviderDeploy {
             model_capabilities,
             allow_metadata_hosts,
             health,
+            options,
         } = self;
         f.debug_struct("ProviderDeploy")
             .field("api_key", api_key)
@@ -666,8 +792,6 @@ impl std::fmt::Debug for ProviderDeploy {
             .field("error_map", error_map)
             .field("path", path)
             .field("path_base", path_base)
-            .field("organization", organization)
-            .field("project", project)
             .field("token_url", &printed_url(token_url.as_ref()))
             .field("scope", scope)
             .field("subject", subject)
@@ -678,6 +802,8 @@ impl std::fmt::Debug for ProviderDeploy {
             .field("model_capabilities", model_capabilities)
             .field("allow_metadata_hosts", allow_metadata_hosts)
             .field("health", health)
+            // The names alone: a value is the plane's to judge, and is never printed.
+            .field("options", &options.keys().collect::<Vec<_>>())
             .finish()
     }
 }

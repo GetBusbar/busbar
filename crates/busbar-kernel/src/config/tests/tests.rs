@@ -15,8 +15,6 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         health: None,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -38,8 +36,6 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         error_map: None,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -50,6 +46,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         native_structured_output: None,
         model_capabilities: None,
         health: None,
+        options: Default::default(),
     }
 }
 
@@ -4378,24 +4375,88 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
     );
 }
 
-/// The provider's tenant (`organization`, `project`) merges like `path_base`: the deployment's value
-/// wins over the catalog's, and absent everywhere it stays absent.
+/// A `providers:` section read the way boot reads it.
+#[derive(serde::Deserialize)]
+struct ProvidersDoc {
+    #[serde(deserialize_with = "crate::config::providers::deployments")]
+    providers: HashMap<String, ProviderDeploy>,
+}
+
+/// A deployment's keys beyond busbar's own are its OPTIONS (owner ruling 2026-10-27): read aside,
+/// under the name the operator wrote, they ride the resolved entry's table to the plane that judges
+/// them; the typed keys read as before. The retired `organization` is an option name like any
+/// other now, for the plane to refuse.
 #[test]
-fn the_provider_tenant_merges_deployment_over_catalog() {
-    let mut def = provider_def("openai", "https://api.example.com");
-    let mut deploy = provider_deploy("K");
-    // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
-    // legacy lane carrier reads them.
-    let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
-    };
-    assert_eq!(tenant(&def, &deploy).organization, None);
-    def.organization = Some("org-catalog".to_string());
-    def.project = Some("proj-catalog".to_string());
-    deploy.organization = Some("org-deploy".to_string());
-    let merged = tenant(&def, &deploy);
-    assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
-    assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
+fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
+    let doc: ProvidersDoc = serde_yaml::from_str(
+        "providers:\n  p:\n    api_key: {env: K}\n    OpenAI-Organization: org-abc\n    \
+         api-version: 2024-10-21\n    path: /v1/x\n    organization: o\n",
+    )
+    .expect("reads");
+    let dep = &doc.providers["p"];
+    assert_eq!(dep.path.as_deref(), Some("/v1/x"));
+    let mut names: Vec<&String> = dep.options.keys().collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["OpenAI-Organization", "api-version", "organization"]
+    );
+    let merged = merge_provider_fallback(&provider_def("openai", "https://api.example.com"), dep);
+    assert_eq!(
+        merged.table.get("OpenAI-Organization"),
+        Some(&serde_json::json!("org-abc"))
+    );
+    assert_eq!(
+        merged.table.get("api-version"),
+        Some(&serde_json::json!("2024-10-21"))
+    );
+    // No plane is folded in this build, so nothing speaks the dialect: an option is refused.
+    assert_eq!(
+        crate::config::providers::judge_options("p", &merged),
+        Err(
+            "providers.p: unknown field `OpenAI-Organization`: no loaded plane speaks this \
+             provider's dialect, so it takes no option"
+                .to_string()
+        )
+    );
+    // An entry that sets no option is judged by nobody.
+    let plain: ProvidersDoc =
+        serde_yaml::from_str("providers:\n  p:\n    api_key: {env: K}\n").expect("reads");
+    let plain = merge_provider_fallback(
+        &provider_def("openai", "https://api.example.com"),
+        &plain.providers["p"],
+    );
+    assert_eq!(crate::config::providers::judge_options("p", &plain), Ok(()));
+}
+
+/// An option written twice in one entry is refused.
+#[test]
+fn an_option_written_twice_is_refused() {
+    let e = serde_yaml::from_str::<ProvidersDoc>(
+        "providers:\n  p:\n    api_key: {env: K}\n    x-a: 1\n    x-a: 2\n",
+    )
+    .err()
+    .map(|e| e.to_string())
+    .unwrap_or_default();
+    assert!(e.contains("x-a"), "{e}");
+}
+
+/// `DEPLOY_KEYS` is the typed grammar's own list, in its order: the derived reader's refusal of a
+/// key it does not read lists exactly these.
+#[test]
+fn the_deploy_keys_are_the_typed_grammars() {
+    let e = serde_yaml::from_str::<ProviderDeploy>("zzz: 1\n")
+        .expect_err("the typed grammar alone refuses a key it does not read")
+        .to_string();
+    let listed: String = crate::config::providers::DEPLOY_KEYS
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        e.starts_with(&format!("unknown field `zzz`, expected one of {listed}")),
+        "{e}"
+    );
 }
 
 /// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a

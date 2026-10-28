@@ -157,6 +157,46 @@ therefore does NOT interpolate cleanly if it is spliced into a double-quoted sca
 
 A map of provider name → `ProviderDef`. The shipped catalog is a curated set of verified providers across the six supported protocols. You can add an entry for any OpenAI-compatible endpoint not already in the catalog.
 
+### Provider options
+
+A provider entry in `config.yaml` may also set any request header or query parameter its dialect's
+API accepts, under the provider's own name, beside busbar's keys:
+
+```yaml
+providers:
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+    OpenAI-Organization: org-abc
+    OpenAI-Project: proj_1
+  vertex:
+    api_key: { env: GOOGLE_SA }
+    x-goog-user-project: my-gcp-project
+  azure:
+    api_key: { env: AZURE_KEY }
+    api-version: 2024-10-21
+```
+
+| Dialect | Names (header unless noted) |
+|---|---|
+| `anthropic` | `anthropic-version` (`2023-06-01`, `2023-01-01`), `anthropic-beta` (a list or comma-separated) |
+| `openai`, `responses` | `OpenAI-Organization`\*, `OpenAI-Project`\*, `api-version` (query; Azure OpenAI) |
+| `gemini` | `X-Goog-User-Project`\*, `X-Goog-Quota-User`, `X-Goog-Request-Reason`, `X-Server-Timeout` (whole seconds) |
+| `bedrock` | `X-Amzn-Bedrock-Trace`, `X-Amzn-Bedrock-GuardrailIdentifier`, `X-Amzn-Bedrock-GuardrailVersion`, `X-Amzn-Bedrock-PerformanceConfig-Latency`, `X-Amzn-Bedrock-Service-Tier` (sent to `bedrock-invoke` models) |
+| `cohere` | `X-Client-Name` |
+
+- Header names match without regard to case. Query names match exactly.
+- Any other key that is not one of busbar's provider keys fails startup and `--validate`. The
+  error names the key and lists the names the provider's dialect accepts.
+- Credential and auth fields (`Authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `key`,
+  `X-Amz-*`, ...) can't be set this way. Use `api_key` and `auth`. Hop-by-hop fields
+  (`Connection`, `Transfer-Encoding`, `Host`, ...) are refused too.
+- **Precedence.** A static option is a default. When a caller speaks the provider's own dialect and
+  sends the same header or query parameter, the caller's value is used. Names marked \* are forced:
+  they select the account that is billed, so the configured value always goes out and a caller's
+  value never does.
+- Options are a `config.yaml` setting. A `providers.yaml` catalog entry ignores keys it does not
+  know, as in 1.5.5.
+
 ### Catalog fields
 
 | Field | Type | Required | Default | Notes |
@@ -166,7 +206,6 @@ A map of provider name → `ProviderDef`. The shipped catalog is a curated set o
 | `error_map` | map<string, string> | no | `{}` | Maps a provider-specific error **code string** (from the JSON error body) to a canonical disposition class. Valid values: `rate_limit`, `overloaded`, `server_error`, `timeout`, `network`, `auth`, `billing`, `client_error`, `context_length`. An unrecognized class value is a startup error. HTTP-status classification (401→auth, 429→rate_limit, 5xx→server_error, etc.) applies automatically without an `error_map`; this field is only for provider-specific JSON codes. |
 | `path` | string | no | Protocol's standard path | Overrides the upstream request path appended to `base_url`. Must begin with `/`. Static, ignores the per-request model. Use when the API version is in `base_url` and the endpoint path differs from the protocol default (e.g. `/chat/completions` without `/v1`). |
 | `path_base` | string | no | Protocol's default base | For URL-model protocols: overrides the hardcoded base segment while the per-request suffix is still appended. Must begin with `/`. On **Gemini** it replaces `/v1beta/models` (suffix `/{model}:verb`) to reach Google Vertex AI's `/v1/projects/{project}/locations/{location}/publishers/google/models` layout; on **Anthropic** it enables Claude-on-Vertex (the model moves into a `:rawPredict`/`:streamRawPredict` suffix and the body carries `anthropic_version` in place of `model`). Config-only, no code. |
-| `organization`, `project` | string | no | none | The tenant the upstream bills this provider's traffic to, sent on every upstream request under the header its protocol defines (OpenAI and Responses: `OpenAI-Organization`, `OpenAI-Project`). A caller's own tenant headers are never forwarded. Absent: none is sent. |
 | `auth` | string | no | Protocol's native auth | The egress auth mechanism. `bearer` (sends `Authorization: Bearer <key>`) · `api-key` (sends `api-key: <key>`, for Azure OpenAI) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523: mints + auto-refreshes a bearer from a service-account key resolved via `api_key`; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4: the `api_key` reference resolves to `client_id:client_secret`, exchanged at `token_url` for a bearer; e.g. Azure OpenAI via Entra ID). When unset, each protocol uses its native scheme: bearer for anthropic/openai/responses/cohere, `x-goog-api-key` for gemini, AWS SigV4 for bedrock. |
 | `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where Busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
 | `scope` | string | no | none | OAuth scope for `auth: oauth-client-credentials`. Required for that auth. |
@@ -771,7 +810,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 | `error_map` | map<string, string> | no | `{}` merged onto catalog | Merged with the catalog's `error_map`; deployment entries win per code. |
 | `path` | string | no | Catalog value | Override the upstream path. Must begin with `/`. |
 | `path_base` | string | no | Catalog value | Override the URL-model base segment (Gemini or Anthropic), keeping the per-request verb suffix. Must begin with `/`. For Gemini-on-Vertex and Claude-on-Vertex. |
-| `organization`, `project` | string | no | Catalog value | Override the provider's tenant (see the catalog keys above). |
+| *provider options* | per name | no | none | Any value the provider's own API accepts in a request header or query parameter, written under the provider's own name directly in the entry (see [Provider options](#provider-options)). |
 | `auth` | string | no | Catalog value | `bearer`, `api-key`, `jwt-bearer` (OAuth service-account, e.g. Vertex AI), or `oauth-client-credentials` (e.g. Azure Entra ID). |
 | `token_url` | string | no | Catalog value | OAuth token endpoint for `oauth-client-credentials`. |
 | `scope` | string | no | Catalog value | OAuth scope for `oauth-client-credentials`. |

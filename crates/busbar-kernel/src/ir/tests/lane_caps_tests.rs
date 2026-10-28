@@ -137,8 +137,6 @@ mod provider_entry {
             health: None,
             path: None,
             path_base: None,
-            organization: None,
-            project: None,
             token_url: None,
             scope: None,
             subject: None,

@@ -1224,7 +1224,9 @@ pub struct DeployCfg {
     /// `providers:` and `models:` are REQUIRED only when a registered plane declares it requires
     /// them (`PlaneDeclaration::required_config_sections`); the pre-pass refuses such a document
     /// with serde's own missing-field message. No such plane: an omitted section reads empty.
-    #[serde(default)]
+    /// Each entry's keys beyond busbar's own are its options, read aside
+    /// ([`providers::deployments`]) for the plane that speaks its dialect to judge.
+    #[serde(default, deserialize_with = "providers::deployments")]
     pub providers: HashMap<String, ProviderDeploy>,
     #[serde(default)]
     pub models: HashMap<String, ModelCfg>,
