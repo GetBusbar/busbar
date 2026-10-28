@@ -18,6 +18,7 @@ fn table() -> Table {
             to: "signing_secret".into(),
             since: "1.6.0".into(),
         }],
+        public: ["url".to_string()].into_iter().collect(),
     }])
 }
 
@@ -43,4 +44,15 @@ fn the_kernels_load_over_the_table_moves_the_operators_old_key() {
     let settings = &deploy.secrets["stub-renames"].settings;
     assert!(settings.contains_key("signing_secret"), "{settings:?}");
     assert!(!settings.contains_key("signing-secret"), "{settings:?}");
+}
+
+#[test]
+fn a_plugins_public_settings_are_found_under_its_words() {
+    use busbar_kernel::config::settings_public::PublicSettings as _;
+    let t = table();
+    assert_eq!(
+        t.public("stub-alias").into_iter().collect::<Vec<_>>(),
+        ["url"]
+    );
+    assert!(t.public("elsewhere").is_empty());
 }

@@ -4344,3 +4344,38 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         "the list and the single read give the one flagged view"
     );
 }
+
+/// SENSITIVE BY DEFAULT (owner ruling 2026-10-27): a settings bag in an admin view shows its keys,
+/// and the values of the keys its plugin's schema declares `x-busbar-public` alone. An undeclared
+/// setting's value never appears; a declared-public one is shown; a module that declares nothing
+/// shows keys alone, exactly as before.
+#[test]
+fn an_admin_view_shows_only_declared_public_setting_values() {
+    let public = |module: &str| -> std::collections::BTreeSet<String> {
+        match module {
+            "stub" => ["url".to_string()].into_iter().collect(),
+            _ => std::collections::BTreeSet::new(),
+        }
+    };
+    let mut v = serde_json::json!({
+        "store": { "module": "stub", "settings": {
+            "url": "https://ledger.internal", "password": "hunter2", "undeclared": "u-value"
+        } },
+        "other": { "module": "plain", "settings": { "url": "https://plain.internal" } }
+    });
+    super::redact_settings_bags_with(&mut v, &public);
+    let text = v.to_string();
+    for hidden in ["hunter2", "u-value", "https://plain.internal"] {
+        assert!(!text.contains(hidden), "`{hidden}` shown: {text}");
+    }
+    assert_eq!(
+        v["store"]["settings_public"],
+        serde_json::json!({ "url": "https://ledger.internal" })
+    );
+    assert_eq!(
+        v["store"]["settings_keys"],
+        serde_json::json!(["password", "undeclared", "url"])
+    );
+    assert!(v["other"].get("settings_public").is_none(), "{text}");
+    assert_eq!(v["other"]["settings_keys"], serde_json::json!(["url"]));
+}
