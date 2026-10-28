@@ -1305,11 +1305,22 @@ pub(crate) fn granting_bindings<'a>(
     principal: &crate::auth::Principal,
     table: &'a std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
 ) -> Vec<&'a crate::config::RoleBindingCfg> {
-    principal
+    let ungoverned = crate::config::auth::UNGOVERNED_ROLE;
+    let named = |role: &&String| role.as_str() != ungoverned;
+    let granting: Vec<_> = principal
         .roles
         .iter()
+        .filter(named)
         .filter_map(|role| table.get(role))
-        .collect()
+        .collect();
+    // The ungoverned role binds a principal that asserts no roles, and every principal of a
+    // provider whose table names no other role: exactly the principals 1.5.5 admitted with no grant.
+    let roleless = !principal.roles.iter().any(|r| named(&r));
+    let only_ungoverned = table.keys().all(|r| r == ungoverned);
+    match table.get(ungoverned) {
+        Some(binding) if granting.is_empty() && (roleless || only_ungoverned) => vec![binding],
+        _ => granting,
+    }
 }
 
 /// The pool union across granting bindings. OMITTED `allowed_pools` on any granting binding widens

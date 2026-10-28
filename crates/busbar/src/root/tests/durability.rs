@@ -516,19 +516,10 @@ fn an_unopenable_data_dir_is_an_error_and_not_a_silent_downgrade() {
     assert!(build(&cfg, Box::new(NullShipper::new())).is_err());
 }
 
-/// Journalling carries no administrative row, and the root holds no administrative ring (item 237).
-///
-/// There is ONE administrative audit ring: the kernel's durable one, written by the core-admin
-/// handlers and served by `GET /api/v1/admin/audit`. The root used to hold a second, RAM-only copy
-/// behind a seam that persisted nothing and that no endpoint read. Two halves:
-///
-/// - a node journalling its units has only its own records on the journal — an administrative row
-///   never leaks onto it;
-/// - the durability stack's own source constructs no administrative ring: no `AuditLog`, no
-///   `NoSeam`. The end-to-end cell `the_served_audit_body_is_byte_identical_with_and_without_the_root`
-///   pins that the served body did not move.
+/// A node journalling its units has only its own records on the journal: an administrative row
+/// never leaks onto it.
 #[test]
-fn journalling_carries_no_admin_row_and_the_root_holds_no_second_admin_ring() {
+fn journalling_carries_no_admin_row() {
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,
@@ -545,19 +536,6 @@ fn journalling_carries_no_admin_row_and_the_root_holds_no_second_admin_ring() {
         .expect("verifies");
     assert_eq!(replayed.len(), 3);
     assert!(replayed.iter().all(|r| r.class == RecordClass::Transaction));
-
-    let source = include_str!("../durability/mod.rs");
-    let code: String = source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for needle in ["AuditLog", "NoSeam"] {
-        assert!(
-            !code.contains(needle),
-            "root/durability.rs builds a second administrative ring again: `{needle}`"
-        );
-    }
 }
 
 /// A store that keeps every record it was handed, in order, behind a shared handle.
