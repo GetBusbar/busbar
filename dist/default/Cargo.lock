@@ -300,13 +300,14 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327#df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=f82441c9db087c6ab68f9c9f3f283cf16c1b4198#f82441c9db087c6ab68f9c9f3f283cf16c1b4198"
 dependencies = [
  "busbar-contract",
  "hex",
  "ring",
  "serde",
  "serde_json",
+ "tracing",
  "zeroize",
 ]
 

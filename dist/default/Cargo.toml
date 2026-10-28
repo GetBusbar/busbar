@@ -861,7 +861,9 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327" }
+# On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
+# region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn).
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "f82441c9db087c6ab68f9c9f3f283cf16c1b4198" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
