@@ -54,9 +54,6 @@ pub trait EngineAppPlus: EngineApp {
     /// The DATA router's route table exactly as it was built — every `(path, auth bar)` pair — so a
     /// plane asserts which of its routes are open and which take the data-plane bar.
     fn data_route_table(&self) -> Vec<(String, RouteAuth)>;
-    /// Force the breaker cell under `key` at pool lane `lane` OPEN until `until` (seconds since the
-    /// epoch) — the operator's "take this member out" the pool batteries reproduce.
-    fn breaker_force_open(&self, key: &str, lane: usize, until: u64);
 }
 
 /// THE TEST-APP BUILDER, widened: the deployment's public URL and its candidate pools of registered

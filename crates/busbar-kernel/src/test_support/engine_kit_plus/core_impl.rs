@@ -4,7 +4,7 @@
 //! THE ENGINE'S IMPLEMENTATION of the widened engine test-kit seam
 //! (`busbar_kernel::test_support::engine_kit_plus`), on the SAME fixture types the base kit is
 //! implemented for ([`CoreEngineKit`], `TestApp`, `App`): every verb is a thin delegate to the fixture
-//! builder, the built App's own tables (`planes`, `plane_breakers`, the data route table view) or the
+//! builder, the built App's own tables (`planes`, the data route table view) or the
 //! process-wide service (`metrics::render`, the scrape route,
 //! the built-in secret resolver, the named-map chassis) a plane's tests used to name directly. A
 //! plane's test tree binds [`CORE_ENGINE_KIT`](crate::test_support::engine_kit::CORE_ENGINE_KIT) once as
@@ -88,8 +88,5 @@ impl EngineAppPlus for crate::state::App {
     }
     fn data_route_table(&self) -> Vec<(String, RouteAuth)> {
         crate::base_data_route_table_view(self)
-    }
-    fn breaker_force_open(&self, key: &str, lane: usize, until: u64) {
-        self.plane_breakers.force_open(key, lane, until)
     }
 }

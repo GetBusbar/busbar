@@ -937,9 +937,8 @@ fn check_failover_pool(
             def.members.len()
         ));
     }
-    // The plane breaker store's lane table is FIXED (process-lifetime, sized
-    // `store::MAX_POOL_MEMBERS`; see `store/breaker_admission.rs` for why it cannot track config), so a pool
-    // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
+    // A plane consumer's pool is capped at `store::MAX_POOL_MEMBERS` members, refused here where the
+    // operator can act.
     if def.members.len() > crate::store::MAX_POOL_MEMBERS {
         errors.push(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \

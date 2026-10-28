@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The seams where two units name the same object at two widths, and the boot check on two label
-//! banks kept in step by hand.
+//! The seams where two units name the same object at two widths.
 //!
 //! ## Why these exist at all, and why none of them is a defect
 //!
@@ -22,7 +21,7 @@
 //! difference between the two is the one that matters — the reference closes over a default
 //! configuration, and this one refuses to.
 //!
-//! ## The three
+//! ## The two
 //!
 //! 1. **Breaker to egress.** The egress unit's port takes no configuration and the breaker unit's
 //!    method requires it, because the cooldown ladder is a per-pool declaration and the walk has no
@@ -38,12 +37,8 @@
 //!    unified away: the trust unit's filter runs BEFORE a candidate set exists, so at that point
 //!    there is nothing to have a destination identity yet.
 //!
-//! 3. **The label banks.** Two crates carry the same four metric label strings as separate
-//!    literals, deliberately, because they share no dependency to point at one constant. They reach
-//!    the scrape as label VALUES, so a drift between them is a wire change nobody would see in a
-//!    diff. The check below compares them at boot. It does not introduce a shared constant: the two
-//!    crates have no common dependency that could hold one, and putting an open-vocabulary key
-//!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
+//! The metric labels the two units record a disposition under are both read off the contract's
+//! one disposition table (`Disposition::label`), so there is no second bank to keep in step.
 
 use busbar_contract::caps::{Pass, Route};
 use busbar_kernel_breaker::cfg::BreakerCfg;
@@ -277,75 +272,6 @@ impl Breaker for BreakerAdapter {
     fn refund_budget(&self, destination: DestinationId) {
         self.unit.refund_budget(destination);
     }
-}
-
-/// A label that appears in one crate's bank and not the other's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LabelDrift {
-    /// What the breaker unit calls it.
-    pub breaker: &'static str,
-    /// What the egress unit calls it.
-    pub egress: &'static str,
-}
-
-impl std::fmt::Display for LabelDrift {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "metric label banks drifted: the breaker unit says `{}` where the egress unit says `{}`",
-            self.breaker, self.egress
-        )
-    }
-}
-
-impl std::error::Error for LabelDrift {}
-
-/// Check at boot that the two crates' metric label banks still agree.
-///
-/// The three labels both crates carry are duplicate literals, kept in step by hand and deliberately
-/// not shared: the crates have no common dependency that could hold a constant, and a shared one
-/// would put an open-vocabulary key somewhere the lean-core scan forbids. What that leaves is a
-/// drift nobody would notice — the labels reach the scrape as label VALUES, so a change on one side
-/// is a wire change that looks like an ordinary edit in a diff. Comparing them once, at boot, is
-/// what turns the hand-kept convention into something mechanical.
-///
-/// Two labels are not compared and cannot be: the breaker unit's client-fault label has no egress
-/// counterpart (the walk short-circuits before it would use one) and the egress unit's
-/// attempt-timeout label has no breaker counterpart (a deadline this side of the wire is not a
-/// classification of anything upstream). Both are single-sided by design, not by omission.
-///
-/// # Errors
-///
-/// A label present in both banks has different text on the two sides.
-pub fn check_label_banks() -> Result<(), LabelDrift> {
-    use busbar_kernel_breaker::port::label;
-    use busbar_kernel_egress::ports::disposition;
-
-    let pairs = [
-        (label::TRANSIENT_UPSTREAM, disposition::TRANSIENT),
-        (label::HARD_DOWN, disposition::HARD_DOWN),
-        (label::CONTEXT_LENGTH, disposition::CONTEXT_LENGTH),
-    ];
-    // A test drives the boot seal over a drift by planting one more pair on its own thread; the
-    // banks themselves are other crates' constants and cannot be bent from here.
-    #[cfg(test)]
-    let pairs = pairs
-        .into_iter()
-        .chain(PLANTED_PAIR.with(std::cell::Cell::get));
-    for (breaker, egress) in pairs {
-        if breaker != egress {
-            return Err(LabelDrift { breaker, egress });
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-thread_local! {
-    /// One extra `(breaker, egress)` pair [`check_label_banks`] compares on this thread, so a test
-    /// can show the boot seal refusing a drift (item 248). Test builds only.
-    static PLANTED_PAIR: std::cell::Cell<Option<(&'static str, &'static str)>> =
-        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]

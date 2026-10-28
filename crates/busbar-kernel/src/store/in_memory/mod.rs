@@ -6,6 +6,7 @@ use super::*;
 // core, so the shim had exactly one caller and is deleted instead of repointed twice.
 use busbar_kernel::store::{LaneHealthSnapshot, PoolCellHealthSnapshot};
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::diagnostics::{diag_warn, LANE_HARD_DOWN};
 
 mod availability;
@@ -602,12 +603,8 @@ impl HealthState {
         ls.ok.add();
     }
 
-    // Production callers: the test-only `record_hard_down` trait wrapper, and
-    // `store::breaker_admission::PlaneBreakers::record_signal` — a registered target's hard-down is
-    // PER CELL by design (the degenerate cells share one lane index, so the all-cells primitive
-    // would trip every other registered target). With no plane consumer compiled in that caller is
-    // vestigial, so this reads dead in such a non-test build alone.
-    #[allow(dead_code)]
+    // One cell's hard-down, for the test-only `record_hard_down` trait wrapper.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn record_hard_down_for(&self, pool: &str, lane: usize, reason: &str) {
         let ls = self.get_lane(lane);
         // Hard-down is RECOVERABLE — long sticky cooldown + Open, recovered via the half-open

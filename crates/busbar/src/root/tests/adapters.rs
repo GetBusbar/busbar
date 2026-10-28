@@ -331,13 +331,6 @@ fn a_hard_reading_is_hard_down() {
     assert_eq!(out.outcome, Outcome::HardDown);
 }
 
-/// The boot check on the two hand-kept banks. It passes today, which is the point: it is a
-/// tripwire on a convention, not a repair of a break.
-#[test]
-fn the_two_label_banks_agree() {
-    assert!(check_label_banks().is_ok());
-}
-
 /// And the values themselves, written out, so a change on either side has to change this file
 /// too. A label that reaches the scrape is wire, and wire that only one test knows about is
 /// wire nobody is holding.
@@ -356,79 +349,6 @@ fn the_shared_labels_are_the_expected_wire_values() {
     // they were never a pair.
     assert_eq!(label::CLIENT_FAULT, "client_fault");
     assert_eq!(disposition::ATTEMPT_TIMEOUT, "attempt_timeout");
-}
-
-/// The drift the check would catch, shown as a value rather than left to the imagination.
-#[test]
-fn a_drifted_bank_reads_as_a_drift() {
-    let drift = LabelDrift {
-        breaker: "transient_upstream",
-        egress: "transient-upstream",
-    };
-    assert!(drift.to_string().contains("drifted"));
-}
-
-/// A DRIFT REFUSES THE BOOT, NAMING BOTH SPELLINGS (item 248), and the boot seal on today's banks
-/// still succeeds, so the label-bank check it runs refuses nothing it should not.
-// The seal it drives composes the shipped transport stack (the http rows over the linked transport
-// door); a build that links no transport door cannot seal it, so this cell gates on that axis.
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn a_label_drift_refuses_the_boot_and_todays_banks_seal() {
-    // What a drift refuses the boot with: both spellings, so an operator reading the boot line can
-    // see which side moved.
-    let refusal = crate::root::registry::BootRefusal::LabelDrift(LabelDrift {
-        breaker: "transient_upstream",
-        egress: "transient-upstream",
-    });
-    let line = refusal.to_string();
-    assert!(line.contains("transient_upstream") && line.contains("transient-upstream"));
-
-    assert!(
-        crate::root::registry::seal(
-            &crate::LINKED,
-            crate::root::registry::Dropped::NONE,
-            Default::default()
-        )
-        .is_ok(),
-        "today's banks agree, so the seal still passes"
-    );
-}
-
-/// THE BOOT SEAL RUNS THE LABEL-BANK CHECK (item 248).
-///
-/// The comparison once existed and passed and nothing ran it: its only caller was the test that
-/// shows it passes, so a rename on one side would ship with the binary booting clean. Driven as
-/// behaviour: a drift is planted where the check reads its pairs, and the seal itself must refuse
-/// with `BootRefusal::LabelDrift` naming both spellings. Moving the call out of the seal makes the
-/// seal answer `Ok` here, and this goes red.
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn the_boot_seal_refuses_a_planted_label_drift() {
-    struct Unplant;
-    impl Drop for Unplant {
-        fn drop(&mut self) {
-            super::PLANTED_PAIR.with(|p| p.set(None));
-        }
-    }
-    let _unplant = Unplant;
-    super::PLANTED_PAIR.with(|p| p.set(Some(("transient_upstream", "transient-upstream"))));
-
-    match crate::root::registry::seal(
-        &crate::LINKED,
-        crate::root::registry::Dropped::NONE,
-        Default::default(),
-    ) {
-        Err(crate::root::registry::BootRefusal::LabelDrift(drift)) => assert_eq!(
-            drift,
-            LabelDrift {
-                breaker: "transient_upstream",
-                egress: "transient-upstream",
-            }
-        ),
-        Err(other) => panic!("the seal refused for another reason: {other}"),
-        Ok(_) => panic!("the boot seal sealed over a label drift: it does not run the check"),
-    }
 }
 
 /// A HEALTH PROBE through the adapter (K7): its answer reaches every cell of the member under the
