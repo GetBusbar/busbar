@@ -833,7 +833,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             .chain
             .iter()
             .chain(auth.admin_auth.iter())
-            .map(|e| e.module.as_str())
+            // A binding is looked up by the PROVIDER NAME the verdict carries
+            // (`AuthChainEntry::name`); the module word is accepted as 1.5.5 accepted it.
+            .flat_map(|e| [e.module.as_str(), e.name.as_str()])
             .chain(auth.methods.keys().map(String::as_str))
             .collect();
 
@@ -2176,6 +2178,16 @@ fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)
     })
 }
 
+/// Why a metadata host-list entry names no host the destination guard judges, or `None` when it
+/// names one or is a `/` entry (refused on its own, as 1.5.5 refused it): the one predicate
+/// startup judges these lists by, which `busbar --migrate-config` drops such an entry by.
+pub(crate) fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
+    if entry.contains('/') {
+        return None;
+    }
+    unmappable_metadata_entry(entry).map(|(why, _)| why)
+}
+
 /// THE 1.5.5 UPGRADE'S PRIVATE PROVIDER (owner ruling 2026-10-27): a provider URL (`base_url`,
 /// `token_url`) naming a private or loopback host is refused by the destination guard on every
 /// request while `advanced.block_private_addresses` holds (the default) and
@@ -2297,9 +2309,11 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
+mod undeclared_secret_refs;
 #[cfg(test)]
 pub(crate) use secret_refs::registry_refusal;
 pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
+pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 /// The one validator every caller runs.
 mod check;
 pub use check::{check, no_root_rules, Check, Refusal};
@@ -2348,6 +2362,11 @@ fn validate_providers_with(
         // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
         // the fail-OPEN answer), but it refuses ONCE and says why.
         validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
+        // The provider's options (every key that is not busbar's), judged by the plane that speaks
+        // its dialect against that dialect's list, in the plane's words.
+        if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
+            errors.push(refusal);
+        }
 
         // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
         // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/

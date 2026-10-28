@@ -137,8 +137,6 @@ mod provider_entry {
             health: None,
             path: None,
             path_base: None,
-            organization: None,
-            project: None,
             token_url: None,
             scope: None,
             subject: None,
@@ -148,6 +146,7 @@ mod provider_entry {
             anthropic_adaptive_thinking: None,
             native_structured_output: None,
             model_capabilities: Vec::new(),
+            options: Default::default(),
         }
     }
 

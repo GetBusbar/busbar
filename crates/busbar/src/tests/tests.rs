@@ -613,7 +613,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // Every linked protocol declaration goes into the test registry, read off the linked table
     // the root registers from.
     for decls in crate::LINKED.protocols {
-        busbar_kernel::ingress::protocols::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let dir = BookDir::new("real-path");
@@ -780,7 +780,7 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel::test_support::register_neutral_test_plane();
     for decls in crate::LINKED.protocols {
-        busbar_kernel::ingress::protocols::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let app = busbar_kernel::test_support::build_once(
@@ -1039,7 +1039,7 @@ fn one_seal_after_two_reloads() {
     use busbar_kernel_wal::RecordClass;
 
     for decls in crate::LINKED.protocols {
-        busbar_kernel::ingress::protocols::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let dir = BookDir::new("two-reloads");

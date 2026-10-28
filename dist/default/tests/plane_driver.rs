@@ -1517,12 +1517,13 @@ where
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     let ctx = common::ctx(key);
     let SessionOpen::Admitted {
         route,
         destinations,
-    } = open_unit(&kernel, &units, &ctx, run)
+    } = open_unit(&kernel, &units, &ctx, run).await
     else {
         panic!("the session is admitted");
     };
