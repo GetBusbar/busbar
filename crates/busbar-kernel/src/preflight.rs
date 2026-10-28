@@ -16,8 +16,8 @@ use crate::diagnostics::{
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, snapshot, state, store,
-    telemetry, tls, transport, trust,
+    observability, operation, plugin_routes, profile, snapshot, state, store, telemetry, tls,
+    transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -1031,47 +1031,6 @@ pub(crate) fn resolve_signing_key(
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
-/// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
-/// name. Fail-closed (an `Err`) when the key names a reserved built-in resolver (`env`/`file`, which
-/// take no module-level config), when no loadable plugin is named or aliased by it, or when the
-/// resolved plugin is not `kind: secret`. Shared by `build_secret_resolver` (boot) and the
-/// `--validate` pre-flight so both apply the identical policy (a mistyped/aliased
-/// `secrets:` key must never silently open a plugin with `{}`).
-pub(crate) fn validate_secret_module(
-    registry: &dyn PluginRows,
-    module: &str,
-) -> Result<String, String> {
-    if config::secret::is_linked_secret(module) {
-        return Err(format!(
-            "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
-             module-level configuration. Remove this `secrets:` entry (reference it inline as \
-             {{ {module}: … }} where the secret is used)."
-        ));
-    }
-    match registry.resolve(module) {
-        Some(p) if p.kind == "secret" => Ok(p.key),
-        Some(p) => Err(format!(
-            "secrets.{module}: plugin '{}' has kind '{}', not 'secret'; only a kind: secret plugin \
-             can back a `secrets:` block entry",
-            p.key, p.kind
-        )),
-        None => Err(format!(
-            "secrets.{module}: no loadable `kind: secret` plugin is named or aliased '{module}' \
-             (check the spelling against the plugin's manifest name/alias, and that the plugin \
-             loaded — see --list-plugins)"
-        )),
-    }
-}
-
-/// THE POST-RESOLVE HALF OF `--validate`, in one place.
-///
-/// `config_validate::validate` is only part of what makes a config valid: the plugin pre-flight
-/// (consistency, trust resolution, the three-phase tarball scan, store resolution) and the two
-/// secret-reference checks are the rest, and they cannot run until the registry exists. Every caller
-/// that asks "is this config valid?" must run ALL of it -- `--validate` assembled the steps by hand
-/// and `POST /api/v1/admin/config/validate` ran only the first, so the admin dry-run answered
-/// `ok: true` for configs the CLI rejects and an operator could ship one straight into a failed boot.
-///
 /// Whether `m` names a REAL `auth.chain` plugin ref that must resolve against the plugin registry
 /// (`true`) vs a builtin/test stand-in that's exempt (`false`). `keys` is engine-handled, never a
 /// plugin. `test-groups-module` is ONLY actually registered as a chain module under
@@ -1126,120 +1085,6 @@ pub(crate) fn valid_identity_provider_modules(registry: &dyn PluginRows) -> Stri
     names.join(" | ")
 }
 
-/// Manifest-only, like the pre-flight it wraps: nothing is `dlopen`ed and no store is opened, so it
-/// is safe on the admin read path.
-pub fn preflight_plugins_and_secrets(
-    deploy: &config::DeployCfg,
-    cfg: &config::RootCfg,
-) -> Result<Arc<dyn PluginRows>, String> {
-    let registry = plugins_preflight(
-        deploy.store.as_ref(),
-        cfg.auth.as_ref(),
-        &cfg.identity_providers,
-        &cfg.hooks,
-        &deploy.plugins,
-        &cfg.export,
-    )?;
-    validate_secret_modules(registry.as_ref(), &cfg.secrets)?;
-    validate_secret_refs(registry.as_ref(), cfg)?;
-    Ok(registry)
-}
-
-/// Validate EVERY `secrets:` block entry against the registry (the `--validate` counterpart of the
-/// per-entry check `build_secret_resolver` runs at boot). Returns the FIRST offending entry's error.
-pub(crate) fn validate_secret_modules(
-    registry: &dyn PluginRows,
-    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
-) -> Result<(), String> {
-    for module in secret_modules.keys() {
-        validate_secret_module(registry, module)?;
-    }
-    Ok(())
-}
-
-/// Validate every SECRET REFERENCE's module against the plugin registry — the deferred half of the
-/// secret-reference check `config_validate` cannot do (it runs before the registry exists). The
-/// built-in `env`/`file` modules always pass; ANY OTHER module name is a `kind: secret` PLUGIN
-/// reference (the 1.5.0 "secrets are plugins" feature: `api_key: { module: acme-vault, … }`, TLS
-/// cert/key, `auth.signing_key`, the admin token) and must resolve to a LOADED, TRUSTED, `kind:
-/// secret` plugin. A genuine typo (no built-in, no plugin) is a hard boot / `--validate` error;
-/// an installed vault/aws-sm plugin PASSES. Shared by boot (`build_app_from_config`) and the
-/// `--validate` pre-flight so the two cannot drift. Returns the FIRST offending reference's error.
-pub(crate) fn validate_secret_refs(
-    registry: &dyn PluginRows,
-    cfg: &config::RootCfg,
-) -> Result<(), String> {
-    for (what, r) in config_validate::secret_refs(cfg) {
-        if config::secret::is_linked_secret(&r.module)
-            // `none` names no module at all — it declares the ABSENCE of a credential — so there is
-            // nothing here for the registry to resolve, and it must never be looked up as though a
-            // `kind: secret` plugin called `none` could back it. WHERE it is permitted is
-            // `config_validate`'s call, not this one.
-            || r.is_none()
-        {
-            continue; // built-in resolver — already structurally checked in config_validate
-        }
-        match registry.resolve(&r.module) {
-            Some(p) if p.kind == "secret" => {}
-            Some(p) => {
-                return Err(format!(
-                    "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
-                     'secret'; only a `kind: secret` plugin can back a secret reference",
-                    r.module, p.key, p.kind
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                     and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
-                     spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
-                     e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
-                    r.module, r.module
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
-///
-/// `config_validate` proves a reference is well-FORMED; it cannot prove the variable is set or the
-/// file is readable, because it runs before anything touches the environment. Without this,
-/// `--validate` reported a config VALID while boot would warn and then serve a gateway whose every
-/// upstream request fails on a missing credential: success reported for something that cannot work.
-///
-/// DELIBERATELY NOT IN `preflight_plugins_and_secrets`. That pre-flight is SHARED with boot and with
-/// the admin apply/reload path, where an unresolvable secret is a WARNING by design, not a refusal
-/// (`test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects` pins that). A live
-/// config change must not be rejected for a secret that may resolve on the next deploy. The operator
-/// asking `--validate` is asking a different question, and deserves the strict answer.
-///
-/// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.
-///
-/// Walks the references boot RESOLVES, not every reference the config can hold: an
-/// `identity-providers:` definition's `token:` is only read through the resolved auth chains, so a
-/// defined-but-unreferenced provider whose token env var is unset boots fine and must pass here too
-/// (see `boot_resolved_secret_refs`). The exhaustive walk stays in use for the structural and
-/// module-existence checks, which cost nothing to run over a reference boot never reads.
-pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
-    let builtins = config::secret::SecretResolver::builtins_only();
-    for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
-        if !config::secret::is_linked_secret(&r.module) {
-            // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
-            // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
-            // be loadable here, and pre-flight covers it.
-            continue;
-        }
-        if let Err(e) =
-            builtins.resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-        {
-            return Err(format!("{what}: {e}"));
-        }
-    }
-    Ok(())
-}
-
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
 /// plugin on the secret axis (opened once per resolver, over the one dispatcher). FAIL-CLOSED: a
@@ -1267,11 +1112,8 @@ pub(crate) fn build_secret_resolver(
     // other spelling and silently open the plugin with `{}` (dropping the operator's configured
     // address/token/CA). Canonicalize the block key through the SAME by_name/by_alias resolution the
     // registry uses, so a `secrets:` entry written under an alias and a `SecretRef` written under the
-    // canonical name (or vice versa) line up. A `secrets:` entry that resolves to NOTHING — a typo, or
-    // a module that names one of the reserved built-in resolvers (`env`/`file`, which take no
-    // module-level open config) — is a hard boot error: silently passing `{}` for a mis-typed module
-    // is exactly the failure this closes. The `--validate` path applies the identical policy via the
-    // shared `validate_secret_module`/`validate_secret_modules` helpers.
+    // canonical name (or vice versa) line up. The one validator (`config_validate::check`) has
+    // already refused a `secrets:` entry that resolves to no `kind: secret` plugin.
     let mut raw_config: std::collections::BTreeMap<String, serde_json::Value> =
         std::collections::BTreeMap::new();
     // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
@@ -1279,9 +1121,7 @@ pub(crate) fn build_secret_resolver(
     let mut claimed_by: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     for (module, mcfg) in secret_modules {
-        // Validate + canonicalize the block key against the registry (shared with --validate). A
-        // reserved built-in name, an unknown module, or a non-secret plugin is a hard error here.
-        let canonical = validate_secret_module(registry.as_ref(), module)?;
+        let canonical = config_validate::secret_module(registry.as_ref(), module)?;
         // TWO SPELLINGS, ONE MODULE: a `secrets:` block written under BOTH a plugin's alias and its
         // canonical name canonicalizes to the same key, and the second insert silently DROPPED the
         // first entry's open() config — one of the two blocks (address, token, CA) just vanished,

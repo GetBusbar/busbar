@@ -1381,9 +1381,12 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         let n = opened.len();
         let body = match self.answer {
             Some(answer) => answer(&opened[n - 1].3),
+            // The first token lives 10 s, so the plugin re-mints it at about half its life (its
+            // short-token rule): the window in which the first bearer is presented is seconds
+            // wide, not the one second a 2 s token left a loaded test thread to observe it in.
             None => format!(
                 r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
-                if n == 1 { 2 } else { 3600 }
+                if n == 1 { 10 } else { 3600 }
             ),
         };
         let id = self.slab.insert(caller, need, ())?;
@@ -4541,7 +4544,7 @@ pub(crate) mod door_boundary {
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+    use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
@@ -4566,7 +4569,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane::registry::register_test_plane(row);
+        busbar_kernel::plane_driver::registry::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -4800,7 +4803,7 @@ pub(crate) mod door_boundary {
                 app.lane(
                     LaneSpec::new(
                         "test-model",
-                        busbar_kernel::proto::PROTO_ANTHROPIC,
+                        busbar_kernel::ingress::protocols::PROTO_ANTHROPIC,
                         &base_url,
                     )
                     .api_key("busbar-upstream-key"),
@@ -5925,9 +5928,14 @@ mod task_continuation {
         )
     }
 
-    /// Poll `tasks/get` until the task is `status` (or the test gives up).
+    /// How long a wait below may take before the test calls it a hang. It bounds a hang only: each
+    /// wait ends on the progress it waits for, so a slow run under load is never a failure.
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Poll `tasks/get` until the task is `status` (or [`HANG_GUARD`] passes).
     async fn until(rig: &Rig, task_id: &str, status: &str) -> serde_json::Value {
-        for _ in 0..250 {
+        let deadline = tokio::time::Instant::now() + HANG_GUARD;
+        while tokio::time::Instant::now() < deadline {
             let (_, body) = ask(rig, &rig.token, "tasks/get", task_id).await;
             if body["result"]["status"] == status {
                 return body;
@@ -6010,7 +6018,7 @@ mod task_continuation {
                 }
             }
         };
-        tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+        tokio::time::timeout(HANG_GUARD, wait)
             .await
             .expect("the upstream call ran")
     }
@@ -8608,11 +8616,21 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
     assert!(sealed.is_empty(), "no destination is sealed");
     assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
+    assert_eq!(
+        one.scope_entry(),
+        Some(b"a".to_vec()),
+        "its gates bind the one entry"
+    );
     assert_eq!(one.routed(), None, "routed nowhere: no pool, no walk");
     // The same reach routed by scope walks the pool its one entry is a member of.
     let relayed = steps(&["a"]);
     let _ = verified(&relayed, ROUTE_SCOPE);
     assert_eq!(relayed.resolved(&ctx), None);
+    assert_eq!(
+        relayed.scope_entry(),
+        Some(b"a".to_vec()),
+        "a relayed scope unit's gates bind the one entry its scope resolved to"
+    );
     assert_eq!(
         relayed.routed().map(|(label, _)| label),
         Some("both".to_string()),
@@ -8624,6 +8642,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         let s = steps(reach);
         let _ = verified(&s, ROUTE_SCOPE_LOCAL);
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
+        assert_eq!(s.scope_entry(), None, "{reach:?}");
         let refused = s
             .admit(
                 &tokens::pass::<Admit>(),
@@ -8842,7 +8861,9 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::registry::{
+        PlaneDecl, PlaneDeclaration, TestRegistryIsolation,
+    };
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {

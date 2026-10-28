@@ -56,6 +56,7 @@
 mod answer;
 mod cancel;
 mod close;
+pub mod dispatch;
 pub mod door;
 mod epoch;
 mod far_end;
@@ -64,6 +65,7 @@ pub mod host;
 mod money;
 mod needs;
 mod probe;
+pub mod registry;
 mod route;
 pub mod route_input;
 pub mod route_tables;
@@ -112,6 +114,7 @@ pub use host::{
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
+pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
 
 use crate::auth::CallerRefKey;
@@ -722,6 +725,15 @@ pub trait DriverSteps: Units {
     /// routed entry for another's). Fail-closed: steps that state no pools hold no member.
     fn pool_holds(&self, _pool: &[u8], _member: &str) -> bool {
         false
+    }
+
+    /// THE ONE ENTRY a `ROUTE_SCOPE` or `ROUTE_SCOPE_LOCAL` unit's scope resolved to at Verify (the
+    /// entry the principal's grant reaches among the plane's candidates). A gate-first unit routed
+    /// by scope binds its entry's gates over this entry, never over an entry its projection names
+    /// (ARCHITECT 2026-10-07). `None` = none resolved (zero or several reach, which the door refuses
+    /// `no_destination`); steps that resolve a scope to an entry MUST state it here.
+    fn scope_entry(&self) -> Option<Vec<u8>> {
+        None
     }
 
     /// THE UNIT'S REQUEST SPAN and the correlation id it carries (status row 173): opened as the

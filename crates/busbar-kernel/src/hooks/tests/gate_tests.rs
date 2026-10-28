@@ -1014,11 +1014,11 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+            crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
         }
     }
     let _restore = Restore;
-    crate::proxy::set_hook_content_max_bytes(8);
+    crate::hooks::set_hook_content_max_bytes(8);
 
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,
