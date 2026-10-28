@@ -1100,7 +1100,7 @@ pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + 
 /// threshold they stay under, or they would be asserting against numbers copied by hand. This module
 /// is gated on the same test/`test-support` axis the rest of the test surface uses, so a shipped
 /// build reveals none of it.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub mod bank_internals {
     pub use super::HIST_DRAIN_THRESHOLD;
 

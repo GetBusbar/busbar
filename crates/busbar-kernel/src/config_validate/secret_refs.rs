@@ -8,11 +8,12 @@
 //! source against are one unit, and they are easier to review as one.
 
 use super::RootCfg;
+use busbar_contract::plugin_rows::PluginRows;
 
 /// Enumerate EVERY secret reference in the resolved config as `(what, &SecretRef)`, where `what` is
 /// the human-readable config path used in error messages. The SINGLE source of truth for which
 /// references are secrets: the structural check in `validate_cost_model` and the registry-backed
-/// module-existence check in `main::validate_secret_refs` (deferred until the plugin registry exists)
+/// module-existence check in `registry_refusal` (deferred until the plugin registry exists)
 /// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
 ///
 /// THIS FUNCTION USED TO FAIL OPEN. It was a hand-written list of config paths, and a secret-bearing
@@ -78,6 +79,86 @@ pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
 /// from them) and narrows only the token set to what boot reads.
 pub(crate) fn boot_resolved_secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
     walk_secret_refs(cfg, TokenRefs::BootResolved)
+}
+
+/// ONE `secrets:` block key against the plugin registry: the plugin's CANONICAL name, or the
+/// refusal. A key naming no loadable plugin, or a plugin that is not `kind: secret`, is refused —
+/// a mistyped/aliased `secrets:` key must never silently open a plugin with `{}`. A key naming a
+/// built-in resolver (`env`/`file`) never reaches here: the semantic pass refuses it first.
+pub(crate) fn secret_module(registry: &dyn PluginRows, module: &str) -> Result<String, String> {
+    match registry.resolve(module) {
+        Some(p) if p.kind == "secret" => Ok(p.key),
+        Some(p) => Err(format!(
+            "secrets.{module}: plugin '{}' has kind '{}', not 'secret'; only a kind: secret plugin \
+             can back a `secrets:` block entry",
+            p.key, p.kind
+        )),
+        None => Err(format!(
+            "secrets.{module}: no loadable `kind: secret` plugin is named or aliased '{module}' \
+             (check the spelling against the plugin's manifest name/alias, and that the plugin \
+             loaded — see --list-plugins)"
+        )),
+    }
+}
+
+/// THE REGISTRY HALF of the secret check, which needs the plugins to exist: every `secrets:` block
+/// entry, then every SECRET REFERENCE's module (from the same [`secret_refs`] walk the semantic
+/// pass reads), must name a loaded `kind: secret` plugin. The built-in `env`/`file` modules and
+/// `none` always pass. Returns the FIRST offending entry's error.
+pub(crate) fn registry_refusal(registry: &dyn PluginRows, cfg: &RootCfg) -> Result<(), String> {
+    for module in cfg.secrets.keys() {
+        secret_module(registry, module)?;
+    }
+    for (what, r) in secret_refs(cfg) {
+        // `none` names no module at all; WHERE it is permitted is the semantic pass's call.
+        if crate::config::secret::is_linked_secret(&r.module) || r.is_none() {
+            continue;
+        }
+        match registry.resolve(&r.module) {
+            Some(p) if p.kind == "secret" => {}
+            Some(p) => {
+                return Err(format!(
+                    "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
+                     'secret'; only a `kind: secret` plugin can back a secret reference",
+                    r.module, p.key, p.kind
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
+                     and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
+                     spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
+                     e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
+                    r.module, r.module
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// RESOLVE every built-in (`env` / `file`) reference boot reads, for `--validate` ONLY.
+///
+/// The semantic pass proves a reference well-FORMED; this proves the variable is set and the file
+/// readable, so a clean `--validate` is not reported for a gateway whose upstream credential is
+/// missing. Boot and the admin apply/dry-run do NOT run it: there an unresolvable secret WARNS by
+/// design (`test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects`). It walks
+/// [`boot_resolved_secret_refs`], so a defined-but-unreferenced identity provider whose token var is
+/// unset still passes, as it boots. Returns the FIRST unresolvable reference's error.
+pub(crate) fn builtins_resolve(cfg: &RootCfg) -> Result<(), String> {
+    let builtins = crate::config::secret::SecretResolver::builtins_only();
+    for (what, r) in boot_resolved_secret_refs(cfg) {
+        // `none` and plugin-backed modules: nothing for the built-ins to resolve.
+        if !crate::config::secret::is_linked_secret(&r.module) {
+            continue;
+        }
+        if let Err(e) =
+            builtins.resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
+        {
+            return Err(format!("{what}: {e}"));
+        }
+    }
+    Ok(())
 }
 
 /// Which identity-provider `token:` references a walk reports. See [`boot_resolved_secret_refs`].
@@ -311,8 +392,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // — to enumerate them; it loops the trait over the section bindings the RootCfg destructure
     // above already forced a decision on. Each impl returns FULLY-QUALIFIED paths
     // (`tools.<name>.…`, `agents.<name>.…`), so nothing is prefixed here. Order within the returned
-    // list is not observed: every consumer (`validate`, `validate_secret_refs`,
-    // `validate_builtin_secrets_resolve`) is a per-reference check, and the coverage test compares by
+    // list is not observed: every consumer (`validate`, `registry_refusal`,
+    // `builtins_resolve`) is a per-reference check, and the coverage test compares by
     // SET.
     for plane_cfg in plane_defs.values() {
         refs.extend(plane_cfg.secret_refs());

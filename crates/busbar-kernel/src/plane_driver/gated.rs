@@ -24,6 +24,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SCOPE_SEPARATOR};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hooks::TransformOutcome;
 
@@ -152,6 +153,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().map_or(0, |d| d.route),
             )
         };
+        // A UNIT ROUTED BY SCOPE recorded its plane's candidate list, never an entry: its entry is
+        // the one the kernel's Verify resolved the scope to (`None` = none resolved yet).
+        let scoped = matches!(route, ROUTE_SCOPE | ROUTE_SCOPE_LOCAL);
+        let resolved = if scoped {
+            self.steps.scope_entry()
+        } else {
+            None
+        };
         let mut view: Projection = match first {
             Ok(view) => view,
             // The plane answered FAULT to the unit's first `project`: where the entry the kernel
@@ -162,7 +171,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             Err(Stopped::Unparseable { marked }) => {
                 // The entry the kernel recorded at decode; a unit that recorded none, or one that
                 // is not UTF-8, binds the empty entry, as `bound_entry` reads an unnamed one.
-                let entry = std::str::from_utf8(recorded.as_deref().unwrap_or_default())
+                // A scope's unit binds the entry its scope resolved to (its recorded bytes are the
+                // candidate list, no entry's name).
+                let named = if scoped {
+                    resolved.as_deref()
+                } else {
+                    recorded.as_deref()
+                };
+                let entry = std::str::from_utf8(named.unwrap_or_default())
                     .unwrap_or_default()
                     .to_string();
                 let hooks = binder.bind_gated(&entry, principal.as_deref());
@@ -190,7 +206,12 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
         let holds = |pool: &[u8], member: &str| self.steps.pool_holds(pool, member);
-        let Some(entry) = bound_entry(recorded.as_deref(), route, &view, holds)? else {
+        let bound = if scoped {
+            scoped_entry(recorded.as_deref(), resolved.as_deref(), &view)?
+        } else {
+            bound_entry(recorded.as_deref(), route, &view, holds)?
+        };
+        let Some(entry) = bound else {
             return Ok(());
         };
         let entry = entry.to_string();
@@ -236,8 +257,9 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                             continue;
                         }
                     };
-                    // The re-projection is held to the same bound entry.
-                    if next.pool != entry {
+                    // The re-projection is held to the same bound entry (a scope's unit's
+                    // projection may still name none: its entry is the kernel's resolution).
+                    if next.pool != entry && !(scoped && next.pool.is_empty()) {
                         return Err(Stopped::Unreadable);
                     }
                     if let Some(body) = &next.rewritten {
@@ -351,6 +373,49 @@ fn bound_entry<'v>(
     std::str::from_utf8(recorded)
         .map(Some)
         .map_err(|_| Stopped::Unreadable)
+}
+
+/// THE ENTRY A GATE-FIRST UNIT ROUTED BY SCOPE (`ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`) IS BOUND OVER:
+/// the ONE entry the kernel's Verify resolved its scope to (`resolved`), never an entry the
+/// plane's projection names. Its `arrive` recorded no entry: `candidates` is the plane's CANDIDATE
+/// LIST joined by `ROUTE_SCOPE_SEPARATOR` (`None` or empty = every entry is a candidate), and the
+/// plane's `project` cannot know which one the scope resolves to, so it names none. The binding
+/// guarantee of [`bound_entry`] holds the same way:
+///
+/// - the resolved entry must be one the recorded candidate list holds (a whole member, never a
+///   widening of the list); any other refuses the unit;
+/// - a projection may name no entry, or the resolved one; naming any other refuses the unit, so
+///   the plane's later word never trades the resolved entry's gates for another's;
+/// - a scope that resolved no entry (zero or several reach) binds nothing: the door refuses that
+///   unit `no_destination` before anything is admitted (`abi::plane::ROUTE_SCOPE`), so no hop runs
+///   ungated; a projection naming an entry for it is still refused;
+/// - a projection that names no entry and states no body binds nothing, as for any route.
+fn scoped_entry<'v>(
+    candidates: Option<&[u8]>,
+    resolved: Option<&'v [u8]>,
+    view: &Projection,
+) -> Result<Option<&'v str>, Stopped> {
+    if view.pool.is_empty() && view.projected.is_none() {
+        return Ok(None);
+    }
+    let Some(resolved) = resolved else {
+        if view.pool.is_empty() {
+            return Ok(None);
+        }
+        return Err(Stopped::Unreadable);
+    };
+    let entry = std::str::from_utf8(resolved).map_err(|_| Stopped::Unreadable)?;
+    let candidates = candidates.unwrap_or_default();
+    if !candidates.is_empty() {
+        let candidates = std::str::from_utf8(candidates).map_err(|_| Stopped::Unreadable)?;
+        if !candidates.split(ROUTE_SCOPE_SEPARATOR).any(|c| c == entry) {
+            return Err(Stopped::Unreadable);
+        }
+    }
+    if entry.is_empty() || (!view.pool.is_empty() && view.pool != entry) {
+        return Err(Stopped::Unreadable);
+    }
+    Ok(Some(entry))
 }
 
 /// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the

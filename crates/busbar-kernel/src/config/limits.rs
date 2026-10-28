@@ -632,7 +632,7 @@ pub fn install(resolved: &LimitsResolved) {
 /// use `InstallGuard` for that, because a broken `InstallGuard::drop` would then silently repair the
 /// very state the assertions inspect. Mirrors the derived caps exactly as every other mutation does,
 /// so a raw poke cannot leave the `proxy` globals disagreeing with the accessors.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn set_installed(slot: Option<LimitsResolved>) {
     mirror_derived_caps(slot.as_ref());
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = slot;

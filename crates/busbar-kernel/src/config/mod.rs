@@ -14,11 +14,11 @@ pub mod filled;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
-/// The root legacy table the composition root hands in, and the one rewrite over it.
-pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;
+/// The root migration table the composition root hands in, and the one rewrite over it.
+pub mod migration_table;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub mod named_map;
@@ -784,17 +784,17 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 ///
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
 /// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
-/// block's home and the trace URL keys that folded into one) are the root legacy table's frozen
-/// 1.5.5 text ([`legacy`]): the kernel names no export instance.
+/// block's home and the trace URL keys that folded into one) are the root migration table's frozen
+/// 1.5.5 text ([`migration_table`]): the kernel names no export instance.
 pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
     let trace_home = format!(
         "an `export:` instance with `module: {}` and `settings.url`",
-        legacy::text("export_trace_module")
+        migration_table::text("export_trace_module")
     );
     [
         // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
         // retired leaves reports the block-level move (the leaves have nowhere left to live).
-        ("observability", legacy::text("observability_home").to_string()),
+        ("observability", migration_table::text("observability_home").to_string()),
         // Inverted so the SAFE posture is the default.
         ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
         // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
@@ -802,8 +802,8 @@ pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
         // The IdP is DEFINED once and REFERENCED by name.
         ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
         // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
-        (legacy::text("observability_trace_key"), trace_home.clone()),
-        (legacy::text("observability_trace_key_1_4"), trace_home),
+        (migration_table::text("observability_trace_key"), trace_home.clone()),
+        (migration_table::text("observability_trace_key_1_4"), trace_home),
     ]
     .into_iter()
     .filter(|(old, _)| !old.is_empty())
@@ -823,10 +823,10 @@ pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
 /// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
 /// The leaves, the request-log type key they fold under and the metrics type key are the root
-/// legacy table's frozen 1.5.5 rows ([`legacy`]); the top-level `metrics:` block is listed last.
+/// migration table's frozen 1.5.5 rows ([`migration_table`]); the top-level `metrics:` block is listed last.
 pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
-    let log = legacy::text("observability_log_type_key");
-    let mut out: Vec<(&'static str, String)> = legacy::pairs("observability_log_keys")
+    let log = migration_table::text("observability_log_type_key");
+    let mut out: Vec<(&'static str, String)> = migration_table::pairs("observability_log_keys")
         .into_iter()
         .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
         .collect();
@@ -834,7 +834,7 @@ pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
         "metrics",
         format!(
             "export.{}.settings (buffer_seconds / key_gauge_limit)",
-            legacy::text("metrics_type_key")
+            migration_table::text("metrics_type_key")
         ),
     ));
     out
@@ -2513,6 +2513,12 @@ mod provider_refusal_pins;
 #[cfg(test)]
 #[path = "tests/resolved_provider_tests.rs"]
 mod resolved_provider_tests;
+
+// A provider's base URL (and token endpoint) as a `Debug` print shows it: no userinfo, while the
+// value the outbound request is built from keeps it (row 74, F25).
+#[cfg(test)]
+#[path = "tests/provider_debug_redaction_tests.rs"]
+mod provider_debug_redaction_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
