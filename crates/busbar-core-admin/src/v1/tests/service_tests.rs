@@ -3429,9 +3429,8 @@ mod plane_fees_on_admin_usage {
     use busbar_contract::records::RecordStore as _;
     use busbar_kernel::cost::PlaneFees;
     use busbar_kernel::governance::PLANE_LANE_SEP;
-    use busbar_kernel::plane_driver::registry::{
-        PlaneDecl, PlaneDeclaration, TestRegistryIsolation,
-    };
+    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+    use busbar_kernel::test_support::planes::TestRegistryIsolation;
 
     const KEY: &str = "vk_plane_fees";
     /// The pools plane's model and provider, as the rows below name them.

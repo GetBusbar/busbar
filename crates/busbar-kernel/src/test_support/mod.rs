@@ -2078,6 +2078,9 @@ pub mod durable_store;
 /// re-exported at the `test_support` root below, so `busbar_kernel::test_support::TestAppSeam`
 /// resolves exactly where the fixture it is a view onto does.
 pub mod seam;
+
+/// A test binary's plane registrations, published as the process plane list.
+pub mod planes;
 pub use seam::{
     build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
 };

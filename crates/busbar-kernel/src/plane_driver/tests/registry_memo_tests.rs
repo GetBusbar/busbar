@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The test-surface plane-list memo (`TEST_MEMO`) must resolve against the registration set that is
-//! actually installed. It used to key on the set's SIZE, so two distinct sets of equal length aliased:
-//! whichever was folded first was handed back for the other (item 117 — 8 `units_llm` tests failed
-//! whenever the `plane_decisions` tests ran first, even single-threaded).
+//! The process plane list must be the fold of the registration set that is actually installed: two
+//! distinct sets of equal length never alias (item 117 — 8 `units_llm` tests once failed whenever the
+//! `plane_decisions` tests ran first, even single-threaded).
 
 use super::*;
+use crate::test_support::planes::TestRegistryIsolation;
 
 static ONE: PlaneDecl =
     crate::plane_driver::dispatch::neutral_sibling_decl("memo-one", "memo-one-section", "one");
