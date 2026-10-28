@@ -104,9 +104,21 @@ Busbar does the same:
   - **revocations of digests and signers, even in a keys document that has expired**;
   - the keys-document **rollback** floor.
 
-A cached `plugins.fetch` target (pinned, already on disk) is installed, so it is not re-judged.
-An unpinned fetch downloads again on every boot, so it is judged every time. The release repository
-must serve tarballs sealed under a current keys document.
+A `plugins.fetch` download is judged for expiry only when its bytes are NEW, meaning their
+SHA-256 differs from the copy already installed at its target. This covers two cases:
+
+- **A pinned target already on disk** is cached and never downloaded.
+- **An unpinned fetch** downloads again on every boot. When it returns the same bytes as the
+  installed copy, nothing new is installed, so the boot judges it by boot rules: the chain,
+  revocation and rollback, with no expiry. A boot never fails because time passed while the bytes
+  stayed the same.
+
+Changed bytes are an install. If their seal has expired, the download is refused with its audit
+code, the refusal says the installed copy is kept, and nothing is written.
+
+At install time, the expiry check runs before any key is consulted, as it does in `plugins.fetch`.
+This check reads the documents unverified, so it can only refuse. A seal that passes it still has
+its whole chain verified.
 
 **Rollback floor.** The highest accepted keys-document version is stored beside the per-plugin
 anti-downgrade marks in the data dir's marks file, under the reserved mark `busbar-release-keys`
@@ -238,10 +250,8 @@ keys.sig`), and `busbar-plugin-pack envelope --key <root> ...` wraps the signatu
 
 ## 5. Open questions
 
-1. **Expiry.** Resolved: expiry is judged at install, fetch and update, not at boot (see "When
-   expiry is judged"). One consequence remains: an unpinned `plugins.fetch` re-downloads at every
-   boot. Once the 90-day keys document it carries has expired, that download is refused until the
-   release is re-sealed under a current one.
+1. **Expiry.** Resolved: expiry is judged at install, fetch and update, and only for new bytes.
+   It is not judged at boot (see "When expiry is judged").
 2. **Root count.** `the_default_release_key_input_is_the_real_release_key_list` requires at least
    two committed keys. With only the KMS root committed, it stays red until the PIV root exists.
 3. **ModernCI requirement 1** ("ModernCI never holds a private key that can sign a release on its

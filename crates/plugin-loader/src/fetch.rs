@@ -194,15 +194,27 @@ pub fn fetch_plugins(
             }
         }
 
-        // FRESHNESS (install time): a sealed tarball whose documents have expired is not installed.
-        // Its chain is verified by the scan; a forged `expires` fails there.
-        if let Err(r) = fresh(&bytes) {
-            record_problem(
-                &mut errors,
-                &mut outcomes,
-                format!("release seal refused ({}): {r} (not written)", r.code()),
-            );
-            continue;
+        // FRESHNESS (install time): NEW bytes, those whose digest differs from the copy already
+        // installed at the target, are an install, and a sealed tarball whose documents have
+        // expired is not installed. The SAME bytes as the installed copy install nothing: they are
+        // judged by boot rules alone (the scan's chain, revocation and rollback, never expiry), so
+        // an unpinned fetch that re-downloads every boot never fails one because time passed. The
+        // chain itself is verified by the scan; a forged `expires` fails there.
+        let unchanged = std::fs::read(&target)
+            .is_ok_and(|installed| sha256_hex(&installed) == sha256_hex(&bytes));
+        if !unchanged {
+            if let Err(r) = fresh(&bytes) {
+                record_problem(
+                    &mut errors,
+                    &mut outcomes,
+                    format!(
+                        "release seal refused ({}): {r} (not written; a NEW download is judged at \
+                         install time, and any installed copy is kept)",
+                        r.code()
+                    ),
+                );
+                continue;
+            }
         }
 
         // Durable write via the single owner (`crate::durable`): temp -> fsync -> atomic rename ->

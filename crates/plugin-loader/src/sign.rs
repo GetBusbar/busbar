@@ -1467,7 +1467,38 @@ pub fn evaluate(
         keys_floor: policy.release_keys_floor,
         enforce_expiry: policy.release_enforce_expiry,
     };
-    let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.signature.trim().is_empty() {
+    // INSTALL-TIME FRESHNESS FIRST: under `release_enforce_expiry` (an install, a fetch, an update)
+    // a sealed manifest whose keys document or release manifest has expired is refused before any
+    // key is consulted, exactly as `plugins.fetch` refuses it. The check reads the documents
+    // unverified, which can only refuse: a seal that passes it still has its whole chain verified
+    // below.
+    let stale = match crate::release_trust::wire::read_seal(&manifest.signature) {
+        Some(Ok((keys, targets))) if policy.release_enforce_expiry => {
+            crate::release_trust::check_fresh(
+                crate::release_trust::Seal {
+                    keys: &keys,
+                    targets: &targets,
+                },
+                checks.now,
+            )
+            .err()
+        }
+        _ => None,
+    };
+    let trusted_or_untrusted: Result<bool, Untrusted> = if let Some(refusal) = stale {
+        Err(Untrusted::Unsigned {
+            reason: format!(
+                "first-party signature failed: release seal refused ({}): {refusal}",
+                refusal.code()
+            ),
+            tampered: true,
+            trusted_keys: policy
+                .first_party_keys
+                .iter()
+                .map(|k| k.id.clone())
+                .collect(),
+        })
+    } else if manifest.signature.trim().is_empty() {
         Err(Untrusted::Unsigned {
             reason: "manifest carries no signature".to_string(),
             tampered: false,
