@@ -75,7 +75,7 @@ use busbar_contract::conn::{
 };
 use std::future::Future as _;
 
-use super::services::{write_out, Answered};
+use super::services::{service, write_out, Answered};
 use super::ticket::InstanceWake;
 
 /// The table an instance with a declared need is handed.
@@ -452,96 +452,69 @@ fn addresses(within: &[u8]) -> Option<Vec<IpAddr>> {
         .collect()
 }
 
-extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::READ,
-        size_of::<IoIn>(),
-        |id, table, st, head| {
-            // SAFETY: the head covered an `IoIn`.
-            let i = unsafe { input.cast::<IoIn>().read_unaligned() };
-            // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
-            // past the call, a PENDING answer included.
-            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answered::fault();
-            };
-            let ticket = conn_ticket(head.handle.ticket);
-            let conn = match resolve(st, id, table, i.stream) {
-                Ok(c) => c,
-                Err(e) => return refusal(e),
-            };
-            match table.read(id, conn, ticket, buf) {
-                Ok(piece) => Answered::ready(0, piece.len as u64),
-                Err(ConnError::Closed) => Answered::ready(0, 0),
-                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
-                    Outcome::Refused,
-                    "a read that would pend is callable only inside a ticketed op",
-                ),
-                Err(e) => refusal_of(e, id, table, conn),
-            }
-        },
-    )
-}
+service!(read, slot, service::READ, IoIn, |id, table, st, head, i| {
+    // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
+    // past the call, a PENDING answer included.
+    let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
+        return Answered::fault();
+    };
+    let ticket = conn_ticket(head.handle.ticket);
+    let conn = match resolve(st, id, table, i.stream) {
+        Ok(c) => c,
+        Err(e) => return refusal(e),
+    };
+    match table.read(id, conn, ticket, buf) {
+        Ok(piece) => Answered::ready(0, piece.len as u64),
+        Err(ConnError::Closed) => Answered::ready(0, 0),
+        Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
+            Outcome::Refused,
+            "a read that would pend is callable only inside a ticketed op",
+        ),
+        Err(e) => refusal_of(e, id, table, conn),
+    }
+});
 
-extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::WRITE,
-        size_of::<IoIn>(),
-        |id, table, st, _| {
-            // SAFETY: the head covered an `IoIn`.
-            let i = unsafe { input.cast::<IoIn>().read_unaligned() };
-            // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
-            // past the call, a PENDING answer included.
-            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answered::fault();
-            };
-            let conn = match resolve(st, id, table, i.stream) {
-                Ok(c) => c,
-                Err(e) => return refusal(e),
-            };
-            match table.write(id, conn, buf, false, false) {
-                Ok(n) => Answered::ready(0, n as u64),
-                Err(e) => refusal_of(e, id, table, conn),
-            }
-        },
-    )
-}
+service!(write, slot, service::WRITE, IoIn, |id, table, st, _, i| {
+    // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
+    // past the call, a PENDING answer included.
+    let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
+        return Answered::fault();
+    };
+    let conn = match resolve(st, id, table, i.stream) {
+        Ok(c) => c,
+        Err(e) => return refusal(e),
+    };
+    match table.write(id, conn, buf, false, false) {
+        Ok(n) => Answered::ready(0, n as u64),
+        Err(e) => refusal_of(e, id, table, conn),
+    }
+});
 
-extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::CLOSE,
-        size_of::<StreamIn>(),
-        |id, table, st, _| {
-            // SAFETY: the head covered a `StreamIn`.
-            let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
-            lock(&st.facts).remove(&i.stream);
-            let held = st.streams().remove(&i.stream);
-            let conn = match held.map(|s| s.conn) {
-                // Never opened, or refused: nothing on the table to close.
-                // (A request waiting on its auth call drops the call: a client drop.)
-                // (A stream being opened outside the lock is closed by the call that opens it.)
-                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
-                    return Answered::ready(0, 0)
-                }
-                Some(Conn::Open(c)) => c,
-                None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
-                None => ConnId(i.stream),
-            };
-            match table.close(id, conn) {
-                Ok(()) => Answered::ready(0, 0),
-                Err(e) => refusal(e),
+service!(
+    close,
+    slot,
+    service::CLOSE,
+    StreamIn,
+    |id, table, st, _, i| {
+        lock(&st.facts).remove(&i.stream);
+        let held = st.streams().remove(&i.stream);
+        let conn = match held.map(|s| s.conn) {
+            // Never opened, or refused: nothing on the table to close.
+            // (A request waiting on its auth call drops the call: a client drop.)
+            // (A stream being opened outside the lock is closed by the call that opens it.)
+            Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
+                return Answered::ready(0, 0)
             }
-        },
-    )
-}
+            Some(Conn::Open(c)) => c,
+            None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
+            None => ConnId(i.stream),
+        };
+        match table.close(id, conn) {
+            Ok(()) => Answered::ready(0, 0),
+            Err(e) => refusal(e),
+        }
+    }
+);
 
 /// An optional text the caller handed: `Ok(None)` when absent or empty, `Err` when it is not text.
 ///
@@ -660,46 +633,41 @@ fn held_text(all: &mut HeldFacts, key: u64, text: Option<&str>) -> AbiStr {
     }
 }
 
-extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::FACTS,
-        size_of::<FactsIn>(),
-        |id, table, st, _| {
-            // SAFETY: the head covered a `FactsIn`.
-            let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
-            if i.facts.is_null() {
-                return Answered::fault();
-            }
-            let conn = match resolve(st, id, table, i.stream) {
-                Ok(c) => c,
-                Err(e) => return refusal(e),
-            };
-            let f = match table.facts(id, conn) {
-                Ok(f) => f,
-                Err(e) => return refusal(e),
-            };
-            let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
-            let mut all = lock(&st.facts);
-            let key = i.stream;
-            let written = StreamFacts {
-                size: size_of::<StreamFacts>() as u32,
-                secure: u32::from(hash.is_some()),
-                endpoint: held_text(&mut all, key, None),
-                agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
-                peer_cert_hash: held_text(&mut all, key, hash),
-                peer_key_pin: held_text(&mut all, key, f.peer_key_pin.as_deref()),
-                client_identity: u32::from(f.client_identity),
-                _reserved: 0,
-            };
-            // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
-            unsafe { i.facts.write_unaligned(written) };
-            Answered::ready(0, 0)
-        },
-    )
-}
+service!(
+    facts,
+    slot,
+    service::FACTS,
+    FactsIn,
+    |id, table, st, _, i| {
+        if i.facts.is_null() {
+            return Answered::fault();
+        }
+        let conn = match resolve(st, id, table, i.stream) {
+            Ok(c) => c,
+            Err(e) => return refusal(e),
+        };
+        let f = match table.facts(id, conn) {
+            Ok(f) => f,
+            Err(e) => return refusal(e),
+        };
+        let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
+        let mut all = lock(&st.facts);
+        let key = i.stream;
+        let written = StreamFacts {
+            size: size_of::<StreamFacts>() as u32,
+            secure: u32::from(hash.is_some()),
+            endpoint: held_text(&mut all, key, None),
+            agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
+            peer_cert_hash: held_text(&mut all, key, hash),
+            peer_key_pin: held_text(&mut all, key, f.peer_key_pin.as_deref()),
+            client_identity: u32::from(f.client_identity),
+            _reserved: 0,
+        };
+        // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
+        unsafe { i.facts.write_unaligned(written) };
+        Answered::ready(0, 0)
+    }
+);
 
 // ── THE REPLAY RULE ─────────────────────────────────────────────────────────────────────────────
 
@@ -1615,34 +1583,29 @@ fn abi(s: &'static str) -> AbiStr {
     }
 }
 
-extern "C" fn identity(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::IDENTITY,
-        size_of::<IdentityIn>(),
-        |_, _, _, _| {
-            // SAFETY: the head covered an `IdentityIn`.
-            let i = unsafe { input.cast::<IdentityIn>().read_unaligned() };
-            if i.identity.is_null() {
-                return Answered::fault();
-            }
-            let (user, program) = process();
-            // SAFETY: the caller's identity slot, checked non-NULL.
-            unsafe {
-                i.identity.write_unaligned(ProcessIdentity {
-                    size: size_of::<ProcessIdentity>() as u32,
-                    _reserved: 0,
-                    pid: u64::from(std::process::id()),
-                    os_user: abi(user),
-                    program: abi(program),
-                });
-            }
-            Answered::ready(0, 0)
-        },
-    )
-}
+service!(
+    identity,
+    slot,
+    service::IDENTITY,
+    IdentityIn,
+    |_, _, _, _, i| {
+        if i.identity.is_null() {
+            return Answered::fault();
+        }
+        let (user, program) = process();
+        // SAFETY: the caller's identity slot, checked non-NULL.
+        unsafe {
+            i.identity.write_unaligned(ProcessIdentity {
+                size: size_of::<ProcessIdentity>() as u32,
+                _reserved: 0,
+                pid: u64::from(std::process::id()),
+                os_user: abi(user),
+                program: abi(program),
+            });
+        }
+        Answered::ready(0, 0)
+    }
+);
 
 #[cfg(test)]
 #[path = "../tests/conn_services_tests.rs"]
