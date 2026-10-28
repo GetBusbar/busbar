@@ -821,16 +821,9 @@ fn answers(c: &Candidate, module: &str) -> bool {
 /// linked half is the root's hook axis.
 #[must_use]
 pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
-    registry.dropped_hooks().any(|p| {
-        let Ok(Some(stated)) = p.manifest.stated_rendering() else {
-            return false;
-        };
-        let origin = Origin::Dropped {
-            file: p.file.clone(),
-            bytes: Arc::new(Vec::new()),
-        };
-        Candidate::from_manifest(stated, &p.manifest, origin).is_ok_and(|c| answers(&c, module))
-    })
+    registry
+        .dropped_hooks()
+        .any(|p| matches!(p.candidate(), Ok(Some(c)) if answers(&c, module)))
 }
 
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
@@ -889,19 +882,9 @@ impl HookRows {
             candidates.push(c);
         }
         for p in registry.into_iter().flat_map(PluginRegistry::dropped_hooks) {
-            let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
-            let Some(stated) = p.manifest.stated_rendering().map_err(named)? else {
-                return Err(named(JSON_HOOK_REFUSED.to_string()));
+            let Some(c) = p.candidate()? else {
+                return Err(format!("plugin '{}': {JSON_HOOK_REFUSED}", p.manifest.name));
             };
-            let c = Candidate::from_manifest(
-                stated,
-                &p.manifest,
-                Origin::Dropped {
-                    file: p.file.clone(),
-                    bytes: Arc::new(p.lib_bytes.clone()),
-                },
-            )
-            .map_err(named)?;
             if p.first_party() {
                 first_party.push(c.name.clone());
             }

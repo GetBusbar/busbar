@@ -376,21 +376,7 @@ fn discovered(
         .iter()
         .filter(|r| keep(&r.manifest.kind))
     {
-        let Some(stated) = row
-            .manifest
-            .stated_rendering()
-            .map_err(|e| format!("plugin '{}': {e}", row.manifest.name))?
-        else {
-            continue;
-        };
-        let origin = Origin::Dropped {
-            file: row.file.clone(),
-            bytes: Arc::new(row.lib_bytes.clone()),
-        };
-        out.push(
-            Candidate::from_manifest(stated, &row.manifest, origin)
-                .map_err(|e| format!("plugin '{}': {e}", row.manifest.name))?,
-        );
+        out.extend(row.candidate()?);
     }
     Ok(out)
 }
