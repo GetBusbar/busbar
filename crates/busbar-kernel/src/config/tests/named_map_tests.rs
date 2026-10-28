@@ -137,7 +137,7 @@ fn only_identity_providers_carry_a_trust_ceiling() {
 /// never in a bespoke "compiled without the plane" sentence that names a plane the build lacks.
 #[test]
 fn a_section_no_registered_plane_declares_is_an_unknown_field() {
-    let _isolation = crate::plane::registry::TestRegistryIsolation::empty();
+    let _isolation = crate::plane_driver::registry::TestRegistryIsolation::empty();
     let section = NamedMapSection::Plane("bays");
     let err = section
         .parse_def("dock", &serde_json::json!({}))
