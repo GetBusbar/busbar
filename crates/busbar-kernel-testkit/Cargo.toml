@@ -15,5 +15,6 @@ license = "Apache-2.0"
 test = false
 
 [dependencies]
-busbar-kernel = { path = "../busbar-kernel", default-features = false }
+# `test-support` while the kernel still gates its process-wide limits lock behind it.
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract" }

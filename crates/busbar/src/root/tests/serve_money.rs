@@ -731,7 +731,7 @@ async fn node_boot_hooks_arm() {
     for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&boot.limits);
     }
-    let app = busbar_kernel::test_support::build_once(boot, None).expect("the boot app builds");
+    let app = busbar_kernel_testkit::app::build_once(boot, None).expect("the boot app builds");
     assert!(
         crate::root::kernel::ROOT_CARD.pin().is_some(),
         "the boot build's rates never reached the card holder: its repricer is not installed"
@@ -749,7 +749,7 @@ async fn node_boot_hooks_arm() {
     let mut applied = cfg();
     applied.per_request_fee = 3;
     let _applied =
-        busbar_kernel::test_support::build_once(applied, Some(&app)).expect("the apply builds");
+        busbar_kernel_testkit::app::build_once(applied, Some(&app)).expect("the apply builds");
     let pinned = crate::root::kernel::ROOT_CARD
         .pin()
         .expect("the card holder has entries")

@@ -631,7 +631,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // A REAL APP, off the REAL construction path — `build_app_from_config`, the one boot and config
     // apply both run — so `app.governance` is the store this deployment actually resolved and
     // `app.cost` is the resolved cost model the read plan is derived from. Not a stand-in for one.
-    let app = busbar_kernel::test_support::build_once(
+    let app = busbar_kernel_testkit::app::build_once(
         busbar_kernel::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BOOT_BOOK"),
         ),
@@ -783,7 +783,7 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
         busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
-    let app = busbar_kernel::test_support::build_once(
+    let app = busbar_kernel_testkit::app::build_once(
         busbar_kernel::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
         ),
@@ -1050,14 +1050,14 @@ fn one_seal_after_two_reloads() {
         )
     };
 
-    let boot = busbar_kernel::test_support::build_once(cfg(), None).expect("the boot builds");
+    let boot = busbar_kernel_testkit::app::build_once(cfg(), None).expect("the boot builds");
     let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
     let store = boot
         .governance
         .clone()
         .expect("a boot resolves the store its book opens over");
-    let first = busbar_kernel::test_support::build_once(cfg(), Some(&boot)).expect("reload 1");
-    let second = busbar_kernel::test_support::build_once(cfg(), Some(&first)).expect("reload 2");
+    let first = busbar_kernel_testkit::app::build_once(cfg(), Some(&boot)).expect("reload 1");
+    let second = busbar_kernel_testkit::app::build_once(cfg(), Some(&first)).expect("reload 2");
 
     // (a) THE STORE CARRIES OVER.
     assert!(

@@ -5,6 +5,8 @@
 //! kernel's own unit-test build by `#[path]`, so it names the kernel as `busbar_kernel` (the kernel
 //! aliases itself under that name) and never as `crate`.
 
+/// An App built from a test's configuration through the kernel's own build.
+pub mod app;
 /// A process-wide limits posture for a test's duration, rolled back on drop.
 pub mod limits;
 /// The base data router's mounted surface for an App, as plain data.
