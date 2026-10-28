@@ -11,6 +11,10 @@
 //!   states it.
 //! * [`carried`] — a carrier op's instance and its armed host I/O, or the refusal a call on neither
 //!   earns.
+//! * [`table::Table`] — what an instance holds by token (framings, connections, calls), one lock per
+//!   value, none shared between two.
+//! * [`sink`] — a framer's sink fill ([`sink::fill`], [`sink::Piece`], [`sink::field_cut`]), over
+//!   any frame buffer.
 //!
 //! The HOT transport lowering that lived here (`export_carrier!`, `export_framer!`, the per-method
 //! `#[repr(C)]` slot bridges and the decl a transport cdylib exported as `busbar_transport_decl`) is
@@ -23,6 +27,9 @@ use crate::abi::sdk::safe::Instance;
 use crate::abi::shared::code;
 use crate::grammar::SelectorForm;
 use crate::transport::DEFAULT_REQUEST_BODY_MAX_BYTES;
+
+pub mod sink;
+pub mod table;
 
 /// `forms` as their codes, in declared order.
 #[must_use]
