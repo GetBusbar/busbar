@@ -79,11 +79,6 @@ pub struct LaneInput {
     pub path: Option<String>,
     /// Optional path-BASE override (URL-model protocols).
     pub path_base: Option<String>,
-    /// The provider's configured tenant (`organization`, `project`), set on every upstream request
-    /// under the header its dialect declares; `None` sends nothing.
-    pub organization: Option<String>,
-    /// See `organization`.
-    pub project: Option<String>,
     /// Optional upstream model-name override (the wire model), else the config key.
     pub upstream_model: Option<String>,
     /// The PRE-RESOLVED provider credential — the resolved secret, carried because the plane cannot
@@ -283,10 +278,6 @@ pub struct PoolInput {
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 pub struct LegacyLaneKeys {
-    /// The provider's configured tenant (`LaneInput::organization`).
-    pub organization: Option<String>,
-    /// See `organization`.
-    pub project: Option<String>,
     /// The provider-level lane capabilities, read off the same table.
     #[serde(flatten)]
     provider_caps: crate::ir::lane_caps::ProviderLaneCaps,

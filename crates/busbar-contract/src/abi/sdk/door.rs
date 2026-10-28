@@ -1231,6 +1231,34 @@ macro_rules! plugin_door {
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
 
     };
+    // `lifecycle: plane_life(P)`: the plane's nine lifecycle slots over its `PlaneLife` `P`
+    // (`abi::sdk::plane_life`), every one a `Safe` slot over `P`.
+    (
+        ops: $ops:ty,
+        statement: $statement:expr,
+        lifecycle: plane_life($plane:ty)
+        $(, ready: $ready:ty)?
+        $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(,)?
+    ) => {
+        $crate::plugin_door! {
+            ops: $ops,
+            statement: $statement,
+            lifecycle: {
+                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Validate<$plane>>,
+                open: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Open<$plane>>,
+                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Refresh<$plane>>,
+                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Retire<$plane>>,
+                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Tick<$plane>>,
+                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Drive<$plane>>,
+                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Cancel<$plane>>,
+                release: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Release<$plane>>,
+                close: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Close<$plane>>,
+            }
+            $(, ready: $ready)?
+            $(, kind_ops: { $($field : $slot),* })?
+        }
+    };
 }
 
 /// THE ONE EXPORT. Invoked once, in a plugin's thin `cdylib` crate, with the logic crate's door:
