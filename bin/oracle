@@ -510,9 +510,18 @@ fi
 # GH_TOKEN, else GITHUB_TOKEN; a LOCAL run only, release_token) reaches curl on stdin as a config line:
 # never on an argv, never on disk. A CI run never fetches: NO JUDGE without ModernCI's judge path.
 ORACLE_RELEASE_API="https://api.github.com/repos/GetBusbar/busbar-release"
-ORACLE_RELEASE_KEY_PEM='-----BEGIN PUBLIC KEY-----
+# THE TRUSTED RELEASE KEYS a judge's .sig may verify with (busbar-release-cli update.rs RELEASE_KEYS,
+# same keys, same order): busbar-release-2026-10-28, the owner's key that signs every judge from
+# 2026-10-28 (its private half is ModernCI's BUSBAR_RELEASE_SIGNING_KEY), then busbar-release-2026-10-09,
+# the earlier key, kept so what it already signed still verifies (nobody holds its private half).
+ORACLE_RELEASE_KEY_PEMS=(
+'-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs=
+-----END PUBLIC KEY-----'
+'-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU=
 -----END PUBLIC KEY-----'
+)
 _pin_in() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}'; }
 sha256_of() {  # sha256_of <file> — the hex digest, or nothing
   if command -v sha256sum >/dev/null 2>&1; then sha256sum -- "$1" | cut -c1-64
@@ -650,20 +659,26 @@ fetch_asset() {  # fetch_asset <source> <name> <out> — <source>: a directory (
   [ -n "$id" ] || return 1
   release_api "$ORACLE_RELEASE_API/releases/assets/$id" application/octet-stream "$out" "the asset $name"
 }
-verify_judge_sig() {  # verify_judge_sig <pubkey pem> <asset name> <sha256> <sig file (base64)>
-  local pem="$1" name="$2" hex="$3" sig="$4" d rc=0
+verify_judge_sig() {  # verify_judge_sig <asset name> <sha256> <sig file (base64)> <pubkey pem>... — any key verifies
+  local name="$1" hex="$2" sig="$3" d pem n=0 rc=1
+  shift 3
   command -v openssl >/dev/null 2>&1 || { echo "oracle: refusing the judge: $name has a .sig and there is no openssl to verify it" >&2; return 1; }
   d="$(mktemp -d)"
-  printf '%s\n' "$pem" >"$d/key.pem"
   printf '%s\n%s\n' "$name" "$hex" >"$d/msg"
-  if ! tr -d '\n\r ' <"$sig" | base64 -d >"$d/sig" 2>/dev/null; then rc=1
-  elif ! openssl pkeyutl -verify -pubin -inkey "$d/key.pem" -rawin -in "$d/msg" -sigfile "$d/sig" >/dev/null 2>&1; then rc=1; fi
+  if tr -d '\n\r ' <"$sig" | base64 -d >"$d/sig" 2>/dev/null; then
+    for pem in "$@"; do
+      n=$((n + 1))
+      printf '%s\n' "$pem" >"$d/key$n.pem"
+      if openssl pkeyutl -verify -pubin -inkey "$d/key$n.pem" -rawin -in "$d/msg" -sigfile "$d/sig" >/dev/null 2>&1; then rc=0; break; fi
+    done
+  fi
   rm -rf "$d"
-  [ "$rc" = 0 ] || echo "oracle: refusing the judge: $name's .sig is not busbar-release's release key's signature of it" >&2
+  [ "$rc" = 0 ] || echo "oracle: refusing the judge: $name's .sig is not a signature of it by any of busbar-release's $# trusted release key(s)" >&2
   return "$rc"
 }
 fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>] — prints the verified judge
-  local text="$1" cache="$2" src="$3" pem="${4:-$ORACLE_RELEASE_KEY_PEM}" arch ref want name bin tmp got side
+  local text="$1" cache="$2" src="$3" arch ref want name bin tmp got side keys
+  if [ -n "${4:-}" ]; then keys=("$4"); else keys=("${ORACLE_RELEASE_KEY_PEMS[@]}"); fi
   arch="$(judge_arch)"
   ref="$(printf '%s\n' "$text" | _pin_in release_ref)"
   want="$(printf '%s\n' "$text" | _pin_in "sha256_linux_$arch")"
@@ -688,7 +703,7 @@ fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>
     [ "$side" = "$want" ] || { echo "oracle: refusing the judge: its published .sha256 ($side) is not the pin's $want" >&2; rm -rf "$tmp"; return 1; }
   fi
   if fetch_asset "$src" "$name.sig" "$tmp/$name.sig" 2>/dev/null; then
-    verify_judge_sig "$pem" "$name" "$got" "$tmp/$name.sig" || { rm -rf "$tmp"; return 1; }
+    verify_judge_sig "$name" "$got" "$tmp/$name.sig" "${keys[@]}" || { rm -rf "$tmp"; return 1; }
   fi
   mkdir -p "$(dirname "$bin")"
   mv "$tmp/$name" "$bin.part" && chmod +x "$bin.part" && mv -f "$bin.part" "$bin"
