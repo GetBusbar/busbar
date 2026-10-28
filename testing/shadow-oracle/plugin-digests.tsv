@@ -74,7 +74,5 @@ hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret
 auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
 auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
 auth-ldap	src:cbc5d83e38604037eba85a56adc8ee650202f145	build:busbar-auth-ldap	-	1.6
-# webrequest-hook ac122a9 (branch pin-g14-secret-fields): 214bfc7 with `secret_refs: ["url"]`, so a 1.5.5
-# hook config's url: {env: ...} is resolved at a declared field, not refused as undeclared (G14, #1699).
-webrequest-hook	src:ac122a9f49256f777db88634b591938413fcd4be	build:busbar-hook-webrequest	-	1.6
+webrequest-hook	src:214bfc79b1a12f91f81bfa91c02f8e7e20e2d83f	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
