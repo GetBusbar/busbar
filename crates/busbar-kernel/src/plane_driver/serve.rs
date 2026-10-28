@@ -302,7 +302,7 @@ impl ServeTables {
             .map(|()| s),
             Err(e) => Err(e),
         };
-        Some(audited_reply(&table, route, &name, &actor, served))
+        Some(audited_reply(&table, route, name, &actor, served))
     }
 
     /// THE PUBLIC SERVE PATH (SEAM-4o; `abi::plane::ROUTE_PUBLIC`: "`serve` serves it to an
@@ -369,7 +369,7 @@ impl ServeTables {
             .map(|()| s),
             Err(e) => Err(e),
         };
-        audited_reply(&table, route, &name, &AuthPrincipal(None), served)
+        audited_reply(&table, route, name, &AuthPrincipal(None), served)
     }
 }
 
