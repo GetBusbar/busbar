@@ -429,7 +429,7 @@ extern "C" fn host_open(
                 &OpenDesc {
                     target: text(d.target)?.unwrap_or(""),
                     fields: &fields,
-                    body: bytes(d.body, d.body_len)?,
+                    body: crate::conn::Bytes::copy_from_slice(bytes(d.body, d.body_len)?),
                     timeout_ms: d.timeout_ms,
                     method: bytes(d.method.ptr, d.method.len)?,
                     head_target: bytes(d.head_target.ptr, d.head_target.len)?,

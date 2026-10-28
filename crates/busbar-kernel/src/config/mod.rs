@@ -50,6 +50,7 @@ pub mod transaction;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
+pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
@@ -452,6 +453,9 @@ pub struct RootCfg {
     /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
     /// secret references the owner listed in it.
     pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
+    /// The `credentials:` block, carried through `resolve` verbatim: the at-rest key references,
+    /// resolved at boot and at reload ([`CredentialsCfg`]).
+    pub credentials: CredentialsCfg,
     /// EVERY REGISTERED PLANE'S DECLARED SECTION this document writes, by config section, carried
     /// through `resolve` VERBATIM.
     ///
@@ -1199,6 +1203,11 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub oauth_as: Option<serde_yaml::Value>,
+    /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
+    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens. A lifted
+    /// CARRIER, exactly as `oauth_as:` above is: 1.5.5 refuses the key as unknown.
+    #[serde(skip)]
+    pub credentials: CredentialsCfg,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
     /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
@@ -2439,6 +2448,7 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,
+            credentials: deploy.credentials.clone(),
             plane_defs: deploy
                 .declared
                 .0
@@ -2538,6 +2548,7 @@ mod provider_debug_redaction_tests;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 pub mod auth;
+pub mod credentials;
 pub mod hooks;
 pub mod limits;
 pub mod plane_sections;
