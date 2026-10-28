@@ -886,7 +886,11 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
 # double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
 # prove the double states what this door states.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "fe9c61859b17873ed88bbb052fa83d5ae42b1e72" }
+# dfce32e (pin-1667-refs-2) is dec14ec, dist-v1.6.0 (076065f) plus `secret_refs: *`
+# (busbar-store-memory #44): 1.5.5 resolved a reference at every top-level store setting, and the
+# undeclared-reference refusal reads only the Statement (G14), so the store declares that surface.
+# On it, fe9c618's 31-slot store table (#1667).
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "dfce32ebc3b9c705183a055c33e409bd7290eb68" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.

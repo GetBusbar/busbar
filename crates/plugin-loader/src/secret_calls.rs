@@ -689,24 +689,40 @@ impl SecretAxis for SecretRows {
         let c = self
             .find(module)
             .ok_or_else(|| format!("no secret module answers to '{module}'"))?;
-        let mut secrets = Vec::new();
-        for key in Self::secret_refs(&c)? {
-            let material = match settings.get(&key) {
-                None => Vec::new(),
-                Some(v) => {
-                    // The decoder's own text is withheld: the value may be the secret itself.
-                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(
-                        crate::boot::not_a_reference(format!("secrets.{module}.settings.{key}")),
-                    )?;
-                    resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
-                }
-            };
-            secrets.push(SecretValue::new(material));
+        let keys = Self::secret_refs(&c)?;
+        if let Some(at) = busbar_contract::secret_fields::undeclared_reference(settings, &keys) {
+            return Err(busbar_contract::secret_fields::undeclared_refusal(
+                &format!("secrets.{module}.settings.{at}"),
+                &c.name,
+            ));
         }
-        let bytes = if settings.is_null() {
+        // An exact key stays in the settings, as this host has always left it; a wildcard match
+        // is lent behind its `{"$secret": <index>}` marker.
+        let reference = |at: &str, v: serde_json::Value| -> Result<Vec<u8>, String> {
+            // The decoder's own text is withheld: the value may be the secret itself.
+            let r = serde_json::from_value::<SecretRef>(v).map_err(
+                crate::boot::not_a_reference(format!("secrets.{module}.settings.{at}")),
+            )?;
+            resolve(&r).map_err(|e| format!("secrets.{module}.settings.{at}: {e}"))
+        };
+        let mut lent_settings = settings.clone();
+        let secrets: Vec<_> = busbar_contract::secret_fields::lend(
+            &mut lent_settings,
+            &keys,
+            true,
+            |at, found| found.map_or(Ok(Vec::new()), |v| reference(at, v)),
+            |at, found| match found {
+                serde_json::Value::String(s) => Ok(s.into_bytes()),
+                v => reference(at, v),
+            },
+        )?
+        .into_iter()
+        .map(SecretValue::new)
+        .collect();
+        let bytes = if lent_settings.is_null() {
             Vec::new()
         } else {
-            settings.to_string().into_bytes()
+            lent_settings.to_string().into_bytes()
         };
         let opened = LoadedSecret::open(
             self.load(&c, &Self::label(module))?,
