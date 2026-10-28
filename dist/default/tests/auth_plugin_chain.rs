@@ -62,12 +62,12 @@ const AUDIENCE: &str = "api://plugin-chain";
 /// `ca_cert_pem`), and genuinely signed tokens. Starting it also binds the test build's auth axis to
 /// a connection table serving that JWKS (`https_conns`): the host fetches it for the module over its
 /// declared need, and the module does the whole verification.
-fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain");
-        let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
+        let issuer = busbar_test_kit::test_issuer::Issuer::start(ISSUER, "plugin-chain");
+        let conns = busbar_test_kit::https_conns::HttpsConns::new();
         conns.serve_issuer(&issuer);
         busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
         issuer
