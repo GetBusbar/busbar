@@ -4734,8 +4734,8 @@
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
       "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded ~/Developer/tmp/cleanup/NEXT.md:328)",
-      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer)$",
-      "expected_cells": 25,
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream)$",
+      "expected_cells": 30,
       "classes": [
         "headers",
         "body",
@@ -4760,13 +4760,43 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27, as recorded ~/Developer/tmp/cleanup/NEXT.md:328: \"S-1 -> OWNER SIGNED 2026-10-27: rule 'busbar answers in the caller's dialect and mode; convert when possible, refuse explained otherwise'; synthesized streams audited, billed from real body; own entry + CHANGELOG.\""
+        "ruling": "OWNER SIGNED 2026-10-27, as recorded ~/Developer/tmp/cleanup/NEXT.md:328: \"S-1 -> OWNER SIGNED 2026-10-27: rule 'busbar answers in the caller's dialect and mode; convert when possible, refuse explained otherwise'; synthesized streams audited, billed from real body; own entry + CHANGELOG.\"",
+        "widened_2026_10_28": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-28",
+          "ruling": "OWNER SIGNED 2026-10-28 (asked by the coordinator with the before/after below): extend S-1-SYNTH by the 5 cells llm|{anthropic,bedrock,cohere,gemini,openai}|responses|request|ok_stream. Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row."
+        }
       },
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape."
+      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape. WIDENED 2026-10-28 (OWNER signed 2026-10-28): the 5 cells llm|anthropic|responses|request|ok_stream, llm|bedrock|responses|request|ok_stream, llm|cohere|responses|request|ok_stream, llm|gemini|responses|request|ok_stream and llm|openai|responses|request|ok_stream (+5, 30). Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row. These cells only."
+    },
+    {
+      "id": "S-1-AUDIT a stream synthesised for a Bedrock caller writes its egress.stream_synthesized audit row",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a stream synthesised for a Bedrock (ConverseStream) caller from an upstream's whole body writes one `egress.stream_synthesized` audit row naming the far dialect.",
+      "by": "owner (Matthew Jackson), 2026-10-28 (signed via the coordinator's question with the before/after below)",
+      "cells": "^(llm\\|bedrock\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|openai\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|responses\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|responses\\|request\\|ok_stream)$",
+      "expected_cells": 6,
+      "classes": [
+        "effects.audit"
+      ],
+      "premise": {
+        "cell": "llm|bedrock|anthropic|request|ok_stream_whole_answer",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-28",
+        "ruling": "OWNER SIGNED 2026-10-28: add the effects.audit class to S-1's six Bedrock cells, the five llm|bedrock|*|request|ok_stream_whole_answer cells plus llm|bedrock|responses|request|ok_stream. The new effect is one egress.stream_synthesized row naming the far dialect."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "On these six Bedrock-caller cells the far end answers one whole body and busbar synthesises the caller's ConverseStream from it (S-1 forgives the frame shape, body only). The synthesis is audited, as the owner's 2026-10-27 rule requires for every synthesised stream: one applied egress.stream_synthesized row naming the far dialect (busbar-plane-llm #53). Before: no audit row. After: one egress.stream_synthesized row naming the far dialect. effects.audit only; these six cells only; S-1 keeps its own scope and classes."
     },
     {
       "id": "STREAMERR-ANTHROPIC a cut Anthropic stream's error event names a published error type (api_error), the text in message",
