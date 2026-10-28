@@ -2820,6 +2820,28 @@ pub const DEPRECATED_ENV_VAR_HONORED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade).
+pub const CONFIG_PROVIDER_DESTINATION_REFUSED: Diagnostic = Diagnostic {
+    code: 3022,
+    class: Class::Config,
+    slug: "config-provider-destination-refused",
+    title: "A provider URL names a private or loopback host the destination guard refuses",
+    severity: Severity::Actionable,
+    summary: "A provider's `base_url` or `token_url` names a private or loopback address (an RFC \
+              1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` \
+              name), and `advanced.block_private_addresses` is on (the default) and \
+              `advanced.allow_destinations` does not name it. The destination guard refuses every \
+              request to it, so the provider would fail on its first request rather than at \
+              startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the \
+              provider, the key and the host.",
+    action: "Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` \
+             adds the hosts a provider's plane reports), or point the provider at a public \
+             address. Turning `block_private_addresses` off also admits it, and every other \
+             private address with it.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub static REGISTRY: &[&Diagnostic] = &[
     &DEPRECATED_ENV_VAR_HONORED,
     &DURABLE_WRITETHROUGH_BELOW_FLOOR,
@@ -2840,6 +2862,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_FIRSTPARTY_FLOOR_INVALID,
     &CONFIG_POOL_HETEROGENEOUS,
     &CONFIG_RATE_CARD_ALL_ZERO,
+    &CONFIG_PROVIDER_DESTINATION_REFUSED,
     &CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
     &CONFIG_AUTH_CHAIN_FULL_SCOPE,
     &CONFIG_OPEN_ADMIN_MINT,
