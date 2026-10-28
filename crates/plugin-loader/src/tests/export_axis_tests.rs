@@ -183,6 +183,60 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
     assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
+/// **A REFUSED WEBHOOK TARGET IS ONE LINE OF BUSBAR'S LOG, SAID AT START** (oracle cell
+/// `export|request-log-webhook|loopback-refused`): 1.5.5 printed `…; disabling this webhook
+/// exporter` once, after the boot's own lines, where it configured its exporters. The sink asks
+/// the host's verdict on its target in `ready`, and its ERROR line is copied to busbar's log, so
+/// `ready` is asked when the host STARTS its sinks: opening says nothing, the start says it once,
+/// and a delivery after it says it no more. RED before: `ready` ran inside `open`, so the line
+/// came before the boot's own lines.
+#[test]
+fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
+    use crate::dispatch::log_file::tests::{config, scratch, HostLog};
+    use crate::dispatch::LogLevel;
+    let host = HostLog::installed();
+    let dir = scratch("webhook-refused");
+    let logs = config(&dir, LogLevel::Info);
+    let row = "export-carried";
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(
+            manifest(row),
+            both_ways::export_carried_fixture::door,
+        )])
+        .expect("the linked sink admits");
+    let rows = ExportRows::new(&registry, dispatcher())
+        .with_logs(&logs)
+        .with_conns(Arc::new(crate::needs_restated::Refusing));
+    // A target of this test's own, so a parallel test's line is never counted.
+    let target = serde_json::json!({ "url": "http://127.0.0.1:1/said-once" });
+    let said = || {
+        host.lines()
+            .into_iter()
+            .filter(|(target, level, _, message)| {
+                target == crate::dispatch::log_file::MIRROR_TARGET
+                    && *level == tracing::Level::ERROR
+                    && message.contains("disabling this webhook exporter")
+                    && message.contains("said-once")
+            })
+            .count()
+    };
+    let sink = rows
+        .open(row, "export.wh", &target)
+        .expect("a refused target never refuses the open");
+    let at_open = said();
+    sink.start()
+        .expect("a refused target never refuses the start");
+    let at_start = said();
+    let _ = sink.deliver(ExportStream::Logs as u8, b"{}".to_vec(), Box::new(()));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let after = said();
+    drop(sink);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(at_open, 0, "opening the sink says nothing in busbar's log");
+    assert_eq!(at_start, 1, "the start says the refusal exactly once");
+    assert_eq!(after, 1, "a delivery after it never says it again");
+}
+
 /// A module no `kind: export` row answers is not the axis's (`None`), and opening it is refused
 /// naming it.
 #[test]
@@ -198,11 +252,12 @@ fn a_module_no_row_answers_is_not_on_the_axis() {
 }
 
 /// DISCOVERY AT BOOT ON THE EXPORT AXIS (`abi::mechanism::lifecycle` READY): an export door that
-/// states `ready` is awaited when its instance is opened to deliver, as a store's and an auth door's
-/// are. A refusal refuses the open with the plugin's own text; a READY answer opens it. The instance
-/// `check` opens to judge a configuration (it has no connector) is never asked.
+/// states `ready` is awaited when its opened instance is STARTED (where 1.5.5 configured its
+/// exporters), not when it is opened. A refusal refuses the start with the plugin's own text; a
+/// READY answer starts it. The instance `check` opens to judge a configuration (it has no
+/// connector) is never asked.
 #[test]
-fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
+fn an_export_door_stating_ready_is_awaited_when_it_starts() {
     use crate::dispatch::ready::ready_plugins::export::{door, NAME, READIES};
     use std::sync::atomic::Ordering;
     let registry = PluginRegistry::empty()
@@ -222,10 +277,11 @@ fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
         before,
         "check's instance is never asked"
     );
-    let failed = rows
+    let sink = rows
         .open(NAME, "export.audit", &refused)
-        .err()
-        .expect("a refused ready refuses the open");
+        .expect("the instance opens; it is not asked yet");
+    assert_eq!(READIES.load(Ordering::SeqCst), before, "open does not ask");
+    let failed = sink.start().expect_err("a refused ready refuses the start");
     assert!(failed.contains("the target is refused"), "{failed}");
     assert_eq!(READIES.load(Ordering::SeqCst), before + 1);
     rows.open(
@@ -233,7 +289,9 @@ fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
         "export.audit",
         &serde_json::json!({ "ready": "fine" }),
     )
-    .expect("a READY ready opens the sink");
+    .expect("the sink opens")
+    .start()
+    .expect("a READY ready starts the sink");
     assert_eq!(READIES.load(Ordering::SeqCst), before + 2);
 }
 

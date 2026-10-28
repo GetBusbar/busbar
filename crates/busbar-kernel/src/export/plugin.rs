@@ -257,15 +257,29 @@ pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projecti
     }
 }
 
-/// START every opened sink — at the moment the host starts its PUSH sinks: each states its
-/// admission (whether it takes deliveries this run, its in-flight bound, its gate's name), or none,
-/// and is fed at the host's default admission.
-pub fn start() {
+/// START every opened sink — at the moment the host starts its PUSH sinks, where 1.5.5 configured
+/// its exporters: each is readied ([`ExportCalls::start`], so what it says of its own target is
+/// said here, once), then states its admission (whether it takes deliveries this run, its
+/// in-flight bound, its gate's name), or none, and is fed at the host's default admission.
+///
+/// # Errors
+/// Every sink whose start was refused, under its instance: a refused start refuses the boot.
+pub fn start() -> Result<(), String> {
+    let mut errors = Vec::new();
     for s in sinks() {
+        if let Err(e) = s.sink.start() {
+            errors.push(format!("export.{}: {e}", s.name));
+            continue;
+        }
         let stated = s.sink.admission();
         if stated.is_some() {
             let _ = s.admission.set(Admission::of(&s.module, stated));
         }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n  - "))
     }
 }
 

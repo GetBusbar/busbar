@@ -299,6 +299,17 @@ pub trait ExportCalls: Send + Sync {
         None
     }
 
+    /// START the instance: its door's `ready` (discovery at boot) is awaited HERE, when the host
+    /// starts its PUSH sinks (after the app is built, before any listener binds), not when it was
+    /// opened. That is where 1.5.5 configured its exporters, so what a sink says of its own target
+    /// lands in busbar's log where 1.5.5 printed it, once. Nothing by default.
+    ///
+    /// # Errors
+    /// The instance's `ready` did not answer READY: the plugin's own text, which refuses the boot.
+    fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// The host shed a line for this instance before handing it over: an instance that declared a
     /// shed counter has it counted. Nothing by default.
     fn shed(&self) {}

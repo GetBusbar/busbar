@@ -48,7 +48,7 @@ fn fixed_clock() -> u64 {
 }
 
 /// A fresh directory of this test's own.
-fn scratch(tag: &str) -> PathBuf {
+pub(crate) fn scratch(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -60,7 +60,7 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-fn config(dir: &Path, level: LogLevel) -> PluginLogConfig {
+pub(crate) fn config(dir: &Path, level: LogLevel) -> PluginLogConfig {
     PluginLogConfig {
         dir: dir.to_path_buf(),
         level,
@@ -726,14 +726,14 @@ fn a_reconfigured_level_and_directory_reach_a_live_sink() {
 }
 
 /// The host log's own events, as a global subscriber sees them: `(target, level, plugin, message)`.
-type HostLine = (String, tracing::Level, String, String);
+pub(crate) type HostLine = (String, tracing::Level, String, String);
 
 /// A minimal global subscriber that keeps every event (busbar's own log, as the host writes it).
-struct HostLog(std::sync::Mutex<Vec<HostLine>>);
+pub(crate) struct HostLog(std::sync::Mutex<Vec<HostLine>>);
 
 impl HostLog {
     /// The process's one host log, installed once as the global subscriber.
-    fn installed() -> &'static HostLog {
+    pub(crate) fn installed() -> &'static HostLog {
         static LOG: std::sync::OnceLock<&'static HostLog> = std::sync::OnceLock::new();
         LOG.get_or_init(|| {
             let log: &'static HostLog = Box::leak(Box::new(HostLog(Default::default())));
@@ -743,7 +743,7 @@ impl HostLog {
         })
     }
 
-    fn lines(&self) -> Vec<HostLine> {
+    pub(crate) fn lines(&self) -> Vec<HostLine> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }

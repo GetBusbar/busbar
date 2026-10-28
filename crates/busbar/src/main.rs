@@ -990,7 +990,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // START the export axis's opened sinks (every request-log sink is one): each states whether it
     // takes deliveries this run and its in-flight admission — the moment the built-in request-log
     // exporters were configured, so a sink that refuses its own target at start says so here.
-    export::plugin::start();
+    export::plugin::start().unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host

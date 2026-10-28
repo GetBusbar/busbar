@@ -745,6 +745,14 @@ impl ExportCalls for ExportInstance {
         Ok(served)
     }
 
+    /// DISCOVERY AT BOOT: the door's `ready`, awaited on the instance's dispatcher (`Ok` at once
+    /// for a door without one).
+    fn start(&self) -> Result<(), String> {
+        let sh = &self.shared;
+        sh.plugin
+            .ready(&sh.dispatcher, crate::dispatch::ready::READY_DEADLINE)
+    }
+
     /// The host SHED one line for this instance (past its bound): count it on each counter the
     /// instance was GRANTED as its shed counter at open (a first-party manifest declaration marked
     /// `shed`), folded under its name through the one observability path (ARCHITECT ruling

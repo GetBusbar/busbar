@@ -918,4 +918,4 @@ mod log_witness_plugin;
 
 #[cfg(test)]
 #[path = "../tests/plugin_log_tests.rs"]
-mod tests;
+pub(crate) mod tests;

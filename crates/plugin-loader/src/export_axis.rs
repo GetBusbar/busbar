@@ -295,15 +295,12 @@ impl<'r> ExportRows<'r> {
         // The destinations its manifest declares: `open` binds each to the path the operator's
         // settings give it, and `disk.append` serves the instance those only.
         p.grant_destinations(&row.manifest.declares);
+        // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY) is not asked here: an export door
+        // that states `ready` is awaited when the host STARTS its sinks ([`ExportCalls::start`]),
+        // after the app is built and before it is served, where 1.5.5 configured its exporters.
+        // Only the open that delivers is started: the instance `check` opens has no connector.
         let opened =
             ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?.holding(grant);
-        // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
-        // export door that states `ready` is awaited once its instance is open over the host's
-        // tables, before it is served, as a store's and an auth door's are. Only this, the open that
-        // delivers, asks it: the instance `check` opens to judge a configuration has no connector.
-        opened
-            .plugin()
-            .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Arc::new(opened))
     }
 
