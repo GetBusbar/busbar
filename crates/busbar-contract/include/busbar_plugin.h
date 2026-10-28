@@ -90,6 +90,7 @@ extern "C" {
 #define BB_MECH_SLOT_RELEASE UINT32_C(7) /* `release`. */
 #define BB_MECH_SLOT_CLOSE UINT32_C(8) /* `close`. */
 #define BB_MECH_SLOT_READY UINT32_C(0xffffffff) /* `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table */
+#define BB_MECH_SLOT_MIGRATE UINT32_C(0xfffffffe) /* `migrate`: the door's optional tail op ([`super::super::door::Door::migrate`]), NOT a table */
 #define BB_MECH_LIFECYCLE_SLOTS UINT32_C(9) /* How many lifecycle slots [`OpsHead`] holds. */
 #define BB_MECH_KIND_STORE "store" /* `abi/store/`. */
 #define BB_MECH_KIND_SECRET "secret" /* `abi/secret/`. */
@@ -1292,6 +1293,7 @@ struct bb_mech_Door {
     const bb_mech_Statement *statement;
     const bb_mech_OpsHead *ops;
     bb_mech_Op ready;
+    bb_mech_Op migrate;
 };
 
 /* One metric family, declared ONCE in the Statement and validated at `open`; a per-call */
@@ -4200,7 +4202,7 @@ BB_ASSERT(offsetof(bb_mech_OutHead, lease) == 16, "bb_mech_OutHead.lease: offset
 BB_ASSERT(offsetof(bb_mech_OutHead, error) == 24, "bb_mech_OutHead.error: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, envelope) == 40, "bb_mech_OutHead.envelope: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, extensions) == 72, "bb_mech_OutHead.extensions: offset");
-BB_ASSERT(sizeof(bb_mech_Door) == 48, "bb_mech_Door: size");
+BB_ASSERT(sizeof(bb_mech_Door) == 56, "bb_mech_Door: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Door) == 8, "bb_mech_Door: alignment");
 BB_ASSERT(offsetof(bb_mech_Door, magic) == 0, "bb_mech_Door.magic: offset");
 BB_ASSERT(offsetof(bb_mech_Door, mechanism_version) == 8, "bb_mech_Door.mechanism_version: offset");
@@ -4210,6 +4212,7 @@ BB_ASSERT(offsetof(bb_mech_Door, kind_abi) == 20, "bb_mech_Door.kind_abi: offset
 BB_ASSERT(offsetof(bb_mech_Door, statement) == 24, "bb_mech_Door.statement: offset");
 BB_ASSERT(offsetof(bb_mech_Door, ops) == 32, "bb_mech_Door.ops: offset");
 BB_ASSERT(offsetof(bb_mech_Door, ready) == 40, "bb_mech_Door.ready: offset");
+BB_ASSERT(offsetof(bb_mech_Door, migrate) == 48, "bb_mech_Door.migrate: offset");
 BB_ASSERT(sizeof(bb_mech_MetricFamily) == 72, "bb_mech_MetricFamily: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_MetricFamily) == 8, "bb_mech_MetricFamily: alignment");
 BB_ASSERT(offsetof(bb_mech_MetricFamily, name) == 0, "bb_mech_MetricFamily.name: offset");

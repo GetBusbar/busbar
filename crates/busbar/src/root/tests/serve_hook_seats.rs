@@ -100,7 +100,7 @@ pub(super) fn install_door_seams() {
     static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
         std::sync::OnceLock::new();
     for decls in crate::LINKED.protocols {
-        busbar_kernel::ingress::protocols::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
     let row = ROW.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};

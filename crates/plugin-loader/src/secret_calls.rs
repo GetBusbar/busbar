@@ -392,7 +392,7 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' did not answer its resolve"),
             ));
         };
-        match (done.outcome, done.frame.as_deref()) {
+        match (done.outcome, done.frame.as_ref()) {
             // `check_resolve` held the answer to the host's buffer: `len` bytes at its start.
             (Outcome::Ready, Some(f)) => Ok(lending.take(f.out.secret.len)),
             (Outcome::Failed | Outcome::Refused, f) => Err(refused(

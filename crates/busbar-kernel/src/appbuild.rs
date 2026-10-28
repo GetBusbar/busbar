@@ -413,8 +413,9 @@ pub fn load_config_from_disk_judged(
     let interpolated_providers =
         config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
             .map_err(|e| format!("providers.yaml: {e}"))?;
-    let defs: HashMap<String, config::ProviderDef> = serde_yaml::from_str(&interpolated_providers)
-        .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
+    let defs: HashMap<String, config::ProviderDef> =
+        config::providers::catalog_from_str(&interpolated_providers)
+            .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
     // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
     // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
@@ -1026,8 +1027,6 @@ pub fn build_app_from_config(
             url_userinfo,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
-            organization: legacy.organization,
-            project: legacy.project,
             upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
