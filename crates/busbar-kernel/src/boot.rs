@@ -56,6 +56,13 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
         .as_ref()
         .and_then(|gov| gov.store_calls())
         .map(crate::store::plane_view::PlaneStoreView::narrow);
+    // THE KERNEL'S DURABLE TRUST RECORD (THE DESIGN §11.12: "the demotion record is durable"): the
+    // demotions and the operator's trust decisions write through to the configured store, attached
+    // here, core side, for every deployment with a store, whatever planes are linked. It rides the
+    // `App` across every later config apply, so this one attach holds for the process.
+    if let Some(store) = &plane_store {
+        app.demotion_record.set_sink(Arc::clone(store));
+    }
     let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }
@@ -148,3 +155,7 @@ pub fn generate_signing_key_hex() -> Result<String, String> {
             .map_err(|e| e.to_string())?;
     Ok(hex::encode(signer.secret_bytes()))
 }
+
+#[cfg(test)]
+#[path = "tests/boot_tests.rs"]
+mod boot_tests;
