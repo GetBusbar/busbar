@@ -2514,6 +2514,12 @@ mod provider_refusal_pins;
 #[path = "tests/resolved_provider_tests.rs"]
 mod resolved_provider_tests;
 
+// A provider's base URL (and token endpoint) as a `Debug` print shows it: no userinfo, while the
+// value the outbound request is built from keeps it (row 74, F25).
+#[cfg(test)]
+#[path = "tests/provider_debug_redaction_tests.rs"]
+mod provider_debug_redaction_tests;
+
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 pub mod auth;
