@@ -6,7 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::proto::PROTO_ANTHROPIC;
+use busbar_kernel::ingress::protocols::PROTO_ANTHROPIC;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -67,90 +67,6 @@ const fn c(
         body,
     }
 }
-
-// ── WITNESS DRIVER FOR THE DECLARED ERROR SET ─────────────────────────────────────────────────────
-//
-// `contract::taxonomy::declared_errors` is what `openapi.json` documents. Under-claim (a handler
-// emits a kind the declaration omits) is already fatal on the spot — the v1 router's recording layer
-// panics inside whichever test triggered it. OVER-claim (the declaration lists a response no handler
-// can produce) has no such moment: it needs a WITNESS. This test is the driver that produces one for
-// every declared entry the rest of the suite does not already exercise, so
-// `declared_error_set_has_no_over_claim` (in the json tests) can assert that every documented error
-// is a real one. A declared 409 nobody can trigger is a lie in the contract; this is how it stays
-// impossible to keep.
-
-/// `declared_error_set_is_exactly_what_the_handlers_emit` requires every declared `(operation,
-/// ErrKind, Cond)` to be witness-backed. Where an operation declares the SAME `ErrKind` under two or
-/// more conditions, an untagged emission proves only that SOME condition fired -- so the emission
-/// has to name its condition (`err_json_cond`) for the declaration to mean anything. These are the
-/// declarations that do not yet.
-///
-/// The entry is enforced in BOTH directions, which is what makes it a ratchet rather than a
-/// suppression list: nothing outside it may be unwitnessed (a NEW ambiguous declaration is rejected
-/// on arrival), and every row in it must still be a live declaration AND still unwitnessed (so a row
-/// cannot be left behind once its emission starts naming its condition, or its declaration is
-/// deleted). The list can only shrink.
-const COND_WITNESS_DEBT: &[(
-    busbar_core_admin::v1::contract::taxonomy::MethodTag,
-    &str,
-    busbar_core_admin::v1::contract::taxonomy::ErrKind,
-    busbar_core_admin::v1::contract::taxonomy::Cond,
-)] = {
-    use busbar_core_admin::v1::contract::taxonomy::Cond::*;
-    use busbar_core_admin::v1::contract::taxonomy::ErrKind::*;
-    use busbar_core_admin::v1::contract::taxonomy::MethodTag::*;
-    &[
-        (Delete, "/groups/{name}", Conflict, BaseDefined),
-        (Delete, "/groups/{name}", Conflict, BoundKeys),
-        (Delete, "/groups/{name}", Conflict, StillParent),
-        (Delete, "/overlay/{section}", Validation, InvalidConfig),
-        (Delete, "/overlay/{section}", Validation, MalformedIfMatch),
-        (Delete, "/overlay/{section}", Validation, NoDiskBase),
-        (Delete, "/overlay/{section}", Validation, UnknownSection),
-        (Patch, "/groups/{name}", Validation, InvalidTree),
-        (Patch, "/groups/{name}", Validation, MalformedBody),
-        (Patch, "/hooks/{name}/settings", Conflict, BaseDefined),
-        (Patch, "/hooks/{name}/settings", Conflict, SettingsPush),
-        (Patch, "/hooks/{name}/settings", Validation, HookNoAck),
-        (Patch, "/hooks/{name}/settings", Validation, MalformedBody),
-        (Post, "/config/apply", Validation, InvalidConfig),
-        (Post, "/config/apply", Validation, MalformedBody),
-        (Post, "/config/apply", Validation, MalformedIfMatch),
-        (Post, "/config/reload", Validation, InvalidConfig),
-        (Post, "/config/reload", Validation, NoDiskBase),
-        (Post, "/config/rollback", Validation, InvalidConfig),
-        (Post, "/config/rollback", Validation, MalformedBody),
-        (Post, "/groups", Validation, InvalidTree),
-        (Post, "/groups", Validation, MalformedBody),
-        (Post, "/hooks", Conflict, BaseDefined),
-        (Post, "/hooks", Conflict, GrantChange),
-        (Post, "/hooks", Validation, MalformedBody),
-        (Post, "/keys", Conflict, AtKeyCap),
-        (Post, "/keys", Conflict, BaseDefined),
-        (Post, "/keys", Conflict, IdempotencyInFlight),
-        (Post, "/keys", Validation, InvalidTree),
-        (Post, "/keys", Validation, Overlong),
-        (Post, "/keys/{id}/rotate", Conflict, IdempotencyInFlight),
-        (Post, "/plugins", Conflict, NameCollision),
-        (Post, "/plugins", Conflict, UntrustedUpload),
-        (Post, "/plugins", Validation, InvalidFilename),
-        (Post, "/plugins", Validation, MalformedBody),
-        (Post, "/plugins", Validation, NotLoadable),
-        (Post, "/plugins/rollback", Validation, InvalidFilename),
-        (Post, "/plugins/rollback", Validation, MalformedBody),
-        (Post, "/plugins/rollback", Validation, NoDiskBase),
-        (Put, "/admin-auth", Validation, MalformedBody),
-        (Put, "/admin-auth", Validation, UnknownModule),
-        (Put, "/config/settings", Validation, InvalidConfig),
-        (Put, "/config/settings", Validation, MalformedBody),
-        (Put, "/config/settings", Validation, NoDiskBase),
-        (Put, "/groups/{name}", Validation, InvalidTree),
-        (Put, "/groups/{name}", Validation, MalformedBody),
-        (Put, "/hooks/{name}", Conflict, BaseDefined),
-        (Put, "/hooks/{name}", Conflict, GrantChange),
-        (Put, "/hooks/{name}", Validation, MalformedBody),
-    ]
-};
 
 /// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
 /// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
@@ -340,7 +256,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .build();
     // The plane the registry says owns the `tools:` section, so the test names no plane crate.
     let section = "tools";
-    let plane = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .expect("a plane is registered to own the `tools:` section");
     let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.key);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
@@ -403,13 +319,12 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     let _ = std::fs::remove_file(&overlay);
 }
 
-/// `GET openapi.json` serves the PRE-GZIPPED embedded bytes to a client whose `Accept-Encoding`
-/// allows gzip — `Content-Encoding: gzip`, inflating byte-identical to the identity body — and
-/// the identity body to a client that does not ask. This is what lets the process retain NO
-/// inflated copy of the 366 KB+ document (the old `OnceLock<String>` held it forever after the
-/// first GET); the gzip client costs zero inflation, the identity client a per-request inflate.
+/// `GET openapi.json` answers every client as 1.5.5 did: the identity JSON document, no
+/// `Content-Encoding` and no `Vary`, whatever `Accept-Encoding` the client sends (ORACLE-116
+/// review, F-011c: the gzip negotiation and its `Vary` were never signed). RED: a gzip-accepting
+/// client was sent the pre-compressed bytes and every answer carried `Vary: accept-encoding`.
 #[tokio::test]
-async fn test_admin_v1_openapi_gzip_negotiation() {
+async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -418,66 +333,37 @@ async fn test_admin_v1_openapi_gzip_negotiation() {
     let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/openapi.json");
 
-    // Identity: no Accept-Encoding -> plain JSON, no Content-Encoding (the shape every pre-gzip
-    // client always got). This reqwest client has no gzip feature, so it sends no Accept-Encoding
-    // and performs no transparent decode — the bytes observed here are the wire bytes.
-    let identity = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(identity.status().as_u16(), 200);
+    // This reqwest client has no gzip feature, so it performs no transparent decode: the bytes
+    // observed here are the wire bytes.
+    let mut bodies = Vec::new();
+    for accept in [
+        None,
+        Some("gzip"),
+        Some("gzip;q=0"),
+        Some("br, gzip, deflate"),
+    ] {
+        let mut req = client.get(&url).header("x-admin-token", "admintok");
+        if let Some(a) = accept {
+            req = req.header("accept-encoding", a);
+        }
+        let resp = req.send().await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200, "{accept:?}");
+        assert!(
+            resp.headers().get("content-encoding").is_none(),
+            "{accept:?}: the document is identity-encoded, as 1.5.5 served it"
+        );
+        assert!(
+            resp.headers().get("vary").is_none(),
+            "{accept:?}: no Vary, as 1.5.5 served it"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(body.starts_with('{'), "{accept:?}: the JSON document");
+        bodies.push(body);
+    }
     assert!(
-        identity.headers().get("content-encoding").is_none(),
-        "a client that did not ask for gzip must get an identity body"
+        bodies.windows(2).all(|w| w[0] == w[1]),
+        "every client reads the same document"
     );
-    let identity_body = identity.text().await.unwrap();
-    assert!(
-        identity_body.starts_with('{'),
-        "identity body is the JSON document"
-    );
-
-    // Gzip: Accept-Encoding: gzip -> Content-Encoding: gzip, and the payload inflates to the
-    // EXACT identity bytes (same committed document, lighter wire + no retained inflation).
-    let gz = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .header("accept-encoding", "gzip")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(gz.status().as_u16(), 200);
-    assert_eq!(
-        gz.headers().get("content-encoding").map(|v| v.as_bytes()),
-        Some(b"gzip".as_ref()),
-        "a gzip-accepting client gets the pre-compressed bytes"
-    );
-    let gz_body = gz.bytes().await.unwrap();
-    let mut inflated = String::new();
-    std::io::Read::read_to_string(
-        &mut flate2::read::GzDecoder::new(gz_body.as_ref()),
-        &mut inflated,
-    )
-    .expect("the served gzip payload inflates");
-    assert_eq!(
-        inflated, identity_body,
-        "gzip and identity must be the SAME document, differing only in transfer encoding"
-    );
-
-    // An explicit refusal (`gzip;q=0`) is honored: identity again.
-    let refused = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .header("accept-encoding", "gzip;q=0")
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        refused.headers().get("content-encoding").is_none(),
-        "gzip;q=0 is an explicit refusal — identity body"
-    );
-
     handle.abort();
 }
 
@@ -2409,13 +2295,8 @@ async fn drive_plugin_rollback_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE CONDITION-WITNESS DEBT LEDGER — a ratchet, not a suppression.
-///
-/// Witness driver for `POST /plugins/inspect`'s declared 400 (`Validation`): a body whose
-/// `tarball_b64` is not valid base64 is rejected with `invalid_request`. The wire behavior itself is
-/// also asserted in `test_admin_v1_plugins_inspect_previews_without_installing`; this driver exists
-/// so `declared_error_set_is_exactly_what_the_handlers_emit` witnesses the emission through the v1
-/// router's recording layer without depending on test order.
+/// `POST /plugins/inspect` with a `tarball_b64` that is not valid base64 is rejected with
+/// `invalid_request`.
 async fn drive_plugin_inspect_errors() {
     busbar_kernel::snapshot::init();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2457,34 +2338,11 @@ async fn drive_plugin_inspect_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE CLASS-LEVEL GUARANTEE: for EVERY documented operation, the declared error set
-/// equals the set the handlers can actually emit. The two directions are enforced by two different
-/// mechanisms, both structural:
-///
-/// - **UNDER-CLAIM** (a handler emits a kind the declaration omits → `openapi.json` would hide a
-/// response clients hit) is fatal AT THE EMISSION: the v1 router's recording layer panics inside
-/// whichever test produced it. Every test in the suite is a driver; nothing accumulates and
-/// nothing depends on test order. That check is live for the whole suite, not just this test.
-/// - **OVER-CLAIM** (the declaration lists a response no handler can produce → `openapi.json`
-/// documents fiction) needs a WITNESS, which is what this test drives. It runs the error-surface
-/// drivers directly — no reliance on other tests having run — and then asserts every declared
-/// entry was seen. A declared 409 no test can trigger IS an over-claim until proven otherwise.
-///
-/// The witness is required at **`(operation, ErrKind, Cond)`** granularity, which is what the design
-/// claims and what an `(operation, ErrKind)` check silently did not give: a 409 whose code path had
-/// been deleted (`GroupRaceOnMint`, removed with the mint race) stayed documented indefinitely
-/// because a SIBLING 409 on the same operation kept the check green. Where an operation declares one
-/// condition per kind the untagged witness is unambiguous and still counts; where it declares
-/// several, only a `err_json_cond`-tagged emission distinguishes them, and the declarations not yet
-/// tagged are ledgered in `COND_WITNESS_DEBT`, which only shrinks.
-///
-/// Consequence: what used to be a per-endpoint hunt for "another missing 4xx" is now a
-/// machine set-comparison over every operation at once. There is no endpoint left to be next.
+/// Every admin error-surface driver answers the status and code it expects: the admin, keys,
+/// plugin, key-cap, named-map, door-verb and usage-read error paths, plus each linked engine
+/// plane's own driver from the kernel's test-seam registry.
 #[tokio::test]
-async fn declared_error_set_is_exactly_what_the_handlers_emit() {
-    use busbar_core_admin::v1::contract::taxonomy::declared_errors;
-    // Drive every error path the declaration claims. (Other tests contribute to the same registry;
-    // calling the drivers here makes the assertion independent of whether they ran.)
+async fn every_admin_error_surface_answers_its_declared_status() {
     drive_admin_error_surface().await;
     drive_keys_error_surface().await;
     drive_plugin_rollback_errors().await;
@@ -2495,13 +2353,6 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_door_verb_errors().await;
     drive_agent_door_verb_errors().await;
     drive_unpriced_usage_reads().await;
-    // Every linked engine plane's own error-surface driver (its trust verbs), called here for the
-    // same reason as every line above it: a condition witnessed only by a sibling test is witnessed
-    // nowhere. Looped from the kernel's test-seam registry, so this names no plane. Since the
-    // agent-style plane's door flip no engine plane mounts trust verbs (each verb-mounting plane is
-    // served through its door, and its verbs are driven by its door driver above), so the registry
-    // may hold none; a plane whose driver
-    // went missing still leaves its declared verbs unwitnessed and fails the over-claim walk below.
     crate::ensure_seam();
     for drive in busbar_kernel::test_support::seam::test_plane_seams()
         .iter()
@@ -2509,122 +2360,6 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     {
         drive().await;
     }
-
-    let witnessed = crate::witness::snapshot();
-    // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
-    // Cond) TRIPLE for the emissions that named their condition. Keyed on the NEUTRAL string form the
-    // process-wide substrate ledger stores (so a witness produced through EITHER copy of busbar-core —
-    // the crate-under-test or the plane crates' dependency copy — counts), and looked up below via the
-    // same `{:?}`/`as_str()` spellings `taxonomy::observed` records with.
-    let seen: std::collections::BTreeSet<(String, String, String)> = witnessed
-        .iter()
-        .map(|(rel, method, kind, _cond)| (rel.clone(), method.clone(), kind.clone()))
-        .collect();
-    let seen_triple: std::collections::BTreeSet<(String, String, String, String)> = witnessed
-        .iter()
-        .filter_map(|(rel, method, kind, cond)| {
-            cond.clone()
-                .map(|c| (rel.clone(), method.clone(), kind.clone(), c))
-        })
-        .collect();
-
-    // Walk the DOCUMENTED operations and require a witness for each declared entry AT CONDITION
-    // GRANULARITY, which is what the design claims and what a `(op, ErrKind)` check does not give.
-    //
-    // The two cases differ in what counts as proof, and the difference is exact, not a concession:
-    // * the op declares this ErrKind under exactly ONE Cond — then no other condition on this
-    // operation can produce that kind, so ANY witness of the kind witnesses that condition;
-    // * the op declares the SAME ErrKind under two or more Conds — then an untagged witness is
-    // genuinely ambiguous (it proves one of them, and cannot say which), so the emission must
-    // name its condition via `err_json_cond` for the declaration to be witness-backed at all.
-    // A declared condition that only the ambiguous case can reach is therefore an over-claim until
-    // its emission site says which condition it is: that is precisely how a 409 whose code path was
-    // deleted (`GroupRaceOnMint`, removed with the mint race) went on being documented while a
-    // sibling 409 on the same operation kept the check green.
-    let mut over_claimed = Vec::new();
-    for (rel, method) in documented_operations() {
-        let declared = declared_errors(method, &rel);
-        for de in declared {
-            let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
-            let proven = if ambiguous {
-                seen_triple.contains(&(
-                    rel.clone(),
-                    method.as_str().to_string(),
-                    format!("{:?}", de.kind),
-                    format!("{:?}", de.cond),
-                ))
-            } else {
-                seen.contains(&(
-                    rel.clone(),
-                    method.as_str().to_string(),
-                    format!("{:?}", de.kind),
-                ))
-            };
-            if !proven {
-                if COND_WITNESS_DEBT.contains(&(method, rel.as_str(), de.kind, de.cond)) {
-                    continue;
-                }
-                over_claimed.push(format!(
-                    "{} {rel} declares {:?}/{:?} ({} {}) — {}",
-                    method.as_str().to_uppercase(),
-                    de.kind,
-                    de.cond,
-                    de.kind.status(),
-                    de.kind.code(),
-                    if ambiguous {
-                        "no test produced it with its CONDITION named (this operation declares \
-                         several conditions for the same kind, so an untagged emission proves \
-                         nothing about which one is reachable — emit it via `err_json_cond`)"
-                    } else {
-                        "no test ever produced it"
-                    },
-                ));
-            }
-        }
-    }
-    assert!(
-        over_claimed.is_empty(),
-        "OpenAPI OVER-CLAIM — openapi.json documents {} response(s) nothing can emit:\n  {}\n\
-         Either the declaration is wrong (delete the entry) or the condition is real and needs a \
-         negative test that triggers it. A documented error no test can produce is not a contract.",
-        over_claimed.len(),
-        over_claimed.join("\n  ")
-    );
-
-    // THE RATCHET'S OTHER DIRECTION: a debt row must still name a LIVE, AMBIGUOUS declaration.
-    // Delete the declaration (as `GroupRaceOnMint` was) or give its kind a single condition, and the
-    // row has to go with it -- otherwise the ledger would quietly become a permanent exemption list
-    // that outlives the thing it exempted.
-    //
-    // Deliberately keyed on the DECLARATION TABLE and not on "was it witnessed": `observed` is a
-    // process-global registry that accumulates whatever tests happened to run, so a witness-based
-    // staleness check would pass or fail depending on the test filter. The declaration table is the
-    // same in every run.
-    let stale: Vec<_> = COND_WITNESS_DEBT
-        .iter()
-        .filter(|(m, rel, k, c)| {
-            let declared = declared_errors(*m, rel);
-            let ambiguous = declared.iter().filter(|o| o.kind == *k).count() > 1;
-            !ambiguous || !declared.iter().any(|d| d.kind == *k && d.cond == *c)
-        })
-        .map(|(m, rel, k, c)| format!("{} {rel} {k:?}/{c:?}", m.as_str().to_uppercase()))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "COND_WITNESS_DEBT has {} row(s) whose declaration is gone or no longer ambiguous — delete \
-         them; the ledger only shrinks:\n  {}",
-        stale.len(),
-        stale.join("\n  ")
-    );
-
-    // Sanity: the drivers really did exercise the surface (a registry that silently stopped
-    // recording would make the assertion above vacuously true).
-    assert!(
-        seen.len() >= 60,
-        "the error-surface drivers witnessed only {} (operation, kind) pairs — the recording layer \
-         is probably not installed",
-        seen.len()
-    );
 }
 
 /// Every (relative path, method) the admin surface documents — read off the COMMITTED
@@ -2999,7 +2734,7 @@ async fn named_map_app_opts(
     // it and builds the runtime, exactly as `appbuild` does at boot — so this helper names no plane,
     // no plane crate and no plane type.
     let owner = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
             .unwrap_or_else(|| panic!("no plane is registered to own the `{section}:` section"))
     };
     let parse = |section: &str| {
@@ -3029,7 +2764,7 @@ async fn named_map_app_opts(
             None => {
                 let defs =
                     std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
-                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                let ctx = busbar_kernel::plane_driver::registry::BuildCtx {
                     endpoint_slot: None,
                     plane_defs: &defs,
                     public_url: Some("https://busbar.example"),
@@ -3049,7 +2784,7 @@ async fn named_map_app_opts(
     {
         let (decl, cfg) = parse("agents");
         let defs = std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
-        let ctx = busbar_kernel::plane::registry::BuildCtx {
+        let ctx = busbar_kernel::plane_driver::registry::BuildCtx {
             endpoint_slot: None,
             plane_defs: &defs,
             public_url: Some("https://busbar.example"),
@@ -3787,7 +3522,7 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     crate::ensure_seam();
-    let owner = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+    let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let (instance, plane) = crate::test_seams::linked_doors()
