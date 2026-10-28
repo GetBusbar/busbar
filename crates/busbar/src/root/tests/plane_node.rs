@@ -4749,7 +4749,7 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
         kind: &str,
         message: &str,
     ) -> Response {
-        busbar_kernel::proxy::ingress_error(proto, status, kind, message)
+        busbar_kernel::ingress::ingress_error(proto, status, kind, message)
     }
 
     fn envelope_dialect(
@@ -4768,7 +4768,7 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
         err_type: &str,
         message: &str,
     ) -> Response {
-        busbar_kernel::proxy::ingress_error(PROTO, status, err_type, message)
+        busbar_kernel::ingress::ingress_error(PROTO, status, err_type, message)
     }
 
     fn percent_decode(&self, s: &str) -> String {
@@ -4776,15 +4776,15 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
     }
 
     fn kind_not_found(&self) -> &'static str {
-        busbar_kernel::proxy::KIND_NOT_FOUND
+        busbar_contract::protocol::KIND_NOT_FOUND
     }
 
     fn kind_invalid_request(&self) -> &'static str {
-        busbar_kernel::proxy::KIND_INVALID_REQUEST
+        busbar_contract::protocol::KIND_INVALID_REQUEST
     }
 
     fn err_type_not_found(&self) -> &'static str {
-        busbar_kernel::proxy::KIND_NOT_FOUND
+        busbar_contract::protocol::KIND_NOT_FOUND
     }
 }
 

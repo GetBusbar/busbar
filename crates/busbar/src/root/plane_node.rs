@@ -1412,7 +1412,7 @@ impl Drop for Occupied<'_> {
 /// What a node whose journal cannot reach its store answers a new unit with, in the caller's own
 /// dialect: 503 and the reason. A state the previous release never reached (it kept no journal).
 fn journal_unavailable(proto: &str, why: &str) -> Response {
-    busbar_kernel::proxy::ingress_error(
+    busbar_kernel::ingress::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
@@ -1422,7 +1422,7 @@ fn journal_unavailable(proto: &str, why: &str) -> Response {
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
-    busbar_kernel::proxy::ingress_error(
+    busbar_kernel::ingress::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,

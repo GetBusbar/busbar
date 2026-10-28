@@ -17,11 +17,10 @@
 //! ## Adjust — a record class no longer written
 //!
 //! Pre-release 1.6.0 builds sealed count corrections here and every money view folded them in, so
-//! two nodes reported different money for the same counts (MONEY-REVIEW review 5, B9). An
-//! adjustment is now a signed usage-row delta through the ledger's own counts, so nothing writes
-//! this class any more and nothing reads it as money. The record shape stays only so a chain that
-//! already holds one still decodes and verifies; 1.5.5 had no amendments, so no released deployment
-//! holds any.
+//! two nodes reported different money for the same counts. An adjustment is now a signed usage-row
+//! delta through the ledger's own counts, so nothing writes this class any more and nothing reads it
+//! as money. The record shape stays only so a chain that already holds one still decodes and
+//! verifies; 1.5.5 had no amendments, so no released deployment holds any.
 //!
 //! ## Why these are amendments rather than fields on the audit record
 //!
@@ -36,7 +35,7 @@ use busbar_contract::{
 };
 use std::collections::{BTreeMap, VecDeque};
 
-/// A unit's counts, keyed by the billable class string the plane declared (#71).
+/// A unit's counts, keyed by the billable class string the plane declared.
 pub type ClassCounts = BTreeMap<String, Count>;
 
 /// Which class of amendment this is.
@@ -147,7 +146,7 @@ pub struct Adjust {
     pub subject: Subject,
     /// The lane the counts were recorded on — the key a card entry is written against.
     pub lane: String,
-    /// THE CARD EPOCH: the instant, in milliseconds, whose card the counts price at (#79). A
+    /// THE CARD EPOCH: the instant, in milliseconds, whose card the counts price at. A
     /// correction changes a count, never the card it prices against, so this is carried unchanged.
     pub card_epoch_ms: u64,
     /// The counts as recorded, per billable class.
@@ -161,10 +160,10 @@ pub struct Adjust {
     pub reason: String,
     /// When, in unix seconds.
     pub wall: u64,
-    /// The pool the corrected unit was dispatched through (owner ruling Q64/Q67): a pool-scoped
-    /// budget bucket for this pool takes the correction too. `None` only on an adjustment sealed
-    /// before the field existed — UNSCOPED, the group-wide buckets alone — and then it is not
-    /// digested, so that adjustment's sealed hash still verifies.
+    /// The pool the corrected unit was dispatched through: a pool-scoped budget bucket for this
+    /// pool takes the correction too. `None` only on an adjustment sealed before the field existed
+    /// — UNSCOPED, the group-wide buckets alone — and then it is not digested, so that adjustment's
+    /// sealed hash still verifies.
     pub pool: Option<String>,
 }
 
@@ -320,7 +319,7 @@ impl AmendChain {
                 d.text(&a.authorised_by);
                 d.text(&a.reason);
                 d.num(a.wall);
-                // Q64: LAST and only when present, so an unscoped adjustment digests exactly as it
+                // LAST and only when present, so an unscoped adjustment digests exactly as it
                 // was sealed; length-prefixed, so a pooled one can never digest as an unscoped one.
                 if let Some(pool) = &a.pool {
                     d.text(pool);
@@ -539,8 +538,6 @@ impl AmendJournal {
     }
 }
 
-// ── THE NODE'S ONE JOURNAL ───────────────────────────────────────────────────────────────────────
-//
 // A hook and an export sink are resolved per config generation, but what they read is the node's
 // to account for, so the node keeps ONE journal for the life of the process. Every writer below
 // takes the audit step's token: the kernel mints it, and only the kernel can.

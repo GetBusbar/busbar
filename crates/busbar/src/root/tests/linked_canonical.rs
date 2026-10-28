@@ -16,7 +16,7 @@ use super::linked_exports;
 use crate::root::loader::boot::Candidate;
 use crate::root::loader::LinkedPlugin;
 
-/// THE REGISTRY, read as the legacy table's test reads it (`root/tests/legacy.rs`).
+/// THE REGISTRY, read as the migration table's test reads it (`root/tests/migration_table.rs`).
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 
 /// One plugins.yaml entry, as this guard reads it.

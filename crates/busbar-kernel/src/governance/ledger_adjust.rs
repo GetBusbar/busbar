@@ -49,7 +49,7 @@ fn adjustment_slot(key_id: &str, lane: &str, era: u64) -> String {
 /// every other row its model — the lane its counts were accrued on in the budget book.
 #[must_use]
 pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match crate::plane::registry::plane_decl_for(provider) {
+    match crate::plane_driver::registry::plane_decl_for(provider) {
         Some(decl) if !decl.fallback => {
             std::borrow::Cow::Owned(format!("{}{}{model}", decl.key, PLANE_LANE_SEP))
         }

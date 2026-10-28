@@ -376,14 +376,16 @@ impl AdminService {
         start: usize,
         limit: usize,
     ) -> Result<Page<GroupView>, AdminError> {
-        let all: Vec<GroupView> = self
-            .app
-            .groups_registry
+        // Skip to the page BEFORE projecting: only the page's groups are built into their wire
+        // view, so a page costs its own size rather than the whole tree's.
+        let registry = &self.app.groups_registry;
+        let total = registry.len();
+        let items: Vec<GroupView> = registry
             .iter()
+            .skip(start)
+            .take(limit)
             .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
             .collect();
-        let total = all.len();
-        let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
         let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })

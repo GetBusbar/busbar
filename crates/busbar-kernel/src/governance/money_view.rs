@@ -126,7 +126,7 @@ impl MoneyView {
 
     /// How many times this view has priced. Built only where its one reader is
     /// (`GovState::money_view_pricings`, the scrape-reprice tests' probe).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(in crate::governance) fn pricings(&self) -> u64 {
         self.pricings.load(Ordering::Relaxed)
     }

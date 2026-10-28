@@ -110,7 +110,7 @@ fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bo
     if !alias.is_empty() && alias != name {
         row.key = alias.to_string();
     }
-    let former = crate::config::legacy::former_names(&row.alias)
+    let former = crate::config::migration_table::former_names(&row.alias)
         .into_iter()
         .filter(|f| *f != row.name && *f != row.alias)
         .collect();
@@ -218,7 +218,7 @@ impl Rows {
     }
 
     /// The linked rows with their doors, in registration order, each with every word config may
-    /// name it by (its canonical name, its alias, the former names the root legacy table gives the
+    /// name it by (its canonical name, its alias, the former names the root migration table gives the
     /// alias): what the test kit's in-process axes answer a linked door by.
     pub(crate) fn linked_doors(&self) -> Vec<(Row, Vec<String>, DoorFn)> {
         self.linked
