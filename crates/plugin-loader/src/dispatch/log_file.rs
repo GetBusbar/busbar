@@ -19,6 +19,10 @@
 //! many. Every control character in a text is escaped, so a record is one line and nothing raw
 //! reaches a terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}`.
 //!
+//! BUSBAR'S OWN LOG keeps a copy of every WARN and ERROR record, written when the record is handed
+//! over, so it lands among the host's own lines in the order 1.5.5 printed it ([`mirror`]); those
+//! are the rare lines, and the host's subscriber decides how it writes them.
+//!
 //! OFF THE DISPATCH WORKER (§11.2: no blocking on the hot path; §11.11 R4: the bounded disk lane is
 //! the SQLite store's and the file export sink's alone, so plugin logging may not claim it). The
 //! sink is fed inside the crossing, where the reply's records are still plugin memory, so there it
@@ -512,6 +516,9 @@ impl PluginLogSink {
     /// Hand one line at `level` to the writer, if the instance's level admits it. Never waits: a
     /// full queue counts the line instead, and the count is written once the writer catches up.
     fn line(&self, level: LogLevel, text: Vec<u8>) {
+        // Busbar's own log gets its copy HERE, in the order the plugin logged it among the host's
+        // own lines, as 1.5.5 printed them; only WARN and ERROR, whatever the file's level.
+        mirror(level, &text);
         if level == LogLevel::Off
             || level > LogLevel::of_u8(self.admit.level.load(Ordering::Acquire))
         {
@@ -653,7 +660,6 @@ impl Writer {
     /// it never reaches the plugin.
     fn line(&mut self, tag: &Tag, at: u64, level: LogLevel, text: &[u8]) {
         self.follow();
-        mirror(tag, level, text);
         let line = render(tag, at, level, text);
         let slot = match self.slot.clone() {
             Some(slot) => slot,
@@ -730,7 +736,7 @@ fn escape_into(line: &mut String, text: &[u8]) {
 /// fields without the module path the plugin's file leads with, escaped as the file holds it. The
 /// line carries no field 1.5.5's never did, so it reads byte for byte as 1.5.5's; the plugin's own
 /// file names the instance. Lines below WARN stay in the plugin's file alone.
-fn mirror(_tag: &Tag, level: LogLevel, text: &[u8]) {
+fn mirror(level: LogLevel, text: &[u8]) {
     if !matches!(level, LogLevel::Error | LogLevel::Warn) {
         return;
     }
