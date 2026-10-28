@@ -869,8 +869,9 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     .join()
     .expect("the script runs");
     s.flush();
-    let file = std::fs::read_to_string(config(&dir, LogLevel::Trace).path_for(MIRRORED))
-        .unwrap_or_default();
+    let file =
+        std::fs::read_to_string(config(&dir, LogLevel::Trace).path_for(MIRRORED, witness::KIND))
+            .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         file.contains(" WARN  mirror-witness export log_witness: log from the plugin, a"),
