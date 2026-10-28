@@ -618,7 +618,7 @@ pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_
 /// this. The remaining consumer is the one test whose SUBJECT is racing the live
 /// cap by re-installing it in a hot loop with no rollback between iterations — `InstallGuard` cannot
 /// serve that (a guard restores on drop, but the test wants the value to keep flipping mid-run).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
     mirror_derived_caps(Some(resolved));

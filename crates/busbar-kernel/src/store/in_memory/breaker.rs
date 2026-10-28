@@ -85,7 +85,7 @@ impl SwrrStripes {
     /// TEST-ONLY: force the CALLING thread's stripe to `v` at the current generation (and settle
     /// every other stripe at a live 0), so the summed accumulator view reads exactly `v` — the
     /// stale-accumulator precondition of the SWRR-reset regression tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn force(&self, v: i64) {
         let g = self.gen.load(Ordering::Relaxed);
