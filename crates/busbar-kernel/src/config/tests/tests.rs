@@ -3688,6 +3688,40 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
 
+/// The `auth:` block's refusals, byte for byte, through the boot parser: the frozen five-key list
+/// (with or without the lifted `policy:` beside it), a lifted key's own refusal at its own path and
+/// position, and a value that is not a section. An empty `auth:` is no block at all.
+#[test]
+fn the_auth_block_refusals_are_pinned() {
+    let refusal = |auth: &str| {
+        crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{auth}"))
+            .expect_err("refused")
+            .to_string()
+    };
+    let frozen = "unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
+                  `admin_auth`, `role_bindings`, `key_ttl`";
+    assert_eq!(
+        refusal("auth:\n  bogus_key: 1\n"),
+        format!("auth: {frozen} at line 4 column 3")
+    );
+    assert_eq!(
+        refusal("auth:\n  policy: {}\n  bogus_key: 1\n"),
+        format!("auth: {frozen} at line 5 column 3")
+    );
+    assert_eq!(
+        refusal("auth:\n  policy:\n    slef_mint: true\n"),
+        "auth.policy: unknown field `slef_mint`, expected one of `self_mint`, `binding_modes`, \
+         `default_ttl`, `max_ttl`, `mint_ceilings` at line 5 column 5"
+    );
+    assert_eq!(
+        refusal("auth: 5\n"),
+        "auth: invalid type: integer `5`, expected a configuration section at line 3 column 7"
+    );
+    let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
+        .expect("an empty auth block parses");
+    assert!(empty.auth.is_none());
+}
+
 /// The top-level section [`NEUTRAL_SECTION_PLANE`] declares and owns.
 const NEUTRAL_SECTION: &str = "neutral_section";
 
