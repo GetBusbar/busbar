@@ -208,10 +208,7 @@ pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use redacted::{constant_time_eq, sha256_hex, Secret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
-pub use transport::{
-    check_composition, CompositionError, FrameStream, Fut, Registered, TransportMeta, TRANSPORT_ABI,
-};
-pub use transport::{Carrier, Framer};
+pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
     Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,

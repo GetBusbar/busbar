@@ -108,7 +108,7 @@ pub(super) fn install_door_seams() {
             .expect("the door serving the `pools` map binds");
         busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
     });
-    busbar_kernel::plane_driver::registry::register_test_plane(row);
+    busbar_kernel::test_support::planes::register_test_plane(row);
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.

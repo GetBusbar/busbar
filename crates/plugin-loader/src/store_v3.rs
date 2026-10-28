@@ -1181,6 +1181,166 @@ impl StoreCalls for LoadedStore {
         })
     }
 
+    fn put_key<'a>(&'a self, key: &'a VirtualKey) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::PUT_KEY,
+                owned_in(|o, head| BlobIn {
+                    head,
+                    record: o.json(to_json(key)),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<VirtualKey>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedBlobOut>(
+                slot::GET_KEY,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(id),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.record(ran)
+        })
+    }
+
+    fn list_keys(&self) -> StoreCall<'_, Vec<VirtualKey>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(slot::LIST_KEYS, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::DELETE_KEY,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(id),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a VirtualKey,
+        secret: &'a CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::PUT_KEY_WITH_CREDENTIAL,
+                owned_in(|o, head| KeyWithCredentialIn {
+                    head,
+                    key: o.json(to_json(key)),
+                    credential: o.secret_json(to_json(secret)),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn list_credentials<'a>(&'a self, key_id: &'a str) -> StoreCall<'a, Vec<CredentialMeta>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_CREDENTIALS,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(key_id),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::REVOKE_CREDENTIAL,
+                owned_in(|o, head| IdReasonIn {
+                    head,
+                    id: o.text(id),
+                    reason: o.text(reason),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn list_credentials_since(&self, since: u64) -> StoreCall<'_, Vec<CredentialSecret>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_CREDENTIALS_SINCE,
+                bare(in_of(|head| U64In { head, value: since })),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        boxed(async move {
+            let r = fixed::<_, OutHead>(
+                slot::ADD_DENYLIST,
+                owned_in(|o, head| IdReasonIn {
+                    head,
+                    id: o.text(sub),
+                    reason: o.text(reason),
+                }),
+            );
+            run!(self, submit, r).0.ok()
+        })
+    }
+
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedStrListOut>(slot::LIST_DENYLIST, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
+            self.read_strs(ran)
+        })
+    }
+
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<MeteringRow>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_METERING,
+                bare(in_of(|head| U64In {
+                    head,
+                    value: bucket,
+                })),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn list_audit(&self) -> StoreCall<'_, Vec<AuditRecord>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(slot::LIST_AUDIT, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<AuditRecord>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedListOut>(
+                slot::LIST_AUDIT_TAIL,
+                bare(in_of(|head| U64In { head, value: limit })),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.records(ran)
+        })
+    }
+
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         boxed(async move {
             let r = fixed::<_, OutHead>(
@@ -1275,6 +1435,35 @@ impl StoreCalls for LoadedStore {
             let (ran, _) = run!(self, submit, r);
             ran.ok()?;
             Ok(ran.out.verdict == VERDICT_YES)
+        })
+    }
+
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedStrListOut>(
+                slot::LIST_PLANE_RECORD_PARENTS,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(kind),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.read_strs(ran)
+        })
+    }
+
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        boxed(async move {
+            let r = fixed::<_, CountOut>(
+                slot::PURGE_PLANE_RECORDS_BEFORE,
+                owned_in(|o, head| KindBeforeIn {
+                    head,
+                    kind: o.text(kind),
+                    before,
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            ran.ok().map(|()| ran.out.count)
         })
     }
 }

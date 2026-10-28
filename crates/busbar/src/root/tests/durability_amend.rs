@@ -5,8 +5,8 @@
 //!
 //! The node journal is ONE per process, so a restart is proven with two real processes rather than
 //! by resetting it under the other tests of this binary: the parent test runs this same test binary
-//! twice over one data directory, filtered to [`restart_phase`] — first to seal content accesses,
-//! then, in a fresh process whose node journal starts empty, to read them back.
+//! twice over one data directory, filtered to itself — first to seal content accesses, then, in a
+//! fresh process whose node journal starts empty, to read them back.
 
 use super::*;
 use busbar_kernel::audit::amend::{node_recent, Reader};
@@ -60,21 +60,24 @@ fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
     book
 }
 
-/// ONE HALF OF THE RESTART, run only in a child process the restart tests below start
-/// ([`run_phase`], `--ignored`). Ignored so the default run never counts it as a pass: alone it
-/// proves nothing, and run without its phase it fails (status row 114).
-#[test]
-#[ignore = "child process of the restart tests: run_phase runs it with --ignored"]
-fn restart_phase() {
+/// In a child process [`run_phase`] started: run its phase and answer `true`. In the test's own
+/// process: `false`, and the test goes on to start its phases.
+fn child_phase() -> bool {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
-        panic!("restart_phase is the child half of the restart tests: run them, not this");
+        return false;
     };
+    restart_phase(&phase, &dir);
+    true
+}
+
+/// ONE HALF OF THE RESTART, run in a child process of the test that names it.
+fn restart_phase(phase: &str, dir: &str) {
     if phase == "store" {
         store_phase();
         return;
     }
-    let book = boot(std::path::Path::new(&dir));
-    match phase.as_str() {
+    let book = boot(std::path::Path::new(dir));
+    match phase {
         "seal" => access(HOOK),
         "read" => {
             let durability = book.lock().unwrap_or_else(|p| p.into_inner());
@@ -211,15 +214,26 @@ fn store_phase() {
 /// rest, and every chain read after boot reads the whole of it. See the `store` phase.
 #[test]
 fn a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-store");
-    run_phase("store", &dir.0);
+    run_phase(
+        "a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store",
+        "store",
+        &dir.0,
+    );
 }
 
-/// Run [`restart_phase`] in a fresh process of this test binary.
-fn run_phase(phase: &str, dir: &std::path::Path) {
+/// Run `phase` in a fresh process of this test binary: the test `test` again, which runs the phase
+/// ([`child_phase`]).
+fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::durability::amend::tests::restart_phase"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .args([
+            "--exact",
+            &format!("root::durability::amend::tests::{test}"),
+        ])
+        .args(["--test-threads", "1", "--nocapture"])
         .env(PHASE, phase)
         .env(DIR, dir)
         .output()
@@ -237,8 +251,15 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
 #[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-verify");
-    run_phase("tamper", &dir.0);
+    run_phase(
+        "verify_reports_an_edit_to_the_held_amendment_run",
+        "tamper",
+        &dir.0,
+    );
 }
 
 /// A CONTENT ACCESS SURVIVES A RESTART. The first process seals a hook's content access; the second,
@@ -246,9 +267,13 @@ fn verify_reports_an_edit_to_the_held_amendment_run() {
 /// amendments held in memory only, the second process found no access.
 #[test]
 fn a_content_access_survives_a_restart() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-restart");
-    run_phase("seal", &dir.0);
-    run_phase("read", &dir.0);
+    let test = "a_content_access_survives_a_restart";
+    run_phase(test, "seal", &dir.0);
+    run_phase(test, "read", &dir.0);
 }
 
 /// A NODE WITH NO DATA DIRECTORY rebuilds nothing, so it binds nothing: the node journal stays
