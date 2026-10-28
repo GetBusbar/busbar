@@ -98,7 +98,7 @@ fn boot(tag: &str, with_planes: bool) -> Booted {
     let (data_port, admin_port) = (free_port(), free_port());
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     let key = Command::new(common::boot::exe())
@@ -331,7 +331,7 @@ fn boot_181_output(extra: &str) -> String {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     std::fs::write(

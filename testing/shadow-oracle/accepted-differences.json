@@ -259,28 +259,37 @@
       "rationale": "MEASURED 2026-09-24 by P3A-measure (predev ddad0c62a, pin 3876913) and re-measured by P3A-register4 at predev b8b554c4f: PUT /api/v1/admin/config/settings with a rate-card entry carrying a `currency` key answers 400 invalid_request in both versions. 1.5.5: \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\". 1.6.0: the same sentence with `, `units`` appended to the backtick list; content-length 189 -> 198 follows the body. Nothing else moves: status, code, audit (0 rows), egress and usage are identical. WHY THE LIST GROWS: the rate-card entry gained the owner-ruled `units:` key (Q42: every billable class a plane declares must be configured, the 1.5.5 upgrade card adds `units: { search_units: 0 }`; Q46(B): `units:` may name only declared classes; decisions in docs/design/1.6.0-QUESTIONS.md), so serde's unknown-field message now names it among the fields an entry accepts — hiding it would make the refusal lie about what the binary takes. WHY `currency` STAYS REFUSED: spec row #66 (docs/design/BUSBAR-1.6.0.md:652, OWNER-LOCKED 2026-09-20) — money is UNITLESS abstract cost, no currency type, no symbol; so this cell's 1.5.5 refusal is the right answer in 1.6.0 too, and D-4's native-currency claim (which wanted this cell at 200) left D-4's scope in the same change. kind=additive with text_list_growth (the Q54 shape): the runner proves the backtick list only GREW — every 1.5.5 field still present, in order, and every byte outside the list identical. PREMISE (evaluated): status 400, code invalid_request, and the exact message = 1.5.5's list plus exactly `units`; any other field, reordering or rewording withholds the entry."
     },
     {
-      "id": "Q66 the providers.<name> unknown-key refusal lists the four lane-capability keys",
-      "kind": "additive",
-      "text_list_growth": true,
+      "id": "Q66 the providers.<name> unknown-key refusal names the key and lists the dialect's options",
+      "kind": "improvement",
       "transform": {
         "candidate": [
           [
             "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
             "\\1 "
+          ],
+          [
+            "(?m)^\\[error\\] config validation failed:\\n  - providers\\.anthropic: unknown key `bogus_key`: it is not a busbar provider key and not an option of the provider's dialect; the anthropic dialect accepts `anthropic-version`, `anthropic-beta`$",
+            "[error] config.yaml: invalid YAML: providers.anthropic: unknown field `bogus_key`, expected one of `api_key`, `protocol`, `base_url`, `error_map`, `path`, `path_base`, `token_url`, `scope`, `subject`, `auth`, `allow_metadata_hosts`, `health` at line 39 column 5"
           ]
         ]
       },
-      "changelog": "1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.",
-      "by": "owner (Matthew Jackson), 2026-09-24 ruling Q66 (answered in Q67): accept the additive difference",
+      "changelog": "1.6.0 Changed: a provider entry (in `config.yaml` and in the `providers.yaml` catalog) takes the provider's own request headers and query parameters under their wire names (`OpenAI-Organization`, `api-version`, `x-goog-user-project`, ...) beside busbar's keys, which include the lane-capability keys `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`; any other key is refused at startup: \"providers.<p>: unknown key `x`: it is not a busbar provider key and not an option of the provider's dialect; the <d> dialect accepts ...\".",
+      "by": "owner (Matthew Jackson), 2026-10-27 direct: Q66 SIGNED with the new text",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "Q67",
-        "when": "2026-09-24",
-        "ruling": "Q66 (answered in Q67, 2026-09-24): ACCEPT the additive difference on neutrality|NEUT-U-providers|validate [effects.stderr]; the providers.<name> unknown-field refusal keeps 1.5.5's exit status and sentence, and its expected-key list gains exactly max_output_key, anthropic_adaptive_thinking, native_structured_output and model_capabilities",
-        "resigned": {
+        "signed": "owner 2026-10-27 direct",
+        "when": "2026-10-27",
+        "ruling": "Q66 SIGNED with the new text: \"providers.<p>: unknown key `x`: it is not a busbar provider key and not an option of the provider's dialect; the <d> dialect accepts ...\"; a provider entry takes busbar's keys and its dialect's options under their wire names (owner rulings 2026-10-27, provider options), and the providers.yaml catalog follows the same rule",
+        "supersedes": {
           "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+          "signed": "Q67",
+          "when": "2026-09-24",
+          "ruling": "Q66 (answered in Q67, 2026-09-24): ACCEPT the additive difference on neutrality|NEUT-U-providers|validate [effects.stderr]; the providers.<name> unknown-field refusal keeps 1.5.5's exit status and sentence, and its expected-key list gains exactly max_output_key, anthropic_adaptive_thinking, native_structured_output and model_capabilities",
+          "resigned": {
+            "who": "owner (Matthew Jackson)",
+            "when": "2026-09-30",
+            "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+          }
         }
       },
       "expires": {
@@ -296,7 +305,7 @@
         "cell": "neutrality|NEUT-U-providers|validate",
         "status": 1
       },
-      "rationale": "MEASURED 2026-09-24 by P3A-register5 against a full local ./bin/oracle record of predev 0e686fa91 (pin 3876913, default all-planes release build, --strict) and first by P3A-register4 at b8b554c4f: a config with an unknown key under providers.<name> is refused as in 1.5.5, exit 1 and the same sentence. After D-1's diagnostic-code rewrite (`[error] BUSBAR-3015: ` -> `[error] `, carried here because an additive entry's list proof reads its OWN transform, not D-1's) the only stderr difference is the expected-key list. 1.5.5: \"providers.anthropic: unknown field `bogus_key`, expected one of `api_key`, `protocol`, `base_url`, `error_map`, `path`, `path_base`, `token_url`, `scope`, `subject`, `auth`, `allow_metadata_hosts`, `health` at line 39 column 5\". 1.6.0: the same sentence with `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output`, `model_capabilities` inserted after `auth`, in that order (the ProviderCfg field order at 0e686fa91, crates/busbar-kernel/src/config/providers.rs). WHY THE LIST GROWS: these are the per-provider lane capabilities (docs/providers.md#lane-capabilities) that keep the Q57 mapping fixes from turning working cross-protocol requests into 400s (OpenAI o-series/gpt-5 need max_completion_tokens; older Claude models must keep thinking.budget_tokens); every key is optional and an omitted key sends what 1.5.5 sent. Owner ruling Q66 (answered in Q67): accept, registered like Q54 with text_list_growth. kind=additive with text_list_growth, so the runner proves the backtick list only GREW: every 1.5.5 key still present, one list touched, same spelling, every byte outside the list identical; a removed or respelled key, or a reworded sentence, stays red. PREMISE (evaluated): the exit status is 1, as in 1.5.5. The list half of Q66's premise (1.5.5's list plus exactly these four keys) is MEASURED above and not evaluated: the pinned runner's premise grammar (busbar-release src/premise.rs @3876913) probes status, body and JSON pointers only, and this exec cell serves an empty body with the refusal on stderr. The runner's own report names the added keys (\"additive: added max_output_key, anthropic_adaptive_thinking, native_structured_output, model_capabilities\"), so a fifth key, or a reorder, shows in that line on the next run. LANECAPS-MOVE (lane-caps parsing leaving busbar-kernel) may reorder or reword the list when it lands; re-measure then."
+      "rationale": "Owner rulings 2026-10-27 (provider options; GetBusbar/busbar#1795, GetBusbar/busbar-plane-llm#54): every key of providers.<name> is a busbar provider key or a name on that dialect's list, judged at validation by the plane that speaks the dialect. The 1.5.5 refusal was serde's unknown-field sentence at parse; 1.6.0's is the plane's, collected with the other validation errors, exit 1 as in 1.5.5 (premise). PINNED EXACTLY: the transform rewrites the one candidate sentence the owner signed (header line and the dialect's list included) to the 1.5.5 golden line, so any other wording, list, key or error count stays red. The first transform is D-1's diagnostic-code rewrite, kept from the superseded entry. Supersedes the 2026-09-24 Q66/Q67 additive entry (the 4 lane-capability keys, which remain busbar keys)."
     },
     {
       "id": "F-015 an inline secret is refused without echoing it",
