@@ -396,6 +396,10 @@ pub(crate) struct AdjustReq {
     /// The rate-card history entry the counts were priced with, by its position (the
     /// `rate_card_version` `GET /admin/usage` names).
     entry: u64,
+    /// The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction
+    /// lands in the budget windows, the card entry and the metering day holding it, never in those
+    /// current when it is made, and `entry` must be the entry in force at it.
+    card_epoch_ms: u64,
     /// The signed delta per billable class: whole counts, never a money figure. At least one class.
     delta: BTreeMap<String, i64>,
     /// Why. Required and non-blank.
@@ -419,6 +423,8 @@ pub(crate) struct AdjustView {
     lane: String,
     /// The history entry the counts were priced with.
     entry: u64,
+    /// The corrected unit's card epoch, unix milliseconds: where the correction landed.
+    card_epoch_ms: u64,
     /// The pool the correction names.
     pool: String,
     /// The signed delta applied, per class.
@@ -1075,8 +1081,10 @@ fn doc_for(
                     format!(
                         "`invalid_request`: malformed body, a blank `key`, `lane` or `reason`, \
                          an empty `delta` or a delta that is not a whole number, an `entry` the \
-                         history does not hold, a delta that would take a count below zero or \
-                         that the day's metering does not hold, a missing or blank `pool` or one \
+                         history does not hold, a missing `card_epoch_ms` or one no history \
+                         entry covers or at which `entry` is not in force, a delta that would \
+                         take a count below zero or that the epoch's metering day or budget \
+                         window does not hold, a missing or blank `pool` or one \
                          naming no configured pool (the message says which), a scope below \
                          `full`, or {BODY_UNREADABLE}"
                     ),

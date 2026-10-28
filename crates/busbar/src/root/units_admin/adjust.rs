@@ -7,16 +7,23 @@
 //! There is no amendment journal and no read-time correction any more: two nodes reading the same
 //! counts report the same money (MONEY-REVIEW review 5, B9). The correction:
 //!
-//! - names the KEY, the LANE (model) the counts were earned on, and the card ENTRY they were priced
-//!   with (its history position, as `GET /api/v1/admin/usage` names it in `rate_card_version`);
+//! - names the KEY, the LANE (model) the counts were earned on, the card ENTRY they were priced
+//!   with (its history position, as `GET /api/v1/admin/usage` names it in `rate_card_version`),
+//!   and the unit's CARD EPOCH (`card_epoch_ms`, its arrival instant);
 //! - names the POOL the unit was dispatched through (owner ruling Q64/Q67), so it lands on every
 //!   bucket an accrual of the unit landed on: the key's own and each group bucket that pool
 //!   participates in;
+//! - LANDS WHERE ITS UNIT WAS LEDGERED (Q128 arch u32 #18): in each bucket's window holding the
+//!   epoch, in the segment of the card entry in force then, on the metering day holding it — never
+//!   the window, card or day current when the correction is made. Money is the counts x the card in
+//!   effect at the ledgered unit's time;
 //! - is applied to the counts in RAM at once, all or nothing, and reaches the store as a signed
 //!   `add_usage` delta through today's write-behind path (the poster replaces it, PR-B2);
-//! - is REFUSED when it would take any count of its segment below zero: nothing is applied.
+//! - FAILS CLOSED: it is REFUSED, with the reason, when no card entry covers its epoch, when the
+//!   entry it names is not the one in force then, when its epoch's window holds none of the counts
+//!   it moves down, or when it would take any count of its segment below zero: nothing is applied.
 //!
-//! The admin unit's own audit record is the trail: who asked, and that it applied.
+//! The admin unit's own audit record is the trail: who asked, and that it applied or was refused.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,6 +41,9 @@ pub struct Correction {
     pub lane: String,
     /// The card entry the counts were priced with, by its history position.
     pub entry: u64,
+    /// THE CARD EPOCH: the corrected unit's arrival instant in milliseconds. The correction lands
+    /// in the window, card entry and metering day holding it.
+    pub card_epoch_ms: u64,
     /// The pool the unit was dispatched through.
     pub pool: String,
     /// The signed delta per class.
@@ -62,7 +72,8 @@ pub fn no_ledger() -> UsageAdjuster {
 
 /// The adjuster over `app`'s live governance state and dated rate-card history: the entry's
 /// position resolves to the era its counts were dated with (its `effective_from`), and
-/// [`busbar_kernel::governance::GovState::adjust_usage`] applies the delta.
+/// [`busbar_kernel::governance::GovState::adjust_usage`] applies the delta where the unit was
+/// ledgered: at its card epoch, never at the instant the correction is made.
 #[must_use]
 pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster {
     Arc::new(move |c: &Correction| {
@@ -85,7 +96,7 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
             pool: &c.pool,
             model: &c.lane,
             entry_era: era,
-            card_epoch_ms: busbar_kernel::store::now_ms(),
+            card_epoch_ms: c.card_epoch_ms,
             delta: &c.delta,
             now: busbar_kernel::store::now(),
         };
@@ -98,15 +109,17 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
 /// The effect half of `adjust`: decode a COUNT correction and apply it to the one ledger.
 ///
 /// The body is `{ "key": "<key id>", "lane": "<model>", "entry": <history position>,
-/// "pool": "<pool name>", "delta": { "<class>": <signed whole count>, … }, "reason": "…" }`.
-/// Counts are whole numbers and never a money figure (owner ruling Q9). `scope` is the scope the
-/// caller was admitted under; the verbs unit admits `adjust` at `full` only, and it is checked again
-/// here.
+/// "card_epoch_ms": <unix ms>, "pool": "<pool name>", "delta": { "<class>": <signed whole count>,
+/// … }, "reason": "…" }`. Counts are whole numbers and never a money figure (owner ruling Q9).
+/// `scope` is the scope the caller was admitted under; the verbs unit admits `adjust` at `full`
+/// only, and it is checked again here.
 ///
 /// Refusals are client-safe: a malformed body, a blank reason, a scope below `full`, an entry the
-/// history does not hold, or a delta that would take a count below zero is `400 invalid_request`
-/// naming the fault; a key that does not exist is `NotFound`. A missing `pool`, or one `pool_known`
-/// does not know, is `400` naming it (Q64/Q67). Nothing is applied on any refusal.
+/// history does not hold, a card epoch no entry covers or at which the named entry is not in force,
+/// a correction its epoch's window holds no counts for, or a delta that would take a count below
+/// zero is `400 invalid_request` naming the fault; a key that does not exist is `NotFound`. A
+/// missing `pool`, or one `pool_known` does not know, is `400` naming it (Q64/Q67). Nothing is
+/// applied on any refusal.
 pub(crate) fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
@@ -130,6 +143,10 @@ pub(crate) fn adjust_effect(
     let _reason = text("reason")?;
     let entry = obj
         .get("entry")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(GovernanceError::Validation)?;
+    let card_epoch_ms = obj
+        .get("card_epoch_ms")
         .and_then(serde_json::Value::as_u64)
         .ok_or(GovernanceError::Validation)?;
     let Ok(pool) = text("pool") else {
@@ -160,6 +177,7 @@ pub(crate) fn adjust_effect(
         key: key.to_string(),
         lane: lane.to_string(),
         entry,
+        card_epoch_ms,
         pool: pool.to_string(),
         delta,
     };
@@ -178,6 +196,7 @@ pub(crate) fn adjust_effect(
             "key": correction.key,
             "lane": correction.lane,
             "entry": correction.entry,
+            "card_epoch_ms": correction.card_epoch_ms,
             "pool": correction.pool,
             "delta": correction.delta,
         }))

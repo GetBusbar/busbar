@@ -78,6 +78,12 @@
       "AdjustReq": {
         "description": "`POST /adjust`: a SIGNED correction to a key's COUNTS on the one ledger, never to a money\nfigure. It names the key, the lane the counts were earned on, the rate-card history entry they\nwere priced with, and the pool the unit was dispatched through.",
         "properties": {
+          "card_epoch_ms": {
+            "description": "The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction\nlands in the budget windows, the card entry and the metering day holding it, never in those\ncurrent when it is made, and `entry` must be the entry in force at it.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "delta": {
             "additionalProperties": {
               "format": "int64",
@@ -113,6 +119,7 @@
           "key",
           "lane",
           "entry",
+          "card_epoch_ms",
           "delta",
           "reason",
           "pool"
@@ -125,6 +132,12 @@
           "applied": {
             "description": "Always true: a refused correction is a `400`, and nothing of it is applied.",
             "type": "boolean"
+          },
+          "card_epoch_ms": {
+            "description": "The corrected unit's card epoch, unix milliseconds: where the correction landed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           },
           "delta": {
             "additionalProperties": {
@@ -158,6 +171,7 @@
           "key",
           "lane",
           "entry",
+          "card_epoch_ms",
           "pool",
           "delta"
         ],
@@ -4463,7 +4477,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, a blank `key`, `lane` or `reason`, an empty `delta` or a delta that is not a whole number, an `entry` the history does not hold, a delta that would take a count below zero or that the day's metering does not hold, a missing or blank `pool` or one naming no configured pool (the message says which), a scope below `full`, or a request body that could not be read to the operator's size cap"
+            "description": "`invalid_request`: malformed body, a blank `key`, `lane` or `reason`, an empty `delta` or a delta that is not a whole number, an `entry` the history does not hold, a missing `card_epoch_ms` or one no history entry covers or at which `entry` is not in force, a delta that would take a count below zero or that the epoch's metering day or budget window does not hold, a missing or blank `pool` or one naming no configured pool (the message says which), a scope below `full`, or a request body that could not be read to the operator's size cap"
           },
           "401": {
             "content": {
