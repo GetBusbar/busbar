@@ -410,7 +410,19 @@ pub fn registry_stand_in(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let mut rows = i.linked.into_iter().fold(Rows::new(), Rows::with_linked);
+    // A test build has no loader to read a door's Statement, so the double's row states here the
+    // secret paths its door's Statement declares, as the production registry reads them off the
+    // linked store's door (`PluginRegistry::secret_slots`).
+    use crate::test_support::store_double::{NAME as DOUBLE, SECRET_REF_PATHS};
+    let mut rows = i
+        .linked
+        .into_iter()
+        .fold(Rows::new(), |rows, row| match row {
+            LinkedRow::Store(store) if store.3 == DOUBLE => {
+                rows.with_linked_secret_slots(row, SECRET_REF_PATHS)
+            }
+            row => rows.with_linked(row),
+        });
     let Some(plugins) = i.plugins else {
         return Ok(rows.into_rows());
     };

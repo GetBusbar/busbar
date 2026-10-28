@@ -40,10 +40,11 @@ use busbar_contract::records::{
 
 use super::{now, MemoryStore, NAME};
 
-/// The settings paths the linked memory store declares may hold a secret reference (`*`, every
-/// top-level key, the surface 1.5.5 resolved); the double states the same.
+/// [`super::SECRET_REF_PATHS`], as the door's Statement states them.
 const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
-    &[busbar_contract::abi::sdk::door::abi_str("*")];
+    &[busbar_contract::abi::sdk::door::abi_str(
+        super::SECRET_REF_PATHS[0],
+    )];
 
 busbar_contract::store_door!(
     MemoryStore,
