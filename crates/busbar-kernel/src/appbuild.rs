@@ -1690,7 +1690,7 @@ pub fn build_app_from_config(
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
                 };
-                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+                (decl.build)(decl, &ctx).map(|obj| (decl.key, obj))
             })
             .collect()
     };

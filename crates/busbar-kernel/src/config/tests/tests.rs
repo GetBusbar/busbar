@@ -3949,6 +3949,7 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
 static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::new(Vec::new());
 
 fn record_plane_section(
+    _: &crate::plane_driver::registry::PlaneDecl,
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>, String> {
     PLANE_SAW.lock().unwrap().push(v.clone());
@@ -3979,11 +3980,11 @@ static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -4004,6 +4005,7 @@ static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
@@ -4221,11 +4223,11 @@ const fn requiring_plane(
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -4246,6 +4248,7 @@ const fn requiring_plane(
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     }
 }
 

@@ -137,13 +137,13 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
+        wire_format_names: |_| &[],
         // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
         // lane names one the boot accepts.
-        provider_dialects: crate::ingress::protocols::known_protocols,
+        provider_dialects: |_| crate::ingress::protocols::known_protocols(),
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -164,6 +164,7 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config

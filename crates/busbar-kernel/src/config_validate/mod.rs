@@ -343,7 +343,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
         if let Some(default_section) = decl.default_section {
-            if let Some(dialects) = default_section().known_dialects() {
+            if let Some(dialects) = default_section(decl).known_dialects() {
                 // A dialect already a wire codec's (the fallback plane's door declares its codecs'
                 // dialects too, #824) is listed once: the refusal names each legal protocol once.
                 for d in dialects.iter().copied() {

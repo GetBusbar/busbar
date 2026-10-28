@@ -187,9 +187,9 @@ impl RawPlaneSection {
 /// pre-seam typed field's `Default`.
 fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
     match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.default_section)
+        .and_then(|d| d.default_section.map(|f| (d, f)))
     {
-        Some(f) => f(),
+        Some((d, f)) => f(d),
         None => Box::new(RawPlaneSection::default()),
     }
 }
@@ -221,7 +221,7 @@ where
                 &config_sections(),
             )
             .map_err(serde::de::Error::custom)?;
-            parse(&value).map_err(serde::de::Error::custom)
+            parse(d, &value).map_err(serde::de::Error::custom)
         }
         None => {
             let raw = if value.is_null() { None } else { Some(value) };
@@ -245,9 +245,9 @@ where
         return Ok(None);
     }
     match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.parse_endpoint)
+        .and_then(|d| d.parse_endpoint.map(|parse| (d, parse)))
     {
-        Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
+        Some((d, parse)) => parse(d, &value).map(Some).map_err(serde::de::Error::custom),
         None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
     }
 }

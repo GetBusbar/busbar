@@ -306,7 +306,7 @@ pub(crate) mod named_map;
 fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(admin_routes) = decl.admin_routes {
-            for spec in admin_routes(&() as &dyn std::any::Any) {
+            for spec in admin_routes(decl, &() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl, spec);
             }
         }

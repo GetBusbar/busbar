@@ -2187,11 +2187,11 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane_driver::registry::plane_decls()
+            let decl = crate::plane_driver::registry::plane_decls()
                 .iter()
-                .find(|d| d.config_section == section)
-                .and_then(|d| d.parse_section)?;
-            parse(value)
+                .find(|d| d.config_section == section)?;
+            let parse = decl.parse_section?;
+            parse(decl, value)
                 .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
                 .ok()
                 .map(|cfg| (section, cfg))

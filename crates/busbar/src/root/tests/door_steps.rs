@@ -4495,15 +4495,22 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
-        let tools = busbar_kernel::plane_driver::door::DoorSection::new(row.config_section, value);
+        let tools = busbar_kernel::plane_driver::door::DoorSection::new(
+            row.door,
+            row.config_section,
+            value,
+        );
         let defs = tools.as_defs();
-        (row.build)(&BuildCtx {
-            endpoint_slot: None,
-            plane_defs: &defs,
-            public_url: Some(PUBLIC_URL),
-            prior: None,
-            providers: None,
-        })
+        (row.build)(
+            row,
+            &BuildCtx {
+                endpoint_slot: None,
+                plane_defs: &defs,
+                public_url: Some(PUBLIC_URL),
+                prior: None,
+                providers: None,
+            },
+        )
         .expect("the door builds from its section")
     }
 

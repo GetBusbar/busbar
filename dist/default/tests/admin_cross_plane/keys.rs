@@ -2778,7 +2778,8 @@ async fn named_map_app_opts(
         let parse = decl
             .parse_section
             .unwrap_or_else(|| panic!("the `{section}:` plane parses its own section"));
-        let cfg = parse(&disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
+        let cfg =
+            parse(decl, &disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
         (
             decl,
             std::sync::Arc::<dyn busbar_kernel::config::plane_sections::PlaneCfg>::from(cfg),
@@ -2807,7 +2808,7 @@ async fn named_map_app_opts(
                     prior: None,
                     providers: None,
                 };
-                if let Some(slot) = (decl.build)(&ctx) {
+                if let Some(slot) = (decl.build)(decl, &ctx) {
                     builder.install_plane_runtime(decl.key, slot);
                 }
             }
@@ -2827,7 +2828,7 @@ async fn named_map_app_opts(
             prior: None,
             providers: None,
         };
-        if let Some(plane) = (decl.build)(&ctx) {
+        if let Some(plane) = (decl.build)(decl, &ctx) {
             builder.install_plane_runtime(decl.key, plane);
         }
     }

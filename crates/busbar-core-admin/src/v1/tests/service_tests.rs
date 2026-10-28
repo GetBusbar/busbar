@@ -3469,11 +3469,11 @@ mod plane_fees_on_admin_usage {
                     served_op_classes: &[],
                     caller_credential_refusal: None,
                 },
-                wire_format_names: || &[],
-                provider_dialects: || &[],
+                wire_format_names: |_| &[],
+                provider_dialects: |_| &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
-                build: |_| None,
+                build: |_, _| None,
                 routes: None,
                 admin_routes: None,
                 openapi: None,
@@ -3494,6 +3494,7 @@ mod plane_fees_on_admin_usage {
                 retain_verify_gates: None,
                 default_section: None,
                 resolve_provider: None,
+                door: None,
             }
         };
     }
