@@ -57,7 +57,11 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # auth-ldap is 52ff062 (#8/#10/#11, 2026-10-09: the sans-IO LDAP codec over the host's connector, pinned to
 # busbar predev 39374ec00e). The rest
 # are each repo's dev head on 2026-10-05.
-store-sqlite	src:510ee41265ca48a63e8a7e5507d92a88b08d51a2	build:busbar-store-sqlite	-	1.6
+# store-sqlite then moved to 5d345fd (its dist-v1.6.0 line, busbar-store-sqlite #44: 510ee41 repinned to
+# busbar 3e1de2c3 plus `secret_refs: *`): busbar #1699 resolves a store setting's reference only where
+# the Statement declares one, and 1.5.5 resolved every top-level setting (BOOT-170). Its dev pins the
+# money store-ABI cut (busbar #1667), which busbar dev does not serve yet.
+store-sqlite	src:5d345fd2b54046c24e0f3e9830adcd0109c2558d	build:busbar-store-sqlite	-	1.6
 store-postgres	src:2bfa17522f77c80c37c9b6de9019ded9d72ca1a8	build:busbar-store-postgres	-	1.6
 store-valkey	src:f37a6d9ee73b3f54669855885e6af1436f80b477	build:busbar-store-valkey	-	1.6
 store-mysql	src:cd609b8f3bcf3e8c13906ecef9471bd4556e3aa5	build:busbar-store-mysql	-	1.6

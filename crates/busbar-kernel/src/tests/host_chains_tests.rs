@@ -294,6 +294,120 @@ fn an_empty_append_drops_the_chain_whole() {
     );
 }
 
+/// A DROPPED CHAIN SCANS EMPTY IN THE STORE (ARCHITECT 2026-10-21, slot 40: an empty `record_put`
+/// removes the row): the drop's strikes remove its rows, so a raw scan of the kind finds none of
+/// them, not one empty row per record the chain ever held.
+#[test]
+fn a_dropped_chain_scans_empty_in_the_store() {
+    let (s, store) = rig();
+    append(&s, b"t1", b"|1|a").unwrap();
+    append(&s, b"t1", b"|2|b").unwrap();
+    assert_eq!(store.record_scan(EV, b"", u32::MAX).unwrap().len(), 2);
+    append(&s, b"t1", b"").unwrap();
+    assert_eq!(
+        store.record_scan(EV, b"", u32::MAX).unwrap(),
+        Vec::new(),
+        "the dropped chain's rows are gone from the store"
+    );
+}
+
+/// A CHAIN DROPPED AND BEGUN AGAIN NEVER MEETS ITS OLD CLAIMS (the fleet's one writer per
+/// position, kept with slot 40's rule): the drop's strikes remove its rows, so the plane's kind has
+/// nothing left to count, and the chain's LIFE is the host's own row instead. The re-begun chain's
+/// first record takes the very position the old first record did, whose claim is still held, and
+/// it is stored all the same, in the next life; the life lives in the store, under the host's kind,
+/// never in the plane's.
+///
+/// RED while the life was the count of the scope's empty rows: the drop left none, the re-begun
+/// chain was back in life `0`, every attempt lost the old claim, and the append answered
+/// `WRITE_FAILED`.
+#[test]
+fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
+    use crate::host_chains::{decode, life_key, position_token, ChainFraming, CHAIN_LIFE_SCHEMA};
+    let (s, store) = rig();
+    let framing = ChainFraming::of(&RecordChain {
+        kind: 0,
+        framing: CHAIN_PIPE_SEPARATED,
+        flags: CHAIN_DIGESTS_SCOPE,
+        _reserved: 0,
+    })
+    .unwrap();
+    let first = |what: &str| {
+        let body = store
+            .record_get(EV, &stored_at("t1", 1))
+            .unwrap()
+            .unwrap_or_else(|| panic!("{what}: record 1 is in the store"));
+        decode("t1", body.as_slice(), framing).unwrap()
+    };
+    append(&s, b"t1", b"|1|a").unwrap();
+    let old = position_token(INST, EV, "t1", 0, &first("the old chain"));
+    append(&s, b"t1", b"").unwrap();
+    assert_eq!(
+        store.record_scan(EV, b"", u32::MAX).unwrap(),
+        Vec::new(),
+        "the drop leaves nothing in the plane's kind"
+    );
+    let life = store
+        .record_get(CHAIN_LIFE_SCHEMA, &life_key(INST, EV, "t1"))
+        .unwrap()
+        .expect("the drop raised the chain's life in the store");
+    assert_eq!(life.as_slice(), 1u64.to_be_bytes().as_slice());
+    append(&s, b"t1", b"|2|b").expect("the chain begun again takes its first record");
+    let again = first("the chain begun again");
+    assert_eq!(
+        position_token(INST, EV, "t1", 0, &again),
+        old,
+        "the re-begun first record stands where the old one stood"
+    );
+    let now = busbar_kernel::store::now();
+    assert!(
+        !Mem(Arc::clone(&store))
+            .claim(
+                crate::host_records::CLAIM_KIND,
+                &old,
+                now.saturating_add(60),
+                now
+            )
+            .unwrap(),
+        "the old life's claim on that position is still held, and was never needed"
+    );
+    assert_eq!(
+        listed(&s, b"t1/"),
+        vec![(record_of("t1", 1), b"|2|b".to_vec())],
+        "a fresh chain at seq 1, verifying"
+    );
+    // A second drop raises the life again; the chain begins a third time.
+    append(&s, b"t1", b"").unwrap();
+    append(&s, b"t1", b"|3|c").expect("the third life takes its first record");
+    assert_eq!(
+        listed(&s, b"t1/"),
+        vec![(record_of("t1", 1), b"|3|c".to_vec())]
+    );
+}
+
+/// **A DROP ON ONE NODE IS SEEN BY EVERY NODE.** The life is read from the store, not from a
+/// node's memory: node `b`, which never held the chain, begins it again after node `a` dropped it,
+/// and takes the position in the life `a` raised, not in the life `a`'s old claims were taken in.
+#[test]
+fn a_chain_dropped_on_one_node_is_begun_again_on_another() {
+    let store = Arc::new(MemoryStore::new());
+    let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    append(&a, b"t1", b"|1|a").unwrap();
+    append(&a, b"t1", b"|2|a").unwrap();
+    append(&a, b"t1", b"").unwrap();
+    append(&b, b"t1", b"|1|b").expect("node b begins the dropped chain again");
+    append(&a, b"t1", b"|2|a").expect("node a continues node b's chain");
+    assert_eq!(
+        listed(&a, b"t1/"),
+        vec![
+            (record_of("t1", 1), b"|1|b".to_vec()),
+            (record_of("t1", 2), b"|2|a".to_vec()),
+        ],
+        "one chain, begun again on b and continued on a, verifying"
+    );
+}
+
 /// A chained kind refuses what it cannot hold: a key that is no scope, bytes too large to keep with
 /// their chain fields, and a single-record read (a chain is read whole).
 #[test]

@@ -79,7 +79,7 @@ fn bytes_go_through_the_framer_both_ways_byte_exact() {
         let far = echo().await;
         let door = Arc::new(TestDoor::identity("bytes"));
         let mut d = dial(&far);
-        d.opening = Some((Vec::new(), b"hello ".to_vec()));
+        d.opening = Some((Vec::new(), b"hello ".to_vec().into()));
         let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
         let waker = std::task::Waker::noop();
         let sent: Vec<u8> = (0..=255_u8).cycle().take(100_000).collect();
@@ -275,7 +275,7 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),
         ));
         d.alpn = vec![b"h2".to_vec()];
-        d.opening = Some((Vec::new(), b"hello".to_vec()));
+        d.opening = Some((Vec::new(), b"hello".to_vec().into()));
         let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
         assert_eq!(c.established().agreed_protocol.as_deref(), Some(&b"h2"[..]));
@@ -343,7 +343,7 @@ fn the_handshake_offers_what_the_framer_located() {
                 crate::tls::client::build_client_config(&trust).expect("a usable client config"),
             ));
             d.alpn = registered;
-            d.opening = Some((Vec::new(), b"hello".to_vec()));
+            d.opening = Some((Vec::new(), b"hello".to_vec().into()));
             let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
             assert_eq!(gather(&mut c, 5).await, b"hello");
             assert_eq!(
@@ -785,7 +785,7 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
         d.tls = Some(Arc::new(
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),
         ));
-        d.opening = Some((Vec::new(), b"hello".to_vec()));
+        d.opening = Some((Vec::new(), b"hello".to_vec().into()));
         let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello", "the handshake completed");
         let sent: Vec<u8> = (0..=255_u8).cycle().take(SENT).collect();
