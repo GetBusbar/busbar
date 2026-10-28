@@ -42,7 +42,8 @@
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
-//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
+//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran; [`proxy_route`] is the
+//!   choice it fills, which proxy (if any) a dial goes through.
 //!
 //! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
 //! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
@@ -76,6 +77,7 @@ pub mod pool;
 pub mod process;
 mod program;
 pub mod proxy;
+pub mod proxy_route;
 pub mod registry;
 pub mod socket;
 pub mod spawn_env;
@@ -426,7 +428,55 @@ type MemberAnchored =
 type AuthKey = (InstanceId, NeedId, String, String);
 
 /// The listeners, one per inbound need, by the need's owner and need.
-type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
+type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
+
+/// ONE INBOUND LISTENER, driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
+/// host lock): an accept takes the listener out, crosses the carrier's `accept` (and closes a
+/// connection past the cap) with nothing held, and puts it back. An accept that finds it out
+/// (another accept has it, or its bind is still crossing) answers PENDING, woken when it is back.
+#[derive(Default)]
+struct Accepting {
+    /// The listener while no accept has it out, and the accepts that found it out.
+    slot: Mutex<(Option<Listening>, Vec<Waker>)>,
+}
+
+impl Accepting {
+    /// Take the listener out; `None` (with `waker` woken once it is back) while it is out.
+    fn take(&self, waker: &Waker) -> Option<Listening> {
+        let mut slot = self.slot.lock().expect("listener");
+        let taken = slot.0.take();
+        if taken.is_none() && !slot.1.iter().any(|w| w.will_wake(waker)) {
+            slot.1.push(waker.clone());
+        }
+        taken
+    }
+
+    /// Put `listening` back (`None`: it is gone), waking every accept that found it out.
+    fn put(&self, listening: Option<Listening>) {
+        let waiting = {
+            let mut slot = self.slot.lock().expect("listener");
+            slot.0 = listening;
+            std::mem::take(&mut slot.1)
+        };
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
+/// A listener an accept has out: put back however the accept ends, an unwind included.
+struct AcceptingOut<'a> {
+    home: &'a Accepting,
+    listening: Option<Listening>,
+}
+
+impl Drop for AcceptingOut<'_> {
+    fn drop(&mut self) {
+        if let Some(l) = self.listening.take() {
+            self.home.put(Some(l));
+        }
+    }
+}
 
 /// A dial whose judgement pended: what to dial once it answers, the answer, and the waker of the
 /// read or wait that found it unanswered.
@@ -714,7 +764,7 @@ impl Wake for TicketWake {
     }
 }
 
-fn map(f: &Failure) -> ConnError {
+pub(crate) fn map(f: &Failure) -> ConnError {
     match f {
         Failure::Refused(_) => ConnError::Refused,
         Failure::Timeout => ConnError::Timeout,
@@ -1277,16 +1327,40 @@ impl Connector {
                 registered
             }
         };
-        let mut listeners = self.listeners.lock().expect("listeners");
-        if listeners.contains_key(&(owner, need)) {
-            return Err(ConnError::Refused);
+        // The need's place is held first; the carrier's `listen` then crosses with no lock held.
+        let held = Arc::new(Accepting::default());
+        {
+            let mut listeners = self.listeners.lock().expect("listeners");
+            if listeners.contains_key(&(owner, need)) {
+                return Err(ConnError::Refused);
+            }
+            listeners.insert((owner, need), Arc::clone(&held));
         }
-        let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
-        let l =
-            Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
-        let addr = l.local_addr();
-        listeners.insert((owner, need), Arc::new(Mutex::new(l)));
-        Ok(addr)
+        let bound = self
+            .ride_on(&door)
+            .ok_or(ConnError::Refused)
+            .and_then(|(framer, via)| {
+                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)
+            });
+        match bound {
+            Ok(l) => {
+                let addr = l.local_addr();
+                held.put(Some(l));
+                Ok(addr)
+            }
+            Err(e) => {
+                let gone = {
+                    let mut listeners = self.listeners.lock().expect("listeners");
+                    let ours = listeners
+                        .get(&(owner, need))
+                        .is_some_and(|a| Arc::ptr_eq(a, &held));
+                    ours.then(|| listeners.remove(&(owner, need))).flatten()
+                };
+                drop(gone);
+                held.put(None);
+                Err(e)
+            }
+        }
     }
 
     /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
@@ -1312,10 +1386,19 @@ impl Connector {
             .cloned()
             .ok_or(ConnError::Refused)?;
         let waker = self.waker(owner, ticket);
-        let got = l
-            .lock()
-            .expect("listener")
+        let Some(listening) = l.take(&waker) else {
+            return Err(ConnError::Pending);
+        };
+        let mut out = AcceptingOut {
+            home: &l,
+            listening: Some(listening),
+        };
+        let got = out
+            .listening
+            .as_mut()
+            .expect("the listener is out")
             .poll_accept(&mut Context::from_waker(&waker));
+        drop(out);
         match got {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(Err(f)) => Err(map(&f)),
@@ -2122,10 +2205,17 @@ impl DeclaredConns for Connector {
             let _ = self.close(owner, conn);
         }
         self.pools.forget(owner);
-        self.listeners
-            .lock()
-            .expect("listeners")
-            .retain(|(o, _), _| *o != owner);
+        // Let go once the table's lock is: a listener's last hold on its entry goes with it.
+        let gone: Vec<Arc<Accepting>> = {
+            let mut listeners = self.listeners.lock().expect("listeners");
+            let keys: Vec<(InstanceId, NeedId)> = listeners
+                .keys()
+                .filter(|(o, _)| *o == owner)
+                .copied()
+                .collect();
+            keys.iter().filter_map(|k| listeners.remove(k)).collect()
+        };
+        drop(gone);
         let needs: Vec<NeedId> = self
             .over
             .lock()

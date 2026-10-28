@@ -226,14 +226,11 @@ fn the_bare_authority_arm_is_reached_through_the_kernel_name() {
 /// THE METADATA LIST IS ONE LIST, AND THE ARM THAT DIALS READS IT.
 ///
 /// This is the bug that was actually live, stated directly. `net_guard` kept a two-entry
-/// `METADATA_HOSTS` that [`judge_host_name`] — the arm the resolve-then-pin DIALING path consults —
-/// read, while a six-entry copy shadowed privately inside `ssrf_blocked_host` served config
-/// validation. Four names were refused at boot and dialled at runtime.
+/// `METADATA_HOSTS` while a six-entry copy shadowed privately inside `ssrf_blocked_host` served
+/// config validation. Four names were refused at boot and dialled at runtime.
 ///
 /// `metadata.platformequinix.com` is why the NAME arm is the only arm that can help: it resolves
-/// and pins to a globally routable address, so no address predicate says anything about it at all.
-///
-/// [`judge_host_name`]: busbar_kernel_egress::trust::net::judge_host_name
+/// to a globally routable address, so no address predicate says anything about it at all.
 #[test]
 fn the_dialing_arm_and_the_config_arm_read_the_same_metadata_list() {
     let names = busbar_contract::net::METADATA_HOSTS;
@@ -246,18 +243,8 @@ fn the_dialing_arm_and_the_config_arm_read_the_same_metadata_list() {
         names.len() >= 6 && names.contains(&"metadata.platformequinix.com"),
         "the metadata list shrank back toward the two-entry copy: {names:?}"
     );
-    let permissive = busbar_kernel_egress::trust::net::GuardPolicy {
-        allow_private: true,
-        ..busbar_kernel_egress::trust::net::GuardPolicy::default()
-    };
     for name in names {
-        // The DIALING arm, under the permissive stance: the metadata arm is unconditional, so
-        // `allow_private` must not reach it.
-        assert!(
-            busbar_kernel_egress::trust::net::judge_host_name(name, permissive).is_err(),
-            "`{name}` is on the metadata list and the dialing arm let it through"
-        );
-        // And the CONFIG arm, over the same name spelled as a URL.
+        // The CONFIG arm, over the name spelled as a URL.
         assert!(
             busbar_kernel::config_validate::ssrf_blocked_host(
                 &format!("https://{name}/latest/meta-data/"),

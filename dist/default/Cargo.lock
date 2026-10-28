@@ -230,8 +230,8 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "busbar-auth-admin-tokens"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=b1337ce8805b1f9ee2e3f83bbf907e232559191f#b1337ce8805b1f9ee2e3f83bbf907e232559191f"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=ea92a077b0b43038196261fc78b5cd26569def07#ea92a077b0b43038196261fc78b5cd26569def07"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -239,8 +239,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=b1337ce8805b1f9ee2e3f83bbf907e232559191f#b1337ce8805b1f9ee2e3f83bbf907e232559191f"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=ea92a077b0b43038196261fc78b5cd26569def07#ea92a077b0b43038196261fc78b5cd26569def07"
 dependencies = [
  "busbar-auth-admin-tokens",
  "busbar-contract",
@@ -447,7 +447,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -458,6 +457,7 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
+ "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -601,7 +601,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -678,13 +677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-kernel-scope"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
 name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
@@ -695,7 +687,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=757897b71862489343d2e5449b1816619bdcf69e#757897b71862489343d2e5449b1816619bdcf69e"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=543fb7ec162e0ef6e28a6e92e2710d3e91197c4e#543fb7ec162e0ef6e28a6e92e2710d3e91197c4e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -724,7 +716,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=c4b8599250ff7996af33494bfe56e4526f5526b8#c4b8599250ff7996af33494bfe56e4526f5526b8"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=bb66a830bb4bb9ecbf737765fa330c06766a8c7d#bb66a830bb4bb9ecbf737765fa330c06766a8c7d"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -763,7 +755,6 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "base64 0.22.1",
  "busbar-contract",
  "ed25519-dalek",
  "flate2",
@@ -772,7 +763,6 @@ dependencies = [
  "hex",
  "libc",
  "libloading",
- "ring",
  "serde",
  "serde_json",
  "tar",
@@ -782,8 +772,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-secret-env"
-version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=a883f3e78abe6df1648e9ed1241d763029f1c849#a883f3e78abe6df1648e9ed1241d763029f1c849"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=af636cef65a5dc66d50e268367cf3608f429b1a9#af636cef65a5dc66d50e268367cf3608f429b1a9"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -791,8 +781,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-secret-file"
-version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=d1972323107d17cc340d93a1ee3e27c7643c63c6#d1972323107d17cc340d93a1ee3e27c7643c63c6"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=d0964c6ce5f6f6c322bbb34c07c1da7d4bf05338#d0964c6ce5f6f6c322bbb34c07c1da7d4bf05338"
 dependencies = [
  "busbar-contract",
  "libc",
@@ -802,11 +792,25 @@ dependencies = [
 
 [[package]]
 name = "busbar-store-memory"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220#1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=076065fc5c500e3da964b627a4a4191f347951a2#076065fc5c500e3da964b627a4a4191f347951a2"
 dependencies = [
  "busbar-contract",
  "sha2",
+]
+
+[[package]]
+name = "busbar-test-kit"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

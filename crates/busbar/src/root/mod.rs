@@ -71,9 +71,6 @@ pub mod credentials;
 pub mod dispatch;
 pub mod door_steps;
 pub mod doors;
-// The door-root rows: every linked row whose crate exports only `door`, read off its Statement
-// (status row 195).
-pub mod door_root;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
@@ -83,11 +80,11 @@ pub mod hooks;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
-pub mod legacy;
 pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
 pub mod migration;
+pub mod migration_table;
 pub mod model_egress;
 pub mod observe;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven
@@ -97,6 +94,7 @@ pub mod plugin_fetch;
 pub mod policy;
 pub mod registry;
 pub mod serve;
+pub mod settings_public;
 pub mod shutdown;
 pub mod transports;
 #[cfg(feature = "root-admin")]
@@ -122,12 +120,6 @@ pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const
 #[path = "tests/doors_refresh.rs"]
 mod doors_refresh;
 
-// A linked transport row is its bare `door`: its key, layers and session are its Statement's
-// (`linked::linked_transport!`, `doors::row_facts`).
-#[cfg(test)]
-#[path = "tests/linked_door_root.rs"]
-mod linked_door_root;
-
 // The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
 // integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan
 // makes of it.
@@ -140,3 +132,9 @@ pub(crate) mod test_plugins;
 #[cfg(test)]
 #[path = "tests/store_double.rs"]
 pub(crate) mod store_double;
+
+// A linked transport row is its bare `door`: its key, layers and session are its Statement's
+// (`linked::linked_transport!`, `doors::row_facts`).
+#[cfg(test)]
+#[path = "tests/linked_door_root.rs"]
+mod linked_door_root;

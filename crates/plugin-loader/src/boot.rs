@@ -1141,7 +1141,57 @@ fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
     })
 }
 
+/// The settings one plugin's schema declares public, and every word a `module:` may name it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicSettings {
+    /// The plugin's Statement name.
+    pub name: String,
+    /// Its Statement name, its aliases and the caller's `words`, sorted.
+    pub words: Vec<String>,
+    /// The settings its schema declares `x-busbar-public`; every other setting is sensitive
+    /// (`busbar_contract::settings_public`).
+    pub public: BTreeSet<String>,
+}
+
+/// What `stated` (a Statement rendering) declares public in its settings schema, answering also
+/// to `words` (a linked row's key, a manifest's aliases); `None` when it declares nothing public.
+///
+/// # Errors
+/// A rendering that does not read back, or a settings schema the pack rules refuse, naming the
+/// plugin.
+pub fn public_settings(stated: &[u8], words: &[&str]) -> Result<Option<PublicSettings>, String> {
+    use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
+    let r: Read = read(stated)
+        .map_err(|e| format!("a Statement rendering does not read back at byte {}", e.at))?;
+    let public = crate::settings_schema::public_settings_of_schema(&r.settings_schema.bytes)
+        .map_err(|e| format!("plugin '{}': {e}", r.name))?;
+    if public.is_empty() {
+        return Ok(None);
+    }
+    let mut answers: Vec<String> = std::iter::once(r.name.clone())
+        .chain(
+            r.rewrites
+                .iter()
+                .filter(|(class, _, _)| *class == REWRITE_ALIAS)
+                .map(|(_, from, _)| from.clone()),
+        )
+        .chain(words.iter().map(|w| (*w).to_string()))
+        .collect();
+    answers.sort();
+    answers.dedup();
+    Ok(Some(PublicSettings {
+        name: r.name,
+        words: answers,
+        public,
+    }))
+}
+
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors
 #[path = "tests/boot_tests.rs"]
 mod tests;
+
+/// A stub plugin whose settings schema declares public settings, read through [`public_settings`].
+#[cfg(test)]
+#[path = "tests/public_settings_tests.rs"]
+mod public_settings_tests;

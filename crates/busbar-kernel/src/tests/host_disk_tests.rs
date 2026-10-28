@@ -186,6 +186,38 @@ fn rotation_keeps_at_most_keep_archives() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// KEEP N, DEFAULT 9 (owner signed 2026-10-27): a destination rotated by rename at its size keeps
+/// `<path>.1` .. `<path>.9`, newest first; the tenth rotation drops only the oldest archive, and
+/// every rotation is reported (`rotated`), so no line goes without a report.
+#[test]
+fn a_rename_rotation_keeps_nine_archives_and_drops_only_the_oldest() {
+    let d = dir("keep9");
+    let file = d.join("log.jsonl");
+    let to = DiskDest {
+        rotate: DiskRotate::declared(Some(busbar_contract::services::DISK_KEEP)),
+        ..dest(&file, Some(3))
+    };
+    for i in 0..11_u8 {
+        let report = append(&to, format!("{i:02}\n").as_bytes());
+        assert_eq!((report.step, report.faults), (0, 0), "append {i}");
+        assert_eq!(
+            report.rotated,
+            i > 0,
+            "append {i}: every due file is rotated and reported"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "10\n");
+    for n in 1..=9_u8 {
+        let archived = std::fs::read_to_string(d.join(format!("log.jsonl.{n}"))).unwrap();
+        assert_eq!(archived, format!("{:02}\n", 10 - n), "archive {n}");
+    }
+    assert!(
+        !d.join("log.jsonl.10").exists(),
+        "never more than nine archives: the oldest (`00`) was dropped"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A rename that cannot happen (no live file) is reported as the rename step, and nothing else.
 #[test]
 fn a_failed_rename_is_reported_and_nothing_is_truncated() {
