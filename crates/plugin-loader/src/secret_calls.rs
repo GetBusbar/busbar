@@ -25,11 +25,11 @@ use crate::open_once::OpenOnce;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::check::HARD_MAX_BYTES;
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
     slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
@@ -43,6 +43,7 @@ use busbar_contract::secret_ref::SecretRef;
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
+use crate::dispatch::lifecycle::{self, blob, open_frame};
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
     EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
@@ -94,19 +95,6 @@ impl std::fmt::Debug for LoadedSecret {
             .field("plugin", &self.opened.plugin.name())
             .field("disk", &self.disk)
             .finish_non_exhaustive()
-    }
-}
-
-/// `bytes` as a blob the host owns for the call (`NO_BLOB` when empty).
-fn blob(bytes: &[u8], fmt: u32, flags: u32) -> Blob {
-    if bytes.is_empty() {
-        return NO_BLOB;
-    }
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt,
-        flags,
     }
 }
 
@@ -211,23 +199,9 @@ impl LoadedSecret {
                 ))
             }
         };
-        let mut f = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings, BLOB_JSON, 0),
-                secrets: lent.as_ptr(),
-                secrets_len: lent.len(),
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let mut f = open_frame(blob(settings, BLOB_JSON, 0));
+        f.input.secrets = lent.as_ptr();
+        f.input.secrets_len = lent.len();
         let c = plugin.call(life::OPEN, &mut f);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
@@ -332,8 +306,7 @@ impl Opened {
 
 impl Drop for Opened {
     fn drop(&mut self) {
-        let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
-        let _ = self.plugin.call(life::CLOSE, &mut f);
+        lifecycle::close(&self.plugin);
     }
 }
 

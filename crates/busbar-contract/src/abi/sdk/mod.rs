@@ -90,6 +90,8 @@ pub mod secret;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
 pub use publish::{Generations, Keyed};
+// THE PLANE KIND'S SHARED PIECES: the section a dealt `validate` blob carries.
+pub mod plane;
 // TRUST ON SIGHT, PLANE SIDE: the state word a trust view answers and the last contact it is
 // derived from, one shape for every plane that sights an upstream on the kernel's trust book.
 pub mod trust;

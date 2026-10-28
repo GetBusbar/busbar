@@ -43,11 +43,9 @@ use busbar_contract::abi::auth::{
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as lc, OpenIn, OpenOut, RefreshIn, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as lc, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
@@ -55,6 +53,7 @@ use busbar_contract::auth_calls::{
 };
 
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
+use crate::dispatch::lifecycle::{lend, lend_opt, open_frame, validate_call, why};
 use crate::dispatch::{
     in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, Metric,
     Plugin, Reply,
@@ -65,25 +64,6 @@ pub const VERIFY_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The most bytes a short answer may ask the identity buffer to grow to.
 const IDENTITY_BUF_MAX: u64 = 1024 * 1024;
-
-/// A string the host lends for a call.
-fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
-
-/// An optional string the host lends; `None` is absent (NULL).
-fn lend_opt(s: Option<&str>) -> AbiStr {
-    s.map_or(
-        AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        lend,
-    )
-}
 
 /// Bytes the host lends for a call, as a blob of `fmt` with `flags`; empty is absent.
 fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
@@ -131,14 +111,6 @@ fn identify_out() -> IdentifyOut {
         needed_strip: 0,
         _reserved: 0,
     }
-}
-
-/// A plugin's error text, or the outcome's name.
-fn why(outcome: Outcome, error: Option<Vec<u8>>) -> String {
-    error.map_or_else(
-        || format!("{outcome:?}"),
-        |e| String::from_utf8_lossy(&e).into_owned(),
-    )
 }
 
 /// Overwrite secret bytes before their allocation is freed.
@@ -665,41 +637,16 @@ impl AuthInstance {
     ) -> Result<Self, String> {
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
-        let mut v = Frame::new(
-            ValidateIn {
-                head: in_head(),
-                settings: blob(settings, BLOB_JSON, 0),
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            out_head(),
-        );
-        let called = plugin.call(lc::VALIDATE, &mut v);
+        let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
         let blobs = secret_blobs(&secrets);
-        let mut f = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings, BLOB_JSON, 0),
-                secrets: if blobs.is_empty() {
-                    std::ptr::null()
-                } else {
-                    blobs.as_ptr()
-                },
-                secrets_len: blobs.len(),
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let mut f = open_frame(blob(settings, BLOB_JSON, 0));
+        if !blobs.is_empty() {
+            f.input.secrets = blobs.as_ptr();
+            f.input.secrets_len = blobs.len();
+        }
         let called = plugin.call(lc::OPEN, &mut f);
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
