@@ -11,12 +11,12 @@ use std::collections::BTreeMap;
 
 use crate::checkpoint::{CheckpointSecret, SignError, Signature};
 use crate::identity::residual;
-use crate::legacy::{LegacyHead, LegacyMigrationSource};
 use crate::migration::{
-    meter_pool_scope, migrate, opening_totals, LegacyCapDimension, LegacyFamily, LegacyFigure,
-    LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker, MigrationRecords, Outcome,
-    OPENING_CHECKPOINT_SEQ,
+    meter_pool_scope, migrate, opening_totals, MigrationCapDimension, MigrationError,
+    MigrationFamily, MigrationFigure, MigrationFigures, MigrationLedgerRows, MigrationMarker,
+    MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
 };
+use crate::migration::{MigrationHead, MigrationSource};
 use crate::totals::{BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 
 /// Records that keep the marker in this test's memory: the in-memory `MigrationRecords` double.
@@ -60,8 +60,8 @@ impl MigrationRecords for NodeLocalRecords {
 /// A source over figures a test seeded, counting every read of the previous release's rows.
 #[derive(Default)]
 struct SeededRows {
-    head: LegacyHead,
-    figures: Vec<LegacyFigure>,
+    head: MigrationHead,
+    figures: Vec<MigrationFigure>,
     unreadable: Vec<String>,
     reads: std::cell::Cell<u32>,
 }
@@ -72,17 +72,17 @@ impl SeededRows {
     }
 }
 
-impl LegacyMigrationSource for SeededRows {
-    fn read_head(&self) -> LegacyHead {
+impl MigrationSource for SeededRows {
+    fn read_head(&self) -> MigrationHead {
         self.reads.set(self.reads.get() + 1);
         self.head.clone()
     }
 }
 
-impl LegacyLedgerRows for SeededRows {
-    fn read_figures(&self) -> LegacyFigures {
+impl MigrationLedgerRows for SeededRows {
+    fn read_figures(&self) -> MigrationFigures {
         self.reads.set(self.reads.get() + 1);
-        LegacyFigures {
+        MigrationFigures {
             figures: self.figures.clone(),
             unreadable: self.unreadable.clone(),
         }
@@ -115,14 +115,20 @@ impl CheckpointSecret for NoKey {
     }
 }
 
-fn window_figure(bucket: &str, window: u64, lane: &str, unit: &str, amount: i128) -> LegacyFigure {
-    LegacyFigure {
-        family: LegacyFamily::Window,
+fn window_figure(
+    bucket: &str,
+    window: u64,
+    lane: &str,
+    unit: &str,
+    amount: i128,
+) -> MigrationFigure {
+    MigrationFigure {
+        family: MigrationFamily::Window,
         bucket: bucket.to_string(),
         window,
         lane: lane.to_string(),
         provider: String::new(),
-        dimension: LegacyCapDimension::Class(unit.to_string()),
+        dimension: MigrationCapDimension::Class(unit.to_string()),
         amount,
     }
 }
@@ -134,14 +140,14 @@ fn meter_figure(
     provider: &str,
     unit: &str,
     amount: i128,
-) -> LegacyFigure {
-    LegacyFigure {
-        family: LegacyFamily::Meter,
+) -> MigrationFigure {
+    MigrationFigure {
+        family: MigrationFamily::Meter,
         bucket: bucket.to_string(),
         window: day,
         lane: lane.to_string(),
         provider: provider.to_string(),
-        dimension: LegacyCapDimension::Class(unit.to_string()),
+        dimension: MigrationCapDimension::Class(unit.to_string()),
         amount,
     }
 }
@@ -150,20 +156,20 @@ fn meter_figure(
 /// window, and the metering rows for the same day under two providers.
 fn a_serving_deployment() -> SeededRows {
     SeededRows {
-        head: LegacyHead {
+        head: MigrationHead {
             seq: Some(4_211),
             hash: Some("d0d0…".to_string()),
             balances: vec![("team-a".to_string(), 9_000), ("team-b".to_string(), 40)],
             cells_read: 7,
         },
         figures: vec![
-            LegacyFigure {
-                family: LegacyFamily::Window,
+            MigrationFigure {
+                family: MigrationFamily::Window,
                 bucket: "team-a".to_string(),
                 window: 86_400,
                 lane: String::new(),
                 provider: String::new(),
-                dimension: LegacyCapDimension::Requests,
+                dimension: MigrationCapDimension::Requests,
                 amount: 512,
             },
             window_figure("team-a", 86_400, "lane-4", "input", 6_000),

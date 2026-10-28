@@ -277,46 +277,74 @@ impl Pools {
     /// A line for `key` on `shard`, LENT (its holder counted): a live multiplexing one, in use or
     /// idle, first; else the most recently idled one that is still fresh. Every stale, spent or dead
     /// line met on the way is dropped from the pool, and closed when nobody holds it.
+    ///
+    /// An idle line is read for freshness with NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
+    /// runs under a host lock; reading it drives its connection): it is taken out of the pool while
+    /// it is read, and put back where it was, lent, when it is fresh.
     pub(crate) fn lend(&self, shard: usize, key: &PoolKey) -> Option<Arc<Line>> {
         if !self.keeps() {
             return None;
         }
         let now = Instant::now();
         self.reap_if_due(now);
+        let timeout = self.posture.idle_timeout;
         let mut spent = Vec::new();
-        let lent = {
-            let mut map = self.shards[shard].lock().expect("pool");
-            let entries = map.get_mut(key)?;
-            let timeout = self.posture.idle_timeout;
-            let mut lent = None;
-            // Newest first, as hyper-util's idle list pops.
-            let mut i = entries.len();
-            while i > 0 {
-                i -= 1;
-                let e = &mut entries[i];
-                let usable = match e.idle {
-                    Some(since) => now.duration_since(since) < timeout && e.line.fresh(),
-                    None => e.line.multiplexes(),
+        // Newest first, as hyper-util's idle list pops: the walk resumes below a line read stale.
+        let mut below = usize::MAX;
+        let lent = loop {
+            let (at, idle) = {
+                let mut map = self.shards[shard].lock().expect("pool");
+                let Some(entries) = map.get_mut(key) else {
+                    break None;
                 };
-                let dead = match e.idle {
-                    Some(_) => !usable,
-                    None => e.line.users() == 0,
+                let mut lent = None;
+                let mut claimed = None;
+                let mut i = below.min(entries.len());
+                while i > 0 {
+                    i -= 1;
+                    let (idle, users) = (entries[i].idle, entries[i].line.users());
+                    match idle {
+                        None if users == 0 => spent.push(entries.remove(i).line),
+                        None if entries[i].line.multiplexes() => {
+                            let line = Arc::clone(&entries[i].line);
+                            line.lend();
+                            lent = Some(line);
+                            break;
+                        }
+                        None => {}
+                        Some(since) if now.duration_since(since) < timeout => {
+                            claimed = Some((i, entries.remove(i).line));
+                            break;
+                        }
+                        Some(_) => spent.push(entries.remove(i).line),
+                    }
+                }
+                if entries.is_empty() {
+                    map.remove(key);
+                }
+                if lent.is_some() {
+                    break lent;
+                }
+                let Some(claimed) = claimed else {
+                    break None;
                 };
-                if dead {
-                    spent.push(entries.remove(i).line);
-                    continue;
-                }
-                if usable {
-                    e.idle = None;
-                    e.line.lend();
-                    lent = Some(Arc::clone(&e.line));
-                    break;
-                }
+                claimed
+            };
+            if idle.fresh() {
+                idle.lend();
+                let mut map = self.shards[shard].lock().expect("pool");
+                let entries = map.entry(key.clone()).or_default();
+                entries.insert(
+                    at.min(entries.len()),
+                    Entry {
+                        line: Arc::clone(&idle),
+                        idle: None,
+                    },
+                );
+                break Some(idle);
             }
-            if entries.is_empty() {
-                map.remove(key);
-            }
-            lent
+            spent.push(idle);
+            below = at;
         };
         for line in spent {
             if line.users() == 0 {

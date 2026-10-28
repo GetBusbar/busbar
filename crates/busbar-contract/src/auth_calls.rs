@@ -612,22 +612,19 @@ pub struct AuthField {
     pub name: Vec<u8>,
     /// The value: credential material, zeroised when it drops, whichever copy it is.
     pub value: Secret<Vec<u8>>,
-    /// `abi::auth::FIELD_SENSITIVE`: never logged, zeroised once the head is encoded.
+    /// `abi::auth::FIELD_SENSITIVE`, as the plugin stated it: the h2 encoding the field asks for.
+    /// Logging never reads it: every auth field's value is withheld, marked or not.
     pub sensitive: bool,
 }
 
+/// Every auth field's value is withheld, whatever its `sensitive` bit says: a field whose
+/// sensitivity the plugin did not declare is treated as sensitive (owner ruling 2026-10-27).
 impl std::fmt::Debug for AuthField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = if self.sensitive {
-            "<redacted>".to_string()
-        } else {
-            // A field the auth plugin marked NOT sensitive renders as it is: this crate reads its
-            // own `Secret`'s field (the sealed `expose` is the host's accessor).
-            String::from_utf8_lossy(&self.value.0).into_owned()
-        };
         f.debug_struct("AuthField")
             .field("name", &String::from_utf8_lossy(&self.name))
-            .field("value", &value)
+            .field("value", &"<redacted>")
+            .field("sensitive", &self.sensitive)
             .finish()
     }
 }
