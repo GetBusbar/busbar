@@ -156,6 +156,30 @@ pub fn provider_keys(
         .find_map(|d| d.reg.provider_keys.as_ref())
 }
 
+/// THE JUDGE OF ONE PROVIDER ENTRY'S OPTIONS (`config::providers::judge_options`): the door row of
+/// the registered planes ([`crate::plane_driver::registry::plane_decls`]) whose tail flags the
+/// provider's dialect a provider dialect validates `{"providers": {<name>: <table>}}`, the entry as
+/// the plane receives it at open, and answers in its own words. `None` when no registered door
+/// speaks that dialect.
+#[must_use]
+pub fn judge_provider(
+    name: &str,
+    table: &crate::config::ProviderTable,
+) -> Option<Result<(), String>> {
+    let dialect = table
+        .get(busbar_contract::section::MODEL_PROTOCOL_KEYS[0])
+        .and_then(serde_json::Value::as_str)?;
+    let door = (crate::plane_driver::registry::plane_decls().iter())
+        .filter_map(|d| d.door)
+        .find(|d| d.provider_dialects.contains(&dialect))?;
+    let blob = serde_json::json!({ "providers": { name: table } });
+    Some(
+        serde_json::to_vec(&blob)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| (door.reg.validate)(&bytes)),
+    )
+}
+
 // ── THE SECTION ───────────────────────────────────────────────────────────────────────────────
 
 /// A DOOR PLANE'S SECTION, as written: the door judged it (`validate`) and is handed it raw; the

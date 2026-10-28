@@ -1226,7 +1226,9 @@ pub struct DeployCfg {
     /// `providers:` and `models:` are REQUIRED only when a registered plane declares it requires
     /// them (`PlaneDeclaration::required_config_sections`); the pre-pass refuses such a document
     /// with serde's own missing-field message. No such plane: an omitted section reads empty.
-    #[serde(default)]
+    /// Each entry's keys beyond busbar's own are its options, read aside
+    /// ([`providers::deployments`]) for the plane that speaks its dialect to judge.
+    #[serde(default, deserialize_with = "providers::deployments")]
     pub providers: HashMap<String, ProviderDeploy>,
     #[serde(default)]
     pub models: HashMap<String, ModelCfg>,
@@ -2010,6 +2012,16 @@ pub fn resolve(
         crate::plane_driver::dispatch::fallback_key(),
     )
     .and_then(|d| d.resolve_provider);
+
+    // Every catalog entry, deployed or not, is judged: its keys beyond busbar's are options of its
+    // dialect (owner ruling 2026-10-27, the `config.yaml` rule), refused in the plane's words.
+    let mut catalog_names: Vec<&String> = defs.keys().collect();
+    catalog_names.sort();
+    for name in catalog_names {
+        if let Err(refusal) = providers::judge_catalog_entry(name, &defs[name]) {
+            errors.push(format!("providers.yaml: {refusal}"));
+        }
+    }
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
