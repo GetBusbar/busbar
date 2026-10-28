@@ -133,7 +133,7 @@ impl OperatorDouble {
             header,
         );
         Answer {
-            strips: STRIPS.into(),
+            fixed_strips: STRIPS,
             ..verdict.into()
         }
     }
@@ -212,7 +212,10 @@ impl OperatorCalls {
     fn answer(&self, request: &VerifyRequest) -> VerifyAnswer {
         let seal = crate::seal::lend();
         let Answer {
-            verdict, strips, ..
+            verdict,
+            mut strips,
+            fixed_strips,
+            ..
         } = self.0.answer(|name| {
             request
                 .lines
@@ -226,7 +229,10 @@ impl OperatorCalls {
             Verdict::Pass => Verified::Pass,
         };
         VerifyAnswer {
-            strips: strips.into_owned(),
+            strips: {
+                strips.extend_from_slice(fixed_strips);
+                strips
+            },
             ..VerifyAnswer::from(verified)
         }
     }

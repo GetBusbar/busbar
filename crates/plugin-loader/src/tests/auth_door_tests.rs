@@ -96,7 +96,7 @@ impl VerifyPlugin for Judge {
             _ => Verdict::Pass,
         };
         Answer {
-            strips: vec![Strip::field("x-alt")].into(),
+            strips: vec![Strip::field("x-alt")],
             ..verdict.into()
         }
     }

@@ -196,7 +196,7 @@ impl VerifyPlugin for AdminTokens {
             request.line(ADMIN_TOKEN_HEADER).and_then(header_token),
         );
         Answer {
-            strips: STRIPS.into(),
+            fixed_strips: STRIPS,
             ..verdict.into()
         }
     }
