@@ -18,9 +18,9 @@ env:
   # The oracle's judge, as bin/oracle reads it under ModernCI (only from the config's env, never the
   # candidate's pin): testing/shadow-oracle/oracle-rust.pin on dev; fetched with BUSBAR_RELEASE_TOKEN.
   BUSBAR_ORACLE_RELEASE_REPO: https://github.com/GetBusbar/busbar-release.git
-  BUSBAR_ORACLE_RELEASE_REF: d12a08c7d716434d082375085acaeeb0bc051d39
+  BUSBAR_ORACLE_RELEASE_REF: 00aee90be0847fe17163efe6565acfb647237bd0
   BUSBAR_ORACLE_SHA256_LINUX_X86_64: 0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: 432a2fb7619bce915cf5fcfbe17ace614792639e80bd9dfdabf81afb19f6effd
+  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: 09e2bdb10da505aa07ea422a2be9307613a2637cd12bc86f6e8e1c0773cf6845
   BUSBAR_ORACLE_CRATE: busbar-release-oracle
   BUSBAR_ORACLE_BIN: busbar-oracle
   # The 1.5.5 golden the replay judges against: git rev-parse dev:testing/shadow-oracle/golden/1.5.5.
