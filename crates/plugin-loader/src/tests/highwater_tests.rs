@@ -143,3 +143,25 @@ fn the_persisted_floor_is_private() {
     // The write is atomic: no temp file is left behind.
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }
+
+/// THE KEYS-DOCUMENT FLOOR: the highest keys-document version this deployment has accepted rises,
+/// never falls, survives a restart beside the plugin marks, and is never mistaken for a plugin's
+/// floor.
+#[test]
+fn the_accepted_keys_document_version_is_a_floor_that_survives_a_restart() {
+    let dir = tmpdir();
+    let (mut marks, _) = HighWaterMarks::load(Some(&dir));
+    assert_eq!(marks.release_keys_floor(), 0, "nothing accepted yet");
+    assert!(marks.raise_release_keys(3));
+    assert!(!marks.raise_release_keys(2), "never falls");
+    assert_eq!(marks.release_keys_floor(), 3);
+    marks.persist().unwrap();
+    let (back, note) = HighWaterMarks::load(Some(&dir));
+    assert!(note.is_none(), "{note:?}");
+    assert_eq!(back.release_keys_floor(), 3);
+    assert!(
+        !back.marks().contains_key(RELEASE_KEYS_MARK),
+        "the keys floor is not a plugin's anti-downgrade mark"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

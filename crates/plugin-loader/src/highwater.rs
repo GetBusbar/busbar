@@ -59,6 +59,11 @@ pub struct HighWaterMarks {
     marks: BTreeMap<String, String>,
 }
 
+/// The reserved mark holding the highest keys-document version this deployment has accepted
+/// ([`crate::release_trust`]), stored as `<version>.0.0` beside the plugin marks so the one durable
+/// file carries both floors. Not a plugin's mark: [`HighWaterMarks::marks`] leaves it out.
+pub const RELEASE_KEYS_MARK: &str = "busbar-release-keys";
+
 impl HighWaterMarks {
     /// Load the marks for a deployment whose fleet data dir is `data_dir` (`None` = no data dir).
     ///
@@ -152,6 +157,17 @@ impl HighWaterMarks {
             },
             note,
         )
+    }
+
+    /// The highest keys-document version accepted ([`RELEASE_KEYS_MARK`]); `0` for none.
+    #[must_use]
+    pub fn release_keys_floor(&self) -> u64 {
+        0
+    }
+
+    /// Raise the keys-document floor to `version`. Returns true iff it moved.
+    pub fn raise_release_keys(&mut self, _version: u64) -> bool {
+        false
     }
 
     /// The marks, in the shape `crate::sign::TrustPolicy::first_party_high_water` takes.
