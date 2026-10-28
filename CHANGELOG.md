@@ -14,6 +14,9 @@ config, the same requests and the same plugins were run through the published 1.
 through 1.6.0, and every difference is either listed below as an improvement, a breaking change, or
 does not exist.
 
+**Upgrading from 1.5.5:** start with [What's new in 1.6.0](docs/whats-new-1.6.md), the one-page
+summary of the upgrade, the security changes and everything you might notice.
+
 ### Additive planes
 
 - **MCP.** Busbar is an MCP server (`mcp:`) and a governed gateway in front of your MCP tool estate
