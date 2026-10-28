@@ -476,11 +476,14 @@ pub fn write_identity(
     write(Some(id), None, buf, out, verdict)
 }
 
+/// A verify's strips as it writes them: [`Answer::strips`], then [`Answer::fixed_strips`].
+type Strips<'a> = [&'a [Strip]; 2];
+
 /// Write the identity `id` (if any) and, for `verify`, the strip names into the host's strip array
 /// and the decision, under `verdict`; or the SHORT FAILED when any of them does not fit.
 fn write(
     id: Option<&VerifiedIdentity>,
-    strip: Option<([&[Strip]; 2], HostBuf<'_, StripName>, u32)>,
+    strip: Option<(Strips<'_>, HostBuf<'_, StripName>, u32)>,
     buf: Lent<'_, IdentityBuf>,
     mut out: Out<'_, IdentifyOut>,
     verdict: u32,
