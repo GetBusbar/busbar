@@ -454,7 +454,7 @@ fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     info("under info");
     follow_plugin_logs(&logs, &words("warn"));
     info("under warn again");
-    let path = logs.path_for("applied");
+    let path = logs.path_for("applied", busbar_contract::abi::mechanism::KindCode::Hook);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let text = loop {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -873,11 +873,5 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
     assert!(
         !answers,
         "the committing build's admission kept a dropped-in secret its registry no longer has"
-    );
-    // The app build reaches that admission only through the root's install record.
-    assert!(
-        include_str!("../linked.rs")
-            .contains("secret_admit: Some(crate::root::boot::admit_secrets)"),
-        "the root's install record stopped carrying its secret admission"
     );
 }

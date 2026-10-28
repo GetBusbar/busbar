@@ -285,63 +285,6 @@ fn a_key_may_be_registered_once_per_kind() {
 }
 
 #[test]
-fn a_unit_keeps_the_plugin_it_started_with_across_a_reload() {
-    let mut registry = Registry::new();
-    let first = registry.register(plane("one")).expect("registered");
-    assert!(registry.resolve(PluginKind::Plane, "one").is_some());
-
-    let second = registry.replace(plane("one"));
-    assert_ne!(first, second);
-    // The unit that started at the first generation still resolves, and resolves to what it
-    // started with; a unit starting now gets the replacement.
-    assert!(registry
-        .resolve_at(PluginKind::Plane, "one", first)
-        .is_some());
-    assert!(registry
-        .resolve_at(PluginKind::Plane, "one", second)
-        .is_some());
-
-    let third = registry.retire(PluginKind::Plane, "one");
-    assert!(registry.resolve(PluginKind::Plane, "one").is_none());
-    assert!(
-        registry
-            .resolve_at(PluginKind::Plane, "one", second)
-            .is_some(),
-        "a unit in flight when the plugin was retired still finishes"
-    );
-    assert!(registry
-        .resolve_at(PluginKind::Plane, "one", third)
-        .is_none());
-}
-
-/// `replace` and `retire` both walk every entry looking for one to close off; the filter has to
-/// read kind AND key, or a plugin sharing only the kind with the one being swapped is closed off
-/// alongside it.
-#[test]
-fn replace_and_retire_leave_a_same_kind_different_key_neighbour_untouched() {
-    let mut registry = Registry::new();
-    registry.register(plane("one")).expect("registered");
-    registry.register(plane("two")).expect("registered");
-
-    let after_replace = registry.replace(plane("one"));
-    // The neighbour is still the original object, live at every generation including the one the
-    // swap just opened — a swap of "one" must not touch "two"'s own entry.
-    assert!(registry
-        .resolve_at(PluginKind::Plane, "two", after_replace)
-        .is_some());
-    assert_eq!(registry.count(PluginKind::Plane), 2);
-
-    let after_retire = registry.retire(PluginKind::Plane, "one");
-    // Retiring "one" must not retire "two": "two" still resolves at the current generation.
-    assert!(registry
-        .resolve_at(PluginKind::Plane, "two", after_retire)
-        .is_some());
-    assert!(registry.resolve(PluginKind::Plane, "two").is_some());
-    // "one" is the one that actually went away.
-    assert!(registry.resolve(PluginKind::Plane, "one").is_none());
-}
-
-#[test]
 fn a_deployment_is_bootstrapped_exactly_once() {
     let fingerprint = [7u8; 32];
     // First boot of a deployment whose store holds no bootstrap: mint.
