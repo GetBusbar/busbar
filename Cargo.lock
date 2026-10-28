@@ -335,6 +335,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
  "flate2",
  "http-body-util",
  "reqwest",
