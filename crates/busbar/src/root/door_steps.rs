@@ -1304,7 +1304,9 @@ impl DriverSteps for DoorSteps<'_> {
                 .map(|p| String::from_utf8_lossy(p).into_owned())
         });
         let ingress = self.facts.dialects.get(decoded.dialect as usize);
+        // 1.5.5's target: `forward` was a `#[tracing::instrument]` in `proxy::engine`.
         let span = tracing::span!(
+            target: "busbar::proxy::engine",
             busbar_kernel::observability::HOTPATH_LEVEL,
             "forward",
             pool = tracing::field::Empty,
