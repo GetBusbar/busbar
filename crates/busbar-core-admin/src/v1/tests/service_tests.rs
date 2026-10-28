@@ -2492,10 +2492,12 @@ mod dated_rate_card_history {
     }
 
     /// **AN `adjust` MOVES THE SERVED USAGE FIGURE** (item 404, OWNER RULING Q9; MONEY-DESIGN §4,
-    /// PR-C). Key `vk_adjust_404` metered 1,000 input tokens today at 2.5 micro-units each:
-    /// `GET /api/v1/admin/usage` serves 2,500 micro-units. A root adjust of -200 input on that key,
-    /// lane and era is a signed adjustment row beside the day's metering rows, and the same read
-    /// serves 800 tokens and 2,000 micro-units: the counts AS ADJUSTED, priced by the one function.
+    /// PR-C). Key `vk_adjust_404` metered 1,000 input tokens three days ago at 2.5 micro-units
+    /// each: `GET /api/v1/admin/usage` serves 2,500 micro-units. A root adjust of -200 input on
+    /// that key, lane and era, made today, is a signed adjustment row beside THAT day's metering
+    /// rows (the unit's card epoch picks the day, Q128 arch u32 #18; dev's fixture day), and the
+    /// same read serves 800 tokens and 2,000 micro-units: the counts AS ADJUSTED, priced by the one
+    /// function.
     /// The figure survives a restart (a new state over the same store), an adjustment past the
     /// metered count is refused and moves nothing, and an adjustment of a key with no metered row
     /// that day is refused.
@@ -2506,8 +2508,9 @@ mod dated_rate_card_history {
     async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         use busbar_kernel::governance::{AdjustRefused, Adjustment};
         const ADJUSTED_KEY: &str = "vk_adjust_404";
-        let now = busbar_kernel::store::now();
-        let today = busbar_kernel::governance::metering_bucket(now);
+        // THE UNIT'S DAY, three days back (dev's fixture), and its arrival instant in it.
+        let (day, _, _) = windows();
+        let served_at = day + 5;
         let store = Arc::new(MemoryStore::new());
         let key = VirtualKey {
             id: ADJUSTED_KEY.to_string(),
@@ -2522,7 +2525,7 @@ mod dated_rate_card_history {
             store.as_ref(),
             &busbar_contract::records::MeteringDelta {
                 key_id: ADJUSTED_KEY.to_string(),
-                bucket: today,
+                bucket: day,
                 model: LANE.to_string(),
                 provider: PROVIDER.to_string(),
                 tokens_input: TOKENS,
@@ -2545,10 +2548,10 @@ mod dated_rate_card_history {
             busbar_contract::records::UNIT_INPUT.to_string(),
             TOKENS,
         )]);
-        gov.record_usage(&cost, &key, "", LANE, &units, now);
+        gov.record_usage(&cost, &key, "", LANE, &units, served_at);
         let src = source(History::opening(card(2.5), 0));
 
-        let before = read(gov.clone(), src, today).await.total;
+        let before = read(gov.clone(), src, day).await.total;
         assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
 
         let era = busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms());
@@ -2564,9 +2567,9 @@ mod dated_rate_card_history {
                     pool: "",
                     model: LANE,
                     entry_era: era,
-                    card_epoch_ms: now * 1_000,
+                    card_epoch_ms: served_at * 1_000,
                     delta: &delta,
-                    now,
+                    now: busbar_kernel::store::now(),
                 },
             )
             .expect("the store reads")
@@ -2579,12 +2582,12 @@ mod dated_rate_card_history {
             "an adjustment past the metered count is refused"
         );
         assert_eq!(
-            read(gov.clone(), src, today).await.total.spend_micros,
+            read(gov.clone(), src, day).await.total.spend_micros,
             2_500,
             "a refused adjustment moves nothing"
         );
         assert_eq!(adjust(ADJUSTED_KEY, -200), Ok(()));
-        let after = read(gov.clone(), src, today).await.total;
+        let after = read(gov.clone(), src, day).await.total;
         assert_eq!(
             (after.tokens_input, after.spend_micros),
             (800, 2_000),
@@ -2592,7 +2595,7 @@ mod dated_rate_card_history {
         );
 
         let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
-        let again = read(restarted, src, today).await.total;
+        let again = read(restarted, src, day).await.total;
         assert_eq!(
             (again.tokens_input, again.spend_micros),
             (800, 2_000),
