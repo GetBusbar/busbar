@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
-//! typed views ([`Hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's
-//! own.
+//! typed views ([`Hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's own.
 //!
 //! * [`Decoded`] — a `decide`/`transform` `in` read as a view borrowed from the host's `in` for
 //!   the call (text and the prompt body zero-copy), and
