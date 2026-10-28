@@ -42,7 +42,8 @@
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
-//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
+//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran; [`proxy_route`] is the
+//!   choice it fills, which proxy (if any) a dial goes through.
 //!
 //! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
 //! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
@@ -76,6 +77,7 @@ pub mod pool;
 pub mod process;
 mod program;
 pub mod proxy;
+pub mod proxy_route;
 pub mod registry;
 pub mod socket;
 pub mod spawn_env;
@@ -840,13 +842,6 @@ impl Connector {
     pub fn proxying(mut self, config: Option<Arc<proxy::ProxyChoice>>) -> Self {
         self.proxy = config;
         self
-    }
-
-    /// The proxy choice this connector's dials honour (the process's environment, read once), for
-    /// the composition root to hand the kernel's remaining egress engine.
-    #[must_use]
-    pub fn proxy(&self) -> Option<Arc<proxy::ProxyChoice>> {
-        self.proxy.clone()
     }
 
     /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
@@ -2010,6 +2005,26 @@ impl DeclaredConns for Connector {
         }
     }
 
+    /// THE DIAL HAS LANDED: its judgement answered and the far end took the connect (a name's
+    /// refused address moving on to its next admitted one first). A lease, a held session's leg,
+    /// and a line lent from the pool are landed when they open.
+    fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
+        let (_, held) = self.slab.get(caller, conn)?;
+        if held.lease.is_some() || held.dialled.is_some() {
+            return Ok(());
+        }
+        let waker = self.waker(caller, ticket);
+        if !self.settle(&held, Some(&waker))? {
+            return Err(ConnError::Pending);
+        }
+        let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+        match line.poll_landed(stream, &mut Context::from_waker(&waker)) {
+            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Pending => Err(ConnError::Pending),
+        }
+    }
+
     /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
     /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
     /// stream.
@@ -2098,6 +2113,60 @@ impl DeclaredConns for Connector {
             .expect("declared needs")
             .insert((owner, need), (spec.clone(), answer));
         answer
+    }
+
+    /// THE INSTANCE IS GONE: its connections close (a member lease among them ends), then every
+    /// need it declared is dropped, which retires its members ([`Connector::set_need`]), so each
+    /// member program is killed now that no lease holds it. What it sealed, bound and held per
+    /// destination goes with it.
+    fn forget(&self, owner: InstanceId) {
+        for conn in self.slab.forget(owner) {
+            let _ = self.close(owner, conn);
+        }
+        self.pools.forget(owner);
+        self.listeners
+            .lock()
+            .expect("listeners")
+            .retain(|(o, _), _| *o != owner);
+        let needs: Vec<NeedId> = self
+            .over
+            .lock()
+            .expect("needs")
+            .keys()
+            .filter(|(o, _)| *o == owner)
+            .map(|(_, n)| *n)
+            .collect();
+        for need in needs {
+            self.set_need(owner, need, None);
+        }
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .retain(|(o, _), _| *o != owner);
+        self.anchored
+            .lock()
+            .expect("anchored")
+            .retain(|(o, _, _), _| *o != owner);
+        self.member_anchored
+            .lock()
+            .expect("member anchored")
+            .retain(|(o, _, _), _| *o != owner);
+        self.registered
+            .lock()
+            .expect("registered")
+            .retain(|(o, _, _), _| *o != owner);
+        self.reaching
+            .lock()
+            .expect("reaching")
+            .retain(|(o, _, _), _| *o != owner);
+        self.auths
+            .lock()
+            .expect("auths")
+            .retain(|(o, _, _, _), _| *o != owner);
+        self.authority_held
+            .lock()
+            .expect("authority held")
+            .remove(&owner);
     }
 }
 

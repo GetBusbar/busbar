@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SCAN'S FIXED-CLASS HALF AND ITS KEPT RED ARM (status row 127). The scan beside this file
+//! THE SCAN'S FIXED-CLASS HALF AND ITS KEPT RED ARM. The scan beside this file
 //! proves a failing secret's source never reaches a door plane's caller; this file proves two more
 //! things about the same renders:
 //! * the refusal is a FIXED CLASS: two different sources failing (an unset variable, a missing file)

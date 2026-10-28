@@ -98,10 +98,10 @@ on:
         description: "Token for the marketing-site rebuild dispatch."
         required: false
 
+# Read-only by default; only the jobs that create, upload to, attest or publish the Release are
+# granted write, so pin / abi-completeness (which run code from the pinned busbar) hold no write token.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   pin:
@@ -138,6 +138,8 @@ jobs:
 
   create-release:
     name: draft release
+    permissions:
+      contents: write
     needs: [pin, abi-completeness]
     # abi-completeness is skipped for every kind but store; skipped is not failed.
     if: ${{ !cancelled() && needs.pin.result == 'success' && needs.abi-completeness.result != 'failure' }}
@@ -156,6 +158,10 @@ jobs:
 
   build:
     name: build, sign, pack (${{ matrix.target }})
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     needs: [pin, create-release]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     runs-on: ${{ matrix.os }}
@@ -281,6 +287,8 @@ jobs:
 
   verify-assets:
     name: no phantom release, then publish
+    permissions:
+      contents: write
     needs: build
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -304,6 +312,7 @@ jobs:
 
   notify-marketing:
     name: site rebuild dispatch
+    permissions: {}
     needs: verify-assets
     # A pre-release is not announced.
     if: ${{ !contains(github.ref_name, '-') }}

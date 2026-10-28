@@ -10,45 +10,15 @@
 
 use std::time::Duration;
 
+use super::tests::Mem;
 use super::*;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{
     RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
 };
-use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::kinds::RecordBytes;
 
 use crate::governance::MemoryStore;
-
-/// The memory store's typed records.
-struct Mem(Arc<MemoryStore>);
-
-impl RecordRows for Mem {
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        self.0.record_put(schema, key, value)
-    }
-
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(schema, key)
-    }
-
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(schema, prefix, limit)
-    }
-}
 
 /// Runs every job at once, on the caller's thread: a write is in the store when its call returns.
 struct Inline;
@@ -470,4 +440,30 @@ fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
     )
     .unwrap();
     s
+}
+
+/// **TWO NODES APPENDING TO ONE CHAIN CONTINUE EACH OTHER'S RECORDS, NEVER OVERWRITE THEM.** Two
+/// services over one store hold their own position caches. Node `b` appends after node `a`; node
+/// `a`'s cached position is then stale, and its next append must take the position after `b`'s
+/// record rather than store over it.
+///
+/// RED while an append stored at its cached position unclaimed: node `a` wrote its record over
+/// node `b`'s, which was lost without a word.
+#[test]
+fn two_nodes_appending_to_one_chain_continue_each_other_and_never_overwrite() {
+    let store = Arc::new(MemoryStore::new());
+    let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    append(&a, b"t1", b"|1|a").unwrap();
+    append(&b, b"t1", b"|2|b").unwrap();
+    append(&a, b"t1", b"|3|a").unwrap();
+    assert_eq!(
+        listed(&a, b"t1/"),
+        vec![
+            (record_of("t1", 1), b"|1|a".to_vec()),
+            (record_of("t1", 2), b"|2|b".to_vec()),
+            (record_of("t1", 3), b"|3|a".to_vec()),
+        ],
+        "every node's record is kept, in one chain that verifies"
+    );
 }

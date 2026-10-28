@@ -12,6 +12,7 @@
 
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node, Routed};
+use crate::test_support::tokens::pass;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::exhaustion::AT_CAPACITY_RETRY_AFTER_SECS;
 use busbar_kernel_egress::pool::OnExhausted;
@@ -106,7 +107,7 @@ fn a_purely_saturated_pool_gets_the_floor_and_never_the_bare_one_second() {
 #[test]
 fn an_empty_candidate_set_gets_the_floor_too() {
     let node = Node::with_lanes(&[]);
-    let token = super::route_token();
+    let token = pass::<busbar_contract::caps::Route>();
     let wait = busbar_kernel_egress::exhaustion::retry_after_secs(
         node.breaker.as_ref(),
         &[],
@@ -465,8 +466,7 @@ use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_egress::ports::{Breaker, Capacity, Outcome, Permit};
 use busbar_kernel_egress::walk::Step;
 
-use super::harness::route_token;
-use super::walk_tests::{answer, ok_200, real_egress, route_async, route_over, RealBreaker};
+use super::walk_tests::{answer, ok_200, real_egress, route_over, RealBreaker};
 use super::STREAM_CEILING_SECS;
 
 /// Hold `lane`'s one slot: it is at capacity for as long as the returned permit lives.
@@ -666,7 +666,7 @@ fn at_capacity_bounded_burst_all_spill_not_serialized() {
     let started = node.clock.now_millis();
 
     let burst = node.rt.block_on(futures::future::join_all(
-        (0..N).map(|_| route_async(&node, &egress, "primary")),
+        (0..N).map(|_| node.route_on(&egress, "primary", |_, _| {})),
     ));
 
     for outcome in &burst {
@@ -1059,7 +1059,7 @@ fn run_world(world: &World) -> &'static str {
     }
 
     // The oracle, at decision time, off the same breaker and permit store the walk reads.
-    let token = route_token();
+    let token = pass::<busbar_contract::caps::Route>();
     let free = |d: DestinationId| node.capacity.try_acquire(d).is_some();
     let ready =
         |pool: &str, d: DestinationId| real.admissible(d) && real.ready(pool, d, now, &token);
@@ -1455,7 +1455,7 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
     );
     let egress = node.egress();
     let far = egress.unit(node.unit_route("p"));
-    let token = super::route_token();
+    let token = pass::<busbar_contract::caps::Route>();
     assert_eq!(far.member_wait(&token, "b"), Some(110));
     assert_eq!(far.member_wait(&token, "a"), Some(30));
     assert_eq!(far.member_wait(&token, "stranger"), None);

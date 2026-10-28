@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL'S SEAL (#65, ARCHITECT ruling 2026-10-14): the one place a release build obtains a
+//! THE KERNEL'S SEAL: the one place a release build obtains a
 //! [`KernelSeal`], and the one crate that can.
 //!
 //! `busbar-contract` keeps the seal's constructor private. It hands a seal out through one symbol,

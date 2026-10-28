@@ -136,13 +136,6 @@ pub struct MemoryStore {
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
-    /// Test-only pinned clock for the retention sweep. `0` (the `Default`) means "use the real wall
-    /// clock" (`now()`); any non-zero value pins `self.now()` to that epoch-second so a test can make
-    /// the sweep's retention ceiling EXACTLY match the timestamp the test itself captured. This
-    /// removes the wall-clock race in the exact-boundary sweep tests, where a one-second tick between
-    /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
-    /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
-    clock: AtomicU64,
     /// Test-only planted fault: when set (an `open` whose settings carry
     /// `"panic_on_plane_append": true`), the door's `append_plane_record` slot PANICS inside the
     /// store body, so a test proves the door boundary turns a backend panic into a FAULT answer.
@@ -291,14 +284,6 @@ impl MemoryStore {
     fn next_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::Relaxed) + 1
     }
-    /// "Now" as the retention sweep sees it: the pinned test clock if set (`clock != 0`), else the
-    /// real wall clock. See the `clock` field.
-    fn now(&self) -> u64 {
-        match self.clock.load(Ordering::Relaxed) {
-            0 => now(),
-            pinned => pinned,
-        }
-    }
     fn plane_records(
         &self,
     ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
@@ -393,7 +378,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             keys.retain(|_, k| match k.deleted_at {
                 None => true, // live rows are never pruned
                 Some(deleted_at) => deleted_at.saturating_add(MAX_RETENTION_SECS) > n,
@@ -440,7 +425,7 @@ impl Store for MemoryStore {
         }
         let rev = self.next_revision();
         key.enabled = false;
-        key.deleted_at = Some(self.now());
+        key.deleted_at = Some(now());
         key.revision = rev;
         usage.retain(|(k, _), _| k != id);
         creds.retain(|_, c| c.meta.key_id != id);
@@ -510,7 +495,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             usage
                 .retain(|(_, window_start), _| window_start.saturating_add(MAX_RETENTION_SECS) > n);
         }
@@ -566,7 +551,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
@@ -624,7 +609,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             creds.retain(|_, c| match c.meta.revoked_at {
                 None => true, // live credentials are never pruned
                 Some(revoked_at) => revoked_at.saturating_add(MAX_RETENTION_SECS) > n,
@@ -706,12 +691,7 @@ impl Store for MemoryStore {
             return Err(StoreError(format!("revoke_credential: unknown id '{id}'")));
         };
         if c.meta.revoked_at.is_none() {
-            // `self.now()` (pinned-clock-aware), not the bare free function — the `creds` sweep
-            // added for the retention fix ages rows off `revoked_at` against `self.now()`, so
-            // stamping it from any other clock would desync the sweep's boundary from what a test
-            // (or, in prod, a paused/adjusted clock) actually pinned. Matches `delete_key`'s
-            // `deleted_at = Some(self.now())` for the same reason.
-            c.meta.revoked_at = Some(self.now());
+            c.meta.revoked_at = Some(now());
             c.meta.revoke_reason = Some(reason.to_string());
             c.meta.revision = self.next_revision();
         } // idempotent: already revoked

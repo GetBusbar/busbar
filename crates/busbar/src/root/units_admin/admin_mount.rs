@@ -1,6 +1,6 @@
 //! The admin mount: one HTTP surface, one loop, one answer.
 //!
-//! Split out of `units_admin/mod.rs` so that file measures the twelve steps and nothing else.
+//! Split out of `units_admin/mod.rs` so that file measures the steps and nothing else.
 //! A child module, not a sibling: it reads its parent's items directly through `use super::*`,
 //! so nothing had to be re-typed or re-plumbed to move it here.
 
@@ -10,19 +10,13 @@ use super::*;
 
 /// The node an admin request is answered by.
 ///
-/// Everything a request needs and nothing it does not: the kernel that mints its tokens, the units
-/// its steps run against, and the in-flight table its hold lives in. Built once at boot and shared
-/// by every request, which is what makes the counts the canary balances node-wide rather than
-/// per-request.
+/// The kernel that seals its records and the units its steps read. Built once at boot and shared by
+/// every request.
 #[cfg(feature = "root-admin")]
 pub struct AdminNode {
-    // `pub(super)` and no wider: these stay readable to `units_admin` and its test module,
-    // which is exactly who read them when this type lived in that file.
+    // `pub(super)` and no wider: these stay readable to `units_admin` and its test module.
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
-    pub(super) inflight: busbar_kernel::inflight::InFlight,
-    pub(super) gauge: busbar_kernel::slice::ConcurrencyGauge,
-    pub(super) canary: busbar_contract::caps::Canary,
     pub(super) next_key: std::sync::atomic::AtomicU64,
 }
 
@@ -37,143 +31,57 @@ impl AdminNode {
         AdminNode {
             kernel,
             units,
-            // The administrative listener is outside the in-flight cap entirely — the design says
-            // so, and for the reason the exemption exists: the surface an operator reaches to find
-            // out why the node is shedding has to answer while it is shedding. The table is still
-            // real, because a hold still has to live somewhere.
-            inflight: busbar_kernel::inflight::InFlight::new(0),
-            gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_contract::caps::Canary::new(),
             next_key: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
-    /// Draw the key of the next unit this node will walk.
+    /// Draw the key of the next unit this node will answer.
     ///
-    /// Drawn by the caller rather than inside the walk because the key is what names this unit on
-    /// BOTH sides of the walk: the steps read it, and the exit path releases against it whatever the
-    /// unit asked to outlive its response.
+    /// Drawn by the caller rather than inside the answer because the key is what names this unit on
+    /// BOTH sides of it: the steps read it, and the exit path releases against it whatever the unit
+    /// asked to outlive its response.
     pub fn next_unit(&self) -> u64 {
         self.next_key
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Walk one admin request through the loop and answer with what it produced.
-    ///
-    /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used
-    /// to reach its handler directly. What comes back is what the operation's own surface answered:
-    /// this function chooses the PATH, never the bytes.
+    /// Answer one admin request: its steps in order ([`decide`]), its one audit record, and the
+    /// answer the operation's own surface produced — or, for a unit that never reached it, the
+    /// refusal its ending earned. This function chooses the PATH, never the bytes.
     pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        // The key the caller already drew for this request. It is drawn OUTSIDE this walk because
-        // the caller has to name the same unit on the way out — the exit path releases what this
-        // unit asked to outlive its response, and a key invented in here would be a key the exit
-        // path could not name.
         let key = UnitKey::new(request.unit);
-        // The arrival clock, read ONCE and read where the request arrived. Every step that asks what
-        // time it is for this unit — the auth unit's expiry and revocation window, the verbs unit's
-        // rate class, the nonce the one-time secrets bind to — is handed this same number, so a
-        // second reading here would put the in-flight table's idea of when the unit arrived after
-        // the one every other step works from. The gap is small and the disagreement is not: a
-        // credential can expire between two readings, and then the unit is authenticated against one
-        // clock and aged against another.
+        // The arrival clock, read ONCE where the request arrived: every step that asks what time it
+        // is for this unit is handed this same number.
         let arrived_at = request.at;
-        self.units.admin.units.open(key, request);
-        // From here the unit occupies two tables, and every way out of this function gives both
-        // back — including the way a panicking step takes.
-        let occupied = Occupied {
-            inflight: &self.inflight,
-            units: &self.units.admin.units,
-            key,
-        };
-
-        let call = self.kernel.next_call();
-        let arrival = busbar_kernel::inflight::arrival_hold(
-            &self.kernel,
-            &self.units.arrival_door,
-            PrincipalId::new("admin"),
-            call,
-        );
-        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            admin_listener: true,
-            zero_hold_tick: false,
-            arrival,
-            now: arrived_at,
-        });
-
-        let answer = match entered {
-            // The table is uncapped for this listener, so this arm is the table declining for a
-            // reason that is not capacity. It is still an answer rather than a panic.
-            Err(_refused) => unavailable_answer(),
-            Ok(slot) => {
-                let ctx = UnitCtx {
-                    call,
-                    key,
-                    origin: busbar_contract::caps::OriginKind::Client,
-                    session: None,
-                    generation: busbar_kernel::registry::Generation::FIRST,
-                    admin_listener: true,
-                    // An admin unit's whole verified set is a kernel verb, which is what exempts it
-                    // from the concurrency gauge — and what makes the admin API answer at a
-                    // saturated cap.
-                    kernel_verb_only: true,
-                };
-                let meter = busbar_kernel::teller::AccrualMeter::new();
-                let ended = busbar_kernel::teller::run_unit(
-                    &self.kernel,
-                    &self.units,
-                    &ctx,
-                    busbar_kernel::teller::Run {
-                        cell: slot.cell(),
-                        parent: None,
-                        leases: slot.leases(),
-                        gauge: &self.gauge,
-                        canary: &self.canary,
-                        meter: &meter,
-                    },
-                );
-                // The loop ran; the answer is whatever Route put there. A unit refused before Route
-                // has none, and the refusal it ended on is what the surface renders. Read BEFORE
-                // the guard below hands the entry back, because the entry is where the answer is.
-                self.units.admin.units.answer(key).unwrap_or_else(|| {
-                    // The request is read back for the one refusal whose message names a
-                    // property of the endpoint rather than of the ending. It is still open here:
-                    // the guard below is what closes it.
-                    refused_answer(&ended, self.units.admin.units.request(key).as_ref())
-                })
-            }
-        };
-
+        let mut walk = AdminWalk::new(request);
+        let ended = decide(&self.units, &mut walk);
+        let facts = audit(&walk, &ended);
+        let answer = walk
+            .answer
+            .take()
+            .unwrap_or_else(|| refused_answer(ended, &walk.request));
         // THE UNIT'S ONE RECORD (THE DESIGN §1: "The audit step writes one fixed record, for every
         // plane"; U14: one record per unit, and a refused unit gets one too), sealed on the node's
-        // book once the unit's answer is in hand, as a request unit's is beside its line.
-        if let Some(sealing) = self.units.admin.units.take_sealing(key) {
-            self.seal(key, arrived_at, sealing);
-        }
-
-        // The guard closes last, whatever happened — including a step that panicked, which the two
-        // statements this replaces walked straight past. An entry or a slot that outlived its unit
-        // is the leak per request this root may not have.
-        drop(occupied);
+        // book once the unit's answer is in hand.
+        self.seal(key, arrived_at, walk.principal.as_ref(), facts, ended);
         answer
     }
 
     /// Seal admin unit `key`'s record on the node's book: who the auth step resolved (or the
-    /// arrival, for a unit refused before anybody was), the operation class its audit door stated,
-    /// how it ended, and no amount: an admin unit counts nothing.
-    fn seal(&self, key: UnitKey, arrived_at: u64, sealing: AdminSealing) {
+    /// arrival, for a unit refused before anybody was), the operation class its audit stated, how it
+    /// ended, and no amount: an admin unit counts nothing.
+    fn seal(
+        &self,
+        key: UnitKey,
+        arrived_at: u64,
+        principal: Option<&PrincipalId>,
+        facts: busbar_contract::AuditFacts,
+        ended: Outcome,
+    ) {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
-        let (facts, ended) = (sealing.facts, sealing.ended);
-        let subject = self
-            .units
-            .admin
-            .units
-            .principal(key)
-            .map_or(Subject::Arrival, |p| {
-                Subject::PrincipalId(p.as_str().to_string())
-            });
+        let subject = principal.map_or(Subject::Arrival, |p| {
+            Subject::PrincipalId(p.as_str().to_string())
+        });
         let inputs = AuditInputs {
             subject,
             what: What {
@@ -218,7 +126,11 @@ impl AdminNode {
             .durability
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal_unit(inputs, sealing.pass, &token);
+            .seal_unit(
+                inputs,
+                busbar_kernel::teller::verb_audit_pass(&self.kernel),
+                &token,
+            );
         if let Err(lost) = sealed {
             tracing::error!(
                 step = lost.step().as_str(),
@@ -253,32 +165,6 @@ impl Drop for ExitPath {
     }
 }
 
-/// THE TWO TABLES A UNIT OCCUPIES, for the length of one unit.
-///
-/// The in-flight table bounds how many units this node has open and the units table holds the
-/// request its steps read, so both have to come back on every way out of one unit — the answer, and
-/// the one this guard exists for: a step that panics, which takes the rest of the function with it.
-/// A removal and a close written as the last statements of that function come back on the first of
-/// those and not on the second, and what they leave behind is per request and resident for the life
-/// of the node.
-///
-/// Dropped explicitly at the end of the answering path rather than at the closing brace, because
-/// the answer is read OUT of the entry this guard gives back.
-#[cfg(feature = "root-admin")]
-pub(crate) struct Occupied<'n> {
-    inflight: &'n busbar_kernel::inflight::InFlight,
-    units: &'n AdminUnits,
-    key: UnitKey,
-}
-
-#[cfg(feature = "root-admin")]
-impl Drop for Occupied<'_> {
-    fn drop(&mut self) {
-        self.inflight.remove(self.key);
-        let _ = self.units.close(self.key);
-    }
-}
-
 /// What a unit that never reached Route answers with.
 ///
 /// The plane's own error envelope, which is the previous release's: the caller is the same caller
@@ -286,28 +172,17 @@ impl Drop for Occupied<'_> {
 /// them and the loop knows which one this unit earned, so the ending is read rather than replaced
 /// by a single word.
 #[cfg(feature = "root-admin")]
-pub(crate) fn refused_answer(
-    ended: &busbar_kernel::teller::Ended,
-    request: Option<&AdminRequest>,
-) -> AdminAnswer {
-    match ended {
-        busbar_kernel::teller::Ended::Settled { end, .. } => {
-            if is_credential_refusal(end.outcome()) {
-                return door_answer();
-            }
-            if let (true, Some(request)) = (is_scope_refusal(end.outcome()), request) {
-                return scope_answer(request);
-            }
-            if is_rate_refusal(end.outcome()) {
-                return rate_limited_answer();
-            }
-            answer_for(end.outcome())
-        }
-        // The node's own sweep took the hold first, which means this unit is not going to produce an
-        // answer at all. That is the node being unable to serve the request, not the caller being
-        // told no.
-        busbar_kernel::teller::Ended::AlreadySettled => unavailable_answer(),
+pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAnswer {
+    if is_credential_refusal(ended) {
+        return door_answer();
     }
+    if is_scope_refusal(ended) {
+        return scope_answer(request);
+    }
+    if is_rate_refusal(ended) {
+        return rate_limited_answer();
+    }
+    answer_for(ended)
 }
 
 /// Whether this ending is one about WHO is calling.
@@ -478,7 +353,6 @@ pub(crate) fn error_answer(status: u16, code: &str) -> AdminAnswer {
 /// Two of its ten errors carry a message this file cannot derive from the code alone — the door's,
 /// and the scope refusal's, which names the scope that would have sufficed. They are the same
 /// envelope from the same source; only the second string differs.
-#[cfg(feature = "root-admin")]
 pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
         status,

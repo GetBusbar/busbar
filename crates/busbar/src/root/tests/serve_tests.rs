@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33, TODO U6-U7): a request the decisions
+//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33): a request the decisions
 //! plane's door claims reaches that plane's driver through its route on the data router (mounted at
 //! the router's construction, ARCHITECT Q-SW1), behind the deployment's auth gate, is admitted and
 //! charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
@@ -490,9 +490,15 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -569,9 +575,15 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -665,8 +677,15 @@ pub(super) mod session_door {
     /// The session door's mint claim.
     const MINT: &str = "/v1/realtime/client_secrets";
 
-    /// The session door's sideband claim: an upgrade line a live session opens on.
+    /// The session door's sideband claim: an upgrade line that attaches to a call the SDP door
+    /// placed for the same caller, and to no other (ARCHITECT ruling 2026-10-23 on Part 2 #45).
     const SIDEBAND: &str = "/v1/realtime/sideband/{call_id}";
+
+    /// The session door's plain OpenAI Realtime socket, as a caller opens it: a WS upgrade on
+    /// `GET /v1/realtime`, its `?model=` on the query, a session attached to no call (ARCHITECT
+    /// ruling 2026-10-23 on Part 2 #45: plain server-to-server OpenAI Realtime over WS is its own
+    /// door, not the sideband).
+    const REALTIME: &str = "/v1/realtime?model=m-cap";
 
     /// The provider's answer to the mint: an ephemeral secret and its expiry.
     const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
@@ -870,6 +889,10 @@ pub(super) mod session_door {
         /// A provider the cell started itself (its port, and what it reports hearing), in place of
         /// the scripted one.
         far_end: Option<(u16, tokio::sync::mpsc::UnboundedReceiver<String>)>,
+        /// The provider's wire name for the catalog model the section's `session.model` names
+        /// (`upstream_model`, Part 2 #51), written in the deployment's `models:` as production
+        /// writes it; `None` = the catalog name is the wire name.
+        upstream_model: Option<&'static str>,
     }
 
     /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
@@ -1111,8 +1134,12 @@ pub(super) mod session_door {
             )]),
             &busbar_kernel::config_validate::MetadataPosture::default(),
         );
+        let models_yaml = match opts.upstream_model {
+            Some(wire) => format!("{{m-cap: {{provider: p, upstream_model: {wire}}}}}"),
+            None => "{m-cap: {provider: p}}".to_string(),
+        };
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
-            serde_yaml::from_str("{m-cap: {provider: p}}").expect("the models catalog");
+            serde_yaml::from_str(&models_yaml).expect("the models catalog");
         let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
             Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
@@ -1140,6 +1167,12 @@ pub(super) mod session_door {
         sections.insert(
             section_key,
             serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
+        );
+        // The deployment's `models:` beside it, as the root hands the kernel-owned sections a door
+        // plane may read (`door_steps::kernel_sections`).
+        sections.insert(
+            busbar_contract::section::RESERVED_MODELS_KEY,
+            serde_yaml::from_str(&models_yaml).expect("the models section"),
         );
         // THE KERNEL'S HOOK STAGE over this cell's generation (the App built below), when the cell
         // defines hooks: the door's tail states its hook order, and the stage binds the deployment's
@@ -1937,9 +1970,8 @@ pub(super) mod session_door {
             let _ = axum::serve(listener, router.into_make_service()).await;
         });
 
-        // The session door's upgrade line (its sideband claim's target, the call named), as a keyed
-        // caller opens it.
-        let route = SIDEBAND.replace("{call_id}", "call-decode");
+        // The session door's plain realtime socket, as a keyed caller opens it.
+        let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
         let open = format!(
             "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
@@ -2020,7 +2052,7 @@ pub(super) mod session_door {
             let _ = axum::serve(listener, router.into_make_service()).await;
         });
 
-        let route = SIDEBAND.replace("{call_id}", "call-silent");
+        let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
         let open = format!(
             "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
@@ -2094,7 +2126,7 @@ pub(super) mod session_door {
             let _ = axum::serve(listener, router.into_make_service()).await;
         });
 
-        let route = SIDEBAND.replace("{call_id}", "call-ga-format");
+        let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
         let open = format!(
             "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
@@ -2160,6 +2192,283 @@ pub(super) mod session_door {
             billed,
             Some(6),
             "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
+        );
+    }
+
+    /// The call the far end's SDP answer places, where its `Location` says it lives.
+    const PLACED_CALL: &str = "rtc_root0001";
+
+    /// A provider on loopback that places calls and serves its realtime socket: a `POST` (the SDP
+    /// offer) is answered `201` with an SDP answer and a `Location` naming [`PLACED_CALL`]; a
+    /// WebSocket upgrade is answered `101`. It reports `OFFER <head>` for each offer, `DIAL <request
+    /// line>` for each upgrade, and `TEXT <payload>` for every text frame a socket is sent.
+    async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let sent = sent.clone();
+                tokio::spawn(async move {
+                    let Some(head) = read_head(&mut socket).await else {
+                        return;
+                    };
+                    let line = head.lines().next().unwrap_or_default().to_string();
+                    let key = head.lines().find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("sec-websocket-key")
+                            .then(|| value.trim().to_string())
+                    });
+                    let Some(key) = key else {
+                        // The SDP offer: its body, then the placed call.
+                        let length = head
+                            .lines()
+                            .find_map(|l| {
+                                let (name, value) = l.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        let mut body = vec![0u8; length];
+                        if socket.read_exact(&mut body).await.is_err() {
+                            return;
+                        }
+                        let _ = sent.send(format!("OFFER {head}"));
+                        let reply = format!(
+                            "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
+                             location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
+                             connection: close\r\n\r\n{ANSWER}",
+                            ANSWER.len()
+                        );
+                        let _ = socket.write_all(reply.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                        return;
+                    };
+                    let _ = sent.send(format!("DIAL {line}"));
+                    let reply = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
+                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+                        ws_accept(&key)
+                    );
+                    if socket.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
+                        return;
+                    }
+                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
+                        match opcode {
+                            0x1 => {
+                                let _ = sent
+                                    .send(format!("TEXT {}", String::from_utf8_lossy(&payload)));
+                            }
+                            0x8 => return,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        (port, heard)
+    }
+
+    /// The next report from [`far_calls_and_socket`] that is not a session's own configuration,
+    /// within a few seconds; `None` when nothing more arrives.
+    async fn next_report(
+        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Option<String> {
+        loop {
+            let text = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .ok()??;
+            if !text.contains("session.update") {
+                return Some(text);
+            }
+        }
+    }
+
+    /// A keyed caller's WebSocket open of `route` on the listener at `addr`: the socket, and the
+    /// head the door answered with (`None` when the door closed without one).
+    async fn open_socket(
+        addr: std::net::SocketAddr,
+        route: &str,
+        plain: &str,
+    ) -> (tokio::net::TcpStream, Option<String>) {
+        let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
+        let open = format!(
+            "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {plain}\r\n\r\n"
+        );
+        caller.write_all(open.as_bytes()).await.expect("the open");
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), read_head(&mut caller))
+            .await
+            .expect("the door answers the open");
+        (caller, head)
+    }
+
+    /// THE SIDEBAND ATTACHES ONLY TO A PLACED CALL (busbar row 159, the session door's audit round
+    /// 2: "The sideband door attaches to no call"; ARCHITECT ruling 2026-10-23 on
+    /// `BUSBAR-1.6.0.md` Part 2 #45), at the session door's root leg: a sideband naming a call the
+    /// SDP door never placed reaches the provider on no dial; once the caller's own offer has placed
+    /// a call through `POST /v1/realtime/calls` (the provider's answer naming it in `Location`), a
+    /// sideband naming that call dials the provider's socket ATTACHED to it
+    /// (`/v1/realtime?call_id=<id>`) and carries the caller's events there. RED ARM: the sideband
+    /// that dialled a bare `/v1/realtime` for any call id opened a new provider session for the
+    /// unplaced call, and attached to nothing for the placed one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_sideband_attaches_only_to_a_placed_call() {
+        use tower::ServiceExt as _;
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_calls_and_socket().await;
+        let mut s = session_with(
+            "serve-door-session-sideband",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        let served = router.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, served.into_make_service()).await;
+        });
+        let append = r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#;
+
+        // A call no offer placed: refused, and the provider is never dialled for it.
+        let unplaced = SIDEBAND.replace("{call_id}", "rtc_unplaced0001");
+        let (mut caller, head) = open_socket(addr, &unplaced, &plain).await;
+        if head
+            .as_deref()
+            .is_some_and(|h| h.starts_with("HTTP/1.1 101"))
+        {
+            let _ = caller.write_all(&client_text(append)).await;
+        }
+        let stray = next_report(&mut s.heard).await;
+        assert!(
+            stray.is_none(),
+            "a sideband naming a call no offer placed reaches the provider on no wire: \
+             open {head:?}, provider heard {stray:?}"
+        );
+        drop(caller);
+
+        // The caller's own offer places the call.
+        let offer = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/realtime/calls")
+            .header("content-type", "application/sdp")
+            .header("authorization", format!("Bearer {plain}"))
+            .body(axum::body::Body::from(offer))
+            .expect("a request");
+        let placed = tokio::time::timeout(ANSWER_BOUND, router.clone().oneshot(req))
+            .await
+            .expect("the SDP door answers within the bound")
+            .expect("the router answers");
+        assert_eq!(placed.status().as_u16(), 201, "the offer placed a call");
+        let location = placed
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        assert_eq!(
+            location.as_deref(),
+            Some(format!("/v1/realtime/calls/{PLACED_CALL}").as_str()),
+            "the caller is told where the call lives"
+        );
+        let posted = next_report(&mut s.heard)
+            .await
+            .expect("the offer reached the provider");
+        assert!(
+            posted.starts_with("OFFER POST /v1/realtime/calls "),
+            "{posted}"
+        );
+
+        // The sideband naming the placed call dials the provider's socket attached to it.
+        let attached = SIDEBAND.replace("{call_id}", PLACED_CALL);
+        let (mut caller, head) = open_socket(addr, &attached, &plain).await;
+        assert!(
+            head.as_deref()
+                .is_some_and(|h| h.starts_with("HTTP/1.1 101")),
+            "the sideband to the caller's own call opens: {head:?}"
+        );
+        caller
+            .write_all(&client_text(append))
+            .await
+            .expect("a readable event");
+        let dial = next_report(&mut s.heard)
+            .await
+            .expect("the sideband dials the provider");
+        assert!(
+            dial.starts_with(&format!("DIAL GET /v1/realtime?call_id={PLACED_CALL} ")),
+            "the sideband attaches to the call it names: {dial}"
+        );
+        let carried = next_report(&mut s.heard)
+            .await
+            .expect("the caller's event reaches the call");
+        assert!(
+            carried.starts_with("TEXT ") && carried.contains("input_audio_buffer.append"),
+            "{carried}"
+        );
+    }
+
+    /// THE PROVIDER IS TOLD THE UPSTREAM MODEL (`BUSBAR-1.6.0.md` Part 2 #51: a model entry's
+    /// `upstream_model` overrides its name on the wire; ARCHITECT rulings 2026-10-23, R-6: a plane
+    /// that reads sections beside its own is handed them keyed), at the session door's root leg: a
+    /// deployment whose catalog entry for the session model names an `upstream_model` has a plain
+    /// session dial the provider's realtime socket with that wire name, never the catalog alias.
+    /// RED ARM: the door was handed its section bare, never read the `models:` beside it, and
+    /// dialled `?model=m-cap`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_dials_the_session_models_upstream_name() {
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_calls_and_socket().await;
+        let mut s = session_with(
+            "serve-door-session-upstream",
+            Opts {
+                far_end: Some(far_end),
+                upstream_model: Some("gpt-realtime-wire"),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+        let (mut caller, head) = open_socket(addr, REALTIME, &plain).await;
+        assert!(
+            head.as_deref()
+                .is_some_and(|h| h.starts_with("HTTP/1.1 101")),
+            "the plain session opens: {head:?}"
+        );
+        caller
+            .write_all(&client_text(
+                r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#,
+            ))
+            .await
+            .expect("a readable event");
+        let dial = next_report(&mut s.heard)
+            .await
+            .expect("the session dials the provider");
+        assert!(
+            dial.starts_with("DIAL GET /v1/realtime?model=gpt-realtime-wire "),
+            "the dial names the upstream model, never the catalog alias: {dial}"
         );
     }
 }
@@ -10607,7 +10916,8 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     )
     .expect("the linked door binds");
     let facing = (reg.facing)(
-        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
+        // No provider facts reach a bare facing probe, so each model states its own `protocol` (#51).
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}}}}"#,
         b"",
         None,
         &[],

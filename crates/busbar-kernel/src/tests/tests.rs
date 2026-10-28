@@ -2,22 +2,6 @@ use super::*;
 use crate::test_support::EnvVarGuard;
 use crate::test_support::{build_once, cfg_with_provider_api_key};
 
-/// The sources this crate took from the retired shared value crate (#83a SD-8), relative to this
-/// crate's manifest dir. The rules that crate held over its own tree — body JSON through the one
-/// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
-/// `src/sigv4.rs` left with D3 (ec0c05f4e3): it was a re-export of the identity unit's SigV4 items
-/// and carried no code of its own, so no code under these rules left with it.
-pub(crate) fn moved_sources() -> &'static [&'static str] {
-    &[
-        "src/breaker.rs",
-        "src/diagnostics/mod.rs",
-        "src/diagnostics/emit.rs",
-        "src/json.rs",
-        "src/ir/lane_caps.rs",
-        "src/config/providers.rs",
-        "src/proto/installed.rs",
-    ]
-}
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
@@ -26,12 +10,12 @@ use crate::appbuild::{
     inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
     stateful_plane_ephemeral_store_warn,
 };
+use crate::config_validate::{registry_refusal, secret_module};
 #[allow(unused_imports)]
 use crate::preflight::{
     build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
     parse_signing_secret, resolve_admin_token, resolve_signing_key,
-    valid_identity_provider_modules, validate_secret_module, validate_secret_modules,
-    validate_secret_refs,
+    valid_identity_provider_modules,
 };
 #[allow(unused_imports)]
 use crate::router::{
@@ -968,7 +952,7 @@ fn a_linked_rows_refusals_print_its_key() {
             "{word}: {refused}"
         );
         assert_eq!(
-            crate::preflight::validate_secret_module(reg.as_ref(), word).unwrap_err(),
+            crate::config_validate::secret_module(reg.as_ref(), word).unwrap_err(),
             format!(
                 "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
                  secret plugin can back a `secrets:` block entry"
@@ -978,7 +962,7 @@ fn a_linked_rows_refusals_print_its_key() {
             module: word.to_string(),
             ..crate::config::SecretRef::env("K")
         });
-        let refused = crate::preflight::validate_secret_refs(reg.as_ref(), &cfg).unwrap_err();
+        let refused = crate::config_validate::registry_refusal(reg.as_ref(), &cfg).unwrap_err();
         assert!(
             refused.contains(&format!(
                 "references secret module '{word}', but plugin '{key}' has kind 'store'"
@@ -989,8 +973,8 @@ fn a_linked_rows_refusals_print_its_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the plugin ABI; TODO
-/// step 28). `env` and `file` are secret plugins the kernel reaches through the root's
+/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the
+/// plugin ABI). `env` and `file` are secret plugins the kernel reaches through the root's
 /// `SecretAxis`, not rows of the cold-kind registry and not a name the resolver matches: the
 /// registry holds no secret row for either, and a resolution's failure text is the plugin's own,
 /// unwrapped (1.5.5's). A dropped-in cold plugin spelling `env` does not take the name: the resolver
@@ -1399,16 +1383,130 @@ fn secret_registry(
 
 /// A `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
 /// module is rejected — the built-ins take no module-level open() config, so such an entry is an
-/// operator error, not a silent no-op.
+/// operator error, not a silent no-op. The one validator refuses it in its semantic pass, before
+/// any registry exists, on every path (boot, apply, `--validate`, the admin dry run): this is the
+/// refusal the operator reads. (The registry-side check that once refused it a second time, in
+/// other words, could never be reached and is gone — S-10.)
 #[test]
 fn secrets_block_rejects_builtin_resolver_names() {
-    let reg = crate::test_support::rows::empty();
     for reserved in ["env", "file"] {
-        let err = validate_secret_module(reg.as_ref(), reserved).unwrap_err();
-        assert!(
-            err.contains("built-in secret resolver"),
-            "reserved '{reserved}' rejected as a module: {err}"
+        let mut cfg =
+            crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env("K"));
+        cfg.secrets.insert(
+            reserved.to_string(),
+            crate::config::SecretModuleCfg::default(),
         );
+        let errs = crate::config_validate::validate(&cfg).unwrap_err();
+        let refusal = errs
+            .iter()
+            .find(|e| e.starts_with(&format!("secrets.{reserved}: ")))
+            .unwrap_or_else(|| panic!("reserved '{reserved}' not refused: {errs:?}"));
+        assert!(
+            refusal.starts_with(&format!(
+                "secrets.{reserved}: the built-in '{reserved}' secret module takes no \
+                 module-level config; its settings ("
+            )) && refusal.ends_with(
+                ") belong on each individual secret reference, not in the top-level `secrets:` \
+                 block"
+            ),
+            "reserved '{reserved}' refused in the semantic pass's words: {refusal}"
+        );
+        // The same config, through the one validator, stops at the semantic pass.
+        let refused = crate::config_validate::check(
+            &cfg,
+            crate::config_validate::Check {
+                plugins: &crate::config::PluginsCfg::default(),
+                unset_env_vars: &[],
+                root: &crate::config_validate::no_root_rules,
+                fetch: None,
+                resolve_builtins: false,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&refused, crate::config_validate::Refusal::Config(e) if e.contains(refusal)),
+            "the one validator refuses '{reserved}' in the semantic pass: {refused:?}"
+        );
+    }
+}
+
+/// THE ONE VALIDATOR'S ORDER (S-10). Boot, every apply, `--validate` and the admin dry run all
+/// run `config_validate::check`, so one config gets one answer on every path:
+/// - a semantic refusal stops it before the root's rules are asked;
+/// - the root's refusal stops it before any plugin is scanned;
+/// - a `secrets:` block entry no plugin backs is refused before a secret REFERENCE no plugin backs;
+/// - the built-in secrets are resolved only when asked.
+#[test]
+fn one_validator_refuses_in_one_order() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
+    let plugins = crate::config::PluginsCfg::default();
+    let check = |cfg: &crate::config::RootCfg,
+                 root: &dyn Fn(&crate::config::RootCfg) -> Result<(), String>,
+                 resolve_builtins: bool| {
+        crate::config_validate::check(
+            cfg,
+            crate::config_validate::Check {
+                plugins: &plugins,
+                unset_env_vars: &[],
+                root,
+                fetch: None,
+                resolve_builtins,
+            },
+        )
+    };
+    let refuse_root = |_: &crate::config::RootCfg| Err("the root refuses".to_string());
+
+    // A reference to a secret module nothing backs, plus a `secrets:` entry nothing backs.
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "typo-ref".to_string(),
+        ..crate::config::SecretRef::env("K")
+    });
+    cfg.secrets.insert(
+        "typo-vault".to_string(),
+        crate::config::SecretModuleCfg::default(),
+    );
+    match check(&cfg, &crate::config_validate::no_root_rules, false) {
+        Err(crate::config_validate::Refusal::Plugins(e)) => assert!(
+            e.starts_with("secrets.typo-vault: no loadable `kind: secret` plugin"),
+            "the `secrets:` block is judged before the references: {e}"
+        ),
+        other => panic!("refused by the registry half: {other:?}"),
+    }
+    // The root's rules come before any plugin is scanned.
+    assert_eq!(
+        check(&cfg, &refuse_root, false).unwrap_err(),
+        crate::config_validate::Refusal::Root("the root refuses".to_string())
+    );
+    // With the `secrets:` entry gone, the reference is what is refused.
+    cfg.secrets.clear();
+    match check(&cfg, &crate::config_validate::no_root_rules, false) {
+        Err(crate::config_validate::Refusal::Plugins(e)) => assert!(
+            e.contains("references secret module 'typo-ref', which is not a built-in"),
+            "the reference is refused: {e}"
+        ),
+        other => panic!("refused by the registry half: {other:?}"),
+    }
+    // A semantic refusal comes before the root's rules.
+    cfg.limits.reasoning_effort_budgets.minimal = 0;
+    assert!(
+        matches!(
+            check(&cfg, &refuse_root, false),
+            Err(crate::config_validate::Refusal::Config(_))
+        ),
+        "the semantic pass answers first"
+    );
+
+    // Built-in secrets resolve only when asked: an unset env var passes until then.
+    let var = "BUSBAR_S10_ONE_VALIDATOR_UNSET_VAR";
+    assert!(std::env::var_os(var).is_none());
+    let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(var));
+    assert!(check(&cfg, &crate::config_validate::no_root_rules, false).is_ok());
+    match check(&cfg, &crate::config_validate::no_root_rules, true) {
+        Err(crate::config_validate::Refusal::Unresolved(e)) => {
+            assert!(e.contains(var), "the unresolved reference is named: {e}")
+        }
+        other => panic!("refused as unresolved: {other:?}"),
     }
 }
 
@@ -1417,7 +1515,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
 #[test]
 fn secrets_block_rejects_unknown_module() {
     let reg = crate::test_support::rows::empty();
-    let err = validate_secret_module(reg.as_ref(), "typo-vault").unwrap_err();
+    let err = secret_module(reg.as_ref(), "typo-vault").unwrap_err();
     assert!(
         err.contains("no loadable") && err.contains("typo-vault"),
         "unknown module named in the error: {err}"
@@ -1433,11 +1531,11 @@ fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
     let (dir, reg) = secret_registry("secrets-canon");
     // Both the alias and the canonical name resolve to the SAME canonical name.
     assert_eq!(
-        validate_secret_module(reg.as_ref(), "vault").unwrap(),
+        secret_module(reg.as_ref(), "vault").unwrap(),
         "acme-secret-vault"
     );
     assert_eq!(
-        validate_secret_module(reg.as_ref(), "acme-secret-vault").unwrap(),
+        secret_module(reg.as_ref(), "acme-secret-vault").unwrap(),
         "acme-secret-vault"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1469,7 +1567,7 @@ fn secrets_block_rejects_non_secret_kind() {
         &Default::default(),
     )
     .unwrap();
-    let err = validate_secret_module(reg.as_ref(), "x").unwrap_err();
+    let err = secret_module(reg.as_ref(), "x").unwrap_err();
     assert!(
         err.contains("not 'secret'"),
         "wrong-kind rejection names the mismatch: {err}"
@@ -1572,7 +1670,7 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
 /// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
 /// module-existence check is DEFERRED past `config_validate::validate` (which runs before the plugin
-/// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
+/// registry exists) to `config_validate::registry_refusal`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
@@ -1591,7 +1689,7 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
         );
         // The registry-backed pre-flight check PASSES because the plugin is loaded + is kind:secret.
         assert!(
-            validate_secret_refs(reg.as_ref(), &cfg).is_ok(),
+            registry_refusal(reg.as_ref(), &cfg).is_ok(),
             "a loaded kind:secret plugin '{module}' must pass the secret-ref pre-flight"
         );
     }
@@ -1615,7 +1713,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
         crate::config_validate::validate(&cfg).is_ok(),
         "pre-registry validate cannot (and must not) reject the unknown module by itself"
     );
-    let err = validate_secret_refs(reg.as_ref(), &cfg)
+    let err = registry_refusal(reg.as_ref(), &cfg)
         .expect_err("a typo'd secret module with no plugin must fail the pre-flight");
     assert!(
         err.contains("providers.acme.api_key")
@@ -1633,7 +1731,7 @@ fn secret_ref_builtin_modules_pass_with_empty_registry() {
     let reg = crate::test_support::rows::empty();
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env("ACME_KEY"));
     assert!(
-        validate_secret_refs(reg.as_ref(), &cfg).is_ok(),
+        registry_refusal(reg.as_ref(), &cfg).is_ok(),
         "a built-in env ref must pass the pre-flight with no plugins loaded"
     );
 }
@@ -1667,7 +1765,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
         module: "x".to_string(),
         settings: serde_json::Map::new(),
     });
-    let err = validate_secret_refs(reg.as_ref(), &root)
+    let err = registry_refusal(reg.as_ref(), &root)
         .expect_err("a store-kind plugin cannot back a secret reference");
     assert!(
         err.contains("not 'secret'") && err.contains("providers.acme.api_key"),
@@ -2166,33 +2264,6 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
     assert!(is_real_auth_plugin_ref("test-idp-double", false));
 }
 
-/// Source review of the boot-logging matrix: the enabled/disabled boot lines and
-/// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
-/// observability wording against silent removal.
-#[test]
-fn plugins_boot_logging_wording_present() {
-    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/preflight.rs"));
-    assert!(
-        src.contains("plugins: disabled (plugins.enabled is false"),
-        "disabled boot line missing"
-    );
-    assert!(
-        src.contains("\"plugins: enabled\""),
-        "enabled boot line missing"
-    );
-    // Two-part diagnosis + fetch/drop remediation on the referenced-but-missing arms.
-    assert!(
-        src.contains("no plugin matching store.module")
-            && src.contains("no plugin matching auth.chain module")
-            && src.contains("no plugin matching the hook reference"),
-        "referenced-but-missing arms not enriched"
-    );
-    assert!(
-        src.contains("Add it to plugins.fetch or drop the signed tarball"),
-        "two-part remediation wording missing"
-    );
-}
-
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
 /// does not resolve, so empty maps are fine).
 const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
@@ -2351,9 +2422,9 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
 }
 
-/// THE ROOT'S RULES RUN FIRST (`appbuild::RootRules`, passed to the build): a configuration the
-/// rules refuse is refused by the build itself, with the rules' words, before anything of it is
-/// built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
+/// THE ROOT'S RULES JUDGE EVERY BUILD (`appbuild::RootRules`, passed to the build and run by the one
+/// validator right after the semantic pass): a configuration the rules refuse is refused by the
+/// build itself, with the rules' words, before anything of it is built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
 /// and the built `App` keeps the rules it was built under, for every build after it to pass on.
 /// RED before the fix: the build had no root rules, so a configuration only the root could judge
 /// went live through an apply.

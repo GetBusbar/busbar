@@ -40,10 +40,8 @@ use std::time::Duration;
 
 use axum::Router;
 
-// `preflight_plugins_and_secrets`, `validate_builtin_secrets_resolve`, `DEFAULT_CONFIG_PATH` and
-// `ENV_PROVIDERS` left with the flag surface (`root::cli`): the first two are what `--validate`
-// checks without booting, and the last two are the config/providers path precedence the scanners
-// there answer for boot AND for every command.
+// `DEFAULT_CONFIG_PATH` and `ENV_PROVIDERS` left with the flag surface (`root::cli`): they are the
+// config/providers path precedence the scanners there answer for boot AND for every command.
 use busbar_kernel::{
     build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
@@ -288,9 +286,6 @@ fn register_planes() {
     root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
-    // THE DOOR-ROOT ROWS FIRST (status row 195): each crate's door admitted by the loader and its
-    // Statement agreeing with its row, or the boot is refused (exit 2) before any row registers.
-    root::door_root::check_door_roots(LINKED.door_roots);
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
@@ -1602,7 +1597,6 @@ fn serve_thread_per_core(
                     // pre-TLS so the balancer can place it on another worker; the TLS handshake
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
-                    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
                     let via = crate::root::connector::the().address_via();
                     let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
