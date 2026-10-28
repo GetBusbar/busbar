@@ -138,29 +138,24 @@ only the current version of each kind.
 
 A test that runs your plugin under the loader hands it the host's services as a
 `busbar_contract::services::HostServices`. Don't implement that trait by hand: the host adds services,
-and a hand-written double stops compiling at the next busbar pin. Enable the contract's dev-only
-`services-double` feature, in `[dev-dependencies]` only (a release build never carries it):
+and a hand-written double stops compiling at the next busbar pin. Use the test kit's double
+(`busbar-test-kit`, already a dev-dependency for the conformance suite).
 
-```toml
-[dev-dependencies]
-busbar-contract = { workspace = true, features = ["services-double"] }
-```
-
-Then implement `services::double::ServicesDouble` and override only the services your test serves.
-Every other service answers the way a host that does not serve it answers: REFUSED with
-`services::UNSERVED`, at once. The clock reads zero. Any `ServicesDouble` is a `HostServices`:
+Implement `busbar_test_kit::services_double::ServicesDouble` and override only the services your test
+serves. Every other service answers the way a host that does not serve it answers: REFUSED with
+`services::UNSERVED`, at once. The clock reads zero. Wrap it in `Double` to hand it to the host:
 
 ```rust
+use busbar_test_kit::services_double::{Double, ServicesDouble};
 struct Clock;
-impl busbar_contract::services::double::ServicesDouble for Clock {
+impl ServicesDouble for Clock {
     fn now(&self) -> Reading { Reading { wall_ns: 7, mono_ns: 7 } }
 }
-let services: Arc<dyn HostServices> = Arc::new(Clock);
+let services: Arc<dyn HostServices> = Arc::new(Double(Clock));
 ```
 
-If you need a double that serves nothing, use `services::double::Unserved`. In the `impl`, name the
-trait by its full path rather than importing it next to `HostServices`, because with both traits in
-scope a direct `clock.now()` call is ambiguous.
+`Double` derefs to your type, so the test still reads its own state through the `Arc`. If you need a
+double that serves nothing, use `Double(Unserved)`.
 
 ## Packaging and signing
 

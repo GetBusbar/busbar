@@ -495,13 +495,6 @@ pub fn merge_list(
         .collect()
 }
 
-// THE SHARED TEST DOUBLE IS NOT IN A RELEASE BUILD: [`HostServices`] with a refusing default per
-// service, kept in step with the trait here. Compiled for this crate's own tests and, through the
-// dev-only `services-double` feature, for a plugin's dev-dependency edge;
-// `tests/test_seal_is_dev_only.rs` refuses any non-dev edge that enables it.
-#[cfg(any(test, feature = "services-double"))]
-#[path = "services_double.rs"]
-pub mod double;
 /// The decimal digits of a chained record's sequence in its listed key ([`chain_key`]).
 pub const CHAIN_SEQ_DIGITS: usize = 20;
 

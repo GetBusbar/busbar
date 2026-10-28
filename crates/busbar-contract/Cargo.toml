@@ -164,13 +164,6 @@ syn = { workspace = true }
 # this workspace enables it, so the type is absent from every release build.
 test-seal = []
 
-# The TEST-ONLY shared host-services double (`services::double`, busbar #476 follow-up): a
-# `HostServices` with a refusing default per service, so a plugin's test double overrides only what
-# it serves and a service the host adds later is one edit here, not one per plugin repo. OFF by
-# default and named only in `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs`), so it is absent
-# from every release build; it switches on no dependency and no other feature.
-services-double = []
-
 # The TEST-ONLY counting allocator (`alloc_counter`, ARCHITECT ruling 2026-10-21): the one
 # `GlobalAlloc` impl a plugin's allocation gates install as their test binary's
 # `#[global_allocator]`, so a plugin crate root keeps the literal `#![forbid(unsafe_code)]`

@@ -8,12 +8,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::super::{
+use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
     Stored, TrustKeyRef, UNSERVED,
 };
-use super::{ServicesDouble, Unserved};
-use crate::abi::mechanism::KindCode;
+
+use super::{Double, ServicesDouble, Unserved};
 
 fn caller() -> Caller {
     Caller {
@@ -157,7 +158,7 @@ const ROWS: &[Row] = &[
             key: "sink".to_string(),
             path: "/nowhere".to_string(),
             rotate_at: None,
-            rotate: crate::services::DiskRotate::Truncate,
+            rotate: busbar_contract::services::DiskRotate::Truncate,
         };
         now(
             "disk_append",
@@ -202,7 +203,7 @@ const ROWS: &[Row] = &[
 #[test]
 fn every_service_of_the_bare_double_answers_as_unserved() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let double: Arc<dyn HostServices> = Arc::new(Unserved);
+    let double: Arc<dyn HostServices> = Arc::new(Double(Unserved));
     for (name, call) in ROWS {
         assert_eq!(
             call(double.as_ref(), &calls),
@@ -243,7 +244,7 @@ impl ServicesDouble for Judging {
 /// and every other service still answers as unserved.
 #[test]
 fn an_override_answers_and_the_rest_still_refuse() {
-    let double = Arc::new(Judging::default());
+    let double = Arc::new(Double(Judging::default()));
     let host: Arc<dyn HostServices> = double.clone();
     assert_eq!(
         host.now(),

@@ -22,6 +22,8 @@ pub mod conformance;
 /// The framed connection-table stand-in with in-process far ends, for a build that cannot link
 /// the process's connector. No TLS library: TLS stays in the connector.
 pub mod https_conns;
+/// The host-services test double: a test overrides only the services it serves.
+pub mod services_double;
 /// The facts the test connection tables stand in for, read from data (`stand_in.json`).
 pub mod stand_in;
 /// The stream connection table over real local sockets.
