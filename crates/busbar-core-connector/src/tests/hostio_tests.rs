@@ -13,6 +13,8 @@ use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::support::worker;
+
 use super::*;
 
 const OWNER: u64 = 1;
@@ -22,113 +24,6 @@ fn ticket(n: u32) -> Ticket {
         slot: 0x00ff_0000 + n,
         generation: 1,
     }
-}
-
-fn worker() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-}
-
-/// A name lookup that wedges (`getaddrinfo` that never returns) answers `Err` within its bound: the
-/// caller is let go and the wedged thread is never joined. RED before the bound: the lookup was
-/// joined with none, and this call never returned. A lookup that answers in time is answered.
-#[test]
-fn a_wedged_name_lookup_fails_within_its_bound_and_an_answer_in_time_is_kept() {
-    let bound = std::time::Duration::from_millis(300);
-    let slack = std::time::Duration::from_secs(1);
-    let (release, wedge) = std::sync::mpsc::channel::<()>();
-    let began = std::time::Instant::now();
-    let answer = within(bound, move || {
-        // The planted wedge: blocks until the test lets it go, far past the bound.
-        let _ = wedge.recv_timeout(std::time::Duration::from_secs(600));
-        Ok(vec![IpAddr::from([127, 0, 0, 1])])
-    });
-    let took = began.elapsed();
-    drop(release);
-    let refused = answer.expect_err("a wedged lookup is a resolution failure");
-    assert!(refused.contains("no answer within"), "{refused}");
-    assert!(took >= bound, "waited its bound: {took:?}");
-    assert!(took < bound + slack, "returned within its bound: {took:?}");
-
-    let one = IpAddr::from([192, 0, 2, 7]);
-    assert_eq!(within(bound, move || Ok(vec![one])), Ok(vec![one]));
-    assert!(within(bound, || panic!("the lookup died")).is_err());
-}
-
-/// Waits (at most 5 s) until `in_flight` reads `want` or fewer: a lookup's thread gives its place
-/// back as it ends, a moment after its wedge is let go.
-fn settles(in_flight: &std::sync::atomic::AtomicUsize, want: usize) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while in_flight.load(Ordering::Acquire) > want {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the lookups in flight never fell to {want}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-}
-
-/// Let-go lookups are CAPPED: with the cap's worth wedged, the next lookup is refused at once (no
-/// thread, no wait for its bound); when one wedge ends its place comes back and a new lookup is
-/// answered; a lookup that panics gives its place back too. RED before the cap: every wedged
-/// lookup left one more thread behind, and the next lookup started another.
-#[test]
-fn wedged_name_lookups_are_capped_and_an_ended_one_gives_its_place_back() {
-    static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    const CAP: usize = 2;
-    let short = std::time::Duration::from_millis(50);
-    let bound = std::time::Duration::from_secs(10);
-    let one = IpAddr::from([192, 0, 2, 7]);
-
-    // Plant the cap's worth of wedges: each outlives its bound and is let go, holding its place.
-    let mut releases = Vec::new();
-    for _ in 0..CAP {
-        let (release, wedge) = std::sync::mpsc::channel::<()>();
-        releases.push(release);
-        let wedged = within_capped(short, CAP, &IN_FLIGHT, move || {
-            let _ = wedge.recv_timeout(std::time::Duration::from_secs(600));
-            Ok(vec![one])
-        });
-        assert!(wedged.is_err(), "a wedged lookup is let go at its bound");
-    }
-    assert_eq!(IN_FLIGHT.load(Ordering::Acquire), CAP);
-
-    // At the cap: refused at once, the lookup never run.
-    let ran = std::sync::Arc::new(AtomicBool::new(false));
-    let saw = ran.clone();
-    let began = std::time::Instant::now();
-    let refused = within_capped(bound, CAP, &IN_FLIGHT, move || {
-        saw.store(true, Ordering::Release);
-        Ok(vec![one])
-    });
-    let took = began.elapsed();
-    let refused = refused.expect_err("at the cap a new lookup is refused");
-    assert!(refused.contains("in flight"), "{refused}");
-    assert!(
-        took < std::time::Duration::from_secs(1),
-        "refused at once: {took:?}"
-    );
-    assert!(
-        !ran.load(Ordering::Acquire),
-        "a refused lookup is never run"
-    );
-    assert_eq!(IN_FLIGHT.load(Ordering::Acquire), CAP);
-
-    // One wedge ends: its place comes back, and a new lookup takes it and is answered.
-    drop(releases.pop());
-    settles(&IN_FLIGHT, CAP - 1);
-    assert_eq!(
-        within_capped(bound, CAP, &IN_FLIGHT, move || Ok(vec![one])),
-        Ok(vec![one])
-    );
-
-    // The rest end; a lookup that panics gives its place back as well.
-    releases.clear();
-    settles(&IN_FLIGHT, 0);
-    assert!(within_capped(bound, CAP, &IN_FLIGHT, || panic!("the lookup died")).is_err());
-    settles(&IN_FLIGHT, 0);
 }
 
 #[test]
@@ -295,7 +190,6 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
     std::env::set_var(VAR, "hostio-spawn-value");
-    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -307,7 +201,11 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
                 busbar_contract::secret_ref::SecretRef::env(VAR),
             )],
         };
-        let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
+        let held = crate::spawn_env::HeldEnv::load(
+            &program.env_refs,
+            Some(crate::spawn_env::counting_env),
+            &scope(),
+        );
         assert!(
             !format!("{held:?}").contains("hostio-spawn-value"),
             "a held environment names no value"
@@ -330,7 +228,11 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             )],
             ..program
         };
-        let held = crate::spawn_env::HeldEnv::load(&unresolved.env_refs, &scope());
+        let held = crate::spawn_env::HeldEnv::load(
+            &unresolved.env_refs,
+            Some(crate::spawn_env::counting_env),
+            &scope(),
+        );
         io.admit(ticket(31), Admission::Spawn(unresolved, held));
         match env_lines(&io, 31).await {
             Err(IoRefusal::Refused(why)) => {
@@ -355,7 +257,6 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
 fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";
     std::env::set_var(VAR, "before-rotation");
-    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -367,7 +268,11 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
                 busbar_contract::secret_ref::SecretRef::env(VAR),
             )],
         };
-        let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
+        let held = crate::spawn_env::HeldEnv::load(
+            &program.env_refs,
+            Some(crate::spawn_env::counting_env),
+            &scope(),
+        );
         let loaded = crate::spawn_env::resolutions_of(VAR);
         assert!(loaded >= 1, "the load resolved the reference");
         let want = |v: &str| vec!["DECLARED=yes".to_owned(), format!("ROTATED={v}")];

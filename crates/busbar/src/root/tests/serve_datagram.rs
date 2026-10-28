@@ -13,7 +13,7 @@ use busbar_core_connector::framer::Got;
 use busbar_core_connector::udp::{bind, ReadyPort};
 use tokio::sync::mpsc;
 
-use super::{lock, CallerLeg, ClaimDoor, ClaimDoors};
+use super::{lock, CallerLeg, ClaimDoor, ClaimDoors, CALLER_QUEUE};
 
 fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
     Got {
@@ -95,6 +95,53 @@ async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
     assert_eq!(rx.recv().await.unwrap(), b"m");
     assert_eq!(rx.recv().await.unwrap(), b"m");
     assert!(rx.recv().await.is_none(), "the session's caller side ended");
+}
+
+/// Up to the caller queue's bound, what the plane writes before the far end opens a channel waits
+/// for it and is released onto it once the channel opens; the session stands (THE DESIGN l.758-765:
+/// application data waits). The green twin of the test below; RED before the fix: none, it passes
+/// before and after.
+#[tokio::test]
+async fn early_writes_up_to_the_bound_wait_for_the_channel() {
+    let (_door, leg, pairing, _rx) = leg(8);
+    let now = Instant::now();
+    for _ in 0..CALLER_QUEUE {
+        assert!(leg.write(b"early", false, now));
+    }
+    assert_eq!(lock(&leg.held).len(), CALLER_QUEUE);
+    assert!(!pairing.closed());
+    leg.take(vec![got(1, b"label: events\r\n", true)], now);
+    assert!(lock(&leg.held).is_empty(), "released onto the channel");
+    assert!(!pairing.closed());
+}
+
+/// What the plane writes before the far end opens a channel is held to the same bound as what the
+/// caller sends the plane: the write past it is refused and ends the session (its pairing closes,
+/// the leg and what it held with it), as a plane that falls behind its caller does; a far end that
+/// never opens a channel cannot grow the host's memory for the session's whole life (THE DESIGN
+/// l.758-765; l.2221 #38(c): every collection has a ceiling). RED before the fix: the held queue had
+/// no bound, so the write past it was accepted and held, the session stood, and a closed leg went
+/// on holding writes.
+#[tokio::test]
+async fn a_plane_that_writes_past_the_bound_before_the_channel_opens_ends_the_session() {
+    let (_door, leg, pairing, mut rx) = leg(8);
+    let now = Instant::now();
+    for _ in 0..CALLER_QUEUE {
+        assert!(leg.write(b"early", false, now));
+    }
+    assert!(
+        !leg.write(b"one too many", false, now),
+        "the write past the bound is refused"
+    );
+    assert!(pairing.closed(), "the session ended");
+    assert!(lock(&leg.held).is_empty(), "what it held went with it");
+    assert!(lock(&leg.to_session).is_none());
+    assert!(rx.recv().await.is_none(), "the session's caller side ended");
+    assert!(
+        !leg.write(b"after", false, now),
+        "a closed leg takes no write"
+    );
+    assert!(lock(&leg.held).is_empty(), "nor holds one");
 }
 
 /// A door that states only its facts.
@@ -197,7 +244,7 @@ async fn boot_binds_a_claim_door_for_each_datagram_listener_and_no_other() {
 }
 
 /// A datagram session's open answers under the head its plane states on the session's first
-/// crossing (ARCHITECT row 132 ruling (a)): the plane's status and its fields, `location` among
+/// crossing: the plane's status and its fields, `location` among
 /// them, as it stated them.
 #[tokio::test]
 async fn the_open_answers_under_the_head_the_plane_states() {

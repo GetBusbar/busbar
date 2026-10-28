@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CANONICAL-NAME DRIFT GUARD (ARCHITECT C'): one plugin has ONE identity whichever door it
+//! THE CANONICAL-NAME DRIFT GUARD: one plugin has ONE identity whichever door it
 //! arrives by. Its canonical name is plugins.yaml's `manifest_name` (default: the repo), the name
 //! its release tarball's signed manifest carries; a row this build LINKS must be registered under
 //! that same name, or the same plugin dropped in beside it is a second plugin claiming its alias.
@@ -16,7 +16,7 @@ use super::linked_exports;
 use crate::root::loader::boot::Candidate;
 use crate::root::loader::LinkedPlugin;
 
-/// THE REGISTRY, read as the legacy table's test reads it (`root/tests/legacy.rs`).
+/// THE REGISTRY, read as the migration table's test reads it (`root/tests/migration_table.rs`).
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 
 /// One plugins.yaml entry, as this guard reads it.
@@ -104,9 +104,17 @@ fn drift(rows: &[Row], entries: &[Entry]) -> (Vec<String>, Vec<String>, Vec<Stri
 fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let mut rows: Vec<Row> = Vec::new();
     let stores = crate::LINKED.stores.iter();
-    rows.extend(stores.map(|s| Row::of(&busbar_kernel::preflight::linked_store_row(s))));
+    rows.extend(stores.map(|s| {
+        Row::of(&crate::root::boot::linked_row(
+            &busbar_kernel::preflight::LinkedRow::Store(*s),
+        ))
+    }));
     let auths = crate::LINKED.auths.iter();
-    rows.extend(auths.map(|a| Row::of(&busbar_kernel::preflight::linked_auth_row(a))));
+    rows.extend(auths.map(|a| {
+        Row::of(&crate::root::boot::linked_row(
+            &busbar_kernel::preflight::LinkedRow::Auth(*a),
+        ))
+    }));
     let exports = linked_exports(crate::LINKED.export_doors).expect("the export rows state");
     rows.extend(exports.iter().map(Row::of));
     for door in crate::LINKED.secrets {
@@ -143,7 +151,7 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
         skipped.push(format!(
             "linked transport '{}': a wire is keyed by its scheme, not a registry row with a \
              manifest name",
-            t.key
+            (t.key)()
         ));
     }
     (rows, skipped)

@@ -26,7 +26,7 @@
 //! # The per-token host-call counter
 //!
 //! The contract forbids a per-token host crossing on the streaming path: governance is a
-//! per-REQUEST cost, not a per-TOKEN one, so a plane streaming N tokens must cross the host table
+//! per-REQUEST cost, not a per-TOKEN one, so a plane emitting N tokens must cross the host table
 //! ZERO times per token. [`PER_TOKEN_HOST_CALLS`] counts every host-service slot invocation; the
 //! streaming model below drives N tokens and asserts the counter is `== 0`. The
 //! `BUSBAR_PERF_STREAM_CROSS` environment knob makes the loop cross per token on purpose, which is
@@ -285,7 +285,7 @@ fn assert_transport_hot_path_delta_under_budget() {
 
 /// THE PER-TOKEN CROSSING ASSERTION — the `per-token host-call counter == 0`.
 ///
-/// Models a plane streaming `n` tokens: the fast path does its per-token work in-plane and crosses
+/// Models a plane emitting `n` tokens: the fast path does its per-token work in-plane and crosses
 /// the host table NOT AT ALL. `BUSBAR_PERF_STREAM_CROSS` makes it cross per token, which is
 /// how the `== 0` assertion is proven able to fail.
 fn assert_zero_per_token_host_calls() {

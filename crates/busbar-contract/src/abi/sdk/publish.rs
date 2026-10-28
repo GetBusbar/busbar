@@ -115,13 +115,7 @@ impl Backing {
 
     /// `s` copied, or absent (NULL) for `None`.
     fn opt_str(&mut self, s: Option<&str>) -> AbiStr {
-        s.map_or(
-            AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            |s| self.str(s),
-        )
+        s.map_or(AbiStr::ZERO, |s| self.str(s))
     }
 
     /// `b` copied as a JSON blob, or absent for `None`.
@@ -131,13 +125,11 @@ impl Backing {
                 ptr: self.copy(b),
                 len: b.len(),
                 fmt: BLOB_JSON,
-                flags: 0,
+                ..Blob::ZERO
             },
             None => Blob {
-                ptr: std::ptr::null(),
-                len: 0,
                 fmt: BLOB_ABSENT,
-                flags: 0,
+                ..Blob::ZERO
             },
         }
     }

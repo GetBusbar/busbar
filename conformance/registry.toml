@@ -1,28 +1,23 @@
-# THE CONFORMANCE SUITE REGISTRY — the ONE hand-authored input, and it holds NO status.
+# THE CONFORMANCE SUITE REGISTRY: the one hand-authored input, and it holds NO status.
 #
-# DERIVED-never-typed (scripts/release-gate/expected-ids.sh:11-14): this file lists WHICH suites
-# exist and their claim TYPE (`tier`) — the ceiling a suite may ever claim. It does NOT record
-# whether a suite passed; that is read from the per-suite verdict artifacts (conformance/verdicts/)
-# and reconciled into conformance/manifest.json by `cargo xtask gate conformance-sync --write`.
+# This file lists WHICH suites exist and their claim TYPE (`tier`), the ceiling a suite may ever
+# claim. Fields: `id`, `standard`, `plan`, `tier`, `label`, `verdict`, `public`, `plane`. It does NOT
+# record whether a suite ran or passed. Status is DERIVED: each repo's ModernCI `conformance` check
+# (testing/conformance/run.sh, from the busbar-release template) writes one verdict per suite it
+# judged, stamped with its repo, commit and core pin; `scripts/conformance/import.sh` brings them into
+# conformance/verdicts/<id>.json, and `python3 scripts/conformance/sync.py --write` renders
+# conformance/manifest.json from this file and those verdicts. A registered suite with no verdict is
+# not-run and renders nothing.
 #
-# `tier` is a registry constant and is the CEILING (CONFORMANCE-MATRIX-RULING.md):
+# `tier` is the CEILING (the owner's conformance-matrix ruling):
 #   certified        a third-party body ISSUED a cert (requires cert fields in the verdict)
 #   conformant       passes an official/authoritative suite
 #   spec-conformant  validated against a published spec; no vendor cert program exists
 #   capable          implements the mechanism; not externally validated
 #   evidence-only    busbar supplies audit EVIDENCE; never busbar's own cert
 #
-# `plane` names the shipped plane a suite judges (`crates/busbar-plane-<key>` in qa/construction.toml
-# `[gate.plugin_kinds].plane`). Every shipped plane owes at least one suite here, and no suite may
-# name a plane the build does not ship: the gate refuses the registry otherwise, so removing a
-# plane's suite cannot shrink the MUST set. A suite that judges no plane (a transport, the auth
-# server, the supply chain) carries no `plane`.
-#
-# A green suite may render only AT OR BELOW its ceiling. Adding a suite is one block here plus the
-# suite's own verdict artifact — nothing on the README is hand-edited; it is rendered from this
-# registry and those artifacts.
-
-# ── GREEN in 1.6.0 (verdict artifacts present) ───────────────────────────────────────────────────
+# `plane` names the shipped plane a suite judges; a suite that judges no plane (a transport, the auth
+# server, the supply chain) carries none. A green suite renders only AT OR BELOW its ceiling.
 
 [[suite]]
 id = "a2a"
@@ -134,8 +129,6 @@ verdict = "conformance-verdict-webrtc-browser"
 plane = "streaming"
 public = "true"
 
-# ── PLANNED for 1.6.0 (no verdict yet → not-run → renders NOTHING) ────────────────────────────────
-
 [[suite]]
 id = "fapi2"
 standard = "FAPI 2.0 Security Profile"
@@ -144,7 +137,6 @@ tier = "conformant"
 label = "FAPI2"
 verdict = "conformance-verdict-fapi2"
 public = "true"
-not_run_reason = "planned 1.6.0 — PAR/DPoP/client-assertion wiring in flight; paid OIDF listing is owner-owned, the code is built to pass the suite (MATRIX-RULING owner ruling 2026-09-19)"
 
 [[suite]]
 id = "h2"
@@ -154,7 +146,6 @@ tier = "conformant"
 label = "HTTP/2"
 verdict = "conformance-verdict-h2"
 public = "true"
-not_run_reason = "planned 1.6.0 — h2spec leg not yet green (MATRIX-RULING B-tier report card)"
 
 [[suite]]
 id = "jev"
@@ -165,7 +156,6 @@ label = "jev"
 verdict = "conformance-verdict-jev"
 plane = "decisions"
 public = "true"
-not_run_reason = "no verdict artifact: `cargo xtask conformance record --suite jev` writes conformance/verdicts/jev.json"
 
 [[suite]]
 id = "oidf-oauth2"
@@ -175,17 +165,15 @@ tier = "conformant"
 label = "OIDF OAuth2"
 verdict = "conformance-verdict-oidf-oauth2"
 public = "true"
-not_run_reason = "planned 1.6.0 — self-hosted OIDF leg not yet green; claim is 'passes the suite', NEVER 'certified' (MATRIX-RULING owner ruling 2026-09-19)"
 
 [[suite]]
 id = "slsa-verifier"
-standard = "SLSA provenance (v1.0)"
-plan = "slsa-verifier over the release attestations"
+standard = "Signed build attestation (in-toto; not SLSA provenance)"
+plan = "each dev build's busbar binaries, verified by cosign verify-blob-attestation against ModernCI's signed check-output attestation (https://modernci.dev/attestation/check-output/v1) and ModernCI's builder key; not-run until ModernCI publishes both"
 tier = "conformant"
 label = "SLSA"
 verdict = "conformance-verdict-slsa-verifier"
 public = "true"
-not_run_reason = "planned 1.6.0 — slsa-verifier leg not yet wired as an arm-or-red verdict"
 
 [[suite]]
 id = "tls"
@@ -195,12 +183,6 @@ tier = "conformant"
 label = "TLS"
 verdict = "conformance-verdict-tls"
 public = "true"
-not_run_reason = "planned 1.6.0 — testssl leg not yet green (MATRIX-RULING B-tier report card)"
-
-# ── ws: NO COMMITTED VERDICT. The 2026-09-28 run (127 of 517 FAIL, text echoed as binary) predates the
-# PIECE_TEXT fix (contract 6b5868fc67, ws pin f8ba71d, echo subject 43921487b0); a hand-committed
-# verdict is stale by design (2026-10-02: a verdict is produced at judge time), so ws reads not-run
-# until the predev -> dev move's `conformance` check records it. ────────────────────────────────
 
 [[suite]]
 id = "ws"
@@ -209,4 +191,31 @@ plan = "Autobahn|Testsuite against busbar-transport-ws"
 tier = "conformant"
 label = "WebSocket"
 verdict = "conformance-verdict-ws"
+public = "true"
+
+[[suite]]
+id = "sbom"
+standard = "Software bill of materials (CycloneDX)"
+plan = "CycloneDX SBOM of each dev build's busbar binary, generated by cargo-cyclonedx and validated by cyclonedx-cli against the CycloneDX schema"
+tier = "capable"
+label = "SBOM"
+verdict = "conformance-verdict-sbom"
+public = "true"
+
+[[suite]]
+id = "sigstore"
+standard = "Sigstore signing (cosign keyless)"
+plan = "cosign verify of a signed release's images and artifacts against the Rekor transparency log; turns green at the first signed release, never from a dev build"
+tier = "capable"
+label = "Sigstore"
+verdict = "conformance-verdict-sigstore"
+public = "true"
+
+[[suite]]
+id = "otlp"
+standard = "OpenTelemetry Protocol (OTLP)"
+plan = "busbar-export-otlp exporting into the official opentelemetry-collector-contrib receiver; every span and metric it sent arrives intact"
+tier = "capable"
+label = "OTLP"
+verdict = "conformance-verdict-otlp"
 public = "true"

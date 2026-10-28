@@ -925,6 +925,38 @@ fn a_route_content_is_checked() {
     );
 }
 
+/// RED (audit contract-src #11): a read route no request can match by its method set or its path
+/// form is refused by the content check the kernel runs on every line it seals: no method, a bit
+/// outside the vocabulary, or a path form outside the five.
+#[test]
+fn a_route_view_with_no_method_or_no_known_form_is_refused() {
+    use route::*;
+    let v = |methods, path_form| RouteView {
+        methods,
+        path_form,
+        path: "/v1/messages",
+        fields: vec![],
+        rung: 0,
+    };
+    assert_eq!(check_route_view(&v(METHOD_ANY, PATH_CONTAINS)), Ok(()));
+    assert_eq!(
+        check_route_view(&v(0, PATH_EXACT)),
+        f(Rule::Missing, "route.methods")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_ANY + 1, PATH_EXACT)),
+        f(Rule::UnknownCode, "route.methods")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_POST, 0)),
+        f(Rule::UnknownCode, "route.path_form")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_POST, PATH_CONTAINS + 1)),
+        f(Rule::UnknownCode, "route.path_form")
+    );
+}
+
 /// A stream's final status (ARCHITECT 4l): a number its claim's rows cover, ranges inside the
 /// bytes lent. RED arms: a status past the claim's numbering, a status on a claim with none, a
 /// message or details range past the bytes, a count with no bytes.

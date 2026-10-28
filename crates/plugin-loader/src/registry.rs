@@ -107,12 +107,10 @@ impl LoadablePlugin {
     /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
     /// one; `None` when it states none (a cold row, a door that will not state itself).
     pub fn statement(&self) -> Option<Vec<u8>> {
-        match self.entry {
-            Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => {
-                crate::dispatch::LinkedRow::of(door)
-                    .ok()
-                    .map(|row| row.statement)
-            }
+        match self.door() {
+            Some(door) => crate::dispatch::LinkedRow::of_raw(door)
+                .ok()
+                .map(|row| row.statement),
             None => self.manifest.stated_rendering().ok().flatten(),
         }
     }
@@ -124,9 +122,10 @@ impl LoadablePlugin {
     }
 
     /// A compiled-in memory-ABI row's door; `None` for any other row.
-    pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
+    pub fn door(&self) -> Option<busbar_contract::abi::sdk::door::RawDoorFn> {
         match self.entry {
-            Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => Some(door),
+            Some(LinkedEntry::Door(door)) => Some(door),
+            Some(LinkedEntry::Store { door }) => Some(crate::dispatch::load::raw(door)),
             _ => None,
         }
     }
@@ -194,7 +193,7 @@ pub enum LinkedEntry {
     /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
-    Door(busbar_contract::abi::mechanism::door::DoorFn),
+    Door(busbar_contract::abi::sdk::door::RawDoorFn),
 }
 
 impl LinkedPlugin {
@@ -218,7 +217,27 @@ impl LinkedPlugin {
     pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
         LinkedPlugin {
             manifest,
-            entry: LinkedEntry::Door(door),
+            entry: LinkedEntry::Door(crate::dispatch::load::raw(door)),
+            ephemeral: false,
+            keyed_by_alias: false,
+        }
+    }
+
+    /// [`LinkedPlugin::door`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status
+    /// rows 159 and 194). #1469 makes `door` take the `MacroDoor` alone and keeps this name beside
+    /// it, so `LinkedPlugin::of_macro(manifest, plugin::MACRO_DOOR)` compiles before and after.
+    pub fn of_macro(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
+        Self::door(manifest, door.door_fn())
+    }
+
+    /// [`LinkedPlugin::door`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159
+    /// and 194): a `MacroDoor`'s, or the door a crate that exports its `door` function alone
+    /// restates (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and
+    /// signature.
+    pub fn of_loaded(manifest: Manifest, door: crate::dispatch::LoadedDoor) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door.door),
             ephemeral: false,
             keyed_by_alias: false,
         }
@@ -261,6 +280,15 @@ impl LinkedPlugin {
         alias: &str,
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> Self {
+        Self::auth_entry(name, alias, crate::dispatch::load::raw(door))
+    }
+
+    /// [`Self::auth_door_named`]'s row over a door the loader holds raw.
+    fn auth_entry(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
         let abi = supported_abi(kind::AUTH)
             .first()
             .copied()
@@ -275,6 +303,52 @@ impl LinkedPlugin {
         )
     }
 
+    /// [`Self::door`] over a test's raw door (a NULL or restated one).
+    #[cfg(test)]
+    pub(crate) fn door_raw(
+        manifest: Manifest,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        // A test's own door, answering NULL or a door it laid out: every entry into it runs the
+        // loader's checks.
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
+            ephemeral: false,
+            keyed_by_alias: false,
+        }
+    }
+
+    /// [`Self::auth_door`] over a test's raw door.
+    #[cfg(test)]
+    pub(crate) fn auth_door_raw(
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, name, door)
+    }
+
+    /// [`Self::auth_door_named`] over a test's raw door.
+    #[cfg(test)]
+    pub(crate) fn auth_door_named_raw(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, alias, door)
+    }
+
+    /// [`Self::door_of_kind`] over a test's raw door.
+    #[cfg(test)]
+    pub(crate) fn door_of_kind_raw(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
+    }
+
     /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
     pub fn door_of_kind(
         kind: &str,
@@ -282,7 +356,8 @@ impl LinkedPlugin {
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> Self {
         let abi = supported_abi(kind).first().copied().unwrap_or_default();
-        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
+        let entry = LinkedEntry::Door(crate::dispatch::load::raw(door));
+        Self::built_in(name, &[], kind, abi, entry, false)
     }
 
     /// The row a built-in states: the manifest a first-party tarball of `kind` would carry, named
@@ -655,19 +730,27 @@ impl PluginRegistry {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
-    /// Open EVERY loadable transport, in scan order, through its memory-ABI door
-    /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
-    /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
-    /// own instance to the host services). A library with no door is refused: the HOT transport lane
-    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
-    /// first that will not load fails the whole set, naming it.
+    /// Open every loadable transport the configuration `uses` (Law 7), in scan order, through its
+    /// memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one
+    /// dispatcher's door validation and bound with `bind`, labelled with its own plugin name (each
+    /// opened door is its own instance to the host services). Select reads the signed manifest's
+    /// Statement and opens nothing ([`crate::boot::Candidate::serves`]): a transport no configured
+    /// scheme selects is never staged, so its library initialisers never run. A manifest that states
+    /// no Statement is refused unopened, and a library with no door is refused: the HOT transport
+    /// lane is deleted (row 84), and no other lane reads it. Each selected image is staged and
+    /// opened once. The first that will not load fails the whole set, naming it.
+    ///
+    /// Each opened door logs to its instance's own file under `logs` (THE DESIGN §11.2, "Plugin
+    /// logging"); its metrics go on to `bind`'s sink.
     ///
     /// # Errors
     ///
-    /// The plugin that would not load, and why.
+    /// The plugin that would not load, or whose log file cannot be opened, and why.
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
+        uses: &crate::boot::Uses,
+        logs: &crate::dispatch::PluginLogConfig,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
         let mut entries = TransportEntries::default();
@@ -677,14 +760,41 @@ impl PluginRegistry {
             .filter(|p| p.manifest.kind == kind::TRANSPORT)
         {
             let name = &p.manifest.name;
-            let stated = p.manifest.stated_rendering()?;
+            let Some(stated) = p.manifest.stated_rendering()? else {
+                return Err(format!(
+                    "transport plugin '{name}' states no Statement in its signed manifest, so it \
+                     exports no memory-ABI door (`busbar_plugin_door`) this host admits: a \
+                     transport loads only through its door"
+                ));
+            };
+            let selected = crate::boot::Candidate::from_manifest(
+                stated.clone(),
+                &p.manifest,
+                crate::boot::Origin::Dropped {
+                    file: p.file.clone(),
+                    bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                },
+            )
+            .map_err(|e| format!("transport plugin '{name}': {e}"))?
+            .serves(uses);
+            if !selected {
+                continue;
+            }
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
+            let sink = logs
+                .sink(
+                    name,
+                    busbar_contract::abi::mechanism::KindCode::Transport,
+                    bind.sink.clone(),
+                )
+                .map_err(|e| format!("transport plugin '{name}': {e}"))?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
-                stated.as_deref(),
+                Some(stated.as_slice()),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
+                    sink: std::sync::Arc::new(sink),
                     ..bind.clone()
                 },
             )

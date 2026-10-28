@@ -180,9 +180,13 @@ impl RateCheck {
 /// be read and written in the same critical section as the sweep, or two concurrent checks could
 /// each decide they are the newest and one could still rewind the map.
 struct LimiterState {
-    /// The newest window start this limiter has ever judged against — never decreases. See
-    /// [`MutationLimiter::check`] for why a limiter fed a wall clock needs one.
+    /// The newest window start this limiter judges against. It falls only when the wall clock has
+    /// read more than one window behind it for a whole window (a forward step that was corrected).
+    /// See [`MutationLimiter::check`] for why a limiter fed a wall clock needs one.
     latest_window: u64,
+    /// The earliest `now` seen since the wall clock started reading MORE than one window behind
+    /// `latest_window`; `None` while the clock reads on (or within one window of) it.
+    behind_since: Option<u64>,
     /// Fixed-window counters keyed by (principal, class).
     windows: HashMap<(String, MutationClass), Window>,
 }
@@ -196,6 +200,7 @@ impl MutationLimiter {
         Self {
             state: std::sync::Mutex::new(LimiterState {
                 latest_window: 0,
+                behind_since: None,
                 windows: HashMap::new(),
             }),
         }
@@ -228,11 +233,44 @@ impl MutationLimiter {
     ///   infrastructure fault it merely observed.
     /// * **Never wipe.** The sweep drops entries STRICTLY OLDER than the window being judged and
     ///   nothing else, so no arrival can clear a counter that is still live.
+    ///
+    /// # A clock that went forwards and was corrected
+    ///
+    /// The clamp alone cannot tell a backwards step from the correction of a FORWARD one. A wall
+    /// clock stepped a day ahead and then set right would leave `latest_window` a day in the future,
+    /// and every check after the correction would be judged against that one future window: ten
+    /// config mutations (apply, reload, `/restart`) in total until the clock caught up a day on,
+    /// or the process restarted.
+    ///
+    /// So the clamp is held only while the clock is not settled behind the high-water mark. A clock
+    /// reading MORE than one window behind `latest_window` starts a watch (`behind_since`, the
+    /// earliest such `now`); a check back on, or within one window of, the high-water mark ends it.
+    /// Once the clock has read behind for a whole window of its own time, the step is taken as
+    /// corrected: `latest_window` falls to the window the clock now reads, and the counters of the
+    /// abandoned future window go with it. Until then the clamp stands, so a correction costs at
+    /// most one extra window of the live budget, and a lone old reading (or a clock that oscillates
+    /// back to the high-water mark) never refills a spent budget.
     pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
         let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        // The clamp. `max` (rather than an assignment) is what makes `latest_window` monotone: time
-        // moving forward advances it, time moving backwards leaves it exactly where it was.
+        if arrived_in.saturating_add(MUTATION_RATE_WINDOW_SECS) < state.latest_window {
+            let since = state.behind_since.map_or(now, |since| since.min(now));
+            if now - since >= MUTATION_RATE_WINDOW_SECS {
+                // Settled behind for a whole window: the high-water mark was a forward step that
+                // has been corrected. Judge on the clock as it now reads; the future window's
+                // counters belong to a timeline the clock has left.
+                state.latest_window = arrived_in;
+                state.behind_since = None;
+                state.windows.retain(|_, (w, _, _)| *w <= arrived_in);
+            } else {
+                state.behind_since = Some(since);
+            }
+        } else {
+            state.behind_since = None;
+        }
+        // The clamp. `max` (rather than an assignment) is what keeps `latest_window` from following
+        // a backwards step: time moving forward advances it, time moving backwards leaves it where
+        // it was (only the settled-correction arm above lowers it).
         let window = arrived_in.max(state.latest_window);
         state.latest_window = window;
         let map = &mut state.windows;

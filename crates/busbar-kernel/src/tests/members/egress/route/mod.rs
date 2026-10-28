@@ -25,6 +25,7 @@ mod relay_tests;
 mod walk_tests;
 mod zero_copy_tests;
 
+use crate::test_support::tokens::pass;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -35,7 +36,7 @@ use busbar_kernel_egress::pool::{Member, Pool};
 use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::ports::DestinationId;
 use busbar_kernel_egress::select::{RequestCtx, WeightedFloor};
-use busbar_kernel_egress::walk::{Step, Taken, Walk, WalkPorts};
+use busbar_kernel_egress::walk::{Shape, Step, Taken, Walk, WalkPorts};
 use busbar_kernel_egress::wire::Shed;
 
 use crate::plane_driver::{
@@ -176,8 +177,9 @@ impl Node {
         Walker {
             node: self,
             pools,
-            token: route_token(),
+            token: pass::<Route>(),
             walk,
+            shape: None,
         }
     }
 
@@ -237,85 +239,93 @@ impl Node {
 
     /// [`Node::route`], with `before` run ahead of every attempt's pick (its number from `1`): the
     /// walk has started by then, so a test can spend its budget between two hops.
-    pub fn route_with(&self, pool: &str, mut before: impl FnMut(&Node, u32)) -> Routed {
+    pub fn route_with(&self, pool: &str, before: impl FnMut(&Node, u32)) -> Routed {
         let egress = self.egress();
-        let token = route_token();
+        self.rt.block_on(self.route_on(&egress, pool, before))
+    }
+
+    /// [`Node::route_with`] over `egress`, on the caller's runtime.
+    pub async fn route_on(
+        &self,
+        egress: &Egress,
+        pool: &str,
+        mut before: impl FnMut(&Node, u32),
+    ) -> Routed {
+        let token = pass::<Route>();
         let far = egress.unit(self.unit_route(pool));
-        self.rt.block_on(async {
-            let mut attempt_no = 0;
-            'attempt: loop {
-                attempt_no += 1;
-                before(self, attempt_no);
-                let (member, pool) = match far.member(&token, attempt_no).await {
-                    Pick::Member { name, pool, .. } => (name, pool),
-                    Pick::Exhausted {
+        let mut attempt_no = 0;
+        'attempt: loop {
+            attempt_no += 1;
+            before(self, attempt_no);
+            let (member, pool) = match far.member(&token, attempt_no).await {
+                Pick::Member { name, pool, .. } => (name, pool),
+                Pick::Exhausted {
+                    status,
+                    retry_after,
+                    ..
+                } => {
+                    return Routed::Refused(Refusal {
                         status,
                         retry_after,
-                        ..
-                    } => {
-                        return Routed::Refused(Refusal {
-                            status,
-                            retry_after,
-                        })
-                    }
-                    // A hook restriction's refusal, or a member credential refusal; neither
-                    // occurs in these walk proofs.
-                    Pick::Refused(_) => {
-                        return Routed::Refused(Refusal {
-                            status: 502,
-                            retry_after: None,
-                        })
-                    }
-                    Pick::Vetoed { status, .. } => {
-                        return Routed::Refused(Refusal {
-                            status,
-                            retry_after: None,
-                        })
-                    }
-                };
-                let destination = self.destination_of(&pool, &member);
-                let bound = request(&member, &pool, attempt_no);
-                self.sent_at
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(bound.body.as_ptr() as usize);
-                if !far.send(&token, bound).await {
-                    // Not sent, so nothing reached the caller: fail over, as the pump does.
+                    })
+                }
+                // A hook restriction's refusal, or a member credential refusal; neither
+                // occurs in these walk proofs.
+                Pick::Refused(_) => {
+                    return Routed::Refused(Refusal {
+                        status: 502,
+                        retry_after: None,
+                    })
+                }
+                Pick::Vetoed { status, .. } => {
+                    return Routed::Refused(Refusal {
+                        status,
+                        retry_after: None,
+                    })
+                }
+            };
+            let destination = self.destination_of(&pool, &member);
+            let bound = request(&member, &pool, attempt_no);
+            self.sent_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(bound.body.as_ptr() as usize);
+            if !far.send(&token, bound).await {
+                // Not sent, so nothing reached the caller: fail over, as the pump does.
+                continue 'attempt;
+            }
+            let mut served = Served {
+                destination,
+                pool,
+                status: None,
+                pieces: 0,
+            };
+            loop {
+                let piece = far.next(&token).await.unwrap_or(FarPiece {
+                    last: true,
+                    ..FarPiece::default()
+                });
+                if piece.fail_over {
                     continue 'attempt;
                 }
-                let mut served = Served {
-                    destination,
-                    pool,
-                    status: None,
-                    pieces: 0,
-                };
-                loop {
-                    let piece = far.next(&token).await.unwrap_or(FarPiece {
-                        last: true,
-                        ..FarPiece::default()
-                    });
-                    if piece.fail_over {
-                        continue 'attempt;
-                    }
-                    if served.status.is_none() {
-                        served.status = piece.status;
-                    }
-                    if !piece.fields && !piece.bytes.is_empty() {
-                        served.pieces += 1;
-                    }
-                    if piece.last {
-                        return Routed::Delivered(served);
-                    }
+                if served.status.is_none() {
+                    served.status = piece.status;
+                }
+                if !piece.fields && !piece.bytes.is_empty() {
+                    served.pieces += 1;
+                }
+                if piece.last {
+                    return Routed::Delivered(served);
                 }
             }
-        })
+        }
     }
 
     /// Take a member, send it the request, poll its answer once, and drop the unit there — the
     /// way a caller that goes away mid-send leaves one.
     pub fn abandon_mid_answer(&self, pool: &str) {
         let egress = self.egress();
-        let token = route_token();
+        let token = pass::<Route>();
         let far: EgressFarEnd<'_> = egress.unit(self.unit_route(pool));
         self.rt.block_on(async {
             let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
@@ -338,7 +348,7 @@ impl Node {
     /// the first piece's bytes.
     pub fn cancel_after_first_piece(&self, pool: &str) -> Vec<u8> {
         let egress = self.egress();
-        let token = route_token();
+        let token = pass::<Route>();
         let far: EgressFarEnd<'_> = egress.unit(self.unit_route(pool));
         let first = self.rt.block_on(async {
             let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
@@ -377,7 +387,7 @@ impl Node {
         ctx: &mut RequestCtx,
     ) -> Option<busbar_kernel_egress::select::Picked<'a>> {
         // Test-only: the route step's pass, as the walk's own pick is handed it.
-        let token = route_token();
+        let token = pass::<Route>();
         busbar_kernel_egress::select::pick_among(
             &busbar_kernel_egress::select::PickInput {
                 breaker: self.breaker.as_ref(),
@@ -429,9 +439,18 @@ pub(crate) struct Walker<'n> {
     pools: HashMap<String, Pool>,
     token: Pass<Route>,
     pub walk: Walk,
+    /// The unit's hooks' shape on every pick, as the far end passes it; `None` = no hooks.
+    shape: Option<Box<dyn Shape>>,
 }
 
 impl Walker<'_> {
+    /// Every step from here shaped by `shape`, as a unit's hooks shape the far end's picks.
+    #[must_use]
+    pub fn shaped(mut self, shape: impl Shape + 'static) -> Self {
+        self.shape = Some(Box::new(shape));
+        self
+    }
+
     /// The walk's next step, its wait (if it is the queue's) already run.
     pub fn step(&mut self) -> Step {
         let Walker {
@@ -439,9 +458,10 @@ impl Walker<'_> {
             pools,
             token,
             walk,
+            shape,
         } = self;
         let ports = ports(node, pools);
-        match walk.next(&ports, node.affinity, token) {
+        match walk.next_shaped(&ports, node.affinity, shape.as_deref(), token) {
             Step::Wait(wait) => {
                 let parked = match walk.park(&ports, &wait, token) {
                     Ok(parked) => parked,
@@ -465,9 +485,11 @@ impl Walker<'_> {
             pools,
             token,
             walk,
+            shape,
         } = self;
         let ports = ports(node, pools);
-        let Step::Wait(wait) = walk.next(&ports, node.affinity, token) else {
+        let Step::Wait(wait) = walk.next_shaped(&ports, node.affinity, shape.as_deref(), token)
+        else {
             panic!("expected the queue terminal's wait");
         };
         let parked = walk

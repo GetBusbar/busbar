@@ -9,9 +9,8 @@
 //! rendering that quietly produced nothing would leave each of them with an empty string where the
 //! only evidence was, and every one of them was reachable without a test naming it.
 //!
-//! Two of the types here carry something they are NOT allowed to say — the hold's principal is a
-//! customer identity and the nonce behind a one-shot secret is the secret — so this file asserts on
-//! both sides: what has to appear, and what must not.
+//! A rendering that needs a minted hold to read — the hold's own, with its principal and figures —
+//! is read back in the kernel's file of the same name.
 //!
 //! The tests in this file that have to MINT a token live in the kernel, under the same file name
 //! in `busbar-kernel/src/tests/caps_tests/` (construction `token-sealed`); what stays here needs
@@ -19,38 +18,53 @@
 
 use crate::caps::*;
 
+/// Every way an accrual is turned away, with its rendering. Hand-kept, so the cell below holds it to
+/// the enum's own variants (Law 8).
+const REFUSALS: &[(AccrualRefused, &str)] = &[
+    (AccrualRefused::ParentNotAdmitted, "parent not admitted"),
+    (AccrualRefused::ParentExited, "parent already exited"),
+    (AccrualRefused::PrincipalMismatch, "principal mismatch"),
+];
+
+/// Every way the cell refuses a transition, with its rendering. Hand-kept, as above.
+const CELL_ERRORS: &[(CellError, &str)] = &[
+    (CellError::AlreadyAdmitted, "cell already admitted"),
+    (CellError::AlreadyTaken, "cell already taken"),
+    (CellError::CallMismatch, "admittance grant of another call"),
+];
+
 #[test]
 fn every_refusal_the_cell_can_give_says_which_one_it_was() {
-    // Three ways an accrual is turned away and two ways a hold is, each read off a log line by
+    // Three ways an accrual is turned away and three ways a hold is, each read off a log line by
     // somebody deciding whether a child has to post late. A rendering that collapsed them would
     // make the two decisions indistinguishable.
-    let refusals = [
-        (AccrualRefused::ParentNotAdmitted, "parent not admitted"),
-        (AccrualRefused::ParentExited, "parent already exited"),
-        (AccrualRefused::PrincipalMismatch, "principal mismatch"),
-    ];
+    let refusals = REFUSALS;
     for (refusal, spelling) in refusals {
-        assert_eq!(refusal.to_string(), spelling);
-        let as_error: &dyn std::error::Error = &refusal;
-        assert_eq!(as_error.to_string(), spelling);
+        assert_eq!(refusal.to_string(), *spelling);
+        let as_error: &dyn std::error::Error = refusal;
+        assert_eq!(as_error.to_string(), *spelling);
     }
     let mut spellings: Vec<&str> = refusals.iter().map(|(_, s)| *s).collect();
     spellings.sort_unstable();
     spellings.dedup();
-    assert_eq!(spellings.len(), 3, "two refusals render as one sentence");
+    assert_eq!(
+        spellings.len(),
+        REFUSALS.len(),
+        "two refusals render as one sentence"
+    );
 
-    let cell_errors = [
-        (CellError::AlreadyAdmitted, "cell already admitted"),
-        (CellError::AlreadyTaken, "cell already taken"),
-    ];
-    for (error, spelling) in cell_errors {
-        assert_eq!(error.to_string(), spelling);
-        let as_error: &dyn std::error::Error = &error;
-        assert_eq!(as_error.to_string(), spelling);
+    for (error, spelling) in CELL_ERRORS {
+        assert_eq!(error.to_string(), *spelling);
+        let as_error: &dyn std::error::Error = error;
+        assert_eq!(as_error.to_string(), *spelling);
     }
-    assert_ne!(
-        CellError::AlreadyAdmitted.to_string(),
-        CellError::AlreadyTaken.to_string()
+    let mut cell_spellings: Vec<&str> = CELL_ERRORS.iter().map(|(_, s)| *s).collect();
+    cell_spellings.sort_unstable();
+    cell_spellings.dedup();
+    assert_eq!(
+        cell_spellings.len(),
+        CELL_ERRORS.len(),
+        "two cell errors render as one sentence"
     );
 }
 

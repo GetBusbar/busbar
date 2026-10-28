@@ -65,6 +65,7 @@ pub mod journal;
 pub mod recipe;
 pub mod record;
 pub mod sign;
+mod wiped;
 
 pub use amend::{
     content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal,
@@ -78,7 +79,8 @@ pub use recipe::{
 };
 pub use record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,
-    HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
+    HookApplied, HookHead, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine,
+    What,
 };
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,

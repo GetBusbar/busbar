@@ -490,9 +490,8 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
 }
 
 /// RED (THE DESIGN §5 "no blocking thread exists"; resource bounds): the dial guard's name
-/// lookups are CAPPED as the kernel's are (`hostio::SystemNames`, `MAX_PENDING_LOOKUPS`): with
-/// the cap's lookups in flight one more is answered at once as a resolution failure and starts no
-/// thread. Uncapped, one thread was started per lookup, so a burst of dials while names were slow
+/// lookups are CAPPED (`MAX_PENDING_LOOKUPS`): with the cap's lookups in flight one more is
+/// answered at once as a resolution failure and starts no thread. Uncapped, one thread was started per lookup, so a burst of dials while names were slow
 /// grew threads without limit.
 #[test]
 fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
@@ -561,4 +560,304 @@ fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address
             "a configured webhook to {a}"
         );
     }
+}
+
+/// The odd spellings of the SSRF guard bypass (HIGH, a plugin argument guard's hosts reach
+/// here as written), each beside the plain ASCII host a URL client dials it as: `url` 2.5.8 maps the
+/// host by UTS #46 before it dials, so `ｌｏｃａｌｈｏｓｔ` fetches `localhost` and
+/// `①⑥⑨.②⑤④.①⑥⑨.②⑤④` fetches the metadata address.
+const ODD_SPELLINGS: [(&str, &str); 6] = [
+    // Full-width `ｌｏｃａｌｈｏｓｔ`.
+    (
+        "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
+        "localhost",
+    ),
+    // Circled digits `①②⑦.0.0.1`.
+    ("\u{2460}\u{2461}\u{2466}.0.0.1", "127.0.0.1"),
+    // Circled digits `①⑥⑨.②⑤④.①⑥⑨.②⑤④`, the metadata address.
+    (
+        "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
+        "169.254.169.254",
+    ),
+    // The ideographic full stop: `LOCALHOST。`.
+    ("LOCALHOST\u{3002}", "localhost"),
+    // Full-width `０ｘ７ｆ．１`, the short hex spelling `0x7f.1`.
+    ("\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}", "0x7f.1"),
+    // Full-width `０１７７００００００００１`, the octal spelling `017700000001`.
+    (
+        "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
+        "017700000001",
+    ),
+];
+
+/// A name judgement as a verdict and the address that decided it, the refused host's own spelling
+/// left out: the one thing an odd spelling and its plain host may differ in.
+type NameVerdict = Result<Option<IpAddr>, (u64, Option<IpAddr>)>;
+
+fn judged(r: Result<Option<IpAddr>, Refusal>) -> NameVerdict {
+    r.map_err(|r| (r.verdict, r.addr))
+}
+
+/// RED (HIGH, the SSRF guard bypass): every odd spelling is judged exactly as the plain ASCII host
+/// it maps to, in every class and strictness, the same verdict and the same deciding address. On
+/// the guard that compared a host only ASCII-lowercased, each read as an unknown name and passed.
+#[test]
+fn an_odd_spelling_is_judged_as_the_ascii_host_it_maps_to() {
+    let g = Guard::default();
+    for class in [
+        EGRESS_DEFAULT,
+        EGRESS_PROVIDER,
+        EGRESS_OPEN_WEB,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_LOOPBACK_ALLOWED,
+    ] {
+        for strict in [false, true] {
+            for (odd, plain) in ODD_SPELLINGS {
+                assert_eq!(
+                    judged(g.judge_name_as(odd, class, strict)),
+                    judged(g.judge_name_as(plain, class, strict)),
+                    "`{odd}` beside `{plain}`, class {class}, strict {strict}"
+                );
+            }
+        }
+    }
+    // And each is REFUSED where its plain host is, with its verdict.
+    let refused = |h: &str| g.judge_name(h, C).err().map(|r| (r.verdict, r.addr));
+    let lo = Some(ip("127.0.0.1"));
+    let want = [
+        Some((DEST_INTERNAL, None)),
+        Some((DEST_INTERNAL, lo)),
+        Some((DEST_METADATA, Some(ip("169.254.169.254")))),
+        Some((DEST_INTERNAL, None)),
+        Some((DEST_OBFUSCATED, None)),
+        Some((DEST_OBFUSCATED, None)),
+    ];
+    for (&(odd, plain), want) in ODD_SPELLINGS.iter().zip(want) {
+        assert_eq!(refused(odd), want, "{odd}");
+        assert_eq!(refused(plain), want, "{plain}");
+    }
+    // The ASCII alternate spellings themselves are judged as before: refused as spellings, and in
+    // the loopback-allowed class read as the loopback address they spell.
+    for spelling in ["0x7f.1", "017700000001"] {
+        assert_eq!(
+            g.judge_name_as(spelling, EGRESS_LOOPBACK_ALLOWED, false),
+            Ok(Some(ip("127.0.0.1"))),
+            "{spelling}"
+        );
+    }
+}
+
+/// RED: a host the mapping reads as nothing is refused as unjudgeable (`DEST_NO_HOST`), naming the
+/// host, before any list is asked: a name UTS #46 refuses, and a host `url` dials as an address the
+/// guard's own address reader does not read (`0x` is `0.0.0.0` to `url`). An allowlist entry
+/// spelling it admits nothing.
+#[test]
+fn a_host_that_maps_to_nothing_is_refused_as_unjudgeable() {
+    let g = guard(true, &["0x"]);
+    for host in ["b\u{fc}cher\u{ff1c}.example", "0x", "1.0x", "0x.0x.0x.0x"] {
+        for class in [EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE] {
+            let refusal = g.judge_name(host, class).expect_err(host);
+            assert_eq!(
+                (refusal.verdict, refusal.addr),
+                (DEST_NO_HOST, None),
+                "{host}"
+            );
+            assert_eq!(refusal.host, host);
+            let said = refusal.to_string();
+            assert!(
+                said.starts_with(&format!("host `{host}` cannot be judged")),
+                "{said}"
+            );
+        }
+        let answered = g.judge_answer(host, &[ip("93.184.216.34")], C);
+        assert_eq!(verdict(answered), Some(DEST_NO_HOST), "{host}");
+        assert!(!names_loopback(host), "{host}");
+    }
+}
+
+/// The operator's lists compare in the mapped form too: a `blocked_metadata_hosts` entry refuses
+/// the odd spelling of its name, an odd-spelt entry refuses the plain name, and an allowlist entry
+/// written in punycode admits the IDN name it is.
+#[test]
+fn the_configured_lists_compare_in_the_mapped_form() {
+    let full_width_meta = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
+    for (entry, target) in [
+        ("meta.example", full_width_meta),
+        (full_width_meta, "meta.example"),
+        ("META.example.", "meta.example"),
+    ] {
+        let g = Guard::from_config(&Destinations {
+            block_private_addresses: true,
+            blocked: vec![entry.to_owned()],
+            ..Destinations::default()
+        })
+        .expect("a guard");
+        assert_eq!(
+            verdict(g.judge_name(target, C).map(|_| ())),
+            Some(DEST_METADATA),
+            "entry `{entry}`, target `{target}`"
+        );
+    }
+    let g = guard(true, &["xn--bcher-kva.example"]);
+    for idn in ["b\u{fc}cher.example", "B\u{dc}CHER.example."] {
+        assert_eq!(g.judge_name(idn, C), Ok(None), "{idn}");
+        assert_eq!(g.judge_answer(idn, &[ip("10.0.0.5")], C), Ok(()), "{idn}");
+    }
+}
+
+/// GREEN control: a public IDN name maps to its punycode name and is admitted, as the plain name
+/// is; its private answer is refused, as the plain name's is.
+#[test]
+fn a_public_idn_name_maps_to_punycode_and_is_allowed() {
+    let g = Guard::default();
+    for idn in ["b\u{fc}cher.example", "xn--bcher-kva.example"] {
+        assert_eq!(g.judge_name(idn, C), Ok(None), "{idn}");
+        assert_eq!(
+            g.judge_answer(idn, &[ip("93.184.216.34")], C),
+            Ok(()),
+            "{idn}"
+        );
+        assert_eq!(
+            verdict(g.judge_answer(idn, &[ip("10.0.0.5")], C)),
+            Some(DEST_INTERNAL),
+            "{idn}"
+        );
+    }
+}
+
+/// An IPv6 literal in brackets, with a zone id, and an ASCII host are judged as before, byte for
+/// byte: the mapping reads each as it is written.
+#[test]
+fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
+    let g = Guard::default();
+    for (host, want) in [
+        ("[::1]", Err((DEST_INTERNAL, Some(ip("::1"))))),
+        // An IPv6 link-local address is refused as metadata on every need (ARCHITECT PB-100).
+        (
+            "[fe80::1%25eth0]",
+            Err((DEST_METADATA, Some(ip("fe80::1")))),
+        ),
+        ("fe80::1%eth0", Err((DEST_METADATA, Some(ip("fe80::1"))))),
+        (
+            "[::ffff:169.254.169.254]",
+            Err((DEST_METADATA, Some(ip("::ffff:169.254.169.254")))),
+        ),
+        ("Api.Example.COM.", Ok(None)),
+        ("LOCALHOST.", Err((DEST_INTERNAL, None))),
+        ("0x7f000001", Err((DEST_OBFUSCATED, None))),
+        ("08", Err((DEST_OBFUSCATED, None))),
+        ("[2606:4700::1111]", Ok(Some(ip("2606:4700::1111")))),
+    ] {
+        assert_eq!(judged(g.judge_name(host, C)), want, "{host}");
+    }
+}
+
+/// RED (HIGH, the percent-escape the guard did not decode): a host holding a `%` outside an IPv6
+/// zone id is unjudgeable (`DEST_NO_HOST`), naming it, in every class, whatever the allowlist says:
+/// `%6c%6fcalhost` is `localhost` to a client that decodes it, and the guard read it as an unknown
+/// name and admitted it unresolved. A zone id's `%` is the literal's, judged as before.
+#[test]
+fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
+    let g = guard(true, &["*.example", "127.0.0.0/8"]);
+    for host in [
+        "%6c%6fcalhost",
+        "%6C%6FCALHOST.",
+        "%31%32%37.0.0.1",
+        "%31%36%39.254.169.254",
+        "api%2eexample",
+        "a%2e.example",
+    ] {
+        for class in [
+            EGRESS_DEFAULT,
+            EGRESS_OPERATOR_INFRASTRUCTURE,
+            EGRESS_PROVIDER,
+        ] {
+            let refusal = g.judge_name(host, class).expect_err(host);
+            assert_eq!(
+                (refusal.verdict, refusal.addr),
+                (DEST_NO_HOST, None),
+                "{host}"
+            );
+            assert_eq!(refusal.host, host);
+            assert!(
+                refusal
+                    .to_string()
+                    .starts_with(&format!("host `{host}` cannot be judged")),
+                "{refusal}"
+            );
+        }
+        assert_eq!(
+            verdict(g.judge_answer(host, &[ip("93.184.216.34")], C)),
+            Some(DEST_NO_HOST),
+            "{host}"
+        );
+        assert!(!names_loopback(host), "{host}");
+    }
+    // A zone id's `%` is the IPv6 literal's: judged as the address, as before.
+    for zoned in ["[fe80::1%25eth0]", "fe80::1%eth0"] {
+        assert_eq!(
+            judged(g.judge_name(zoned, C)),
+            Err((DEST_METADATA, Some(ip("fe80::1")))),
+            "{zoned}"
+        );
+    }
+}
+
+/// RED (Q128 arch u22 HIGH 2; ARCHITECT PB-100: metadata and link-local are refused on every need,
+/// whatever its egress class): the guard, the one metadata and link-local refusal a judged dial
+/// meets, refuses an IPv6 link-local answer in every class, operator infrastructure included, with
+/// the endpoint check's verdict; only an IP or CIDR entry naming the address admits it (the
+/// allowlist's in any class, a provider carve-out's for a provider dial). A host entry, a private
+/// reach, `allow_all_metadata` and `block_private_addresses: false` admit nothing of it.
+#[test]
+fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
+    let ll = ip("fe80::1");
+    let lax = Guard::from_config(&Destinations {
+        block_private_addresses: false,
+        allow: vec!["router.test".into()],
+        allow_all_metadata: true,
+        ..Destinations::default()
+    })
+    .unwrap();
+    for class in [
+        EGRESS_DEFAULT,
+        EGRESS_PROVIDER,
+        EGRESS_OPEN_WEB,
+        EGRESS_LOOPBACK_ALLOWED,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+    ] {
+        assert_eq!(
+            verdict(lax.judge_answer("router.test", &[ll], class)),
+            Some(DEST_METADATA),
+            "class {class}"
+        );
+        assert_eq!(
+            lax.judge_name("[fe80::1]", class).unwrap_err().verdict,
+            DEST_METADATA,
+            "class {class}"
+        );
+        assert_eq!(
+            verdict(lax.judge_answer_with("router.test", &[ll], class, false, true)),
+            Some(DEST_METADATA),
+            "a private reach, class {class}"
+        );
+    }
+    let listed = guard(true, &["fe80::/10"]);
+    assert_eq!(
+        listed.judge_answer("router.test", &[ll], EGRESS_OPERATOR_INFRASTRUCTURE),
+        Ok(())
+    );
+    let carved = Guard::from_config(&Destinations {
+        legacy_allow: vec!["fe80::1".into()],
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        carved.judge_answer("router.test", &[ll], EGRESS_PROVIDER),
+        Ok(())
+    );
+    assert_eq!(
+        verdict(carved.judge_answer("router.test", &[ll], EGRESS_DEFAULT)),
+        Some(DEST_METADATA)
+    );
 }

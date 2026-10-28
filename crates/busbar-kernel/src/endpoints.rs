@@ -210,8 +210,10 @@ pub fn catalog_names(app: &App, gov: &GovCtx) -> Vec<String> {
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
-    if let Some(halted) = plugin_dispatch_halted(busbar_plugin_loader::dispatch::handle::latched())
-    {
+    let latched = crate::preflight::root_rows()
+        .dispatch_latched
+        .is_some_and(|latched| latched());
+    if let Some(halted) = plugin_dispatch_halted(latched) {
         return halted;
     }
     let t = now();
@@ -256,7 +258,7 @@ fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
 /// Whether any configured non-model plane's generation opened: its runtime slot was built for this
 /// generation and, for a door plane, its open answered ([`crate::plane_driver::door::opened`]).
 fn a_plane_opened(app: &crate::state::App) -> bool {
-    crate::plane::registry::plane_decls()
+    crate::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| !d.fallback && app.plane_configured(d))
         .filter_map(|d| app.plane_slot(d.key))

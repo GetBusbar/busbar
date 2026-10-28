@@ -138,6 +138,33 @@ fn publishing_a_card_leaves_every_prior_posting_byte_identical() {
     assert_eq!(priced_before.micros(), 23_440);
 }
 
+/// THE CARD IN EFFECT AT THE LEDGERED ITEM'S TIME (owner ruling 2026-10-27), at the edge: card B
+/// takes effect at `T` = 1,000,000. An item ledgered at `T - 1` costs card A's price, one at `T`
+/// and one at `T + 1` card B's, even though the history read holds both cards.
+#[test]
+fn an_item_costs_the_card_in_effect_at_its_own_instant_on_either_side_of_a_price_change() {
+    const T: u64 = 1_000_000;
+    let at = |instant: u64| {
+        price_ledger(
+            &[LedgerEntry::new(LANE, instant).with_whole(INPUT, 1_000)],
+            &known_history(),
+        )
+        .expect("prices")
+        .micros()
+    };
+    assert_eq!(
+        at(T - 1),
+        3_000,
+        "before the change: card A, 3 micro-units a token"
+    );
+    assert_eq!(
+        at(T),
+        1_000,
+        "from the change: card B, 1 micro-unit a token"
+    );
+    assert_eq!(at(T + 1), 1_000, "after the change: card B");
+}
+
 #[test]
 fn pricing_flat_at_the_newest_card_is_a_different_and_wrong_figure() {
     // THE DIVERGENCE, with numbers. `get_group_usage`, `GET /keys/{id}/usage` and the
@@ -603,16 +630,16 @@ const MINOR: i128 = 10_000;
 #[test]
 fn a_planes_request_fee_charges_its_calls_and_the_flat_fee_charges_the_pools_plane() {
     use crate::cost::{plane_fee_lane, PER_REQUEST};
-    // 4 tool calls on the tools plane's fee lane: 4 × 3 — its OWN fee, not the flat 5.
-    let tools = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
-    assert_eq!(fee_row(tools), Ok(Money::from_micros(12 * MINOR)));
+    // 4 calls on plane t's fee lane: 4 × 3 — its OWN fee, not the flat 5.
+    let plane_calls = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
+    assert_eq!(fee_row(plane_calls), Ok(Money::from_micros(12 * MINOR)));
     // 2 flat-card requests (the flat fee count on an unqualified lane): 2 × 5, as 1.5.5 billed them.
     let flat = LedgerEntry::new(LANE, 0).with_fee_count(2);
     assert_eq!(fee_row(flat), Ok(Money::from_micros(10 * MINOR)));
     // A fee count on a QUALIFIED lane is its plane's: 2 × 3 on `t`.
     let q = format!("t{}srv_read", crate::cost::PLANE_LANE_SEP);
-    let tools_posting = LedgerEntry::new(q, 0).with_fee_count(2);
-    assert_eq!(fee_row(tools_posting), Ok(Money::from_micros(6 * MINOR)));
+    let qualified = LedgerEntry::new(q, 0).with_fee_count(2);
+    assert_eq!(fee_row(qualified), Ok(Money::from_micros(6 * MINOR)));
 }
 
 #[test]

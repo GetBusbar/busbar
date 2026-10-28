@@ -329,9 +329,8 @@ pub(crate) fn resolve_projection(
 ) -> Projection {
     let before = errors.len();
 
-    // `durable:` — the KEY is part of the frozen surface; the core spool that backs it is a later
-    // unit. Accepting `true` and not spooling would be precisely the "reports success while quietly
-    // not taking effect" defect, so it is a LOUD refusal until the spool lands.
+    // `durable:` — the KEY is part of the frozen surface but core does not spool. Accepting
+    // `true` would report success while quietly not taking effect, so it is a LOUD refusal.
     if durable {
         errors.push(format!(
             "export.{name}.durable: `true` is NOT YET IMPLEMENTED in this release — core does not \

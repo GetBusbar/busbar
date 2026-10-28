@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::{host_slots, ConnHost, HostConns};
-use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+};
 use busbar_kernel::config::Destinations;
 
 use crate::guard::{Guard, Resolve, Resolved, SystemResolver};
@@ -166,6 +168,111 @@ fn a_need_dials_a_hostname_through_the_one_guard() {
     });
 }
 
+/// A NAME'S ADDRESSES ARE TRIED IN TURN (oracle wire.tls client-hello cells, store.boot postgres
+/// localhost): `localhost` answering `::1` first where the far end listens on `127.0.0.1` only. The
+/// pinned `::1` refuses the connect, and the dial moves on to the name's next admitted address, as
+/// 1.5.5's client did. RED before: the open failed on the first refusal.
+#[test]
+fn a_refused_connect_moves_on_to_the_names_next_address() {
+    worker().block_on(async {
+        let port = echo([127, 0, 0, 1].into()).await;
+        let c = connector(
+            Arc::new(Table(vec![
+                ("upstream.test", "::1".parse().unwrap()),
+                ("upstream.test", [127, 0, 0, 1].into()),
+            ])),
+            Arc::default(),
+        );
+        let host = host(&c);
+        let t = table(&host);
+        let target = format!("upstream.test:{port}");
+        let id = t
+            .open(
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a name opens, its dial in flight");
+        assert_eq!(t.write(id, b"ping", false, false), Ok(4));
+        assert_eq!(
+            read(&t, id).await.expect("the second address answers"),
+            b"ping"
+        );
+        t.close(id).unwrap();
+    });
+}
+
+/// Ask `c` whether `id`'s dial has landed until it answers, as `ESTABLISH` asks on the plugin's
+/// ticket.
+async fn landed(c: &Connector, id: ConnId) -> Result<(), ConnError> {
+    for _ in 0..2000 {
+        match DeclaredConns::landed(c, OWNER, id, 7) {
+            Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(1)).await,
+            answer => return answer,
+        }
+    }
+    panic!("the dial neither landed nor failed in two seconds");
+}
+
+/// A LIBPQ MULTI-HOST URL'S ENDPOINTS, as `ESTABLISH` answers them (oracle
+/// `store.boot|postgres|multi-host`: `127.0.0.1:1,127.0.0.1:<port>`): an open answers with its
+/// dial in flight, and the dial's landing is what the plugin's connect waits on. The first
+/// endpoint REFUSES the connect: its landing answers the refusal, its cause the connect's, so the
+/// plugin closes it and opens the next; the second lands and carries the bytes. Each endpoint is
+/// the plugin's own open, judged as every open is: nothing wider is admitted. RED before: the
+/// connector named no landing (the table's default answered every open landed), so the refused
+/// endpoint was the plugin's connection and the second was never dialled.
+#[test]
+fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
+    worker().block_on(async {
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let port = echo([127, 0, 0, 1].into()).await;
+        let c = connector(Arc::new(Table(Vec::new())), Arc::default());
+        let host = host(&c);
+        let t = table(&host);
+        let first = format!("127.0.0.1:{closed}");
+        let id = t
+            .open(
+                NEED,
+                &OpenDesc {
+                    target: &first,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("an address opens, its dial in flight");
+        assert_eq!(
+            landed(&c, id).await,
+            Err(ConnError::Refused),
+            "the refused connect is the landing's answer"
+        );
+        assert_eq!(
+            DeclaredConns::cause(c.as_ref(), OWNER, id).map(|k| k.stage),
+            Some(busbar_contract::abi::host::conn::connector::CAUSE_CONNECT),
+            "its cause is the connect"
+        );
+        t.close(id).unwrap();
+        let second = format!("127.0.0.1:{port}");
+        let id = t
+            .open(
+                NEED,
+                &OpenDesc {
+                    target: &second,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("the next endpoint opens");
+        assert_eq!(landed(&c, id).await, Ok(()), "the next endpoint lands");
+        assert_eq!(t.write(id, b"ping", false, false), Ok(4));
+        assert_eq!(read(&t, id).await.expect("the echo"), b"ping");
+        t.close(id).unwrap();
+    });
+}
+
 /// The system resolver, through the same path: `localhost` resolves, is judged, and is dialled at
 /// the address it answered first. The guard refuses the `localhost` name itself under
 /// `block_private_addresses` unless the allowlist names it (RFC 6761), so this deployment names it.
@@ -259,7 +366,7 @@ impl Resolve for Flaky {
     }
 }
 
-/// RED (ARCHITECT parity ruling A1; 1.5.5 `otlp_resolves_to_internal`, v1.5.5
+/// RED (1.5.5 `otlp_resolves_to_internal`, v1.5.5
 /// `crates/busbar/src/observability.rs:588-590`, test `:1482-1490`: "A resolution FAILURE is not a
 /// rejection. A collector whose DNS is briefly down is an availability event, not a security one
 /// ... disabling trace export over a transient blip would be the wrong trade"): a loopback-allowed
@@ -548,7 +655,7 @@ fn the_same_name_dials_when_allowlisted() {
     });
 }
 
-/// THE DESIGN §5 egress-class table, owner-signed 2026-09-27: the same name, when the need's
+/// THE DESIGN §5 egress-class table: the same name, when the need's
 /// CONFIG names it (`target_from`, a store/secret/auth plugin's connection), is the operator's own
 /// destination and dials with no allowlist; the name a plugin names per open (above) stays refused.
 #[test]
@@ -572,7 +679,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
     });
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14: "refused unless allowlisted"
+/// RED (THE DESIGN §5 destination guard: "refused unless allowlisted"
 /// holds for the provider class): a PROVIDER need whose config names a target on loopback is not
 /// lifted to operator infrastructure; it is refused before any socket until the allowlist names it.
 #[test]

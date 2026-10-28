@@ -7,7 +7,8 @@
 //! - the error-`type` / error-KIND / disposition / provider-code vocabulary that crosses a dialect's
 //!   `write_error(kind)` and the kernel's `error_map`;
 //! - the media-type and user-agent literals a protocol declaration defaults to;
-//! - the SSE frame-boundary scan every SSE-reading plane shares (the SSE wire encoding itself);
+//! - the event-stream frame-boundary scan every event-stream-reading plane shares (the
+//!   `text/event-stream` wire encoding itself);
 //! - the neutral codec traits a dialect implements — [`StreamTranslator`], [`ArrayStreamFramer`],
 //!   [`DialectCodec`] — the detection-predicate shapes a declaration carries, and the per-request
 //!   [`SigningContext`].
@@ -93,7 +94,7 @@ pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 /// surfaces. One const so the literal isn't repeated across egress/health/observability.
 pub const APPLICATION_JSON: &str = "application/json";
 
-/// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
+/// Streaming MIME type for event-stream responses — the `Content-Type` value that
 /// signals an open event-stream to the client.
 pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
 
@@ -112,8 +113,8 @@ pub const SIGNAL_IR_PARSE: &str = "ir_parse";
 pub type IrError = crate::upstream::CanonicalSignal;
 
 /// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
-/// translate step failed after first byte). BOTH the kernel's forward engine (SSE/forward abort
-/// path) and a plane's binary event-stream reassembler emit it without either re-spelling the
+/// translate step failed after first byte). BOTH the kernel's forward engine (event-stream/forward
+/// abort path) and a plane's binary event-stream reassembler emit it without either re-spelling the
 /// literal. Single source of truth so the abort text a client sees is identical on every framing.
 pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
@@ -135,12 +136,12 @@ fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
-/// where `offset` is the byte index of the first terminator byte and the length spans BOTH line
-/// terminators that make the blank line. All three of the spec's terminators are recognised, in
-/// every pairing: `\n\n` and `\r\n\r\n` are the two the providers emit, and `\r\r`, `\n\r`,
-/// `\r\n\r` and `\r\r\n` are the rest of the grammar. Returns `None` if no complete blank line is
-/// present yet.
+/// Find the first event-stream frame terminator (a blank line) in `buf`, returning `(offset,
+/// terminator_len)` where `offset` is the byte index of the first terminator byte and the length
+/// spans BOTH line terminators that make the blank line. All three of the spec's terminators are
+/// recognised, in every pairing: `\n\n` and `\r\n\r\n` are the two the providers emit, and `\r\r`,
+/// `\n\r`, `\r\n\r` and `\r\r\n` are the rest of the grammar. Returns `None` if no complete blank
+/// line is present yet.
 pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
     loop {
@@ -155,10 +156,10 @@ pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// Split SSE frame text into lines on the event-stream grammar's own line-terminator rule — CRLF, a
-/// lone LF, **or** a lone CR each end a line — rather than `str::lines()`, which recognizes only
-/// LF/CRLF. Shared by the SSE frame parser and the SSE line reader, which both used
-/// `str::lines()` and so silently produced no fields at all on a frame framed by a bare-CR
+/// Split event-stream frame text into lines on the event-stream grammar's own line-terminator rule
+/// — CRLF, a lone LF, **or** a lone CR each end a line — rather than `str::lines()`, which
+/// recognizes only LF/CRLF. Shared by the event-stream frame parser and line reader, which both
+/// used `str::lines()` and so silently produced no fields at all on a frame framed by a bare-CR
 /// terminator (a frame `find_frame_terminator` above correctly frames).
 pub fn sse_lines(text: &str) -> Vec<&str> {
     sse_line_spans(text.as_bytes())
@@ -167,10 +168,10 @@ pub fn sse_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The `(start, end)` byte span of each line in `bytes` under the event-stream line-terminator rule.
-/// The single walk both [`sse_lines`] (which projects the spans back onto the `&str`) and the
-/// byte-level SSE event-type probe share, so the two cannot disagree about where a line ends.
-/// Every terminator byte is ASCII, so a span taken from valid UTF-8 always lands on a char boundary.
+/// The `(start, end)` byte span of each line in `bytes` under the event-stream line-terminator
+/// rule. The single walk both [`sse_lines`] (which projects the spans back onto the `&str`) and the
+/// byte-level event-type probe share, so the two cannot disagree about where a line ends. Every
+/// terminator byte is ASCII, so a span taken from valid UTF-8 always lands on a char boundary.
 pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut start = 0usize;
@@ -252,12 +253,12 @@ pub trait StreamTranslator: Send {
 
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
 /// binds TIGHTER — it names an earlier rung of the historical detection ladder (a mandatory-unique
-/// auth header binds tighter than a path verb, which binds tighter than a bare path suffix). The
-/// fold picks the tightest claim across the registered protocols; a tie breaks by registration
-/// order. Opaque to core: only the relative order is meaningful, and each protocol owns the rungs it
-/// claims. This is the datum that let a hand-ordered `if`-ladder in the kernel become a fold over
-/// per-declaration predicates — each dialect's specific header/path sniff now states its own rungs
-/// on its declaration's `claims`, and the kernel names no dialect.
+/// credential header binds tighter than a path verb, which binds tighter than a bare path suffix).
+/// The fold picks the tightest claim across the registered protocols; a tie breaks by registration
+/// order. Opaque to core: only the relative order is meaningful, and each protocol owns the rungs
+/// it claims. This is the datum that let a hand-ordered `if`-ladder in the kernel become a fold
+/// over per-declaration predicates — each dialect's specific header/path sniff now states its own
+/// rungs on its declaration's `claims`, and the kernel names no dialect.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ClaimStrength(pub u16);
 
@@ -302,17 +303,18 @@ pub type ResidualClaimsFn = fn(&str) -> Option<ClaimStrength>;
 /// per-dialect lookup SHAPE (a per-candidate key, a top-level key) stays with the dialect. `None` for a protocol that carries no such artifact.
 pub type VendorResponseMetadataFn = fn(&serde_json::Value) -> Vec<&'static str>;
 
-/// A streaming JSON-array reframer: consumes a protocol's SSE response bytes and re-emits them as one
-/// streaming JSON array (`[{...},{...}]`), the body shape a non-SSE streaming request expects. The
-/// agnostic forward path holds one `Box<dyn ArrayStreamFramer>` (built via
-/// `ProtocolWriter::make_array_stream_framer`) and drives it, so it names no protocol's framer type.
-/// Implemented by a dialect whose streaming endpoint answers a non-SSE client with a JSON array.
-/// The trait exposes only the SUBSET of that type's API the agnostic core needs (`feed`,
-/// `finish_for_translate`, `finish_with_server_error`); the type's raw `finish` and its low-level
-/// `finish_with_error(code, status, …)` are absent, since the core never passes a wire status code.
+/// A streaming JSON-array reframer: consumes a protocol's event-stream response bytes and re-emits
+/// them as one streaming JSON array (`[{...},{...}]`), the body shape a non-event-stream streaming
+/// request expects. The agnostic forward path holds one `Box<dyn ArrayStreamFramer>` (built via
+/// `ProtocolWriter::make_array_stream_framer`) and drives it, so it names no protocol's framer
+/// type. Implemented by a dialect whose streaming endpoint answers a non-event-stream client with a
+/// JSON array. The trait exposes only the SUBSET of that type's API the agnostic core needs
+/// (`feed`, `finish_for_translate`, `finish_with_server_error`); the type's raw `finish` and its
+/// low-level `finish_with_error(code, status, …)` are absent, since the core never passes a wire
+/// status code.
 pub trait ArrayStreamFramer: Send {
-    /// Feed a chunk of SSE bytes; return JSON-array bytes for whatever complete frames are now
-    /// available (empty if only a partial frame is buffered).
+    /// Feed a chunk of event-stream bytes; return JSON-array bytes for whatever complete frames are
+    /// now available (empty if only a partial frame is buffered).
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
 
     /// Close the array at end-of-stream when this framer sits DOWNSTREAM of a cross-protocol
@@ -327,7 +329,7 @@ pub trait ArrayStreamFramer: Send {
     fn finish_with_server_error(&mut self, message: &str) -> Vec<u8>;
 }
 
-/// **THE 4TH NEUTRAL SEAM (G6 A4b, owner-ruled 2026-08-20).** The per-PROTOCOL computed-codec facade
+/// **THE 4TH NEUTRAL SEAM.** The per-PROTOCOL computed-codec facade
 /// the operation-blind driver reads, so the kernel names ZERO concrete IR and zero `ProtocolReader`/
 /// `ProtocolWriter` at its call sites. Every method here has a NEUTRAL signature (bytes / `Value` /
 /// `bool` / `TokenUsage` / neutral tuples — `IrError` is `upstream::CanonicalSignal`); the concrete
@@ -384,8 +386,9 @@ pub trait DialectCodec: Send + Sync {
     /// This protocol's upstream-error vocabulary (the reader's `extract_error`), reached by name so
     /// `handlers::protocol_error` names no concrete reader. `status` is the raw HTTP code.
     fn extract_error(&self, status: u16, body: &[u8]) -> crate::upstream::RawUpstreamError;
-    /// The dialect's array-stream framer for a JSON-array ingress client, or `None` when
-    /// this protocol frames no array stream — the writer method reached by name at the SSE seam.
+    /// The dialect's array-stream framer for a JSON-array ingress client, or `None` when this
+    /// protocol frames no array stream — the writer method reached by name at the event-stream
+    /// seam.
     fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>>;
     /// The upstream request path for a (streaming) request against this dialect — the health probe's
     /// URL builder reaches it here rather than through the concrete writer.
@@ -580,8 +583,9 @@ pub struct ProtocolDecl {
     /// protocol that does not stream.
     pub streaming_content_type: Option<&'static str>,
 
-    /// The router's array-stream shim key for this protocol (only one dialect has one: a marker injected
-    /// into a non-`alt=sse` request body and stripped before egress).
+    /// The router's array-stream shim key for this protocol (only one dialect has one: a marker
+    /// injected into a request body that did not ask for event-stream framing and stripped before
+    /// egress).
     pub array_stream_shim_key: Option<&'static str>,
 
     /// This protocol's NATIVE tool-call id prefix, or `None` when it carries no tool id on the wire
@@ -619,7 +623,7 @@ pub struct ProtocolDecl {
     /// default answer for every other dialect — means the stream reports usage unconditionally.
     pub stream_usage_requires_opt_in: bool,
 
-    // ── PROMOTED WRITER FACTS (G6 step A1) ─────────────────────────────────────────────────────────
+    // ── PROMOTED WRITER FACTS ─────────────────────────────────────────────────────────
     // Constant, no-argument, IR-free facts that used to be answered off the `ProtocolWriter` vtable.
     /// Replaces `ProtocolWriter::requires_max_tokens()`. Whether this dialect hard-rejects a request
     /// with no `max_tokens` (such a dialect 400s; the forward path injects the lane default).
@@ -658,7 +662,7 @@ pub struct ProtocolDecl {
     /// decodes a binary event-stream body (a native SDK that reads framed events).
     pub ingress_is_eventstream: bool,
 
-    /// Replaces `ProtocolWriter::emits_sse_done_terminator()`. True when this protocol's streamed
+    /// Replaces the writer's former done-terminator method. True when this protocol's streamed
     /// response ends with the literal `data: [DONE]` terminator.
     pub emits_sse_done_terminator: bool,
 
@@ -673,7 +677,7 @@ pub struct ProtocolDecl {
     /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
     /// URL path rather than the body, so a same-protocol passthrough strips body
     /// `model`. The plane that declares it serves those arrivals through its own door claims; the
-    /// kernel registers no URL-model arrival (ARCHITECT 2026-10-16 ruling 3 item 1).
+    /// kernel registers no URL-model arrival.
     pub has_model_in_url: bool,
 
     /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
@@ -692,19 +696,20 @@ pub struct ProtocolDecl {
     /// message this dialect lands verbatim in the native error body.
     pub auth_failure_message: &'static str,
 
-    /// Replaces `ProtocolWriter::uses_array_stream_shim()`. True when this protocol's ingress client
-    /// expects a JSON-array (non-SSE) streamed body (a request without `?alt=sse`).
+    /// Replaces `ProtocolWriter::uses_array_stream_shim()`. True when this protocol's ingress
+    /// client expects a JSON-array (non-event-stream) streamed body (a request whose query does not
+    /// ask for event-stream framing).
     pub uses_array_stream_shim: bool,
 
     /// Replaces `ProtocolWriter::has_native_path_not_found()`. True when this protocol has a native
     /// path-not-found envelope with a protocol-specific message format.
     pub has_native_path_not_found: bool,
 
-    /// Replaces `ProtocolWriter::egress_accept()` (the STREAMING half of it). The native-SDK `Accept`
-    /// header value THIS egress protocol sends on a STREAMING request — `text/event-stream` for every
-    /// SSE-framed dialect, a binary event-stream type for a framed-event dialect. The NON-streaming value
-    /// is universally `application/json`, so the caller reads
-    /// `if wants_stream { decl.egress_stream_accept } else { APPLICATION_JSON }`.
+    /// Replaces `ProtocolWriter::egress_accept()` (the STREAMING half of it). The native-SDK
+    /// `Accept` header value THIS egress protocol sends on a STREAMING request —
+    /// `text/event-stream` for every event-stream-framed dialect, a binary event-stream type for a
+    /// framed-event dialect. The NON-streaming value is universally `application/json`, so the
+    /// caller reads `if wants_stream { decl.egress_stream_accept } else { APPLICATION_JSON }`.
     pub egress_stream_accept: &'static str,
 
     /// This protocol's `GET /v1(beta)/models` (list-models) response ENVELOPE builder, or `None`

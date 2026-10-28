@@ -115,6 +115,12 @@ pub struct DiskFailure {
 /// A `disk.append`'s answer.
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
+/// `Host` as an instance holds it for its life (status row 194): the host's own tables, read at
+/// `open`. #1471 ties `Host` to the tables it was read from (`Host<'t>`) and states this alias as
+/// `Host<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
+/// the same spelling compiles before and after.
+pub type StaticHost = Host;
+
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
 #[derive(Debug, Clone, Copy)]
@@ -151,6 +157,20 @@ impl Host {
             services: tables.services,
             io,
         }
+    }
+
+    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
+    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
+    /// caller that names it here compiles there too.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub const unsafe fn from_raw(tables: &HostTables) -> Self {
+        Self::of(tables)
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
@@ -255,21 +275,16 @@ service_in!(
 
 const fn blank_head() -> ServiceHead {
     ServiceHead {
-        size: 0,
-        op: 0,
         handle: CompletionHandle {
             ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
+        ..ServiceHead::ZERO
     }
 }
 
 const fn absent() -> AbiStr {
-    AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    }
+    AbiStr::ZERO
 }
 
 /// The host's error text, copied (it is the host's until the next service on the ticket).
@@ -349,7 +364,7 @@ impl Connector<'_> {
         let handle = CompletionHandle {
             ticket: self.ticket,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         };
         self.cross(op, f, input, handle)
     }
@@ -399,13 +414,8 @@ impl Connector<'_> {
         let mut out = ServiceOut {
             size: std::mem::size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(Outcome::Fault),
-            _reserved: [0; 3],
-            value: 0,
-            len: 0,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
             error: absent(),
+            ..ServiceOut::ZERO
         };
         let answered = f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome();
         (answered, out)
@@ -586,6 +596,51 @@ impl Connector<'_> {
         self.call(service::CLOSE, |s| s.close, input)
             .map(|r| r.map(|_| ()))
     }
+
+    /// What closes this connector's streams once no entry of its op runs ([`Closer`]).
+    pub(crate) fn closer(&self) -> Closer {
+        Closer {
+            ctx: self.host.ctx,
+            conns: self.host.conns,
+        }
+    }
+}
+
+/// WHAT CLOSES A STREAM WITH NO OP RUNNING: the instance's host context and connector table, the
+/// two a CLOSE crosses with, kept by a continuation the SDK parks so that one given up (its op
+/// cancelled, or a fresh op on its ticket) closes the stream it established (status row 159).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Closer {
+    ctx: HostCtx,
+    conns: *const ConnectorSlots,
+}
+
+// SAFETY: as `Host`'s: the context is an opaque handle and the table plain code addresses, both
+// valid for the instance's life; every call goes through the host's own synchronisation.
+unsafe impl Send for Closer {}
+// SAFETY: as `Send`.
+unsafe impl Sync for Closer {}
+
+impl Closer {
+    /// Close `stream` on no ticket: a close never pends, so it is made on none
+    /// ([`Connector::close`]). What the host answers is not read: the stream is given up either
+    /// way.
+    pub(crate) fn close(&self, stream: u64) {
+        let tables = HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: self.ctx,
+            wake: None,
+            conns: self.conns,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        };
+        // SAFETY: `ctx` and `conns` are the ones a host lent this instance's `open` (read off its
+        // `Host`, [`Connector::closer`]), valid for the instance's life, which outlives every
+        // continuation it parks; no wake, services or I/O table is named.
+        let host = unsafe { Host::from_raw(&tables) };
+        let _ = host.connector(Ticket::NONE).close(stream);
+    }
 }
 
 impl Connector<'_> {
@@ -634,13 +689,7 @@ impl Connector<'_> {
     /// READY with what the host wrote: the whole of `bytes` landed, and whether the file was rotated
     /// first. A FAILED answer names its step and still reports the rotation that ran before it.
     pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
-        let blank = DiskWritten {
-            size: 0,
-            rotated: 0,
-            faults: 0,
-            _reserved: [0; 2],
-            written: 0,
-        };
+        let blank = DiskWritten::ZERO;
         let fail = |step, rotation, why| {
             Poll::Ready(Err(DiskFailure {
                 step,
@@ -658,7 +707,7 @@ impl Connector<'_> {
         let handle = CompletionHandle {
             ticket: self.ticket,
             seq: self.issued,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         };
         self.issued += 1;
         let mut result = blank;
@@ -672,7 +721,7 @@ impl Connector<'_> {
                 ptr: bytes.as_ptr(),
                 len: bytes.len(),
                 fmt: BLOB_OCTETS,
-                flags: 0,
+                ..Blob::ZERO
             },
             result: std::ptr::from_mut(&mut result),
         };
@@ -710,8 +759,7 @@ impl Connector<'_> {
         };
         let none = CompletionHandle {
             ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         };
         self.cross(op, f, input, none)
     }

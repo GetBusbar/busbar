@@ -244,7 +244,7 @@ pub struct UnitCtx {
 /// A running count a test rig keeps of what its unit spent, in nano-units.
 ///
 /// NOT a money figure the exit reads. The exit spends and settles the hold by the settlement
-/// writer's one `amount` (TODO L1689); a second figure here could only disagree with it. No
+/// writer's one `amount`; a second figure here could only disagree with it. No
 /// production leg accrues onto this.
 #[derive(Debug, Default)]
 pub struct AccrualMeter {
@@ -1326,11 +1326,24 @@ async fn under_hold<U: Units, R: RouteAwait>(
 /// audit pass freely". Every end that writes a line takes its pass from this one fn: the loop's two
 /// audit doors ([`run_unit_async`]'s refused door and [`terminal`]), the session opener's two
 /// ([`open_unit`]), and the node's sweep ([`crate::tick::sweep_settle`]), which settles a unit whose
-/// task disappeared and so has no audit step of its own to have been lent one. Each pass is bound to
-/// the unit's call (#74): the loop's to its context's, the sweep's to the call its hold was opened
-/// under.
+/// task disappeared and so has no audit step of its own to have been lent one, and the one public
+/// lender, [`verb_audit_pass`], for a kernel-verb unit the root answers without the loop (the
+/// admin surface). Each pass is bound to the unit's call (#74): the loop's to its context's, the
+/// sweep's to the call its hold was opened under, a kernel verb's to a call of its own.
 pub(crate) fn audit_pass(seal: &KernelSeal, call: CallId) -> Pass<Audit> {
     Pass::<Audit>::mint_bound(seal, call)
+}
+
+/// THE AUDIT PASS OF A KERNEL-VERB UNIT: an administrative request the root answers directly
+/// rather than walking it through this loop. Such a unit holds nothing, is charged nothing and has no
+/// Route leg to await, so it has no hold to settle and no exit to leave through — but it still gets
+/// its one audit record (U14), and that record is sealed by a pass minted here, from [`audit_pass`],
+/// for a call of its own. One pass per unit: the caller asks once, when it seals the record.
+///
+/// Public because the admin surface lives in the composition root, another crate; `pub(crate)`
+/// would leave it unreachable there. Its one caller is `root::units_admin::AdminNode::seal`.
+pub fn verb_audit_pass(kernel: &Kernel) -> Pass<Audit> {
+    audit_pass(&kernel.seal, kernel.next_call())
 }
 
 /// A hold the cell handed back. It has been superseded by the admitted one and carries no spend of
@@ -1367,7 +1380,7 @@ pub fn exit<U: Units>(
             let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
             let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
             let requests = requests_settled(reached_admitted, drawn);
-            // ONE FIGURE (TODO L1689): the hold is spent by the same `amount` the posting settles,
+            // ONE FIGURE: the hold is spent by the same `amount` the posting settles,
             // so the overdraft counter and the settled figure can never disagree. Spending one
             // number and settling another posted an OVERDRAFT on an end that settled inside its
             // reservation. The spend lands in full and whatever nothing backs is carried out as an
@@ -1428,7 +1441,3 @@ mod call_binding_tests;
 #[cfg(test)]
 #[path = "tests/teller_verified_destination_tests.rs"]
 mod teller_verified_destination_tests;
-
-#[cfg(test)]
-#[path = "tests/teller_seal_doc_tests.rs"]
-mod teller_seal_doc_tests;

@@ -31,7 +31,7 @@ fn fixture() -> &'static serde_json::Value {
     static DOC: OnceLock<serde_json::Value> = OnceLock::new();
     DOC.get_or_init(|| {
         let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
+            env!("BUSBAR_CORE_DIR"),
             "/../../testing/plane-copies/declared-credentials.json"
         );
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
@@ -1322,7 +1322,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         };
         let routes = crate::root::door_steps::member_routes(
             &section,
-            &crate::root::door_steps::DoorPools::of(&section),
+            &crate::root::door_steps::DoorPools::of(&section).expect("the pools"),
             &served,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),

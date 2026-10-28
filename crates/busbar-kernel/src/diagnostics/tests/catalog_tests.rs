@@ -114,6 +114,21 @@ fn lookup_by_code_works() {
     assert!(by_code(9999).is_none());
 }
 
+/// 1.5.5 reported an `error_map` value that names no status class with an uncoded warning
+/// (v1.5.5 `crates/busbar/src/breaker.rs::warn_unrecognized_error_map_value`), and 1.6.0's only
+/// emitter of BUSBAR-3022 was the kernel's wrapper over the deleted normalizer. A code nothing
+/// emits and no release ever emitted is not catalogued.
+#[test]
+fn the_error_map_class_code_no_release_emitted_is_not_catalogued() {
+    assert!(by_code(3022).is_none(), "BUSBAR-3022 has no emitter");
+    assert!(
+        REGISTRY
+            .iter()
+            .all(|d| d.slug != "config-error-map-class-unrecognized"),
+        "config-error-map-class-unrecognized has no emitter"
+    );
+}
+
 /// D54: the overlay-rejected-at-read diagnostic exists so the one place the parser's message (the
 /// offending key + accepted sections) is logged has a stable code. Inert until busbar-core's
 /// overlay read path emits it, but it must be registered and resolvable by code.

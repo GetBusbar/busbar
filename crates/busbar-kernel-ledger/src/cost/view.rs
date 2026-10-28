@@ -112,6 +112,7 @@ impl Money {
     pub const ZERO: Money = Money(0);
 
     /// An amount from its mantissa at [`MONEY_SCALE`]. `34_510` is `0.034510`.
+    #[cfg(test)]
     pub const fn from_micros(micros: i128) -> Money {
         Money(micros)
     }

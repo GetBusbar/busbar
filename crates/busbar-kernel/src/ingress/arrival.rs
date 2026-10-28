@@ -30,7 +30,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 
-use crate::plane_host::PlaneAnswer;
+use crate::plane_driver::PlaneAnswer;
 
 /// THE OPAQUE CORE CONTEXT of one arrival — core's `Arc<App>` + `GovCtx` + `CallerToken`, type-erased
 /// so the dialect crate carries it back into the host methods without naming a core type. Core boxes
@@ -65,7 +65,7 @@ impl ArrivalCtx {
 pub struct ArrivalPayload {
     /// The neutral engine host, minted core-side over the live `App` — the seam every reader (core's
     /// `ArrivalHost` impl and the LLM plane's ingress) drives instead of naming `Arc<App>`.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The resolved per-request governance context (public `busbar_contract` type).
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, as a REF the host presents upstream for a `passthrough`
@@ -168,10 +168,6 @@ pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = PlaneAnswer> +
 /// One protocol-name → body-arrival pairing, the element of an installed / test body-arrival table.
 pub type BodyIngressEntry = (&'static str, BodyIngress);
 
-/// A fn that yields a `&'static` body-arrival table — the shape the core-test/`test-support` hook seeds.
-#[cfg(any(test, feature = "test-support"))]
-pub type BodyIngressFn = fn() -> &'static [BodyIngressEntry];
-
 /// The body-arrivals the COMPOSITION ROOT installed, protocol-name-keyed. Set once by
 /// [`install_body_ingress`]; consulted by [`body_ingress_for`]. A `Vec`, not a `&'static [_]`,
 /// because the composition root ASSEMBLES it from whichever protocol crates are linked.
@@ -189,49 +185,23 @@ pub fn install_body_ingress(arrivals: Vec<(&'static str, BodyIngress)>) {
     );
 }
 
-/// THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK. A
-/// build with no composition root seeds the LLM plane's `BODY_INGRESS` slice here so
-/// [`body_ingress_for`] resolves the universal ingress without a set-once `install_body_ingress`.
-#[cfg(any(test, feature = "test-support"))]
-static TEST_BODY_INGRESS_HOOK: std::sync::OnceLock<BodyIngressFn> = std::sync::OnceLock::new();
-
-/// SEED THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK. Idempotent (first writer wins).
-#[cfg(any(test, feature = "test-support"))]
-pub fn set_test_body_ingress(f: BodyIngressFn) {
-    let _ = TEST_BODY_INGRESS_HOOK.set(f);
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn test_body_ingress() -> &'static [BodyIngressEntry] {
-    TEST_BODY_INGRESS_HOOK.get().map(|f| f()).unwrap_or(&[])
-}
-
 /// Whether any body-model arrival is installed (a plane registered its arrivals on the body axis):
 /// the convenience surfaces that hand their unit to one (`/{name}/v1/messages`,
 /// `/{provider}/{model}/v1/messages`) are mounted only then; a plane served through its door
 /// claims those paths itself.
 #[must_use]
 pub fn any_body_ingress() -> bool {
-    #[cfg(any(test, feature = "test-support"))]
-    if !test_body_ingress().is_empty() {
-        return true;
-    }
     INSTALLED_BODY_INGRESS.get().is_some_and(|a| !a.is_empty())
 }
 
 /// RESOLVE A BODY-MODEL DIALECT'S UNIVERSAL ARRIVAL BY NAME — the lookup `protocol_dispatch` performs
-/// for a body-model protocol. Consults the installed table first, then the test hook. `None` when no
+/// for a body-model protocol. Consults the installed table. `None` when no
 /// LLM plane is linked (core booted plane-agnostic): the caller then answers the honest no-handler
 /// 404.
 pub fn body_ingress_for(name: &str) -> Option<BodyIngress> {
-    if let Some(installed) = INSTALLED_BODY_INGRESS.get() {
-        if let Some((_, f)) = installed.iter().find(|(n, _)| *n == name) {
-            return Some(*f);
-        }
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some((_, f)) = test_body_ingress().iter().find(|(n, _)| *n == name) {
-        return Some(*f);
-    }
-    None
+    INSTALLED_BODY_INGRESS
+        .get()?
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, f)| *f)
 }

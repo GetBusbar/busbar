@@ -32,7 +32,8 @@ impl RateApply for Recorder {
 /// The whole of the seam, in the order the process actually sees it: silent before an install, and
 /// delivering the raw view verbatim after one.
 ///
-/// ONE test, not two, because [`APPLY`] is a process-wide `OnceLock` and the install is
+/// ONE test, not two, because the holder a test binary hands in
+/// (`test_support::rate_holders::install_rate_apply`) is process-wide and the hand-in is
 /// irreversible: split across two `#[test]`s the two halves would race, and whichever ran second
 /// would be asserting the other one's state. Within one test the order is the language's.
 #[test]
@@ -40,7 +41,8 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     // BEFORE: a build with no root ledger in it swallows the apply rather than refusing it, and
     // nothing is recorded because there is nothing to record to.
     assert!(
-        APPLY.get().is_none(),
+        crate::test_support::rate_holders::apply().is_none()
+            && crate::preflight::root_rows().rate_apply.is_none(),
         "this is the only test that installs a holder, so the seam must still be empty here"
     );
     rates_applied(&RawRates {
@@ -53,7 +55,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
 
     // AFTER: the holder receives the figures the engine resolved, unchanged.
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
-    install_rate_apply(recorder);
+    crate::test_support::rate_holders::install_rate_apply(recorder);
     // Four DISTINCT tier rates per lane, so a seam that carried the right lane names with the wrong
     // (or a defaulted) card is red rather than green.
     let fast = RawTierRates {

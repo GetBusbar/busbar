@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHO A NODE IS, AND THE KEY IT SIGNS WITH, KEPT IN THE CONFIGURED STORE (ARCHITECT 2026-10-07 H3
-//! ruling, follow-up): two facts a node with no data directory has nowhere else to keep.
+//! WHO A NODE IS, AND THE KEY IT SIGNS WITH, KEPT IN THE CONFIGURED STORE: two facts a node with no data directory has nowhere else to keep.
 //!
 //! ## The node's identity
 //!
 //! A journal record is named `(node, node_seq)`, and the store keys every record by that pair. Two
 //! nodes numbering under one identity would overwrite each other's records in a shared store, so
-//! each node journals under an identity no other LIVE node holds (Q128 root part 12 HIGH 2;
-//! BUSBAR-1.6.0.md l.206 "Nodes share one store"; THE DESIGN §7, l.1056-1059: a money record never
-//! vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
+//! each node journals under an identity no other LIVE node holds (nodes share one store, and a money
+//! record never vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
 //! configuration schema.
 //!
 //! * WITH A DATA DIRECTORY the identity is the node's own: a 128-bit random id generated at its
@@ -19,7 +17,7 @@
 //!   file yet ADOPTS the id the store's registry holds under this host's name, so one node
 //!   continuing on its host keeps its chain (unless another live node holds that name's lease),
 //!   and then holds that name's lease as a node with no data directory does.
-//! * WITH NO DATA DIRECTORY there is nowhere of its own to keep one (PB-13: no data-dir files), so
+//! * WITH NO DATA DIRECTORY there is nowhere of its own to keep one, so
 //!   the identity is the STABLE one the store's node registry ([`NODE_SCHEMA`]) keeps for this host,
 //!   minted the first time it booted, and a restart resumes that chain and recovers the holds it
 //!   left open. The host name is held under a LEASE ([`take_node`]): a boot that finds the name's
@@ -34,7 +32,7 @@
 //! name, or two with none, never journal under one identity while both are live. A deployment whose
 //! host name changes on every restart mints a new identity each time, and its predecessor's chain
 //! stays in the store under the old one, readable and verified by `/admin/verify`
-//! ([`walk_stored_chains`]) but not resumed (a known limit, ARCHITECT 2026-10-07), and so does a
+//! ([`walk_stored_chains`]) but not resumed, and so does a
 //! process that restarts while its predecessor still refreshes the lease ([`LEASE_TTL_MS`]).
 //!
 //! ## The deployment keyset
@@ -50,7 +48,7 @@
 //! The store ABI has no compare-and-set. Its one atomic step is `redeem_plane_token`, a single-use
 //! TEST-AND-SET: exactly one caller is told it was first (the construction `oauth_as`'s store and
 //! the kernel's own claims use). So two first boots racing on an empty store never keep two
-//! keysets or two ids for one host (ARCHITECT 2026-10-07 H3 ruling):
+//! keysets or two ids for one host:
 //!
 //! * Minting the deployment keyset, and minting a host's node id, each REDEEMS a claim first
 //!   ([`MINT_CLAIM_KIND`]). Only the boot the store answers `true` mints and keeps; every other
@@ -72,7 +70,7 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditRecord};
 
-use super::store_chain::{off_runtime, read_chain, wait_for};
+use super::store_chain::{off_runtime, read_chain, read_chain_beside, wait_for, JournalLane};
 
 /// The record schema of the node registry: host to node id.
 pub(super) const NODE_SCHEMA: &str = "busbar.node.v1";
@@ -396,6 +394,23 @@ fn put_lease(calls: &dyn StoreCalls, host: &str, row: LeaseRow) -> Result<(), St
         .map_err(|f| format!("the store would not keep this host's lease: {f}"))
 }
 
+/// `host`'s lease row as the store holds it: its holder and when it lapses (0 = released). A
+/// test-only read, so a cell asserts what a hand-driven refresh or release left in the store.
+#[cfg(test)]
+pub(super) fn lease_row(calls: &dyn StoreCalls, host: &str) -> Option<([u8; 16], u64)> {
+    read_lease(calls, host)
+        .expect("the lease reads")
+        .map(|row| (row.holder, row.expires_ms))
+}
+
+/// Put `host`'s held lease back to lapse at `expires_ms`, its holder kept: a test-only write, so a
+/// cell tells a refresh by the expiry it moves without reading the wall clock.
+#[cfg(test)]
+pub(super) fn set_lease_expiry(calls: &dyn StoreCalls, host: &str, expires_ms: u64) {
+    let (holder, _) = lease_row(calls, host).expect("a lease is held");
+    put_lease(calls, host, LeaseRow { holder, expires_ms }).expect("the lease is kept");
+}
+
 /// Whether another process holds `host`'s lease live now.
 fn held_live(row: Option<LeaseRow>, holder: &[u8; 16], now: u64) -> bool {
     row.is_some_and(|row| row.holder != *holder && row.expires_ms > now)
@@ -550,64 +565,62 @@ pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String
     Ok(TakenNode { id, lease: None })
 }
 
-/// The lease this process holds on its host name, and the store it is held in: refreshed on the
-/// checkpoint flush tick, released on a clean shutdown.
-type Held = (std::sync::Arc<dyn StoreCalls>, NodeLease);
-
-/// THE PROCESS'S LEASE, once its boot took one ([`hold_lease`]).
-static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
-
-/// Keep `lease`, held in `calls`, as this process's: what [`refresh_held_lease`] and
-/// [`release_held_lease`] act on.
-pub fn hold_lease(calls: std::sync::Arc<dyn StoreCalls>, lease: NodeLease) {
-    *HELD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((calls, lease));
+/// THE LEASE A BOOK'S LANE HOLDS on its host name (`JournalLane::hold_lease`): taken by the boot
+/// that opened the lane, refreshed on the checkpoint flush tick, released on a clean shutdown. It is
+/// kept on the lane to the store it is held in, the value the boot hands the book, never in a
+/// process-wide static.
+#[derive(Debug, Default)]
+pub struct HeldLease {
+    lease: std::sync::Mutex<Option<NodeLease>>,
+    /// The checkpoint flush ticks counted since the lease was last refreshed.
+    ticks: std::sync::atomic::AtomicU32,
 }
 
-/// The held lease, cloned out of the lock so no store call waits under it.
-fn held() -> Option<Held> {
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-/// The checkpoint flush ticks counted since the lease was last refreshed.
-static LEASE_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// REFRESH this process's lease, if it holds one, on every [`LEASE_REFRESH_TICKS`]-th call: run on
-/// the checkpoint flush tick, off any runtime worker. A lease another process took (this one went
-/// unrefreshed past its lapse) is logged.
-pub fn refresh_held_lease() {
-    let tick = LEASE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
-        return;
+impl HeldLease {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<NodeLease>> {
+        self.lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    let Some((calls, lease)) = held() else {
-        return;
-    };
-    match lease.refresh(calls.as_ref()) {
-        Ok(true) => {}
-        Ok(false) => tracing::error!(
-            host = %lease.host,
-            "this node's lease on its host name lapsed and another process took it"
-        ),
-        Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
-    }
-}
 
-/// RELEASE this process's lease, if it holds one: run on a clean shutdown once the journal's lane
-/// drained, so the next boot of the host resumes the whole chain at once.
-pub fn release_held_lease() {
-    let Some((calls, lease)) = HELD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    else {
-        return;
-    };
-    if let Err(why) = lease.release(calls.as_ref()) {
-        tracing::warn!(reason = %why, "this node's lease was not released");
+    /// Keep `lease` as the one [`HeldLease::refresh`] and [`HeldLease::release`] act on.
+    pub fn hold(&self, lease: NodeLease) {
+        *self.lock() = Some(lease);
+    }
+
+    /// REFRESH the lease in `calls`, if one is held, on every [`LEASE_REFRESH_TICKS`]-th call: run
+    /// on the checkpoint flush tick, off any runtime worker. A lease another process took (this one
+    /// went unrefreshed past its lapse) is logged. The lease is cloned out of the lock, so no store
+    /// call waits under it.
+    pub fn refresh(&self, calls: &dyn StoreCalls) {
+        let tick = self
+            .ticks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
+            return;
+        }
+        let Some(lease) = self.lock().clone() else {
+            return;
+        };
+        match lease.refresh(calls) {
+            Ok(true) => {}
+            Ok(false) => tracing::error!(
+                host = %lease.host,
+                "this node's lease on its host name lapsed and another process took it"
+            ),
+            Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
+        }
+    }
+
+    /// RELEASE the lease in `calls`, if one is held: run on a clean shutdown once the journal's lane
+    /// drained, so the next boot of the host resumes the whole chain at once.
+    pub fn release(&self, calls: &dyn StoreCalls) {
+        let Some(lease) = self.lock().take() else {
+            return;
+        };
+        if let Err(why) = lease.release(calls) {
+            tracing::warn!(reason = %why, "this node's lease was not released");
+        }
     }
 }
 
@@ -711,8 +724,8 @@ fn write_atomically(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    busbar_kernel::durable::create_dir_all(dir)?;
-    busbar_kernel::durable::write(path, bytes)
+    crate::root::loader::durable::create_dir_all(dir)?;
+    crate::root::loader::durable::write(path, bytes)
 }
 
 /// Every node the registry names: `(host, node id)`, in key order.
@@ -775,16 +788,21 @@ pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, Str
 pub struct StoredWalk {
     /// The node ids whose chains were walked.
     pub chains: Vec<u64>,
-    /// What did not hold: a chain that does not verify, an audit record whose digest or link does
-    /// not hold, or whose signature does not verify under the deployment keyset.
+    /// What did not hold: a chain that does not verify, an audit record that does not decode, whose
+    /// digest or link does not hold, or whose signature does not verify under the deployment
+    /// keyset, and an unsigned one journalled after its chain's `Bootstrap`.
     pub findings: Vec<String>,
 }
 
 /// WALK EVERY CHAIN THE STORE KEEPS — every node the registry names, and `own` — verifying each
 /// journal chain and the audit records on it, signatures included, against `keys`. Off any runtime
-/// worker where one is waiting: this reads the whole of every chain.
+/// worker where one is waiting: this reads the whole of every chain. `own`'s chain is read beside
+/// `lane`, which may be putting to it ([`read_chain_beside`]): its record mid-put is not torn.
+/// Another node's chain has no lane here, so a record missing a part there is.
 #[must_use]
-pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) -> StoredWalk {
+pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> StoredWalk {
+    let calls = lane.calls();
+    let calls = calls.as_ref();
     off_runtime(|| {
         let mut walk = StoredWalk::default();
         let mut nodes = match registered(calls) {
@@ -799,7 +817,12 @@ pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) 
         nodes.dedup();
         for node in nodes {
             walk.chains.push(node);
-            let records = match read_chain(calls, node) {
+            let read = if node == own {
+                read_chain_beside(lane, node)
+            } else {
+                read_chain(calls, node)
+            };
+            let records = match read {
                 Ok(records) => records,
                 Err(why) => {
                     walk.findings.push(format!("node {node}: {why}"));
@@ -817,16 +840,42 @@ pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) 
                     continue;
                 }
             };
-            let audits: Vec<AuditRecord> = decoded
-                .iter()
-                .filter_map(|r| super::decode_audit(r).ok().flatten())
-                .collect();
+            // As the boot resumes a chain (`resume_audit`): a record that will not read back is a
+            // finding, and the first record journalled after this chain's `Bootstrap` is where
+            // its signatures start.
+            let mut audits: Vec<AuditRecord> = Vec::new();
+            let mut keyed = false;
+            let mut signed_from = None;
+            for record in &decoded {
+                keyed |= record.class == busbar_kernel_wal::RecordClass::Bootstrap;
+                match super::decode_audit(record) {
+                    Ok(Some(audit)) => {
+                        if keyed && signed_from.is_none() {
+                            signed_from = Some(audit.seq);
+                        }
+                        audits.push(audit);
+                    }
+                    Ok(None) => {}
+                    Err(why) => walk
+                        .findings
+                        .push(format!("node {node}: record {}: {why}", record.node_seq)),
+                }
+            }
             if let Err(broken) = AuditChain::verify_window(&audits) {
                 walk.findings
                     .push(format!("node {node}: audit chain: {broken:?}"));
             }
             for record in &audits {
                 let Some(key_id) = record.key_id.as_deref() else {
+                    // The signature is not in the digest: stripped, it leaves the chain whole and
+                    // only this rule sees it.
+                    if signed_from.is_some_and(|from| record.seq >= from) {
+                        walk.findings.push(format!(
+                            "node {node}: audit record {} is unsigned, sealed after the keyset \
+                             was bound",
+                            record.seq
+                        ));
+                    }
                     continue;
                 };
                 let verified = keys

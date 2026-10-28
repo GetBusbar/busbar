@@ -5,4 +5,3 @@
 
 mod breaker_adapter_tests;
 mod route;
-mod trust_net_tests;

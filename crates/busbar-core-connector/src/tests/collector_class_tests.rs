@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OTLP COLLECTOR POLICY AS THE `loopback-allowed` EGRESS CLASS JUDGES IT (ARCHITECT rule 15.3:
-//! ported, not dropped). 1.5.x held the OTLP endpoint to a collector guard (`collector_policy`),
+//! THE OTLP COLLECTOR POLICY AS THE `loopback-allowed` EGRESS CLASS JUDGES IT (ported, not dropped). 1.5.x held the OTLP endpoint to a collector guard (`collector_policy`),
 //! deleted with the cold export lane together with its suite (`crates/busbar/src/root/tests/otlp.rs`)
-//! and the root's egress-carrier tests. In 1.6.0 the `busbar-export-otlp` sink declares one outbound
+//! and the root's egress-carrier tests. In 1.6.0 the trace-export sink declares one outbound
 //! need in the `loopback-allowed` class and names the collector itself; the http framer locates the
 //! collector URL's authority and whether it is secured, and the connector's open judges that: the
 //! endpoint check, the one dial judge ([`judge`] over a [`GuardJudge`], the node's own ports held
@@ -12,10 +11,10 @@
 //! tests ask exactly those, in that order, under the production default guard (private addresses
 //! blocked, nothing allowlisted).
 //!
-//! Every verdict is 1.5.5's (ARCHITECT parity rulings, 2026-10-06; the source is the tag `v1.5.5`,
+//! Every verdict is 1.5.5's (the source is the tag `v1.5.5`,
 //! `crates/busbar/src/observability.rs`, the collector guard as it shipped). A private, CGNAT or
 //! unique-local collector is refused, over a secure connection or not, as 1.5.5 refused it; 1.6.0's
-//! destination guard admits it when `advanced.allow_destinations` names it (A2: the owner-signed
+//! destination guard admits it when `advanced.allow_destinations` names it (the
 //! guard still applying). An alternate IPv4 spelling (`127.1`, `2130706433`, `0x7f000001`,
 //! `16909060`, …) is the address it spells, judged as that address; plaintext reaches only a host
 //! WRITTEN as loopback (a loopback literal in any spelling, `localhost`, `*.localhost`), never a
@@ -103,17 +102,18 @@ fn allowing(allow: &[&str]) -> Arc<dyn DialJudge> {
 
 /// `authority` (`host:port`, as the http framer locates it out of the collector URL), dialled
 /// `secure` or in plaintext by a plugin-named need in `class`, judged as the connector's open
-/// judges it: the endpoint check, open-web's plaintext refusal, the dial judgement (waiting out a
-/// resolution), the class's scheme rule on the pinned address. The endpoint check's refusal reads
-/// as [`DEST_METADATA`], the scheme rule's as [`DEST_PLAINTEXT`].
+/// judges it: the endpoint check (the target names a host), open-web's plaintext refusal, the dial
+/// judgement (waiting out a resolution; the guard's metadata and link-local refusal reads as
+/// [`DEST_METADATA`]), the class's scheme rule on the pinned address. A hostless authority reads as
+/// [`DEST_NO_HOST`], the scheme rule's refusal as [`DEST_PLAINTEXT`].
 fn open(
     j: &Arc<dyn DialJudge>,
     authority: &str,
     secure: bool,
     class: u32,
 ) -> Result<SocketAddr, Verdict> {
-    if crate::endpoint::check(authority).is_err() {
-        return Err(DEST_METADATA);
+    if crate::endpoint::named(authority).is_err() {
+        return Err(DEST_NO_HOST);
     }
     if class == EGRESS_OPEN_WEB && !secure {
         return Err(DEST_PLAINTEXT);
@@ -237,7 +237,7 @@ fn cloud_metadata_never_reaches_a_collector_in_any_spelling() {
     }
 }
 
-/// RED (ARCHITECT parity ruling A3; ports
+/// RED (ports
 /// `test_validate_otlp_endpoint_rejects_alternate_encoded_internal` and 1.5.5's alternate-loopback
 /// carve-out): an alternate IPv4 spelling of LOOPBACK is the
 /// loopback collector it spells, reached in plaintext or over a secure connection at `127.0.0.1`,
@@ -296,11 +296,11 @@ fn an_alternate_ipv4_spelling_of_loopback_reaches_a_collector_as_in_1_5_5() {
     assert!(open(&j, "127.0.0.1:4318", false, LA).is_ok());
 }
 
-/// RED (ARCHITECT parity ruling A2; ports the private rows of
+/// RED (ports the private rows of
 /// `test_validate_otlp_endpoint_rejects_cloud_metadata_and_internal`: 1.5.5 refused
 /// `https://10.0.0.1/collect` and every RFC 1918, CGNAT, unique-local and link-local collector,
 /// v1.5.5 `crates/busbar/src/observability.rs:620-633`, `:676-728`, test `:1493`): a collector over
-/// a secure connection to any public host is reached, and the owner-signed destination guard still
+/// a secure connection to any public host is reached, and the destination guard still
 /// applies — a private collector, written or named, is refused under the default
 /// (`block_private_addresses` on, nothing allowlisted) and reached once
 /// `advanced.allow_destinations` names it. Loopback needs no entry. RED on the guard that admitted
@@ -401,7 +401,7 @@ fn an_address_is_judged_the_same_named_or_written() {
 /// `HTTPS://…` were valid collectors, `scheme_is`: v1.5.5
 /// `crates/busbar/src/observability.rs:180-183`, `:531`, `:570`, test `:1553-1571`; and every other
 /// 1.5.5 URL guard — provider `base_url`, `token_url`, the webhook — read it the same way, so every
-/// class does: ARCHITECT parity ruling A3); an empty one names none; a URL carrying userinfo is
+/// class does); an empty one names none; a URL carrying userinfo is
 /// refused as naming no host, a verdict code that carries none of it. RED on the URL arm that
 /// refused an upper-case scheme as a foreign one.
 #[test]
@@ -410,7 +410,7 @@ fn only_an_http_or_https_url_names_a_collector() {
     for url in [
         "file:///etc/shadow",
         "ftp://collector.example.com",
-        "grpc://collector:4317",
+        "rpc://collector:4317",
         "HTTPX://collector.example.com",
     ] {
         assert_eq!(j.judge_name(url, LA, false), Err(DEST_SCHEME), "{url}");
@@ -464,7 +464,7 @@ fn only_an_http_or_https_url_names_a_collector() {
     }
 }
 
-/// RED (ARCHITECT parity ruling A3; ports the plaintext rule of 1.5.5's collector guard,
+/// RED (ports the plaintext rule of 1.5.5's collector guard,
 /// `otlp_host_is_loopback`, v1.5.5 `crates/busbar/src/observability.rs:565-576`, `:643-664`, and the
 /// webrequest hook's `host_is_loopback` / `validate_target_url`, busbar-hook-webrequest v1.0.6
 /// `src/net_guard/mod.rs:155-171`, `:241`): plaintext reaches a collector only where the URL WRITES
@@ -539,7 +539,7 @@ fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
     }
 }
 
-/// RED (ARCHITECT parity ruling A3; 1.5.5's collector guard read an alternate IPv4 spelling as the
+/// RED (1.5.5's collector guard read an alternate IPv4 spelling as the
 /// address its URL parser canonicalized it to, v1.5.5 `crates/busbar/src/observability.rs:695-710`,
 /// as did the webrequest hook's): in the collector's class a spelling of a PUBLIC address is the
 /// public collector it spells, reached over a secure connection at that address and refused in

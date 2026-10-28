@@ -17,7 +17,7 @@ use crate::test_support::TestApp;
 use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use busbar_kernel::governance::signing::TokenSigner;
 use busbar_kernel::governance::NewKeySpec;
-use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
+use busbar_kernel::plane_driver::{EngineHost, LiveHostFactory};
 use busbar_kernel::store::BreakerState;
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -30,11 +30,11 @@ pub static CORE_ENGINE_KIT: CoreEngineKit = CoreEngineKit;
 /// The engine's test-kit provider. Stateless: every service it reaches is process-wide already.
 pub struct CoreEngineKit;
 
-fn need(level: HookNeed) -> busbar_plugin_loader::sign::NeedLevel {
+fn need(level: HookNeed) -> busbar_contract::plugin_rows::NeedLevel {
     match level {
-        HookNeed::No => busbar_plugin_loader::sign::NeedLevel::No,
-        HookNeed::Ro => busbar_plugin_loader::sign::NeedLevel::Ro,
-        HookNeed::Rw => busbar_plugin_loader::sign::NeedLevel::Rw,
+        HookNeed::No => busbar_contract::plugin_rows::NeedLevel::No,
+        HookNeed::Ro => busbar_contract::plugin_rows::NeedLevel::Ro,
+        HookNeed::Rw => busbar_contract::plugin_rows::NeedLevel::Rw,
     }
 }
 
@@ -86,7 +86,7 @@ impl EngineTestKit for CoreEngineKit {
     fn hook_env(&self, aliases: &[&str], prompt: HookNeed, user: HookNeed) -> HookEnvHandle {
         Box::new(crate::test_support::test_hook_env(
             aliases,
-            busbar_plugin_loader::sign::HookNeeds {
+            crate::test_support::HookNeeds {
                 prompt: need(prompt),
                 user: need(user),
             },
@@ -94,12 +94,10 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn audit_high_water_seq(&self) -> u64 {
-        crate::audit_ring::AUDIT
-            .export()
-            .iter()
-            .map(|e| e.seq)
-            .max()
-            .unwrap_or(0)
+        crate::audit::auditlog::AUDIT_LOG
+            .list_filtered(0, 1, None, None)
+            .first()
+            .map_or(0, |e| e.seq)
     }
 
     fn emit_admin_audit_now(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
@@ -336,14 +334,14 @@ impl EngineApp for crate::state::App {
     fn router_with_handle(self: Arc<Self>) -> (axum::Router, Arc<dyn EngineHandle>) {
         let (router, handle) = crate::build_router_with_limits(
             self,
-            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
             crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
             crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
         );
         (router, handle)
     }
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost> {
-        crate::plane_host::engine_host(&self)
+        crate::plane_driver::engine_host(&self)
     }
     fn handle(self: Arc<Self>) -> Arc<dyn EngineHandle> {
         Arc::new(crate::state::AppHandle::new(self))
@@ -374,10 +372,10 @@ fn app_of(app: Arc<dyn EngineApp>) -> Arc<crate::state::App> {
 
 impl EngineHandle for crate::state::AppHandle {
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost> {
-        crate::plane_host::engine_host_from_handle(&self)
+        crate::plane_driver::engine_host_from_handle(&self)
     }
     fn live_host_factory(self: Arc<Self>) -> LiveHostFactory {
-        crate::plane_host::live_host_factory(self)
+        crate::plane_driver::live_host_factory(self)
     }
     fn load(&self) -> Arc<dyn EngineApp> {
         crate::state::AppHandle::load(self)

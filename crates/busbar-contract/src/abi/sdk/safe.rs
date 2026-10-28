@@ -40,89 +40,341 @@
 //! than another type's bytes.
 
 use std::any::{Any, TypeId};
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome, FLAG_RESUME};
 use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenIn, OpenOut, ValidateIn};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
+use crate::abi::sdk::generation::Gen;
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, Reporting};
 
-/// What each ticket's op parked, by ticket.
-type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
+/// One op's parked continuation, its type erased: an `Option<S>` kept boxed in its slot. When the
+/// op ends it is emptied, not freed, so the next `S` parked in the slot reuses the allocation
+/// (BUSBAR-1.6.0.md A.8: a not-ready continuation comes from a recycled pool).
+trait Continuation: Send + Sync {
+    /// Drop what is held, keeping the allocation.
+    fn clear(&mut self);
+    /// The `Option<S>` itself, to downcast.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<S: Send + Sync + 'static> Continuation for Option<S> {
+    fn clear(&mut self) {
+        drop(self.take());
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// How many slots each segment of an instance's parked table holds. The trampoline is not handed
+/// the Statement's `max_inflight`, and tickets outside it park too (the driver ticket, a duplex
+/// connection's second side), so the table opens with one segment in the instance box and grows by
+/// a segment only when every slot holds a parked op: an allocation at the peak, never per crossing.
+const SEGMENT: usize = 16;
+
+/// A free slot's key.
+const FREE: u64 = 0;
+
+/// A ticket as a slot's key: its two words side by side, compared, never decoded (the encoding is
+/// the host's). A real ticket's generation is never `0`, so its key is never [`FREE`].
+fn key(ticket: Ticket) -> u64 {
+    (u64::from(ticket.slot) << 32) | u64::from(ticket.generation)
+}
+
+/// One parked op: its ticket's key, the slot's lock, and the pooled continuation.
+struct Slot {
+    /// [`FREE`], or the key of the ticket whose op is parked here. Written only under `lock`.
+    key: AtomicU64,
+    /// Held by whoever reads or writes `cell`: the ticket's own entry, or a `cancel` of it.
+    lock: AtomicBool,
+    /// The continuation's allocation, kept across the ops that park here.
+    cell: UnsafeCell<Option<Box<dyn Continuation>>>,
+}
+
+// SAFETY: `cell` is reached only through a `Held`, which owns `lock` while it lives, so one thread
+// at a time touches it; what it holds is `Send + Sync` (`Continuation`'s bound).
+unsafe impl Sync for Slot {}
+
+impl Slot {
+    fn new() -> Self {
+        Self {
+            key: AtomicU64::new(FREE),
+            lock: AtomicBool::new(false),
+            cell: UnsafeCell::new(None),
+        }
+    }
+
+    /// The slot, locked. Only parties on the slot's own ticket meet here (its entry and a `cancel`
+    /// of it), or a claimer that saw the slot free and lets go at once: never another ticket's op.
+    fn hold(&self) -> Held<'_> {
+        while self
+            .lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+        Held {
+            slot: self,
+            free: false,
+        }
+    }
+
+    /// The slot, locked, unless someone holds it.
+    fn try_hold(&self) -> Option<Held<'_>> {
+        if self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        Some(Held {
+            slot: self,
+            free: false,
+        })
+    }
+}
+
+/// A slot, locked; dropping it frees the slot's key when `free` says so, then lets go of the lock
+/// (a panic in a continuation's `Drop` included).
+struct Held<'a> {
+    slot: &'a Slot,
+    free: bool,
+}
+
+impl Held<'_> {
+    fn cell(&mut self) -> &mut Option<Box<dyn Continuation>> {
+        // SAFETY: this guard holds the slot's lock, so no other reference to the cell exists.
+        unsafe { &mut *self.slot.cell.get() }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if self.free {
+            self.slot.key.store(FREE, Ordering::Release);
+        }
+        self.slot.lock.store(false, Ordering::Release);
+    }
+}
+
+/// A run of slots, and the next run once this one filled.
+struct Segment {
+    slots: [Slot; SEGMENT],
+    /// The next segment, appended by [`Segment::grow`]; NULL until then. This segment owns it.
+    next: AtomicPtr<Segment>,
+}
+
+impl Segment {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| Slot::new()),
+            next: AtomicPtr::new(std::ptr::null_mut()),
+        }
+    }
+
+    fn next(&self) -> Option<&Segment> {
+        // SAFETY: a non-NULL `next` is a segment `grow` published, owned by this one and freed
+        // only when this one drops.
+        unsafe { self.next.load(Ordering::Acquire).as_ref() }
+    }
+
+    /// The next segment, appended when there is none: the table's only allocation after `open`.
+    fn grow(&self) -> &Segment {
+        if let Some(next) = self.next() {
+            return next;
+        }
+        let fresh = Box::into_raw(Box::new(Segment::new()));
+        match self.next.compare_exchange(
+            std::ptr::null_mut(),
+            fresh,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            // SAFETY: `fresh` is published as this segment's `next`, which it owns from now on.
+            Ok(_) => unsafe { &*fresh },
+            Err(theirs) => {
+                // SAFETY: `fresh` was never published: it is still this call's to free.
+                drop(unsafe { Box::from_raw(fresh) });
+                // SAFETY: `theirs` is the non-NULL `next` another worker published (as `next`).
+                unsafe { &*theirs }
+            }
+        }
+    }
+}
+
+impl Drop for Segment {
+    fn drop(&mut self) {
+        let next = *self.next.get_mut();
+        if !next.is_null() {
+            // SAFETY: a `next` `grow` published from `Box::into_raw`, owned by this segment alone.
+            drop(unsafe { Box::from_raw(next) });
+        }
+    }
+}
 
 /// What the SDK keeps in every instance box whatever the state's type: the tag, then the parked
 /// continuations, then what the instance's answers name.
 #[repr(C)]
 struct Head {
     tag: TypeId,
-    parked: Mutex<Parked>,
-    /// How many tickets `parked` holds, written under its lock as the guard drops and read without
-    /// it, so an entry on an instance with nothing parked never takes the lock every worker shares.
-    parked_len: AtomicUsize,
+    /// The parked continuations, by ticket: slots claimed by compare-and-swap on the ticket, each
+    /// locked only by its own ticket's parties, so no crossing waits on another ticket's op, and
+    /// none allocates once its slot's continuation is pooled (BUSBAR-1.6.0.md decision #30, A.8).
+    parked: Segment,
     kept: Kept,
 }
 
-/// The parked table, locked; dropping it states the table's length in [`Head::parked_len`].
-struct ParkedGuard<'a> {
-    table: MutexGuard<'a, Parked>,
-    len: &'a AtomicUsize,
-}
-
-impl Deref for ParkedGuard<'_> {
-    type Target = Parked;
-    fn deref(&self) -> &Parked {
-        &self.table
-    }
-}
-
-impl DerefMut for ParkedGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Parked {
-        &mut self.table
-    }
-}
-
-impl Drop for ParkedGuard<'_> {
-    fn drop(&mut self) {
-        self.len.store(self.table.len(), Ordering::Release);
-    }
-}
-
 impl Head {
-    fn new(tag: TypeId, parked: Parked) -> Self {
+    fn new(tag: TypeId) -> Self {
         Self {
             tag,
-            parked_len: AtomicUsize::new(parked.len()),
-            parked: Mutex::new(parked),
+            parked: Segment::new(),
             kept: Kept::default(),
         }
     }
 
-    fn parked(&self) -> ParkedGuard<'_> {
-        ParkedGuard {
-            table: self.parked.lock().unwrap_or_else(PoisonError::into_inner),
-            len: &self.parked_len,
+    fn slots(&self) -> impl Iterator<Item = &Slot> {
+        std::iter::successors(Some(&self.parked), |&s| s.next()).flat_map(|s| s.slots.iter())
+    }
+
+    /// The slot `ticket`'s op is parked in, locked; `None` when nothing is parked on it, without
+    /// taking any lock.
+    fn find(&self, ticket: Ticket) -> Option<Held<'_>> {
+        if ticket.is_none() {
+            return None;
+        }
+        let key = key(ticket);
+        for slot in self.slots() {
+            if slot.key.load(Ordering::Acquire) == key {
+                let held = slot.hold();
+                // Freed before the lock was taken: the ticket's op is no longer parked here.
+                if slot.key.load(Ordering::Acquire) == key {
+                    return Some(held);
+                }
+            }
+        }
+        None
+    }
+
+    /// A free slot claimed for `ticket` by compare-and-swap, locked: first one whose pooled
+    /// continuation is an `S` (or none yet), then any free one, then one in a new segment.
+    fn claim<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Held<'_> {
+        let key = key(ticket);
+        for any in [false, true] {
+            for slot in self.slots() {
+                if let Some(held) = Self::claim_free::<S>(slot, key, any) {
+                    return held;
+                }
+            }
+        }
+        let mut segment = &self.parked;
+        loop {
+            segment = segment.grow();
+            for slot in &segment.slots {
+                if let Some(held) = Self::claim_free::<S>(slot, key, true) {
+                    return held;
+                }
+            }
         }
     }
 
-    /// Drop what `ticket` parked, outside the lock. Nothing parked on the instance means nothing
-    /// parked on `ticket`: the lock is not taken. What this ticket parked was parked by an earlier
-    /// entry of the same op, which the host's next entry on the ticket follows, so its length is
-    /// seen here.
-    fn forget(&self, ticket: Ticket) {
-        if self.parked_len.load(Ordering::Acquire) == 0 {
+    /// `slot` claimed for `key`, locked, when it is free and (unless `any`) pools an `S` or
+    /// nothing.
+    fn claim_free<S: 'static>(slot: &Slot, key: u64, any: bool) -> Option<Held<'_>> {
+        if slot.key.load(Ordering::Relaxed) != FREE {
+            return None;
+        }
+        let mut held = slot.try_hold()?;
+        let fits = any
+            || held
+                .cell()
+                .as_mut()
+                .is_none_or(|c| c.as_any_mut().is::<Option<S>>());
+        let claimed = fits
+            && slot
+                .key
+                .compare_exchange(FREE, key, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok();
+        // Not claimed: `held` lets go of the lock as it drops.
+        if claimed {
+            Some(held)
+        } else {
+            None
+        }
+    }
+
+    /// Park `state` on `ticket`, replacing what was parked there, in the slot's pooled allocation
+    /// when it holds an `S`. What it replaces is dropped outside the slot's lock.
+    fn park<S: Send + Sync + 'static>(&self, ticket: Ticket, state: S) {
+        if ticket.is_none() {
             return;
         }
-        let gone = self.parked().remove(&ticket);
-        drop(gone);
+        let mut held = match self.find(ticket) {
+            Some(held) => held,
+            None => self.claim::<S>(ticket),
+        };
+        let cell = held.cell();
+        if let Some(pooled) = cell
+            .as_mut()
+            .and_then(|c| c.as_any_mut().downcast_mut::<Option<S>>())
+        {
+            let old = pooled.replace(state);
+            drop(held);
+            drop(old);
+            return;
+        }
+        // The slot's first `S`: the one allocation, kept for every later op parked here.
+        let old = cell.replace(Box::new(Some(state)));
+        drop(held);
+        drop(old);
+    }
+
+    /// Take back what `ticket` parked as an `S`, freeing its slot (the allocation stays, pooled);
+    /// `None` when nothing is, or another type is (it stays).
+    fn take<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Option<S> {
+        let mut held = self.find(ticket)?;
+        let taken = held
+            .cell()
+            .as_mut()?
+            .as_any_mut()
+            .downcast_mut::<Option<S>>()?
+            .take()?;
+        held.free = true;
+        Some(taken)
+    }
+
+    /// Drop what `ticket` parked and free its slot, the allocation kept for the next op parked
+    /// there. Nothing parked on `ticket` takes no lock at all.
+    fn forget(&self, ticket: Ticket) {
+        if let Some(mut held) = self.find(ticket) {
+            held.free = true;
+            if let Some(c) = held.cell().as_mut() {
+                c.clear();
+            }
+        }
+    }
+
+    /// How many tickets hold parked state.
+    fn count(&self) -> usize {
+        self.slots()
+            .filter(|s| s.key.load(Ordering::Acquire) != FREE)
+            .count()
+    }
+
+    /// Every slot of the table, locked: a test holds the whole table while another worker crosses.
+    #[cfg(test)]
+    fn parked(&self) -> Vec<Held<'_>> {
+        self.slots().map(Slot::hold).collect()
     }
 }
 
@@ -152,6 +404,10 @@ pub struct Instance<'call, T> {
     ticket: Ticket,
     resuming: bool,
     opened: &'call Cell<Option<Box<Tagged<T>>>>,
+    /// INVARIANT in `'call` (status row 194): an instance cannot be shortened to a local's
+    /// lifetime, so the generation borrow it lends ([`Instance::generation`]) holds only what the
+    /// instance state lives for.
+    _call: PhantomData<fn(&'call ()) -> &'call ()>,
 }
 
 impl<T> std::fmt::Debug for Instance<'_, T> {
@@ -196,7 +452,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             "Instance::open: the state is installed in `open` only"
         );
         self.opened.set(Some(Box::new(Tagged {
-            head: Head::new(TypeId::of::<T>(), HashMap::new()),
+            head: Head::new(TypeId::of::<T>()),
             state,
         })));
     }
@@ -212,14 +468,52 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             self.index == slot::OPEN,
             "Instance::open_parking: the state is installed in `open` only"
         );
-        let mut map: Parked = HashMap::new();
-        if !self.ticket.is_none() {
-            map.insert(self.ticket, Box::new(parked));
-        }
-        self.opened.set(Some(Box::new(Tagged {
-            head: Head::new(TypeId::of::<T>(), map),
+        let tagged = Box::new(Tagged {
+            head: Head::new(TypeId::of::<T>()),
             state,
-        })));
+        });
+        // A call with no ticket parks nothing (`Head::park`).
+        tagged.head.park(self.ticket, parked);
+        self.opened.set(Some(tagged));
+    }
+
+    /// THE GENERATION BORROW this op is lent (status row 194): a string or payload borrowed for
+    /// `'call` (the instance state [`Instance::get`] answers, or the program's memory) lives at
+    /// least until the instance's next refresh generation, so the runtime writers
+    /// ([`AbiStr::lent`](crate::abi::mechanism::call::AbiStr::lent),
+    /// [`Out::lent_str`](super::Out::lent_str)) take it as their proof. A local of the body, or a
+    /// string the host lent the call, is refused at compile time.
+    ///
+    /// ```
+    /// use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
+    /// use busbar_contract::abi::sdk::{Instance, Out};
+    /// struct State {
+    ///     name: String,
+    /// }
+    /// fn answer(instance: Instance<'_, State>, mut out: Out<'_, OutHead>) -> Outcome {
+    ///     let gen = instance.generation();
+    ///     if let Some(state) = instance.get() {
+    ///         let _named: AbiStr = AbiStr::lent(&state.name, &gen);
+    ///         out.error_lent(&state.name, &gen);
+    ///     }
+    ///     Outcome::Failed
+    /// }
+    /// ```
+    #[must_use]
+    pub fn generation(&self) -> Gen<'call> {
+        // `close` frees the state its borrow names before the host reads the `out`; the
+        // trampoline clears what `close` named (above), and a `close` has no use for it.
+        debug_assert_ne!(
+            self.index,
+            slot::CLOSE,
+            "Instance::generation: close frees the state the borrow names"
+        );
+        // SAFETY: `'call` is the instance's lifetime, which nothing but the instance state
+        // (`get`) and the program's memory is borrowed for: the body's own locals and what the
+        // host lent the call live for shorter, unrelated lifetimes, and `Instance` is invariant in
+        // `'call`, so it is never shortened to theirs. The state lives until `close` answers
+        // READY, after every other call of the instance, so past its next refresh generation.
+        unsafe { Gen::assume() }
     }
 
     fn head(&self) -> Option<&'call Head> {
@@ -231,35 +525,38 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     /// (what it has done, buffers a pending service reads or writes). It replaces what was parked
     /// there. The SDK drops it unless this call answers PENDING and the host's next entry on the
     /// ticket is its RESUME; a call with no ticket or no instance parks nothing (it may not pend).
+    ///
+    /// It takes no lock another ticket's op holds, and once the instance has parked an `S` its
+    /// allocation is reused: a warm park allocates nothing.
     pub fn park<S: Send + Sync + 'static>(&self, state: S) {
-        if let (Some(h), false) = (self.head(), self.ticket.is_none()) {
-            let old = h.parked().insert(self.ticket, Box::new(state));
-            drop(old);
+        if let Some(h) = self.head() {
+            h.park(self.ticket, state);
         }
     }
 
-    /// Take back what [`Instance::park`] parked on this call's ticket, in the op's RESUME;
-    /// `None` in a fresh entry, when nothing is parked, or when another type is (it stays).
+    /// Take back what [`Instance::park`] parked on this call's ticket, in the op's RESUME, by
+    /// value: its allocation stays in the instance's pool for the next park, so the crossing
+    /// allocates nothing. `None` in a fresh entry, when nothing is parked, or when another type is
+    /// (it stays).
     #[must_use]
-    pub fn resume<S: Send + Sync + 'static>(&self) -> Option<Box<S>> {
+    pub fn resume_value<S: Send + Sync + 'static>(&self) -> Option<S> {
         if !self.resuming {
             return None;
         }
-        let h = self.head()?;
-        let mut parked = h.parked();
-        match parked.remove(&self.ticket)?.downcast::<S>() {
-            Ok(s) => Some(s),
-            Err(other) => {
-                parked.insert(self.ticket, other);
-                None
-            }
-        }
+        self.head()?.take(self.ticket)
+    }
+
+    /// [`Instance::resume_value`], boxed. The box is a fresh allocation: a body on the request path
+    /// takes the value with [`Instance::resume_value`].
+    #[must_use]
+    pub fn resume<S: Send + Sync + 'static>(&self) -> Option<Box<S>> {
+        self.resume_value().map(Box::new)
     }
 
     /// How many tickets hold parked state on this instance.
     #[must_use]
     pub fn parked_count(&self) -> usize {
-        self.head().map_or(0, |h| h.parked().len())
+        self.head().map_or(0, Head::count)
     }
 
     /// Whether this entry is its op's RESUME (the mechanism's `FLAG_RESUME`).
@@ -414,6 +711,7 @@ impl<S: SafeSlot> Entry for Safe<S> {
             ticket: call.ticket,
             resuming,
             opened: &opened,
+            _call: PhantomData,
         };
         // What the body reports is built here and handed to the instance when it returns.
         let reporting: Reporting = Cell::new(None);
@@ -496,10 +794,15 @@ impl<S: SafeSlot> Entry for Safe<S> {
                     // Not this state's box: leave it rather than free it as another type.
                     return Outcome::Fault;
                 }
+                // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
+                let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
+                // Whatever `close` named in its `out` may live in the box that goes now (a reason
+                // leased from the state's table, a string the generation borrow named): the host
+                // reads the `out` after this call, so it names none of it (status row 194).
+                head.error = crate::abi::mechanism::call::AbiStr::ABSENT;
+                head.extensions = crate::abi::mechanism::call::Blob::ABSENT;
                 if kept_report {
                     // What `close` reported lives in the box that goes now: it is not reported.
-                    // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
-                    let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
                     head.envelope.metrics = std::ptr::null();
                     head.envelope.metrics_len = 0;
                     head.envelope.diags = std::ptr::null();

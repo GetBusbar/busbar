@@ -406,6 +406,16 @@ impl Instance {
 /// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
 /// worker, after the wake that carried it returned).
 pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    quarantine(
+        wake,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined",
+    );
+}
+
+/// The instance whose handle `wake` is, quarantined for the plugin fault `why`, as
+/// [`quarantine_crossing`] quarantines a crossing's: faulted, never called again on any worker, its
+/// connections gone, its handle naming nothing any more.
+pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
     wake.revoked.store(true, Ordering::Release);
     let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
         return;
@@ -414,10 +424,7 @@ pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
     if let Some((id, table)) = inst.wake.conn.get() {
         super::conn_services::purge(*id, table);
     }
-    tracing::warn!(
-        plugin = %inst.name,
-        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
-    );
+    tracing::warn!(plugin = %inst.name, "{why}");
 }
 
 /// One family's shape, copied from the Statement: its kind and its label count.
@@ -428,7 +435,8 @@ struct FamilyShape {
 }
 
 /// THE INSTANCE, kind-erased: what every crossing needs. Shared across workers.
-pub(crate) struct Instance {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub struct Instance {
     /// The instance's identity on the host's connection table.
     pub(crate) instance: InstanceId,
     /// The needs its Statement declares, in Statement order (empty when it was handed no table).
@@ -473,18 +481,23 @@ pub(crate) struct Instance {
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
     /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
-    pub(crate) crossings: AtomicU64,
+    #[doc(hidden)]
+    pub crossings: AtomicU64,
     /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
     /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
     /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
     /// the op pends.
-    pub(crate) resumes: AtomicU64,
+    #[doc(hidden)]
+    pub resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
     next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
     pub(crate) drainable: AtomicU32,
+    /// Ops of ADMITTED UNITS in flight (a plane unit's `on_piece` and `serve`): they hold no
+    /// `max_inflight` unit, and `close` is refused while any is in flight (THE DESIGN §11.13 M1).
+    pub(crate) unit_ops: AtomicU32,
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
     pub(crate) timeout: Outcome,
@@ -495,7 +508,7 @@ pub(crate) struct Instance {
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
-    unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    pub(crate) unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
     /// [`Kind::cancel_frame`] of the bound kind.
     pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
@@ -508,7 +521,8 @@ pub(crate) struct Instance {
     /// it was lent), then handed to the caller as the reason. Empty at any other time.
     open_reason: Mutex<Vec<u8>>,
     /// What its driver ticket's READY `drive` answers named, until the host collects them.
-    pub(crate) driven: super::worker::Driven,
+    #[doc(hidden)]
+    pub driven: super::worker::Driven,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
 }
@@ -618,7 +632,8 @@ impl Instance {
 
     /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
     /// on every call ([`super::handle::resolve`]).
-    pub(crate) fn ctx(&self) -> HostCtx {
+    #[doc(hidden)]
+    pub fn ctx(&self) -> HostCtx {
         self.tables.0.ctx
     }
 
@@ -645,16 +660,31 @@ impl Instance {
     /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
     /// no other op is in flight (one atomic step). `None` over the cap, or `close` with ops in
     /// flight.
+    ///
+    /// `close` is refused too while an admitted unit's op is in flight ([`Instance::unit_ops`];
+    /// THE DESIGN §11.13 M1: "`close` is refused while units are in flight"). The count is read
+    /// again once the units are taken: a unit op counted before that is seen and the units go
+    /// back; one counted after it was submitted after `close` was admitted, and meets the closing
+    /// instance's own refusal.
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         let close = s == slot::CLOSE;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
         let want = if close { self.cap } else { 1 };
-        self.inflight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        let taken = self
+            .inflight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 let fits = if close { n == 0 } else { n < self.cap };
                 fits.then_some(n + want)
             })
             .ok()
-            .map(|_| want)
+            .map(|_| want)?;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            self.release(taken);
+            return None;
+        }
+        Some(taken)
     }
 
     pub(crate) fn release(&self, units: u32) {
@@ -736,8 +766,8 @@ impl Instance {
                 continue;
             }
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
-            // registration that names a program is a member, its `command`/`args`/`env` its
+            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5, the member-program upstream ruling (A)):
+            // each registration that names a program is a member, its `command`/`args`/`env` its
             // program (every other key its own), sealed per member: the table keeps one long-lived
             // program per member, and a re-declaration retires a member that changed or is gone.
             if busbar_contract::section::member_program(&need.target_from) {
@@ -772,9 +802,14 @@ impl Instance {
     /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
     /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
     /// under the key, rotated at the `rotate_mb` (the host's rotation key,
-    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
-    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
-    /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it as the host's
+    /// [`busbar_contract::services::DiskRotate`] for the key: from the archives the manifest
+    /// declares it keeps (`declares.keep`: `0` truncates in place, as 1.5.5's request-log sink did;
+    /// `n` renames keeping `n`), else the host's default
+    /// ([`busbar_contract::services::DISK_ROTATE_UNDECLARED`]). The operator's `keep` beside it
+    /// ([`busbar_contract::services::DISK_KEEP_KEY`]) outranks the manifest's. A key the settings leave unset is
+    /// not bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the
+    /// file.
     fn bind_destinations(&self, settings: Blob) {
         let Some(keys) = self.wake.destinations.get() else {
             return;
@@ -790,6 +825,10 @@ impl Instance {
             .get(busbar_contract::services::DISK_ROTATE_KEY)
             .and_then(serde_json::Value::as_u64)
             .map(|mb| mb.saturating_mul(1024 * 1024));
+        let operator_keep = doc
+            .get(busbar_contract::services::DISK_KEEP_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
         let bound = keys
             .iter()
             .filter_map(|key| {
@@ -799,7 +838,11 @@ impl Instance {
                         key: key.clone(),
                         path: path.to_owned(),
                         rotate_at,
-                        keep: busbar_contract::services::DISK_KEEP,
+                        // The operator's `keep`, else the manifest's, else the host's default.
+                        rotate: busbar_contract::services::DiskRotate::declared(
+                            operator_keep
+                                .or_else(|| self.wake.keep.get().and_then(|k| k.get(key)).copied()),
+                        ),
                     }
                 })
             })
@@ -908,6 +951,30 @@ impl Instance {
             self.close_half_open();
         }
         crossed
+    }
+
+    /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
+    /// abandoned with no worker to resume it on (a replaced worker's orphan): a TICKET-LESS crossing,
+    /// listed in [`Instance::calls`] so the watchdog judges one that hangs, made on a permanent FFI
+    /// worker ([`crate::ffi_thread`]) since its caller's thread retires. The kind's own frame, as
+    /// the worker's `cancel` sends it.
+    pub(crate) fn cancel_abandoned(
+        &self,
+        ticket: Ticket,
+        class: DeadlineClass,
+        unit: Option<u64>,
+    ) -> Outcome {
+        let mut frame = (self.cancel_frame)();
+        frame.name_unit(unit.unwrap_or(0));
+        let (input, out, out_size) = frame.prepare(ticket, class as u8);
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
+        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
+            self.cross(slot::CANCEL, input, out, out_size)
+        });
+        self.lock_calls().retain(|c| c.0 != id);
+        crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
     /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
@@ -1037,9 +1104,10 @@ impl Instance {
         }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
-        // The unit this crossing serves, for the host services it calls.
+        // The unit this crossing serves, and the ticket it carries, for the host services it calls.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
+        let _ticket = super::services::crossing(ticket);
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -1065,6 +1133,7 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
+                let _ticket = super::services::crossing(ticket);
                 with_crossing(Some(self), || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
@@ -1332,18 +1401,18 @@ pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u
     }
 }
 
-/// `len` entries at `p`, or `None` for NULL-with-length or an over-long array.
+/// `len` entries at `p`, or `None` for NULL-with-length, an over-long array, or one misaligned for
+/// `T`: formed only through the one capped, validated reader ([`validate::lent`], THE DESIGN
+/// §11.13 M1).
 ///
 /// # Safety
-/// A non-NULL `p` points to `len` live `T`s.
+/// A range that passes the checks names `len` live `T`s.
 unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
-    match (p.is_null(), len) {
-        (_, 0) => Some(&[]),
-        (true, _) => None,
-        (false, n) if n > MAX_ENVELOPE_ENTRIES => None,
-        // SAFETY: the caller's contract.
-        (false, n) => Some(unsafe { std::slice::from_raw_parts(p, n) }),
+    if len > MAX_ENVELOPE_ENTRIES {
+        return None;
     }
+    // SAFETY: the caller's contract.
+    unsafe { validate::lent(p, len) }
 }
 
 /// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
@@ -1381,7 +1450,8 @@ pub(crate) unsafe fn kind_tail<T: Copy>(
 
 /// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
 /// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
-pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
     if s.len == 0 {
         return Some(&[]);
     }
@@ -1404,7 +1474,8 @@ pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
 /// DESIGN C.1, `BUSBAR-1.6.0.md` l.3868: "`Plugin<K>` is `!Clone`"): the instance has one owner,
 /// and a holder that shares it shares an `Arc<Plugin<K>>`, never a copy of the handle.
 pub struct Plugin<K: Kind> {
-    pub(crate) inner: Arc<Instance>,
+    #[doc(hidden)]
+    pub inner: Arc<Instance>,
     _k: PhantomData<fn() -> K>,
 }
 
@@ -1601,6 +1672,7 @@ impl<K: Kind> Plugin<K> {
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
+                unit_ops: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
                 timeout: K::TIMEOUT,
@@ -1642,11 +1714,17 @@ impl<K: Kind> Plugin<K> {
     }
 
     /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
-    /// file the host appends to for it, `declares.destinations`), before it opens: its `open` and
-    /// `refresh` bind each to the path its settings give, and `disk.append` serves it those only.
-    /// Granted once; a second grant is ignored.
-    pub fn grant_destinations(&self, keys: &[String]) {
-        let _ = self.inner.wake.destinations.set(keys.to_vec());
+    /// file the host appends to for it, `declares.destinations`, each with the retention
+    /// `declares.keep` states for it), before it opens: its `open` and `refresh` bind each to the
+    /// path its settings give, and `disk.append` serves it those only. Granted once; a second
+    /// grant is ignored.
+    pub fn grant_destinations(&self, declares: &crate::sign::Declares) {
+        let _ = self.inner.wake.keep.set(declares.keep.clone());
+        let _ = self
+            .inner
+            .wake
+            .destinations
+            .set(declares.destinations.clone());
     }
 
     /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.
@@ -1752,7 +1830,23 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
     ) -> Called {
-        self.call_ticketed(s, frame, ticket, resume)
+        // A NEW op on the ticket starts with nothing kept; a resume, or the re-call a short answer
+        // earns, reads what its op kept (`super::inline`, THE DESIGN §11.12).
+        let inline = self
+            .inner
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.inline());
+        if let Some(tickets) = &inline {
+            tickets.starting(ticket, self.inner.instance, s, resume);
+        }
+        let called = self.call_ticketed(s, frame, ticket, resume);
+        if let Some(tickets) = &inline {
+            tickets.ended(ticket, s, called.recall.is_some());
+        }
+        called
     }
 
     fn instance_id(&self) -> usize {
@@ -1939,3 +2033,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
 #[cfg(test)]
 #[path = "../tests/instance_id_tests.rs"]
 mod instance_id_tests;
+
+#[cfg(test)]
+#[path = "../tests/envelope_array_tests.rs"]
+mod envelope_array_tests;

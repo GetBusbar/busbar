@@ -61,9 +61,6 @@ pub mod test_support;
 pub mod verb;
 pub mod verbs;
 pub mod versions;
-// The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
-#[cfg(any(test, feature = "test-support"))]
-pub mod witness;
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError};
@@ -123,46 +120,24 @@ fn seam_mount(
 /// admin surface through the seam, which is unregistered until the composition root (production) or
 /// this helper (tests) installs it — so every moved test that wants the admin routes builds through
 /// here instead of naming `busbar_kernel::build_router` directly.
-/// Install the process-wide test environment exactly once: every LINKED plane's test seams
-/// (protocols/codecs, plane runtimes, ingress hooks), then the admin mount seam. busbar-core's own
-/// unit-test binary auto-registers these from its `cfg(test)` builtins, but a test-support CONSUMER
-/// (this crate) has `cfg(test)` false for its busbar-core dependency, so it must install them
-/// explicitly. It names no plane crate: `build.rs` emits `TEST_LINKED` (each linked dev-dependency's
-/// `testkit::TEST_SEAM` entry, listed as data in Cargo.toml's `[package.metadata.busbar]
-/// test-linked`); this registers each into the kernel's test-seam registry and runs every registered
-/// install. All are idempotent (first-wins), so calling this from every router builder is safe.
+/// Install the process-wide test environment exactly once, from the kernel's KIND-NEUTRAL doubles
+/// (THE DESIGN, the kernel: "Kernel tests use kind-neutral doubles ... The cleanliness crates obey the
+/// same rule"): the operator credential's double on the auth axis, the neutral fallback plane (a
+/// plane owns `pools:`), the neutral synthetic protocols, then the admin mount seam. This crate's
+/// tests link no plugin; a cell that asserts a real plane's behaviour is the composition root's.
+/// All installs are idempotent (first-wins), so calling this from every router builder is safe.
 ///
 /// A `#[cfg(test)]` MODULE, not a bare `#[cfg(test)] fn`: this body is test-binary-only code, and the
 /// module is the form `plane-purity` reads as test scope.
 #[cfg(test)]
 mod test_seams {
-    include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
-    include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
-
     pub(crate) fn ensure_seam() {
-        use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
         SEAM_ONCE.call_once(|| {
-            // The operator credential's test registry row, before anything resolves the auth axis.
-            // This binary links the operator plugin the composition root links and pins the root's
-            // bytes, so it hands in the root's words as the root does (crates/busbar's legacy
-            // table, `root::auth_bindings::operator_auth_module`; ARCHITECT 2026-09-30,
-            // KERNEL-AUTH-ZERO Q2).
-            for_each_operator_auth_row!(install_operator_row);
-            fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
-                const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =
-                    busbar_kernel::test_support::OperatorWords {
-                        provider: "admin-tokens",
-                        principal_id: "admin",
-                    };
-                busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
-            }
-            for entry in TEST_LINKED {
-                register_test_plane_seam(entry);
-            }
-            for seam in test_plane_seams() {
-                (seam.install)();
-            }
+            // The operator credential's double, before anything resolves the auth axis.
+            busbar_kernel::test_support::operator_double::install();
+            // The kernel's neutral seam: its synthetic protocols and the neutral fallback plane.
+            (busbar_kernel::testkit::TEST_SEAM.install)();
             super::install();
         });
     }
@@ -179,16 +154,16 @@ pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     busbar_kernel::test_support::TestApp::new()
 }
 
-/// The first codec protocol this test binary links, read off the protocol registry the linked
-/// planes' test seams installed (their own declarations) rather than spelled here: an admin test
-/// needs a provider protocol the validator accepts, never a particular dialect.
+/// The first codec protocol this test binary registers, read off the protocol registry (the
+/// kernel's neutral synthetic rows) rather than spelled here: an admin test needs a provider
+/// protocol the validator accepts, never a particular dialect.
 #[cfg(test)]
 pub(crate) fn linked_protocol() -> &'static str {
     ensure_seam();
-    busbar_kernel::proto::known_protocols()
+    busbar_kernel::ingress::protocols::known_protocols()
         .first()
         .copied()
-        .expect("this test binary links a codec protocol")
+        .expect("this test binary registers a codec protocol")
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn ensure_seam() {

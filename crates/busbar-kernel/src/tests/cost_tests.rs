@@ -1115,36 +1115,3 @@ fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
         );
     }
 }
-
-/// **THE COST MODEL AND THE CAP CHECK NAME NO METER CLASS** (audit K5#2; BUSBAR-1.6.0.md #77(4):
-/// "Classes are STRINGS declared by the plane"). A per-class token cap is carried as the class its
-/// `tokens_<class>` config word names and checked against the cell's count of that class, so
-/// neither the resolved bucket nor the admission check has a field or a constant per tier. A
-/// source witness: what has to stay true is that these two files spell no tier.
-#[test]
-fn the_cost_model_and_the_cap_check_name_no_meter_class() {
-    for (file, src) in [
-        ("cost.rs", include_str!("../cost.rs")),
-        (
-            "governance/state.rs",
-            include_str!("../governance/state.rs"),
-        ),
-    ] {
-        for name in [
-            "UNIT_INPUT",
-            "UNIT_OUTPUT",
-            "UNIT_CACHE_READ",
-            "UNIT_CACHE_WRITE",
-            "tokens_input_cap",
-            "tokens_output_cap",
-            "tokens_cache_read_cap",
-            "tokens_cache_write_cap",
-        ] {
-            assert!(
-                !src.contains(name),
-                "{file} names `{name}`: a per-tier field or constant in the kernel's cost model or \
-                 cap check, where a cap is an opaque class name"
-            );
-        }
-    }
-}

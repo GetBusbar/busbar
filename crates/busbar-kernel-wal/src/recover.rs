@@ -63,6 +63,21 @@
 //! this layout left unfinished, so it is treated the same way — its bytes are whole and another
 //! build can read them, so they are never simply cut.
 //!
+//! ## Acknowledged damage is never cut, and nothing behind it is lost with it
+//!
+//! Frames sit at a fixed stride, so the scan does not stop for good at acknowledged damage: it reads
+//! on to the next frame that opens a record, and every record from there on whose frames all verify
+//! is kept, exactly as if the damage were not there. The damaged record alone is the HOLE: copied
+//! into a quarantine, reported, and LEFT IN PLACE, because cutting it would cut every good record
+//! behind it, and because only a true torn tail is ever truncated (THE DESIGN, MONEY-CHAIN,
+//! BUSBAR-1.6.0.md l.1056-1058). A corrupt remainder with no record behind it is copied too, and the
+//! segment is closed to writes rather than cut, so the next append rolls past it. Either way the
+//! damage is still on the medium at the next boot, which finds it, reports it and keeps the units it
+//! names from settling at 0 all over again. Each hole names the kept records on either side of it
+//! ([`Quarantine::before`], [`Quarantine::after`]), which is what lets the journal's chain verify
+//! across it and nowhere else. A torn tail is still cut whole: what a crash left of a commit nothing
+//! acknowledged is not read past.
+//!
 //! The verdict is returned rather than acted on further here. Raising the alarm — the log line, the
 //! counter, the durable record naming what was set aside — is the caller's, which is the one place
 //! that knows what the lost records meant.
@@ -89,7 +104,7 @@ pub enum TailVerdict {
     Torn,
     /// The scan stopped on damage a crash does not leave: a commit a subsequent one acknowledges, a whole
     /// frame that fails a check, or a frame written under a layout this build does not read.
-    /// Acknowledged records are in it. Never cut without a quarantine copy first.
+    /// Acknowledged records are in it. Copied into a quarantine and never cut.
     Corrupt {
         /// The byte offset, inside the segment, of the frame the scan stopped on.
         at: u64,
@@ -116,9 +131,10 @@ pub enum QuarantineKept {
     /// In the memory factory's own quarantine list. A memory-backed log has no disk to put it on,
     /// and the process holding it is the only thing that could ever have read it.
     Memory,
-    /// The copy could not be made durable, so the segment was NOT cut: the damaged bytes are still
-    /// in it, it is closed to writes, and the next append rolls to a fresh segment. The text is why
-    /// the copy failed.
+    /// The copy could not be made durable, so the damaged bytes are only where they were, in the
+    /// segment — which recovery never cuts, and which is closed to writes besides, so the next
+    /// append rolls to a fresh segment and nothing is ever written near them. The text is why the
+    /// copy failed.
     InPlace(String),
 }
 
@@ -129,13 +145,14 @@ pub struct Quarantine {
     pub segment: u64,
     /// The segment's file, on a log that has one.
     pub segment_file: Option<PathBuf>,
-    /// The first byte set aside — the end of the verified prefix that was kept.
+    /// The first byte set aside — the end of the record kept before it.
     pub offset: u64,
     /// The frame the scan stopped on. At or after `offset`: frames of a record that never completed
     /// verify on their own and still go with the damage.
     pub damage_at: u64,
-    /// How many bytes were set aside, from `offset` to the end of what was ever written. Space
-    /// claimed ahead of the writes is zeros and is not copied.
+    /// How many bytes were set aside, from `offset` to the next record kept — or, past the last
+    /// one, to the end of what was ever written. Space claimed ahead of the writes is zeros and is
+    /// not copied.
     pub bytes: u64,
     /// Why the scan stopped, when a frame said so.
     pub why: Option<FrameError>,
@@ -149,8 +166,8 @@ pub struct Quarantine {
     /// number never moves a node's numbering further than one per set-aside record.
     pub unverified: Vec<(u64, u64)>,
     /// Every record the set-aside bytes hold whose frames' HEADERS check, assembled as the bytes now
-    /// read: a whole altered record (header checks, digest does not) and every acknowledged record
-    /// behind the damage. They are gone from the log, and the caller reads what they named — a
+    /// read: a whole altered record (header checks, digest does not), and the head of a record the
+    /// damage cut into. They are off the book, and the caller reads what they named — a
     /// settlement the node made must not be settled again as if it never happened. A whole frame
     /// whose header does not check — of this layout or another — contributes its record as its
     /// bytes now read (unverified, so a caller that cannot decode it holds back what it cannot rule
@@ -161,13 +178,95 @@ pub struct Quarantine {
     pub at_unix_ms: u64,
     /// Where the bytes went.
     pub kept: QuarantineKept,
+    /// The last record the log KEPT before the set-aside bytes, in the log's order across every
+    /// segment: the record the journal's chain re-anchors on. `None` when nothing precedes them.
+    pub before: Option<(u64, u64)>,
+    /// The first record the log kept AFTER the set-aside bytes, when one does: its link points at a
+    /// record that is no longer readable. `None` for a remainder nothing was kept behind, where the
+    /// next record written is the one that resumes the chain.
+    pub after: Option<(u64, u64)>,
+}
+
+/// Where a quarantine leaves a hole in the journal's chain, and the only place a chain may skip
+/// numbers or a link and still verify. See [`crate::journal::verify_bridged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bridge {
+    /// The last record kept before the hole.
+    pub before: (u64, u64),
+    /// The first record kept after it, or `None` when the chain resumes with whatever is written
+    /// next.
+    pub after: Option<(u64, u64)>,
+}
+
+/// What a quarantine's `ChainBreak` body says about where the set-aside bytes were: the segment, the
+/// first byte, and the hole they leave in the chain. Read back so that a chain carrying the break
+/// verifies across the hole it names, and so that a hole re-found at a later boot is not recorded a
+/// second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuarantineNote {
+    /// Which segment.
+    pub segment: u64,
+    /// The first byte set aside.
+    pub offset: u64,
+    /// The hole it names in the chain, on a body that names one.
+    pub bridge: Option<Bridge>,
+}
+
+impl QuarantineNote {
+    /// Read a quarantine `ChainBreak` body back. `None` for any other body.
+    #[must_use]
+    pub fn read(body: &[u8]) -> Option<Self> {
+        let mut r = crate::journal::BodyReader::new(body);
+        if r.text()? != QUARANTINE_BODY_TAG {
+            return None;
+        }
+        let _segment_file = r.text()?;
+        let segment = r.num()?;
+        let offset = r.num()?;
+        let _damage_at = r.num()?;
+        let _bytes = r.num()?;
+        let _kept = r.text()?;
+        let _at = r.num()?;
+        let _count = r.num()?;
+        // A body sealed before the hole was named carries no bridge.
+        let bridge = read_bridge(&mut r);
+        Some(QuarantineNote {
+            segment,
+            offset,
+            bridge,
+        })
+    }
+}
+
+/// The hole a quarantine body names, read after its fixed fields: whether a record was kept before
+/// it and which, then whether one was kept after it and which.
+fn read_bridge(r: &mut crate::journal::BodyReader<'_>) -> Option<Bridge> {
+    let has_before = r.num()?;
+    let before = (r.num()?, r.num()?);
+    let has_after = r.num()?;
+    let after = (r.num()?, r.num()?);
+    (has_before == 1).then_some(Bridge {
+        before,
+        after: (has_after == 1).then_some(after),
+    })
 }
 
 impl Quarantine {
+    /// The hole this quarantine leaves in the chain, when a record was kept before it.
+    #[must_use]
+    pub fn bridge(&self) -> Option<Bridge> {
+        self.before.map(|before| Bridge {
+            before,
+            after: self.after,
+        })
+    }
+
     /// The body of the `ChainBreak` journal record that says, durably, what was set aside: a tag,
     /// the segment file, the segment index, the first byte set aside, the frame the damage was
-    /// found at, the byte count, where the bytes went, the moment, and how many record identities
-    /// they held — in that order, through the journal's own body writer.
+    /// found at, the byte count, where the bytes went, the moment, how many record identities
+    /// they held, and the hole they leave in the chain (whether a record was kept before it and
+    /// which, whether one was kept after it and which) — in that order, through the journal's own
+    /// body writer.
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let segment_file = self
@@ -189,6 +288,14 @@ impl Quarantine {
             .text(&kept)
             .num(self.at_unix_ms)
             .num(self.identities.len() as u64);
+        let (has_before, before) = self.before.map_or((0, (0, 0)), |id| (1, id));
+        let (has_after, after) = self.after.map_or((0, (0, 0)), |id| (1, id));
+        body.num(has_before)
+            .num(before.0)
+            .num(before.1)
+            .num(has_after)
+            .num(after.0)
+            .num(after.1);
         body.finish()
     }
 }
@@ -230,19 +337,29 @@ impl std::fmt::Display for Quarantine {
 /// What a scan of a segment found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recovered {
-    /// Every record whose frames all verify, in the order they were written.
+    /// Every record whose frames all verify, in the order they were written — those behind a hole
+    /// included.
     pub records: Vec<Record>,
     /// The offset the last complete record ends at. This is where appending resumes.
     pub durable_end: u64,
     /// How many bytes past `durable_end` the backing held. Non-zero means a tail was cut.
     pub discarded_bytes: u64,
-    /// Why the scan stopped, when it stopped on damage rather than on the end of the writes.
+    /// Why the scan stopped at the end, when it stopped on damage rather than on the end of the
+    /// writes.
     pub stopped_because: Option<FrameError>,
-    /// Which of the three endings this was.
+    /// How the segment read, as a whole: [`TailVerdict::Corrupt`] at the first acknowledged damage
+    /// anywhere in it (a hole or the tail), otherwise how the tail ended.
     pub verdict: TailVerdict,
-    /// Where the bytes a corrupt verdict gave up went. Set only by [`recover_and_truncate`]; a
-    /// bare [`scan`] modifies nothing and so has set nothing aside.
-    pub quarantined: Option<Quarantine>,
+    /// How the bytes past the last kept record ended: what is cut silently, what is clean, and what
+    /// is a corrupt remainder copied aside and never cut.
+    pub tail: TailVerdict,
+    /// The damaged records the scan read past, in order: every one of them has a kept record behind
+    /// it in this segment.
+    pub holes: Vec<Hole>,
+    /// Where the bytes every hole and a corrupt tail gave up went, in the order they sit in the
+    /// segment. Set only by [`recover_and_truncate`] and [`quarantine_in_place`]; a bare [`scan`]
+    /// modifies nothing and so has set nothing aside.
+    pub quarantined: Vec<Quarantine>,
     /// The end of what was ever written past the verified prefix: the last byte that is not
     /// claimed-ahead zeros. Equal to `durable_end` when nothing was written past it.
     pub written_end: u64,
@@ -250,8 +367,31 @@ pub struct Recovered {
     pub identities_beyond: Vec<(u64, u64)>,
     /// The identities past the stop no verified header carries. See [`Quarantine::unverified`].
     pub unverified_beyond: Vec<(u64, u64)>,
-    /// The records the set-aside bytes hold, as they now read. See [`Quarantine::damaged`].
+    /// The records the corrupt tail holds, as they now read. See [`Quarantine::damaged`].
     pub damaged: Vec<Record>,
+}
+
+/// One damaged stretch the scan read past: acknowledged damage with a kept record behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hole {
+    /// The first byte of the damaged record: the end of the record kept before it.
+    pub offset: u64,
+    /// The frame the scan stopped on.
+    pub damage_at: u64,
+    /// Where the next kept record starts.
+    pub end: u64,
+    /// Why the scan stopped, when a frame said so.
+    pub why: Option<FrameError>,
+    /// See [`Quarantine::identities`].
+    pub identities: Vec<(u64, u64)>,
+    /// See [`Quarantine::unverified`].
+    pub unverified: Vec<(u64, u64)>,
+    /// See [`Quarantine::damaged`].
+    pub damaged: Vec<Record>,
+    /// The record kept before it in this segment, if any.
+    pub before: Option<(u64, u64)>,
+    /// The record kept after it.
+    pub after: (u64, u64),
 }
 
 impl Recovered {
@@ -261,75 +401,191 @@ impl Recovered {
         self.verdict == TailVerdict::Torn
     }
 
-    /// Whether the scan stopped on damage with acknowledged records behind it.
+    /// Whether the scan met acknowledged damage anywhere in the segment.
     pub fn was_corrupt(&self) -> bool {
         matches!(self.verdict, TailVerdict::Corrupt { .. })
     }
 }
 
-/// Scan `segment` from its beginning and report the last complete, verifying record.
+/// Scan `segment` from its beginning and report every complete, verifying record, reading past
+/// acknowledged damage to the records behind it.
 ///
 /// This does not modify anything. [`recover_and_truncate`] is the one that cuts.
 pub fn scan(segment: &Segment) -> io::Result<Recovered> {
-    let Walk {
-        records,
-        durable_end,
-        stopped_because,
-        stop_at,
-    } = walk(segment, 0, usize::MAX)?;
-
     let len = segment.len()?;
-    let mut beyond = look_past(segment, durable_end, stop_at, len)?;
-    // Corrupt when anything is past the verified prefix and either a subsequent commit acknowledges the
-    // damaged one or the damage is not a shape a crash leaves. See the module preamble.
-    let corrupt =
-        beyond.written_end > durable_end && (beyond.acknowledged || !beyond.unfinished_only);
-    let mut unverified = Vec::new();
-    let damaged = if corrupt {
-        let set_aside = read_set_aside(segment, durable_end, len)?;
-        // Every set-aside identity is named, the altered record's first: it was acknowledged, and
-        // it is the one the caller asks about.
-        for id in set_aside.iter().rev().map(|(r, _)| r.identity()) {
-            if let Some(i) = beyond.identities.iter().position(|x| *x == id) {
-                beyond.identities.remove(i);
+    let mut records: Vec<Record> = Vec::new();
+    let mut holes: Vec<Hole> = Vec::new();
+    let mut from = 0u64;
+    loop {
+        let Walk {
+            records: run,
+            durable_end,
+            stopped_because,
+            stop_at,
+        } = walk(segment, from, usize::MAX)?;
+        records.extend(run);
+
+        let beyond = look_past(segment, durable_end, stop_at, len)?;
+        // Corrupt when anything is past the verified prefix and either a subsequent commit
+        // acknowledges the damaged one or the damage is not a shape a crash leaves. See the module
+        // preamble.
+        let corrupt =
+            beyond.written_end > durable_end && (beyond.acknowledged || !beyond.unfinished_only);
+        if corrupt {
+            // Acknowledged damage with a record behind it: read past it, and keep reading.
+            if let Some((resume, after)) =
+                resync(segment, durable_end, stop_at, beyond.written_end)?
+            {
+                let in_hole = look_past(segment, durable_end, stop_at, resume)?;
+                let SetAside {
+                    identities,
+                    unverified,
+                    damaged,
+                } = set_aside(segment, durable_end, resume, in_hole)?;
+                holes.push(Hole {
+                    offset: durable_end,
+                    damage_at: stop_at,
+                    end: resume,
+                    why: stopped_because,
+                    identities,
+                    unverified,
+                    damaged,
+                    before: records.last().map(Record::identity),
+                    after,
+                });
+                from = resume;
+                continue;
             }
-            beyond.identities.insert(0, id);
         }
-        // An identity no verified header vouches for is named, never trusted to number by.
-        let vouched = |id: &(u64, u64)| {
-            beyond.verified.contains(id)
-                || set_aside
-                    .iter()
-                    .any(|(r, checked)| *checked && r.identity() == *id)
+
+        let written_end = beyond.written_end;
+        let SetAside {
+            identities: identities_beyond,
+            unverified: unverified_beyond,
+            damaged,
+        } = if corrupt {
+            set_aside(segment, durable_end, len, beyond)?
+        } else {
+            SetAside {
+                identities: beyond.identities,
+                unverified: Vec::new(),
+                damaged: Vec::new(),
+            }
         };
-        for id in set_aside.iter().map(|(r, _)| r.identity()) {
-            if !vouched(&id) && !unverified.contains(&id) {
-                unverified.push(id);
-            }
+        let tail = if corrupt {
+            TailVerdict::Corrupt { at: stop_at }
+        } else if written_end > durable_end {
+            TailVerdict::Torn
+        } else {
+            TailVerdict::Clean
+        };
+        let verdict = holes
+            .first()
+            .map_or(tail, |h| TailVerdict::Corrupt { at: h.damage_at });
+        return Ok(Recovered {
+            records,
+            durable_end,
+            discarded_bytes: len.saturating_sub(durable_end),
+            stopped_because,
+            verdict,
+            tail,
+            holes,
+            quarantined: Vec::new(),
+            written_end,
+            identities_beyond,
+            unverified_beyond,
+            damaged,
+        });
+    }
+}
+
+/// The identities and records a set-aside stretch `[from, until)` holds: every identity a frame in
+/// it carries (the altered record's first, it is the one the caller asks about), the ones no
+/// verified header vouches for, and its records as they now read.
+fn set_aside(segment: &Segment, from: u64, until: u64, mut beyond: Beyond) -> io::Result<SetAside> {
+    let set_aside = read_set_aside(segment, from, until)?;
+    // Every set-aside identity is named, the altered record's first: it was acknowledged, and it
+    // is the one the caller asks about.
+    for id in set_aside.iter().rev().map(|(r, _)| r.identity()) {
+        if let Some(i) = beyond.identities.iter().position(|x| *x == id) {
+            beyond.identities.remove(i);
         }
-        set_aside.into_iter().map(|(r, _)| r).collect()
-    } else {
-        Vec::new()
+        beyond.identities.insert(0, id);
+    }
+    // An identity no verified header vouches for is named, never trusted to number by.
+    let mut unverified = Vec::new();
+    let vouched = |id: &(u64, u64)| {
+        beyond.verified.contains(id)
+            || set_aside
+                .iter()
+                .any(|(r, checked)| *checked && r.identity() == *id)
     };
-    let verdict = if corrupt {
-        TailVerdict::Corrupt { at: stop_at }
-    } else if beyond.written_end > durable_end {
-        TailVerdict::Torn
-    } else {
-        TailVerdict::Clean
-    };
-    Ok(Recovered {
-        records,
-        durable_end,
-        discarded_bytes: len.saturating_sub(durable_end),
-        stopped_because,
-        verdict,
-        quarantined: None,
-        written_end: beyond.written_end,
-        identities_beyond: beyond.identities,
-        unverified_beyond: unverified,
+    for id in set_aside.iter().map(|(r, _)| r.identity()) {
+        if !vouched(&id) && !unverified.contains(&id) {
+            unverified.push(id);
+        }
+    }
+    let damaged = set_aside.into_iter().map(|(r, _)| r).collect();
+    Ok(SetAside {
+        identities: beyond.identities,
+        unverified,
         damaged,
     })
+}
+
+/// What a set-aside stretch holds. See [`Quarantine`] for each field.
+struct SetAside {
+    identities: Vec<(u64, u64)>,
+    unverified: Vec<(u64, u64)>,
+    damaged: Vec<Record>,
+}
+
+/// The first record behind damage: the offset of the first frame at or past `stop_at` (and past
+/// the record the damage is in) that verifies, opens a record, and starts one whose every frame
+/// verifies — and that record's identity. `None` when no complete record lies before `until`.
+///
+/// Read in blocks, because the stretch may be long and is mostly frames that do not verify.
+fn resync(
+    segment: &Segment,
+    durable_end: u64,
+    stop_at: u64,
+    until: u64,
+) -> io::Result<Option<(u64, (u64, u64))>> {
+    const BLOCK_FRAMES: usize = 128;
+    let mut at = u64::max(stop_at, durable_end + FRAME_BYTES as u64);
+    let mut block = vec![0u8; BLOCK_FRAMES * FRAME_BYTES];
+    while at < until {
+        let want = usize::try_from(u64::min(until - at, block.len() as u64)).unwrap_or(block.len());
+        let mut filled = 0usize;
+        while filled < want {
+            let n = segment.read_at(at + filled as u64, &mut block[filled..want])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled < FRAME_BYTES {
+            return Ok(None);
+        }
+        for (i, chunk) in block[..filled].chunks(FRAME_BYTES).enumerate() {
+            let chunk_at = at + (i * FRAME_BYTES) as u64;
+            let Ok(whole) = <&[u8; FRAME_BYTES]>::try_from(chunk) else {
+                continue;
+            };
+            let Ok((header, _)) = decode_frame(whole) else {
+                continue;
+            };
+            if header.part_index != 0 {
+                continue;
+            }
+            let walked = walk(segment, chunk_at, 1)?;
+            if let Some(first) = walked.records.first() {
+                return Ok(Some((chunk_at, first.identity())));
+            }
+        }
+        at += (filled - filled % FRAME_BYTES) as u64;
+    }
+    Ok(None)
 }
 
 /// The complete, verifying records of `segment` from `from` (a record boundary) on, at most `limit`
@@ -436,13 +692,27 @@ fn walk(segment: &Segment, from: u64, limit: usize) -> io::Result<Walk> {
 /// The complete, verifying records of `segment` from byte `from` — the start of a record — at most
 /// `limit` of them, and the offset the last one ends at (`from` when there are none). What the log
 /// re-reads from its own medium to hand a store the records it is still owed.
+///
+/// A hole recovery set aside is read past, as [`scan`] reads past it: the records behind it are
+/// owed like any other, and stopping at it would leave them unshipped while the reader moved on to
+/// the next segment.
 pub(crate) fn records_from(
     segment: &Segment,
     from: u64,
     limit: usize,
 ) -> io::Result<(Vec<Record>, u64)> {
-    let walked = walk(segment, from, limit)?;
-    Ok((walked.records, walked.durable_end))
+    let mut at = from;
+    loop {
+        let walked = walk(segment, at, limit)?;
+        if !walked.records.is_empty() {
+            return Ok((walked.records, walked.durable_end));
+        }
+        let len = segment.len()?;
+        match resync(segment, at, walked.stop_at, len)? {
+            Some((next, _)) => at = next,
+            None => return Ok((Vec::new(), at)),
+        }
+    }
 }
 
 /// Every record in `[from, len)`, read frame by frame through each frame's full verification or its
@@ -583,76 +853,148 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
     Ok(beyond)
 }
 
-/// Scan, then cut the segment back to the last complete record — branching on WHY the scan
-/// stopped.
+/// Scan, then make the backing agree with the scan — branching on WHY it stopped.
 ///
+/// - Every hole is copied, byte for byte, into a quarantine `factory` makes durable, and LEFT IN
+///   PLACE: the records behind it are kept, and the next scan reads past it again.
 /// - A torn tail (the last commit, torn by a crash), or a clean end with space claimed ahead of
-///   it, is cut silently.
-/// - A corrupt one first has its damaged remainder copied, byte for byte, into a quarantine
-///   `factory` makes durable, and only then is the segment cut. If the copy cannot be made, the
-///   segment is NOT cut: it is closed to writes instead, so the next append rolls past it and the
-///   damaged bytes stay exactly where they are.
+///   it, is cut silently back to the last kept record.
+/// - A corrupt tail is copied the same way and NEVER cut: the segment is closed to writes instead,
+///   so the next append rolls past it and the damaged bytes stay exactly where they are.
+/// - A copy that cannot be made closes the segment to writes as well, whatever the tail: the bytes
+///   it could not copy are the only ones there are, and nothing is written into their segment.
 ///
-/// After this returns — on every arm but the last — the backing holds exactly the records reported
-/// and nothing else, so an append lands on a frame boundary and no reader meets the damage again.
+/// After this returns the backing holds the records reported, the damage set aside in place, and —
+/// past the last kept record — nothing an append could land on but space the cut freed.
 ///
-/// `clock` is the composition root's wall clock in unix milliseconds. It is read once, and only on
-/// the corrupt arm, to stamp when the damage was set aside; this crate never reads a clock itself.
+/// `clock` is the composition root's wall clock in unix milliseconds. It is read once, and only
+/// when something is set aside, to stamp when; this crate never reads a clock itself.
 pub fn recover_and_truncate(
     segment: &mut Segment,
     factory: &mut dyn SegmentFactory,
     clock: crate::wal::Clock,
 ) -> io::Result<Recovered> {
     let mut recovered = scan(segment)?;
-    if recovered.was_torn() {
-        // A crash mid-commit. Nothing past the verified prefix was acknowledged.
-        segment.truncate_to(recovered.durable_end)?;
-        return Ok(recovered);
+    set_aside_in_place(segment, &mut recovered, factory, clock)?;
+    match recovered.tail {
+        // A crash mid-commit, or space claimed ahead of the writes. Nothing past the last kept
+        // record was acknowledged.
+        TailVerdict::Torn | TailVerdict::Clean => segment.truncate_to(recovered.durable_end)?,
+        TailVerdict::Corrupt { .. } => segment.close_to_writes(),
     }
-    let TailVerdict::Corrupt { at } = recovered.verdict else {
-        // Clean: the only thing past the records is space claimed ahead of them.
-        segment.truncate_to(recovered.durable_end)?;
-        return Ok(recovered);
+    if recovered
+        .quarantined
+        .iter()
+        .any(|q| matches!(q.kept, QuarantineKept::InPlace(_)))
+    {
+        segment.close_to_writes();
+    }
+    Ok(recovered)
+}
+
+/// Scan a segment the log no longer writes to — one below the tail — and set aside whatever
+/// acknowledged damage it holds, cutting nothing. Its holes and a corrupt tail are copied into a
+/// quarantine exactly as [`recover_and_truncate`] copies them; the segment itself is left as it is.
+///
+/// A torn remainder at the end of a closed segment is not set aside: a segment is closed past its
+/// last commit only by a roll, which is either a full segment or a lost sync, and the batch a lost
+/// sync tore is written again, whole, in the next segment.
+pub fn quarantine_in_place(
+    segment: &Segment,
+    factory: &mut dyn SegmentFactory,
+    clock: crate::wal::Clock,
+) -> io::Result<Recovered> {
+    let mut recovered = scan(segment)?;
+    set_aside_in_place(segment, &mut recovered, factory, clock)?;
+    Ok(recovered)
+}
+
+/// Copy every hole, and a corrupt tail, into a quarantine, and note each in
+/// [`Recovered::quarantined`]. Nothing in `segment` is changed.
+fn set_aside_in_place(
+    segment: &Segment,
+    recovered: &mut Recovered,
+    factory: &mut dyn SegmentFactory,
+    clock: crate::wal::Clock,
+) -> io::Result<()> {
+    let tail = match recovered.tail {
+        TailVerdict::Corrupt { at } => Some(at),
+        _ => None,
     };
-    let offset = recovered.durable_end;
-    let bytes = recovered.written_end.saturating_sub(offset);
-    let mut copy = vec![0u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
+    if recovered.holes.is_empty() && tail.is_none() {
+        return Ok(());
+    }
+    let at_unix_ms = clock();
+    let segment_file = factory.segment_file(segment.index());
+    let mut quarantined = Vec::new();
+    for hole in &recovered.holes {
+        let (bytes, kept) = copy_aside(segment, factory, hole.offset, hole.end, at_unix_ms)?;
+        quarantined.push(Quarantine {
+            segment: segment.index(),
+            segment_file: segment_file.clone(),
+            offset: hole.offset,
+            damage_at: hole.damage_at,
+            bytes,
+            why: hole.why,
+            identities: hole.identities.clone(),
+            unverified: hole.unverified.clone(),
+            damaged: hole.damaged.clone(),
+            at_unix_ms,
+            kept,
+            before: hole.before,
+            after: Some(hole.after),
+        });
+    }
+    if let Some(at) = tail {
+        let offset = recovered.durable_end;
+        let (bytes, kept) =
+            copy_aside(segment, factory, offset, recovered.written_end, at_unix_ms)?;
+        quarantined.push(Quarantine {
+            segment: segment.index(),
+            segment_file,
+            offset,
+            damage_at: at,
+            bytes,
+            why: recovered.stopped_because,
+            identities: recovered.identities_beyond.clone(),
+            unverified: recovered.unverified_beyond.clone(),
+            damaged: recovered.damaged.clone(),
+            at_unix_ms,
+            kept,
+            before: recovered.records.last().map(Record::identity),
+            after: None,
+        });
+    }
+    recovered.quarantined = quarantined;
+    Ok(())
+}
+
+/// Copy `[from, until)` of `segment` into a quarantine `factory` makes durable, and say where it
+/// went and how many bytes it holds. A copy that cannot be made is answered, not raised: the bytes
+/// are still in the segment, which nothing cuts.
+fn copy_aside(
+    segment: &Segment,
+    factory: &mut dyn SegmentFactory,
+    from: u64,
+    until: u64,
+    at_unix_ms: u64,
+) -> io::Result<(u64, QuarantineKept)> {
+    let mut copy = vec![0u8; usize::try_from(until.saturating_sub(from)).unwrap_or(usize::MAX)];
     let mut filled = 0usize;
     while filled < copy.len() {
-        let n = segment.read_at(offset + filled as u64, &mut copy[filled..])?;
+        let n = segment.read_at(from + filled as u64, &mut copy[filled..])?;
         if n == 0 {
             break;
         }
         filled += n;
     }
     copy.truncate(filled);
-    let at_unix_ms = clock();
-    // The copy is durable before a single byte of the segment is cut. The order is the whole
-    // guarantee: a crash between the two leaves both.
-    let kept = match factory.quarantine(segment.index(), offset, at_unix_ms, &copy) {
+    let kept = match factory.quarantine(segment.index(), from, at_unix_ms, &copy) {
         Ok(Some(path)) => QuarantineKept::File(path),
         Ok(None) => QuarantineKept::Memory,
         Err(e) => QuarantineKept::InPlace(e.to_string()),
     };
-    if let QuarantineKept::InPlace(_) = kept {
-        segment.close_to_writes();
-    } else {
-        segment.truncate_to(offset)?;
-    }
-    recovered.quarantined = Some(Quarantine {
-        segment: segment.index(),
-        segment_file: factory.segment_file(segment.index()),
-        offset,
-        damage_at: at,
-        bytes: copy.len() as u64,
-        why: recovered.stopped_because,
-        identities: recovered.identities_beyond.clone(),
-        unverified: recovered.unverified_beyond.clone(),
-        damaged: recovered.damaged.clone(),
-        at_unix_ms,
-        kept,
-    });
-    Ok(recovered)
+    Ok((copy.len() as u64, kept))
 }
 
 /// Read exactly one frame, or report that there is not a whole one left.

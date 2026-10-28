@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use std::collections::HashMap;
 
 /// A key no other request in this binary is walking. The unit key names one live unit, so two
 /// fixtures sharing a literal would be two requests claiming one entry in the units table.
@@ -107,7 +108,7 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
 #[test]
 fn the_door_answers_the_published_releases_own_bytes() {
     const GOLDEN: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        env!("BUSBAR_CORE_DIR"),
         "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetConfig__unauth.json"
     ));
     let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
@@ -150,22 +151,6 @@ fn a_grant_that_does_not_reach_the_endpoint_is_answered_with_the_scope_it_needed
         String::from_utf8(answer.body).expect("the envelope is text"),
         r#"{"error":{"code":"forbidden","message":"insufficient scope: this endpoint requires `read-only`"}}"#
     );
-}
-
-/// The round trip is the whole reason the answer travels as bytes: a status, a header value and
-/// a body all come back exactly as they went in, including bytes a text framing would mangle.
-#[test]
-fn an_answer_survives_the_round_trip_through_the_verbs_seam() {
-    let answer = AdminAnswer {
-        status: 409,
-        headers: vec![
-            ("etag".to_string(), "\"7\"".to_string()),
-            ("content-type".to_string(), "application/json".to_string()),
-        ],
-        body: vec![0x00, 0xff, b'{', b'}', 0x0a],
-    };
-    let packed = answer.pack();
-    assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
 }
 
 /// A DISCONNECT IS STILL AN EXIT. The release of an effect that outlives the response used to be
@@ -295,40 +280,6 @@ fn a_refused_units_status_is_the_one_its_ending_earned() {
     );
 }
 
-/// The only producer of the framing is the packer. Anything else is this file being wrong, and
-/// a lenient parse would turn that into a silently wrong answer.
-#[test]
-fn a_shape_the_packer_did_not_write_has_no_answer() {
-    assert_eq!(AdminAnswer::unpack(&[]), None);
-    assert_eq!(AdminAnswer::unpack(&[0, 200, 0, 0, 0, 1]), None);
-    let mut trailing = AdminAnswer {
-        status: 200,
-        headers: Vec::new(),
-        body: Vec::new(),
-    }
-    .pack();
-    trailing.push(0);
-    assert_eq!(AdminAnswer::unpack(&trailing), None);
-}
-
-/// A count is a claim about bytes that are not there, not an instruction to go and find room
-/// for them. The frame below says it carries four billion headers in three bytes: the answer is
-/// `None`, and no room is made for the claim on the way to it.
-#[test]
-fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
-    let mut frame = Vec::new();
-    frame.extend_from_slice(&200u16.to_be_bytes());
-    frame.extend_from_slice(&u32::MAX.to_be_bytes());
-    frame.extend_from_slice(&[0, 0, 0]);
-    assert_eq!(AdminAnswer::unpack(&frame), None);
-
-    // What the frame could actually be carrying, not what it says it is.
-    assert_eq!(header_capacity(u32::MAX, 3), 0);
-    assert_eq!(header_capacity(u32::MAX, 4_096), 512);
-    // An honest count is still reserved for in full.
-    assert_eq!(header_capacity(2, 4_096), 2);
-}
-
 /// Neither audit door carries the presented credential into what it seals.
 ///
 /// Both doors are walked, completed and refused, with a live-looking credential on the request.
@@ -337,50 +288,22 @@ fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
 /// the core-admin handler, not by this step.
 #[test]
 fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
-    let seal = busbar_kernel::test_support::tokens::seal();
-    let binding = AdminBinding::new(Arc::new(RefusingDispatch), open_door());
-
-    for completed in [true, false] {
-        let key = UnitKey::new(1);
+    for ended in [
+        Outcome::Completed,
+        Outcome::Refused(
+            busbar_contract::caps::StepName::Approve,
+            ReasonCode::ScopeDenied,
+        ),
+    ] {
         let mut request = a_request();
         request.method = "PUT".to_string();
         request.path = "/api/v1/admin/config/settings".to_string();
         request.credential = Some("sk-live-the-presented-secret".to_string());
-        binding.units.open(key, request);
-        let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: true,
-            kernel_verb_only: true,
-        };
-        let decode_token: Pass<Decode> = busbar_kernel::test_support::tokens::pass();
-        let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
-        let verify_token: Pass<Verify> = busbar_kernel::test_support::tokens::pass();
-        let _ = verify(
-            &binding,
-            &verify_token,
-            &ctx,
-            &PrincipalId::new("key_operator_7"),
-        )
-        .into_result(&seal);
+        let mut walk = AdminWalk::new(request);
+        let _ = decode(&mut walk);
+        let _ = verify(&mut walk, &PrincipalId::new("key_operator_7"));
 
-        let audit_token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
-        let facts = if completed {
-            audit(&binding, &audit_token, &ctx, &Outcome::Completed).into_result(&seal)
-        } else {
-            audit_refused(
-                &binding,
-                &audit_token,
-                &ctx,
-                &Refusal::new(ReasonCode::ScopeDenied),
-            )
-            .into_result(&seal)
-        }
-        .expect("the door seals the mutation");
-        binding.units.close(key);
+        let facts = audit(&walk, &ended);
         assert!(
             !format!("{facts:?}").contains("sk-live-the-presented-secret"),
             "the presented credential reached the sealed facts"
@@ -404,37 +327,20 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
 #[test]
 #[cfg(feature = "root-admin")]
 fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
-    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
         let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
-        let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "POST".to_string();
         request.path = path.to_string();
         // `store_restore` refuses a body naming no backup before it reaches authorization, so every
         // body names one; the other five read nothing from it that would change the assertion.
         request.body = b"{\"backup_ref\":\"backup-1\"}".to_vec();
-        binding.units.open(key, request);
-        let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: true,
-            kernel_verb_only: true,
-        };
-        let decode_token: Pass<Decode> = busbar_kernel::test_support::tokens::pass();
-        decode(&binding, &decode_token, &ctx)
-            .into_result(&seal)
-            .expect("the plane's table declares this operation");
-        binding.units.set_granted(key, granted);
-        let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
-        let outcome = route(&binding, None, &admin, &token, &ctx).into_result(&seal);
-        binding.units.close(key);
-        outcome.map(|_| ()).map_err(|refusal| refusal.reason())
+        let mut walk = AdminWalk::new(request);
+        decode(&mut walk).expect("the plane's table declares this operation");
+        walk.granted = Some(granted);
+        route(&binding, None, &admin, &mut walk)
     };
 
     for path in [
@@ -490,53 +396,15 @@ fn approved_under(
     method: &str,
     path: &str,
 ) -> Result<(), ReasonCode> {
-    let seal = busbar_kernel::test_support::tokens::seal();
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), a_door_answering(door));
-    let key = UnitKey::new(a_fresh_unit());
     let mut request = a_request();
     request.method = method.to_string();
     request.path = path.to_string();
-    binding.units.open(key, request);
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key,
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: true,
-        kernel_verb_only: true,
-    };
-    decode(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass::<Decode>(),
-        &ctx,
-    )
-    .into_result(&seal)
-    .expect("the plane's table declares this operation");
+    let mut walk = AdminWalk::new(request);
+    decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
-    let authenticated = authenticate(
-        &binding,
-        &bindings,
-        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
-        &ctx,
-    )
-    .into_result(&seal);
-    let verdict = match authenticated {
-        Err(refusal) => Err(refusal.reason()),
-        Ok(_) => approve(
-            &binding,
-            binding.units.granted(key),
-            &busbar_kernel::test_support::tokens::pass::<Approve>(),
-            &ctx,
-            &PrincipalId::new("acct:verb-listed"),
-            &[],
-        )
-        .into_result(&seal)
-        .map(|_| ())
-        .map_err(|refusal| refusal.reason()),
-    };
-    binding.units.close(key);
-    verdict
+    authenticate(&binding, &bindings, &mut walk)?;
+    approve(&walk)
 }
 
 /// One request through the WHOLE loop under `door`, answered as the listener answers it.
@@ -782,45 +650,6 @@ fn the_two_spellings_of_the_scope_split_agree() {
     assert!(!VerbScope::ReadOnly.allows(VerbScope::Full));
 }
 
-/// An entry that outlived its unit would be a leak per request. Opening and closing is the whole
-/// lifecycle, and the table is empty between requests.
-#[test]
-fn a_unit_leaves_the_table_when_it_ends() {
-    let units = AdminUnits::new();
-    let key = UnitKey::new(7);
-    assert!(units.is_empty());
-    units.open(key, a_request());
-    assert_eq!(units.len(), 1);
-    assert_eq!(
-        units.request(key).map(|r| r.method),
-        Some("GET".to_string())
-    );
-    assert_eq!(units.close(key), None);
-    assert!(units.is_empty());
-}
-
-/// What the exit path settles for an admin unit: nothing located, no upstream candidate, and
-/// therefore no request slot and no flat fee, whatever the deployment configured the fee to be.
-#[test]
-fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key: UnitKey::new(1),
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: true,
-        kernel_verb_only: true,
-    };
-    let evidence = evidence(&ctx);
-    assert!(!evidence.upstream_candidate);
-    assert_eq!(
-        busbar_kernel::teller::requests_drawn(ctx.origin, evidence.upstream_candidate),
-        0
-    );
-    assert_eq!(evidence.fee_units, 0);
-}
-
 /// Route is the one place that chooses between the unit's general execution path and its two
 /// dedicated minting methods, and the choice is exactly the two credential-minting verbs. Every
 /// other verb on the keys surface — reading them, revoking one, listing a key's usage — goes
@@ -899,9 +728,8 @@ impl busbar_contract::verb_store::Store for ReplaySlots {
 }
 
 /// A replayed idempotency key answers with the FIRST answer's bytes, through a store's replay
-/// slot and the root's own packing. Byte-identical is the property: a re-render would mint a
-/// second one-time secret over one identity, and the whole reason the answer travels as opaque
-/// bytes is that there is no decode step here that could.
+/// slot. Byte-identical is the property: a re-render would mint a second one-time secret over one
+/// identity.
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     use busbar_contract::verb_store::Store;
@@ -911,7 +739,7 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: br#"{"id":"vk_1","secret":"once"}"#.to_vec(),
     };
-    let first = answer.pack();
+    let first = answer.body.clone();
     let key = ("idem-1".to_string(), "POST /api/v1/admin/keys".to_string());
 
     let store = ReplaySlots::default();
@@ -929,7 +757,7 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         .expect("the slot reads")
         .expect("a committed key replays");
     assert_eq!(replayed, first);
-    assert_eq!(AdminAnswer::unpack(&replayed), Some(answer));
+    assert_eq!(replayed, answer.body);
 }
 
 /// The dispatch a test drives the loop against: it answers, and its answer is recognisable, so a
@@ -1219,30 +1047,15 @@ fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_n
     );
 }
 
-/// A binding holding one open unit, with the decode step run so the verb is resolved exactly as
-/// the loop resolves it. Returns the binding and the context every later step reads the unit
-/// through, so a cell drives the real steps rather than a table it filled in by hand.
+/// One admin request with the decode step run, so the verb is resolved exactly as the steps resolve
+/// it: a cell drives the real steps rather than a walk it filled in by hand.
 #[cfg(feature = "root-admin")]
-fn a_bound_unit(
-    request: AdminRequest,
-) -> (AdminBinding, UnitCtx, busbar_contract::caps::KernelSeal) {
-    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
-    let key = UnitKey::new(1);
-    binding.units.open(key, request);
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key,
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: true,
-        kernel_verb_only: true,
-    };
-    let seal = busbar_kernel::test_support::tokens::seal();
-    // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
-    // asserting over a row the loop never wrote.
-    let _ = decode(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx);
-    (binding, ctx, seal)
+fn a_bound_unit(request: AdminRequest) -> AdminWalk {
+    let mut walk = AdminWalk::new(request);
+    // Decode is what resolves the verb. A cell that set it itself would be asserting over a verb
+    // the steps never resolved.
+    let _ = decode(&mut walk);
+    walk
 }
 
 /// The administrative listener answers on a table with no room in it at all, and the data
@@ -1255,33 +1068,28 @@ fn a_bound_unit(
 /// keeping it alive: its cap is ZERO, so every unit under the cap is refused and every unit that
 /// answers did so because the exemption carried it.
 ///
-/// Three answers, over one table at one moment:
+/// Two answers, at one moment:
 ///
-/// - a unit that did NOT arrive on the administrative listener is refused, `InFlightCap`,
-///   stamped at `Arrival` because the origin is a client, with its arrival hold handed back
-///   reserving nothing — the shedding the operator came to ask about;
-/// - a real admin request, through the whole loop on that same table, comes back with the
-///   operation's own 200 rather than the node's `unavailable`. Not a smaller claim than the
-///   refusal above: it is the exemption, on the path the listener actually takes;
-/// - the step itself proceeds, and the record it carries names the administrative transport. The
-///   admin plane synthesizes its arrival rather than copying a data-listener one, and the chain
-///   is where that shows.
+/// - a unit that did NOT arrive on the administrative listener is refused by a table with no room,
+///   `InFlightCap`, stamped at `Arrival` because the origin is a client, with its arrival hold
+///   handed back reserving nothing — the shedding the operator came to ask about;
+/// - a real admin request comes back with the operation's own 200 rather than the node's
+///   `unavailable`: an admin unit takes no slot in any in-flight table, so no cap can shed it. (It
+///   is not asserted that the full table stayed empty: the node never touches that table, so the
+///   assertion could not fail; the 200 is what says the cap did not shed it.)
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     use busbar_contract::caps::{OriginKind, StepName};
-    use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter};
+    use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter, InFlight};
 
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    assert_eq!(
-        node.inflight.cap(),
-        0,
-        "the exemption is the only reason anything answers on this table"
-    );
+    let full = InFlight::new(0);
+    assert_eq!(full.cap(), 0, "a table with no room");
 
-    // REFUSED: the same table, asked for a unit that is under the cap.
+    // REFUSED: that table, asked for a unit that is under the cap.
     let entering = Enter {
         key: UnitKey::new(9_000),
         origin: OriginKind::Client,
@@ -1296,7 +1104,7 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
             node.kernel.next_call(),
         ),
     };
-    let Err(refused) = node.inflight.insert(entering) else {
+    let Err(refused) = full.insert(entering) else {
         panic!("a table with no room admits nothing that is under the cap");
     };
     assert_eq!(refused.reason, ReasonCode::InFlightCap);
@@ -1309,7 +1117,7 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         "a unit refused at the gate has spent nothing"
     );
 
-    // ADMITTED: an ordinary administrative request, through the whole loop, on that table.
+    // ANSWERED: an ordinary administrative request, at the same moment.
     let answer = node.answer(a_request());
     assert_eq!(
         answer.status, 200,
@@ -1320,23 +1128,6 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         answer,
         answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
         "the answer is the request's own, not the gate's refusal"
-    );
-    assert_eq!(node.inflight.len(), 0, "the unit gave its slot back");
-
-    // The step's own answer, for the unit that got through.
-    let (binding, ctx, seal) = a_bound_unit(a_request());
-    assert!(ctx.admin_listener, "the fixture is on the admin listener");
-    let record = arrival(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx)
-        .into_result(&seal)
-        .expect("an admin unit is never refused at the gate");
-    assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
-    assert_eq!(
-        record.transport_chain,
-        busbar_core_admin::admin_codec::claims::CLAIMS
-            .iter()
-            .map(|c| c.transport)
-            .collect::<Vec<_>>(),
-        "the chain is the transport the admin plane's own claim declares"
     );
 }
 
@@ -1362,38 +1153,28 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     // A path no row names: the unit has nowhere to go at all, and is refused here.
     let mut unknown = a_request();
     unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
-    let (binding, ctx, seal) = a_bound_unit(unknown);
+    let mut walk = a_bound_unit(unknown);
     assert!(
-        binding.units.verb(ctx.key).is_none(),
+        walk.verb.is_none(),
         "the fixture must be a path the table never resolved"
     );
-    let refusal = verify(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &principal,
-    )
-    .into_result(&seal)
-    .expect_err("a verb that resolved to nothing has nowhere to go");
-    assert_eq!(refusal.reason(), ReasonCode::NoDestination);
+    assert_eq!(
+        verify(&mut walk, &principal),
+        Err(ReasonCode::NoDestination),
+        "a verb that resolved to nothing has nowhere to go"
+    );
 
-    // A real operation: it proceeds, and it proceeds to nowhere PRICED.
-    let (binding, ctx, seal) = a_bound_unit(a_request());
+    // A real operation: it proceeds, and it proceeds to nowhere PRICED — the step seals no
+    // destination at all.
+    let mut walk = a_bound_unit(a_request());
     assert!(
-        binding.units.verb(ctx.key).is_some(),
+        walk.verb.is_some(),
         "the fixture must be a path the table did resolve"
     );
-    let destinations = verify(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &principal,
-    )
-    .into_result(&seal)
-    .expect("a resolved verb has somewhere to go");
-    assert!(
-        destinations.is_empty(),
-        "an admin unit that sealed a destination would sit on the priced axis"
+    assert_eq!(
+        verify(&mut walk, &principal),
+        Ok(()),
+        "a resolved verb has somewhere to go"
     );
 }
 
@@ -1415,41 +1196,23 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
     mutating.path = "/api/v1/admin/plane-record-write".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating.clone());
-    let resolved = binding
-        .units
-        .verb(ctx.key)
+    let mut walk = a_bound_unit(mutating.clone());
+    let resolved = walk
+        .verb
         .expect("the plane-record write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
-    binding
-        .units
-        .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
-    let facts = audit(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Outcome::Completed,
-    )
-    .into_result(&seal)
-    .expect("the door seals a completed mutation");
+    walk.principal = Some(PrincipalId::new(AN_IDENTIFIED_OPERATOR));
+    let facts = audit(&walk, &Outcome::Completed);
     assert_eq!(facts.op_class, resolved.op_class());
     assert_eq!(facts.finish, busbar_contract::FinishClass::Complete);
 
     // A read.
-    let (binding, ctx, seal) = a_bound_unit(a_request());
-    let read = binding
-        .units
-        .verb(ctx.key)
+    let walk = a_bound_unit(a_request());
+    let read = walk
+        .verb
         .expect("the audit listing is a row the table names");
     assert!(read.read_only, "the fixture must be a read");
-    let facts = audit(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Outcome::Completed,
-    )
-    .into_result(&seal)
-    .expect("the door seals a read");
+    let facts = audit(&walk, &Outcome::Completed);
     assert_eq!(facts.op_class, read.op_class());
     assert_ne!(
         facts.op_class,
@@ -1459,20 +1222,17 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
 
     // A refused mutation, by somebody the node identified and by nobody.
     for identified in [true, false] {
-        let (binding, ctx, seal) = a_bound_unit(mutating.clone());
+        let mut walk = a_bound_unit(mutating.clone());
         if identified {
-            binding
-                .units
-                .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
+            walk.principal = Some(PrincipalId::new(AN_IDENTIFIED_OPERATOR));
         }
-        let facts = audit_refused(
-            &binding,
-            &busbar_kernel::test_support::tokens::pass(),
-            &ctx,
-            &Refusal::new(ReasonCode::OverBudget),
-        )
-        .into_result(&seal)
-        .expect("the refused door seals the attempt");
+        let facts = audit(
+            &walk,
+            &Outcome::Refused(
+                busbar_contract::caps::StepName::Admit,
+                ReasonCode::OverBudget,
+            ),
+        );
         assert_eq!(facts.op_class, resolved.op_class());
         assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
     }
@@ -1484,7 +1244,7 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
 /// identity no other cell in this binary uses.
 #[cfg(feature = "root-admin")]
 fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
-    busbar_kernel::audit_ring::AUDIT
+    busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, usize::MAX, None, None)
         .into_iter()
         .filter(|entry| entry.principal == principal)
@@ -1513,8 +1273,12 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 #[test]
 fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
+    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
+    // test harness registers it, so the rows this test seals reach the seam's read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
-        let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
+        let ring =
+            busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
         let at = ring
             .iter()
             .position(|e| e.seq == entry.seq)
@@ -1535,29 +1299,19 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     };
 
     // A root-only mutation that applied: exactly one row, under its own name, `applied`.
-    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/plane-record-write"));
-    let resolved = binding
-        .units
-        .verb(ctx.key)
+    let mut walk = a_bound_unit(mutating("/api/v1/admin/plane-record-write"));
+    let resolved = walk
+        .verb
         .expect("the plane-record write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
-    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
-    binding.units.set_answer(
-        ctx.key,
-        AdminAnswer {
-            status: 204,
-            headers: Vec::new(),
-            body: Vec::new(),
-        },
-    );
+    walk.principal = Some(PrincipalId::new(WHO));
+    walk.answer = Some(AdminAnswer {
+        status: 204,
+        headers: Vec::new(),
+        body: Vec::new(),
+    });
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Outcome::Completed,
-    )
-    .into_result(&seal);
+    let _ = audit(&walk, &Outcome::Completed);
     let rows = the_one_rings_rows_by(WHO);
     assert_eq!(rows.len(), before + 1, "one unit, one entry");
     assert_eq!(rows[0].action, resolved.verb);
@@ -1567,77 +1321,58 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         "the entry names the identity, never the presented credential"
     );
     linked(&rows[0]);
-    binding.units.close(ctx.key);
 
     // A read changes nothing and records nothing.
-    let (binding, ctx, seal) = a_bound_unit(a_request());
+    let mut walk = a_bound_unit(a_request());
     assert!(
-        binding
-            .units
-            .verb(ctx.key)
+        walk.verb
             .expect("the audit listing is a row the table names")
             .read_only,
         "the fixture must be a read"
     );
-    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    walk.principal = Some(PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Outcome::Completed,
-    )
-    .into_result(&seal);
+    let _ = audit(&walk, &Outcome::Completed);
     assert_eq!(
         the_one_rings_rows_by(WHO).len(),
         before,
         "a read is not a mutation"
     );
-    binding.units.close(ctx.key);
 
     // A 1.5.5 mutation: its one row is the handler's, so the step adds none.
-    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/keys"));
+    let mut walk = a_bound_unit(mutating("/api/v1/admin/keys"));
     assert!(
-        !binding
-            .units
-            .verb(ctx.key)
+        !walk
+            .verb
             .expect("the key mint is a row the table names")
             .read_only,
         "the fixture must be a mutation"
     );
-    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    walk.principal = Some(PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Outcome::Completed,
-    )
-    .into_result(&seal);
+    let _ = audit(&walk, &Outcome::Completed);
     assert_eq!(
         the_one_rings_rows_by(WHO).len(),
         before,
         "the handler's row is the one row; the step writes no second copy"
     );
-    binding.units.close(ctx.key);
 
     // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
-    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/plane-record-write"));
-    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let mut walk = a_bound_unit(mutating("/api/v1/admin/plane-record-write"));
+    walk.principal = Some(PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit_refused(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Refusal::new(ReasonCode::OverBudget),
-    )
-    .into_result(&seal);
+    let _ = audit(
+        &walk,
+        &Outcome::Refused(
+            busbar_contract::caps::StepName::Admit,
+            ReasonCode::OverBudget,
+        ),
+    );
     let rows = the_one_rings_rows_by(WHO);
     assert_eq!(rows.len(), before + 1, "the attempt is on the chain");
     assert_eq!(rows[0].action, resolved.verb);
     assert_eq!(rows[0].outcome, busbar_kernel::audit_ring::OUTCOME_REJECTED);
     linked(&rows[0]);
-    binding.units.close(ctx.key);
 }
 
 /// The identity a fixture stands Verify's answer in for. Deliberately NOT the word the
@@ -1723,7 +1458,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         }
     }
 
-    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     for (path, body, reached) in [
@@ -1741,36 +1475,20 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     ] {
         let store = Arc::new(RecordingStore::default());
         let binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
-        let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "POST".to_string();
         request.path = path.to_string();
         request.body = body.as_bytes().to_vec();
-        binding.units.open(key, request);
-        let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: true,
-            kernel_verb_only: true,
-        };
-        decode(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx)
-            .into_result(&seal)
-            .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
-        binding.units.set_granted(key, VerbScope::Full);
+        let mut walk = AdminWalk::new(request);
+        decode(&mut walk).unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
+        walk.granted = Some(VerbScope::Full);
 
-        let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
         let outcome = route(
             &binding,
             Some(Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>),
             &admin,
-            &token,
-            &ctx,
-        )
-        .into_result(&seal);
-        binding.units.close(key);
+            &mut walk,
+        );
 
         assert_eq!(
             store.0.lock().unwrap().as_slice(),
@@ -1778,7 +1496,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             "{path} did not reach the store method it names"
         );
         assert_eq!(
-            outcome.err().map(|refusal| refusal.reason()),
+            outcome.err(),
             Some(ReasonCode::DurabilityUnavailable),
             "{path} did not surface the refusing store's refusal"
         );
@@ -1986,20 +1704,19 @@ fn the_refused_door_seals_the_refusal_that_happened() {
     let mut unrouted = a_request();
     unrouted.method = "DELETE".to_string();
     unrouted.path = "/api/v1/admin/nothing-declares-this".to_string();
-    let (binding, ctx, seal) = a_bound_unit(unrouted);
+    let walk = a_bound_unit(unrouted);
     assert!(
-        binding.units.verb(ctx.key).is_none(),
+        walk.verb.is_none(),
         "the fixture must be a unit whose verb never resolved"
     );
 
-    let facts = audit_refused(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass(),
-        &ctx,
-        &Refusal::new(ReasonCode::Unauthenticated),
-    )
-    .into_result(&seal)
-    .expect("the door seals a record for an unresolved unit");
+    let facts = audit(
+        &walk,
+        &Outcome::Refused(
+            busbar_contract::caps::StepName::Authenticate,
+            ReasonCode::Unauthenticated,
+        ),
+    );
     assert_eq!(
         facts.op_class,
         busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE),
@@ -2087,7 +1804,10 @@ impl LedgerView for SeededLedger {
         .collect())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
         use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
         let mut totals = std::collections::BTreeMap::new();
@@ -2106,17 +1826,20 @@ impl LedgerView for SeededLedger {
                 ..busbar_kernel_ledger::totals::Totals::zero()
             },
         );
-        vec![busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            4,
-            1,
-            1_700_000_000,
-            Vec::new(),
-            totals,
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail")]
+        each(
+            &busbar_kernel_ledger::checkpoint::Checkpoint::seal(
+                4,
+                1,
+                1_700_000_000,
+                Vec::new(),
+                totals,
+                0,
+                0,
+                None,
+            )
+            .expect("an unsigned seal cannot fail"),
+        );
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -2285,6 +2008,13 @@ impl busbar_kernel_ledger::legacy::LegacyRows for CountingRows {
             .push(posting.clone());
         Ok(())
     }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.written
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
+    }
 }
 
 #[cfg(feature = "root-admin")]
@@ -2375,14 +2105,11 @@ impl AdminDispatch for PanickingDispatch {
     }
 }
 
-/// A STEP THAT PANICS STILL GIVES THE TABLES BACK.
+/// A STEP THAT PANICS LEAVES THE NODE ANSWERING.
 ///
-/// Both tables are per-node and live for the life of the process: the in-flight slot bounds how
-/// many units the node has open, and the units table holds the request the steps read. A removal
-/// written as the next statement after the loop comes back on the answering path and on no
-/// other, so a panic in one operation's body would leave one slot and one whole request body
-/// resident for as long as the node runs — a leak per panicking request, and the operator
-/// reaching for the admin surface to find out why is the one making them.
+/// A unit's state lives in its own walk and nowhere node-wide, so a panic in one operation's body
+/// takes that walk with it and leaves nothing resident: the node answers the next request exactly
+/// as if the panicking one had never arrived — no slot held, no request body kept, no lock poisoned.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_panicking_step_leaves_both_tables_empty() {
@@ -2396,11 +2123,13 @@ fn a_panicking_step_leaves_both_tables_empty() {
     std::panic::set_hook(previous);
     assert!(ended.is_err(), "the fixture's dispatch panics");
 
-    assert_eq!(node.inflight.len(), 0, "the in-flight slot came back");
+    // The same node, asked a question no dispatch is reached for, still answers it.
+    let mut unknown = a_request();
+    unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
     assert_eq!(
-        node.units.admin.units.len(),
-        0,
-        "the units table gave up the request"
+        node.answer(unknown).status,
+        400,
+        "the node answers after a panicking unit"
     );
 }
 
@@ -2531,6 +2260,13 @@ impl busbar_kernel_ledger::legacy::LegacyRows for RowsThatLose {
                 .push(posting.clone());
         }
         Ok(())
+    }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.kept
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
     }
 }
 
@@ -2890,14 +2626,13 @@ fn verify_names_a_refused_balance_and_every_other_finding() {
 /// The other two views are this node's too: the seal it made and the marker it sealed.
 ///
 /// Both are on the same composition that answered empty above, so the change is the node's own
-/// act rather than a fixture swapped in behind the seam. The checkpoint is asserted through its
-/// sealed balances, which is the half the journal deliberately does not carry — a view rebuilt
-/// from the chain could not answer it at all.
+/// act rather than a fixture swapped in behind the seam. The checkpoint is the one the node's own
+/// sealer made, served as its chain re-derives it (ARCHITECT A1): the node keeps the seal's head,
+/// and the figures the read serves are the ones the body digest was taken over.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
     use busbar_kernel_ledger::migration::MigrationRecords as _;
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
@@ -2912,56 +2647,36 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
         rate_card_version: 4,
     };
 
-    {
+    let sealed = {
         let mut durability = units.durability.lock().expect("durability lock");
-        let mut totals = std::collections::BTreeMap::new();
-        totals.insert(
-            (
-                TotalsKey::new(
-                    BucketId::new(KEPT.0),
-                    CapDimension::NanoUnits,
-                    BucketScope::All,
-                ),
-                A_DAY,
-            ),
-            busbar_kernel_ledger::totals::Totals {
-                settled: 8_000,
-                ..busbar_kernel_ledger::totals::Totals::zero()
-            },
-        );
-        let checkpoint = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            7,
-            0,
-            1_700_000_100,
-            Vec::new(),
-            totals,
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail");
-        durability
-            .journal_checkpoint(&checkpoint, &token, busbar_contract::caps::StepName::Meter)
-            .expect("the memory-buffered journal takes it");
         durability
             .migration_records(&token, busbar_contract::caps::StepName::Meter)
             .write_marker(&marker)
             .expect("the marker goes on the chain");
-    }
+        durability
+            .seal_checkpoint(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("the node seals")
+    };
 
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let body = |path: &str| -> serde_json::Value {
         serde_json::from_slice(&node.answer(a_ledger_request(path)).body).expect("valid JSON")
     };
 
-    let sealed = body("/api/v1/admin/ledger/checkpoints");
-    let sealed = sealed["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 1, "the seal this node made is not served");
-    assert_eq!(sealed[0]["checkpoint_seq"], 7);
-    assert_eq!(sealed[0]["body_hash_verifies"], true);
+    let served = body("/api/v1/admin/ledger/checkpoints");
+    let served = served["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(served.len(), 1, "the seal this node made is not served");
+    assert_eq!(served[0]["checkpoint_seq"], sealed.checkpoint_seq);
+    assert_eq!(served[0]["wall"], 1_700_000_100);
+    assert_eq!(served[0]["body_hash_verifies"], true);
     assert_eq!(
-        sealed[0]["totals"][0]["settled"], "8000",
-        "the sealed balances the journal does not carry"
+        served[0]["totals"].as_array().map(Vec::len),
+        Some(sealed.totals.len()),
+        "the sealed balances, re-derived"
     );
 
     let served = body("/api/v1/admin/ledger/migration");
@@ -2976,69 +2691,111 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 }
 
 /// THE CHECKPOINTS READ RENDERS THE SEAL'S VERIFICATION (OWNER Q71(3): one keyset, #82): a
-/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and each
-/// refusal is served in its own words — an EDITED seal and an UNSIGNED one.
+/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and one a
+/// node with no signing key sealed is served with its refusal in its own words, UNSIGNED.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    let served = |signing: bool| -> serde_json::Value {
+        let units = crate::root::kernel::ProductionUnits::admin_only(
+            Arc::new(AnsweringDispatch),
+            open_door(),
+        );
+        let token =
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        {
+            let mut durability = units.durability.lock().expect("durability lock");
+            if signing {
+                durability.record = busbar_kernel_audit::AuditChain::new()
+                    .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
+            }
+            durability
+                .seal_checkpoint(
+                    &token,
+                    busbar_contract::caps::StepName::Meter,
+                    1_700_000_100,
+                )
+                .expect("the node seals");
+        }
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let served: serde_json::Value = serde_json::from_slice(
+            &node
+                .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
+                .body,
+        )
+        .expect("valid JSON");
+        served["checkpoints"][0].clone()
+    };
+
+    let signed = served(true);
+    assert_eq!(signed["signed"], true);
+    assert_eq!(signed["seal_verifies"], true);
+    assert_eq!(signed["seal_refusal"], serde_json::Value::Null);
+
+    let unsigned = served(false);
+    assert_eq!(unsigned["signed"], false);
+    assert_eq!(unsigned["seal_verifies"], false);
+    assert_eq!(
+        unsigned["seal_refusal"],
+        format!(
+            "checkpoint {} carries no signature — no key in the keyset can vouch for it",
+            unsigned["checkpoint_seq"]
+        )
+    );
+}
+
+/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE REFUSES THE CHECKPOINTS
+/// READ, and `GET /admin/verify` names it by its sequence number as a finding. Before the ruling
+/// the read served the held copy's figures, edited or not, as `body_hash_verifies: false`; now no
+/// figure is served for a checkpoint the chain cannot vouch for.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_and_named_by_verify() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
     let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    {
-        let mut durability = units.durability.lock().expect("durability lock");
-        durability.record = busbar_kernel_audit::AuditChain::new()
-            .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
-        let signed = durability
+    let stray = {
+        let mut durability = node_book.durability.lock().expect("unpoisoned");
+        let sealed = durability
             .seal_checkpoint(
                 &token,
                 busbar_contract::caps::StepName::Meter,
                 1_700_000_100,
             )
-            .expect("the node seals and signs");
-        // The same seal with a figure edited after it was made, and one nobody signed.
-        let mut edited = signed.clone();
-        edited.checkpoint_seq = 2;
-        let unsigned = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            3,
-            0,
-            1_700_000_200,
-            Vec::new(),
-            std::collections::BTreeMap::new(),
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail");
-        durability.checkpoints.push(edited);
-        durability.checkpoints.push(unsigned);
-    }
+            .expect("the node seals");
+        // The held head is edited after the seal: no record on the chain carries it.
+        let mut stray = sealed.head();
+        stray.checkpoint_seq = sealed.checkpoint_seq + 40;
+        durability.checkpoints = vec![stray.clone()];
+        stray
+    };
 
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let served: serde_json::Value = serde_json::from_slice(
-        &node
-            .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
-            .body,
-    )
-    .expect("valid JSON");
-    let sealed = served["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 3);
-
-    assert_eq!(sealed[0]["signed"], true);
-    assert_eq!(sealed[0]["seal_verifies"], true);
-    assert_eq!(sealed[0]["seal_refusal"], serde_json::Value::Null);
-
-    assert_eq!(sealed[1]["seal_verifies"], false);
-    assert_eq!(
-        sealed[1]["seal_refusal"],
-        "checkpoint 2 does not hash to its own figures — it was EDITED after it was sealed"
+    assert!(
+        matches!(
+            render_ledger_view(KernelVerb::GetLedgerCheckpoints, &view),
+            Err(busbar_core_admin::GovernanceError::Store)
+        ),
+        "no figure is served for a checkpoint the chain cannot vouch for"
     );
 
-    assert_eq!(sealed[2]["signed"], false);
-    assert_eq!(sealed[2]["seal_verifies"], false);
-    assert_eq!(
-        sealed[2]["seal_refusal"],
-        "checkpoint 3 carries no signature — no key in the keyset can vouch for it"
+    let answer = crate::root::units_admin::bound::verify_effect(&view).expect("verify answers");
+    let verified: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let named = format!(
+        "checkpoint {}: no record on the chain carries it",
+        stray.checkpoint_seq
     );
+    assert!(
+        verified["findings"]
+            .as_array()
+            .expect("findings")
+            .iter()
+            .any(|f| f.as_str() == Some(named.as_str())),
+        "the refusal is a finding naming the sequence number: {verified}"
+    );
+    assert_eq!(verified["book_verified"], false, "{verified}");
+    assert_eq!(verified["ok"], false, "{verified}");
 }
 
 /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
@@ -3110,34 +2867,12 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
 /// first.
 #[test]
 fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
-    let binding = AdminBinding::new(Arc::new(RefusingDispatch), open_door());
-    let seal = busbar_kernel::test_support::tokens::seal();
-
     let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
-        let key = UnitKey::new(1);
         let mut request = a_ledger_request(path);
         request.method = method.to_string();
-        binding.units.open(key, request);
-        let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: true,
-            kernel_verb_only: true,
-        };
-        let token: Pass<Approve> = busbar_kernel::test_support::tokens::pass();
-        let verdict = approve(
-            &binding,
-            Some(granted),
-            &token,
-            &ctx,
-            &PrincipalId::new("admin"),
-            &[],
-        );
-        binding.units.close(key);
-        verdict.into_result(&seal).is_ok()
+        let mut walk = AdminWalk::new(request);
+        walk.granted = Some(granted);
+        approve(&walk).is_ok()
     };
 
     for path in LEDGER_PATHS {
@@ -3232,7 +2967,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
-        let packed = verbs
+        let answer = verbs
             .execute(
                 *verb,
                 &admin,
@@ -3242,7 +2977,6 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 b"",
             )
             .unwrap_or_else(|r| panic!("{verb:?} was refused: {r:?}"));
-        let answer = AdminAnswer::unpack(&packed).expect("the view packs an answer");
         assert_eq!(answer.status, 200);
     }
     assert_eq!(
@@ -3658,7 +3392,7 @@ fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views()
     }
 
     let pinned: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        env!("BUSBAR_CORE_DIR"),
         "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
     )))
     .expect("the pinned fixture is JSON");
@@ -3775,7 +3509,7 @@ fn amend_through_a_journal(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_secs: u64,
-) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
     let book = a_memory_book();
     amend_rate_history_effect(
         history,
@@ -3830,9 +3564,8 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(before_seq, busbar_kernel_ledger::cost::HistorySeq(0));
 
     // The correction applies, arriving at second 6 (→ 6000 ms).
-    let packed =
+    let answer =
         amend_through_a_journal(&history, &a_correction_body(), 6).expect("the correction applies");
-    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
     assert_eq!(doc["history_seq"], 1);
@@ -4227,7 +3960,10 @@ fn amend_at(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_ms: u64,
-) -> (Result<Vec<u8>, busbar_core_admin::GovernanceError>, usize) {
+) -> (
+    Result<AdminAnswer, busbar_core_admin::GovernanceError>,
+    usize,
+) {
     let book = a_memory_book();
     let result = amend_rate_history_effect(
         history,
@@ -4273,8 +4009,8 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
 
 /// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
 /// UTC days, an open end, and the instant a config apply started a new price era (every unit from it
-/// on accrued under that era). A window that opens after the arrival is not a correction at all
-/// (TODO M28): [`a_future_dated_correction_is_refused_and_appends_nothing`].
+/// on accrued under that era). A window that opens after the arrival is not a correction at all:
+/// [`a_future_dated_correction_is_refused_and_appends_nothing`].
 #[test]
 fn a_correction_on_row_boundaries_applies() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
@@ -4306,7 +4042,7 @@ fn a_correction_on_row_boundaries_applies() {
     );
 }
 
-/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (TODO M28; #79: a correction is "an entry whose
+/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (#79: a correction is "an entry whose
 /// `effective_from` lies in the past"). A signed window that opens after the call arrived prices a
 /// future no booked line has reached: a forward price under an amendment's signature, standing in
 /// for a configuration write. Refused at the shape, and nothing is recorded or appended — including a
@@ -4344,7 +4080,7 @@ fn a_future_dated_correction_is_refused_and_appends_nothing() {
     assert_eq!((history.len(), records), (2, 1));
 }
 
-/// **A SIGNED CORRECTION APPLIES ONCE** (TODO M28). The signature covers the window, the figures and
+/// **A SIGNED CORRECTION APPLIES ONCE**. The signature covers the window, the figures and
 /// the reason, and nothing that tells one submission from the next, so the same signed bytes sent
 /// again after a later correction would put the earlier price back with no new operator act. The
 /// replay is refused `Conflict`, nothing is recorded and nothing appended, and the later correction
@@ -4578,8 +4314,8 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
             &an_attribution(),
         )
         .expect("the first correction applies");
-        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused
-        // (TODO M28), so each later one moves the fee.
+        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused,
+        // so each later one moves the fee.
         for fee in 8..1_008 {
             amend_rate_history_effect(
                 &history,
@@ -4758,9 +4494,8 @@ fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     let body = a_correction_body();
     let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
     assert!(doc.get("signature").is_none() && doc.get("operator_fingerprint").is_none());
-    let packed =
+    let answer =
         amend_through_a_journal(&history, &body, 6).expect("an unsigned correction applies");
-    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     assert!(
@@ -4780,9 +4515,8 @@ fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
         serde_json::from_slice(&a_correction_body()).expect("the body is JSON");
     doc["operator_fingerprint"] = serde_json::json!("a-fingerprint-nothing-checks");
     doc["signature"] = serde_json::json!("00".repeat(64));
-    let packed = amend_through_a_journal(&history, &a_body(doc), 6)
+    let answer = amend_through_a_journal(&history, &a_body(doc), 6)
         .expect("a body carrying a stale signature still applies");
-    let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     assert!(
         doc.get("operator_fingerprint").is_none(),
@@ -4857,7 +4591,6 @@ fn a_booked_line(
         fee_count,
         tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived_ms,
-        origin: busbar_kernel_ledger::PostingOrigin::Client,
     }
 }
 
@@ -4916,8 +4649,11 @@ impl LedgerView for PricedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
-        Vec::new()
+    fn each_checkpoint(
+        &self,
+        _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -5244,8 +4980,11 @@ fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinn
                 Ok(LegacySnapshot::new())
             }
         }
-        fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
-            Vec::new()
+        fn each_checkpoint(
+            &self,
+            _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+        ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
+            Ok(())
         }
         fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
             None
@@ -5383,9 +5122,22 @@ fn a_book_with_one_recorded_unit(
     principal: &str,
     lane: &str,
 ) -> (crate::root::durability::NodeBook, String) {
+    let book = crate::root::durability::node_book();
+    let digest = post_one_recorded_unit(&book.durability, principal, lane);
+    (book, digest)
+}
+
+/// Post ONE counts posting for `principal` on `book`: 1,000 `input` units on `lane`, arrived at
+/// `ADJUST_ARRIVED_MS`. Answers the digest of the posting's journal record — the entry an `adjust`
+/// names.
+#[cfg(feature = "root-admin")]
+fn post_one_recorded_unit(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    principal: &str,
+    lane: &str,
+) -> String {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
     use busbar_contract::caps::{DurableWrite, PrincipalId};
-    let book = crate::root::durability::node_book();
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let key = busbar_kernel_ledger::totals::TotalsKey::new(
         busbar_kernel_ledger::totals::BucketId::new(principal),
@@ -5400,7 +5152,7 @@ fn a_book_with_one_recorded_unit(
             1_000,
         )]),
     };
-    let mut durability = book.durability.lock().expect("unpoisoned");
+    let mut durability = book.lock().expect("unpoisoned");
     durability
         .post_counts(
             &Settling {
@@ -5425,9 +5177,7 @@ fn a_book_with_one_recorded_unit(
         .replay()
         .expect("the journal reads back")
         .expect("the journal verifies");
-    let digest = hex::encode(records.last().expect("the posting is on the chain").hash);
-    drop(durability);
-    (book, digest)
+    hex::encode(records.last().expect("the posting is on the chain").hash)
 }
 
 /// The instant the adjusted unit arrived: its card epoch.
@@ -5442,44 +5192,16 @@ fn adjust_through_route(
     granted: VerbScope,
     body: serde_json::Value,
 ) -> Result<AdminAnswer, ReasonCode> {
-    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
-    let key = UnitKey::new(a_fresh_unit());
     let mut request = a_request();
     request.method = "POST".to_string();
     request.path = "/api/v1/admin/adjust".to_string();
     request.body = serde_json::to_vec(&body).expect("the body serialises");
-    binding.units.open(key, request);
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key,
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: true,
-        kernel_verb_only: true,
-    };
-    decode(
-        binding,
-        &busbar_kernel::test_support::tokens::pass::<Decode>(),
-        &ctx,
-    )
-    .into_result(&seal)
-    .expect("the plane's table declares adjust");
-    binding.units.set_granted(key, granted);
-    let outcome = route(
-        binding,
-        None,
-        &admin,
-        &busbar_kernel::test_support::tokens::pass::<Route>(),
-        &ctx,
-    )
-    .into_result(&seal);
-    let answer = binding.units.answer(key);
-    binding.units.close(key);
-    outcome
-        .map(|_| answer.expect("an admitted unit leaves an answer"))
-        .map_err(|refusal| refusal.reason())
+    let mut walk = AdminWalk::new(request);
+    decode(&mut walk).expect("the plane's table declares adjust");
+    walk.granted = Some(granted);
+    route(binding, None, &admin, &mut walk)
+        .map(|()| walk.answer.expect("an admitted unit leaves an answer"))
 }
 
 /// A binding over `book`'s node ledger.
@@ -5667,6 +5389,7 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
             busbar_contract::authz::Scope::ReadOnly,
             "admin",
             &|_| true,
+            None,
             |_| binding.ledger.recorded_counts(&digest),
         ),
         Err(busbar_core_admin::GovernanceError::Validation)
@@ -5984,10 +5707,9 @@ fn a_book_over_the_store(
     ))
 }
 
-/// The status and body of a packed admin answer.
+/// The status and body of an admin answer.
 #[cfg(test)]
-fn status_and_body(packed: &[u8]) -> (u16, String) {
-    let answer = AdminAnswer::unpack(packed).expect("a packed answer");
+fn status_and_body(answer: &AdminAnswer) -> (u16, String) {
     (
         answer.status,
         String::from_utf8_lossy(&answer.body).into_owned(),
@@ -6104,6 +5826,327 @@ fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
         String::from_utf8_lossy(&answer.body)
     );
     assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
+}
+
+/// A store whose answer the test flips: refusing, a memory-buffered journal over it chains every
+/// record, retains the refused batch and offers it again ahead of the next append (`busbar-kernel-wal`
+/// `Journal::append`, `Wal::append_batch`); answering, the retained batch lands.
+#[cfg(test)]
+struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(test)]
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(busbar_kernel_wal::ShipError::Unavailable(
+                "the store is not answering".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A memory-buffered book whose store refuses while `refusing` holds (opened while it answers).
+#[cfg(test)]
+fn a_book_whose_store_switches(
+    refusing: &Arc<std::sync::atomic::AtomicBool>,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(SwitchShipper(Arc::clone(refusing))),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ))
+}
+
+/// Put one record that is not a `Policy` record on `book`'s journal, as the next posting would.
+#[cfg(test)]
+fn append_the_next_record(book: &Arc<Mutex<crate::root::durability::Durability>>) {
+    book.lock()
+        .unwrap()
+        .journal
+        .append(
+            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+            busbar_contract::caps::StepName::Meter,
+            &[
+                busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, vec![1])
+                    .at(7, 0),
+            ],
+        )
+        .expect("the store answers again and the next record lands");
+}
+
+/// **A CORRECTION WHOSE RECORD THE JOURNAL CHAINED AND RETAINED IS IN FORCE, AND ANSWERED "SEALED,
+/// NOT YET KEPT"** (audit root r4 B-7). The journal chains a record before the log is asked to take
+/// it, and a log that could not make it durable retains it and writes it ahead of the next append —
+/// so the record reaches the chain a restart rebuilds the dated history from. #79
+/// (`docs/design/BUSBAR-1.6.0.md` l.2282: a correction is "an appended, journaled, dated entry")
+/// makes the history the chain holds the history in force: the live node must price the correction
+/// from the moment its record is chained, and answer `503` "do not re-submit" until it is kept
+/// (ARCHITECT 2026-10-07 H3 ruling (d)). Re-sending it is then refused: it is already applied.
+///
+/// RED before the fix: the journal's `DurabilityLost` was answered `Store` and the history left
+/// untouched — then the retained record landed with the next append, and a restart repriced the
+/// window by a correction the operator was told had failed.
+#[test]
+fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let book = a_book_whose_store_switches(&refusing);
+    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+    let history = a_seeded_history();
+    let answered = amend_rate_history_effect(
+        &history,
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(5, serde_json::json!(1.5)),
+        6,
+        &an_attribution(),
+    )
+    .expect("a correction the journal chained is answered, never refused as unrecorded");
+    let (status, body) = status_and_body(&answered);
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("do not re-submit"), "{body}");
+    assert_eq!(
+        history.len(),
+        2,
+        "the correction is in force on the live node from the moment its record is chained"
+    );
+
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    append_the_next_record(&book);
+    assert_eq!(
+        replayed_amendments(&book.lock().unwrap()).len(),
+        1,
+        "the retained record landed on the chain a restart rebuilds the history from"
+    );
+    assert!(
+        matches!(
+            amend_rate_history_effect(
+                &history,
+                Some(&a_journal_over(&book)),
+                &a_priced_correction(5, serde_json::json!(1.5)),
+                7,
+                &an_attribution(),
+            ),
+            Err(busbar_core_admin::GovernanceError::Conflict)
+        ),
+        "a re-submission is refused: the correction is already applied"
+    );
+    assert_eq!(history.len(), 2);
+}
+
+/// **A COMMIT WHOSE RECORD THE JOURNAL CHAINED AND RETAINED IS ANSWERED "SEALED, NOT YET KEPT"**
+/// (audit root r4 B-7): `commit_upgrade` answers `503` "do not re-submit" (ARCHITECT 2026-10-07 H3
+/// ruling (d)), never a refusal of a commit whose record still reaches the chain.
+///
+/// RED before the fix: the journal's `DurabilityLost` was answered `Store` (a commit nothing
+/// recorded) while the retained record landed with the next append.
+#[test]
+fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let book = a_book_whose_store_switches(&refusing);
+    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("a commit the journal chained is answered, never refused as unrecorded");
+    let text = String::from_utf8_lossy(&answer.body).into_owned();
+    assert_eq!(answer.status, 503, "{text}");
+    assert!(text.contains("do not re-submit"), "{text}");
+
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    append_the_next_record(&book);
+    let commits = book
+        .lock()
+        .unwrap()
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("the journal verifies")
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .count();
+    assert_eq!(commits, 1, "the retained commit landed on the chain");
+}
+
+/// A binding over `book`'s node ledger, as [`an_adjusting_binding`] builds one, whose amendments are
+/// recorded on `book`'s journal as production binds them (`kernel.rs`, `units.admin.amendments`).
+#[cfg(feature = "root-admin")]
+fn an_adjusting_binding_over(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> AdminBinding {
+    let legacy: Arc<dyn LegacyRowsRead> =
+        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)))
+        .with_pools(Arc::new(|pool| pool == "pool-a"))
+        .with_amendment_journal(Arc::new(a_journal_over(book)))
+}
+
+/// A store-kept book holding one recorded unit the store has taken. Answers the book and the
+/// unit's digest.
+#[cfg(feature = "root-admin")]
+fn a_store_kept_book_with_one_recorded_unit(
+    slots: &crate::root::store_double::RecordSlots,
+    principal: &str,
+    lane: &str,
+) -> (Arc<Mutex<crate::root::durability::Durability>>, String) {
+    let book = a_book_over_the_store(slots);
+    let digest = post_one_recorded_unit(&book, principal, lane);
+    assert!(
+        book.lock()
+            .unwrap()
+            .lane()
+            .expect("a book over the store")
+            .drain(std::time::Duration::from_secs(120)),
+        "the store takes the posting"
+    );
+    (book, digest)
+}
+
+/// The corrections the node journal holds for `digest`.
+#[cfg(feature = "root-admin")]
+fn corrections_of(digest: &str) -> usize {
+    busbar_kernel::audit::amend::node_corrections()
+        .iter()
+        .filter(|a| {
+            matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
+                if adj.amends_hash == digest)
+        })
+        .count()
+}
+
+/// **`adjust` WHILE THE STORE REFUSES THE JOURNAL'S RECORDS IS REFUSED `503` AND SEALS NOTHING**
+/// (audit root r4 B-8; ARCHITECT 2026-10-07 H3 ruling (d), `durability/mod.rs` and
+/// `AmendmentJournal`: a durable admin verb records nothing while the store is refusing the
+/// journal's records). A count correction moves money (#71, `docs/design/BUSBAR-1.6.0.md`
+/// l.2268: the money is read-time over the counts), so it is held to the rule `amend_rate_history`
+/// and `commit_upgrade` already keep.
+///
+/// RED before the fix: `adjust` never asked the journal — it sealed the correction and answered 200.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_adjust_while_the_store_refuses_the_journal_is_refused_503_and_seals_nothing() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (book, digest) = a_store_kept_book_with_one_recorded_unit(
+        &slots,
+        "vk_adjust_h3_refused",
+        "adjust-h3-refused",
+    );
+    slots.refuse(true);
+    // A durable verb that waited on the store saw it refuse.
+    let commit = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+    let seen = bound::commit_upgrade_effect(
+        &commit,
+        1_700_000_000,
+        "admin",
+        Some(&a_journal_over(&book)),
+    )
+    .expect("an answer");
+    assert_eq!(seen.status, 503, "{}", String::from_utf8_lossy(&seen.body));
+
+    let answer = adjust_through_route(
+        &an_adjusting_binding_over(&book),
+        VerbScope::Full,
+        serde_json::json!({
+            "amends": digest,
+            "now": { "input": "800" },
+            "reason": "a retried request was metered twice",
+            "pool": "pool-a",
+        }),
+    )
+    .expect("an answer");
+    let body = String::from_utf8_lossy(&answer.body).into_owned();
+    assert_eq!(answer.status, 503, "{body}");
+    assert!(body.contains("the test store refuses writes"), "{body}");
+    assert_eq!(
+        corrections_of(&digest),
+        0,
+        "nothing is sealed while the store refuses"
+    );
+}
+
+/// Marks the child process of [`an_adjust_answers_only_once_the_store_kept_its_correction`].
+#[cfg(feature = "root-admin")]
+const ADJUST_ACK_PHASE: &str = "BUSBAR_TEST_ADJUST_ACK_PHASE";
+
+/// THE CHILD HALF of [`an_adjust_answers_only_once_the_store_kept_its_correction`], run only in a
+/// process of its own: it binds the node amendment journal's sink — one per process — to its book,
+/// as the production boot does (`root::boot`, `bind_amendments`). Ignored so the default run never
+/// counts it as a pass.
+#[cfg(feature = "root-admin")]
+#[test]
+#[ignore = "child process of an_adjust_answers_only_once_the_store_kept_its_correction"]
+fn adjust_ack_phase() {
+    assert!(
+        std::env::var(ADJUST_ACK_PHASE).is_ok(),
+        "adjust_ack_phase is the child half of an_adjust_answers_only_once_the_store_kept_its_\
+         correction: run that, not this"
+    );
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (book, digest) =
+        a_store_kept_book_with_one_recorded_unit(&slots, "vk_adjust_h3_ack", "adjust-h3-ack");
+    book.lock()
+        .unwrap()
+        .restore_amendments()
+        .expect("the chain reads back");
+    crate::root::durability::bind_amendments(&book);
+    slots.refuse(true);
+
+    let answer = adjust_through_route(
+        &an_adjusting_binding_over(&book),
+        VerbScope::Full,
+        serde_json::json!({
+            "amends": digest,
+            "now": { "input": "800" },
+            "reason": "a retried request was metered twice",
+            "pool": "pool-a",
+        }),
+    )
+    .expect("an answer");
+    let body = String::from_utf8_lossy(&answer.body).into_owned();
+    assert_eq!(answer.status, 503, "{body}");
+    assert!(
+        body.contains("the test store refuses writes") && body.contains("do not re-submit"),
+        "{body}"
+    );
+    assert_eq!(
+        corrections_of(&digest),
+        1,
+        "the correction is sealed and on the chain, offered again: in force, not yet kept"
+    );
+}
+
+/// **`adjust` ANSWERS 200 ONLY ONCE THE STORE KEPT ITS CORRECTION** (audit root r4 B-8; ARCHITECT
+/// 2026-10-07 H3 ruling (d): a durable admin verb answers only once the store acknowledged its
+/// record). A correction sealed and journalled whose record the store then refuses is answered
+/// `503` "sealed, not yet kept; do not re-submit" — never 200 over a record a crash would lose, and
+/// with it the money derived from the corrected counts (#71, `docs/design/BUSBAR-1.6.0.md` l.2268).
+/// See [`adjust_ack_phase`].
+///
+/// RED before the fix: `adjust` answered 200 without waiting for the store.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_adjust_answers_only_once_the_store_kept_its_correction() {
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "root::units_admin::tests::adjust_ack_phase"])
+        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .env(ADJUST_ACK_PHASE, "1")
+        .output()
+        .expect("the test binary runs");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the child phase failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "the child phase ran nothing:\n{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6460,37 +6503,129 @@ fn h6_an_unpriceable_line_or_an_uncounted_figure_serves_the_balance_never_zero()
 #[test]
 #[cfg(feature = "root-admin")]
 fn route_refuses_a_unit_whose_grant_was_never_recorded() {
-    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
-    let key = UnitKey::new(1);
     let mut request = a_request();
     request.method = "POST".to_string();
     request.path = "/api/v1/admin/chain-break".to_string();
-    binding.units.open(key, request);
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key,
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: true,
-        kernel_verb_only: true,
-    };
-    decode(
-        &binding,
-        &busbar_kernel::test_support::tokens::pass::<Decode>(),
-        &ctx,
-    )
-    .into_result(&seal)
-    .expect("the plane's table declares this operation");
-    // No `set_granted`: the Approve step never ran for this unit.
-    let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
-    let outcome = route(&binding, None, &admin, &token, &ctx).into_result(&seal);
-    binding.units.close(key);
+    let mut walk = AdminWalk::new(request);
+    decode(&mut walk).expect("the plane's table declares this operation");
+    // No grant: the Approve step never ran for this unit.
+    let outcome = route(&binding, None, &admin, &mut walk);
     assert_eq!(
-        outcome.map(|_| ()).map_err(|refusal| refusal.reason()),
+        outcome,
         Err(ReasonCode::ScopeDenied),
         "a unit with no recorded grant reached the verb"
+    );
+}
+
+/// A REQUEST THE ADMIN PLANE DID NOT COMPOSE IS NEVER SEALED AS AN ADMIN READ (regression guard
+/// for 8fb8a1f9ba).
+///
+/// The bug: a unit that no admin row claimed reached the root's audit door and was sealed under the
+/// admin plane's word for a verb that never resolved, `admin_read`, so the record said an operator
+/// read a page when no administrative operation was involved. With the steps called directly there
+/// is no shared audit door any more; what decides whether an admin record is sealed is the mount's
+/// claim. So this drives the mount itself: a path outside the admin prefix, and a path inside it that
+/// no row declares, go to the surface below and leave NO record on the node's book, while a declared
+/// admin read leaves exactly one, under `admin_read`.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
+    use tower::ServiceExt;
+
+    let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+    let book: Arc<std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>> =
+        Arc::new(std::sync::OnceLock::new());
+    let kept = Arc::clone(&book);
+    let wrapped = mount(
+        inner,
+        busbar_kernel::teller::Kernel::new(),
+        1024,
+        move |dispatch| {
+            let units = crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door());
+            let _ = kept.set(Arc::clone(&units.durability));
+            units
+        },
+    );
+    let book = Arc::clone(book.get().expect("the mount built its units"));
+    let sealed = || {
+        let mut held = Vec::new();
+        NodeAudit::new(Arc::clone(&book)).read(&mut |_, records| {
+            held = records.map(<[_]>::to_vec).unwrap_or_default();
+        });
+        held
+    };
+    let get = |path: &str| {
+        axum::http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .expect("the request builds")
+    };
+    let admin_read = busbar_kernel_audit::OpClassId::new(OP_UNRESOLVED_READ);
+
+    for uncomposed in ["/v1/chat/completions", "/api/v1/admin/not-a-real-operation"] {
+        let response = wrapped
+            .clone()
+            .oneshot(get(uncomposed))
+            .await
+            .expect("the router answers");
+        let records = sealed();
+        assert!(
+            records.iter().all(|r| r.what.op_class != admin_read),
+            "{uncomposed} was sealed as an administrative read: {records:?}"
+        );
+        assert!(
+            records.is_empty(),
+            "{uncomposed} is no admin unit and seals no admin record: {records:?}"
+        );
+        assert_eq!(
+            response.status(),
+            200,
+            "{uncomposed} reached the surface below"
+        );
+    }
+
+    // The positive control: a declared admin read is one unit, sealed once, as a read.
+    let response = wrapped
+        .oneshot(get("/api/v1/admin/audit?limit=4"))
+        .await
+        .expect("the router answers");
+    assert_eq!(response.status(), 200);
+    let records = sealed();
+    assert_eq!(records.len(), 1, "one declared admin unit, one record");
+    assert_eq!(records[0].what.op_class, admin_read);
+}
+
+/// A LENGTH THE REQUEST CLAIMS IS CHECKED AGAINST THE BYTES, NEVER TRUSTED (regression guard for
+/// e9fbbd4d55).
+///
+/// The bug: the root's answer framing reserved room for the header count a frame declared before
+/// reading a single header, so four bytes off the wire could ask for gigabytes. That framing is gone;
+/// the admin input a caller controls now is the request itself, and the same invariant holds there:
+/// what the request says about its own size is a claim, and the wrap reads no more than the
+/// operator's cap whatever the claim. A request that declares a length inside the cap and then sends
+/// more is refused, not read to its end and executed.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
+    use tower::ServiceExt;
+
+    let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+    let wrapped = mount(inner, busbar_kernel::teller::Kernel::new(), 4, |dispatch| {
+        crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door())
+    });
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/keys")
+        .header(axum::http::header::CONTENT_LENGTH, "3")
+        .body(axum::body::Body::from(b"0123456789".to_vec()))
+        .expect("the request builds");
+    let response = wrapped.oneshot(request).await.expect("the router answers");
+    assert_eq!(
+        response.status(),
+        400,
+        "a body longer than the cap is refused whatever length it declared"
     );
 }

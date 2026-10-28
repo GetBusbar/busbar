@@ -290,6 +290,15 @@ pub struct Declares {
     /// the plugin's host ops name the key, never a path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub destinations: Vec<String>,
+    /// How many archives the host's disk lane keeps when it rolls a declared destination over
+    /// (THE DESIGN: `disk.append` rotation is declared per destination, `{path_key,
+    /// rotate_size_key, keep}`), keyed by the destination's settings key; the host turns it into
+    /// its rotation ([`busbar_contract::services::DiskRotate::declared`]). `0`: no archive — a due
+    /// file is truncated in place, 1.5.5's request-log rollover. A destination not named here takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`]. Left off the wire when empty, so every
+    /// manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keep: BTreeMap<String, u32>,
     /// The EGRESS POLICY the host applies to every request the plugin asks it to admit or carry
     /// (K9e-2, export ABI minor 10) — see [`EgressPolicy`]. Granted to a first-party plugin only
     /// when it is not the default; the default is left off the wire, so every manifest packed
@@ -309,6 +318,30 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
+    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
+    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
+    /// hook is judged and served as every hook before the field existed (it may order); left off
+    /// the wire when absent, so every manifest packed before the field existed keeps its canonical
+    /// bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookDecl>,
+}
+
+/// A hook's declared FACTS (`declares.hook`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDecl {
+    /// Whether the hook's `decide` ever answers an order (PREFER). `false`: it always abstains, the
+    /// conformance suite judges it on abstain-only and fails it if it orders, and the loader refuses
+    /// an order it answers at run. Absent, `true`.
+    #[serde(default = "HookDecl::orders_by_default")]
+    pub orders: bool,
+}
+
+impl HookDecl {
+    const fn orders_by_default() -> bool {
+        true
+    }
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -392,7 +425,15 @@ impl Declares {
         if let Some(m) = doc.as_object_mut() {
             m.remove("contract_abi");
         }
-        serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
+        let read: Self =
+            serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))?;
+        // A retention is stated for a declared destination only.
+        if let Some(key) = read.keep.keys().find(|k| !read.destinations.contains(k)) {
+            return Err(format!(
+                "not a `declares` section: `keep` names `{key}`, which is not a declared destination"
+            ));
+        }
+        Ok(read)
     }
 
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
@@ -400,9 +441,17 @@ impl Declares {
         self.metrics.is_empty()
             && self.diagnostics.is_empty()
             && self.destinations.is_empty()
+            && self.keep.is_empty()
             && self.egress.is_default()
             && self.breaker.is_none()
             && !self.disk
+            && self.hook.is_none()
+    }
+
+    /// Whether the hook may answer an order: `declares.hook.orders`, `true` when not stated.
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.hook.is_none_or(|h| h.orders)
     }
 }
 
@@ -663,25 +712,24 @@ pub enum RejectKind {
     EgressGrant,
 }
 
-/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
-/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
-/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
-/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
-/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
-pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
-        "provider",
-    ),
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
-        "operator-infrastructure",
-    ),
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
-        "loopback-allowed",
-    ),
-];
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
+/// provider's allow-list and metadata hosts (a plane's upstreams). The connector's default class
+/// and the open web are any trusted plugin's (ARCHITECT ruling EGRESS-GRANT 2026-10-03; the cold
+/// lane's `declares.egress` grant, on the door's needs).
+///
+/// `loopback-allowed` is NOT here (OWNER 2026-10-24, oracle BOOT-W23): a collector or hook on
+/// loopback the operator admitted with `plugins.trust` loaded in 1.5.5, UNVERIFIED; the opt-in is
+/// the operator's grant. `operator-infrastructure` is NOT here either. §5's egress-class table gives it to "databases, vault,
+/// ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611): its
+/// targets come from operator settings, and the plugins that dial them (a store, a secret service, a
+/// directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an operator's
+/// `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted changes what
+/// 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the default is
+/// 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829, Part 2 #75 l.2276).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 1] = [(
+    busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+    "provider",
+)];
 
 /// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
 /// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a

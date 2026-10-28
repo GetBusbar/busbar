@@ -21,7 +21,7 @@ use std::collections::HashMap;
 // gate whose `plugin:` names a missing row resolves to `None` (gate-absent), exactly as before.
 
 /// A [`HookEnv`] whose registry holds the `kind: hook` row `alias`, declaring manifest `needs`.
-fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> HookEnv {
+fn test_env_needs(alias: &str, needs: crate::test_support::HookNeeds) -> HookEnv {
     crate::test_support::test_hook_env(&[alias], needs)
 }
 
@@ -30,9 +30,9 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> 
 fn test_env() -> HookEnv {
     test_env_needs(
         "test-hook",
-        busbar_plugin_loader::sign::HookNeeds {
-            prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-            user: busbar_plugin_loader::sign::NeedLevel::Ro,
+        crate::test_support::HookNeeds {
+            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+            user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
     )
 }
@@ -40,7 +40,7 @@ fn test_env() -> HookEnv {
 /// An empty env (no plugins loaded) — a hook ref resolves to `None` (gate-absent).
 fn empty_env() -> HookEnv {
     HookEnv::new(
-        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        crate::test_support::rows::empty(),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
     .expect("the registry's hook axis")
@@ -188,10 +188,9 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 }
 
 /// Each native `policy:` strategy resolves to a constructed `Policy` whose name round-trips the
-/// native registry name. (No gate; empty hook registry.) Requires the removable `hooks-ranking`
-/// plugin — under `--no-default-features` a non-weighted native policy is a boot error, not a
-/// resolvable policy, so this behavior test only applies when the plugin is compiled in.
-#[cfg(feature = "hooks-ranking")]
+/// native registry name. (No gate; empty hook registry.) Runs in every build: a test build's
+/// stand-in hook rows always link the kernel's ranking double (THE DESIGN l.1443: no
+/// `hooks-ranking` kernel feature; audit Q128 p15#6).
 #[test]
 fn native_policy_resolves_constructed_policy() {
     for (policy, name) in [
@@ -445,7 +444,6 @@ fn on_error_chain_resolves_gates_and_terminals() {
 }
 
 /// `on_error: <ranking strategy>` appends one infallible link and terminates at weighted.
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn on_error_chain_strategy_terminates() {
     let env = test_env();
@@ -509,7 +507,7 @@ fn missing_plugin_gate_is_absent_not_stranded() {
 ///
 /// `resolution::key` identifies a registry by its `Arc` ADDRESS, and a published entry outlives the
 /// registry it was resolved against. Nothing in the entry USED TO KEEP THAT ALLOCATION, so once the
-/// old registry was dropped its address was free, the very next `Arc<PluginRegistry>` the allocator
+/// old registry was dropped its address was free, the very next registry `Arc` the allocator
 /// handed out landed on it, and a resolution against a registry that had never heard of the plugin
 /// collided with the dead one's key and was served ITS transport.
 ///
@@ -531,14 +529,17 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
         1,
         "the plugin-backed gate resolves against the registry that carries it"
     );
-    let freed = std::sync::Arc::as_ptr(&env.registry) as usize;
+    let freed = std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize;
     drop(env);
 
     // Now hunt for a NEW, EMPTY registry that the allocator places on the freed allocation.
-    let mut keepalive: Vec<std::sync::Arc<busbar_plugin_loader::PluginRegistry>> = Vec::new();
+    // The candidates are the registry double (`test_support::rows`), the type `test_env` built the
+    // dead registry as, so each candidate is an allocation of the freed one's size.
+    let mut keepalive: Vec<std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>> =
+        Vec::new();
     for _ in 0..4096 {
-        let reg = std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty());
-        if std::sync::Arc::as_ptr(&reg) as usize == freed {
+        let reg = crate::test_support::rows::empty();
+        if std::sync::Arc::as_ptr(&reg) as *const u8 as usize == freed {
             let reused = HookEnv::new(
                 reg,
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
@@ -609,7 +610,8 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
 /// on `hook.prompt.can_rewrite()` alone and every row admitted.
 #[test]
 fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
-    use busbar_plugin_loader::sign::{HookNeeds, NeedLevel};
+    use crate::test_support::HookNeeds;
+    use busbar_contract::plugin_rows::NeedLevel;
 
     for (need, admitted) in [
         (NeedLevel::No, false),
@@ -675,7 +677,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
 /// `open_relay_banner`/`inert_durable_keys_banner` unit tests pin theirs.
 #[test]
 fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch() {
-    use busbar_plugin_loader::sign::NeedLevel;
+    use busbar_contract::plugin_rows::NeedLevel;
 
     // The exact bug scenario: `kind: gate`, operator `prompt: rw`, manifest only `ro`. Must banner,
     // loudly, naming the hook, the plugin, and both exclusion mechanisms.
@@ -743,7 +745,7 @@ impl tracing::Subscriber for LineCapturingSubscriber {
 /// grants MORE than the plugin's manifest wants to READ, and never otherwise.
 #[test]
 fn effective_access_warns_on_inert_read_grants_only() {
-    use busbar_plugin_loader::sign::NeedLevel;
+    use busbar_contract::plugin_rows::NeedLevel;
 
     let events: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -753,7 +755,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     // Must warn at effective_access's prompt-inert-grant call site.
     let env = test_env_needs(
         "inert-prompt",
-        busbar_plugin_loader::sign::HookNeeds {
+        crate::test_support::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::No,
         },
@@ -777,7 +779,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let sub2 = LineCapturingSubscriber(events2.clone());
     let env2 = test_env_needs(
         "matched-prompt",
-        busbar_plugin_loader::sign::HookNeeds {
+        crate::test_support::HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
         },
@@ -800,7 +802,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let sub3 = LineCapturingSubscriber(events3.clone());
     let env3 = test_env_needs(
         "inert-user",
-        busbar_plugin_loader::sign::HookNeeds {
+        crate::test_support::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::No,
         },
@@ -824,7 +826,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let sub4 = LineCapturingSubscriber(events4.clone());
     let env4 = test_env_needs(
         "matched-user",
-        busbar_plugin_loader::sign::HookNeeds {
+        crate::test_support::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
@@ -850,7 +852,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
 /// real code via the set's post-call membership).
 #[test]
 fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
-    use busbar_plugin_loader::sign::NeedLevel;
+    use busbar_contract::plugin_rows::NeedLevel;
 
     let events: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -860,7 +862,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     // (can_rewrite() true, wants_rewrite() false) — the WRITE-half mismatch.
     let env = test_env_needs(
         "inert-rewrite",
-        busbar_plugin_loader::sign::HookNeeds {
+        crate::test_support::HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
         },
@@ -908,7 +910,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     let sub3 = LineCapturingSubscriber(events3.clone());
     let env3 = test_env_needs(
         "matched-rewrite",
-        busbar_plugin_loader::sign::HookNeeds {
+        crate::test_support::HookNeeds {
             prompt: NeedLevel::Rw,
             user: NeedLevel::No,
         },
@@ -1133,8 +1135,7 @@ fn from_ranked_empty_is_abstain() {
 }
 
 /// A native `policy:` FORCES the payload projections off at resolve (no native policy reads them).
-/// Requires the `hooks-ranking` plugin (a native non-weighted policy exists only when compiled in).
-#[cfg(feature = "hooks-ranking")]
+/// Runs in every build: the stand-in hook rows always link the ranking double (THE DESIGN l.1443).
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
     match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
@@ -1196,7 +1197,7 @@ fn gate_grants_pass_through_as_projection_flags() {
 /// a no-op. Prompt content flows only when both are ≥ read; rewrite-power (rw) requires both rw.
 #[test]
 fn manifest_intent_and_grant_projection_matrix() {
-    use busbar_plugin_loader::sign::NeedLevel;
+    use busbar_contract::plugin_rows::NeedLevel;
     // (manifest prompt need, operator prompt grant) -> expected send_prompt
     let prompt_cases = [
         (NeedLevel::No, PromptAccess::No, false),
@@ -1213,7 +1214,7 @@ fn manifest_intent_and_grant_projection_matrix() {
         let alias = format!("mtx-{idx}");
         let env = test_env_needs(
             &alias,
-            busbar_plugin_loader::sign::HookNeeds {
+            crate::test_support::HookNeeds {
                 prompt: need,
                 user: NeedLevel::No,
             },
@@ -1248,7 +1249,7 @@ fn manifest_intent_and_grant_projection_matrix() {
         let alias = format!("mtx-user-{idx}");
         let env = test_env_needs(
             &alias,
-            busbar_plugin_loader::sign::HookNeeds {
+            crate::test_support::HookNeeds {
                 prompt: NeedLevel::No,
                 user: need,
             },
@@ -1886,7 +1887,8 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
 /// This is the identity analogue of the prompt opt-in delivery test.
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
-    use busbar_plugin_loader::sign::{HookNeeds, NeedLevel};
+    use crate::test_support::HookNeeds;
+    use busbar_contract::plugin_rows::NeedLevel;
     let env = test_env_needs(
         "user-hook",
         HookNeeds {
@@ -2233,7 +2235,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
 /// the ENGINE is responsible for keeping it off the reactor.
 fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
-        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        crate::test_support::rows::empty(),
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(park);
@@ -2256,7 +2258,7 @@ fn hook_with_plugin_secret() -> HookCfg {
     hook
 }
 
-/// See `auth::token::token_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
+/// See `busbar-core-oauth2`'s `hosted_login_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
 /// never on a Tokio timer: when every worker is parked in FFI the time driver is parked too, so a
 /// `tokio::time::timeout` does not fire — it returns late and its assertion passes against a runtime
 /// that was dead for the whole window.
@@ -2473,7 +2475,3 @@ fn only_reject_refuses_a_failed_call() {
         &PolicyOnError::First
     ));
 }
-
-// TODO M4 HOOK-PARITY: the consolidated v1.5.5 hook acceptance suite (module doc there).
-#[path = "m4_acceptance_suite.rs"]
-mod m4_acceptance_suite;

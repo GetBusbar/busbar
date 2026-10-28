@@ -142,9 +142,7 @@ fn card_of(entry: &str) -> BTreeMap<String, busbar_kernel::config::RateEntryCfg>
 // ── GAP 1: a pre-routing refusal leaves a prior charge intact ──────────────────────────────────
 
 /// A PRE-ROUTING REFUSAL ON THE DOOR NEVER REFUNDS A PRIOR CHARGE. Door successor of
-/// `plane_node.rs::a_pre_routing_refusal_leaves_a_prior_charge_intact` (legacy
-/// `ingress_integration_tests.rs::test_pre_routing_failure_does_not_refund_prior_charge`, coverage
-/// map row 378). 1.5.5 behaviour, as the original pinned it: a key carrying one legitimately
+/// `plane_node.rs::a_pre_routing_refusal_leaves_a_prior_charge_intact`. 1.5.5 behaviour, as the original pinned it: a key carrying one legitimately
 /// charged request (one 1-cent flat fee, admitted on the real admission charge) sends a body that
 /// is not JSON; it is refused 400 before any model resolves, was never charged, so refunds nothing:
 /// the prior request and its fee stay on the key's bucket (requests 1, spend 1 cent).
@@ -196,8 +194,7 @@ async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
 // ── GAP 3: an aliased lane prices at the rate card of its config name ─────────────────────────
 
 /// AN ALIASED LANE PRICES AT THE RATE CARD UNDER ITS CONFIG NAME, ON THE DOOR. Door successor of
-/// `plane_node.rs::an_aliased_lane_prices_at_the_rate_card_under_its_config_name` (legacy
-/// `usage_tap_tests.rs::ledger_prices_an_aliased_lane_at_the_rate_card`, coverage map row 629).
+/// `plane_node.rs::an_aliased_lane_prices_at_the_rate_card_under_its_config_name`.
 /// 1.5.5 behaviour, as the original pinned it: the card is keyed by the CONFIG model name; a lane
 /// whose `upstream_model` differs is sent the wire name but ledgered and priced under its config
 /// name, so 600 input and 400 output tokens at 1,000 micro-units each land as 1,000 tokens on the
@@ -275,17 +272,16 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
 const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}"#;
 
 /// THE DOOR'S REPORT CARRIES THE END A STATUS LINE CANNOT. Door successor of
-/// `plane_node.rs::the_tap_reports_the_end_a_status_line_cannot` (legacy
-/// `src/unit/tests/chain.rs::the_tap_reports_the_end_a_status_line_cannot`, coverage map row
-/// 688). 1.5.5 behaviour, as the original pinned it for its two fixtures (a 2xx stream cut after
+/// `plane_node.rs::the_tap_reports_the_end_a_status_line_cannot`. 1.5.5 behaviour, as the original pinned it for its two fixtures (a 2xx stream cut after
 /// one content frame, and a 2xx transfer that failed before its first byte): both answer the caller
 /// under a 200 status line and neither completes, so the caller holds the cut (the one relayed
 /// frame, no terminator) or nothing; the unit's report (on the door, the counts its line on the
 /// node's book carries) names the lane that served it (`m0`) and bills what streamed before the end,
-/// zero tokens; and the key's ledger holds no tokens and no metering row.
+/// zero tokens; and the key's ledger holds no tokens. The plane ledgered nothing, so nothing bills:
+/// the 2xx end's one metering row carries no token.
 ///
 /// RED: no report, a report keyed to another lane, tokens that never streamed, a terminator the far
-/// end never reached, or a metering row for an answer that never completed.
+/// end never reached, or a metering row carrying a token that never streamed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     use http_body_util::BodyExt as _;
@@ -362,12 +358,88 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
             "{label}: the request unit still counts (oracle cell \
              `route.failover|fo|primary-cut-stream`, golden usage {{\"requests\":1}})"
         );
-        assert_eq!(
-            metering_rows(&rig, charged_at),
-            Vec::<String>::new(),
-            "{label}: no metering row"
+        let rows = metering_rows(&rig, charged_at);
+        assert_eq!(rows.len(), 1, "{label}: one metering row: {rows:?}");
+        assert!(
+            rows[0].starts_with("m0/") && rows[0].contains(" in=0 out=0 cr=0 cw=0 "),
+            "{label}: and it carries no token, as the plane ledgered none: {rows:?}"
         );
     }
+}
+
+/// The first frame of a streamed answer that carries its content, its stop and its usage together:
+/// 600 input and 400 output tokens, the 1,000 the plane ledgers before the far end cuts. The usage
+/// rides the stop: the chat dialect's reader takes a content chunk's `usage` only with its
+/// `finish_reason` (or on a usage-only chunk).
+const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":400,"total_tokens":1000}}"#;
+
+/// A STREAM ITS FAR END CUT AFTER ITS FIRST FRAME BILLS WHAT ITS PLANE LEDGERED. The far
+/// end streams one frame carrying 600 input and 400 output tokens under a 200 head, then cuts the
+/// stream before its end. The plane ledgered those 1,000 tokens, so the door takes that ledger as
+/// final: the key's ledger holds the 1,000 tokens, its group's spend derives 100 cents against
+/// the card (1,000 micro-units a token, no request fee), and one metering row carries 600 in and
+/// 400 out. Core does not override the plane's ledger because of the cut or the caller's status.
+///
+/// RED: the cut stream's ledgered tokens dropped, its charge withheld, or its metering row skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its_first_frame() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "door-gap-cut-stream-plane-ledger";
+    let _published = Published(instance);
+    let far = far_end_scripted(Script {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![(0, frame(FIRST_FRAME_WITH_USAGE)), (50, Vec::new())],
+        finish: None,
+    })
+    .await;
+    let card = card_of("{ input_utok: 1000, output_utok: 1000 }");
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1_000_000_000),
+            rate_card: Some(&card),
+            fee_cents: Some(0),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let charged_at = now();
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    let text = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(status, 200, "the stream had begun: {text}");
+    assert!(
+        !text.contains("[DONE]"),
+        "precondition: the far end cut the stream before its end: {text}"
+    );
+    assert_eq!(
+        rig.tokens_after().await,
+        1000,
+        "the 1,000 tokens the plane ledgered are the key's"
+    );
+    let derived = rig
+        .gov
+        .derived_bucket_usage(
+            &rig.app.cost,
+            &format!("group:{instance}-group@day"),
+            "day",
+            true,
+            now(),
+        )
+        .expect("usage read");
+    assert_eq!(derived.tokens, 1000, "the group's bucket holds them");
+    assert_eq!(
+        derived.spend_cents, 100,
+        "and they are charged: 1,000 tokens at 1,000 micro-units each"
+    );
+    let rows = metering_rows(&rig, charged_at);
+    assert_eq!(rows.len(), 1, "one metering row: {rows:?}");
+    assert!(
+        rows[0].starts_with("m0/") && rows[0].contains(" in=600 out=400 "),
+        "the row carries what the plane ledgered: {rows:?}"
+    );
 }
 
 // ── GAP 6: rerank pricing on both books ────────────────────────────────────────────────────────
@@ -406,8 +478,7 @@ fn rerank_pin() -> Option<crate::root::kernel::PinnedHistory> {
 }
 
 /// A RERANK'S SEARCH UNITS REACH THE PRICE ON BOTH BOOKS, THROUGH THE DOOR. Door successor of
-/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books` (legacy
-/// `rerank_search_units_tests.rs::a_reranks_search_units_reach_the_price`, coverage map row 584)
+/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books`
 /// and of the unbilled arm of `a_same_dialect_rerank_puts_identical_search_units_on_both_books`.
 /// 1.5.5 behaviour, as the originals pinned it: a card pricing `search_units` at 2,000 micro-units
 /// (0.2 cents) each derives 10 cents for 50 units and 0 cents for 1 unit (one unit rounds to

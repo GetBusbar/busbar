@@ -15,43 +15,25 @@
 //!   byte stream: [`Framer::detach`] gives back the bytes it held unconsumed, and the framer the
 //!   stream moves to [`Framer::adopt`]s them.
 //!
-//! The ROLE is not declared twice: it is derived from what the plugin composes over ([`role_of`]) —
-//! a transport that composes over nothing opens its own connections, so it is a carrier; one that
-//! composes over a layer frames that layer's bytes, so it is a framer.
+//! The ROLE is the export the plugin's door makes, never a reading of what it composes over: a framer
+//! states an EMPTY `composes_over` too, because the carrier under it is the connector's choice
+//! (BUSBAR-1.6.0.md THE DESIGN, "Plugins").
 //!
 //! Core stacks a connection as `carrier -> [connection security, when the binding says so] ->
 //! framer`, and moves the byte stream on an upgrade; no transport holds, dials or names another.
 //! Connection security is core's alone (#40(b); TLS never crosses the ABI): no method here hands a
 //! plugin key or certificate material — [`ConnFacts`] is what the handshake established, as facts.
 //!
-//! These traits are the LINKED source of truth. A transport plugin reaches the host through its
-//! door and the transport kind's ops table (`abi::transport`), the one memory ABI every kind speaks.
+//! These traits are NOT how a transport reaches the host: a transport plugin reaches the host only
+//! through its door and the transport kind's ops table (`abi::transport`), the one memory ABI every
+//! kind speaks (THE DESIGN, the plugin ABI: "Plugins speak the memory ABI only"). The door is
+//! the source of truth.
 
 use std::task::{Context, Poll};
 
 use super::wire::{CertFacts, CloseReason, Encode, TransportError, WireStatusClass};
 use crate::ids::StreamId;
 use crate::plugin::Plugin;
-
-/// Which role a transport plays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum Role {
-    /// Opens connections and moves their bytes.
-    Carrier,
-    /// Frames the bytes of a connection a carrier opened.
-    Framer,
-}
-
-/// A transport's role, from the layers it declares it composes over (`TransportMeta::COMPOSES_OVER`):
-/// none is a carrier, any is a framer.
-#[must_use]
-pub const fn role_of(composes_over: &[&str]) -> Role {
-    if composes_over.is_empty() {
-        Role::Carrier
-    } else {
-        Role::Framer
-    }
-}
 
 /// A transport's ROW: every constant it declares about itself (`TransportMeta`), as one value — what
 /// the composition root reads, the same value whichever door the transport came in by. A linked
@@ -61,7 +43,7 @@ pub const fn role_of(composes_over: &[&str]) -> Role {
 pub struct TransportRow {
     /// The registry key.
     pub key: &'static str,
-    /// The layers it composes over; its role follows ([`TransportRow::role`]).
+    /// The layers it composes over. Not a role: a framer states an empty list too.
     pub composes_over: &'static [&'static str],
     /// The selector forms it evaluates on arriving bytes.
     pub selector_forms: &'static [crate::grammar::SelectorForm],
@@ -94,7 +76,7 @@ pub struct TransportRow {
     pub claims: &'static [Claim],
 }
 
-/// ONE CLAIM of a transport entry (ARCHITECT 2026-09-27, TRANSPORT-STACK (A)): a scheme the entry
+/// ONE CLAIM of a transport entry: a scheme the entry
 /// answers for, and everything the root reads per scheme. One entry carries one or more claims — a
 /// carrier or a single-wire framer carries one, a framer that frames several wires carries one per
 /// wire — and each claim is registered as a row of its own, pointing at the one entry. How one claim rides another inside the plugin is the plugin's own business and never
@@ -141,12 +123,6 @@ impl TransportRow {
             status_namespace: T::STATUS_NAMESPACE,
             claims: T::CLAIMS,
         }
-    }
-
-    /// Its role ([`role_of`] its composes-over list).
-    #[must_use]
-    pub const fn role(&self) -> Role {
-        role_of(self.composes_over)
     }
 }
 
@@ -440,8 +416,8 @@ pub trait Framer: Plugin + Send + Sync + 'static {
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError>;
 
-    /// Render an outbound envelope (`fields`, post-decoration) and `body` as this framer's wire
-    /// bytes, into `out`.
+    /// Render an outbound envelope (`fields`, as the host hands them) and `body` as this framer's
+    /// wire bytes, into `out`.
     ///
     /// # Errors
     ///

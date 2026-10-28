@@ -13,15 +13,8 @@ use axum::{
 
 use crate::state::App;
 
-// The body-model arrival catch-all resolves straight off the installed table (the composition root
-// wrote it via `install_body_ingress`) or the test hook (`set_test_body_ingress`). Core's OWN
-// `#[cfg(test)]` binary used to auto-seed the test hook here with the extracted dialects'
-// `BODY_INGRESS` slice — the A6/HostCtx dev-dependency-cycle cleanup removed that (it named
-// the retired engine crate directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
-// needs a real body-model arrival now registers it itself
-// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| the retired engine crate::BODY_INGRESS)`, idempotent,
-// first-wins) from an integration-test target, exactly the posture an external `test-support`
-// consumer already used — so this neutral source names no dialect crate under any build surface.
+// The body-model arrival catch-all resolves straight off the table the composition root installed
+// (`install_body_ingress`).
 pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
@@ -41,7 +34,7 @@ pub fn pool_authorized(
             return Some(ingress_error(
                 proto,
                 StatusCode::FORBIDDEN,
-                crate::proxy::KIND_PERMISSION,
+                busbar_contract::protocol::KIND_PERMISSION,
                 "Your API key does not have permission to access this resource.",
             ));
         }
@@ -215,35 +208,11 @@ pub fn limit_refusal(
     match blocked {
         LimitBlocked::Limit {
             group,
-            // The per-tier token caps (`tokens_input`/…) surface as a rate limit exactly like
-            // the aggregate `tokens` metric — a 429 naming the tier — NOT as an over-quota
-            // block. Without this arm they would fall to the budget/quota arm below and return
-            // the vendor quota status (Bedrock 400), silently mislabelling the block.
-            metric:
-                metric @ ("requests" | "tokens" | "tokens_input" | "tokens_output" | "tokens_cache_read"
-                | "tokens_cache_write"),
-            window,
-            pool: limit_pool,
-            retry_after,
-            ..
-        } => (
-            StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
-            format!(
-                "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
-                     after the indicated time.",
-                window.unwrap_or("total"),
-                pool_scope_suffix(limit_pool),
-            ),
-            *retry_after,
-        ),
-        LimitBlocked::Limit {
-            group,
             metric: "concurrent",
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            busbar_contract::protocol::KIND_RATE_LIMIT,
             format!(
                 "Too many concurrent requests (group '{group}' is at its in-flight \
                      limit). Please retry shortly."
@@ -261,10 +230,10 @@ pub fn limit_refusal(
             // The native quota status is the writer's (every dialect answers 429 today;
             // Bedrock's is ThrottlingException, a Converse-declared error). The writer owns
             // that mapping.
-            crate::proto::decl_for(proto)
+            protocols::decl_for(proto)
                 .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
                      exhausted). Please check your plan and billing details.",
@@ -273,11 +242,11 @@ pub fn limit_refusal(
             ),
             *retry_after,
         ),
-        // FAIL-SAFE catch-all for any FUTURE metric not yet given an explicit arm above. It
-        // maps to a generic 429 rate limit — never the vendor quota status — so a new metric
-        // can never silently inherit `budget`'s Bedrock-400 semantics. Every metric that exists
-        // today (`requests`/`tokens`/the four `tokens_*` tiers/`concurrent`/`budget`) is matched
-        // explicitly above; this arm only exists to keep the string match exhaustive.
+        // EVERY OTHER METRIC IS A RATE LIMIT: `requests`, `tokens`, and a cap on any meter class
+        // the operator configured (`tokens_<class>`), each a 429 naming the metric word as
+        // configured — never the quota status, so no metric inherits `budget`'s answer. The
+        // metric is an opaque word here: the kernel names no plane's meter class (audit K4 #2;
+        // BUSBAR-1.6.0.md l.166, "Nothing in the kernel parses or understands ... a plane concept").
         LimitBlocked::Limit {
             group,
             metric,
@@ -287,7 +256,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            busbar_contract::protocol::KIND_RATE_LIMIT,
             format!(
                 "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
                      after the indicated time.",
@@ -300,7 +269,7 @@ pub fn limit_refusal(
         // vendor-plausible shape is a permission denial.
         LimitBlocked::Disabled(group) => (
             StatusCode::FORBIDDEN,
-            crate::proxy::KIND_PERMISSION,
+            busbar_contract::protocol::KIND_PERMISSION,
             format!(
                 "Your API key does not currently have access to this resource (group \
                      '{group}' is disabled)."
@@ -310,10 +279,10 @@ pub fn limit_refusal(
         // FAIL-CLOSED: a key bound to a group this node's config does not know is not
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
-            crate::proto::decl_for(proto)
+            protocols::decl_for(proto)
                 .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \
                      configured). Please contact your administrator."
@@ -416,7 +385,7 @@ pub fn destination_guard(
         let resp = ingress_error(
             proto,
             StatusCode::BAD_REQUEST,
-            crate::proxy::KIND_INVALID_REQUEST,
+            busbar_contract::protocol::KIND_INVALID_REQUEST,
             &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
         );
         return Err(Box::new(finish_rejected(
@@ -470,7 +439,7 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
     if v.pools().iter().any(|(n, _)| *n == model) || v.model_index(model).is_some() {
         model
     } else {
-        crate::proxy::POOL_LABEL_UNRESOLVED
+        crate::telemetry::POOL_LABEL_UNRESOLVED
     }
 }
 
@@ -583,7 +552,7 @@ fn finish_inner(
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(
         app,
-        crate::plane::fallback_key(),
+        crate::plane_driver::dispatch::fallback_key(),
         ingress_protocol,
         pool,
         outcome,
@@ -630,27 +599,47 @@ fn finish_inner(
     resp
 }
 
-/// Render a router-side error as the ingress protocol's NATIVE error envelope (total
-/// indistinguishability). A client on a vendor's official SDK gets the typed
-/// exception it expects (JSON envelope) instead of a plain-text body it cannot decode. `proto`
-/// names the ingress protocol of the route that failed; `status` is the HTTP status; `kind` is a
-/// protocol-appropriate error category; `message` is the human-readable detail.
-///
-/// Thin delegation to the CANONICAL `crate::proxy::ingress_error` (the single
-/// source of truth for native error shaping + per-protocol headers — Bedrock
-/// `x-amzn-RequestId`/`x-amzn-errortype` via the `ProtocolWriter::attach_error_response_headers` vtable method (BedrockWriter delegates to its private helper), the generic
-/// fallback envelope, etc.). Keeping ingress on this one function rather than a private copy means
-/// route/forward error shaping cannot drift. The route call sites (and the in-module tests) keep
-/// the short `proto`/`message` parameter names; the canonical fn names them `ingress`/`msg`.
+/// Render an error as the ingress protocol's NATIVE error envelope, with the protocol's own error
+/// headers. A `proto` that resolves to no protocol gets the neutral `{"error": {"message",
+/// "type"}}` envelope and no protocol headers.
 pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
-    crate::proxy::ingress_error(proto, status, kind, message)
+    use axum::response::IntoResponse;
+    let dialect = protocols::decl_for(proto).and_then(|d| d.dialect());
+    let envelope = match &dialect {
+        Some(di) => di.write_error(protocols::CODEC_HOST, status.as_u16(), kind, message),
+        None => agnostic_error_envelope(kind, message),
+    };
+    let body = crate::json::to_string(&envelope)
+        .unwrap_or_else(|_| agnostic_error_envelope(kind, message).to_string());
+    let mut resp = Response::builder()
+        .status(status)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            busbar_contract::protocol::APPLICATION_JSON,
+        )
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| status.into_response());
+    if let Some(di) = &dialect {
+        for (name, value) in di.error_response_fields(protocols::CODEC_HOST, kind, &envelope) {
+            if let (Ok(n), Ok(v)) = (
+                axum::http::HeaderName::from_bytes(name.as_bytes()),
+                axum::http::HeaderValue::from_bytes(&value),
+            ) {
+                resp.headers_mut().insert(n, v);
+            }
+        }
+    }
+    resp
 }
 
-// THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by every JSON-RPC-fronted mounted plane. It
-// lives under `ingress/` because that is the shared owner `structure-lint`'s plane ledger already
-// names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
-// its wire reader". This is the envelope half of that.
+fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
+    serde_json::json!({ "error": { "message": msg, "type": kind } })
+}
+
+// The one JSON-RPC body the kernel writes: a mounted path's refusal made before any envelope was
+// read (`native::native_error`'s mounted arm). The reader is `busbar_contract::jsonrpc`.
 pub mod jsonrpc;
+pub mod protocols;
 
 #[cfg(test)]
 #[path = "tests/terminal_tests.rs"]
@@ -667,8 +656,7 @@ pub mod byte_duplex;
 #[cfg(feature = "runtime")]
 pub mod duplex_ws;
 
-/// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
-/// that says which four steps are a protocol's and which nine are core's.
+/// THE RFC 9728 PROTECTED-RESOURCE DOCUMENT RENDER, from the facts a door states.
 pub mod protocol;
 
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
@@ -756,7 +744,7 @@ pub(crate) async fn named(
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (the
     // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
     // no dialect. `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    let proto = protocols::residual_dialect_for_path("/v1/messages").unwrap_or("");
     delegate_body_arrival(
         app,
         gov,
@@ -793,7 +781,7 @@ async fn delegate_body_arrival(
         let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
         let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
+                host: crate::plane_driver::engine_host(&app),
                 gov,
                 caller_token: caller,
             },
@@ -810,10 +798,10 @@ async fn delegate_body_arrival(
         .await
         .into_response();
     }
-    crate::proxy::ingress_error(
+    ingress_error(
         proto,
         StatusCode::NOT_FOUND,
-        crate::proxy::KIND_NOT_FOUND,
+        busbar_contract::protocol::KIND_NOT_FOUND,
         "This endpoint does not support that operation.",
     )
 }
@@ -832,7 +820,7 @@ pub async fn adhoc(
     crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
     // `named`); `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    let proto = protocols::residual_dialect_for_path("/v1/messages").unwrap_or("");
     // ADHOC PROVIDER MATCH (pre-relocation `adhoc`'s Some(i)-wrong-provider arm): the path names BOTH a
     // provider and a model, and a configured model reached under the WRONG provider is a client error,
     // not a route to that model's real provider. Read the neutral routing view: a model that IS
@@ -842,10 +830,10 @@ pub async fn adhoc(
         let view = app.engine_tables_view();
         if let Some(idx) = view.model_index(&model) {
             if !view.lane_view(idx).is_some_and(|l| l.provider == provider) {
-                return crate::proxy::ingress_error(
+                return ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
+                    busbar_contract::protocol::KIND_INVALID_REQUEST,
                     &not_found_message(&model, None),
                 );
             }

@@ -23,7 +23,7 @@
 //! tool result. A consumer reads `slot`; it never reads a protocol name. The protocol determined the
 //! slot at parse time — in exactly one `proto/` arm — and never appears again.
 //!
-//! # Scope: the LLM family's walk, behind a seam two families now implement
+//! # Scope: the model-inference family's walk, behind a seam two families now implement
 //!
 //! The concrete-IR projection (`impl IrFacts for IrRequest` + `project`) lives in the plane that
 //! owns that IR; the invocation IR ([`crate::ir::invoke`]) is the second family
@@ -145,9 +145,10 @@ pub enum ContentItem<'a> {
 
 impl ContentItem<'_> {
     /// Who authored this content — an OPAQUE label the producing walk chose, never a core enum. The
-    /// LLM walk uses `"system"`/`"user"`/`"assistant"`/`"tool"` (the strings the hook wire has always
-    /// carried); a non-chat plane uses its own words. Core reads this as the hook-wire bucket label a
-    /// screening consumer is shown and **branches on nothing** — the label carries no protocol.
+    /// model-inference walk uses `"system"`/`"user"`/`"assistant"`/`"tool"` (the strings the hook
+    /// wire has always carried); a non-chat plane uses its own words. Core reads this as the
+    /// hook-wire bucket label a screening consumer is shown and **branches on nothing** — the label
+    /// carries no protocol.
     pub fn author(&self) -> &'static str {
         match self {
             ContentItem::Text { author, .. }

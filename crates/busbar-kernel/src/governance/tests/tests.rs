@@ -4840,6 +4840,8 @@ fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
         Some(self_serve_signer()),
     )
     .unwrap();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let sub = "oidc:alice";
     let now = 1_700_000_000u64;
 

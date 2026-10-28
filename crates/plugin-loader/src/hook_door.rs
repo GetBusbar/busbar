@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{
     slot, ConfigureIn, ConfigureOut, DecideOut, DescribeOut, NotifyIn, StatusOut, TransformOut,
+    VERB_PREFER,
 };
 use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::{
@@ -202,6 +203,34 @@ enum State {
     Trialing,
 }
 
+/// One acknowledged `configure`: the instance name, the settings and the version.
+type Configured = Arc<(String, Vec<u8>, u64)>;
+
+/// `configure` `plugin` with `pushed` (ticket-less; the SDK's `configure` never pends): `Ok` when
+/// it acknowledged the version.
+fn reconfigure(plugin: &Plugin<Hook>, pushed: &(String, Vec<u8>, u64)) -> Result<(), String> {
+    let (name, settings, version) = pushed;
+    let mut f = Frame::new(
+        ConfigureIn {
+            head: in_head(),
+            version: *version,
+            settings: json(settings),
+            name: lend(name),
+        },
+        blank_out::<ConfigureOut>(),
+    );
+    let c = plugin.call(slot::CONFIGURE, &mut f);
+    release(plugin, c.lease);
+    if c.outcome == Outcome::Ready && f.out.acked_version == *version {
+        Ok(())
+    } else {
+        Err(c.error.map_or_else(
+            || format!("it did not acknowledge settings version {version} again"),
+            |e| String::from_utf8_lossy(&e).into_owned(),
+        ))
+    }
+}
+
 struct Inner {
     name: String,
     dispatcher: Arc<Dispatcher>,
@@ -210,8 +239,15 @@ struct Inner {
     // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
     // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
     settings: Vec<u8>,
+    /// The last `configure` the hook acknowledged (its name, settings and version): a quarantine's
+    /// trial opens its fresh instance over [`Inner::settings`], then pushes this again, so a commit
+    /// the hook acknowledged outlives the instance that acknowledged it.
+    configured: Mutex<Option<Configured>>,
     state: Mutex<State>,
     next_worker: AtomicU32,
+    /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
+    /// is refused where the host reads it ([`HookInstance::verdict`]).
+    orders: bool,
 }
 
 impl Inner {
@@ -282,8 +318,19 @@ impl Inner {
     /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
     /// doubles the window.
     fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
+        let configured = self
+            .configured
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let opened = (self.rebind)().and_then(|p| {
             open(&p, &self.settings)?;
+            if let Some(pushed) = configured {
+                if let Err(e) = reconfigure(&p, &pushed) {
+                    close(&p);
+                    return Err(e);
+                }
+            }
             Ok(p)
         });
         let mut state = self.lock();
@@ -562,6 +609,22 @@ impl HookInstance {
         settings: &[u8],
         rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
     ) -> Result<Self, String> {
+        Self::open_declaring(plugin, dispatcher, settings, true, rebind)
+    }
+
+    /// [`Self::open`] for a hook whose `declares.hook.orders` is `orders`: when `false`, the hook
+    /// declared that its `decide` never answers an order, and every order it does answer is refused
+    /// (ARCHITECT ruling, status row 194).
+    ///
+    /// # Errors
+    /// The plugin's refusal, in 1.5.5's words.
+    pub fn open_declaring(
+        plugin: Plugin<Hook>,
+        dispatcher: Arc<Dispatcher>,
+        settings: &[u8],
+        orders: bool,
+        rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
+    ) -> Result<Self, String> {
         open(&plugin, settings)?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -569,8 +632,10 @@ impl HookInstance {
                 dispatcher,
                 rebind: Box::new(rebind),
                 settings: settings.to_vec(),
+                configured: Mutex::new(None),
                 state: Mutex::new(State::Live(Arc::new(plugin))),
                 next_worker: AtomicU32::new(0),
+                orders,
             }),
         })
     }
@@ -611,6 +676,11 @@ impl HookInstance {
             match inner.submit(s, budget, frame as Lent, make, regrow).await {
                 Ok(done) => {
                     release(&done.plugin, done.lease);
+                    if !inner.orders && done.outcome == Outcome::Ready {
+                        if let Some(refused) = refused_order(s, &done.out, &inner.name) {
+                            return Answered::Broken(refused);
+                        }
+                    }
                     let frame = current.lock().unwrap_or_else(|p| p.into_inner()).clone();
                     drop(done.lent);
                     Answered::Answer {
@@ -651,6 +721,23 @@ impl HookInstance {
             Some(bytes)
         })
     }
+}
+
+/// THE ORDER A HOOK THAT DECLARED `orders: false` ANSWERED, refused: the text, when `out` is a
+/// `decide` answer naming an order (PREFER, or order slots written or needed), else `None`. The one
+/// place the host reads a hook's order from its answer, so an order is never read past it.
+fn refused_order<O: 'static>(s: u32, out: &O, name: &str) -> Option<String> {
+    if s != slot::DECIDE {
+        return None;
+    }
+    let out: &dyn std::any::Any = out;
+    let o = out.downcast_ref::<DecideOut>()?;
+    (o.verbs & VERB_PREFER != 0 || o.order_written > 0 || o.order_needed > 0).then(|| {
+        format!(
+            "hook plugin '{name}' declared `hook.orders: false` and answered an order: its \
+             `decide` must always abstain, so the order is refused"
+        )
+    })
 }
 
 /// The regrown frame for the one short re-call of `s` (`decide` or `transform`).
@@ -723,9 +810,10 @@ impl HookCalls for HookInstance {
         budget: Duration,
     ) -> Pending<Result<(), String>> {
         let inner = Arc::clone(&self.inner);
-        let owned = Arc::new((name.to_string(), settings.as_bytes().to_vec()));
+        let owned: Configured = Arc::new((name.to_string(), settings.as_bytes().to_vec(), version));
         Box::pin(async move {
             let lent = Arc::clone(&owned);
+            let acked = Arc::clone(&owned);
             let make = move || {
                 Frame::new(
                     ConfigureIn {
@@ -750,6 +838,11 @@ impl HookCalls for HookInstance {
             {
                 Ok(done) if done.outcome == Outcome::Ready && done.out.acked_version == version => {
                     release(&done.plugin, done.lease);
+                    // Acknowledgements may finish out of order: the newest version is kept.
+                    let mut kept = inner.configured.lock().unwrap_or_else(|p| p.into_inner());
+                    if kept.as_ref().is_none_or(|k| k.2 <= version) {
+                        *kept = Some(acked);
+                    }
                     Ok(())
                 }
                 Ok(done) => {
@@ -1031,6 +1124,7 @@ impl HookAxis for HookRows {
             })
         };
         let conns = ConnTable::serving(self.conns.map(|table| table()));
+        let c_orders = c.orders;
         let plugin = Self::bind(&c, &self.dispatcher, label, sink(label)?, conns.clone())?;
         let rebind = {
             let (dispatcher, label) = (Arc::clone(&self.dispatcher), label.to_string());
@@ -1038,10 +1132,11 @@ impl HookAxis for HookRows {
             move || Self::bind(&c, &dispatcher, &label, Arc::clone(&sink), conns.clone())
         };
         let text = settings.to_string();
-        let opened = HookInstance::open(
+        let opened = HookInstance::open_declaring(
             plugin,
             Arc::clone(&self.dispatcher),
             text.as_bytes(),
+            c_orders,
             rebind,
         )?;
         Ok(Arc::new(opened))

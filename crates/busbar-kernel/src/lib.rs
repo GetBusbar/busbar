@@ -208,18 +208,23 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
-// The durable-write choke point lives in `busbar-plugin-loader` (which names the contract alone, Part 2
-// #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
-// so every existing `crate::durable::*` call site in this binary resolves unchanged.
-pub use busbar_plugin_loader::durable;
-// The host-owned outbound surface: the neutral SSRF-pinned client and the egress-trust seam. See the
-// module header.
+// THE DURABLE-WRITE SEAM: the one durable-write primitive is the composition root's to install
+// (the kernel never names the loader); every `crate::durable::*` call site writes through it.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
+pub mod durable;
+// The kernel's outbound vocabulary and the destinations seam; the kernel dials nothing. See the
+// module header.
 pub mod egress;
 pub mod endpoints;
 pub mod export;
-pub mod failover;
+/// The pool vocabulary's historical path. The failover module is deleted (row 82 D2); the one
+/// spelling of this path left is a linked plugin's root tests at its pinned rev, which name
+/// `failover::CandidatePoolCfg`. Its rename to `config::pools` is open on the plugin's own
+/// repository, and the repin that carries it strikes this alias.
+pub mod failover {
+    pub use crate::config::pools::CandidatePoolCfg;
+}
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
@@ -252,26 +257,19 @@ pub mod operation {
 }
 
 // The kernel member crates' minting tests (ARCHITECT ruling A): minting is legal only here.
+/// THE PLUGIN-ADMISSION SEAM the operator surface drives (upload, inspect, rollback, inventory),
+/// in the kernel's own words: the composition root answers it over its loader
+/// ([`preflight::RootInstall::admission`]). The admin cleanliness crate reaches it through the
+/// kernel it serves, its one-way dependency (BUSBAR-1.6.0.md:3780, R2/#37); neither names the
+/// loader (THE DESIGN l.322).
+pub mod admission;
 #[cfg(test)]
 #[path = "tests/members/mod.rs"]
 mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
-pub mod plane_host;
 pub mod plugin_routes;
-/// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
-/// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
-/// admin cleanliness crate reaches them through the kernel it serves, its one-way dependency
-/// (BUSBAR-1.6.0.md:3780, R2/#37), never by naming the loader: `kernel -> plugin-tooling` is a class
-/// the architecture grants and `cleanliness -> plugin-tooling` is not.
-pub mod plugin_admission {
-    pub use busbar_plugin_loader::{
-        inventory_tarballs, scan_and_validate, sign, supported_abi, tarball, LoadablePlugin,
-        PluginRegistry,
-    };
-}
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
 // implementation's own instrument — a second honest implementation could bucket differently, or not
@@ -279,8 +277,6 @@ pub mod plugin_admission {
 // Relocated byte-identically out of `busbar-substrate-values`, whose module is DELETED rather than
 // kept as a re-export: one type, one home.
 pub mod profile;
-pub mod proto;
-pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
@@ -288,11 +284,6 @@ pub mod ratelimit;
 /// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
 /// carried usage counts no billing class records (MONEY LAW). See the module header.
 pub mod residual_log;
-/// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
-/// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the
-/// client-identity PEM parse ask this seam, answered through the root-installed egress-trust
-/// capability. See the module header.
-pub mod secure;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
@@ -369,13 +360,12 @@ mod tests;
 mod caps_tests;
 
 pub use appbuild::{
-    build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
-    resolve_model_context_max, GovCredentialRotation, InstalledLimits, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    build_app_from_config, inert_durable_keys_banner, load_config_from_disk,
+    load_config_from_disk_judged, open_relay_banner, resolve_model_context_max,
+    GovCredentialRotation, InstalledLimits, LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG,
+    ENV_PROVIDERS,
 };
-pub use preflight::{
-    plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
-};
+pub use preflight::plugins_preflight;
 pub use router::{
     build_router, build_split_routers_serving, build_split_routers_serving_doors,
     build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,

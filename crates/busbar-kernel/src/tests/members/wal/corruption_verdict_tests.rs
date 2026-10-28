@@ -5,18 +5,21 @@
 //!
 //! A crash mid-append leaves an incomplete final record with nothing verifying past it; cutting it
 //! loses nothing that was acknowledged. A checksum failure with whole, verifying records BEHIND it is
-//! acknowledged data the medium damaged. The node still boots — over the verified prefix — but the
-//! damaged remainder is first copied byte for byte into a quarantine file beside the segment, made
-//! durable, and only then cut; and the verdict naming the file, the offset and the byte count is
-//! handed back so the caller can raise the alarm.
+//! acknowledged data the medium damaged. The node still boots — over every record that verifies,
+//! those behind the damage included — and the damaged record is copied byte for byte into a
+//! quarantine file beside the segment, made durable, and LEFT IN PLACE: only a true torn tail is
+//! ever cut (THE DESIGN, MONEY-CHAIN, BUSBAR-1.6.0.md l.1056-1058). The verdict naming the file, the
+//! offset and the byte count is handed back so the caller can raise the alarm, at every boot that
+//! finds the damage still there. 1.5.5 had no log, so there is no earlier recovery to match.
 
 use std::path::{Path, PathBuf};
 
 use busbar_kernel_wal::backend::{DirectoryFactory, MemoryFactory, SegmentBackend, SegmentFactory};
+use busbar_kernel_wal::journal::{Entry, Journal, RecordClass};
 use busbar_kernel_wal::record::{decode_frame, frame_version, FrameError, Record, FRAME_BYTES};
 use busbar_kernel_wal::recover::{QuarantineKept, TailVerdict};
 use busbar_kernel_wal::ship::NullShipper;
-use busbar_kernel_wal::wal::{Mode, OpenError, Wal};
+use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, TempDir, METER};
 
@@ -65,8 +68,13 @@ fn quarantine_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// **ONE DAMAGED RECORD QUARANTINES ONLY ITSELF**. Record two of four is
+/// altered on the medium. RED before the fix: the scan stopped at it for good, and records three and
+/// four — whole, verifying and acknowledged — were copied into the quarantine and cut off the log
+/// with it, so their postings left the book. Now the damaged record alone is set aside, left in
+/// place, and every record behind it is kept.
 #[test]
-fn a_mid_log_checksum_flip_boots_keeps_the_prefix_and_quarantines_exactly_the_damage() {
+fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_one_behind_it() {
     let dir = TempDir::new("corrupt-mid-log");
     let written = four();
     let original = lay_down(dir.path(), &written);
@@ -84,14 +92,18 @@ fn a_mid_log_checksum_flip_boots_keeps_the_prefix_and_quarantines_exactly_the_da
     )
     .expect("a corrupt segment does not stop the log opening");
 
-    // Every record before the damage is kept.
-    assert_eq!(wal.recovered(), &written[..1]);
+    // Every record that verifies is kept, the two behind the damage included.
+    assert_eq!(
+        wal.recovered(),
+        &[written[0].clone(), written[2].clone(), written[3].clone()]
+    );
+    // Nothing acknowledged is cut: the damaged record is still where it was.
     let segment_now = std::fs::read(segment_path(dir.path())).unwrap();
-    assert_eq!(segment_now, original[..FRAME_BYTES].to_vec());
+    assert_eq!(segment_now[..original.len()].to_vec(), damaged);
 
-    // The verdict names the file, the offset and the byte count.
+    // The verdict names the file, the offset and the byte count — of the damaged record alone.
     let q = wal.quarantined();
-    assert_eq!(q.len(), 1, "one corrupt segment, one quarantine");
+    assert_eq!(q.len(), 1, "one damaged record, one quarantine");
     let q = &q[0];
     assert_eq!(q.segment, 0);
     assert_eq!(
@@ -100,17 +112,19 @@ fn a_mid_log_checksum_flip_boots_keeps_the_prefix_and_quarantines_exactly_the_da
     );
     assert_eq!(q.offset, FRAME_BYTES as u64);
     assert_eq!(q.damage_at, FRAME_BYTES as u64);
-    assert_eq!(q.bytes, 3 * FRAME_BYTES as u64);
+    assert_eq!(q.bytes, FRAME_BYTES as u64);
     assert_eq!(
         q.identities,
-        vec![(3, 2), (3, 3), (3, 4)],
-        "the altered record and the verifying records past the damage are named"
+        vec![(3, 2)],
+        "only the altered record is named"
     );
     assert_eq!(
         q.damaged.iter().map(Record::identity).collect::<Vec<_>>(),
-        vec![(3, 2), (3, 3), (3, 4)],
-        "every set-aside record is handed over, as it now reads, for the caller to attribute"
+        vec![(3, 2)],
+        "the set-aside record is handed over, as it now reads, for the caller to attribute"
     );
+    assert_eq!(q.before, Some((3, 1)), "the record kept before the hole");
+    assert_eq!(q.after, Some((3, 3)), "the record kept behind it");
 
     // The quarantine file is beside the segment and holds exactly the damaged bytes.
     let files = quarantine_files(dir.path());
@@ -123,11 +137,11 @@ fn a_mid_log_checksum_flip_boots_keeps_the_prefix_and_quarantines_exactly_the_da
     );
     assert_eq!(
         std::fs::read(&files[0]).unwrap(),
-        damaged[FRAME_BYTES..].to_vec()
+        damaged[FRAME_BYTES..2 * FRAME_BYTES].to_vec()
     );
 
-    // The numbers the set-aside records carried are never handed out again — not by the log, and
-    // not by a journal resuming over it.
+    // The set-aside number is never handed out again — not by the log, and not by a journal
+    // resuming over it.
     assert_eq!(wal.next_free_seq(3), 5);
     assert_eq!(
         busbar_kernel_wal::journal::Journal::over(wal, 3).next_seq(),
@@ -185,6 +199,16 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     let q = wal.quarantined();
     assert_eq!(q.len(), 1, "the altered final record is set aside, loudly");
     assert_eq!(q[0].identities, vec![(3, 4)]);
+    assert_eq!((q[0].before, q[0].after), (Some((3, 3)), None));
+    assert_eq!(
+        std::fs::read(segment_path(dir.path())).unwrap()[3 * FRAME_BYTES + 200],
+        written[3].encode()[0][200] ^ 0xFF,
+        "an acknowledged record is never cut, at the tail either"
+    );
+    assert!(
+        wal.is_poisoned(),
+        "the segment is closed to writes, so the next append rolls past the damage"
+    );
     assert_eq!(
         q[0].damaged
             .iter()
@@ -271,8 +295,8 @@ fn a_version_1_segment_is_quarantined_never_read() {
     );
 }
 
-/// A WHOLE final frame RELABELLED to version 1 is quarantined, never cut as a torn tail (Q128
-/// kernel-wal). Under a reader that still took version 1, the relabel skipped the header check and
+/// A WHOLE final frame RELABELLED to version 1 is quarantined, never cut as a torn tail.
+/// Under a reader that still took version 1, the relabel skipped the header check and
 /// the digest failure it caused read as a torn write, so an acknowledged record was cut silently.
 #[test]
 fn a_final_frame_relabelled_to_version_1_is_quarantined_not_cut() {
@@ -338,7 +362,7 @@ fn a_whole_final_frame_with_an_altered_header_is_quarantined_not_cut() {
     }
 }
 
-/// **A TEAR INSIDE A FRAME'S PAYLOAD IS A TORN TAIL, CUT SILENTLY** (Q128 kernel-wal 5). The write
+/// **A TEAR INSIDE A FRAME'S PAYLOAD IS A TORN TAIL, CUT SILENTLY**. The write
 /// got past the header and the digest and stopped in the payload, leaving zeros to the frame's end.
 /// The frame's end mark is one of those zeros, so the write that made it never completed: nothing
 /// in it was acknowledged, and an ordinary crash is not reported as corruption. RED before the fix:
@@ -393,7 +417,7 @@ fn lay_down_commits(dir: &Path, commits: &[Vec<Record>]) -> Vec<u8> {
     bytes[..usize::try_from(end).unwrap()].to_vec()
 }
 
-/// **A COMMIT WHOSE PAGES LANDED OUT OF ORDER IS A TORN TAIL, NOT CORRUPTION** (Q128 kernel-wal 5).
+/// **A COMMIT WHOSE PAGES LANDED OUT OF ORDER IS A TORN TAIL, NOT CORRUPTION**.
 ///
 /// A group commit spanning more than one page is written back in whatever order the kernel picks.
 /// A crash during its sync can land one page and not the page before it: frames that verify sit
@@ -465,13 +489,22 @@ fn damage_in_a_commit_a_subsequent_commit_acknowledges_is_corrupt_whatever_its_s
         super::fixtures::wall_ms,
     )
     .unwrap();
-    assert_eq!(wal.recovered(), &first[..1]);
+    let mut kept = vec![first[0].clone(), first[2].clone(), first[3].clone()];
+    kept.extend(next.iter().cloned());
+    assert_eq!(
+        wal.recovered(),
+        kept.as_slice(),
+        "every acknowledged record behind the zeroed one is kept"
+    );
     let q = wal.quarantined();
-    assert_eq!(q.len(), 1, "acknowledged records lost are reported");
+    assert_eq!(q.len(), 1, "the acknowledged record lost is reported");
     assert_eq!(q[0].damage_at, FRAME_BYTES as u64);
-    let mut ids = q[0].identities.clone();
-    ids.sort_unstable();
-    assert_eq!(ids, vec![(3, 3), (3, 4), (3, 5), (3, 6)]);
+    assert_eq!(q[0].bytes, FRAME_BYTES as u64);
+    assert!(
+        q[0].identities.is_empty(),
+        "a zeroed frame carries no identity to name"
+    );
+    assert_eq!((q[0].before, q[0].after), (Some((3, 1)), Some((3, 3))));
     assert_eq!(quarantine_files(dir.path()).len(), 1);
     assert_eq!(wal.next_free_seq(3), 7);
 }
@@ -498,111 +531,61 @@ fn the_scan_names_the_verdict() {
     );
     assert!(corrupt.was_corrupt() && !corrupt.was_torn());
     assert!(!corrupt.verdict.truncates());
+    assert_eq!(
+        corrupt.records.len(),
+        3,
+        "the scan reads past the hole to the record behind it"
+    );
+    assert_eq!(corrupt.holes.len(), 1);
+    assert_eq!(corrupt.tail, TailVerdict::Clean);
 }
 
-/// A directory factory whose segments refuse to SHRINK — the moment between the quarantine copy
-/// being durable and the segment being cut, frozen, which is what a crash there looks like.
-struct CrashBeforeCut(DirectoryFactory);
-
-struct NoShrink(Box<dyn SegmentBackend>);
-
-impl SegmentBackend for NoShrink {
-    fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
-        self.0.write_all_at(offset, bytes)
-    }
-    fn sync(&mut self) -> std::io::Result<()> {
-        self.0.sync()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read_at(offset, buf)
-    }
-    fn len(&self) -> std::io::Result<u64> {
-        self.0.len()
-    }
-    fn set_len(&mut self, len: u64) -> std::io::Result<()> {
-        if len < self.0.len()? {
-            return Err(std::io::Error::other("the process died before the cut"));
-        }
-        self.0.set_len(len)
-    }
-}
-
-impl SegmentFactory for CrashBeforeCut {
-    fn open(&mut self, index: u64) -> std::io::Result<Box<dyn SegmentBackend>> {
-        Ok(Box::new(NoShrink(self.0.open(index)?)))
-    }
-    fn highest_index(&self) -> std::io::Result<Option<u64>> {
-        self.0.highest_index()
-    }
-    fn existing(&self, index: u64) -> std::io::Result<Option<Box<dyn SegmentBackend>>> {
-        self.0.existing(index)
-    }
-    fn is_durable(&self) -> bool {
-        true
-    }
-    fn segment_file(&self, index: u64) -> Option<PathBuf> {
-        self.0.segment_file(index)
-    }
-    fn quarantine(
-        &mut self,
-        index: u64,
-        offset: u64,
-        unix_ms: u64,
-        bytes: &[u8],
-    ) -> std::io::Result<Option<PathBuf>> {
-        self.0.quarantine(index, offset, unix_ms, bytes)
-    }
-}
-
+/// **ACKNOWLEDGED DAMAGE IS FOUND AGAIN AT EVERY BOOT, AND NOTHING ABOUT IT IS LOST OR DOUBLED.**
+/// The damage is never cut, so a second boot reads exactly what the first did: the same records kept,
+/// the same quarantine reported, and the copy already beside the segment reused rather than written
+/// out once per boot. (Before the fix a corrupt remainder was cut after its copy, and a crash between
+/// the two left a second copy on the next boot.)
 #[test]
-fn a_crash_between_the_quarantine_copy_and_the_cut_loses_nothing() {
-    let dir = TempDir::new("crash-before-cut");
+fn acknowledged_damage_is_found_again_at_every_boot_with_one_copy() {
+    let dir = TempDir::new("found-again");
     let written = four();
     let original = lay_down(dir.path(), &written);
     flip(dir.path(), FRAME_BYTES + 7);
     let path = segment_path(dir.path());
-    let damaged_file = std::fs::read(&path).unwrap();
-    let damaged = damaged_file[..original.len()].to_vec();
+    let damaged = std::fs::read(&path).unwrap()[..original.len()].to_vec();
 
-    // The first boot dies after the copy and before the cut.
-    let crashed = Wal::with_parts(
-        Box::new(CrashBeforeCut(DirectoryFactory::new(dir.path()).unwrap())),
-        Box::new(NullShipper::new()),
-        Mode::OnDisk,
-        busbar_kernel_wal::segment::SEGMENT_BYTES,
-        super::fixtures::wall_ms,
-    );
-    assert!(matches!(crashed, Err(OpenError::Io(_))));
-    // The copy is durable AND the segment is uncut: both halves of the damage exist.
-    assert_eq!(std::fs::read(&path).unwrap(), damaged_file);
-    let first = quarantine_files(dir.path());
-    assert_eq!(first.len(), 1);
+    let open = || {
+        Wal::in_directory(
+            dir.path(),
+            Box::new(NullShipper::new()),
+            super::fixtures::wall_ms,
+        )
+        .unwrap()
+    };
+    let first = open();
+    let first_q = first.quarantined().to_vec();
+    drop(first);
+    let second = open();
     assert_eq!(
-        std::fs::read(&first[0]).unwrap(),
-        damaged[FRAME_BYTES..].to_vec()
+        second.recovered(),
+        &[written[0].clone(), written[2].clone(), written[3].clone()]
     );
-
-    // The next boot completes. Nothing was lost across the two: the kept prefix and the first
-    // copy together are every byte that was on the medium.
-    let wal = Wal::in_directory(
-        dir.path(),
-        Box::new(NullShipper::new()),
-        super::fixtures::wall_ms,
-    )
-    .unwrap();
-    assert_eq!(wal.recovered(), &written[..1]);
-    let mut rebuilt = std::fs::read(&path).unwrap();
-    rebuilt.extend(std::fs::read(&first[0]).unwrap());
-    assert_eq!(rebuilt, damaged);
-    // The second boot made its own copy rather than overwriting the first.
-    let after = quarantine_files(dir.path());
-    assert_eq!(after.len(), 2);
-    for file in &after {
-        assert_eq!(
-            std::fs::read(file).unwrap(),
-            damaged[FRAME_BYTES..].to_vec()
-        );
-    }
+    assert_eq!(
+        second.quarantined().len(),
+        1,
+        "the damage is reported again"
+    );
+    assert_eq!(second.quarantined()[0].kept, first_q[0].kept, "one copy");
+    assert_eq!(
+        std::fs::read(&path).unwrap()[..original.len()].to_vec(),
+        damaged
+    );
+    let files = quarantine_files(dir.path());
+    assert_eq!(files.len(), 1);
+    assert_eq!(
+        std::fs::read(&files[0]).unwrap(),
+        damaged[FRAME_BYTES..2 * FRAME_BYTES].to_vec()
+    );
 }
 
 /// A memory factory whose quarantine cannot be made durable.
@@ -650,7 +633,7 @@ fn a_quarantine_that_cannot_be_made_leaves_the_damage_in_place_and_writes_elsewh
     }
     let seg0 = factory.segment_bytes(0);
     seg0.lock().unwrap()[FRAME_BYTES + 9] ^= 0xFF;
-    let before = seg0.lock().unwrap().clone();
+    let before = seg0.lock().unwrap()[..4 * FRAME_BYTES].to_vec();
 
     let mut wal = Wal::with_parts(
         Box::new(NoQuarantine(factory.clone())),
@@ -660,19 +643,23 @@ fn a_quarantine_that_cannot_be_made_leaves_the_damage_in_place_and_writes_elsewh
         super::fixtures::wall_ms,
     )
     .expect("a failed copy does not stop the log opening");
-    assert_eq!(wal.recovered(), &written[..1]);
+    assert_eq!(
+        wal.recovered(),
+        &[written[0].clone(), written[2].clone(), written[3].clone()]
+    );
     assert!(matches!(
         wal.quarantined()[0].kept,
         QuarantineKept::InPlace(_)
     ));
     // Not cut, not overwritten.
-    assert_eq!(*seg0.lock().unwrap(), before);
+    assert_eq!(seg0.lock().unwrap()[..4 * FRAME_BYTES].to_vec(), before);
+
     assert!(wal.is_poisoned(), "the damaged segment is closed to writes");
 
     let next = records(3, 9, 1, 10);
     let ack = wal.append_batch(&durability_token(), METER, &next).unwrap();
     assert_eq!(ack.segment, 1, "the next append rolled past the damage");
-    assert_eq!(*seg0.lock().unwrap(), before);
+    assert_eq!(seg0.lock().unwrap()[..4 * FRAME_BYTES].to_vec(), before);
 }
 
 #[test]
@@ -693,7 +680,7 @@ fn a_memory_log_keeps_the_quarantined_bytes_in_the_factory() {
     }
     let seg0 = factory.segment_bytes(0);
     seg0.lock().unwrap()[2 * FRAME_BYTES + 40] ^= 0xFF;
-    let damaged = seg0.lock().unwrap()[2 * FRAME_BYTES..4 * FRAME_BYTES].to_vec();
+    let damaged = seg0.lock().unwrap()[2 * FRAME_BYTES..3 * FRAME_BYTES].to_vec();
 
     let wal = Wal::with_parts(
         Box::new(factory.clone()),
@@ -703,7 +690,10 @@ fn a_memory_log_keeps_the_quarantined_bytes_in_the_factory() {
         super::fixtures::wall_ms,
     )
     .unwrap();
-    assert_eq!(wal.recovered(), &written[..2]);
+    assert_eq!(
+        wal.recovered(),
+        &[written[0].clone(), written[1].clone(), written[3].clone()]
+    );
     assert_eq!(wal.quarantined()[0].kept, QuarantineKept::Memory);
     let kept = factory.quarantined();
     assert_eq!(kept.len(), 1);
@@ -714,7 +704,7 @@ fn a_memory_log_keeps_the_quarantined_bytes_in_the_factory() {
 
 #[test]
 fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
-    use busbar_kernel_wal::journal::{BodyReader, Journal, RecordClass};
+    use busbar_kernel_wal::journal::BodyReader;
 
     let dir = TempDir::new("quarantine-record");
     lay_down(dir.path(), &four());
@@ -754,14 +744,43 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
     assert_eq!(body.num(), Some(0));
     assert_eq!(body.num(), Some(FRAME_BYTES as u64));
     assert_eq!(body.num(), Some(FRAME_BYTES as u64));
-    assert_eq!(body.num(), Some(3 * FRAME_BYTES as u64));
+    assert_eq!(body.num(), Some(FRAME_BYTES as u64));
     let kept = file.display().to_string();
     assert_eq!(body.text(), Some(kept.as_str()));
     assert_eq!(body.num(), Some(q.at_unix_ms));
-    // The record whose magic was flipped (3, 2) and the two verifying ones behind it: the flipped
-    // frame was written whole, so its record was acknowledged and its identity is named too.
-    assert_eq!(body.num(), Some(3));
+    // The record whose magic was flipped (3, 2): the flipped frame was written whole, so its
+    // record was acknowledged and its identity is named. The two behind it are kept.
+    assert_eq!(body.num(), Some(1));
+    // The hole it leaves in the chain: kept before it (3, 1), kept after it (3, 3).
+    assert_eq!(
+        [
+            body.num(),
+            body.num(),
+            body.num(),
+            body.num(),
+            body.num(),
+            body.num()
+        ],
+        [Some(1), Some(3), Some(1), Some(1), Some(3), Some(3)]
+    );
     assert!(body.is_done());
+
+    // Found again at the next boot, and not recorded again: one break per hole.
+    drop(journal);
+    let mut journal = Journal::over(
+        Wal::in_directory(
+            dir.path(),
+            Box::new(NullShipper::new()),
+            super::fixtures::wall_ms,
+        )
+        .unwrap(),
+        3,
+    );
+    assert_eq!(journal.log().quarantined().len(), 1);
+    assert!(journal
+        .record_quarantines(&durability_token(), METER, 1_700_000_001)
+        .unwrap()
+        .is_none());
 
     // A clean boot has nothing to record.
     drop(journal);
@@ -780,4 +799,195 @@ fn the_journal_puts_a_durable_record_of_each_quarantine_on_the_chain() {
         .record_quarantines(&durability_token(), METER, 1)
         .unwrap()
         .is_none());
+}
+
+/// Append `n` journal records, one commit each, numbered on from wherever `journal` stands.
+fn seal_loads(journal: &mut Journal, n: u8, tag: u8) {
+    for i in 0..n {
+        journal
+            .append(
+                &durability_token(),
+                METER,
+                &[Entry::new(RecordClass::Load, vec![tag, i, 0, 0, 0, 0, 0, 0]).at(1, 0)],
+            )
+            .unwrap();
+    }
+}
+
+fn journal_in(dir: &Path) -> Journal {
+    Journal::in_directory(
+        3,
+        dir,
+        Box::new(NullShipper::new()),
+        super::fixtures::wall_ms,
+    )
+    .unwrap()
+}
+
+/// The node sequence numbers of the chain `journal` replays, which must verify.
+fn replayed_seqs(journal: &Journal) -> Vec<u64> {
+    journal
+        .replay()
+        .expect("the log reads back")
+        .expect("the chain verifies across the quarantine")
+        .iter()
+        .map(|r| r.node_seq)
+        .collect()
+}
+
+/// **AFTER A QUARANTINE THE CHAIN STILL VERIFIES, ON THIS BOOT AND EVERY ONE AFTER IT** (arch-audit
+/// u44, HIGH). The final journal record is altered on the medium and set aside; the number it carried
+/// stays taken, so the chain resumes past it. RED before the fix: `verify` had no rule for that gap,
+/// so the replay failed with a sequence mismatch as soon as the quarantine's `ChainBreak` was sealed,
+/// and on every boot after — and the composition root answers an unverifiable chain by rebuilding
+/// an EMPTY book. Now the chain re-anchors on the last record kept before the hole, every
+/// acknowledged record replays, and the quarantine is still reported, once on the chain.
+#[test]
+fn after_a_quarantine_every_later_replay_rebuilds_every_kept_record() {
+    let dir = TempDir::new("chain-after-quarantine");
+    seal_loads(&mut journal_in(dir.path()), 4, 1);
+    // Record four, the last on the chain, altered whole: an acknowledged record set aside.
+    flip(dir.path(), 3 * FRAME_BYTES + 200);
+
+    let mut journal = journal_in(dir.path());
+    assert_eq!(
+        journal.log().quarantined().len(),
+        1,
+        "the quarantine is reported"
+    );
+    assert_eq!(replayed_seqs(&journal), vec![1, 2, 3]);
+    let sealed = journal
+        .record_quarantines(&durability_token(), METER, 1_700_000_000)
+        .unwrap()
+        .expect("the quarantine goes on the chain");
+    assert_eq!(sealed.sealed[0].node_seq, 5, "number four stays taken");
+    seal_loads(&mut journal, 3, 2);
+    assert_eq!(
+        replayed_seqs(&journal),
+        vec![1, 2, 3, 5, 6, 7, 8],
+        "the replay after the break rebuilds every kept record and every one after"
+    );
+    drop(journal);
+
+    for boot in 0..2 {
+        let mut journal = journal_in(dir.path());
+        assert_eq!(
+            journal.log().quarantined().len(),
+            1,
+            "boot {boot}: the damage is still there, and still reported"
+        );
+        assert_eq!(
+            replayed_seqs(&journal),
+            vec![1, 2, 3, 5, 6, 7, 8],
+            "boot {boot}"
+        );
+        assert!(
+            journal
+                .record_quarantines(&durability_token(), METER, 1_700_000_001)
+                .unwrap()
+                .is_none(),
+            "boot {boot}: the hole is on the chain once"
+        );
+    }
+}
+
+/// A damaged record in the MIDDLE of the journal: the records behind it are kept, and the chain
+/// verifies across the hole on the boot that finds it (before its break is sealed), once the break
+/// is sealed, and on a later boot. RED before the fix: records three and four left the log with the
+/// damaged one, and the chain stopped verifying once the break was sealed.
+#[test]
+fn a_mid_journal_hole_keeps_every_record_behind_it_on_the_chain() {
+    let dir = TempDir::new("chain-mid-hole");
+    seal_loads(&mut journal_in(dir.path()), 4, 1);
+    flip(dir.path(), FRAME_BYTES + 200);
+
+    let mut journal = journal_in(dir.path());
+    assert_eq!(replayed_seqs(&journal), vec![1, 3, 4]);
+    journal
+        .record_quarantines(&durability_token(), METER, 1_700_000_000)
+        .unwrap()
+        .expect("the hole goes on the chain");
+    seal_loads(&mut journal, 2, 2);
+    assert_eq!(replayed_seqs(&journal), vec![1, 3, 4, 5, 6, 7]);
+    drop(journal);
+    assert_eq!(
+        replayed_seqs(&journal_in(dir.path())),
+        vec![1, 3, 4, 5, 6, 7]
+    );
+}
+
+/// A gap NO quarantine names still fails: the bridge is the hole recovery set aside and nothing
+/// else. A record taken out of the middle of a verified run is a removal, not a quarantine.
+#[test]
+fn a_gap_no_quarantine_names_still_breaks_the_chain() {
+    let dir = TempDir::new("chain-unnamed-gap");
+    let mut journal = journal_in(dir.path());
+    seal_loads(&mut journal, 4, 1);
+    let mut records = journal.replay().unwrap().unwrap();
+    records.remove(1);
+    assert!(matches!(
+        busbar_kernel_wal::journal::verify(&records),
+        Err(busbar_kernel_wal::journal::JournalBreak { at_index: 2, .. })
+    ));
+}
+
+/// **DAMAGE BELOW THE TAIL SEGMENT IS QUARANTINED, REPORTED AND READ PAST**.
+/// The log has rolled, and a record in the closed segment below the tail is altered — in its middle,
+/// and at its end. RED before the fix: only the tail segment was ever recovered, so no quarantine
+/// was made or reported, no unit it named was held back, and `read_back` dropped the rest of that
+/// segment silently.
+#[test]
+fn damage_in_a_segment_below_the_tail_is_quarantined_reported_and_read_past() {
+    // Four single-frame records to a segment: records 1..4 in segment 0, 5..8 in segment 1.
+    const CEILING: u64 = 4 * FRAME_BYTES as u64;
+    let open = |dir: &Path| {
+        Journal::over(
+            Wal::with_parts(
+                Box::new(DirectoryFactory::new(dir).unwrap()),
+                Box::new(NullShipper::new()),
+                Mode::OnDisk,
+                CEILING,
+                super::fixtures::wall_ms,
+            )
+            .unwrap(),
+            3,
+        )
+    };
+    for (damaged, kept, before, after) in [
+        (2u64, vec![1, 3, 4, 5, 6, 7, 8], (3, 1), (3, 3)),
+        (4u64, vec![1, 2, 3, 5, 6, 7, 8], (3, 3), (3, 5)),
+    ] {
+        let dir = TempDir::new(&format!("below-tail-{damaged}"));
+        seal_loads(&mut open(dir.path()), 8, 1);
+        assert!(
+            DirectoryFactory::new(dir.path())
+                .unwrap()
+                .segment_path(1)
+                .exists(),
+            "the log rolled"
+        );
+        flip(dir.path(), (damaged as usize - 1) * FRAME_BYTES + 200);
+
+        let journal = open(dir.path());
+        let q = journal.log().quarantined();
+        assert_eq!(q.len(), 1, "record {damaged}: the damage is reported");
+        assert_eq!(q[0].segment, 0);
+        assert_eq!(q[0].offset, (damaged - 1) * FRAME_BYTES as u64);
+        assert_eq!(q[0].identities, vec![(3, damaged)]);
+        assert_eq!((q[0].before, q[0].after), (Some(before), Some(after)));
+        assert_eq!(quarantine_files(dir.path()).len(), 1);
+        let back: Vec<u64> = journal
+            .log()
+            .read_back()
+            .unwrap()
+            .records
+            .iter()
+            .map(|r| r.node_seq)
+            .collect();
+        assert_eq!(
+            back, kept,
+            "record {damaged}: the rest of the segment is read"
+        );
+        assert_eq!(replayed_seqs(&journal), kept, "record {damaged}");
+    }
 }

@@ -8,7 +8,7 @@
 //! The `/api/v1/admin/*` JSON-REST service — the route table, every handler, the committed
 //! `openapi.json`, the transport port, the test-support recording layer — and the v1 CONTRACT (the
 //! typed views, the full `AdminError` taxonomy, the JSON envelope helpers and the plane-verb
-//! envelope; P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04) are `busbar-core-admin`'s, which depends on
+//! envelope) are `busbar-core-admin`'s, which depends on
 //! the kernel ONE-WAY. The kernel mounts that service through the fn-pointer seam in [`seam`]
 //! (registered once by the composition root, exactly like `oauth_as::seam`), so `router.rs` names no
 //! core-admin type.

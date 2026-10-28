@@ -367,7 +367,7 @@ fn port_outcome(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
     }
 }
 
-impl crate::proxy::egress_unit::ports::Breaker for Cells {
+impl busbar_kernel_egress::ports::Breaker for Cells {
     fn try_admit(
         &self,
         pool: &str,
@@ -461,8 +461,8 @@ impl crate::proxy::egress_unit::ports::Breaker for Cells {
         );
     }
 
-    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.0.release_probe(pool, destination, epoch, now);
+    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
+        self.0.release_probe(pool, destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
@@ -481,7 +481,7 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
     let cells = Arc::new(Cells(busbar_kernel_breaker::BreakerUnit::new()));
     let _ = cells.0.cell(POOL, TRIPPED);
-    r.egress.breaker = Arc::clone(&cells) as Arc<dyn crate::proxy::egress_unit::ports::Breaker>;
+    r.egress.breaker = Arc::clone(&cells) as Arc<dyn busbar_kernel_egress::ports::Breaker>;
     let driver = PlaneDriver::new(
         Arc::new(Prober::default()),
         DriverConfig {

@@ -48,7 +48,9 @@ use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
 };
-use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
+};
 use crate::grammar::{PathSeg, Selector};
 
 /// The most unit counts one answer may carry.
@@ -1503,10 +1505,14 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
 ///
 /// The rule the sections break.
 pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED;
+    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_SELECTS;
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
+        // The verb selects its plane already: the selecting bit beside it is redundant.
+        if s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_SELECTS != 0 {
+            return Err(fault(Rule::Contradiction, "section.flags"));
+        }
     }
     let declaring = sections
         .iter()

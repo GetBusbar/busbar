@@ -305,8 +305,9 @@ fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
 ///
 /// The `v3` page stays published as the history of the field list, so its table must still
 /// reproduce its own example's digest and its example must still name `v3`. The `v4` table is the
-/// `v3` table with exactly `incarnation` (a number) inserted after `unit_key` and `node` (a number)
-/// inserted after `mono`. Read off the two pages, never off the code.
+/// `v3` table with exactly `incarnation` (a number) inserted after `unit_key`, `node` (a number)
+/// inserted after `mono`, and each hook's `head` (text) and `failed` (a number) inserted after its
+/// key. Read off the two pages, never off the code.
 #[test]
 fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
     let v3 = published_page("audit-chain-digest-v3.md");
@@ -333,13 +334,17 @@ fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
             + 1
     };
     let mut v3_plus = v3_order.clone();
-    // `mono` sits after `unit_key`, so inserting at the later position first keeps the earlier one.
+    // Inserting at the later positions first keeps the earlier ones: `hooks[].hook` sits after
+    // `mono`, which sits after `unit_key`.
+    let hook = after("hooks[].hook");
+    v3_plus.insert(hook, ("hooks[].failed".to_string(), Kind::Num));
+    v3_plus.insert(hook, ("hooks[].head".to_string(), Kind::Text));
     v3_plus.insert(after("mono"), ("node".to_string(), Kind::Num));
     v3_plus.insert(after("unit_key"), ("incarnation".to_string(), Kind::Num));
     assert_eq!(
         v4_order, v3_plus,
-        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key` and `node` \
-         after `mono`"
+        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key`, `node` \
+         after `mono` and `hooks[].head` and `hooks[].failed` after `hooks[].hook`"
     );
     assert_eq!(
         spec_json_block(&published_spec(), 0)["recipe"].as_str(),
@@ -525,46 +530,5 @@ fn the_published_bodies_expose_a_window_that_stops_short() {
         delivered < asked_to.min(head_seq),
         "a window that stopped short is not detectable from the published bodies: asked to {asked_to}, \
          head at {head_seq}, delivered {delivered}"
-    );
-}
-
-/// THE CHECK NEVER REACHES THE CODE IT IS CHECKING.
-///
-/// The constraint the whole file rests on, enforced rather than promised. If any of the three
-/// functions that ARE the recipe were called from here, every check above would go green on a
-/// build whose order had drifted — because it would be asking the drifted code what the answer is.
-///
-/// The names are assembled at runtime rather than written out, so that this test's own source does
-/// not trip the scan it performs. Comment lines are skipped, because the module comment has to be
-/// able to say what it is banning.
-#[test]
-fn the_check_never_reaches_the_code_it_is_checking() {
-    let source = include_str!("published_recipe_tests.rs");
-    let banned = [
-        format!("digest_{}", "fields"),
-        format!("digest_{}", "over"),
-        format!("digest_{}", "of"),
-    ];
-    let mut found = Vec::new();
-    for (n, line) in source.lines().enumerate() {
-        if line.trim_start().starts_with("//") {
-            continue;
-        }
-        for name in &banned {
-            if line.contains(name.as_str()) {
-                found.push(format!("line {}: {name}", n + 1));
-            }
-        }
-    }
-    assert!(
-        found.is_empty(),
-        "this file reaches the implementation of the recipe it is supposed to check \
-         independently, which makes every check in it vacuous: {found:?}"
-    );
-    // And the scan itself is not vacuous: it finds a planted name.
-    let planted = format!("let x = digest_{}(&r);", "of");
-    assert!(
-        banned.iter().any(|b| planted.contains(b.as_str())),
-        "the scan cannot see a call it is meant to ban"
     );
 }

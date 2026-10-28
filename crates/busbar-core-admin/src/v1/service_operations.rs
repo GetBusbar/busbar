@@ -16,20 +16,26 @@
 //! where the block now lives.
 
 use super::*;
+use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::groups::LimitMetric;
-use busbar_kernel::plugin_admission::sign::TrustPolicy;
 
-/// `plugins.trust` resolved by THE ROOT'S ONE BUILDER — the one boot admits plugins under, carried
-/// on the snapshot (`App::plugin_trust`) — after warning about any malformed anti-downgrade floor,
-/// so every admin moment the policy resolves (catalog, install, inspect, rollback) reaches boot's
-/// verdict and warns exactly as boot does. No builder lives here. `binary_version` is carried for
-/// diagnostics only.
-pub(crate) fn trust_policy(app: &App, binary_version: &str) -> Result<TrustPolicy, String> {
+/// THE ROOT'S PLUGIN ADMISSION — the one boot admits plugins under, carried on the snapshot
+/// (`App::plugin_admission`) — after warning about any malformed anti-downgrade floor, so every
+/// admin moment that judges a plugin (catalog, install, inspect, rollback) reaches boot's verdict
+/// and warns exactly as boot does. No policy is built here: the admission judges under the root's
+/// one trust builder over `app.plugins_cfg`.
+pub(crate) fn admission(app: &App) -> Result<&'static dyn PluginAdmission, String> {
     app.plugins_cfg.warn_invalid_floors();
-    let build = app.plugin_trust.ok_or_else(|| {
-        "no plugin trust policy is installed (the composition root's)".to_string()
-    })?;
-    build(&app.plugins_cfg, binary_version)
+    app.plugin_admission
+        .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
+}
+
+/// A refusal of the root's admission, in the class the operator surface answers it with.
+fn refused(refusal: Refusal) -> AdminError {
+    match refusal {
+        Refusal::Validation(m) => AdminError::Validation(m),
+        Refusal::Conflict(m) => AdminError::Conflict(m),
+    }
 }
 
 impl AdminService {
@@ -273,10 +279,7 @@ impl AdminService {
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
         // discoverable to an operator inspecting state rather than boot logs. A name that is live
         // wins — the registry only ever holds names the applier actually dropped.
-        for (name, entry) in busbar_kernel::config::overlay::unparseable_named_map_entries(
-            self.app.overlay_path.as_deref(),
-            section,
-        ) {
+        for (name, entry) in self.unparseable_overlay_entries(section).await? {
             if !defs.iter().any(|d| d.name == name) {
                 defs.push(unparseable_def_view(&name, &entry));
             }
@@ -307,18 +310,55 @@ impl AdminService {
             // seam; `None` for a plane compiled out is the seam's own `None`.
             NamedMapSection::Plane(_) => plane_named_def_get(section, &self.app, name),
         };
-        view.or_else(|| {
-            // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
-            // 404 for a name that is sitting in the operator's own overlay is precisely the silent
-            // drop this surfaces.
-            busbar_kernel::config::overlay::unparseable_named_map_entries(
-                self.app.overlay_path.as_deref(),
-                section,
-            )
+        if let Some(view) = view {
+            return Ok(view);
+        }
+        // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a 404
+        // for a name that is sitting in the operator's own overlay is precisely the silent drop
+        // this surfaces.
+        self.unparseable_overlay_entries(section)
+            .await?
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
+            .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+    }
+
+    /// The overlay entries of `section` this binary could not parse, read OFF THE ASYNC WORKER.
+    ///
+    /// Finding them reads the operator's overlay FILE and parses all of it — every section, the
+    /// group tree a self-service mint grows among them — on a read-scope endpoint the admin limiter
+    /// does not meter. Inline, that file read held the runtime worker the data plane shares for as
+    /// long as the disk took; on a blocking thread it holds nothing. A blocking task that fails to
+    /// join answers what a panic inside the handler always answered, the `500` `internal` envelope.
+    async fn unparseable_overlay_entries(
+        &self,
+        section: NamedMapSection,
+    ) -> Result<
+        std::collections::BTreeMap<String, busbar_kernel::config::overlay::UnparseableNamedDef>,
+        AdminError,
+    > {
+        let overlay = self.app.overlay_path.clone();
+        // The caller's tracing dispatcher rides onto the blocking thread, so the corrupt-overlay
+        // warning the read raises still reaches it (the `GET /config/settings` read does the same).
+        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
+        tokio::task::spawn_blocking(move || {
+            tracing::dispatcher::with_default(&dispatch, || {
+                busbar_kernel::config::overlay::unparseable_named_map_entries(
+                    overlay.as_deref(),
+                    section,
+                )
+            })
         })
-        .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+        .await
+        .map_err(|join_err| {
+            diag_error!(
+                ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "named_defs.overlay",
+                error = %join_err,
+                "admin blocking task failed"
+            );
+            AdminError::Internal
+        })
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
@@ -336,14 +376,16 @@ impl AdminService {
         start: usize,
         limit: usize,
     ) -> Result<Page<GroupView>, AdminError> {
-        let all: Vec<GroupView> = self
-            .app
-            .groups_registry
+        // Skip to the page BEFORE projecting: only the page's groups are built into their wire
+        // view, so a page costs its own size rather than the whole tree's.
+        let registry = &self.app.groups_registry;
+        let total = registry.len();
+        let items: Vec<GroupView> = registry
             .iter()
+            .skip(start)
+            .take(limit)
             .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
             .collect();
-        let total = all.len();
-        let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
         let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })
@@ -371,15 +413,47 @@ impl AdminService {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
         let now = busbar_kernel::store::now();
+        // THE STORE READS RUN OFF THE ASYNC WORKER, all of the group's buckets in one blocking
+        // task (as `get_usage`'s are): a slow store never stalls the worker the admin surface and
+        // the data plane share. One read per bucket, in bucket order.
+        let reads = match self.app.governance.clone() {
+            Some(gov) => {
+                let cost = self.app.cost.clone();
+                let wanted: Vec<(String, String)> = rt
+                    .buckets
+                    .iter()
+                    .map(|b| (b.bucket_id.to_string(), b.window.to_string()))
+                    .collect();
+                tokio::task::spawn_blocking(move || {
+                    wanted
+                        .iter()
+                        // Include the flat per-request fee (`true`) — the group `/usage` read must
+                        // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket,
+                        // groups included). Passing `false` here understated spend and overstated
+                        // remaining budget, so operators saw more headroom than the enforcer
+                        // actually allows.
+                        .map(|(id, window)| {
+                            gov.derived_bucket_usage_priced(&cost, id, window, true, now)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|e| {
+                    busbar_kernel::diagnostics::diag_error!(
+                        busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
+                        group = name, err = %e,
+                        "group usage read failed"
+                    );
+                    AdminError::Internal
+                })?
+            }
+            None => Vec::new(),
+        };
+        let mut reads = reads.into_iter();
         let mut buckets = Vec::with_capacity(rt.buckets.len());
         for b in &rt.buckets {
-            let usage = match &self.app.governance {
-                Some(gov) => gov
-                    // Include the flat per-request fee (`true`) — the group `/usage` read must
-                    // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket, groups
-                    // included). Passing `false` here understated spend and overstated remaining
-                    // budget, so operators saw more headroom than the enforcer actually allows.
-                    .derived_bucket_usage_priced(&self.app.cost, &b.bucket_id, b.window, true, now)
+            let usage = match reads.next() {
+                Some(read) => read
                     .map_err(|e| {
                         busbar_kernel::diagnostics::diag_error!(
                             busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
@@ -405,9 +479,10 @@ impl AdminService {
                 tokens_cache_read_cap: b.class_cap(LimitMetric::TokensCacheRead),
                 tokens_cache_write_cap: b.class_cap(LimitMetric::TokensCacheWrite),
                 budget_cap: b.budget_cap,
+                // The headroom is the ledger's read-time arithmetic (THE DESIGN, Money), never this crate's.
                 budget_remaining_cents: b
                     .budget_cap
-                    .map(|cap| cap.saturating_sub(usage.spend_cents).max(0)),
+                    .map(|cap| busbar_kernel::cost::budget_remaining(cap, usage.spend_cents)),
             });
         }
         Ok(GroupUsageView {
@@ -608,9 +683,12 @@ impl AdminService {
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
         let mut out = linked_store_rows();
-        let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
+        let Ok(admission) = admission(&self.app) else {
             return out;
         };
+        if admission.policy_resolves(&self.app.plugins_cfg).is_err() {
+            return out;
+        }
 
         let now = busbar_kernel::store::now();
         // Bound the cache with the same TTL+`retain()` idiom
@@ -683,7 +761,11 @@ impl AdminService {
                 }
             }
 
-            let rows = Self::scan_store_plugin_rows(&self.app.plugins_dir, &policy);
+            let rows = Self::scan_store_plugin_rows(
+                &self.app.plugins_dir,
+                admission,
+                &self.app.plugins_cfg,
+            );
 
             // "After" fingerprint: only memoize if the directory still looks like it did before the
             // scan started (see the race caveat in the doc comment above — this narrows, it does
@@ -712,35 +794,48 @@ impl AdminService {
             out.extend(rows);
             out
         } else {
-            out.extend(Self::scan_store_plugin_rows(&self.app.plugins_dir, &policy));
+            out.extend(Self::scan_store_plugin_rows(
+                &self.app.plugins_dir,
+                admission,
+                &self.app.plugins_cfg,
+            ));
             out
         }
     }
 
-    /// The pure scan half of [`Self::store_plugin_catalog`]: run `inventory_tarballs` and project
-    /// each row to a [`PluginView`]. No cache read, no cache write — split out so both the
+    /// The pure scan half of [`Self::store_plugin_catalog`]: run the admission's manifest-only
+    /// `inventory` and project each row to a [`PluginView`]. No cache read, no cache write — split out so both the
     /// cache-miss path above and (indirectly, via the whole-method `spawn_blocking`)
     /// [`Self::store_plugin_catalog_async`] share exactly one implementation of "what a scan is."
-    fn scan_store_plugin_rows(dir: &Path, policy: &TrustPolicy) -> Vec<PluginView> {
+    fn scan_store_plugin_rows(
+        dir: &Path,
+        admission: &dyn PluginAdmission,
+        cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Vec<PluginView> {
         // TEST-ONLY injection point: expands to nothing outside
         // `#[cfg(test)]`, so the release path carries zero indirection. See
         // `catalog_scan_test_hooks` above for what it does and why.
         catalog_scan_test_hook!(dir);
         let mut rows = Vec::new();
-        for row in busbar_kernel::plugin_admission::inventory_tarballs(dir, policy) {
+        // The policy resolved a moment ago (the caller checked); a refusal here lists nothing
+        // beyond the linked rows, the same answer an unresolvable policy gets.
+        let Ok(inventory) = admission.inventory(dir, cfg) else {
+            return rows;
+        };
+        for row in inventory {
             let trust = if row.status == "ready" {
                 if row.signature == "first-party" || row.signature.starts_with("publisher:") {
                     Some("trusted")
                 } else {
                     Some("unverified")
                 }
-            } else if row.manifest.is_some() {
+            } else if row.stated.is_some() {
                 Some("rejected")
             } else {
                 None
             };
             let name = row
-                .manifest
+                .stated
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
@@ -750,7 +845,7 @@ impl AdminService {
             // preserving the exact pre-existing behavior for every case this change doesn't newly
             // cover (a broken upload of unknown kind still surfaces somewhere an operator will see
             // it, and `type=hooks` has its own, unrelated listing mechanism below — not this scan).
-            let r#type = match row.manifest.as_ref().map(|m| m.kind.as_str()) {
+            let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
                 Some("secret") => "secret",
                 Some("auth") => "auth",
                 _ => "store",
@@ -761,7 +856,7 @@ impl AdminService {
             // admin-prefixed RELATIVE path to `GET /plugins/{name}/schema`, resolved by this
             // plugin's real manifest `name` (what that endpoint resolves against), never the
             // installed tarball's filename.
-            let (schema_url, schema_error) = match row.manifest.as_ref() {
+            let (schema_url, schema_error) = match row.stated.as_ref() {
                 Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
                 None => (None, None),
             };
@@ -773,9 +868,9 @@ impl AdminService {
                 target: Some(row.file.clone()),
                 file: Some(row.file.clone()),
                 has_schema: schema_url.is_some(),
-                version: row.manifest.as_ref().map(|m| m.version.clone()),
-                publisher: row.manifest.as_ref().map(|m| m.publisher.clone()),
-                interface_version: row.manifest.as_ref().map(|m| m.abi_version),
+                version: row.stated.as_ref().map(|m| m.version.clone()),
+                publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
+                interface_version: row.stated.as_ref().map(|m| m.abi_version),
                 trust,
                 valid: Some(row.status == "ready"),
                 error: (row.status != "ready").then(|| row.status.clone()),
@@ -843,7 +938,7 @@ impl AdminService {
                 );
                 // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
-                // an unparseable `plugins_cfg` (`trust_policy` failing) just above.
+                // an unparseable `plugins_cfg` (the policy not resolving) just above.
                 Ok(linked_store_rows())
             }
         }
@@ -872,106 +967,46 @@ impl AdminService {
         file: &str,
         tarball: &[u8],
     ) -> Result<crate::v1::contract::PluginInstallView, AdminError> {
-        use busbar_kernel::plugin_admission::sign::{
-            evaluate, validate_structure, Verdict, HOST_IDENTITY,
-        };
-
         // ── 1. filename sanity: a bare tarball filename ──
-        let file = validate_plugin_filename(file)?;
+        let file = validate_plugin_filename(&self.app, file)?;
 
-        let policy =
-            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
-
-        // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
-        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_kernel::plugin_admission::supported_abi,
-            HOST_IDENTITY,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
-        let manifest = &unpacked.manifest;
-
-        // ── 3. TRUST re-verify against the RUNNING posture (server-side) ──
-        let (trust, publisher) = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { publisher, .. }) => ("trusted", Some(publisher)),
-            Ok(Verdict::Allowed { .. }) => ("unverified", Some(manifest.publisher.clone())),
-            // An untrusted upload with no matching opt-in is forbidden - a terminal state conflict
-            // (retrying the same bytes can't fix it; sign it, or set the opt-in). The `evaluate`
-            // reason already names the exact flag to set and is safe to surface.
-            Err(rejected) => {
+        // ── 2–4b. THE ROOT'S ADMISSION, nothing written: STRUCTURAL (in-memory unpack + manifest
+        // completeness + integrity + abi, `400`); TRUST re-verified against the RUNNING posture
+        // server-side (an untrusted upload with no matching opt-in is a terminal `409` — retrying
+        // the same bytes cannot fix it; the refusal names the exact flag to set); CONFLICT with the
+        // already-installed loadable set (a corrupt installed tarball refuses rather than skipping
+        // the check, and a same-name upload under a DIFFERENT filename is refused because boot
+        // would reject two files claiming one plugin name, `409`); and THE ONE-VERSION RULE against
+        // the plugins this build LINKS (ARCHITECT C'), after trust: the same plugin at the same
+        // version is served by the linked row, so the install is an accepted no-op; another
+        // version is refused now, in the words boot would refuse it with, never published to brick
+        // the next boot.
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let admitted = admission
+            .admit_upload(&self.app.plugins_dir, &file, tarball, &self.app.plugins_cfg)
+            .map_err(refused)?;
+        let manifest = &admitted.stated;
+        let (trust, publisher) = match &admitted.judged {
+            Judged::Trusted { publisher } => ("trusted", Some(publisher.clone())),
+            Judged::Allowed => ("unverified", Some(manifest.publisher.clone())),
+            // An admission never admits a rejected upload; the mapping stays total.
+            Judged::Rejected { reason } => {
                 return Err(AdminError::Conflict(format!(
-                    "plugin rejected by the trust policy: {}",
-                    rejected.reason
+                    "plugin rejected by the trust policy: {reason}"
                 )));
             }
         };
-
-        // ── 4. CONFLICT vs the already-installed loadable set ──
-        // FAIL-OPEN GAP: a corrupt tarball already in the plugins dir makes scan_and_validate Err.
-        // The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Propagate
-        // it as a Conflict so we never admit a plugin whose conflict status we could not determine.
-        let reg =
-            busbar_kernel::plugin_admission::scan_and_validate(&self.app.plugins_dir, &policy)
-                .map_err(|errors| {
-                    AdminError::Conflict(format!(
-                    "cannot validate the installed plugin set before publishing (fix or remove the \
-                     offending tarball first): {}",
-                    errors.join("; ")
-                ))
-                })?;
-        for existing in reg.loadable() {
-            if existing.file == file {
-                continue; // overwriting the same tarball file is a legitimate upgrade
-            }
-            // Every identifier either claims (name, alias, former names) against the other's.
-            let clash = manifest
-                .identities()
-                .any(|word| existing.manifest.answers_to(word));
-            // BRICKS THE NEXT BOOT: the old gate exempted a SAME-NAME upload under a DIFFERENT
-            // filename (`&& existing.manifest.name != manifest.name`). But boot's phase-3
-            // conflicts() hard-rejects two loadable plugins with the same name (different files) -
-            // admitting one BRICKS the next restart. Reject it here (409) so we never publish a
-            // state boot will refuse: a same-name upgrade must REUSE the existing filename (which
-            // hits the `existing.file == file` overwrite path above), not add a second file.
-            if clash {
-                return Err(AdminError::Conflict(format!(
-                    "plugin name/alias conflict: uploaded '{}' (alias '{}', file {}) collides with \
-                     installed '{}' (alias '{}', file {}); a same-name upgrade must reuse the \
-                     existing filename, not add a second file (boot would reject two files claiming \
-                     the same plugin name)",
-                    manifest.name,
-                    manifest.alias,
-                    file,
-                    existing.manifest.name,
-                    existing.manifest.alias,
-                    existing.file
-                )));
-            }
-        }
-
-        // ── 4b. THE ONE-VERSION RULE against the plugins this build LINKS (ARCHITECT C'), after
-        // trust (an untrusted upload was refused above, before its identity was compared): the same
-        // plugin at the same version is already served by the linked row, so the install is an
-        // accepted no-op (nothing is written); another version is refused now, in the words boot
-        // would refuse it with, never published to brick the next boot.
-        match busbar_kernel::preflight::linked().and_then(|r| r.linked_copy(manifest, &file)) {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                return Ok(crate::v1::contract::PluginInstallView {
-                    file,
-                    name: manifest.name.clone(),
-                    interface_version: manifest.abi_version,
-                    trust,
-                    version: Some(manifest.version.clone()),
-                    publisher,
-                    note: "this build links the plugin at this version and the linked build \
-                           serves it: nothing was written",
-                });
-            }
-            Err(refusal) => return Err(AdminError::Conflict(refusal)),
+        if admitted.linked_serves {
+            return Ok(crate::v1::contract::PluginInstallView {
+                file,
+                name: manifest.name.clone(),
+                interface_version: manifest.abi_version,
+                trust,
+                version: Some(manifest.version.clone()),
+                publisher,
+                note: "this build links the plugin at this version and the linked build \
+                       serves it: nothing was written",
+            });
         }
 
         // ── 5. atomic publish via the crate's ONE durable-write choke point ──
@@ -1023,10 +1058,10 @@ impl AdminService {
     /// base64-encoded, COMPRESSED ARCHIVE, reachable by the WEAKEST admin credential in the system,
     /// and the archive must be decompressed and its manifest parsed BEFORE the signature can even be
     /// checked, so the trust check happens strictly after the dangerous part):
-    ///   1. a hard cap on the DECODED tarball size, `busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES`
+    ///   1. a hard cap on the DECODED tarball size, the admission's `max_tarball_bytes`
     ///      — the same ceiling `POST /plugins` (install) and the on-disk catalog scan both already
-    ///      enforce, checked here BEFORE `unpack` ever runs;
-    ///   2. `busbar_kernel::plugin_admission::tarball::unpack` itself streams each archive member through a
+    ///      enforce, checked here BEFORE anything else, the unpack included;
+    ///   2. the admission's unpack itself streams each archive member through a
     ///      cap enforced DURING decompression (`read_entry_bounded`'s `.take(cap + 1)`) — a
     ///      decompression bomb fails fast, never after allocating the bomb — and rejects any
     ///      non-regular-file or path-traversal entry name outright, and errors immediately on a
@@ -1043,38 +1078,24 @@ impl AdminService {
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
-        use busbar_kernel::plugin_admission::sign::{
-            evaluate, validate_structure, Verdict, HOST_IDENTITY,
-        };
-
-        if tarball.len() as u64 > busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES {
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let cap = admission.max_tarball_bytes();
+        if tarball.len() as u64 > cap {
             return Err(AdminError::Validation(format!(
-                "decoded tarball is {} bytes, exceeding the {}-byte cap",
-                tarball.len(),
-                busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES
+                "decoded tarball is {} bytes, exceeding the {cap}-byte cap",
+                tarball.len()
             )));
         }
 
-        let policy =
-            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
-
-        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_kernel::plugin_admission::supported_abi,
-            HOST_IDENTITY,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
-        let manifest = &unpacked.manifest;
-
         // Trust is REPORTED, never a refusal to answer — an untrusted/rejected candidate is exactly
         // the case an operator most wants to preview before deciding whether to trust it at all.
-        let trust = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { .. }) => "trusted",
-            Ok(Verdict::Allowed { .. }) => "unverified",
-            Err(_rejected) => "rejected",
+        let (manifest, judged) = admission
+            .inspect(tarball, &self.app.plugins_cfg)
+            .map_err(refused)?;
+        let trust = match judged {
+            Judged::Trusted { .. } => "trusted",
+            Judged::Allowed => "unverified",
+            Judged::Rejected { .. } => "rejected",
         };
 
         let (schema, schema_error) = match manifest.settings_schema.as_deref() {
@@ -1099,7 +1120,7 @@ impl AdminService {
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&manifest.kind),
+            "restart_required_default": admission.restart_default(&manifest.kind),
         }))
     }
 
@@ -1111,7 +1132,7 @@ impl AdminService {
         &self,
         file: &str,
     ) -> Result<crate::v1::contract::PluginRemoveView, AdminError> {
-        let file = validate_plugin_filename(file)?;
+        let file = validate_plugin_filename(&self.app, file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
@@ -1169,56 +1190,22 @@ impl AdminService {
         &self,
         file: &str,
         prior_pins: &std::collections::BTreeMap<String, String>,
-    ) -> Result<
-        (
-            busbar_kernel::plugin_admission::sign::Manifest,
-            std::collections::BTreeMap<String, String>,
-        ),
-        AdminError,
-    > {
-        use busbar_kernel::plugin_admission::sign::{
-            evaluate, validate_structure, Verdict, HOST_IDENTITY,
-        };
-        let file = validate_plugin_filename(file)?;
+    ) -> Result<(Stated, std::collections::BTreeMap<String, String>), AdminError> {
+        let file = validate_plugin_filename(&self.app, file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
         let bytes = std::fs::read(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
-        let unpacked = busbar_kernel::plugin_admission::tarball::unpack(&bytes)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball `{file}`: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_kernel::plugin_admission::supported_abi,
-            HOST_IDENTITY,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest `{file}`: {e}")))?;
-        let manifest = unpacked.manifest;
-
-        // Build the trust policy with the first-party floor LOWERED to the target artifact's own
-        // version — the EXPLICIT relaxation. `min_versions` is carried from base config as-is; we
-        // additionally lower THIS plugin's configured floor to the target version so a floored
-        // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
-        // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
-        // never the ARTIFACT.
-        let mut policy =
-            trust_policy(&self.app, &manifest.version).map_err(AdminError::Validation)?;
-        policy
-            .min_versions
-            .insert(manifest.name.clone(), manifest.version.clone());
-        match evaluate(&unpacked.lib_bytes, &manifest, &policy) {
-            Ok(Verdict::Trusted { .. }) | Ok(Verdict::Allowed { .. }) => {}
-            Err(rejected) => {
-                return Err(AdminError::Conflict(format!(
-                    "rollback target `{file}` is not loadable under the trust policy even with the \
-                     floor lowered to its own version {}: {}. A rollback lowers the anti-downgrade \
-                     floor for an explicit operator action; it cannot load an untrusted artifact.",
-                    manifest.version, rejected.reason
-                )));
-            }
-        }
+        // The root's admission checks the target's structure and judges its trust with THIS
+        // plugin's floor LOWERED to the target's own version — the EXPLICIT relaxation. Anything the
+        // target does NOT satisfy (a broken signature, an un-opted-in third party) still fails: a
+        // rollback authenticates the OPERATOR, never the ARTIFACT.
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let manifest = admission
+            .rollback_target(&file, &bytes, &self.app.plugins_cfg)
+            .map_err(refused)?;
 
         // Merge: this plugin's pin becomes the target version; other plugins' prior pins are preserved.
         let mut pins = prior_pins.clone();
@@ -1485,7 +1472,48 @@ impl AdminService {
             std::collections::BTreeMap::new();
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
+        // THE CORRECTIONS A ROW OF THIS WINDOW CAN RECEIVE, indexed once by (key, lane). The node's
+        // list holds every `adjust` it ever sealed and is never trimmed; only one whose card epoch
+        // falls inside this window can land on a row of it, and only on a row of its own key and
+        // lane. Handing each row the whole list made the read rows × lifetime corrections; each
+        // row is handed its own share instead (one pass over each, not their product).
+        let (window_start_ms, window_end_ms) = (
+            window.start.saturating_mul(1_000),
+            window.end.saturating_mul(1_000),
+        );
+        let mut corrections_of: std::collections::HashMap<(&str, &str), Vec<&amend::Amendment>> =
+            std::collections::HashMap::new();
+        for amendment in &corrections {
+            let amend::AmendBody::Adjust(adj) = &amendment.body else {
+                continue;
+            };
+            let amend::Subject::PrincipalId(key_id) = &adj.subject else {
+                continue;
+            };
+            if (window_start_ms..window_end_ms).contains(&adj.card_epoch_ms) {
+                corrections_of
+                    .entry((key_id.as_str(), adj.lane.as_str()))
+                    .or_default()
+                    .push(amendment);
+            }
+        }
+        // When a correction lands in this window, the eras of every (key, lane), grouped once in
+        // row order, so the per-row loop below looks a row's eras up rather than rescanning the
+        // bucket for them (one pass, not quadratic in the rows).
+        let mut eras_of: std::collections::HashMap<(&str, std::borrow::Cow<'_, str>), Vec<u64>> =
+            std::collections::HashMap::new();
+        if !corrections_of.is_empty() {
+            for r in &rows {
+                eras_of
+                    .entry((r.key_id.as_str(), row_lane(&r.model, &r.provider)))
+                    .or_default()
+                    .push(r.priced_from_ms);
+            }
+        }
         for r in &rows {
+            // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
+            // requests at the plane's own fee, as the budget book charges them (#47).
+            let lane = row_lane(&r.model, &r.provider);
             // Spend derives PER ROW (the model is known here - the per-model rate applies), then
             // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
             // heterogeneous rate card.
@@ -1504,20 +1532,20 @@ impl AdminService {
             // correction that leaves a count fractional or below zero REFUSES the read: a figure
             // over counts nobody recorded is not one this read may serve.
             let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
-            if !corrections.is_empty() {
-                let lane = row_lane(&r.model, &r.provider);
-                let eras: Vec<u64> = rows
-                    .iter()
-                    .filter(|o| o.key_id == r.key_id && row_lane(&o.model, &o.provider) == lane)
-                    .map(|o| o.priced_from_ms)
-                    .collect();
+            if !corrections_of.is_empty() {
+                let eras = eras_of
+                    .get(&(r.key_id.as_str(), lane.clone()))
+                    .map_or(&[][..], Vec::as_slice);
+                let own = corrections_of
+                    .get(&(r.key_id.as_str(), &*lane))
+                    .map_or(&[][..], Vec::as_slice);
                 for (class, delta) in row_count_corrections(
-                    &corrections,
+                    own,
                     &r.key_id,
                     &lane,
                     (window.start, window.end),
                     r.priced_from_ms,
-                    &eras,
+                    eras,
                 ) {
                     let column = match class.as_str() {
                         busbar_contract::records::UNIT_INPUT => &mut row_view.tokens_input,
@@ -1553,9 +1581,6 @@ impl AdminService {
             // card at the instant below and prices against it. See
             // `derive_spend_micros_row_at_card`.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
-            // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
-            // requests at the plane's own fee, as the budget book charges them (#47).
-            let lane = row_lane(&r.model, &r.provider);
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
@@ -1638,11 +1663,11 @@ impl AdminService {
                     );
                     return Err(AdminError::Internal);
                 }
-                // CHECKED, like the one function it sums (item 28): a rollup past the range is a
-                // refused read, never a figure pinned at the ceiling.
-                b.spend_micros = match b.spend_micros.checked_add(row_spend) {
-                    Some(sum) => sum,
-                    None => {
+                // The ledger's rollup (THE DESIGN, Money), CHECKED like the one function it sums (item 28): a
+                // rollup past the range is a refused read, never a figure pinned at the ceiling.
+                b.spend_micros = match busbar_kernel::cost::sum_spend(b.spend_micros, row_spend) {
+                    Ok(sum) => sum,
+                    Err(_) => {
                         diag_error!(
                             ADMIN_STORE_OPERATION_FAILED,
                             operation = "usage.price",
@@ -1683,7 +1708,7 @@ impl AdminService {
         let by_key_truncated = by_key.len() > BY_KEY_CAP;
         // FinOps completeness: the tail beyond the cap is summed into an `others` bucket, so
         // total == sum(by_key) + others and every unit stays attributable.
-        let others = by_key_truncated.then(|| {
+        let others = if by_key_truncated {
             let mut o = UsageBreakdown::default();
             for row in &by_key[BY_KEY_CAP..] {
                 o.tokens_input = o.tokens_input.saturating_add(row.usage.tokens_input);
@@ -1695,15 +1720,22 @@ impl AdminService {
                     .tokens_cache_creation
                     .saturating_add(row.usage.tokens_cache_creation);
                 o.requests = o.requests.saturating_add(row.usage.requests);
-                o.spend_micros = o.spend_micros.saturating_add(row.usage.spend_micros);
+                // The ledger's rollup (THE DESIGN, Money), CHECKED as the total's is: the tail sums to no more
+                // than the total, which summed, so a refusal here is a figure nothing served.
+                o.spend_micros =
+                    busbar_kernel::cost::sum_spend(o.spend_micros, row.usage.spend_micros)
+                        .map_err(|_| rollup_refused("the others spend rollup left the range"))?;
                 for (class, u) in &row.usage.classes {
                     let e = o.classes.entry(class.clone()).or_default();
                     e.count = e.count.saturating_add(u.count);
-                    e.cost = e.cost.saturating_add(u.cost);
+                    e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost)
+                        .map_err(|_| rollup_refused("the others class cost left the range"))?;
                 }
             }
-            o
-        });
+            Some(o)
+        } else {
+            None
+        };
         by_key.truncate(BY_KEY_CAP);
         Ok(UsageView {
             window,
@@ -1778,7 +1810,7 @@ fn linked_store_rows() -> Vec<PluginView> {
 }
 
 /// Add one row's classes into a rollup's: counts summed saturating like the token columns, costs
-/// CHECKED like `spend_micros` (item 28) — `None` when a cost left the range, so the read refuses
+/// through the ledger's rollup, CHECKED like `spend_micros` (item 28) — `None` when a cost left the range, so the read refuses
 /// rather than serving a figure pinned at the ceiling.
 fn add_classes(
     into: &mut std::collections::BTreeMap<String, ClassUsage>,
@@ -1787,9 +1819,21 @@ fn add_classes(
     for (class, u) in row {
         let e = into.entry(class.clone()).or_default();
         e.count = e.count.saturating_add(u.count);
-        e.cost = e.cost.checked_add(u.cost)?;
+        e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost).ok()?;
     }
     Some(())
+}
+
+/// A usage rollup the ledger refused (it left the range), logged as every usage-read failure is and
+/// answered `internal`: the read serves no figure pinned at the ceiling.
+fn rollup_refused(error: &'static str) -> AdminError {
+    diag_error!(
+        ADMIN_STORE_OPERATION_FAILED,
+        operation = "usage.price",
+        error = error,
+        "admin store operation failed"
+    );
+    AdminError::Internal
 }
 
 /// The dry run itself, on a blocking thread (see [`AdminService::validate_config`]): resolve, the
@@ -1807,42 +1851,36 @@ fn validate_config_blocking(
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };
-    if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
-        return ConfigValidateView { ok: false, errors };
-    }
-    // The composition root's rules, as an apply's build judges them first: a dry run never answers
-    // green for a configuration the apply would refuse.
-    if let Err(e) = rules.check(&root) {
-        return ConfigValidateView {
-            ok: false,
-            errors: vec![e],
-        };
-    }
-    // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
-    // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint
-    // `deploy` is CALLER-SUPPLIED, so honoring its `plugins.dir` turned validation into an
-    // arbitrary-path readability + directory-enumeration oracle for any token that can reach it
-    // (`plugins.dir: /root/.ssh` reports whether that path is readable and what it contains).
-    // PIN the scanned directory to the RUNNING install's plugins dir before preflight: the scan
-    // can no longer be steered off the real install, while validation still lints every
-    // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
-    // meaningful check, and the CI dry-run use case (does this config resolve against what is
-    // deployed?). The caller's `plugins.dir` string was already structurally checked by
-    // `config_validate::validate` above (no FS access); only the SCAN is pinned.
+    // SECURITY (R3-B): the plugin pre-flight SCANS `plugins.dir` — `fs::read_dir` plus a read of
+    // every tarball it finds. On THIS endpoint `deploy` is CALLER-SUPPLIED, so honoring its
+    // `plugins.dir` turned validation into an arbitrary-path readability + directory-enumeration
+    // oracle for any token that can reach it (`plugins.dir: /root/.ssh`). PIN the scanned directory
+    // to the RUNNING install's plugins dir: every store/auth/hook/secret REFERENCE is still linted
+    // against the plugins that are ACTUALLY installed — the CI dry-run use case.
     deploy.plugins.dir = plugins_dir;
-    // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
-    // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
-    // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
-    // whose module is neither built-in nor installed -- so an operator could dry-run a config
-    // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
-    if let Err(e) = busbar_kernel::preflight_plugins_and_secrets(&deploy, &root) {
-        return ConfigValidateView {
-            ok: false,
-            errors: vec![e],
-        };
-    }
-    ConfigValidateView {
-        ok: true,
-        errors: Vec::new(),
-    }
+    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and `--validate` run, with the
+    // composition root's rules an apply's build judges: a dry run never answers green for a
+    // configuration the apply or the CLI would refuse. Manifest-only: nothing is `dlopen`ed.
+    let root_rules = |c: &busbar_kernel::config::RootCfg| rules.check(c);
+    let checked = busbar_kernel::config_validate::check(
+        &root,
+        busbar_kernel::config_validate::Check {
+            plugins: &deploy.plugins,
+            unset_env_vars: &[],
+            root: &root_rules,
+            fetch: None,
+            resolve_builtins: false,
+        },
+    );
+    let ok = checked.is_ok();
+    let errors = match checked {
+        Ok(_) => Vec::new(),
+        Err(busbar_kernel::config_validate::Refusal::Config(errors)) => errors,
+        Err(
+            busbar_kernel::config_validate::Refusal::Root(e)
+            | busbar_kernel::config_validate::Refusal::Plugins(e)
+            | busbar_kernel::config_validate::Refusal::Unresolved(e),
+        ) => vec![e],
+    };
+    ConfigValidateView { ok, errors }
 }

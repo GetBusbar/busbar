@@ -172,13 +172,22 @@ pub(crate) struct Buried {
     pub(crate) flight: Option<Box<dyn PieceInFlight>>,
     /// The principal the kernel verified for the unit: its cancel row is written under it.
     pub(crate) principal: Option<busbar_contract::caps::PrincipalId>,
+    /// The unit is closed already (a done answer, or a cancel that crossed before the drop): the
+    /// sweep bills it and makes no second closing call.
+    pub(crate) closed: bool,
+    /// The flags of the piece its op in flight was pushed: a refused piece's done answer is not
+    /// the unit's close.
+    pub(crate) piece_flags: u32,
+    /// That op's answer was marked `PIECE_FINAL` on its first piece (`route::closes_unit`).
+    pub(crate) final_answer: bool,
 }
 
 impl PlaneDriver {
     /// Finish every buried unit that can be finished: an in-flight op that has settled, and a unit
     /// with no op in flight, which gets its ticketless `cancel` here. Each is billed through the
-    /// money seam and its ticket recycled. Called at the start of every unit and by the kernel's
-    /// tick; never inside a `Drop`, and never under a lock (the plane is called with none held).
+    /// money seam and its ticket recycled. Then every close a unit dropped open is owed
+    /// (`plane_driver/close.rs`). Called at the start of every unit (its decode, and its route
+    /// leg); never inside a `Drop`, and never under a lock (the plane is called with none held).
     pub fn sweep(&self) {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
@@ -197,12 +206,25 @@ impl PlaneDriver {
                     }
                     // The client-drop path cancelled the op on its worker; an op that ended on its
                     // own before the cancel reached it leaves the plane owing one.
+                    // An op whose own done answer closed the unit owes it nothing more.
                     Some(done) => match (done.disposition, done.outcome) {
                         (Some(d), _) => Some((d, flight.cancel_writes())),
                         (None, AbiOutcome::Fault) => None,
+                        (None, _)
+                            if unit.closed
+                                || super::route::answered_done(
+                                    &done,
+                                    &*flight,
+                                    unit.piece_flags,
+                                    unit.final_answer,
+                                ) =>
+                        {
+                            None
+                        }
                         (None, _) => now(unit.ticket),
                     },
                 },
+                None if unit.closed => None,
                 None => now(unit.ticket),
             };
             // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote.
@@ -215,6 +237,8 @@ impl PlaneDriver {
             self.calls.recycle(unit.ticket);
         }
         self.lock_buried().extend(unsettled);
+        // The units dropped while their plane still held them: their owed close.
+        self.close_owed();
     }
 
     /// How many buried units are still waiting (a witness for the tests and the tick).

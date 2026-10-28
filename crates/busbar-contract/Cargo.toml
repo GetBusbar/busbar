@@ -10,8 +10,7 @@ license = "Apache-2.0"
 # The door macro's test plugin (`abi::sdk::door`), loaded by the dropped-in leg
 # `tests/sdk_door_cdylib.rs`. It is an example, not a crate: `cargo test` builds it and it never
 # ships. It lives under `tests/` because it is a test double (its lifecycle-only table is a shape no
-# kind ships). It sits above the dependency section, which `tests/feature_invariance.rs` reads
-# line by line.
+# kind ships).
 [[example]]
 name = "sdk_door_plugin"
 path = "tests/fixtures/sdk_door_plugin.rs"
@@ -101,6 +100,14 @@ crate-type = ["cdylib"]
 # installs it in the plugin's image; the host installs the same one. Default features off, `log-tracer`
 # and `std` on, the set `tracing-subscriber` already resolves: it adds `log` itself, a leaf, and
 # `once_cell`/`tracing-core`, already here. None reaches `libc`.
+#
+# `idna` arrived with the IDN host reading of `net::parse_url`: busbar 1.5.5 dialled a non-ASCII
+# host by `url` 2.5.8's UTS #46 mapping (its punycode name), and the one URL reader a plugin and the
+# host judge and dial by maps it the same way, with the same `idna` call and options. It was already
+# in `Cargo.lock` under `url`; it resolves to `idna_adapter` (the unicode-rs backend the workspace
+# selects), `smallvec` and `utf8_iter`, and through them to `idna_mapping`, `unicode-bidi`,
+# `unicode-normalization`, `unicode-joining-type` and `tinyvec`: pure tables and string code, none
+# opens anything or reaches `libc`.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -111,6 +118,10 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
+# The chip's RSA recipe (MySQL `caching_sha2_password` full authentication) and its RS256 recipe.
+num-bigint = { workspace = true }
+getrandom = { workspace = true }
+ring = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # `base64` renders the one document-fingerprint tag a plane writes, `sha256/<standard base64>`
@@ -118,6 +129,7 @@ hex = { workspace = true }
 # leaf with no dependencies of its own, already in Cargo.lock, so a plane links no encoder.
 base64 = { workspace = true }
 http = { workspace = true }
+idna = { workspace = true }
 memchr = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
@@ -139,6 +151,10 @@ jsonschema = { workspace = true }
 # expansion names `::hyper`, and the test names hyper's own buffer type. Dev-only: the shipped graph
 # does not name it.
 hyper = { workspace = true }
+# The C header generator (tests/abi_header) and the source rules (tests/source_rules) parse Rust.
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
 
 [features]
 # The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED
@@ -154,3 +170,12 @@ test-seal = []
 # default and named only in `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs`), so it is absent
 # from every release build; it switches on no dependency and no other feature.
 services-double = []
+
+# The TEST-ONLY counting allocator (`alloc_counter`, ARCHITECT ruling 2026-10-21): the one
+# `GlobalAlloc` impl a plugin's allocation gates install as their test binary's
+# `#[global_allocator]`, so a plugin crate root keeps the literal `#![forbid(unsafe_code)]`
+# (BUSBAR-1.6.0.md l.273). OFF by default, never in `default`, and named only in
+# `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs` refuses any other edge and any `default`
+# that names it), so it is absent from every release build; it switches on no dependency and no
+# other feature.
+alloc-counter = []

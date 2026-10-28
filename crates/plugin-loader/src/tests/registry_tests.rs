@@ -417,11 +417,11 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let release = key(1);
     let dir = tmpdir("secretkind");
     // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
-    let mut m = manifest("busbar-secret-vault", "vault", "busbar");
+    let mut m = manifest("busbar-secret-delta", "delta", "busbar");
     m.kind = "secret".into();
     m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
     let m = sign(&release, m, b"secret lib");
-    write_tarball(&dir, "vault.tar.gz", &m, b"secret lib");
+    write_tarball(&dir, "delta.tar.gz", &m, b"secret lib");
     // And a trusted store plugin beside it.
     let st = sign(
         &release,
@@ -435,14 +435,14 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
     // ...and a secret plugin cannot back the store.
-    let err = reg.store_door("vault").map(|_| ()).unwrap_err();
+    let err = reg.store_door("delta").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'secret'"), "got {err}");
     // An unknown secret module name is fail-closed with the loadable set named.
     let err = reg.secret_refusal("nope");
     assert!(err.contains("no plugin named or aliased"), "got {err}");
     // A secret plugin that states no door (a 1.5.5 JSON-contract plugin) is refused naming the
     // rebuild: no JSON secret lane remains (THE DESIGN §11.8).
-    let err = reg.secret_refusal("vault");
+    let err = reg.secret_refusal("delta");
     assert!(
         err.contains(crate::registry::JSON_SECRET_REFUSED),
         "got {err}"
@@ -946,7 +946,7 @@ fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
 /// The registry over `m` LINKED (the build's own row, no artifact).
 fn linked_in(m: Manifest) -> PluginRegistry {
     PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door(m, unopened_door)])
+        .link(vec![LinkedPlugin::door_raw(m, unopened_door)])
         .expect("the linked door admits the row")
 }
 
@@ -1095,7 +1095,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     // webrequest that answers that name.
     let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
     let refused = dropped_in("cross-old", old)
-        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+        .link(vec![LinkedPlugin::door_raw(webrequest(), unopened_door)])
         .expect_err("a linked row and a dropped-in plugin claiming one name are refused");
     assert!(
         refused.contains("'busbar-webrequest'")
@@ -1106,8 +1106,8 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     // RED: two linked rows claiming one alias.
     let refused = PluginRegistry::empty()
         .link(vec![
-            LinkedPlugin::door(webrequest(), unopened_door),
-            LinkedPlugin::door(
+            LinkedPlugin::door_raw(webrequest(), unopened_door),
+            LinkedPlugin::door_raw(
                 renamed("hook", "acme-hook-x", "busbar-webrequest", &[]),
                 unopened_door,
             ),
@@ -1134,7 +1134,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         ),
     ] {
         let refused = dropped_in(tag, other)
-            .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+            .link(vec![LinkedPlugin::door_raw(webrequest(), unopened_door)])
             .expect_err("no door outranks the other");
         assert!(
             refused.contains("claim conflict") && refused.contains("busbar-hook-webrequest"),
@@ -1311,7 +1311,7 @@ fn the_one_version_rule_compares_statement_versions_only() {
         assert_eq!(refused, refusal, "{tag}");
     }
     let refused = dropped_in("copy-unopened", stating(m(), None))
-        .link(vec![LinkedPlugin::door_of_kind(
+        .link(vec![LinkedPlugin::door_of_kind_raw(
             "store",
             "busbar-store-mem",
             unopened_door,
@@ -1331,7 +1331,7 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
     let reg = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::store_named("busbar-store-mem", "mem", door, true),
-            LinkedPlugin::auth_door_named("busbar-auth-tok", "tok", unopened_door),
+            LinkedPlugin::auth_door_named_raw("busbar-auth-tok", "tok", unopened_door),
         ])
         .expect("the rows register");
     for (word, key) in [

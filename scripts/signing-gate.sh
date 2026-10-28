@@ -9,8 +9,14 @@
 #                 ("first-party signature failed").
 #   4. TAMPERED (lib):      post-signing byte-flip in the cdylib is REFUSED ("integrity").
 #   5. TAMPERED (manifest): post-signing manifest edit is REFUSED (signature failed).
-#   and a RED plant: the unsigned arm re-judged under `plugins.trust.allow_unsigned: true`, where
-#   the loader ACCEPTS the unsigned tarball, must FAIL, or the arm proves nothing.
+#   and a RED plant, `plugins.trust.allow_unsigned: true`: under it the unsigned tarball must LOAD
+#   (any refusal, for any reason, is RED: the plant did not take) and the unsigned arm must FAIL;
+#   without it the same tarball is refused for the signing reason. Otherwise the arm proves nothing.
+#   One refusal is the loader's to make under the plant and is asserted instead of the load: a
+#   plugin whose Statement DECLARES a need in an egress class the host grants a first-party plugin
+#   only (provider, loopback-allowed; operator-infrastructure is any trusted plugin's, so a networked
+#   auth plugin LOADS) is refused at that grant, never loaded, when unsigned. For it the arm asserts the signing refusal is gone and that grant refusal,
+#   word for word, is the only one; any other refusal is RED as before.
 #
 # A LINKED ROW ANSWERING THE REFERENCE (busbar links busbar-store-memory, alias `memory`): the
 # config's reference then resolves in-process whatever the tarball's fate, so `--validate` exits 0
@@ -103,6 +109,69 @@ OTHER_PRIV=$("$PACK" keygen | sed -n 's/^private.*: //p')
 [ ${#OTHER_PRIV} -eq 64 ] \
   || { echo "FAIL: second keygen output unparseable — the wrong-key case would be packed UNSIGNED, testing a different defect than its name claims" >&2; exit 1; }
 pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
+
+# THE DECLARED FIRST-PARTY NEED, read from the unsigned tarball's own signed manifest: the first need
+# its Statement rendering (`manifest.statement`, hex; the format is
+# crates/busbar-contract/src/abi/mechanism/rendering.rs's) declares in an egress class the host grants
+# a FIRST-PARTY plugin only (crates/plugin-loader/src/sign.rs FIRST_PARTY_EGRESS, the table
+# `egress_grant` reads; the classes are busbar_contract::abi::host::conn::connector's EGRESS_*). Printed
+# as `<transport>\t<class>`, or nothing for a plugin declaring none (a cold plugin states no
+# Statement). This is a FACT about the plugin, never its name: section 5 judges the loader's refusal
+# against it, not the other way round. A statement that is not one whole rendering fails the gate.
+GRANT_NEED=$(python3 - "$WORK/unsigned.tar.gz" <<'EOF'
+import json, struct, sys, tarfile
+FIRST_PARTY = {1: "provider", 4: "loopback-allowed"}
+with tarfile.open(sys.argv[1]) as t:
+    m = json.load(t.extractfile("manifest.json"))
+st = m.get("statement")
+if st is None:
+    sys.exit(0)
+if st != st.lower():
+    sys.exit("manifest statement is not lowercase hex")
+b, at = bytes.fromhex(st), 0
+def take(n):
+    global at
+    if at + n > len(b):
+        sys.exit(f"manifest statement is not a Statement rendering: it ends at byte {len(b)}")
+    s = b[at:at + n]; at += n; return s
+u8 = lambda: take(1)[0]
+u32 = lambda: struct.unpack("<I", take(4))[0]
+u64 = lambda: struct.unpack("<Q", take(8))[0]
+def count():
+    n = u32()
+    if n > (len(b) - at) // 4:
+        sys.exit(f"manifest statement is not a Statement rendering: a count at byte {at - 4}")
+    return n
+def string():
+    return take(u32()).decode("utf-8")
+def blob():
+    u32(); u32(); take(u32())
+strs = lambda: [string() for _ in range(count())]
+if take(8) != b"BBSTMT02":   # RENDERING_MAGIC in busbar-contract: exactly the current version
+    sys.exit("manifest statement is not a Statement rendering: the magic")
+u32(); u32(); u32(); u32()                       # mechanism, kind, kind_abi, max_inflight
+string(); string()                               # name, version
+for _ in range(count()):                         # families
+    string(); string(); string(); strs(); u8()
+strs(); u32(); take(u32())                       # diag_ids, kind_tail, kind_tail_facts (bytes)
+blob(); strs(); blob(); u64()                    # extensions, secret_refs, settings_schema, marks
+for _ in range(count()): u32(); string()         # mark_words
+for _ in range(count()): u32(); string(); string()  # rewrites
+for _ in range(count()): string(); u32()         # sections
+needs = []
+for _ in range(count()):
+    u32(); klass = u32(); transport = string()   # direction, egress_class, transport
+    string(); string(); string(); blob(); u64()  # auth, target_from, trust_from, details, timeout_ms
+    needs.append((klass, transport))
+string(); string(); strs(); strs()               # target_from, trust_from, answers, claims
+if at != len(b):
+    sys.exit(f"manifest statement is not a Statement rendering: trailing bytes at {at}")
+for klass, transport in needs:
+    if klass in FIRST_PARTY:
+        print(f"{transport}\t{FIRST_PARTY[klass]}")
+        break
+EOF
+) || { echo "FAIL: cannot read the declared needs from the unsigned tarball's manifest statement" >&2; exit 1; }
 
 # Tampered variants: unpack the SIGNED tarball, mutate, repack (signature/manifest kept as-was).
 mkdir "$WORK/t1" "$WORK/t2"
@@ -255,17 +324,72 @@ install_only "$WORK/tampered-lib.tar.gz";      expect "tampered-lib-refused"    
 install_only "$WORK/tampered-manifest.tar.gz"; expect "tampered-manifest-refused" "$TMM_RC" "${TMM_RE[@]}"
 
 # ── 5. RED: the unsigned arm must FAIL when the loader ACCEPTS the unsigned tarball ─────────────
-# The same arm, the same expectations, re-judged under `plugins.trust.allow_unsigned: true`, where
-# the unsigned tarball loads. An arm that still passes here is satisfied by something other than the
-# loader's refusal (a linked row, a config error) and proves nothing about signing.
+# The plant is `plugins.trust.allow_unsigned: true`, and the arm asserts the outcome it plants, not
+# merely that the unsigned arm stops passing:
+#   a. under the plant the unsigned tarball LOADS, judged exactly as the signed one is (`signed-ok`'s
+#      exit and summary). Any refusal here, for whatever reason, makes the arm itself RED with the
+#      loader's output shown: the plant did not take, so nothing below proves anything. (Before
+#      this, only (b) was asked, and a refusal for another reason satisfied it: hook-webrequest's
+#      unsigned tarball is refused for an egress class under allow_unsigned, and the arm passed.)
+#   b. under the plant the unsigned arm FAILS: its expectations are not met by an accepted tarball,
+#      so it cannot be satisfied by a linked row or a config error.
+#   c. without the plant the same tarball is refused again, for the signing reason (the unsigned
+#      arm's own expectations), so the one difference between (a) and (c) is the trust posture.
+# (a) has ONE exception, decided by the plugin's DECLARED needs (GRANT_NEED above), never by the
+# refusal under judgment: a plugin declaring a need in a first-party egress class is admitted on
+# trust under the plant and then refused at the egress-class grant (crates/plugin-loader/src/
+# registry.rs phase 2b, sign::egress_grant), because it is not first-party. It can never load
+# unsigned, so for it (a) becomes:
+#   a'. under the plant the signing refusal is GONE (no "manifest carries no signature", no
+#       "refusing to load an unsigned plugin", no allow_unsigned text), and the ONLY refusal is the
+#       grant's, word for word, naming this plugin and the first first-party need it declares. Any
+#       other refusal, alone or beside it, is RED exactly as in (a).
 write_config $'  trust:\n    allow_unsigned: true'
 install_only "$WORK/unsigned.tar.gz"
+if [ -z "$GRANT_NEED" ]; then
+  if ! check "unsigned-loads (planted: allow_unsigned)" "$POS_RC" "$POS_RE"; then
+    echo "FAIL [unsigned-refused RED]: under allow_unsigned the unsigned tarball did not load (output above), so the plant proves nothing about signing"
+    exit 1
+  fi
+else
+  GRANT_TRANSPORT=$(printf '%s' "${GRANT_NEED%%$'\t'*}" | sed 's/[][\.*^$(){}?+|/]/\\&/g')
+  GRANT_CLASS=${GRANT_NEED#*$'\t'}
+  GRANT_REASON="plugin '$MANIFEST_NAME' declares a \`$GRANT_TRANSPORT\` need in the \`$GRANT_CLASS\` egress class, which the host grants to a first-party plugin only"
+  echo "gate: '$MANIFEST_NAME' declares a \`${GRANT_NEED%%$'\t'*}\` need in the \`$GRANT_CLASS\` egress class (first-party only): under allow_unsigned its only refusal must be that grant"
+  if [ "$PLUGIN_KIND" = secret ] || [ "$LINKED" = 1 ]; then
+    GRANT_RC=0
+    GRANT_RE=("^    skipped: $MANIFEST_NAME \\(p\\.tar\\.gz\\) — $GRANT_REASON\$" '0 validated, 1 skipped')
+    REFUSALS='^    skipped: '
+  else
+    GRANT_RC=1
+    GRANT_RE=("^\\[error\\] BUSBAR-6009: .* \\(p\\.tar\\.gz\\) but (it )?was not loaded: $GRANT_REASON\$")
+    REFUSALS='was not loaded|^\[error\]'
+  fi
+  if ! check "unsigned-refused-only-at-the-egress-grant (planted: allow_unsigned)" "$GRANT_RC" "${GRANT_RE[@]}"; then
+    echo "FAIL [unsigned-refused RED]: under allow_unsigned the unsigned tarball was not refused at the egress-class grant its Statement declares (output above), so the plant proves nothing about signing"
+    exit 1
+  fi
+  if grep -qE 'manifest carries no signature|refusing to load an unsigned plugin|allow_unsigned' "$WORK/out"; then
+    echo "FAIL [unsigned-refused RED]: under allow_unsigned the signing refusal is still present beside the egress-class grant"; sed 's/^/    /' "$WORK/out"
+    exit 1
+  fi
+  if [ "$(grep -cE "$REFUSALS" "$WORK/out")" -ne 1 ]; then
+    echo "FAIL [unsigned-refused RED]: under allow_unsigned the egress-class grant is not the only refusal"; sed 's/^/    /' "$WORK/out"
+    exit 1
+  fi
+fi
 if check "unsigned-refused (planted: allow_unsigned)" "$UNS_RC" "${UNS_RE[@]}"; then
   echo "FAIL [unsigned-refused RED]: an unsigned tarball the loader ACCEPTED still passed the unsigned arm"
   exit 1
 fi
-echo "PASS [unsigned-refused RED] (the arm fails when the unsigned tarball is accepted)"
 write_config ""
+install_only "$WORK/unsigned.tar.gz"
+expect "unsigned-refused (plant removed)" "$UNS_RC" "${UNS_RE[@]}"
+if [ -z "$GRANT_NEED" ]; then
+  echo "PASS [unsigned-refused RED] (the unsigned tarball loads under allow_unsigned, the arm fails there, and it is refused for the signing reason without it)"
+else
+  echo "PASS [unsigned-refused RED] (under allow_unsigned the signing refusal is gone and the declared egress-class grant is the only refusal, the arm fails there, and it is refused for the signing reason without it)"
+fi
 
 # ── 6. With NO linked row answering, an unsigned tarball the config references still EXITS 1 ─────
 # The same unsigned artifact under a name and alias no row this build links claims, referenced by

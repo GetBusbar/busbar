@@ -13,10 +13,10 @@ use busbar_contract::export_calls::{parse_families, ServeRequest};
 use super::*;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
 
-/// The real prometheus sink's door, LINKED: the one place the loader's export tests name it
-/// (`conformance::export`'s unjudged test restates it).
+/// The real scrape sink's door, LINKED, reached by the both-ways table's `export-scrape` row: the
+/// one place the loader's export tests take it (`conformance::export`'s unjudged test restates it).
 pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn =
-    busbar_export_prometheus::door::door;
+    crate::both_ways::export_scrape_fixture::door::door;
 
 fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -129,4 +129,17 @@ fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
     assert!(check(sink.plugin(), 1, &[])
         .expect("check answers")
         .is_empty());
+}
+
+/// RED (export ABI defect 4): dropping an opened instance sends its `close`. Before, the export
+/// path never closed an instance, so each instance a configuration check opened stayed open.
+#[test]
+fn a_dropped_instance_is_closed() {
+    let (plugin, dispatcher) = linked();
+    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
+        .expect("the sink opens");
+    let instance = Arc::clone(&sink.plugin().inner);
+    assert!(instance.is_open());
+    drop(sink);
+    assert!(!instance.is_open(), "the dropped instance was never closed");
 }

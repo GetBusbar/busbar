@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use crate::dispatch_test_plugin as plug;
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
-use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, OpenIn, OpenOut, OpsHead, RefreshIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
@@ -33,7 +33,7 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Budgets, Diagnostic,
+    in_head, load_dropped, load_linked, now_ns, out_head, Bind, Budgets, Diagnostic,
     DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LinkedRow, LoadError,
     ManifestFacts, Metric, Plugin, NO_BLOB,
 };
@@ -150,7 +150,8 @@ fn facts() -> ManifestFacts {
 /// The plugin's Statement rendering, as its signed manifest states it: rendered from the linked
 /// `rlib`'s door, the same crate the `cdylib` is built from.
 fn stated() -> Vec<u8> {
-    rendering_of(plug::busbar_plugin_door).expect("the door renders its Statement")
+    crate::dispatch::load::rendering_of_raw(plug::busbar_plugin_door)
+        .expect("the door renders its Statement")
 }
 
 /// [`stated`] with its head facts replaced by `f`.
@@ -184,7 +185,7 @@ fn a_plugin_handle_is_not_clone() {
 }
 
 fn row() -> LinkedRow {
-    LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
+    LinkedRow::of_raw(plug::busbar_plugin_door).expect("the linked row states its Statement")
 }
 
 fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
@@ -842,7 +843,7 @@ mod open_faults_on_its_resume {
             // SAFETY: the test plugin's door and its lifecycle table are `'static`.
             let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
             // SAFETY: as above.
-            let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+            let ops: OpsHead = unsafe { real.ops().read_unaligned() };
             *REAL.lock().unwrap() = Some(ops);
             let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
                 open: Some(open),
@@ -850,7 +851,7 @@ mod open_faults_on_its_resume {
                 tick: Some(tick),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door { ops, ..real }));
+            let door = Box::into_raw(Box::new(unsafe { Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts { ops, ..real.parts() }) }));
             SLOT.store(door, Ordering::SeqCst);
             door
         }
@@ -859,7 +860,7 @@ mod open_faults_on_its_resume {
     #[test]
     fn red_an_open_that_faults_on_its_resume_leaves_no_instance() {
         let d = Dispatcher::new(config());
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
 
         let t = d.mint(0).expect("a ticket");
@@ -1022,14 +1023,14 @@ mod open_left_live_is_closed {
             // SAFETY: the test plugin's door and its lifecycle table are `'static`.
             let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
             // SAFETY: as above.
-            let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+            let ops: OpsHead = unsafe { real.ops().read_unaligned() };
             *REAL.lock().unwrap() = Some(ops);
             let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
                 open: Some(open),
                 close: Some(close),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door { ops, ..real }));
+            let door = Box::into_raw(Box::new(unsafe { Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts { ops, ..real.parts() }) }));
             SLOT.store(door, Ordering::SeqCst);
             door
         }
@@ -1039,7 +1040,7 @@ mod open_left_live_is_closed {
     fn red_an_open_the_host_judged_fault_is_closed_never_leaked() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let d = Dispatcher::new(config());
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(door).expect("the restated door states itself");
 
         // A ticket-less `open` that answers PENDING: the host FAULTs it.
         MODE.store(PEND, Ordering::SeqCst);
@@ -1087,7 +1088,7 @@ mod open_left_live_is_closed {
     /// A ticketed `open` that pends (no wake comes), ended by the host: `cancel` then `close`.
     fn pended(d: &Dispatcher) -> (Plugin<TestKind>, Ticket) {
         MODE.store(PEND, Ordering::SeqCst);
-        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
         let t = d.mint(0).expect("a ticket");
         (p, t)
@@ -1323,13 +1324,15 @@ fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
 fn red_every_door_refusal() {
     // SAFETY: the real door is `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let ops: OpsHead = unsafe { *real.ops };
-    let st = unsafe { *real.statement };
+    let ops: OpsHead = unsafe { *real.ops() };
+    let st = unsafe { *real.statement() };
     let leak_ops = |o: OpsHead| Box::leak(Box::new(o)) as *const OpsHead;
-    let with = |f: &dyn Fn(&mut Door)| {
-        let mut d = real;
+    let with = |f: &dyn Fn(&mut DoorParts)| {
+        let mut d = real.parts();
         f(&mut d);
-        validate_door::<TestKind>(Box::leak(Box::new(d))).err()
+        // SAFETY: a copy of the real door with one field wrong, which the loader reads only
+        // through its checks (the refusal under test).
+        validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
     };
     assert!(validate_door::<TestKind>(&real).is_ok(), "the GREEN twin");
     assert_eq!(
@@ -1504,7 +1507,10 @@ fn red_both_origins_refuse_the_same_way() {
         load_linked::<TestKind>(&null_row, bind(quiet())).err(),
         Some(LoadError::NullDoor)
     );
-    assert_eq!(LinkedRow::of(null_door).err(), Some(LoadError::NullDoor));
+    assert_eq!(
+        LinkedRow::of_raw(null_door).err(),
+        Some(LoadError::NullDoor)
+    );
     // The manifest's mechanism is checked BEFORE dlopen: a path that does not exist is never opened.
     let nowhere = std::path::Path::new("/nonexistent/libnothing.so");
     for v in [MECHANISM_VERSION - 1, MECHANISM_VERSION + 1] {
@@ -1746,11 +1752,12 @@ fn red_one_recall_a_second_short_answer_is_fault() {
 
 // ── EXACT VERSIONS: older, newer and a wrong magic are each refused ─────────────────────────────
 
-fn door_with(f: impl Fn(&mut Door)) -> Option<LoadError> {
-    // SAFETY: the real door is `'static`.
-    let mut d = unsafe { *plug::busbar_plugin_door() };
+fn door_with(f: impl Fn(&mut DoorParts)) -> Option<LoadError> {
+    let mut d = plug::door().parts();
     f(&mut d);
-    validate_door::<TestKind>(Box::leak(Box::new(d))).err()
+    // SAFETY: a copy of the real door with one field wrong, which the loader reads only through
+    // its checks (the refusal under test).
+    validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
 }
 
 #[test]
@@ -2635,7 +2642,7 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             claims_len: NAMES.len(),
             ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
         }));
-        let door = Door {
+        let door = DoorParts {
             magic: DOOR_MAGIC,
             mechanism_version: MECHANISM_VERSION,
             size: std::mem::size_of::<Door>() as u32,
@@ -2710,7 +2717,7 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
             kind_tail,
             ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
         }));
-        let door = Door {
+        let door = DoorParts {
             magic: DOOR_MAGIC,
             mechanism_version: MECHANISM_VERSION,
             size: std::mem::size_of::<Door>() as u32,
@@ -3119,7 +3126,7 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     let held = Mutex::new(None);
     // SAFETY: no buffers; the service pends.
     let pended = unsafe {
-        serve(&d.service_store(), &waking, &head, None, |c| {
+        serve(&d.service_store(), &waking, &head, 0, None, |c| {
             *held.lock().unwrap() = c;
             Ran::Later
         })
@@ -3436,5 +3443,465 @@ fn red_a_slot_whose_counter_is_spent_is_retired() {
         latch.forged(),
         0,
         "a retired slot's own generation was judged a forgery"
+    );
+}
+
+// ── THE LINKED DOOR-ROOT ENTRY: `open_linked` refuses as the dropped-in door is refused ─────────
+
+/// One restated door for an `open_linked` cell, behind its own door function.
+struct LinkedSlot(std::sync::atomic::AtomicPtr<Door>);
+
+impl LinkedSlot {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()))
+    }
+    fn set(&self, d: Door) {
+        self.0.store(
+            Box::into_raw(Box::new(d)),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+    fn get(&self) -> *const Door {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+static LINKED_ABI: LinkedSlot = LinkedSlot::new();
+static LINKED_PIECE: LinkedSlot = LinkedSlot::new();
+static LINKED_LAYOUT: LinkedSlot = LinkedSlot::new();
+
+/// The door function of linked cell `I`: the kind ABI (0), the piece (1), the plane layout (2).
+extern "C" fn linked_cell<const I: usize>() -> *const Door {
+    [&LINKED_ABI, &LINKED_PIECE, &LINKED_LAYOUT][I].get()
+}
+
+/// Linked cell `I` as a sealed door function: what the composition root hands the safe entry.
+extern "C" fn sealed_cell<const I: usize>() -> &'static Door {
+    // SAFETY: every test sets its cell, to a door built through the contract's `unsafe`
+    // constructor and leaked, before it calls this.
+    unsafe { &*linked_cell::<I>() }
+}
+
+/// A slot that answers READY: a table cell that is never called.
+extern "C" fn ready_slot(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    _: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Ready)
+}
+
+/// The host's table of `K`, every slot filled: a door whose table the loader admits, so its
+/// Statement is what decides.
+fn whole_table<K: Kind>() -> *const busbar_contract::abi::mechanism::lifecycle::OpsHead {
+    use busbar_contract::abi::mechanism::lifecycle::OpsHead;
+    let size = crate::dispatch::host_table_size::<K>();
+    let slots = crate::dispatch::host_slots::<K>();
+    let words: &'static mut [u64] =
+        Box::leak(vec![0u64; (size as usize).div_ceil(8)].into_boxed_slice());
+    let head = words.as_mut_ptr().cast::<OpsHead>();
+    // SAFETY: the buffer is `size` bytes (rounded up) of zeros, 8-aligned, leaked for the process; the
+    // head and every slot lie inside it.
+    unsafe {
+        std::ptr::addr_of_mut!((*head).size).write(size);
+        std::ptr::addr_of_mut!((*head).slots).write(slots);
+        let first = head
+            .cast::<u8>()
+            .add(std::mem::offset_of!(OpsHead, validate))
+            .cast::<Option<busbar_contract::abi::mechanism::call::Op>>();
+        for i in 0..slots as usize {
+            first.add(i).write(Some(
+                ready_slot as busbar_contract::abi::mechanism::call::Op,
+            ));
+        }
+    }
+    head
+}
+
+/// A door of `kind` over the host's whole table of `K` and `statement`.
+fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
+    // SAFETY: the Statement is leaked for the process, and every slot of the table answers READY
+    // under the call convention.
+    unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: kind as u32,
+            kind_abi: kind.abi_version(),
+            statement: Box::leak(Box::new(statement)),
+            ops: whole_table::<K>(),
+            ready: None,
+        })
+    }
+}
+
+/// RED (status row 195, coordinator ruling (a)): A LINKED DOOR-ROOT DOOR AT ANOTHER KIND ABI is
+/// refused by `open_linked` exactly as the same door is refused once `dlsym` has resolved it (the
+/// dropped-in path's own `validate`): the same `KindAbi`, word for word, older and newer alike.
+#[test]
+fn open_linked_refuses_another_kind_abi_as_the_dropped_in_door_is_refused() {
+    let abi = plug::KIND.abi_version();
+    for v in [abi - 1, abi + 1] {
+        let mut d = plug::door().parts();
+        d.kind_abi = v;
+        // SAFETY: the real door's own `'static` Statement and table, at another kind ABI.
+        LINKED_ABI.set(unsafe { Door::__from_parts(d) });
+        let door: busbar_contract::abi::sdk::door::RawDoorFn = linked_cell::<0>;
+        // SAFETY: the cell's door function answers a `'static` door (a restated real door).
+        let linked = unsafe { crate::dispatch::load::open_linked(door) }
+            .expect_err("a linked door at another kind ABI is refused");
+        // The safe entry the composition root's generated table calls is the same entry.
+        assert_eq!(
+            crate::dispatch::load::admit_linked(sealed_cell::<0>)
+                .expect_err("the safe entry refuses it alike"),
+            linked
+        );
+        let Err(dropped) = crate::dispatch::load::validate::<TestKind>(door) else {
+            panic!("the dropped-in door at another kind ABI is refused");
+        };
+        assert_eq!(linked, dropped, "the same refusal, both ways");
+        assert_eq!(
+            linked,
+            LoadError::KindAbi {
+                kind: plug::KIND,
+                door: v,
+                host: abi
+            }
+        );
+        assert_eq!(linked.to_string(), dropped.to_string());
+    }
+}
+
+/// RED (status row 195): A LINKED DOOR-ROOT TRANSPORT BUILT AGAINST ANOTHER FRAME PIECE, and a
+/// linked plane built against another answer layout, are refused by `open_linked` exactly as the
+/// dropped-in door is (the same `FramePieceSize` / `PlaneLayout`, word for word). GREEN: the host's
+/// piece and layout are admitted. (Row 188's layout fingerprint joins the same shared check.)
+#[test]
+fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
+    use crate::dispatch::kinds::{plane::Plane, transport::Transport};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
+    use busbar_contract::abi::transport::{Claim, FramePiece, TransportTail};
+    const NAMES: &[AbiStr] = &[busbar_contract::abi::sdk::door::abi_str("tele")];
+    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
+    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
+    let piece_door = |piece: u32| {
+        // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set.
+        let mut t: TransportTail = unsafe { std::mem::zeroed() };
+        t.head.size = std::mem::size_of::<TransportTail>() as u32;
+        t.frame_piece_size = piece;
+        t.claim_rows = row;
+        t.claim_rows_len = 1;
+        let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
+        door_over::<Transport>(
+            KindCode::Transport,
+            Statement {
+                size: std::mem::size_of::<Statement>() as u32,
+                kind: KindCode::Transport as u32,
+                kind_abi: KindCode::Transport.abi_version(),
+                kind_tail: tail,
+                claims: NAMES.as_ptr(),
+                claims_len: NAMES.len(),
+                ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+            },
+        )
+    };
+    let layout_door = |layout: u32| {
+        // SAFETY: an all-zero PlaneTail is a valid value; its size and layout are set.
+        let mut t: PlaneTail = unsafe { std::mem::zeroed() };
+        t.head.size = std::mem::size_of::<PlaneTail>() as u32;
+        t.answer_layout = layout;
+        let tail = (Box::leak(Box::new(t)) as *const PlaneTail).cast::<KindTailHead>();
+        door_over::<Plane>(
+            KindCode::Plane,
+            Statement {
+                size: std::mem::size_of::<Statement>() as u32,
+                kind: KindCode::Plane as u32,
+                kind_abi: KindCode::Plane.abi_version(),
+                kind_tail: tail,
+                ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
+            },
+        )
+    };
+    let piece = std::mem::size_of::<FramePiece>() as u32;
+    let piece_cell: busbar_contract::abi::sdk::door::RawDoorFn = linked_cell::<1>;
+    let layout_cell: busbar_contract::abi::sdk::door::RawDoorFn = linked_cell::<2>;
+
+    // GREEN: the host's piece and layout are admitted.
+    LINKED_PIECE.set(piece_door(piece));
+    // SAFETY: the cell answers a `'static` door built above.
+    assert!(unsafe { crate::dispatch::load::open_linked(piece_cell) }.is_ok());
+    LINKED_LAYOUT.set(layout_door(ANSWER_LAYOUT));
+    // SAFETY: as above.
+    assert!(unsafe { crate::dispatch::load::open_linked(layout_cell) }.is_ok());
+
+    // RED: another piece, refused as the dropped-in transport is.
+    LINKED_PIECE.set(piece_door(piece - 8));
+    // SAFETY: as above.
+    let linked = unsafe { crate::dispatch::load::open_linked(piece_cell) }
+        .expect_err("a linked transport at another piece is refused");
+    let Err(dropped) = crate::dispatch::load::validate::<Transport>(piece_cell) else {
+        panic!("the dropped-in transport at another piece is refused");
+    };
+    assert_eq!(linked, dropped, "the same refusal, both ways");
+    assert_eq!(
+        linked,
+        LoadError::FramePieceSize {
+            plugin: "sockets".into(),
+            stated: piece - 8,
+            host: piece,
+        }
+    );
+
+    // RED: another answer layout, refused as the dropped-in plane is.
+    LINKED_LAYOUT.set(layout_door(ANSWER_LAYOUT + 1));
+    // SAFETY: as above.
+    let linked = unsafe { crate::dispatch::load::open_linked(layout_cell) }
+        .expect_err("a linked plane at another layout is refused");
+    let Err(dropped) = crate::dispatch::load::validate::<Plane>(layout_cell) else {
+        panic!("the dropped-in plane at another layout is refused");
+    };
+    assert_eq!(linked, dropped, "the same refusal, both ways");
+    assert_eq!(
+        linked,
+        LoadError::PlaneLayout {
+            plugin: "tools".into(),
+            stated: ANSWER_LAYOUT + 1,
+            host: ANSWER_LAYOUT,
+        }
+    );
+}
+
+// ── the client-drop `cancel` names the unit its op serves ──────────────────────────────────────
+
+/// The unit the last client-drop `cancel` of a [`UnitKind`] op named.
+static CANCEL_NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// The test kind, its ops serving a unit: a `tick`'s `now_ns` stands for the unit key its `in`
+/// carries (as a plane's `OnPieceIn::unit` does), and its `cancel` frame records the unit it is
+/// told to name (as a plane's `PlaneCancelIn::unit`).
+struct UnitKind;
+
+impl Kind for UnitKind {
+    const CODE: KindCode = plug::KIND;
+    type Ops = OpsHead;
+    const TIMEOUT: Outcome = Outcome::Failed;
+
+    fn context(
+        st: &busbar_contract::abi::mechanism::door::Statement,
+    ) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+        <TestKind as Kind>::context(st)
+    }
+
+    fn check(a: &crate::dispatch::Answer) -> Result<(), Fault> {
+        <TestKind as Kind>::check(a)
+    }
+
+    fn short(a: &crate::dispatch::Answer) -> bool {
+        <TestKind as Kind>::short(a)
+    }
+
+    fn unit_of(
+        s: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+    ) -> Option<u64> {
+        // SAFETY: the dispatcher's own `in` of `in_size` bytes, read only when it holds a whole
+        // `TickIn`.
+        (s == TICK && in_size >= std::mem::size_of::<TickIn>())
+            .then(|| unsafe { input.cast::<TickIn>().read_unaligned() }.now_ns)
+    }
+
+    fn cancel_frame() -> Box<dyn crate::dispatch::CancelFrame> {
+        Box::new(Naming(crate::dispatch::cancel_frame(Ticket::NONE)))
+    }
+}
+
+/// The lifecycle's `cancel` frame, recording the unit it is told to name.
+struct Naming(
+    Frame<
+        busbar_contract::abi::mechanism::lifecycle::CancelIn,
+        busbar_contract::abi::mechanism::lifecycle::CancelOut,
+    >,
+);
+
+impl crate::dispatch::CancelFrame for Naming {
+    fn prepare(
+        &mut self,
+        ticket: Ticket,
+        class: u8,
+    ) -> (
+        *mut busbar_contract::abi::mechanism::call::InHead,
+        *mut OutHead,
+        u32,
+    ) {
+        crate::dispatch::CancelFrame::prepare(&mut self.0, ticket, class)
+    }
+
+    fn disposition(&self) -> u32 {
+        crate::dispatch::CancelFrame::disposition(&self.0)
+    }
+
+    fn name_unit(&mut self, unit: u64) {
+        CANCEL_NAMED.store(unit, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// RED (plane reviews, close once): the client-drop path's `cancel` of an op in flight names the
+/// unit the op serves, read off the op's own `in` (`Kind::unit_of`), so a plane that keys its units
+/// from `arrive` frees that unit by its key (`PlaneCancelIn::unit`). Before the fix the frame was
+/// never told it and a plane's `cancel` carried `unit: 0`.
+#[test]
+fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
+    let d = Dispatcher::new(config());
+    let p = load_linked::<UnitKind>(&row(), bind(quiet())).expect("the linked door loads");
+    let t = d.mint(0).expect("a ticket");
+    let opened = d
+        .submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
+        .wait(WAIT)
+        .expect("open answers");
+    d.recycle(t);
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+    let held = frame(plug::PEND_HOLD);
+    let unit = held.input.now_ns;
+    assert_ne!(unit, 0);
+    let reply = d.submit(&p, t, TICK, held, DeadlineClass::Call, 0);
+    until("the held op", || d.is_pending(t));
+    d.drop_client(t);
+    let done = reply.wait(WAIT).expect("the drop answers");
+    d.recycle(t);
+    assert_eq!(done.outcome, Outcome::Failed, "the kind's timeout outcome");
+    assert_eq!(
+        CANCEL_NAMED.load(std::sync::atomic::Ordering::SeqCst),
+        unit,
+        "the client-drop cancel named the unit its op serves"
+    );
+}
+
+/// RED (audit loader-src PL1#7; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.13 M1, l.1652-1653:
+/// "`close` is refused while units are in flight"): an admitted unit's op (a plane's `on_piece` or
+/// `serve`, [`Dispatcher::submit_unit`]) holds no `max_inflight` unit, yet while one is in flight
+/// `close` is REFUSED and never crosses, called or submitted. RED: the unit op left `inflight` at 0,
+/// so `close` took every unit and closed the instance under a pending unit, whose resume then
+/// answered FAULT and cut a stream already answered to its caller. The GREEN twin: once the unit's
+/// op has ended, `close` crosses and closes.
+#[test]
+fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_unit(
+        &p,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Stream,
+        0,
+        Arc::new(()),
+    );
+    until("the unit's held op", || d.is_pending(t));
+    let n = crossings(&p);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Refused,
+        "close crossed while a unit's op was in flight"
+    );
+    let c = d.mint(1).unwrap();
+    let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
+    assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
+    assert_eq!(crossings(&p), n, "a refused close never crossed");
+    assert!(p.is_open());
+    d.drop_client(t);
+    let _ = held.wait(WAIT).unwrap();
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Ready
+    );
+    assert!(!p.is_open());
+}
+
+/// RED (audit loader-src PL1#8; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.324-325: "The memory a
+/// call lends a plugin lives until that call completes, abandoned or not, for every kind"): when
+/// one plugin wedges a worker and the watchdog replaces it, a HEALTHY instance's op that was
+/// PENDING on that worker is sent `cancel` before its frame and lent memory go, so the plugin
+/// learns its op ended (a store op's checked-out connection is released on `cancel`). Its caller is
+/// answered FAULT, and the lent memory goes only after the `cancel`. RED: the replacement dropped
+/// the op with no `cancel`, and the plugin was never told.
+#[test]
+fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_its_memory_goes() {
+    let d = Dispatcher::new(config());
+    let (healthy, sink) = opened(&d);
+    let (owner, dropped) = lent(plug::PEND_HOLD);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_lent(
+        &healthy,
+        t,
+        TICK,
+        lent_frame(&owner),
+        DeadlineClass::Call,
+        0,
+        owner.clone(),
+    );
+    drop(owner);
+    until("the healthy op pends", || d.is_pending(t));
+    let (wedger, _) = opened(&d);
+    let h = d.mint(0).unwrap();
+    let hung = d.submit(
+        &wedger,
+        h,
+        TICK,
+        frame(b"hang:orphan"),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the watchdog replaced the wedged worker", || {
+        d.stats().replacements == 1
+    });
+    until("the healthy instance's orphaned op is cancelled", || {
+        count(&healthy, &sink).1 >= 1
+    });
+    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Fault);
+    until("the orphan's lent memory goes after its cancel", || {
+        dropped.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    // Release the hang from a third instance (the wedger is faulted).
+    let (releaser, _) = opened(&d);
+    assert_eq!(
+        releaser.call(TICK, &mut frame(b"unhang:orphan")).outcome,
+        Outcome::Ready
+    );
+    drop(hung);
+}
+
+/// RED (audit loader-src PL1#6; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.12, "the host never
+/// runs a service twice", and l.1509, "a late wake cannot resume a slot the host has since recycled
+/// to a different call"): the results an op on an INLINE ticket kept are that op's own. A resume
+/// reads them; the next NEW op on the ticket, whose handles count from 0 again, starts with none,
+/// and a dropped inline ticket takes them with it. RED: nothing forgot an inline ticket's results,
+/// so the next op on a carrier's connection side redeemed the last op's answer on its handle 0 (the
+/// same random bytes, a stale verdict), and the entries outlived the ticket.
+#[test]
+fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let side = d.inline_ticket().expect("an inline ticket");
+    let t = side.ticket();
+    d.services().keep(t, 0);
+    let _ = p.call_inline(t, true, TICK, &mut frame(answer(1)));
+    assert_eq!(d.services().held(), 1, "a resume reads what its op kept");
+    let _ = p.call_inline(t, false, TICK, &mut frame(answer(1)));
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a new op on an inline ticket redeems the last op's kept results"
+    );
+    d.services().keep(t, 0);
+    drop(side);
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a dropped inline ticket's kept results outlive it"
     );
 }

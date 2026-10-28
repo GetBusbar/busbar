@@ -16,11 +16,14 @@
 use std::sync::Arc;
 
 use super::linked::{linked_exports, Linked};
-use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
+use super::loader::{
+    boot::*, dispatch::LoadError, dispatch::ManifestFacts, LinkedPlugin, PluginRegistry,
+};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
-use busbar_kernel::preflight::{Fetched, RegistryIn};
+use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
 
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
 /// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
@@ -34,36 +37,136 @@ use busbar_kernel::preflight::{Fetched, RegistryIn};
 /// `plugins.trust is invalid: …`, an invalid tarball, manifest or conflict, or a linked row the
 /// admission refuses.
 pub fn registry(
-    i: RegistryIn<'_>,
+    linked: Vec<LinkedPlugin>,
+    plugins: Option<&PluginsCfg>,
+    data_dir: Option<&std::path::Path>,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
-    let scan = match i.plugins {
+    let scan = match plugins {
         None => None,
         Some(p) => Some(Scan {
             policy: trust_policy(p, env!("CARGO_PKG_VERSION"))
                 .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
-            data_dir: i.data_dir,
+            data_dir,
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    let registry = super::loader::boot::registry(
-        Build {
-            linked: i.linked,
-            scan,
-        },
-        note,
-    )?;
-    // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
-    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
-    super::linked::secret_rows().admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
+    let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
+    // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
+    // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
+    // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
+    // (BUSBAR-1.6.0.md l.456-457).
+    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
+}
+
+/// STAGE 3's SECRET ADMISSION (BUSBAR-1.6.0.md §3, 3a/3e; the kernel's `RootInstall::secret_admit`):
+/// the dropped-in secret plugins that state a door join the secret axis (the root's, over the one
+/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). The
+/// app build calls it through the install record with the rows the kernel holds, read back as the
+/// registry this root built them as (a test build's rows double admits nothing); boot's scan calls
+/// [`admit_dropped_secrets`] on its own registry. The registry build ([`registry`]) never does.
+///
+/// # Errors
+///
+/// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
+/// another plugin answers to, naming both.
+pub fn admit_secrets(rows: &Arc<dyn PluginRows>) -> Result<(), String> {
+    match super::loader::rows::registry_arc(Arc::clone(rows)) {
+        Some(registry) => admit_dropped_secrets(&registry),
+        None => Ok(()),
+    }
+}
+
+/// [`admit_secrets`] over a registry this root built.
+///
+/// # Errors
+///
+/// As [`admit_secrets`].
+pub fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
+    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
+}
+
+/// THE REGISTRY BUILD THE KERNEL RECEIVES (`RootInstall::registry_build`): [`registry`] over the
+/// kernel's linked rows ([`linked_row`]), each loader note handed on in the kernel's words, and the
+/// registry handed back as the contract's `PluginRows` view (the kernel names no loader type).
+///
+/// # Errors
+///
+/// As [`registry`].
+pub fn registry_rows(
+    i: RegistryIn<'_>,
+    note: &mut dyn FnMut(BuildNote<'_>),
+) -> Result<Arc<dyn PluginRows>, String> {
+    let linked = i.linked.iter().map(linked_row).collect();
+    let registry = registry(linked, i.plugins, i.data_dir, &mut |n| match n {
+        Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
+        Note::Off => note(BuildNote::Off),
+        Note::Scanned(scanned) => {
+            let copies: Vec<CopyLine> = scanned
+                .linked_copies()
+                .iter()
+                .map(|c| CopyLine {
+                    name: c.name.clone(),
+                    version: c.version.clone(),
+                    file: c.file.clone(),
+                    line: c.line(),
+                })
+                .collect();
+            note(BuildNote::Scanned {
+                rows: scanned,
+                copies: &copies,
+            });
+        }
+        Note::FloorUnwritable(e) => note(BuildNote::FloorUnwritable(e)),
+    })?;
+    Ok(Arc::new(registry))
+}
+
+/// The registry row one of the kernel's linked rows states: a STORE under its canonical name,
+/// answering also to its key; an AUTH row likewise — each answering also to the former names the
+/// root migration table gives that key ([`answering_former_names`]).
+#[must_use]
+pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
+    match *row {
+        LinkedRow::Store((key, ephemeral, door, canonical)) => {
+            answering_former_names(LinkedPlugin::store_named(canonical, key, door, ephemeral))
+        }
+        LinkedRow::Auth((key, canonical, door)) => {
+            answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door))
+        }
+    }
+}
+
+/// THE REGISTRY OF THIS BUILD'S LINKED ROWS ALONE (the kernel's `preflight::linked_rows`): what an
+/// axis answers over when the rows it is handed are not a registry this root built (a test build's
+/// rows double), and what the one-version rule compares an upload against.
+#[must_use]
+pub fn linked_registry() -> PluginRegistry {
+    let linked = busbar_kernel::preflight::linked_rows()
+        .iter()
+        .map(linked_row)
+        .collect();
+    PluginRegistry::empty()
+        .link(linked)
+        .unwrap_or_else(|_| PluginRegistry::empty())
+}
+
+/// `row`, answering also to the former names the root migration table declares for its alias
+/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
+/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
+#[must_use]
+pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
+    let former = busbar_kernel::config::migration_table::former_names(&row.manifest.alias);
+    row.with_former_names(former)
 }
 
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
 /// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
 /// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
 /// automatic first-party floor is the registry build's to arm. THE ONE BUILDER: the root hands this
-/// same function to the kernel (`RootInstall::trust_policy`, `root::linked::register_stores`), and
+/// same function to the kernel's plugin admission (`root::admission::ADMISSION`, installed by
+/// `root::linked::register_stores`), and
 /// every snapshot carries it to the admin surface, which judges a plugin under nothing else.
 ///
 /// # Errors
@@ -156,6 +259,13 @@ pub fn plugins_fetch(
             super::loader::FetchOutcome::Warned { url, error } => Fetched::Warned { url, error },
         })
         .collect())
+}
+
+/// The configuration file this process boots from (`--config`, or its default).
+fn config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(crate::root::cli::resolve_config_path(
+        crate::root::cli::config_path_flag().as_deref(),
+    ))
 }
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
@@ -564,12 +674,11 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     }
     plugins.warn_invalid_floors();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let build = RegistryIn {
-        linked: Vec::new(),
-        plugins: Some(&plugins),
-        data_dir: data_dir.as_deref(),
-    };
-    crate::root::boot::registry(build, &mut |_| {}).ok()
+    let registry =
+        crate::root::boot::registry(Vec::new(), Some(&plugins), data_dir.as_deref(), &mut |_| {})
+            .ok()?;
+    admit_dropped_secrets(&registry).ok()?;
+    Some(registry)
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
@@ -586,6 +695,59 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
         std::process::exit(2);
     });
     let _ = DOOR_CANDIDATES.set(set.doors);
+}
+
+/// The declaring sections of the discovered door planes the boot never bound (Law 7: the boot
+/// configuration writes none of their sections). Like a bound plane left unopened, each is
+/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one.
+#[must_use]
+pub fn unbound_sections() -> Vec<&'static str> {
+    let bound = door_planes();
+    DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .filter_map(|c| c.verbs.first())
+        .filter_map(|section| {
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
+        })
+        .filter(|decl| !decl.fallback)
+        .map(|decl| decl.config_section)
+        .collect()
+}
+
+/// The `base_url` of every resolved provider (its catalog definition merged with the document's
+/// deployment), noted by `main` once the configuration resolves and before the seal opens the
+/// dropped-in transports ([`transport_uses`]).
+static PROVIDER_URLS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Note the resolved providers' `base_url`s (`main`, once, before the seal).
+pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
+    let _ = PROVIDER_URLS.set(urls.into_iter().collect());
+}
+
+/// WHAT SELECTS A DROPPED-IN TRANSPORT (Law 7; `BUSBAR-1.6.0.md` §4, "a transport loads iff a
+/// configured URL uses a scheme it claims"): the URL schemes the configuration file uses, and those
+/// of the resolved providers' `base_url`s, which a catalog definition carries when the document
+/// does not. And every scheme a linked transport claims: a dropped-in transport claiming one is a
+/// second owner of it, opened so the seal refuses the boot as it refuses a second linked row with
+/// that key (two transports claiming one scheme refuse boot).
+fn transport_uses() -> Uses {
+    let mut uses = plan(&config_path()).reaching(
+        PROVIDER_URLS
+            .get()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(String::as_str),
+    );
+    uses.schemes.extend(
+        crate::LINKED_TRANSPORT_DOORS
+            .iter()
+            .filter_map(|(_, door)| Candidate::linked(*door).ok())
+            .flat_map(|c| c.schemes),
+    );
+    uses
 }
 
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
@@ -606,13 +768,23 @@ pub type DoorPlane = std::sync::Arc<
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
-pub fn load_door_planes() {
+///
+/// LAW 7: only a plane the configuration uses is bound — one that owns a section among `sections`,
+/// the keys the boot composes its door planes over (the document's plane sections and the
+/// kernel-owned sections it hands them, `pools` whenever `models` is), so a plane is bound exactly
+/// when the composition can open it.
+pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    let uses = Uses {
+        roots: sections.into_iter().map(str::to_string).collect(),
+        ..Uses::default()
+    };
+    let used = crate::root::loader::boot::used_planes(&uses, doors);
     // The process's ONE connection table: a plane that declares a need is declared on it.
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
-        doors,
+        &used,
         plugin_logs(),
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
@@ -705,7 +877,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind())
+            .open_transport_entries(&crate::root::doors::bind(), &transport_uses(), plugin_logs())
             .and_then(|entries| {
                 entries
                     .doors
@@ -720,11 +892,7 @@ pub fn dropped_transports(
                         let composes_over = facts.composes_over;
                         let offered = facts.offered;
                         let upgrades = facts.upgrades;
-                        let (door, wire) = crate::root::doors::served(
-                            plugin,
-                            settings,
-                            Some(crate::root::connector::address_carrier()),
-                        )?;
+                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
@@ -812,8 +980,9 @@ pub fn compose_book(
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
     // corrected count and every recorded content access survive the restart — off the disk, or off
-    // the chain the store kept.
-    durability.restore_amendments();
+    // the chain the store kept. A chain that will not read back refuses the boot here as it would
+    // have at the book's build: taken for an empty one, every signed correction would revert.
+    durability.restore_amendments()?;
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
@@ -914,8 +1083,19 @@ pub fn book(
         None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // THE FIRST-PARTY ANTI-DOWNGRADE FLOOR, held in the store for this host: the scan ran before
+    // the store opened, so a dropped-in first-party plugin below the mark the store keeps refuses
+    // the boot here, and the marks rise to what loaded.
+    super::durability::hold_plugin_floor(
+        calls.as_ref(),
+        &host,
+        app.hook_env.registry.as_ref(),
+        &app.plugins_cfg.first_party_floors,
+    )?;
+    // The lease is held on the lane to the store it is held in, the lane this book keeps: its
+    // checkpoint flush tick refreshes it and the clean shutdown releases it.
     if let Some(lease) = taken.lease {
-        super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
+        lane.hold_lease(lease);
     }
     let node = taken.id;
     let mig = super::migration::MigrationConfig {
@@ -924,14 +1104,26 @@ pub fn book(
     };
     let token = super::kernel::new_kernel().durability_token();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the store's epoch floor, read back through
+    // `record_get`, fences a node below it out; the chain's operator breaks are read as deliberate.
+    super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
-    // an empty reference and two principals never share one.
+    // an empty reference and two principals never share one. A node with neither keeps this
+    // boot's random key, so its references differ from every other node's and from its own after
+    // a restart: a deployment that meant to bind a keyset reads that here. DEBUG, not INFO: the
+    // INFO+ boot lines are pinned by `tests/boot_lines_neutrality.rs`.
     if let Some(material) = durability
         .record
         .derived_secret(super::keyset::CALLER_REF_MATERIAL)
     {
         gov.bind_deployment_caller_ref(material);
+    } else {
+        tracing::debug!(
+            node = mig.node,
+            "no deployment keyset is bound: caller references are keyed by this boot's random key \
+             unless the node keeps signing material, so they differ per node and per restart"
+        );
     }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned
@@ -962,12 +1154,19 @@ pub fn book(
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
     super::durability::bind_amendments(&durability);
+    // The disaster-recovery verbs reach this book's journal and the store it is shipped to: one
+    // store behind the node, not one per seam (row 113, ruling (B); row 187).
+    let verb_store = super::durability::node_verb_store(
+        Arc::clone(&durability),
+        super::kernel::new_kernel().durability_token(),
+        calls,
+        store,
+        &adapter,
+    );
     Ok(super::durability::NodeBook {
         durability,
         rows,
-        // The disaster-recovery verbs reach the store this book is shipped to, through the same
-        // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
-        verb_store: Some(adapter.verb_store()),
+        verb_store,
     })
 }
 

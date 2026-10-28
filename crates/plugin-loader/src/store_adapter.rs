@@ -4,10 +4,14 @@
 //! The store adapter: the unit-side store seams over ONE loaded store plugin.
 //!
 //! Two crates bind to a store and neither may name one — `busbar-kernel` (slices) and the admin
-//! verb-execution unit (the disaster-recovery verbs and the sealed new-verb replay cache, reached
-//! here through the `busbar_contract::verb_store::Store` face). The composition root binds both to
-//! a single adapter over the store this crate loaded, so there is exactly one store handle in the
-//! process and one place that says what this adapter answers itself.
+//! verb-execution unit (the sealed new-verb replay cache, which the composition root's
+//! `busbar_contract::verb_store::Store` answers through this adapter). The composition root binds
+//! both to a single adapter over the store this crate loaded, so there is exactly one store handle
+//! in the process and one place that says what this adapter answers itself.
+//!
+//! The disaster-recovery verbs are not here (status row 187). They act on the node's journal and on
+//! the store's record slots, both of which the composition root holds (`durability::recovery`), and
+//! nothing about them is kept in this adapter's memory.
 //!
 //! # The journal is not here
 //!
@@ -26,11 +30,11 @@
 //!   this module touches their wire; the oracle's store-persist cell is what proves it
 //!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
 //!   store, read the money back).
-//! - **Slices, the verb seam's recovery records, the sealed replay cache and the migration marker
-//!   are answered from this node's memory.** The store v3 table carries slots for the ledger
-//!   operations behind them (`reserve`, `slice_release`, `heads`, `append_batch`), and every store
-//!   this binary loads speaks store ABI v3, which has no table without them; routing these seams to
-//!   those slots is separate work, and until it lands what is said below is what they answer.
+//! - **Slices and the sealed replay cache are answered from this node's
+//!   memory.** The store v3 table carries slots for the ledger operations behind them (`reserve`,
+//!   `slice_release`, `heads`, `append_batch`), and every store this binary loads speaks store ABI
+//!   v3, which has no table without them; routing these seams to those slots is separate work, and
+//!   until it lands what is said below is what they answer.
 //!
 //! # Those answers, stated rather than implied
 //!
@@ -39,16 +43,12 @@
 //!   constant and a reservation is granted in full, stamped with that epoch — a request carrying
 //!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
 //!   there is no fleet for it to be stale against. The grant never expires for the same reason.
-//! - **The sealed replay cache.** Node-local. A restore does NOT clear it: dropping a committed
-//!   replay slot is precisely how a credential-minting verb re-mints, which is the one thing the
-//!   sealed cache exists to prevent. It is not process-lifetime, though: a slot answers for
-//!   [`REPLAY_TTL_SECS`] — the same window the in-process sibling keeps — and is swept after, or
-//!   the map would grow forever with every minted response the node ever served. It does not
-//!   survive a restart.
-//! - **The migration's marker, through this adapter.** [`StoreAdapter::migration_records`] keeps it
-//!   in node memory. The boot does not use it: the boot's marker goes on the node's journal, which
-//!   the store keeps. It must never go into the rows the migration read — those may be on a
-//!   read-only replica, and they are not this release's to write.
+//! - **The sealed replay cache.** Node-local. Nothing but its TTL clears it — no restore and no
+//!   other verb: dropping a committed replay slot is precisely how a credential-minting verb
+//!   re-mints, which is the one thing the sealed cache exists to prevent. It is not
+//!   process-lifetime, though: a slot answers for [`REPLAY_TTL_SECS`] — the same window the
+//!   in-process sibling keeps — and is swept after, or the map would grow forever with every minted
+//!   response the node ever served. It does not survive a restart.
 //!
 //! # The migration's read, and why it is on this side of the seam
 //!
@@ -63,17 +63,16 @@
 //! back onto the rows, because a deployment booting on a read-only replica or a grant-restricted
 //! database is the previous release's supported shape and must keep booting.
 
-use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::migration::{
-    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyHead, LegacyLedgerRows,
-    LegacyMigrationSource, MigrationError, MigrationMarker, MigrationRecords,
+    MigrationCapDimension, MigrationFamily, MigrationFigure, MigrationFigures, MigrationHead,
+    MigrationLedgerRows, MigrationSource,
 };
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
-use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
+use busbar_contract::verb_store::StoreError as VerbStoreError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -88,18 +87,12 @@ pub struct ShimState {
     pub slices_outstanding: usize,
     /// Units granted and NOT given back — granted minus the unspent part every `release` returned.
     /// A net figure, not a running total: it describes what the outstanding reservations above are
-    /// holding, and a restore that clears them zeroes it too.
+    /// holding.
     pub slices_granted: u64,
     /// Keys the sealed replay cache is holding, reserved or committed.
     pub replay_slots: usize,
     /// Of those, the ones with a committed response.
     pub replay_committed: usize,
-    /// How many times the journal chain was broken through the verb seam.
-    pub chain_breaks: u64,
-    /// How many restores were requested through the verb seam.
-    pub restores: u64,
-    /// The epoch the floor was last resealed to.
-    pub epoch_floor: u64,
 }
 
 /// The unit-side store seams over one loaded store.
@@ -157,23 +150,15 @@ fn system_clock() -> ShimClock {
 ///
 /// # The lock order, stated once
 ///
-/// The four mutexes below are independent, and every one of them is on the request path: a slice
-/// draw takes `slices` on every reserve and release. A thread that needs more than one takes them
-/// in the order they are declared here — recovery, then slices, then replay, then migration — and
-/// no thread takes them in any other order. Two orders is a deadlock that wedges
-/// the slice seam for the whole process, because the pair a restore holds is the pair a slice draw
-/// waits on.
-///
-/// Only [`VerbStore::store_restore`] needs two at once, and it needs them because the reseal it
-/// performs must be one critical section. Everything else — the diagnostics read included — takes
-/// one lock, copies what it wants out, drops it, and only then takes the next.
+/// The three mutexes below are independent, and every one of them is on the request path: a slice
+/// draw takes `slices` on every reserve and release. No thread holds two at once: every reader and
+/// writer — the diagnostics read included — takes one lock, copies what it wants out, drops it,
+/// and only then takes the next. A thread that ever needs more than one takes them in the order
+/// they are declared here — slices, then replay — and in no other order.
 #[derive(Default)]
 struct Shim {
-    recovery: Mutex<Recovery>,
     slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
-    /// The migration's marker: the record that this deployment has sealed its opening balances.
-    migration: Mutex<Option<MigrationMarker>>,
 }
 
 #[derive(Default)]
@@ -181,14 +166,6 @@ struct Slices {
     next_id: u64,
     granted_total: u64,
     outstanding: HashMap<u64, u64>,
-}
-
-#[derive(Default)]
-struct Recovery {
-    chain_breaks: u64,
-    restores: u64,
-    last_restore: Option<String>,
-    epoch_floor: u64,
 }
 
 /// The one epoch a node-local shim has. There is no fleet to advance it and nothing that could
@@ -244,15 +221,13 @@ impl StoreAdapter {
     /// What the node-local shim is holding.
     ///
     /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
-    /// on [`Shim`]. This is a diagnostics read on a path a restore and every slice draw also walk,
-    /// so holding one of the shim's locks while reaching for another would put a second lock order
-    /// in the process and wedge both threads, and behind them the slice seam.
+    /// on [`Shim`]. This is a diagnostics read on a path every slice draw also walks.
     ///
-    /// What that costs is that the four groups below are read at four instants rather than one, so
-    /// a caller reading while the shim is being written can see one group's figures beside a
-    /// slightly older other group's. Each group is still internally whole — the two slice figures
-    /// come out under one guard, and so do the three recovery ones — which is what the figures
-    /// actually have to promise.
+    /// What that costs is that the two groups below are read at two instants rather than one, so a
+    /// caller reading while the shim is being written can see one group's figures beside a slightly
+    /// older other group's. Each group is still internally whole — the two slice figures come out
+    /// under one guard, and so do the two replay ones — which is what the figures actually have to
+    /// promise.
     pub fn shim_state(&self) -> ShimState {
         let (slices_outstanding, slices_granted) = {
             let slices = self.inner.shim.slices();
@@ -265,38 +240,12 @@ impl StoreAdapter {
                 replay.values().filter(|(_, v)| v.is_some()).count(),
             )
         };
-        let (chain_breaks, restores, epoch_floor) = {
-            let recovery = self.inner.shim.recovery();
-            (
-                recovery.chain_breaks,
-                recovery.restores,
-                recovery.epoch_floor,
-            )
-        };
         ShimState {
             slices_outstanding,
             slices_granted,
             replay_slots,
             replay_committed,
-            chain_breaks,
-            restores,
-            epoch_floor,
         }
-    }
-
-    /// The backup reference the last restore named, if one was asked for.
-    pub fn last_restore(&self) -> Option<String> {
-        self.inner.shim.recovery().last_restore.clone()
-    }
-
-    /// The kernel's slice seam.
-    pub fn slice_store(&self) -> Arc<dyn SliceStore> {
-        Arc::new(self.clone())
-    }
-
-    /// The verbs unit's store seam.
-    pub fn verb_store(&self) -> Arc<dyn VerbStore + Send + Sync> {
-        Arc::new(self.clone())
     }
 
     /// The previous release's chain head: its last administrative sequence number and the hash at
@@ -312,16 +261,16 @@ impl StoreAdapter {
     /// node whose store is briefly unreachable must still boot, but the reason travels with the
     /// answer and is said out loud: a migration that seals a zero opening balance over a chain that
     /// was really there has broken the chain, and the one thing it may not do is break it quietly.
-    pub fn legacy_audit_head(&self) -> LegacyAuditHead {
+    pub fn migration_audit_head(&self) -> MigrationAuditHead {
         match self.store().list_audit_tail(1) {
-            Ok(tail) => LegacyAuditHead {
+            Ok(tail) => MigrationAuditHead {
                 head: match tail.last() {
-                    Some(entry) => LegacyHead {
+                    Some(entry) => MigrationHead {
                         seq: Some(entry.seq),
                         hash: Some(entry.hash.clone()),
-                        ..LegacyHead::empty()
+                        ..MigrationHead::empty()
                     },
-                    None => LegacyHead::empty(),
+                    None => MigrationHead::empty(),
                 },
                 unreadable: None,
             },
@@ -332,8 +281,8 @@ impl StoreAdapter {
                      migration seals a zero opening balance over a chain whose head is unknown. \
                      If that store held audit rows, this node's chain starts again from nothing."
                 );
-                LegacyAuditHead {
-                    head: LegacyHead::empty(),
+                MigrationAuditHead {
+                    head: MigrationHead::empty(),
                     unreadable: Some(format!("the previous release's audit tail: {e}")),
                 }
             }
@@ -344,11 +293,11 @@ impl StoreAdapter {
     /// metering rows for each named day.
     ///
     /// Reads only. A row the store would not answer for is NAMED in
-    /// [`LegacyCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
+    /// [`MigrationCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
     /// node booting and must not vanish either.
-    pub fn legacy_cells_read(&self, plan: &LegacyReadPlan) -> LegacyCells {
+    pub fn migration_cells_read(&self, plan: &MigrationReadPlan) -> MigrationCells {
         let store = self.store();
-        let mut cells = LegacyCells::default();
+        let mut cells = MigrationCells::default();
         // Where each bucket's balance already sits in `cells.balances`. The vector's ORDER is the
         // plan's order and stays that way — this index only replaces the scan that found the slot,
         // which grew with the square of a deployment's virtual-key count on the one read that runs
@@ -369,10 +318,10 @@ impl StoreAdapter {
                         continue;
                     }
                     cells.cells_read += 1;
-                    let mut push = |lane: &str, dimension: LegacyCapDimension, amount: u64| {
+                    let mut push = |lane: &str, dimension: MigrationCapDimension, amount: u64| {
                         if amount != 0 {
-                            cells.figures.push(LegacyFigure {
-                                family: LegacyFamily::Window,
+                            cells.figures.push(MigrationFigure {
+                                family: MigrationFamily::Window,
                                 bucket: bucket.clone(),
                                 window: *window,
                                 lane: lane.to_string(),
@@ -382,17 +331,17 @@ impl StoreAdapter {
                             });
                         }
                     };
-                    push("", LegacyCapDimension::Requests, ledger.requests);
+                    push("", MigrationCapDimension::Requests, ledger.requests);
                     push(
                         "",
-                        LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                        MigrationCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                         ledger.billable_requests,
                     );
                     for model in &ledger.models {
                         for (unit, count) in &model.usage_units {
                             push(
                                 &model.model,
-                                LegacyCapDimension::Class(unit.clone()),
+                                MigrationCapDimension::Class(unit.clone()),
                                 *count,
                             );
                         }
@@ -419,10 +368,10 @@ impl StoreAdapter {
                 Ok(rows) => {
                     for row in rows {
                         cells.cells_read += 1;
-                        let mut push = |dimension: LegacyCapDimension, amount: u64| {
+                        let mut push = |dimension: MigrationCapDimension, amount: u64| {
                             if amount != 0 {
-                                cells.figures.push(LegacyFigure {
-                                    family: LegacyFamily::Meter,
+                                cells.figures.push(MigrationFigure {
+                                    family: MigrationFamily::Meter,
                                     bucket: row.key_id.clone(),
                                     window: *day,
                                     lane: row.model.clone(),
@@ -432,9 +381,9 @@ impl StoreAdapter {
                                 });
                             }
                         };
-                        push(LegacyCapDimension::Requests, row.requests);
+                        push(MigrationCapDimension::Requests, row.requests);
                         push(
-                            LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                            MigrationCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                             row.billable_requests,
                         );
                         for (unit, amount) in [
@@ -443,7 +392,7 @@ impl StoreAdapter {
                             (UNIT_CACHE_READ, row.tokens_cache_read),
                             (UNIT_CACHE_WRITE, row.tokens_cache_write),
                         ] {
-                            push(LegacyCapDimension::Class(unit.to_string()), amount);
+                            push(MigrationCapDimension::Class(unit.to_string()), amount);
                         }
                     }
                 }
@@ -468,7 +417,7 @@ impl StoreAdapter {
         window: u64,
         group_buckets: &[(String, u64)],
         days: &[u64],
-    ) -> Result<LegacyReadPlan, RecordStoreError> {
+    ) -> Result<MigrationReadPlan, RecordStoreError> {
         let mut windows: Vec<(String, u64)> = self
             .store()
             .list_keys()?
@@ -476,32 +425,20 @@ impl StoreAdapter {
             .map(|key| (key.id, window))
             .collect();
         windows.extend(group_buckets.iter().cloned());
-        Ok(LegacyReadPlan {
+        Ok(MigrationReadPlan {
             windows,
             days: days.to_vec(),
         })
     }
 
     /// The migration's source over this adapter's store, reading exactly `plan`.
-    pub fn legacy_ledger_rows(&self, plan: LegacyReadPlan) -> LegacyStoreRows {
-        LegacyStoreRows {
+    pub fn migration_ledger_rows(&self, plan: MigrationReadPlan) -> MigrationStoreRows {
+        MigrationStoreRows {
             adapter: self.clone(),
             plan,
             cells: std::sync::OnceLock::new(),
             audit: std::sync::OnceLock::new(),
         }
-    }
-
-    /// The ledger's own records for the migration marker.
-    pub fn migration_records(&self) -> ShimMigrationRecords {
-        ShimMigrationRecords {
-            adapter: self.clone(),
-        }
-    }
-
-    /// The migration marker this node is holding, if it has sealed one.
-    pub fn migration_marker(&self) -> Option<MigrationMarker> {
-        self.inner.shim.migration().clone()
     }
 }
 
@@ -519,17 +456,17 @@ pub const BILLABLE_REQUESTS_CLASS: &str = "billable_requests";
 /// enumerable across that seam. Naming what will be read also means the read is bounded and
 /// reviewable, which a full-store walk at boot would not be.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyReadPlan {
+pub struct MigrationReadPlan {
     /// The (bucket, window) pairs whose token ledger to read.
     pub windows: Vec<(String, u64)>,
     /// The metering day buckets to read.
     pub days: Vec<u64>,
 }
 
-impl LegacyReadPlan {
+impl MigrationReadPlan {
     /// A plan naming nothing. Reading it produces no figures, which seals a zero opening balance.
     pub fn nothing() -> Self {
-        LegacyReadPlan::default()
+        MigrationReadPlan::default()
     }
 
     /// Whether this plan names anything at all.
@@ -542,21 +479,21 @@ impl LegacyReadPlan {
 ///
 /// The two travel together because the empty head has two very different meanings — "there was
 /// nothing there" and "the store would not say" — and a caller handed only the head cannot tell
-/// them apart. The reason joins the same named-reason channel [`LegacyCells::unreadable`] carries,
+/// them apart. The reason joins the same named-reason channel [`MigrationCells::unreadable`] carries,
 /// so one unanswered read is reported rather than either stopping a boot or vanishing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyAuditHead {
+pub struct MigrationAuditHead {
     /// The head itself. Empty when the store had nothing to say AND when it would not say.
-    pub head: LegacyHead,
+    pub head: MigrationHead,
     /// Why the head is empty, when it is empty because the store would not answer.
     pub unreadable: Option<String>,
 }
 
 /// What the previous release's cells held.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyCells {
+pub struct MigrationCells {
     /// One figure per bucket, day, lane, provider and dimension that held anything.
-    pub figures: Vec<LegacyFigure>,
+    pub figures: Vec<MigrationFigure>,
     /// The opening balance per bucket, from the enforcement ledger.
     pub balances: Vec<(String, i128)>,
     /// How many rows were read to arrive at those figures.
@@ -575,38 +512,39 @@ pub struct LegacyCells {
 /// and — on a store being written by something else — could answer the two questions from two
 /// different moments.
 #[derive(Debug, Clone)]
-pub struct LegacyStoreRows {
+pub struct MigrationStoreRows {
     adapter: StoreAdapter,
-    plan: LegacyReadPlan,
-    cells: std::sync::OnceLock<LegacyCells>,
-    audit: std::sync::OnceLock<LegacyAuditHead>,
+    plan: MigrationReadPlan,
+    cells: std::sync::OnceLock<MigrationCells>,
+    audit: std::sync::OnceLock<MigrationAuditHead>,
 }
 
-impl LegacyStoreRows {
+impl MigrationStoreRows {
     /// What this source will read.
-    pub fn plan(&self) -> &LegacyReadPlan {
+    pub fn plan(&self) -> &MigrationReadPlan {
         &self.plan
     }
 
     /// The reading, taken on first use and kept.
-    pub fn cells(&self) -> &LegacyCells {
+    pub fn cells(&self) -> &MigrationCells {
         self.cells
-            .get_or_init(|| self.adapter.legacy_cells_read(&self.plan))
+            .get_or_init(|| self.adapter.migration_cells_read(&self.plan))
     }
 
     /// The chain head, taken on first use and kept — for the same reason the cells are: the head a
     /// caller reads and the reason it reports must describe one reading of one store.
-    pub fn audit_head(&self) -> &LegacyAuditHead {
-        self.audit.get_or_init(|| self.adapter.legacy_audit_head())
+    pub fn audit_head(&self) -> &MigrationAuditHead {
+        self.audit
+            .get_or_init(|| self.adapter.migration_audit_head())
     }
 }
 
-impl LegacyMigrationSource for LegacyStoreRows {
+impl MigrationSource for MigrationStoreRows {
     /// The chain head, with the per-bucket balances the cells hold hung off it — one object that
     /// read one store, so the head and the figures cannot disagree about what was there.
-    fn read_head(&self) -> LegacyHead {
+    fn read_head(&self) -> MigrationHead {
         let cells = self.cells();
-        LegacyHead {
+        MigrationHead {
             balances: cells.balances.clone(),
             cells_read: cells.cells_read,
             ..self.audit_head().head.clone()
@@ -614,39 +552,17 @@ impl LegacyMigrationSource for LegacyStoreRows {
     }
 }
 
-impl LegacyLedgerRows for LegacyStoreRows {
-    fn read_figures(&self) -> LegacyFigures {
+impl MigrationLedgerRows for MigrationStoreRows {
+    fn read_figures(&self) -> MigrationFigures {
         let cells = self.cells();
         // An unread chain head joins the unread cells on the one channel the migration report
         // already prints, so "the store would not say" reaches an operator whichever read it was.
         let mut unreadable = cells.unreadable.clone();
         unreadable.extend(self.audit_head().unreadable.clone());
-        LegacyFigures {
+        MigrationFigures {
             figures: cells.figures.clone(),
             unreadable,
         }
-    }
-}
-
-/// The migration marker, in node memory.
-///
-/// Labelled as what it is: a marker kept here does not survive a restart. The boot does not keep its
-/// marker here — it goes on the node's journal, which the configured store keeps — and what it must
-/// never do is go into the rows it read: those may be read-only, and they are not this release's to
-/// write.
-#[derive(Debug, Clone)]
-pub struct ShimMigrationRecords {
-    adapter: StoreAdapter,
-}
-
-impl MigrationRecords for ShimMigrationRecords {
-    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
-        Ok(self.adapter.migration_marker())
-    }
-
-    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError> {
-        *self.adapter.inner.shim.migration() = Some(marker.clone());
-        Ok(())
     }
 }
 
@@ -659,31 +575,6 @@ impl Shim {
 
     fn replay(&self) -> MutexGuard<'_, ReplaySlots> {
         self.replay.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn recovery(&self) -> MutexGuard<'_, Recovery> {
-        self.recovery.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn migration(&self) -> MutexGuard<'_, Option<MigrationMarker>> {
-        self.migration.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-#[cfg(test)]
-impl StoreAdapter {
-    /// Stand in for one side of a shim lock interleaving: take the recovery guard, run `between`,
-    /// then take the slices guard — the exact pair, in the exact order, that
-    /// [`VerbStore::store_restore`] takes them in.
-    ///
-    /// It exists because `store_restore` has no pause between its two locks, so a test cannot park
-    /// a thread there; `between` is that pause, and nothing else about the sequence differs.
-    pub(crate) fn hold_recovery_then_slices(&self, between: impl FnOnce()) {
-        let recovery = self.inner.shim.recovery();
-        between();
-        let slices = self.inner.shim.slices();
-        drop(slices);
-        drop(recovery);
     }
 }
 
@@ -724,49 +615,22 @@ impl SliceStore for StoreAdapter {
     }
 }
 
-impl VerbStore for StoreAdapter {
-    /// Break the journal chain. On a deployment whose journal is memory-buffered, the chain is the
-    /// node's own, so the break is recorded here and the node's next entry starts a new one.
-    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
-        let mut recovery = self.inner.shim.recovery();
-        recovery.chain_breaks = recovery.chain_breaks.saturating_add(1);
-        Ok(())
+/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter (status row 187,
+/// ARCHITECT 2026-10-20): the slice epoch this node serves at, which `reseal_epoch_floor` puts in
+/// the store as the floor and the boot compares with the floor the store holds. It is the door the
+/// root reads it through, so the money-slice seam stays named only here and in its defining module.
+impl StoreAdapter {
+    /// This node's slice epoch, as a number: the value the epoch floor is resealed to and checked
+    /// against.
+    #[must_use]
+    pub fn recovery_epoch(&self) -> u64 {
+        SliceStore::epoch(self).0
     }
+}
 
-    /// Restore from a named backup. The published store keeps its own rows and restoring THEM is an
-    /// operator action off the node (the store's own tooling); what this seam can do here is record
-    /// that a restore was taken and reseal the node-local state that depends on it.
-    ///
-    /// The sealed replay cache deliberately survives — see the module preamble.
-    fn store_restore(
-        &self,
-        _admin: &Grant<AdminVerb>,
-        backup_ref: &str,
-    ) -> Result<(), VerbStoreError> {
-        let mut recovery = self.inner.shim.recovery();
-        recovery.restores = recovery.restores.saturating_add(1);
-        recovery.last_restore = Some(backup_ref.to_string());
-        // The slices guard is taken BEFORE the recovery one is released, so the reseal is one
-        // critical section: a `reserve` landing between them would otherwise be recorded and then
-        // erased. Recovery-then-slices is the shim's fixed order (stated on `Shim`), and this is
-        // the only place that holds two of its locks at once — every other reader takes one, copies
-        // and drops. `granted_total` is zeroed beside the map it describes — the counter is net
-        // units held by the outstanding reservations, and there are about to be none.
-        let mut slices = self.inner.shim.slices();
-        slices.outstanding.clear();
-        slices.granted_total = 0;
-        drop(slices);
-        drop(recovery);
-        Ok(())
-    }
-
-    /// Reseal the epoch floor. The shim has one epoch, so the floor becomes it.
-    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
-        let mut recovery = self.inner.shim.recovery();
-        recovery.epoch_floor = SHIM_EPOCH.0;
-        Ok(())
-    }
-
+/// THE SEALED NEW-VERB REPLAY CACHE, which the composition root's verb store answers through this
+/// adapter (`busbar_contract::verb_store::Store::replay_new_verb` and `commit_new_verb_replay`).
+impl StoreAdapter {
     /// Read the sealed replay slot for a credential-minting verb, reserving it on first sighting so
     /// a concurrent second call sees a reservation rather than another first sighting — the same
     /// discipline the in-process cache keeps, over the node-local shim instead of durable storage.
@@ -777,7 +641,10 @@ impl VerbStore for StoreAdapter {
     /// Every probe first drops the slots past [`REPLAY_TTL_SECS`], which is what bounds the cache:
     /// the only other thing that ever touches it is a commit, so a sweep anywhere else would leave
     /// the map growing on exactly the traffic that fills it. The in-process sibling sweeps here too.
-    fn replay_new_verb(&self, key: &(String, String)) -> Result<Option<Vec<u8>>, VerbStoreError> {
+    pub fn replay_new_verb(
+        &self,
+        key: &(String, String),
+    ) -> Result<Option<Vec<u8>>, VerbStoreError> {
         let now = (self.inner.clock)();
         let mut replay = self.inner.shim.replay();
         replay.retain(|_, (written, _)| now.saturating_sub(*written) < REPLAY_TTL_SECS);
@@ -792,7 +659,7 @@ impl VerbStore for StoreAdapter {
     }
 
     /// Commit the response bytes into the slot, so a replay returns exactly these bytes.
-    fn commit_new_verb_replay(
+    pub fn commit_new_verb_replay(
         &self,
         key: &(String, String),
         response: &[u8],

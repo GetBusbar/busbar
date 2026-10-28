@@ -221,7 +221,8 @@ pub struct Connection {
     upgraded: bool,
     /// The framer's own error, when it is what failed the open connection.
     framer_error: Option<String>,
-    /// The far end's key the handshake is held to (the dial's sealed anchors); `None` = no pin.
+    /// The far end's key the handshake is held to (the dial's sealed anchors), in its canonical
+    /// spelling; `None` = no pin.
     key_pin: Option<String>,
     /// Raised when the handshake presented busbar's client identity.
     presented: Arc<std::sync::atomic::AtomicBool>,
@@ -232,6 +233,17 @@ pub struct Connection {
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
     /// ([`crate::proxy`]); `None` once the proxy answered, and on every direct connection.
     tunnel: Option<Tunnel>,
+    /// THE NAME'S OTHER ADMITTED ADDRESSES, in the resolver's order: a connect the far end refuses
+    /// is dialled afresh at the next, as 1.5.5's client moved on through a name's addresses.
+    fallback: Option<Fallback>,
+    /// The protocols connection security offered (a dial) or agrees to (an accept), in the
+    /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
+    /// (`check_agreed`) before the framer is handed it. Empty = none offered.
+    alpn_offer: Vec<u8>,
+    /// A STREAM'S OWN BACKPRESSURE (`busbar_contract::abi::transport`): the streams whose last
+    /// emit the framer answered `YIELD_STREAM_FULL`. Nothing more is emitted on one until the
+    /// framer hands a writable piece for it, or its end or failure piece.
+    full: std::collections::HashSet<u64>,
 }
 
 /// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
@@ -333,17 +345,53 @@ fn failed(e: impl std::fmt::Display) -> Failure {
     Failure::Failed(e.to_string())
 }
 
+/// `protocols`, most preferred first, in the handshake's ProtocolNameList encoding (one length
+/// byte, then the id). An id that cannot be written so (empty, or over 255 bytes) is left out: it is
+/// never offered, so it is never agreed.
+fn protocol_name_list(protocols: &[Vec<u8>]) -> Vec<u8> {
+    let mut list = Vec::new();
+    for id in protocols {
+        if let Ok(n @ 1..=u8::MAX) = u8::try_from(id.len()) {
+            list.push(n);
+            list.extend_from_slice(id);
+        }
+    }
+    list
+}
+
+/// THE AGREED PROTOCOL IS ONE THE HANDSHAKE OFFERED (`check_agreed`, before the framer is handed
+/// [`Established::agreed_protocol`]): none agreed, or one of `offer`'s ids exactly. Anything else
+/// fails the connection before the framing begins.
+///
+/// # Errors
+///
+/// [`Failure::Refused`], naming the rule.
+fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure> {
+    busbar_contract::abi::transport::check::check_agreed(offer, agreed.unwrap_or_default()).map_err(
+        |f| {
+            Failure::Refused(format!(
+                "connection security: the protocol agreed breaks {:?} at {}",
+                f.rule, f.field
+            ))
+        },
+    )
+}
+
 impl Connection {
-    /// Dial `dial.target` through `door`: the endpoint check, the entry's `locate`, a second
-    /// endpoint check on the authority it named, then a non-blocking connect registered on the
-    /// calling worker's reactor. The connection comes back at once, its open in flight.
+    /// Dial `dial.target` through `door`, an IP literal dialled as written and judged by no
+    /// destination judge: the whole endpoint check ([`endpoint::check`]: no cloud metadata or
+    /// link-local host), the entry's `locate`, the whole endpoint check on the authority it named,
+    /// then a non-blocking connect registered on the calling worker's reactor. The connection comes
+    /// back at once, its open in flight.
     ///
     /// # Errors
     ///
     /// [`Failure::Refused`] before any socket exists; [`Failure::Failed`] off a worker or when the
     /// socket cannot be made.
     pub fn dial(door: Arc<dyn FramerDoor>, via: &Via, dial: Dial) -> Result<Self, Failure> {
+        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let planned = Planned::locate(door, via.clone(), dial)?;
+        endpoint::check(planned.authority()).map_err(|e| Failure::Refused(e.to_string()))?;
         let addr = crate::socket::address_of(planned.authority()).ok_or_else(|| {
             Failure::Refused(format!(
                 "`{}` is not an address the connector dials without resolving a name",
@@ -378,8 +426,9 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
     })
 }
 
-/// A dial located but not yet dialled: the target and the authority the entry named passed the
-/// endpoint check, and the address to dial is still to be judged.
+/// A dial located but not yet dialled: the target and the authority the entry named each name a
+/// host ([`endpoint::named`]), and the address to dial is still to be judged: cloud metadata and
+/// link-local are the destination guard's to refuse, or its carve-outs and allowlist to admit.
 pub struct Planned {
     /// The framer; `None` = the carrier carried as itself.
     door: Option<Arc<dyn FramerDoor>>,
@@ -398,17 +447,17 @@ impl std::fmt::Debug for Planned {
 }
 
 impl Planned {
-    /// The endpoint check, the entry's `locate`, and a second endpoint check on the authority it
-    /// named.
+    /// The target names a host, the entry's `locate`, and the authority it named names one too.
     ///
     /// # Errors
     ///
-    /// [`Failure::Refused`]: the target or the authority is refused, or the entry locates nothing.
+    /// [`Failure::Refused`]: the target or the authority names no host, or the entry locates
+    /// nothing.
     pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
-        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
-        endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         Ok(Self {
             door: Some(door),
             via,
@@ -419,16 +468,18 @@ impl Planned {
 
     /// A dial over a carrier CARRIED AS ITSELF (a need over the carrier's own claim, `claim`): its
     /// target is an authority, `host:port`, or `<claim>://host:port`; nothing is offered, and no
-    /// connection security is asked for at the dial. The endpoint check, then the authority's.
+    /// connection security is asked for at the dial. The target names a host, then the authority
+    /// does.
     ///
     /// # Errors
     ///
-    /// [`Failure::Refused`]: the target or the authority is refused, or the target is no authority.
+    /// [`Failure::Refused`]: the target or the authority names no host, or the target is no
+    /// authority.
     pub fn carried(via: Via, dial: Dial) -> Result<Self, Failure> {
-        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let claim = via.door.facts().claims.first().copied().unwrap_or_default();
         let located = carried_at(claim, &dial.target)?;
-        endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         Ok(Self {
             door: None,
             via,
@@ -494,6 +545,29 @@ impl Planned {
         self.dial_via(addr, None)
     }
 
+    /// [`Self::dial_at`] `addr`, a connect the far end refuses moving on to each of `also` in
+    /// turn (each already judged as `addr` was) before the connection fails.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dial_at`].
+    pub fn dial_at_any(
+        self,
+        addr: std::net::SocketAddr,
+        also: Vec<std::net::SocketAddr>,
+    ) -> Result<Connection, Failure> {
+        let via = (Arc::clone(&self.via.door), Arc::clone(&self.via.io));
+        let mut conn = self.dial_via(addr, None)?;
+        if !also.is_empty() {
+            conn.fallback = Some(Fallback {
+                door: via.0,
+                io: via.1,
+                next: also.into(),
+            });
+        }
+        Ok(conn)
+    }
+
     /// Dial the PROXY at `proxy` and, once it connects, ask it for a tunnel to this plan's
     /// authority with `connect` (the CONNECT request, [`crate::proxy::connect_request`]); the
     /// secure layer (this plan's name and the target's certificate) and the framing run over the
@@ -525,6 +599,7 @@ impl Planned {
             located,
         } = self;
         let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut alpn_offer = Vec::new();
         let tls = if located.secure {
             let base = dial.tls.clone().ok_or_else(|| {
                 Failure::Refused("the target asks for connection security and none is set".into())
@@ -537,6 +612,7 @@ impl Planned {
             } else {
                 located.offer.clone()
             };
+            alpn_offer = protocol_name_list(&config.alpn_protocols);
             // A PINNED DESTINATION IS VERIFIED ON EVERY CONNECTION: no session is resumed, so each
             // handshake carries the far end's certificate and its key is held to the pin afresh
             // (a resumed session would present the key of the handshake it resumed).
@@ -583,6 +659,7 @@ impl Planned {
             offered_name,
             &located.offer,
         )?;
+        conn.alpn_offer = alpn_offer;
         conn.tunnel = connect.map(|request| Tunnel {
             request,
             asked: false,
@@ -591,6 +668,13 @@ impl Planned {
         });
         Ok(conn)
     }
+}
+
+/// A dial's remaining addresses ([`Connection::fallback`]) and the carrier that dials them.
+struct Fallback {
+    door: Arc<dyn FramerDoor>,
+    io: Arc<HostIo>,
+    next: VecDeque<std::net::SocketAddr>,
 }
 
 impl Connection {
@@ -690,13 +774,17 @@ impl Connection {
             security_error: None,
             cause: None,
             tunnel: None,
+            fallback: None,
+            alpn_offer: Vec::new(),
+            full: std::collections::HashSet::new(),
         })
     }
 }
 
 /// How a program's environment references resolve: at config time, held for its spawns
-/// ([`crate::spawn_env`]).
-pub use crate::spawn_env::{install_spawn_secrets, SpawnSecretFn};
+/// ([`crate::spawn_env`]); the root hands it to the connector it builds
+/// ([`crate::Connector::resolving_spawn_secrets`]).
+pub use crate::spawn_env::SpawnSecretFn;
 
 impl Connection {
     /// SPAWN `program` through the carrier `via` (the host spawns it: no shell, its absolute path
@@ -743,6 +831,9 @@ impl Connection {
             framer_error: None,
             cause: None,
             tunnel: None,
+            fallback: None,
+            alpn_offer: Vec::new(),
+            full: std::collections::HashSet::new(),
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -841,6 +932,11 @@ impl Connection {
         accept: &Accept,
         slot: Option<Slot>,
     ) -> Result<Self, Failure> {
+        let alpn_offer = if accept.tls.is_some() {
+            protocol_name_list(&accept.alpn)
+        } else {
+            Vec::new()
+        };
         let tls = match &accept.tls {
             None => None,
             Some(base) => {
@@ -893,6 +989,9 @@ impl Connection {
             security_error: None,
             cause: None,
             tunnel: None,
+            fallback: None,
+            alpn_offer,
+            full: std::collections::HashSet::new(),
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1034,6 +1133,9 @@ impl Connection {
     fn put(&mut self, stream: u64, bytes: &[u8], end: bool, text: bool) -> Result<(), Failure> {
         if let Some(framing) = self.framing.as_mut() {
             let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
+            if y.full {
+                self.full.insert(stream);
+            }
             return self.absorb(y);
         }
         if self.door.is_some() {
@@ -1117,6 +1219,7 @@ impl Connection {
             }
             let mut config = (**config).clone();
             config.alpn_protocols.clear();
+            self.alpn_offer.clear();
             let server = rustls::pki_types::ServerName::try_from(
                 name.trim_start_matches('[')
                     .trim_end_matches(']')
@@ -1165,6 +1268,12 @@ impl Connection {
     /// Whether connection security is set and its handshake has not completed.
     fn handshaking(&self) -> bool {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
+    }
+
+    /// Whether connection security is set and its handshake has completed: what
+    /// [`Self::peer_cert_hash`] is read off.
+    pub(crate) fn secured(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
     }
 
     /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
@@ -1249,6 +1358,30 @@ impl Connection {
         }
     }
 
+    /// WHETHER THE DIAL HAS LANDED: the far end took the connect (through the proxy's tunnel,
+    /// where one is asked for). `Ready(Ok)` once it has, `Ready(Err)` once the connect failed
+    /// (every address the name admitted refused it, or its deadline passed), `Pending` with `cx`'s
+    /// waker while it connects. What the far end sends meanwhile is kept for the reader.
+    ///
+    /// # Errors
+    ///
+    /// Why the connection failed.
+    pub fn poll_landed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        loop {
+            match &self.phase {
+                Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
+                Phase::Connecting => {}
+                _ if self.tunnel.as_ref().is_some_and(|t| t.asked) => {}
+                _ => return Poll::Ready(Ok(())),
+            }
+            match self.drive(cx) {
+                Ok(true) => {}
+                Ok(false) => return Poll::Pending,
+                Err(f) => self.fail(f),
+            }
+        }
+    }
+
     /// Whether a piece (or the end) is ready, without taking it.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
@@ -1320,6 +1453,12 @@ impl Connection {
             self.fail(f.clone());
             return Err(f);
         }
+        // A FULL STREAM takes nothing (not-ready: the drive above parked `cx` on the socket, whose
+        // bytes bring the framer's writable piece). An empty write adds nothing to the stream's
+        // queue, and its end of message is never held back.
+        if self.full.contains(&stream) && !bytes.is_empty() {
+            return Ok(0);
+        }
         let take = bytes
             .len()
             .min(WRITE_BUFFER_BYTES.saturating_sub(self.buffered()));
@@ -1340,6 +1479,22 @@ impl Connection {
             return Err(f);
         }
         Ok(take)
+    }
+
+    /// The connect was refused: dial the name's next admitted address in its place, the
+    /// connection still connecting. `None` when no address is left to try.
+    fn redial_next(&mut self) -> Option<Result<(), Failure>> {
+        let f = self.fallback.as_mut()?;
+        let next = f.next.pop_front()?;
+        Some(
+            Carried::dial(
+                Arc::clone(&f.door),
+                Arc::clone(&f.io),
+                &Dest::Authority(next.to_string()),
+            )
+            .map(|carried| self.carried = carried)
+            .map_err(dial_failure),
+        )
     }
 
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
@@ -1368,7 +1523,11 @@ impl Connection {
                         self.connected()?;
                     }
                 }
-                Poll::Ready(Err(e)) => return Err(Failure::Refused(e)),
+                Poll::Ready(Err(e)) => match self.redial_next() {
+                    Some(Ok(())) => moved = true,
+                    Some(Err(f)) => return Err(f),
+                    None => return Err(Failure::Refused(e)),
+                },
                 Poll::Pending => {}
             }
         }
@@ -1625,6 +1784,8 @@ impl Connection {
             .and_then(|chain| chain.first())
             .and_then(|leaf| crate::tls::client::peer_key_pin(leaf.as_ref()));
         self.established.client_identity = self.presented.load(std::sync::atomic::Ordering::SeqCst);
+        // Both sides are the canonical spelling (`trust::key_pin`, `trust::canonical_key_pin`), so
+        // they compare as the digest they spell, and the facts report the canonical one.
         match &self.key_pin {
             Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
                 Err(Failure::Refused(PIN_REFUSED.into()))
@@ -1659,6 +1820,10 @@ impl Connection {
                     .tls
                     .as_ref()
                     .and_then(|t| t.alpn_protocol().map(<[u8]>::to_vec));
+                agreed_was_offered(
+                    &self.alpn_offer,
+                    self.established.agreed_protocol.as_deref(),
+                )?;
                 if let Some(rustls::Connection::Server(s)) = self.tls.as_ref() {
                     self.established.offered_name = s.server_name().map(str::to_owned);
                 }
@@ -1742,6 +1907,14 @@ impl Connection {
                 }
                 None => self.queue(&y.wire, false),
             }
+        }
+        // A stream the framer says is writable again, or whose last piece arrived, is held no
+        // more.
+        for stream in &y.writable {
+            self.full.remove(stream);
+        }
+        for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
+            self.full.remove(&g.stream);
         }
         self.inbox.extend(y.pieces);
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);

@@ -37,7 +37,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress, HookStage};
+use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -97,18 +97,18 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
 /// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
 /// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
 pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
+    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
         std::sync::OnceLock::new();
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
     let row = ROW.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg = registration(linked_probe(pools_door(), "pools-door-row"))
             .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane::door::fold(reg).expect("the door folds")
+        busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
     });
-    busbar_kernel::plane::registry::register_test_plane(row);
+    busbar_kernel::plane_driver::registry::register_test_plane(row);
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -543,6 +543,9 @@ pub(crate) struct RigOpts<'a> {
     /// The card history a unit is pinned to at its door, which the node's book prices its line
     /// against (`None`: the rig's own priceless card).
     pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
+    /// The walk's clock the door plane is composed on, which every generation's walk reads (`None`:
+    /// the node's own, [`crate::root::egress_ports::NodeClock`]).
+    pub clock: Option<&'a Arc<dyn busbar_kernel_egress::ports::Clock>>,
 }
 
 /// A NODE'S BOOK WHOSE JOURNAL CANNOT REACH ITS STORE: the journal is kept by a configured store
@@ -836,7 +839,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -847,6 +850,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("the connector builds");
 
@@ -1162,6 +1166,10 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             Arc::new(move || Arc::clone(&app))
         },
     };
+    let clock: Arc<dyn busbar_kernel_egress::ports::Clock> = match opts.clock {
+        Some(clock) => Arc::clone(clock),
+        None => Arc::new(crate::root::egress_ports::NodeClock::new()),
+    };
     let reach = DoorReach {
         providers: &providers,
         secrets: Arc::clone(&secrets),
@@ -1175,12 +1183,15 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let stage = HookStage {
         host: {
             let app = Arc::clone(&app);
-            Arc::new(move || busbar_kernel::plane_host::engine_host(&app))
+            Arc::new(move || busbar_kernel::plane_driver::engine_host(&app))
         },
         gov: Arc::clone(&gov),
+        journal: None,
     };
     let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
-    let served = compose_planes(
+    // As [`compose_planes`] composes, on the rig's walk clock.
+    let served = compose_planes_over(
+        &crate::LINKED,
         &[(instance.to_string(), plane)],
         &dispatcher,
         &services,
@@ -1192,6 +1203,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         Some(&stage),
+        &clock,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     );
     let _ = std::fs::remove_file(&key_file);
     let mut served = served?;

@@ -20,8 +20,8 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, READ_END_OF_FRAME,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, PIECE_WRITABLE,
+    READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -65,6 +65,14 @@ pub struct Knobs {
     pub echo: bool,
     /// Every answer the framing gives says it owes more (`YIELD_MORE`), whatever it wrote.
     pub spin: bool,
+    /// A STREAM'S OWN BACKPRESSURE: an `emit` that brings the bytes emitted since the stream was
+    /// last writable to this many answers `YIELD_STREAM_FULL`; a scripted `w` from the far end
+    /// ([`Knobs::messages`]) is a `PIECE_WRITABLE` piece on the scripted stream, and makes it
+    /// writable again.
+    pub full_at: Option<usize>,
+    /// `locate` answers SHORT, needing this many authority bytes, while the host offers fewer;
+    /// offered as many, it answers READY with the target as its authority.
+    pub authority_needed: Option<u64>,
 }
 
 #[derive(Default)]
@@ -81,6 +89,8 @@ struct State {
     declared_len: Option<u64>,
     echo: bool,
     spin: bool,
+    full_at: Option<usize>,
+    emitted: usize,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -104,10 +114,13 @@ pub struct TestDoor {
     pub refused_statuses: Mutex<Vec<u32>>,
     /// The opening head fields every `begin` crossing carried (`BeginIn::fields`), in order.
     pub begun_fields: Mutex<Vec<OpeningFields>>,
-    /// The target every `begin` crossing was handed (`BeginIn::target`), in order.
-    pub begun_targets: Mutex<Vec<Vec<u8>>>,
     /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
     pub dialled_keys: Mutex<Vec<u64>>,
+    /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
+    /// program it holds down.
+    pub held_keys: Mutex<HashSet<u64>>,
+    /// The authority capacity every `locate` crossing offered (`LocateIn::authority_cap`), in order.
+    pub locate_caps: Mutex<Vec<usize>>,
 }
 
 impl TestDoor {
@@ -130,6 +143,7 @@ impl TestDoor {
             || knobs.fields
             || knobs.silence.is_some()
             || knobs.authority.is_some()
+            || knobs.authority_needed.is_some()
             || knobs.messages.is_some();
         Self {
             facts: DoorFacts {
@@ -155,8 +169,9 @@ impl TestDoor {
             threads: Mutex::new(HashSet::new()),
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
-            begun_targets: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
+            held_keys: Mutex::new(HashSet::new()),
+            locate_caps: Mutex::new(Vec::new()),
         }
     }
 
@@ -231,6 +246,10 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 b'b' => (0, PIECE_END_OF_FRAME),
                 b't' => (0, PIECE_TEXT | PIECE_END_OF_FRAME),
                 b'e' => (0, PIECE_END | PIECE_END_OF_FRAME),
+                b'w' => {
+                    st.emitted = 0;
+                    (0, PIECE_WRITABLE)
+                }
                 other => {
                     // SAFETY: `frame_len < frame_cap`.
                     unsafe { sink.frame.add(frame_len).write(other) };
@@ -347,8 +366,17 @@ impl FramerDoor for TestDoor {
         let silence = self.knobs.silence;
         let mut framings = self.framings.lock().unwrap();
         let (op, answered) = match call {
-            Call::Locate(i, o) => {
+            Call::Locate(i, o) => 'locate: {
+                self.locate_caps.lock().unwrap().push(i.authority_cap);
                 let target = raw(i.target.ptr, i.target.len);
+                if let Some(needed) = self
+                    .knobs
+                    .authority_needed
+                    .filter(|n| *n > i.authority_cap as u64)
+                {
+                    o.authority_needed = needed;
+                    break 'locate ("locate", failed("short"));
+                }
                 let authority = self.knobs.authority.map_or(target, str::as_bytes);
                 // SAFETY: host buffer of `authority_cap` bytes; the test's authorities fit.
                 unsafe {
@@ -387,10 +415,6 @@ impl FramerDoor for TestDoor {
                 ("locate", ok)
             }
             Call::Begin(i, o) => {
-                self.begun_targets
-                    .lock()
-                    .unwrap()
-                    .push(raw(i.target.ptr, i.target.len).to_vec());
                 let fields = if i.fields.is_null() {
                     &[][..]
                 } else {
@@ -417,6 +441,7 @@ impl FramerDoor for TestDoor {
                     declared_len: self.knobs.declared_len,
                     echo: self.knobs.echo,
                     spin: self.knobs.spin,
+                    full_at: self.knobs.full_at,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);
@@ -469,7 +494,11 @@ impl FramerDoor for TestDoor {
                 None => ("emit", failed("no such framing")),
                 Some(st) => {
                     st.outbound.extend(raw(i.bytes, i.len));
+                    st.emitted += i.len;
                     answer(st, &i.sink, o, silence);
+                    if st.full_at.is_some_and(|n| st.emitted >= n) {
+                        o.yielded.flags |= YIELD_STREAM_FULL;
+                    }
                     // A text emit is counted as its own op, so a test sees the bit cross.
                     let op = if i.flags & EMIT_TEXT != 0 {
                         "emit text"
@@ -509,6 +538,9 @@ impl FramerDoor for TestDoor {
                     std::ptr::copy_nonoverlapping(body.as_ptr(), i.sink.wire, body.len());
                 }
                 o.yielded.wire_len = body.len() as u64;
+                if self.knobs.spin {
+                    o.yielded.flags = YIELD_MORE;
+                }
                 ("encode", ok)
             }
             Call::Finish(i, o) => {
@@ -669,7 +701,12 @@ impl TestDoor {
                 self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 // SAFETY: the connector's destination, live for the call.
                 let d = unsafe { &*i.dest };
-                let r = if d.kind == DEST_PROGRAM {
+                let held = self.held_keys.lock().unwrap().contains(&i.supervision_key);
+                let r = if held {
+                    Err(IoRefusal::Refused(
+                        "held down by the carrier's supervisor".to_owned(),
+                    ))
+                } else if d.kind == DEST_PROGRAM {
                     let program = text_of(d.program);
                     let args: Vec<String> = (0..d.args_len)
                         // SAFETY: `args_len` strings at `args`.
@@ -730,16 +767,6 @@ impl TestDoor {
                 let _ = io.close(OWNER, i.conn);
                 ("shut", io_crossed(Ok(()), |()| {}))
             }
-            Carry::Arrival(i, o) => (
-                "arrival",
-                io_crossed(io.ends(OWNER, i.conn), |(port, peer)| {
-                    let mut bytes: VecDeque<u8> = peer.into_bytes().into();
-                    let n = bytes.len().min(i.peer_cap);
-                    put(i.peer_buf, &mut bytes, n);
-                    o.peer_written = n as u64;
-                    o.local_port = u32::from(port);
-                }),
-            ),
             Carry::Cancel(_, _) => ("cancel", io_crossed(Ok(()), |()| {})),
         };
         self.carried.lock().unwrap().push(op);

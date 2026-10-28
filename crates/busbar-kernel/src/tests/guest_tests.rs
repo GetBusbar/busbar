@@ -379,3 +379,38 @@ fn the_offered_points_record_decides_what_a_line_may_need() {
         "no record offers no Peer"
     );
 }
+
+/// RED (audit contract-src #11, `check_route_view` never called): a line whose route no request can
+/// match is refused when the list is sealed, naming the line and the rule, never mounted as a dead
+/// route: no method, an unrooted exact path, a broken pattern, an upper-case field name.
+#[test]
+fn a_line_no_request_can_match_is_refused_at_seal() {
+    let refused = |r: Route| match GuestList::seal(vec![
+        line("ok", route(METHOD_GET, PATH_EXACT, "/ok")),
+        line("bad", r),
+    ]) {
+        Err(GuestRefusal::Malformed(bad)) => {
+            assert_eq!(bad.0.claimant, Claimant::Plane("bad".into()));
+            bad.1.field
+        }
+        other => panic!("a dead route sealed: {other:?}"),
+    };
+    assert_eq!(refused(route(0, PATH_EXACT, "/v1/x")), "route.methods");
+    assert_eq!(
+        refused(route(METHOD_POST, PATH_EXACT, "v1/x")),
+        "route.path"
+    );
+    assert_eq!(
+        refused(route(METHOD_POST, PATH_PATTERN, "/a/{*rest}/b")),
+        "route.path.pattern"
+    );
+    assert_eq!(
+        refused(with_field(
+            route(METHOD_POST, PATH_EXACT, "/v1/x"),
+            FIELD_PRESENT,
+            "Authorization",
+            b"",
+        )),
+        "route.field.name"
+    );
+}

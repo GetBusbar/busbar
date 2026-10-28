@@ -14,11 +14,11 @@ pub mod filled;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
-/// The root legacy table the composition root hands in, and the one rewrite over it.
-pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;
+/// The root migration table the composition root hands in, and the one rewrite over it.
+pub mod migration_table;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub mod named_map;
@@ -784,17 +784,17 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 ///
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
 /// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
-/// block's home and the trace URL keys that folded into one) are the root legacy table's frozen
-/// 1.5.5 text ([`legacy`]): the kernel names no export instance.
+/// block's home and the trace URL keys that folded into one) are the root migration table's frozen
+/// 1.5.5 text ([`migration_table`]): the kernel names no export instance.
 pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
     let trace_home = format!(
         "an `export:` instance with `module: {}` and `settings.url`",
-        legacy::text("export_trace_module")
+        migration_table::text("export_trace_module")
     );
     [
         // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
         // retired leaves reports the block-level move (the leaves have nowhere left to live).
-        ("observability", legacy::text("observability_home").to_string()),
+        ("observability", migration_table::text("observability_home").to_string()),
         // Inverted so the SAFE posture is the default.
         ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
         // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
@@ -802,8 +802,8 @@ pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
         // The IdP is DEFINED once and REFERENCED by name.
         ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
         // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
-        (legacy::text("observability_trace_key"), trace_home.clone()),
-        (legacy::text("observability_trace_key_1_4"), trace_home),
+        (migration_table::text("observability_trace_key"), trace_home.clone()),
+        (migration_table::text("observability_trace_key_1_4"), trace_home),
     ]
     .into_iter()
     .filter(|(old, _)| !old.is_empty())
@@ -823,10 +823,10 @@ pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
 /// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
 /// The leaves, the request-log type key they fold under and the metrics type key are the root
-/// legacy table's frozen 1.5.5 rows ([`legacy`]); the top-level `metrics:` block is listed last.
+/// migration table's frozen 1.5.5 rows ([`migration_table`]); the top-level `metrics:` block is listed last.
 pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
-    let log = legacy::text("observability_log_type_key");
-    let mut out: Vec<(&'static str, String)> = legacy::pairs("observability_log_keys")
+    let log = migration_table::text("observability_log_type_key");
+    let mut out: Vec<(&'static str, String)> = migration_table::pairs("observability_log_keys")
         .into_iter()
         .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
         .collect();
@@ -834,7 +834,7 @@ pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
         "metrics",
         format!(
             "export.{}.settings (buffer_seconds / key_gauge_limit)",
-            legacy::text("metrics_type_key")
+            migration_table::text("metrics_type_key")
         ),
     ));
     out
@@ -1031,7 +1031,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // config, where they can see the cross-section references a single entry cannot.
         let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
             deserializer,
-            crate::plane::fallback_key(),
+            crate::plane_driver::dispatch::fallback_key(),
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -1684,7 +1684,7 @@ impl PluginsCfg {
 // settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
 // historical `config::` path.
 pub use busbar_kernel::config::sections::{
-    store_required, SecretModuleCfg, StoreCfg, MIGRATED_STORE_MODULE,
+    migrated_store_module, store_required, SecretModuleCfg, StoreCfg,
 };
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
@@ -1974,7 +1974,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
 /// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
 /// providers exactly as every prior release has rather than silently dropping configured providers
-/// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
+/// out of `RootCfg::providers`. See `crate::plane_driver::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
 /// why this section never evicts.
 pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
     ResolvedProvider::merge(def, deploy_cfg)
@@ -2004,9 +2004,10 @@ pub fn resolve(
     // so a build compiled without the LLM plane must keep merging providers exactly as every prior
     // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
     // kept for exactly that build.
-    let resolve_provider_hook =
-        crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.resolve_provider);
+    let resolve_provider_hook = crate::plane_driver::registry::plane_decl_for(
+        crate::plane_driver::dispatch::fallback_key(),
+    )
+    .and_then(|d| d.resolve_provider);
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
@@ -2186,7 +2187,7 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane::registry::plane_decls()
+            let parse = crate::plane_driver::registry::plane_decls()
                 .iter()
                 .find(|d| d.config_section == section)
                 .and_then(|d| d.parse_section)?;
@@ -2362,7 +2363,7 @@ pub fn resolve(
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
     // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
+    let lower = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
@@ -2490,8 +2491,8 @@ mod tests;
 mod advanced_destinations_tests;
 
 #[cfg(test)]
-#[path = "tests/named_map_merge_tests.rs"]
-mod named_map_merge_tests;
+#[path = "tests/named_map_replace_tests.rs"]
+mod named_map_replace_tests;
 
 // The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
 // 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads
@@ -2512,6 +2513,12 @@ mod provider_refusal_pins;
 #[cfg(test)]
 #[path = "tests/resolved_provider_tests.rs"]
 mod resolved_provider_tests;
+
+// A provider's base URL (and token endpoint) as a `Debug` print shows it: no userinfo, while the
+// value the outbound request is built from keeps it (row 74, F25).
+#[cfg(test)]
+#[path = "tests/provider_debug_redaction_tests.rs"]
+mod provider_debug_redaction_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 

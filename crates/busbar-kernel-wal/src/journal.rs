@@ -80,6 +80,7 @@ use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use ring::digest::{Context, SHA256};
 
 use crate::record::Record;
+use crate::recover::{Bridge, QuarantineNote};
 use crate::ship::Shipper;
 use crate::wal::{BatchAck, Clock, Mode, OpenError, Wal};
 
@@ -573,10 +574,55 @@ impl std::error::Error for JournalBreak {}
 /// is not the same event as a record that was removed, and an operator handed one break needs to
 /// know which of them happened.
 ///
+/// A run that carries a quarantine's `ChainBreak` verifies across the hole that break names, and
+/// only there: see [`verify_bridged`].
+///
 /// # Errors
 ///
 /// The first record that does not verify, with what is wrong with it.
 pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
+    verify_bridged(records, &[])
+}
+
+/// [`verify`], crossing the holes recovery set aside — those named by a quarantine `ChainBreak` in
+/// the run, and those in `known` (the log's own quarantines, on the boot that found them, before
+/// their break is on the chain).
+///
+/// ## The one place a chain may skip
+///
+/// A record recovery set aside is acknowledged, so its number stays taken and the chain resumes
+/// past it: a sequence gap where it stood. And a record kept behind it links to it, a link nothing
+/// can check now. Without a rule for that, one damaged record left every later replay of the chain
+/// unverifiable, and a boot answers an unverifiable chain by rebuilding an empty book. So a hole is
+/// crossed exactly where a quarantine names it, by the last record kept before it ([`Bridge::before`]):
+///
+/// - the record kept right after it ([`Bridge::after`]) follows `before` with any higher number,
+///   and its link — to the set-aside record — is not checked; or
+/// - a later record RE-ANCHORS on `before`: it links to `before`'s own hash, with any higher
+///   number. That is the record the journal sealed next over a log whose tail was set aside, and it
+///   is also how a copy that still holds the set-aside record (a store's) reads past it.
+///
+/// Every other gap, and every other link that does not match, fails exactly as before. The body
+/// and chain digests of every record are checked whatever the bridge, so a record crossed into is
+/// still one that hashes to itself.
+///
+/// # Errors
+///
+/// The first record that does not verify, with what is wrong with it.
+pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), JournalBreak> {
+    let mut bridges: Vec<Bridge> = known.to_vec();
+    bridges.extend(
+        records
+            .iter()
+            .filter(|r| r.class == RecordClass::ChainBreak)
+            .filter_map(|r| QuarantineNote::read(&r.body).and_then(|note| note.bridge)),
+    );
+    // The hashes of the records a hole re-anchors on, and only those: a hash per record would cost
+    // memory in the length of the chain.
+    let anchors: std::collections::HashSet<(u64, u64)> = bridges.iter().map(|b| b.before).collect();
+    let mut anchored: std::collections::HashMap<(u64, u64), [u8; 32]> =
+        std::collections::HashMap::new();
+    let mut previous: Option<&JournalRecord> = None;
     let mut expected_prev = records.first().map(|r| r.prev_hash).unwrap_or([0u8; 32]);
     let mut expected_seq = records.first().map(|r| r.node_seq);
     for (i, record) in records.iter().enumerate() {
@@ -593,27 +639,63 @@ pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
                 kind: JournalBreakKind::ChainDigestMismatch,
             });
         }
-        if record.prev_hash != expected_prev {
-            return Err(JournalBreak {
-                at_index: index,
-                kind: JournalBreakKind::LinkMismatch,
+        let follows = record.prev_hash == expected_prev && expected_seq == Some(record.node_seq);
+        let crosses = !follows
+            && previous.is_some_and(|prev| {
+                bridges
+                    .iter()
+                    .any(|bridge| bridge.crosses(prev, record, &anchored))
             });
-        }
-        if let Some(expected) = expected_seq {
-            if record.node_seq != expected {
+        if !crosses {
+            if record.prev_hash != expected_prev {
                 return Err(JournalBreak {
                     at_index: index,
-                    kind: JournalBreakKind::SequenceMismatch {
-                        expected,
-                        found: record.node_seq,
-                    },
+                    kind: JournalBreakKind::LinkMismatch,
                 });
             }
+            if let Some(expected) = expected_seq {
+                if record.node_seq != expected {
+                    return Err(JournalBreak {
+                        at_index: index,
+                        kind: JournalBreakKind::SequenceMismatch {
+                            expected,
+                            found: record.node_seq,
+                        },
+                    });
+                }
+            }
         }
+        if anchors.contains(&record.identity()) {
+            anchored.insert(record.identity(), record.hash);
+        }
+        previous = Some(record);
         expected_prev = record.hash;
         expected_seq = Some(record.node_seq.saturating_add(1));
     }
     Ok(())
+}
+
+impl Bridge {
+    /// Whether `record`, coming after `prev` in a run, crosses this hole. See [`verify_bridged`].
+    fn crosses(
+        &self,
+        prev: &JournalRecord,
+        record: &JournalRecord,
+        anchored: &std::collections::HashMap<(u64, u64), [u8; 32]>,
+    ) -> bool {
+        // The chain only ever resumes FORWARD of the record it re-anchors on.
+        if record.node == self.before.0 && record.node_seq <= self.before.1 {
+            return false;
+        }
+        let named_after = self.after == Some(record.identity());
+        // The record kept right behind the hole: its predecessor is the record set aside.
+        if named_after && prev.identity() == self.before {
+            return true;
+        }
+        // The chain re-anchored on the last record kept before the hole.
+        (named_after || self.after.is_none())
+            && anchored.get(&self.before) == Some(&record.prev_hash)
+    }
 }
 
 /// Decode a run of log records into journal records, in order.
@@ -857,10 +939,10 @@ impl Journal {
     /// The same journal KEEPING every record at its bound instead of dropping the oldest.
     ///
     /// For a caller that decides what a full buffer means itself and has said so: the composition
-    /// root over a store, which refuses new money-bearing work while its store lane is full (ARCHITECT
-    /// 2026-10-07 H3 ruling: records are never dropped). What it costs is that the buffer is then
-    /// bounded by the caller's refusal rather than by this journal, so a caller that keeps admitting
-    /// work while the store refuses grows it.
+    /// root over a store, which refuses new money-bearing work while its store lane is full
+    /// (records are never dropped). What it costs is that the buffer is then bounded by the
+    /// caller's refusal rather than by this journal, so a caller that keeps admitting work while
+    /// the store refuses grows it.
     #[must_use]
     pub fn retaining_at_bound(mut self) -> Self {
         self.drop_at_bound = false;
@@ -890,16 +972,35 @@ impl Journal {
         at: StepName,
         wall: u64,
     ) -> Result<Option<JournalAck>, DurabilityLost> {
+        // Damage is left in place and found again at every boot; each hole goes on the chain once.
+        let noted = self.quarantines_on_chain();
         let entries: Vec<Entry> = self
             .log
             .quarantined()
             .iter()
+            .filter(|q| !noted.contains(&(q.segment, q.offset)))
             .map(|q| Entry::new(RecordClass::ChainBreak, q.body()).at(wall, 0))
             .collect();
         if entries.is_empty() {
             return Ok(None);
         }
         self.append(token, at, &entries).map(Some)
+    }
+
+    /// Every `(segment, first byte)` a quarantine `ChainBreak` already on the chain names. A log
+    /// that cannot be read back names none, and a hole is then recorded again — a duplicate
+    /// statement of the same loss, never a missing one.
+    fn quarantines_on_chain(&self) -> std::collections::HashSet<(u64, u64)> {
+        let Ok(back) = self.log.read_back() else {
+            return std::collections::HashSet::new();
+        };
+        back.records
+            .iter()
+            .filter_map(|r| JournalRecord::decode(&r.body).ok())
+            .filter(|r| r.class == RecordClass::ChainBreak)
+            .filter_map(|r| QuarantineNote::read(&r.body))
+            .map(|note| (note.segment, note.offset))
+            .collect()
     }
 
     /// The same journal with a different buffer bound. For batteries that need to reach the bound
@@ -1048,9 +1149,19 @@ impl Journal {
     /// # Errors
     ///
     /// The log could not be read, or what came back does not verify.
+    ///
+    /// The chain is verified across every hole recovery set aside — those whose `ChainBreak` is on
+    /// the chain, and those the log found at this open, whose break the boot has not sealed yet.
     pub fn replay(&self) -> std::io::Result<Result<Vec<JournalRecord>, JournalBreak>> {
         let back = self.log.read_back()?;
-        Ok(decode_run(&back.records).and_then(|records| verify(&records).map(|()| records)))
+        let known: Vec<Bridge> = self
+            .log
+            .quarantined()
+            .iter()
+            .filter_map(crate::recover::Quarantine::bridge)
+            .collect();
+        Ok(decode_run(&back.records)
+            .and_then(|records| verify_bridged(&records, &known).map(|()| records)))
     }
 
     /// Raise the next number to one the log does not already hold for this node.

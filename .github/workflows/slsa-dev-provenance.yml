@@ -1,28 +1,41 @@
-# SLSA PROVENANCE FOR EACH DEV COMMIT (ARCHITECT ruling 2026-10-17, option A1).
+# SLSA PROVENANCE FOR EACH DEV COMMIT (ARCHITECT rulings 2026-10-17, option A1, and 2026-10-20).
 #
 # The conformance suite `slsa-verifier` (conformance/registry.toml) verifies a busbar binary built
 # from the commit under judgement against SLSA provenance minted by a TRUSTED BUILDER: keyless,
 # through Sigstore, under GitHub's OIDC identity. A ModernCI check has no such identity and a key
-# of our own is not one, so the builder is this repository's own Actions run, here, on each push to
-# `dev`. It does nothing else: no tests and no gates (verification stays ModernCI's,
-# `xtask/src/conformance_record/slsa.rs`).
+# of our own is not one, so the SIGNER is this repository's own Actions run, here, on each push to
+# `dev`. It does nothing else: no tests and no gates. The JUDGE is ModernCI's `conformance` check
+# (`xtask/src/conformance_record/slsa.rs`).
 #
 # Per push to dev:
 #   1. `build` builds `busbar` at the pushed commit for linux x86_64 and aarch64
-#      (`cargo build --locked --release -p busbar --bin busbar`, the oracle check's own build);
+#      (`cargo build --locked --release --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target`, the oracle check's own build) and
+#      uploads each as the run artifact `busbar-linux-<arch>`, holding `busbar-linux-<arch>-<sha>`;
 #   2. `hashes` states both binaries' sha256 as the generator's subjects;
-#   3. `provenance` is slsa-github-generator's generic generator over those subjects;
-#   4. `publish` puts `busbar-linux-<arch>-<sha>` and `busbar-linux-<arch>-<sha>.intoto.jsonl` on
-#      busbar-release's `dev-bin` release, where the rig fetches HEAD's pair. Immutable: an asset
-#      already there is never replaced.
+#   3. `provenance` is slsa-github-generator's generic generator over those subjects: one signed
+#      statement, `busbar-linux-<sha>.intoto.jsonl`, naming both binaries;
+#   4. `hand-off` uploads that statement again as the run artifact `busbar-slsa-provenance` (the
+#      generator's own copy is kept 5 days, a retention it fixes and we do not).
+#
+# THE HAND-OFF IS THIS RUN'S OWN ARTIFACTS, nothing else: no release, no write to another
+# repository, no secret. The rig finds the run of this workflow whose head_sha is the commit it
+# judges, waits a bounded time while it is queued or in progress, and downloads
+# `busbar-linux-<arch>` and `busbar-slsa-provenance` with a token holding actions:read on
+# GetBusbar/busbar (artifact downloads need one even on a public repository). Every artifact here is
+# kept RETENTION_DAYS (90, the most a public repository allows); a commit judged after that reads
+# not-run, never a pass.
 #
 # THE GENERATOR IS REFERENCED BY TAG. slsa-verifier trusts the generic generator only under its
 # builder id `.../generator_generic_slsa3.yml@refs/tags/vX.Y.Z`; a workflow called by sha mints
 # provenance it refuses. v2.1.0 is commit f7dd8c54c2067bafc12ca7a55595d5ee9b75204a, stated as the
 # call's trailing comment and held to that by workflow-rules R14's one tag-pinned entry.
 #
-# SECRET: `BUSBAR_DEV_BIN_TOKEN`, a token with contents:write on GetBusbar/busbar-release (the
-# owner sets it); it is used by `publish` alone.
+# PERMISSIONS: `contents: read` for the workflow. The `provenance` call grants exactly what
+# generator_generic_slsa3.yml@v2.1.0 declares for its jobs: `id-token: write` (keyless signing and
+# its own ref detection), `actions: read` (the workflow's identity) and `contents: write`, which only
+# its `upload-assets` job asks for. That job is skipped here (`upload-assets: false`, and a push to
+# a branch is no tag), but GitHub refuses at load a called workflow whose job asks for more than its
+# caller grants, so the grant stays and nothing in this run uses it.
 
 name: slsa-dev-provenance
 
@@ -32,6 +45,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  RETENTION_DAYS: 90
 
 concurrency:
   group: slsa-dev-provenance-${{ github.sha }}
@@ -53,8 +69,8 @@ jobs:
       - name: Toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - name: Build busbar
-        run: cargo build --locked --release -p busbar --bin busbar
-      - name: Name it for dev-bin
+        run: cargo build --locked --release --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target
+      - name: Name it for the hand-off
         run: |
           mkdir -p out
           cp target/release/busbar "out/busbar-linux-${{ matrix.arch }}-${{ github.sha }}"
@@ -63,6 +79,7 @@ jobs:
           name: busbar-linux-${{ matrix.arch }}
           path: out/busbar-linux-${{ matrix.arch }}-${{ github.sha }}
           if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}
 
   hashes:
     needs: [build]
@@ -94,37 +111,25 @@ jobs:
       provenance-name: busbar-linux-${{ github.sha }}.intoto.jsonl
       upload-assets: false
 
-  publish:
-    needs: [build, provenance]
+  hand-off:
+    needs: [provenance]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: busbar-linux-*
-          path: out
-          merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
           name: ${{ needs.provenance.outputs.provenance-name }}
           path: prov
-      - name: Publish to busbar-release dev-bin (never over an existing asset)
+      - name: The provenance is the one the rig asks for
         env:
-          GH_TOKEN: ${{ secrets.BUSBAR_DEV_BIN_TOKEN }}
-          SHA: ${{ github.sha }}
           PROV: ${{ needs.provenance.outputs.provenance-name }}
+          WANT: busbar-linux-${{ github.sha }}.intoto.jsonl
         run: |
           set -euo pipefail
-          R=GetBusbar/busbar-release
-          have=$(gh release view dev-bin -R "$R" --json assets --jq '.assets[].name')
-          for arch in x86_64 aarch64; do
-            bin="busbar-linux-$arch-$SHA"
-            # One provenance names both binaries as subjects; each binary carries it under its own name.
-            cp "prov/$PROV" "out/$bin.intoto.jsonl"
-            for f in "$bin" "$bin.intoto.jsonl"; do
-              if printf '%s\n' "$have" | grep -qx "$f"; then
-                echo "dev-bin already holds $f; it is never replaced"
-              else
-                gh release upload dev-bin -R "$R" "out/$f"
-              fi
-            done
-          done
+          [ "$PROV" = "$WANT" ] || { echo "::error::the generator named its provenance $PROV, not $WANT"; exit 1; }
+          [ -s "prov/$WANT" ] || { echo "::error::prov/$WANT is missing or empty"; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: busbar-slsa-provenance
+          path: prov/busbar-linux-${{ github.sha }}.intoto.jsonl
+          if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}

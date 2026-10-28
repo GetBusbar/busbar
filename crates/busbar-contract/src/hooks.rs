@@ -346,8 +346,14 @@ pub trait RoutingPolicy: Send + Sync + 'static {
     ) -> PolicyResult;
 
     /// Stable transport/policy name for metrics + the `x-busbar-route` header
-    /// (e.g. `"webhook"`, `"socket"`, `"weighted"`, `"cheapest"`).
-    fn name(&self) -> &'static str;
+    /// (e.g. `"socket"`, `"weighted"`, `"cheapest"`).
+    fn name(&self) -> &str;
+
+    /// The same name as an owned, shareable handle: an implementation that already holds its name in
+    /// an `Arc<str>` hands out a clone, any other copies the borrow once.
+    fn name_arc(&self) -> std::sync::Arc<str> {
+        std::sync::Arc::from(self.name())
+    }
 
     /// REWRITE phase (`prompt: rw` gate): send the request projection and return the hook's `rewrite`
     /// reply — the replacement message body (+ optional injected tools), FAIL-CLOSED (`None` = proceed
@@ -361,6 +367,17 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         _budget: std::time::Duration,
     ) -> TransformOutcome {
         TransformOutcome::Abstain
+    }
+
+    /// Whether a REWRITE this hook answered that the plane then refuses to apply (one naming a
+    /// model other than the routed one, say) refuses the unit: the hook's own failure, answered by
+    /// its own `on_error`, as a failed `transform` call of the same hook is. `true` = the operator
+    /// declared the hook load-bearing (`on_error: reject`) and the unit is refused with the shared
+    /// required-hook answer; `false` = the request proceeds as it stood before that rewrite.
+    /// DEFAULT `false`: only the host's `on_error` decorator over a resolved rewrite knows the
+    /// disposition, and it overrides this.
+    fn refuses_failed_rewrite(&self) -> bool {
+        false
     }
 
     /// PUSH a settings map to the hook (`PATCH /admin/v1/hooks/{name}/settings`): send the

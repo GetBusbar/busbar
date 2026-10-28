@@ -10,8 +10,8 @@
 //! So each amendment goes on the node's journal as it is sealed — an access as an `Access` record,
 //! an adjustment as a `Transaction` record (the classes the journal unit names for them) — carrying
 //! every field its digest covers, and a boot rebuilds the node journal from the chain before
-//! anything can seal onto it. A node with no data directory keeps the previous release's shape:
-//! nothing is journalled and nothing is rebuilt.
+//! anything can seal onto it, whenever the chain has a durable source: a data directory, or the
+//! configured store the chain was resumed from. A node with neither journals and rebuilds nothing.
 //!
 //! A private child module of `durability`, as `replay` is; the parent re-exports the two items that
 //! are part of its public surface.
@@ -193,14 +193,23 @@ impl Durability {
     /// An amendment record the walk cannot link is REPORTED on
     /// [`Durability::restart_findings`], never spliced in. Once rebuilt, the book is the one
     /// [`bind_amendments`] binds.
-    pub fn restore_amendments(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// The chain could not be read back, or does not verify. The boot refuses then, as it refuses a
+    /// store that would not read the chain back the first time: taken for an empty chain, the
+    /// failed read rebuilt no amendment, so every signed count correction reverted for the life of
+    /// the process and none sealed afterwards was journalled (audit R1#3, audit root r4 B-2).
+    pub fn restore_amendments(&mut self) -> Result<(), String> {
         if !self.keeps_chain() {
-            return;
+            return Ok(());
         }
         let (run, set_aside) = match self.chain() {
             Ok(Ok(records)) => linked_run(&records),
-            // The book's own rebuild already reported a chain it could not read.
-            _ => return,
+            // A chain that does not verify refuses the boot as the book's own build does: taken for
+            // an empty chain, nothing was rebuilt or bound (audit root r4 B-2).
+            Ok(Err(broken)) => return Err(format!("the journal does not verify: {broken}")),
+            Err(e) => return Err(self.unreadable(&e)),
         };
         if set_aside > 0 {
             let finding = JournalDisagreement::Unreadable(format!(
@@ -218,6 +227,7 @@ impl Durability {
                     "the amendment chain does not verify: {broken:?}"
                 ))),
         }
+        Ok(())
     }
 }
 

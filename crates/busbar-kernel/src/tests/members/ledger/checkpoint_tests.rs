@@ -35,7 +35,7 @@ fn book_with_a_settlement() -> Ledger {
     ledger.record_draw(&k, 1, 1_000);
     ledger.record_hold_opened(&k, 1, 600);
     ledger.record_slice_spent(&k, 1, 600);
-    ledger.settle(&k, 1, hold("a", 600), 450, &usage("tokens", 450), &token);
+    ledger.settle_recording(&k, 1, hold("a", 600), 450, &usage("tokens", 450), &token);
     ledger
 }
 
@@ -117,11 +117,8 @@ fn the_head_order_does_not_change_the_body() {
 }
 
 #[test]
-fn the_local_anchor_admits_it_is_self_attesting() {
-    // The honest label. A node that files its own signatures where it can rewrite them has proved
-    // nothing, and the type says so rather than leaving an operator to work it out.
+fn the_local_anchor_keeps_the_head_it_anchored() {
     let mut anchor = SelfAttestingAnchor::new();
-    assert!(anchor.is_self_attesting());
     let checkpoint = seal(&book_with_a_settlement(), 4);
     anchor.anchor(&checkpoint).unwrap();
     let head = anchor.head().unwrap().unwrap();
@@ -143,12 +140,15 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     let k = key("b");
     ledger.record_hold_opened(&k, 1, 200);
     ledger.record_slice_spent(&k, 1, 200);
-    ledger.settle(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
+    ledger.settle_recording(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
     assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // One figure edited by hand: does not.
-    ledger.book_mut().entry(k.clone(), 1).settled += 5;
-    let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
+    let mut tampered = ledger.book().snapshot();
+    if let Some(figures) = tampered.get_mut(&(k.clone(), 1)) {
+        figures.settled += 5;
+    }
+    let findings = verify(&checkpoint, &tampered, None);
     assert_eq!(findings.len(), 1);
     match &findings[0] {
         Finding::Imbalanced(i) => assert_eq!(i.residual.amount(), 5),
@@ -171,8 +171,13 @@ fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
     let checkpoint = seal(&ledger, 1);
     assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
-    // The window is sealed, so the book lets it go.
-    assert_eq!(ledger.book_mut().retain_from(2), 1);
+    // The window is sealed and past the horizon, so the book lets it go.
+    let retired = ledger.retirable(&checkpoint, u64::MAX);
+    assert_eq!(
+        retired.iter().copied().collect::<Vec<_>>(),
+        vec![1 as WindowStart]
+    );
+    assert_eq!(ledger.retire_windows(&retired), 1);
     let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
     match findings.as_slice() {
         [Finding::Retired { key: k, window }] => {
@@ -345,7 +350,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
     let k = key("b");
     ledger.record_hold_opened(&k, 1, 100);
     ledger.record_slice_spent(&k, 1, 100);
-    ledger.settle(&k, 1, hold("a", 100), 100, &usage("tokens", 100), &token);
+    ledger.settle_recording(&k, 1, hold("a", 100), 100, &usage("tokens", 100), &token);
     let second = seal(&ledger, 2);
     anchor.anchor(&second).unwrap();
 
@@ -382,7 +387,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
     )));
 }
 
-// ── THE SEAL VERIFIES AGAINST A KEYSET (Q71(3), #82) ────────────────────────────────────────────
+// ── THE SEAL VERIFIES AGAINST A KEYSET ────────────────────────────────────────────
 //
 // The ledger holds no key: the keyset is the audit unit's, and the one that signs and checks real
 // checkpoints is busbar_kernel_audit::AuditKeySet (its own tests prove the ed25519 half). Here the

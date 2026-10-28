@@ -9,13 +9,19 @@
 //! nothing about the field somebody adds next. Comparing the entire object means a new key cannot
 //! reach a hook without this file being edited, which is where the decision belongs.
 
-use crate::hooks::gate::{decide, GateSubject, GateVerdict};
+use crate::hooks::gate::{decide_over, GateSubject, GateVerdict};
 use crate::hooks::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
 };
 use busbar_contract::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
+
+/// The gate pass over a request whose content was read: the cells below drive the one pass the door
+/// path runs (`decide_door` reaches it the same way), shown readable content.
+async fn decide(gates: &[(u16, ResolvedPolicy)], subject: &GateSubject<'_>) -> GateVerdict {
+    decide_over(gates, subject, true, &mut Vec::new()).await
+}
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
 /// through the contract's own `hook_wire::build`, so what this test reads is what a plugin would receive
@@ -74,108 +80,95 @@ impl RoutingPolicy for Broken {
 /// (`test_support::hook_double`), opened through the kernel's hook axis port and told to answer
 /// `reply` verbatim (`raw_decide_reply`). The reply is lowered into the call's frame as the SDK
 /// lowers it, and the kernel's hook seam lowers the fixed answer back, so this drives the kernel's
-/// path whole: a reply that fails to parse yields `Err(..)` (→ the gate's `on_error`), a reply that
-/// parses to "no opinion" yields `Ok(Abstain)` (→ proceed). Nothing here re-implements the normalizer.
+/// path whole: a reply the hook got wrong (its typed fields do not parse) is `Ok(Abstain)`, as
+/// 1.5.5's host read it (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56`); only a hook that SAYS it
+/// could not answer is `Err(..)` (→ the gate's `on_error`). Nothing here re-implements the
+/// normalizer.
 fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
+    double_gate("raw_decide_reply", reply)
+}
+
+/// The hook double, opened with the one setting `key: value`.
+fn double_gate(key: &str, value: serde_json::Value) -> Arc<dyn RoutingPolicy> {
     let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
     let mut settings = serde_json::Map::new();
-    settings.insert("raw_decide_reply".into(), reply);
+    settings.insert(key.into(), value);
     env.open("reply-gate", &settings, "reply-gate", 5_000)
         .expect("the hook double opens through the axis")
 }
 
-/// A reply carrying a VALID `reject` beside a WRONG-TYPED sibling (`order` must be an array of
-/// integers) fails the 1.5.5 reply parse (`abi::sdk::hook::lower_decide_reply`) — and with `on_error: reject` that MUST refuse the
-/// request, never route it. This is the exact CF4 fail-open: the malformed reply used to be
-/// swallowed to `Abstain` (proceed), bypassing both the hook's `reject` and the operator's on_error.
+fn tool_subject(facts: &InvokeReq) -> GateSubject<'_> {
+    GateSubject {
+        facts,
+        container: "filesystem",
+        ingress_protocol: "example-protocol",
+        request_id: 1,
+        key: None,
+        session: None,
+        incremental: None,
+    }
+}
+
+/// A reply the hook got wrong is read as 1.5.5's host read it: a failed parse of the reply is
+/// ABSTAIN (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56`, `Err(_) => RoutingDecision::Abstain`),
+/// so the request PROCEEDS even under `on_error: reject`. That includes a valid `reject` beside a
+/// wrong-typed sibling: 1.5.5's `HookResponse` types `order` as `Vec<usize>` and `abstain` as
+/// `bool` (v1.5.5 `crates/busbar/src/hooks/wire.rs:431,433`), so the whole parse failed and the
+/// reject was never read. (This cell asserted the opposite, `on_error`, before the hook SDK's
+/// lowering was brought back to 1.5.5: that was the divergence, not 1.5.5's behaviour.)
 #[tokio::test]
-async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject() {
+async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_error_reject() {
     let facts = tool_call();
-    // `reject` is untyped (fail-closed by design); `order` is strictly `Vec<usize>`, so a string
-    // aborts the WHOLE parse.
+    for reply in [
+        serde_json::json!({ "reject": { "status": 403, "message": "screened" }, "order": "x" }),
+        serde_json::json!({ "reject": { "status": 403 }, "abstain": "yes" }),
+        serde_json::json!({ "order": "x" }),
+        serde_json::json!({ "abstain": "yes" }),
+        serde_json::json!("garbage"),
+        serde_json::json!(null),
+        serde_json::json!([1]),
+    ] {
+        let gates = gate(
+            reply_gate(reply.clone()),
+            crate::config::PolicyOnError::Reject,
+            true,
+            false,
+        );
+        assert!(
+            matches!(
+                decide(&gates, &tool_subject(&facts)).await,
+                GateVerdict::Proceed
+            ),
+            "1.5.5's host read the out-of-shape reply {reply} as abstain: the request proceeds"
+        );
+    }
+}
+
+/// A hook that SAYS it could not answer (`decide_result` → `Err`, the hook double's `fail_decide`)
+/// is FAILED, and `on_error: reject` refuses, as 1.5.5's host did (v1.5.5
+/// `crates/plugin-loader/src/hook.rs:173-175`, `HookReply::Failed` → `Err` → `on_error`). This is
+/// the one road to `on_error` from a hook that answered; an out-of-shape reply is not it.
+#[tokio::test]
+async fn a_hook_that_says_it_failed_resolves_on_error_reject() {
+    let facts = tool_call();
     let gates = gate(
-        reply_gate(serde_json::json!({
-            "reject": { "status": 403, "message": "screened" },
-            "order": "not-an-array",
-        })),
+        double_gate("fail_decide", serde_json::json!("the screen is down")),
         crate::config::PolicyOnError::Reject,
         true,
         false,
     );
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-    };
     assert!(
-        matches!(decide(&gates, &subject).await, GateVerdict::Reject { .. }),
-        "a malformed reply carrying a valid reject must fail CLOSED to on_error, not proceed"
-    );
-}
-
-/// A TOTALLY malformed reply (not even an object) fails to parse → the gate's `on_error` decides.
-#[tokio::test]
-async fn a_totally_malformed_reply_applies_on_error() {
-    let facts = tool_call();
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-    };
-
-    let closed = gate(
-        reply_gate(serde_json::json!("garbage")),
-        crate::config::PolicyOnError::Reject,
-        false,
-        false,
-    );
-    assert!(
-        matches!(decide(&closed, &subject).await, GateVerdict::Reject { .. }),
-        "`on_error: reject` refuses a request whose gate returned an unparseable reply"
-    );
-}
-
-/// `on_error: weighted` (the advisory posture) HONORS the operator's choice: a malformed reply from
-/// an advisory gate does NOT refuse — the fix routes a parse failure to `on_error`, whatever the
-/// operator set it to, so a non-reject terminal still proceeds.
-#[tokio::test]
-async fn a_malformed_reply_honors_a_non_reject_on_error() {
-    let facts = tool_call();
-    let open = gate(
-        reply_gate(serde_json::json!({
-            "reject": { "status": 403 },
-            "order": "not-an-array",
-        })),
-        crate::config::PolicyOnError::Weighted,
-        true,
-        false,
-    );
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-    };
-    assert!(
-        matches!(decide(&open, &subject).await, GateVerdict::Proceed),
-        "the operator chose `weighted`: a failed advisory gate proceeds, it does not refuse"
+        matches!(
+            decide(&gates, &tool_subject(&facts)).await,
+            GateVerdict::Reject { .. }
+        ),
+        "`on_error: reject` refuses a request whose gate said it could not answer"
     );
 }
 
 /// A GENUINE no-opinion reply still Abstains. An empty `{}` parses cleanly to a reply with
 /// no verbs → `Ok(Abstain)` → proceed, even under `on_error: reject`: a hook that legitimately has
-/// nothing to say is NOT turned into a hard failure by this fix.
+/// nothing to say is not a failure (v1.5.5 `crates/busbar/src/hooks/wire.rs:687-692`).
 #[tokio::test]
 async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     let facts = tool_call();
@@ -207,8 +200,9 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     }
 }
 
-/// A well-formed `reject` (the common case) still rejects through this seam — the parse-OK path is
-/// untouched, proving the fix narrowed only the parse-FAILURE case.
+/// A well-formed `reject` (the common case) rejects through this seam — the parse-OK path is
+/// 1.5.5's (v1.5.5 `crates/busbar/src/hooks/wire.rs:670-675`), and a parsed reject is the hook's own
+/// verdict, never `on_error`'s.
 #[tokio::test]
 async fn a_well_formed_reject_still_rejects() {
     let facts = tool_call();
@@ -393,19 +387,28 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
 }
 
 /// The verdict. A `reject` stops the request and carries the hook's own message and name; the
-/// status is re-clamped to the 4xx band at the seam that ACTS on it, not merely at the one that
-/// parsed it.
+/// status is re-clamped at the seam that ACTS on it, not merely at the one that parsed it, by the
+/// ONE shared rule 1.5.5's `map_decision` applied (outside 400..=499 is 403), and the message is
+/// re-sanitized by the one shared sanitizer (audit Q128 p15#5; THE DESIGN §11.7 l.1357-1358).
+/// RED before: a saturating clamp answered 400 for a 200 and 499 for a 5xx, and the message
+/// reached the caller with its control characters.
 #[tokio::test]
-async fn a_reject_stops_the_request_with_a_clamped_status() {
+async fn a_reject_stops_the_request_with_the_shared_clamp_and_sanitizer() {
     let facts = tool_call();
     // The out-of-band values a hook can send are bounded by the wire's own `u16`, so the interesting
     // pair is a success status and a 5xx — the two a gate must not be able to mint through a reject.
-    for (replied, expected) in [(403u16, 403u16), (200, 400), (503, 499), (65_535, 499)] {
+    for (replied, expected) in [
+        (403u16, 403u16),
+        (451, 451),
+        (200, 403),
+        (503, 403),
+        (65_535, 403),
+    ] {
         let gates = gate(
             Arc::new(Spy {
                 reply: RoutingDecision::Reject {
                     status: replied,
-                    message: "screened".to_string(),
+                    message: "scr\r\neened".to_string(),
                 },
                 seen: Mutex::new(None),
             }),
@@ -433,7 +436,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
                 hook,
             } => {
                 assert_eq!(status, expected, "a hook replied {replied}");
-                assert_eq!(message, "screened");
+                assert_eq!(message, "screened", "the shared sanitizer strips the CR LF");
                 assert_eq!(hook, "spy", "the verdict names which control refused");
             }
             GateVerdict::Proceed => panic!("a reject must stop the request"),
@@ -534,6 +537,11 @@ async fn no_attached_gate_builds_no_projection() {
 
 use crate::hooks::gate::IncrementalScan;
 use crate::session::{SessionKey, SessionStore};
+
+/// The screen-cache key of a session named by a string, as the door path keys its octets.
+fn derive_session_key(sid: &str, principal_id: &str, hook_generation: u64) -> SessionKey {
+    IncrementalScan::derive_session_key_octets(sid.as_bytes(), principal_id, hook_generation)
+}
 
 /// A long session re-screens only NEW content: a piece cleared on one turn is not sent to the hook
 /// again on the next turn of the same session, and the gate proceeds without a sidecar call.
@@ -694,18 +702,18 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
 /// stable for identical inputs.
 #[test]
 fn derive_session_key_partitions_by_principal_and_generation() {
-    let base = IncrementalScan::derive_session_key("sid", "alice", 1);
+    let base = derive_session_key("sid", "alice", 1);
     // Identical inputs are stable.
-    assert_eq!(base, IncrementalScan::derive_session_key("sid", "alice", 1));
+    assert_eq!(base, derive_session_key("sid", "alice", 1));
     // A DIFFERENT principal on the same session id + generation: different key (confused-deputy fix).
-    assert_ne!(base, IncrementalScan::derive_session_key("sid", "bob", 1));
+    assert_ne!(base, derive_session_key("sid", "bob", 1));
     // A generation bump (policy tightened) on the same principal + session id: different key
     // (stale-clearance fix).
-    assert_ne!(base, IncrementalScan::derive_session_key("sid", "alice", 2));
+    assert_ne!(base, derive_session_key("sid", "alice", 2));
     // Domain separation: the principal/sid field boundary cannot alias into another split.
     assert_ne!(
-        IncrementalScan::derive_session_key("b", "a", 1),
-        IncrementalScan::derive_session_key("", "ab", 1),
+        derive_session_key("b", "a", 1),
+        derive_session_key("", "ab", 1),
     );
 }
 
@@ -753,9 +761,9 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
         saw
     }
 
-    let alice_g1 = IncrementalScan::derive_session_key(sid, "alice", 1);
-    let bob_g1 = IncrementalScan::derive_session_key(sid, "bob", 1);
-    let alice_g2 = IncrementalScan::derive_session_key(sid, "alice", 2);
+    let alice_g1 = derive_session_key(sid, "alice", 1);
+    let bob_g1 = derive_session_key(sid, "bob", 1);
+    let alice_g2 = derive_session_key(sid, "alice", 2);
 
     // ALICE screens the piece clean at generation 1.
     assert!(
@@ -835,7 +843,7 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
 
 // ── The door path: the session the plane's `project` names (ARCHITECT RULING 2026-10-03) ──────
 
-use crate::hooks::gate::{decide_door, DoorSubject, ScanSubstrate};
+use crate::hooks::gate::{decide_door, DoorShape, DoorSubject, ScanSubstrate};
 
 /// A gate that abstains and records the session each call's request view named.
 #[derive(Default)]
@@ -895,7 +903,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
         let store = &store;
         async move {
             let door = DoorSubject {
-                projected: PROJECTED,
+                projected: Some(PROJECTED),
                 container: "entry",
                 dialect: "door-dialect",
                 request_id: 1,
@@ -906,8 +914,12 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
                     generation,
                     now_ms: 0,
                 }),
+                plane: DoorShape::default(),
             };
-            matches!(decide_door(gates, &door).await, GateVerdict::Proceed)
+            matches!(
+                decide_door(gates, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            )
         }
     };
     let alice: &'static busbar_contract::records::VirtualKey = Box::leak(Box::new(alice));
@@ -948,7 +960,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
 fn an_octet_session_keys_as_its_string() {
     assert_eq!(
         IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),
-        IncrementalScan::derive_session_key("ctx-1", "alice", 3)
+        derive_session_key("ctx-1", "alice", 3)
     );
     assert_ne!(
         IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),
@@ -1002,11 +1014,11 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+            crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
         }
     }
     let _restore = Restore;
-    crate::proxy::set_hook_content_max_bytes(8);
+    crate::hooks::set_hook_content_max_bytes(8);
 
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,
@@ -1046,5 +1058,385 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     assert!(
         messages.as_array().is_none_or(|m| m.is_empty()),
         "21 bytes of arguments reached a gate whose ceiling is 8: {messages}"
+    );
+}
+
+// ── The on_error chain, the container-bound clearance and the plane's projection (audit Q128 p15) ──
+
+/// A spy answering `reply`.
+fn spying(reply: RoutingDecision) -> Arc<Spy> {
+    Arc::new(Spy {
+        reply,
+        seen: Mutex::new(None),
+    })
+}
+
+/// A spy that abstains.
+fn abstaining() -> Arc<Spy> {
+    spying(RoutingDecision::Abstain)
+}
+
+/// One `on_error` fallback link around `policy`, with the grants a test wants.
+fn link(
+    policy: Arc<dyn RoutingPolicy>,
+    send_prompt: bool,
+    send_user: bool,
+) -> crate::hooks::FallbackHook {
+    crate::hooks::FallbackHook {
+        policy,
+        timeout: std::time::Duration::from_secs(5),
+        send_prompt,
+        send_user,
+        on_empty: crate::config::PolicyOnError::Reject,
+    }
+}
+
+/// [`gate`] with an `on_error` fallback chain in front of its terminal.
+fn chained(
+    policy: Arc<dyn RoutingPolicy>,
+    chain: Vec<crate::hooks::FallbackHook>,
+    terminal: crate::config::PolicyOnError,
+    send_prompt: bool,
+    send_user: bool,
+) -> Vec<(u16, ResolvedPolicy)> {
+    vec![(
+        0,
+        ResolvedPolicy::Policy {
+            policy,
+            on_error: terminal,
+            on_error_chain: chain,
+            timeout: std::time::Duration::from_secs(5),
+            send_prompt,
+            send_user,
+            on_empty: crate::config::PolicyOnError::Reject,
+        },
+    )]
+}
+
+fn subject_on<'a>(facts: &'a InvokeReq, container: &'a str) -> GateSubject<'a> {
+    GateSubject {
+        facts,
+        container,
+        ingress_protocol: "example-protocol",
+        request_id: 1,
+        key: None,
+        session: None,
+        incremental: None,
+    }
+}
+
+/// A FAILED GATE WALKS ITS `on_error` CHAIN BEFORE ITS TERMINAL, as 1.5.5's `run_on_error_chain`
+/// did (v1.5.5 `crates/busbar/src/proxy/hooks.rs:1119-1180`; THE DESIGN §11.7 l.1357-1358, audit
+/// Q128 p15#1). `a: on_error: b`, `b: on_error: weighted`: a broken `a` asks `b`, and `b`'s reject
+/// stops the request under `b`'s name. RED before: the door gate applied the terminal alone, so the
+/// request proceeded without `b` ever being asked.
+#[tokio::test]
+async fn a_failed_gate_asks_its_fallback_and_the_fallbacks_reject_stops_the_request() {
+    let facts = tool_call();
+    let fallback = spying(RoutingDecision::Reject {
+        status: 403,
+        message: "fallback screened".to_string(),
+    });
+    let gates = chained(
+        Arc::new(Broken),
+        vec![link(fallback.clone(), true, true)],
+        crate::config::PolicyOnError::Weighted,
+        false,
+        false,
+    );
+    match decide(&gates, &subject_on(&facts, "filesystem")).await {
+        GateVerdict::Reject {
+            status,
+            message,
+            hook,
+        } => {
+            assert_eq!((status, message.as_str()), (403, "fallback screened"));
+            assert_eq!(hook, "spy", "the link that answered is the one named");
+        }
+        GateVerdict::Proceed => panic!("the fallback gate was skipped: the chain was not walked"),
+    }
+    let seen = fallback
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the fallback was asked");
+    assert!(
+        seen["request"].get("messages").is_none() && seen["request"].get("user").is_none(),
+        "a link sees at most what the failed gate was granted (1.5.5): {seen}"
+    );
+}
+
+/// The first link that ANSWERS decides: a broken link is passed over, and a link that abstains
+/// lets the request proceed even under a `reject` terminal. RED before: the terminal alone answered
+/// the shared 503 although a fallback would have answered.
+#[tokio::test]
+async fn the_first_link_that_answers_decides_before_the_terminal() {
+    let facts = tool_call();
+    let abstains = abstaining();
+    let gates = chained(
+        Arc::new(Broken),
+        vec![
+            link(Arc::new(Broken), false, false),
+            link(abstains.clone(), false, false),
+        ],
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    assert!(
+        matches!(
+            decide(&gates, &subject_on(&facts, "filesystem")).await,
+            GateVerdict::Proceed
+        ),
+        "the second link answered: the terminal does not decide"
+    );
+    assert!(
+        abstains.seen.lock().unwrap().is_some(),
+        "the second link was asked"
+    );
+
+    // Every link failing lands on the terminal: the shared refusal.
+    let gates = chained(
+        Arc::new(Broken),
+        vec![link(Arc::new(Broken), false, false)],
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    match decide(&gates, &subject_on(&facts, "filesystem")).await {
+        GateVerdict::Reject { status, .. } => {
+            assert_eq!(status, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
+        }
+        GateVerdict::Proceed => panic!("every link failed: the reject terminal refuses"),
+    }
+}
+
+/// A CLEARANCE IS BOUND TO THE CONTAINER (audit Q128 p15#2): a piece one hook cleared for the
+/// caller's session on container A is screened again when the same caller sends it to container B,
+/// which the same hook guards (its verdict may read `pool`); on A it is still skipped. RED before:
+/// the cleared set was keyed by the hook alone, so B's call was skipped unscreened.
+#[tokio::test]
+async fn a_piece_cleared_on_one_container_is_screened_again_on_another() {
+    let store = SessionStore::new(64, None);
+    let session = SessionKey(4242);
+    let facts = tool_call();
+    let spy = abstaining();
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        false,
+    );
+    let on = |container: &'static str| GateSubject {
+        incremental: Some(IncrementalScan {
+            store: &store,
+            session,
+            now_ms: 0,
+        }),
+        ..subject_on(&facts, container)
+    };
+    let fired = || spy.seen.lock().unwrap().take().is_some();
+
+    assert!(matches!(
+        decide(&gates, &on("server-a")).await,
+        GateVerdict::Proceed
+    ));
+    assert!(fired(), "a new piece is screened on A");
+    assert!(matches!(
+        decide(&gates, &on("server-a")).await,
+        GateVerdict::Proceed
+    ));
+    assert!(!fired(), "cleared on A: not screened again on A");
+    assert!(matches!(
+        decide(&gates, &on("server-b")).await,
+        GateVerdict::Proceed
+    ));
+    assert!(fired(), "a clearance on A is not a clearance on B");
+}
+
+/// One door request over `projected`, the plane's own fields `plane`.
+fn door_on<'a>(projected: Option<&'a [u8]>, plane: DoorShape<'a>) -> DoorSubject<'a> {
+    DoorSubject {
+        projected,
+        container: "entry",
+        dialect: "door-dialect",
+        request_id: 1,
+        key: None,
+        session: None,
+        scan: None,
+        plane,
+    }
+}
+
+/// A DOOR BODY THE GATE CANNOT READ IS NOT EMPTY CONTENT (audit Q128 p15#3; THE DESIGN Appendix
+/// B.9 l.5436-5437). A plane that states no body, or one that is not JSON, gives a content-granted
+/// gate nothing to screen: it is a gate that could not answer, and its `on_error` decides (here
+/// `reject`, the shared refusal), never a gate shown `null` that abstains. A shape-only gate reads
+/// no content and still fires. RED before: both bodies were screened as an unnamed call with
+/// `null` arguments, the spy abstained, and the unit proceeded.
+#[tokio::test]
+async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
+    for body in [None, Some(&b"\xff not json"[..])] {
+        let spy = abstaining();
+        let gates = gate(
+            spy.clone(),
+            crate::config::PolicyOnError::Reject,
+            true,
+            false,
+        );
+        match decide_door(
+            &gates,
+            &door_on(body, DoorShape::default()),
+            &mut Vec::new(),
+        )
+        .await
+        {
+            GateVerdict::Reject { status, .. } => {
+                assert_eq!(status, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
+            }
+            GateVerdict::Proceed => panic!("a content gate passed a body it never saw: {body:?}"),
+        }
+        assert!(
+            spy.seen.lock().unwrap().is_none(),
+            "the gate was not shown empty content"
+        );
+
+        let shape_only = abstaining();
+        let gates = gate(
+            shape_only.clone(),
+            crate::config::PolicyOnError::Reject,
+            false,
+            false,
+        );
+        assert!(matches!(
+            decide_door(
+                &gates,
+                &door_on(body, DoorShape::default()),
+                &mut Vec::new()
+            )
+            .await,
+            GateVerdict::Proceed
+        ));
+        assert!(
+            shape_only.seen.lock().unwrap().is_some(),
+            "a shape-only gate fires"
+        );
+    }
+}
+
+/// A door body that is JSON but not the invoke document is screened WHOLE, never as `null`; and
+/// the plane's own `max_tokens`, stream flag and end user reach the hook's view (THE DESIGN
+/// Appendix B.9 l.5436-5437). RED before: the content was `null` and the plane's fields were
+/// dropped for the kernel's own reading.
+#[tokio::test]
+async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
+    let spy = abstaining();
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Reject,
+        true,
+        true,
+    );
+    let plane = DoorShape {
+        max_tokens: Some(64),
+        stream: true,
+        end_user: Some("end-user-1"),
+    };
+    let body = br#"{"message":{"text":"the secret"}}"#;
+    assert!(matches!(
+        decide_door(&gates, &door_on(Some(&body[..]), plane), &mut Vec::new()).await,
+        GateVerdict::Proceed
+    ));
+    let seen = spy
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the gate was fired");
+    let request = &seen["request"];
+    assert!(
+        request["messages"].to_string().contains("the secret"),
+        "the plane's document is screened whole: {seen}"
+    );
+    assert_eq!(request["max_tokens"], 64, "{seen}");
+    assert_eq!(request["stream"], true, "{seen}");
+    assert_eq!(request["user"]["user"], "end-user-1", "{seen}");
+}
+
+/// THE HOOKS APPLIED INCLUDE THE `on_error` WALK (THE DESIGN §1: the audit record's "controls (...
+/// hooks applied)"; §11.7 l.1357-1358, the chain is 1.5.5's): a failed gate is recorded first, its
+/// head what its chain made of it and its failure kept, then every link the walk asked, in order,
+/// each as it ran. One record: the list the gate pushes is the one the hook report carries.
+#[tokio::test]
+async fn the_hooks_applied_carry_the_failed_gate_and_every_link_its_walk_asked() {
+    use busbar_kernel_audit::record::{HookApplied, HookHead};
+    let ran_as = |hook: &str, head: HookHead, failed: bool| HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    };
+
+    // A broken link is passed over; the next link abstains: the unit proceeds.
+    let gates = chained(
+        Arc::new(Broken),
+        vec![
+            link(Arc::new(Broken), false, false),
+            link(abstaining(), false, false),
+        ],
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    let mut ran = Vec::new();
+    assert!(matches!(
+        decide_door(
+            &gates,
+            &door_on(Some(PROJECTED), DoorShape::default()),
+            &mut ran
+        )
+        .await,
+        GateVerdict::Proceed
+    ));
+    assert_eq!(
+        ran,
+        vec![
+            ran_as("broken", HookHead::Pass, true),
+            ran_as("broken", HookHead::Pass, true),
+            ran_as("spy", HookHead::Pass, false),
+        ]
+    );
+
+    // A link that rejects closes the failed gate: both carry the veto.
+    let gates = chained(
+        Arc::new(Broken),
+        vec![link(
+            spying(RoutingDecision::Reject {
+                status: 403,
+                message: "fallback screened".to_string(),
+            }),
+            false,
+            false,
+        )],
+        crate::config::PolicyOnError::Weighted,
+        false,
+        false,
+    );
+    let mut ran = Vec::new();
+    assert!(matches!(
+        decide_door(
+            &gates,
+            &door_on(Some(PROJECTED), DoorShape::default()),
+            &mut ran
+        )
+        .await,
+        GateVerdict::Reject { .. }
+    ));
+    assert_eq!(
+        ran,
+        vec![
+            ran_as("broken", HookHead::Veto, true),
+            ran_as("spy", HookHead::Veto, false),
+        ]
     );
 }

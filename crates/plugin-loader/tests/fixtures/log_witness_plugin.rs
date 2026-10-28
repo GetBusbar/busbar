@@ -106,7 +106,7 @@ fn log_outside() {
 /// Call plugin [`b`]'s `tick` directly, on this thread, with `mode`.
 fn call_b(mode: &'static [u8]) {
     // SAFETY: `b::door` answers a `'static` door whose table leads with an `OpsHead`.
-    let tick = unsafe { (*(*b::door()).ops).tick };
+    let tick = unsafe { (*b::door().ops()).tick };
     let Some(tick) = tick else { return };
     // SAFETY: all-zero is a valid `TickIn`/`TickOut` (the mechanism's rule for every `in`/`out`).
     let mut input: TickIn = unsafe { MaybeUninit::zeroed().assume_init() };

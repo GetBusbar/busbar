@@ -253,6 +253,18 @@ pub struct StoreTail {
     pub _reserved: [u8; 6],
 }
 
+impl StoreTail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `StoreTail { …, ..StoreTail::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        durable_plane: 0,
+        fork_refusal: 0,
+        _reserved: [0; 6],
+    };
+}
+
 // ── the cancel vocabulary ────────────────────────────────────────────────────────────────────
 
 /// [`CancelOut::disposition`](crate::abi::mechanism::lifecycle::CancelOut::disposition): the store

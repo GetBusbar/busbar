@@ -35,8 +35,11 @@
 //!   ([`DialJudge`], under the dialling need's egress class) BEFORE any byte goes there. A candidate
 //!   the judge refuses is never numbered, never told to the framer and never sent to; one it admits
 //!   becomes an admitted candidate of the secure layer ([`Association::admit_candidate`]), which
-//!   probes it and binds it only once that probe is answered from it. The accepting side learns
-//!   its paths from verified checks alone and admits no candidate.
+//!   probes it and binds it only once that probe is answered from it. A verified check from a path
+//!   no candidate named meets the SAME judge before the secure layer hears it: admitted, the path
+//!   becomes an admitted candidate like any other; refused or pending, the check is dropped and the
+//!   path is never probed, numbered, told to the framer or bound. The accepting side learns its
+//!   paths from verified checks alone and admits no candidate.
 //!
 //! Sans-IO: the caller hands in what the port read and the clock, takes
 //! [`DatagramFraming::poll_send`] out to the port, and calls [`DatagramFraming::timeout`] at
@@ -365,6 +368,13 @@ impl DatagramFraming {
         bytes: &[u8],
         now: Instant,
     ) -> Result<Yielded, Refused> {
+        let unadmitted = self
+            .secure
+            .as_ref()
+            .is_some_and(|s| s.unadmitted_check(from, bytes));
+        if unadmitted && !self.admit_heard(from, now) {
+            return self.settle(Yielded::default(), now);
+        }
         let Some(secure) = self.secure.as_mut() else {
             return Ok(Yielded::default());
         };
@@ -781,13 +791,17 @@ impl DatagramFraming {
                 return Err(fault("the framer answered terms twice"));
             }
             self.user = Some(t.local.ufrag.clone());
-            self.secure = Some(Association::new(
+            let mut secure = Association::new(
                 Arc::clone(&self.cert),
                 t.role,
                 &t.local,
                 &t.remote,
                 t.fingerprint,
-            ));
+            );
+            if self.side == SIDE_DIAL {
+                secure.set_dialling();
+            }
+            self.secure = Some(secure);
             if self.side == SIDE_DIAL {
                 self.admit(&t.candidates, now);
             }
@@ -803,17 +817,14 @@ impl DatagramFraming {
     /// numbered (told to the framer on the next call) and handed to the secure layer, which probes
     /// it. A refused, unparsable or still-pending one is dropped and counted.
     fn admit(&mut self, candidates: &[String], now: Instant) {
-        let Some((judge, class)) = self.judge.clone() else {
+        if self.judge.is_none() {
             return;
-        };
+        }
         for c in candidates {
-            let admitted = c.parse::<SocketAddr>().ok().filter(|addr| {
-                // A literal is judged at once; a judgement that would pend is no admission.
-                matches!(
-                    judge.judge_dial(&addr.to_string(), class, Box::new(|_| {})),
-                    Some(Ok(pinned)) if pinned == *addr
-                )
-            });
+            let admitted = c
+                .parse::<SocketAddr>()
+                .ok()
+                .filter(|addr| self.judged(*addr));
             let Some(addr) = admitted else {
                 self.refused_candidates += 1;
                 continue;
@@ -830,6 +841,33 @@ impl DatagramFraming {
                 self.refused_candidates += 1;
             }
         }
+    }
+
+    /// THE dialling side's one admission test, for an advertised candidate and a heard path alike:
+    /// `addr` meets the destination judge under the dialling need's egress class. A literal is
+    /// judged at once; a refusal, a judgement that would pend, or one pinned elsewhere is no
+    /// admission. No judge (the accepting side) admits nothing.
+    fn judged(&self, addr: SocketAddr) -> bool {
+        let Some((judge, class)) = self.judge.as_ref() else {
+            return false;
+        };
+        matches!(
+            judge.judge_dial(&addr.to_string(), *class, Box::new(|_| {})),
+            Some(Ok(pinned)) if pinned == addr
+        )
+    }
+
+    /// The dialling side: a verified check came from `addr`, a path no admitted candidate named.
+    /// It is judged as a candidate is ([`Self::judged`]); admitted, it becomes an admitted candidate
+    /// of the secure layer (probed now, bound only once proven) and the check is ingested. `false`
+    /// = refused, pending or past the candidate cap: the check is dropped unheard.
+    fn admit_heard(&mut self, addr: SocketAddr, now: Instant) -> bool {
+        if !self.judged(addr) {
+            return false;
+        }
+        self.secure
+            .as_mut()
+            .is_some_and(|s| s.admit_candidate(addr, now))
     }
 
     /// Send one route where the secure layer allows it, or drop it.
@@ -1237,12 +1275,6 @@ impl Bridge {
     /// Stop the bridge: no frame crosses again, in either direction.
     pub fn stop(&mut self) {
         self.stopped = true;
-    }
-
-    /// Whether the bridge is stopped.
-    #[must_use]
-    pub fn stopped(&self) -> bool {
-        self.stopped
     }
 
     /// The stream a frame on `leg`'s `stream` crosses to on the other leg; `None` = the stream is

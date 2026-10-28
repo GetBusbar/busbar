@@ -5,7 +5,7 @@
 //!
 //! ## The one act that closes a unit
 //!
-//! [`Ledger::settle`] takes the hold BY VALUE. That is not a style choice — it is the whole
+//! [`Ledger::settle_recording`] takes the hold BY VALUE. That is not a style choice — it is the whole
 //! mechanism by which a hold is settled at most once. A settled hold does not exist any more, so
 //! there is no second one to settle, and no amount of care at the call sites is required to make
 //! that true. The token is the other half: a posting cannot be built by anything that is not the
@@ -94,17 +94,38 @@ pub struct Settlement {
     pub overdraft: Option<Overdraft>,
 }
 
-/// What one posting moves the books by: its three figures and how many billable requests it is.
+/// What one posting moves the books by: its two figures and how many billable requests it is.
+///
+/// There is no overdraft figure here, and that is the point. The identity closes a posting only when
+/// the overdraft carried out is exactly the part of what was posted that nothing reserved —
+/// `settled - reserved`, floored at zero, the same comparison the released residual floors the other
+/// way. A third figure handed in beside the two would be a figure the book had to take on trust,
+/// and one that disagreed with them would put the books out by the difference with nothing saying
+/// why. So the ledger reckons it from the two ([`Figures::overdraft`]) and accepts no other.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Figures {
     /// What had been reserved for the unit.
     pub reserved: u64,
     /// What was posted.
     pub settled: u64,
-    /// How much of what was posted had no reservation behind it.
-    pub overdraft: u64,
     /// How many billable requests the posting is.
     pub fee_count: u64,
+}
+
+impl Figures {
+    /// How much of what was posted had no reservation behind it: `settled - reserved`, or zero
+    /// where the reservation covered it. The one overdraft the books carry.
+    #[must_use]
+    pub fn overdraft(&self) -> u64 {
+        self.settled.saturating_sub(self.reserved)
+    }
+
+    /// What was reserved and never used, handed back to the slice it was drawn from:
+    /// `reserved - settled`, or zero where the posting used it all.
+    #[must_use]
+    pub fn released(&self) -> u64 {
+        self.reserved.saturating_sub(self.settled)
+    }
 }
 
 /// The ledger unit: the book it keeps, and the previous release's rows it also feeds.
@@ -166,38 +187,57 @@ impl Ledger {
         &self.book
     }
 
-    /// The books, to be moved directly. No production caller: the book moves through this type's
-    /// own verbs, and only tests reach in here.
+    /// The books, to be moved directly: a test corrupts a book to prove a check sees it. The book
+    /// moves through this type's own verbs everywhere else.
+    #[doc(hidden)]
     pub fn book_mut(&mut self) -> &mut Book {
         &mut self.book
     }
 
-    /// Settle a hold against what the unit's usage priced at, and move the books.
+    /// **THE WINDOWS THE BOOK MAY LET GO** at `now` (wall seconds), measured against `sealed`, the
+    /// latest checkpoint the node kept — signed, journalled and anchored: [`Book::retirable`]'s
+    /// rule. Every one is past [`crate::totals::WINDOW_RETENTION_SECS`], held by `sealed` at the
+    /// figures the book still holds, and has no hold open, so a checkpoint holds everything
+    /// retiring it would drop. Asking moves nothing.
+    ///
+    /// The caller seals its next checkpoint WITHOUT these windows and retires them
+    /// ([`Ledger::retire_windows`]) only once that seal is durable: a seal that fails retires
+    /// nothing, and the checkpoint the books are verified against always holds every window the
+    /// book does.
+    #[must_use]
+    pub fn retirable(
+        &self,
+        sealed: &crate::checkpoint::Checkpoint,
+        now: u64,
+    ) -> std::collections::BTreeSet<WindowStart> {
+        self.book.retirable(&sealed.totals, now)
+    }
+
+    /// **RETIRE `windows` FROM THE BOOK AND THE PREVIOUS RELEASE'S ROWS** in one step, and say how
+    /// many balances went: the windows [`Ledger::retirable`] named, once the seal taken without
+    /// them is durable. The rows leave with the balances they mirror, so the reconciliation between
+    /// the two never meets one without the other.
+    pub fn retire_windows(&mut self, windows: &std::collections::BTreeSet<WindowStart>) -> usize {
+        if windows.is_empty() {
+            return 0;
+        }
+        let retired = self.book.retire(windows);
+        if let Some(rows) = self.legacy.as_mut() {
+            rows.retire(windows);
+        }
+        retired
+    }
+
+    /// Settle a hold against what the unit's usage priced at, move the books, and hand back what
+    /// the settlement left behind as well as the posting: the residual it released and the
+    /// overdraft it noted, the two facts a posting record cannot carry on its own.
     ///
     /// The token is required by the capability itself, so this function cannot be reached by
     /// anything that is not the ledger unit mid-settlement. The hold is consumed.
     ///
     /// `priced_nanos` is the money figure, in the unit the reservation is written in; `usage` is
-    /// the report it was priced from. See [`busbar_contract::caps::Posted::settle`] for why those are two
-    /// arguments and not one.
-    pub fn settle(
-        &mut self,
-        key: &TotalsKey,
-        window: WindowStart,
-        hold: Hold,
-        priced_nanos: u128,
-        usage: &Usage,
-        token: &Grant<WriteMoney>,
-    ) -> Posted {
-        self.settle_recording(key, window, hold, priced_nanos, usage, token)
-            .posted
-    }
-
-    /// Settle, and hand back what the settlement left behind as well as the posting.
-    ///
-    /// The same act as [`Ledger::settle`] — one function, so the two can never move the books
-    /// differently — reporting the residual it released and the overdraft it noted. The composition
-    /// root wants both: they are the two facts a posting record cannot carry on its own.
+    /// the report it was priced from. See [`busbar_contract::caps::Posted::settle`] for why those are
+    /// two arguments and not one.
     pub fn settle_recording(
         &mut self,
         key: &TotalsKey,
@@ -238,7 +278,6 @@ impl Ledger {
             Figures {
                 reserved: posted.reserved(),
                 settled: posted.settled(),
-                overdraft: posted.overdraft(),
                 fee_count,
             },
         );
@@ -278,7 +317,11 @@ impl Ledger {
 
     /// THE ONE BOOK-MOVING ARITHMETIC, for a live posting and a replayed one alike.
     ///
-    /// Returns what was released and what was carried as overdraft.
+    /// Returns what was released and what was carried as overdraft. Both are reckoned here from the
+    /// posting's two figures ([`Figures::released`], [`Figures::overdraft`]) and from nothing a
+    /// caller hands in, so a posting's movement satisfies the identity by construction: what was
+    /// reserved leaves the holds, what was posted enters the settled column, the unused remainder
+    /// returns to the slice and the unreserved excess is carried — and those four net to zero.
     fn move_books(
         &mut self,
         key: &TotalsKey,
@@ -289,16 +332,15 @@ impl Ledger {
         let Figures {
             reserved,
             settled,
-            overdraft,
             fee_count,
         } = figures;
         let legacy_reserved = reserved;
         let legacy_settled = settled;
-        let legacy_overdraft = overdraft;
+        let legacy_overdraft = figures.overdraft();
         let reserved = i128::from(reserved);
         let settled = i128::from(settled);
-        let overdraft = i128::from(overdraft);
-        let released = reserved.saturating_sub(settled).max(0);
+        let overdraft = i128::from(figures.overdraft());
+        let released = i128::from(figures.released());
 
         let figures = self.book.entry(key.clone(), window);
         // Three figures move together, and they have to. What was reserved stops being held; what

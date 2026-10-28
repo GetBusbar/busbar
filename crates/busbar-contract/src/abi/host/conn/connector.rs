@@ -123,6 +123,57 @@ pub struct Need {
     pub deny_response_headers_len: usize,
 }
 
+impl Need {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Need { …, ..Need::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        direction: 0,
+        egress_class: 0,
+        transport: AbiStr::ZERO,
+        auth: AbiStr::ZERO,
+        target_from: AbiStr::ZERO,
+        trust_from: AbiStr::ZERO,
+        details: Blob::ZERO,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: 0,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    };
+}
+
+/// HOW THE NEED ROW IS MADE (status row 194): from [`Need::EMPTY`], its plain fields set directly
+/// and each list by its setter, to items that live for the program.
+impl Need {
+    /// Nothing stated: every string absent, every list empty, every number zero.
+    pub const EMPTY: Need = Need {
+        direction: 0,
+        egress_class: 0,
+        transport: AbiStr::ABSENT,
+        auth: AbiStr::ABSENT,
+        target_from: AbiStr::ABSENT,
+        trust_from: AbiStr::ABSENT,
+        details: Blob::ABSENT,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: 0,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    };
+
+    abi_lists! {
+        keep_response_headers, keep_response_headers_len: AbiStr
+            => keep_response_headers_ptr, with_keep_response_headers, with_raw_keep_response_headers;
+        deny_response_headers, deny_response_headers_len: AbiStr
+            => deny_response_headers_ptr, with_deny_response_headers, with_raw_deny_response_headers;
+    }
+}
+
 /// [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross.
 pub const KEEP_NAMED: u32 = 0;
 
@@ -513,6 +564,20 @@ pub struct RequestPiece {
     /// How long the request may take, milliseconds; `0` = the op's deadline. The host clamps a
     /// larger value to the op's deadline class. On [`REQUEST_HEAD`].
     pub timeout_ms: u64,
+}
+
+impl RequestPiece {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RequestPiece { …, ..RequestPiece::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        kind: 0,
+        _reserved: 0,
+        method: crate::abi::transport::FrameSpan::ZERO,
+        target: crate::abi::transport::FrameSpan::ZERO,
+        fields: crate::abi::transport::FrameSpan::ZERO,
+        timeout_ms: 0,
+    };
 }
 
 /// [`service::WRITE_REQUEST`]'s `in`. The buffer and the descriptor are the plugin's and stay

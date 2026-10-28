@@ -3,9 +3,9 @@
 
 //! THE AUTH ROWS (WIRE-AUTH): [`AuthRows`] answers and opens the plugin registry's `kind: auth` rows
 //! on the process's one dispatcher. The composition root implements the contract's `AuthAxis` over
-//! it and installs that axis on the kernel (`install_auth_axis`, ARCHITECT ruling 2026-09-29: the
-//! opener seam, impl in the root), so the kernel's identity chain opens auth instances naming
-//! neither this crate nor the root.
+//! it and hands that axis to the kernel on its install record (`RootInstall::auth_axis`, ARCHITECT
+//! ruling 2026-09-29: the opener seam, impl in the root), so the kernel's identity chain opens auth
+//! instances naming neither this crate nor the root.
 //!
 //! A row opens on the auth kind's MEMORY ABI (`abi::auth`, through [`AuthInstance`]) when it is a
 //! linked door ([`crate::registry::LinkedEntry::Door`]) or a dropped-in library exporting
@@ -57,6 +57,10 @@ pub struct AuthRows {
     held: Option<Arc<dyn DeclaredConns>>,
     /// Where each instance opened to serve writes its plugin log (THE DESIGN §11.2).
     logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
+    /// TEST PROBE: every row [`Self::load`] was asked to bind, by key, in order (Law 7: a row the
+    /// configuration does not use is never bound).
+    #[cfg(test)]
+    bound: std::sync::Mutex<Vec<String>>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -75,6 +79,8 @@ impl AuthRows {
             conns: None,
             held: None,
             logs: None,
+            #[cfg(test)]
+            bound: std::sync::Mutex::default(),
         }
     }
 
@@ -87,8 +93,8 @@ impl AuthRows {
     }
 
     /// Each instance opened to serve declares its needs on the table `conns` answers when it opens
-    /// (the process's one connector): a networked auth door (a directory over `tcp`) dials through
-    /// it.
+    /// (the process's one connector): a networked auth door (a directory over a stream transport)
+    /// dials through it.
     #[must_use]
     pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);
@@ -127,6 +133,11 @@ impl AuthRows {
     /// only read for its facts binds with no table.
     fn load(&self, row: &LoadablePlugin, label: &str, serving: bool) -> Result<Door, String> {
         let name = row.key();
+        #[cfg(test)]
+        self.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(name.to_string());
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
         // Opened to serve: its own plugin log file (THE DESIGN §11.2). A fact read binds no file.
@@ -148,7 +159,7 @@ impl AuthRows {
             },
         };
         let loaded = match row.door() {
-            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
+            Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None => match row.manifest.stated_rendering().map_err(refused)? {
                 None => return Err(refused(NO_DOOR.to_string())),
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
@@ -156,6 +167,24 @@ impl AuthRows {
         };
         let plugin = loaded.map_err(|e| refused(e.to_string()))?;
         Ok(Door::Memory(plugin, sink))
+    }
+
+    /// The facts `row` states, READ, never bound (Law 7; ARCHITECT rulings 2026-10-20: reading a
+    /// row's static declaration, its kind tail included, is reading, not loading; and the canonical
+    /// rendering carries the whole kind tail, audit root#7 / loader#9): a linked door's `'static`
+    /// Statement, a dropped-in row's SIGNED MANIFEST rendering, with no `dlopen` (admitting that row
+    /// compares its door's Statement with the same rendering, tail included). `None` when the row's
+    /// Statement is one a bind refuses.
+    fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
+        match row.door() {
+            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).ok(),
+            None => row
+                .manifest
+                .stated_rendering()
+                .ok()
+                .flatten()
+                .and_then(|r| crate::dispatch::kinds::auth::rendered_facts(&r).ok()),
+        }
     }
 
     /// The config keys of the auth rows this build LINKS, in registration order.
@@ -196,12 +225,8 @@ impl AuthRows {
             .iter()
             .chain(self.registry.loadable());
         rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
-            let alias = &row.manifest.alias;
-            let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
-                return None;
-            };
-            let principal = plugin.context::<AuthFacts>()?.operator_principal.clone()?;
-            Some((alias.clone(), principal))
+            let principal = self.stated(row)?.operator_principal?;
+            Some((row.manifest.alias.clone(), principal))
         })
     }
 
@@ -217,14 +242,32 @@ impl AuthRows {
             .chain(self.registry.loadable());
         rows.filter(|p| p.manifest.kind == AUTH)
             .filter_map(|row| {
-                let alias = &row.manifest.alias;
-                let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
-                    return None;
-                };
-                let facts = plugin.context::<AuthFacts>()?;
-                (facts.facts & FACT_READS_CREDENTIALS != 0).then(|| alias.clone())
+                let facts = self.stated(row)?;
+                (facts.facts & FACT_READS_CREDENTIALS != 0).then(|| row.manifest.alias.clone())
             })
             .collect()
+    }
+
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first credential reader, in
+    /// [`Self::credential_readers`]' order, whose Statement states an issued shape (its
+    /// `MARK_WORD_ISSUED_*` marks, checked at load), as its first credential kind and that shape.
+    /// Read from the Statements ([`Self::stated`]), binding no linked row: the build's fact,
+    /// whatever the chain names.
+    #[must_use]
+    pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
+            let facts = self.stated(row)?;
+            if facts.facts & FACT_READS_CREDENTIALS == 0 {
+                return None;
+            }
+            let kind = facts.credential_kinds.first()?.clone();
+            facts.issued.map(|shape| (kind, shape))
+        })
     }
 
     /// The carriers the auth row answering `module` states (its Statement's carrier word marks, in
@@ -234,13 +277,7 @@ impl AuthRows {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
-        match self.load(row, &row.manifest.alias, false) {
-            Ok(Door::Memory(plugin, _)) => plugin
-                .context::<AuthFacts>()
-                .map(|f| f.carriers.clone())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        }
+        self.stated(row).map(|f| f.carriers).unwrap_or_default()
     }
 
     /// THE HOST'S DEFAULT INBOUND STYLE: the carriers of the one auth row whose Statement states
@@ -258,13 +295,9 @@ impl AuthRows {
         let stating: Vec<(String, Vec<String>)> = rows
             .filter(|p| p.manifest.kind == AUTH)
             .filter_map(|row| {
-                let alias = &row.manifest.alias;
-                let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
-                    return None;
-                };
-                let facts = plugin.context::<AuthFacts>()?;
+                let facts = self.stated(row)?;
                 (facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0)
-                    .then(|| (alias.clone(), facts.carriers.clone()))
+                    .then(|| (row.manifest.alias.clone(), facts.carriers))
             })
             .collect();
         match stating.as_slice() {
@@ -291,10 +324,7 @@ impl AuthRows {
             .chain(self.registry.loadable());
         let alias = &row.manifest.alias;
         for other in rows.filter(|p| p.manifest.kind == AUTH && p.manifest.alias != *alias) {
-            let Ok(Door::Memory(theirs, _)) = self.load(other, &other.manifest.alias, false) else {
-                continue;
-            };
-            let Some(f) = theirs.context::<AuthFacts>() else {
+            let Some(f) = self.stated(other) else {
                 continue;
             };
             if let Some(kind) = mine.iter().find(|k| f.credential_kinds.contains(k)) {
@@ -321,6 +351,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
+        let name = row.manifest.name.clone();
         let Door::Memory(plugin, sink) = self.load(row, label, true)?;
         let kinds = plugin
             .context::<AuthFacts>()
@@ -337,7 +368,7 @@ impl AuthRows {
             text.as_bytes(),
             secrets,
         )
-        .map_err(|e| format!("auth plugin '{module}': {e}"))?;
+        .map_err(|e| format!("plugin '{name}' open failed: {e}"))?;
         Ok(Arc::new(opened))
     }
 
@@ -388,7 +419,7 @@ impl AuthRows {
 /// A rendering that does not read back names nothing here; the load refuses it.
 fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
     let stated = match row.door() {
-        Some(door) => LinkedRow::of(door).ok().map(|r| r.statement),
+        Some(door) => LinkedRow::of_raw(door).ok().map(|r| r.statement),
         None => row.manifest.stated_rendering().ok().flatten(),
     };
     stated
@@ -431,7 +462,7 @@ static STAND_IN_CONNS: std::sync::Mutex<Option<Arc<dyn DeclaredConns>>> =
     std::sync::Mutex::new(None);
 
 /// TEST STAND-IN: bind every instance the stand-in axis opens from now on to `conns` (a test's
-/// stand-in for the process's connector, e.g. [`crate::https_conns::HttpsConns`]). Never shipped.
+/// stand-in for the process's connector, e.g. busbar-test-kit's `HttpsConns`). Never shipped.
 #[cfg(any(test, feature = "test-support"))]
 pub fn stand_in_conns(conns: Arc<dyn DeclaredConns>) {
     *STAND_IN_CONNS
@@ -460,6 +491,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn credential_readers(&self) -> Vec<String> {
         AuthRows::credential_readers(self)
+    }
+
+    fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        AuthRows::issued_credential(self)
     }
 
     fn carriers(&self, module: &str) -> Vec<String> {

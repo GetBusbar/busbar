@@ -392,11 +392,13 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         let eff = resolve_effective(schema, defs, resolving, depth)?;
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
-                return Err(
-                    "x-busbar-secret: true is only allowed on a direct property of the schema's \
-                     root object — flatten the field to a root property instead"
-                        .to_string(),
-                );
+                // 1.5.5's words, naming the nesting depth (v1.5.5
+                // `crates/plugin-pack/src/main.rs:298-304`; ruling (B), 2026-10-19).
+                return Err(format!(
+                    "x-busbar-secret: true is only allowed on a direct root-level property \
+                     (found at nesting depth {depth}) — flatten the field to a root property \
+                     instead"
+                ));
             }
             let ty = eff.get("type").and_then(|t| t.as_str());
             let content_encoding = eff.get("contentEncoding").and_then(|t| t.as_str());

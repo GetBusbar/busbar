@@ -274,8 +274,9 @@ pub(crate) enum ExchangeError {
     /// and the disabled-mint policy is not disclosed to the unauthenticated.
     SelfMintDisabled,
     /// Identified, but no role of the principal is bound under the identifying module, or the bound
-    /// role has no `group` to charge through, or the subject's self-serve binding is disabled or was
-    /// minted by another identity provider → 403.
+    /// role has no `group` to charge through, or (only with the unsigned
+    /// [`crate::governance::SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`] on) the subject's self-serve
+    /// binding is disabled or was minted by another identity provider → 403.
     Unbound,
     /// The principal id is not a safe self-serve subject (reserved/ambiguous) → 403.
     BadSubject,

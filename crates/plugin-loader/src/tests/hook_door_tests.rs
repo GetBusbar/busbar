@@ -327,7 +327,7 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     );
 }
 
-/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
+/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, the project-pool fold ruling's session
 /// half): the request view's opaque session crosses the hook kind's `decide` through the one
 /// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
 /// abstains on any other, and on a request that names none.
@@ -527,7 +527,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 /// THE RULING'S HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
 /// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
 /// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
-/// LINKED (the former names the root's legacy table gives a linked row). RED ARMS, in the same
+/// LINKED (the former names the root's migration table gives a linked row). RED ARMS, in the same
 /// test: without the former names neither way answers the old name.
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
@@ -726,6 +726,70 @@ async fn a_wedged_trial_holds_no_other_caller() {
     assert!(!instance.quarantined());
 }
 
+/// RED (hook ABI defect 2): a quarantine's trial opens its fresh instance over the settings the
+/// hook was opened with, then pushes the last `configure` the hook acknowledged, so an
+/// acknowledged commit outlives the faulted instance. Before, the trial's instance served the
+/// first-open settings and the commit was silently lost.
+#[tokio::test]
+async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
+    use super::{HookInstance, State};
+    use crate::dispatch::{ConnTable, NoSink};
+    use busbar_contract::hook_calls::HookCalls;
+    let axis = rows(
+        hook_door_plugin::configurable::door,
+        "hook_door",
+        Way::Linked,
+    );
+    let c = axis
+        .find(hook_door_plugin::CONFIGURABLE_NAME)
+        .expect("the linked row")
+        .clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.tuned",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let instance = HookInstance::open(
+        bind().expect("the hook binds"),
+        Arc::clone(&dispatcher),
+        br#"{"reject_over_messages": 3}"#,
+        bind,
+    )
+    .expect("the hook opens");
+    let rejects = |a: &Answered<busbar_contract::abi::hook::DecideOut>| matches!(a, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS);
+    assert!(!rejects(&instance.decide(frame(2), BUDGET).await));
+    instance
+        .configure("tuned", r#"{"reject_over_messages": 1}"#, 2, BUDGET)
+        .await
+        .expect("the hook acknowledges version 2");
+    let a = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        rejects(&a),
+        "the acknowledged settings gate: {}",
+        decided(2, &a)
+    );
+    // Faulted, its trial window open now.
+    *instance.inner.lock() = State::Quarantined {
+        trial_at: std::time::Instant::now(),
+        window: super::QUARANTINE_FIRST,
+    };
+    let a = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        rejects(&a),
+        "the trial's instance lost the acknowledged settings: {}",
+        decided(2, &a)
+    );
+    assert!(!instance.quarantined());
+}
+
 /// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a
 /// resolved bag) to re-open a fresh instance on a quarantine trial; its `Debug` names the instance
 /// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.
@@ -758,4 +822,47 @@ fn an_instance_debug_never_shows_its_settings() {
     for leak in ["reject_over_messages", "3}"] {
         assert!(!shown.contains(leak), "`{leak}` printed: {shown}");
     }
+}
+
+/// RED (ARCHITECT ruling, status row 194): a hook that declared `hook.orders: false` is refused
+/// when its `decide` answers an order, where the host reads the answer: BROKEN naming the
+/// declaration, never the verdict. Its twin, the same door with `orders` unstated (true), is
+/// answered READY with its order, and a declaring hook that abstains is still answered READY.
+#[tokio::test]
+async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
+    let open = |door: DoorFn, orders: bool| {
+        let mut axis = rows(door, "hook_door", Way::Linked);
+        for c in &mut axis.candidates {
+            c.orders = orders;
+        }
+        let name = axis.candidates[0].name.clone();
+        axis.open(
+            &name,
+            "hooks.gate",
+            &json!({"reject_over_messages": 3}),
+            BUDGET,
+        )
+        .expect("the hook opens")
+    };
+    let ordering = hook_door_plugin::ordering::door;
+    let undeclared = decided(2, &open(ordering, true).decide(frame(2), BUDGET).await);
+    assert!(
+        undeclared.contains("Ready") && undeclared.contains("verbs=0x1 "),
+        "a hook that never declared `orders: false` may order: {undeclared}"
+    );
+    let declared = decided(2, &open(ordering, false).decide(frame(2), BUDGET).await);
+    assert!(
+        declared.contains("broken") && declared.contains("`hook.orders: false`"),
+        "a hook that declared `orders: false` and ordered was not refused: {declared}"
+    );
+    let abstains = decided(
+        2,
+        &open(hook_door_plugin::conforming::door, false)
+            .decide(frame(2), BUDGET)
+            .await,
+    );
+    assert!(
+        abstains.contains("Ready") && abstains.contains("verbs=0x2 "),
+        "a hook that declared `orders: false` and abstains is served: {abstains}"
+    );
 }

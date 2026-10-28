@@ -35,7 +35,7 @@
 use crate::v1::contract::AdminError;
 
 /// Re-export the relocated resolve/look seam so `crate::admin::planeverbs::{PlaneTrust, PlaneVerbError,
-/// registered}` keeps resolving for the in-core (a2a) callers and the shared `connect` bound.
+/// registered}` keeps resolving for the in-core agent-plane callers and the shared `connect` bound.
 pub use busbar_kernel::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
 
 /// RECORD ONE PLANE TRUST VERB in the audit trail.
@@ -50,7 +50,7 @@ pub fn audit(
     outcome: &'static str,
     principal: &busbar_kernel::auth::AuthPrincipal,
 ) {
-    let audit_kind = busbar_kernel::plane::plane_decl(plane).audit_kind;
+    let audit_kind = busbar_kernel::plane_driver::dispatch::plane_decl(plane).audit_kind;
     crate::v1::json::audit::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),
@@ -68,7 +68,7 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
     match err {
         PlaneVerbError::NotFound => AdminError::not_found(format!(
             "{} `{name}`",
-            busbar_kernel::plane::plane_decl(plane).subject_noun
+            busbar_kernel::plane_driver::dispatch::plane_decl(plane).subject_noun
         )),
         PlaneVerbError::Validation(msg) | PlaneVerbError::ValidationOf(msg, _) => {
             AdminError::Validation(msg)

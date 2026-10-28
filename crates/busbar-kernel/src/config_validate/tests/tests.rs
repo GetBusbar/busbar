@@ -92,7 +92,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
 /// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
 /// registered name, not a particular dialect — and the neutral kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
-    crate::proto::registry::builtin_decls()
+    crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
         .iter()
         .filter(|d| d.codec.is_some())
         .nth(nth)
@@ -215,7 +215,7 @@ fn test_validate_rejects_bad_protocol() {
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
         .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
-    for proto in crate::proto::known_protocols() {
+    for proto in crate::ingress::protocols::known_protocols() {
         assert!(
             msg.contains(proto),
             "allowed-set list must include '{proto}'; got: {msg}"
@@ -1938,7 +1938,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
-    // `preflight_plugins_and_secrets` doc comment), so it genuinely cannot tell a real `kind: auth`
+    // `config_validate::check` doc comment), so it genuinely cannot tell a real `kind: auth`
     // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
     // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
     // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
@@ -2583,6 +2583,240 @@ fn test_reject_cidr_metadata_entries() {
             "exact IP/hostname entries must not trip the CIDR guard; got: {errs:?}"
         );
     }
+}
+
+/// RED (HIGH, the list entry read as written while every target is mapped): a metadata host-list
+/// entry is read as a target's host is read, through UTS #46. A full-width blocked entry blocks the
+/// ASCII target it maps to (it matched nothing, and the target was dialled), and an allow entry
+/// written the same way lifts it.
+#[test]
+fn test_metadata_list_entries_are_mapped() {
+    // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
+    let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
+    let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
+    for (entry, target) in [
+        (full_width_ip, "https://10.99.99.99/v1"),
+        (full_width_ip, "https://[::ffff:10.99.99.99]/v1"),
+        (full_width_name, "https://meta.example/v1"),
+        (full_width_name, "meta.example:443"),
+    ] {
+        assert!(
+            ssrf_blocked_host(target, &[], false, &[entry.to_string()]).is_some(),
+            "the entry `{entry}` must block `{target}`"
+        );
+        assert!(
+            ssrf_blocked_host(target, &[entry.to_string()], false, &[entry.to_string()]).is_none(),
+            "the allow entry `{entry}` must lift `{target}`"
+        );
+    }
+}
+
+/// Metadata host-list entries that name no host the guard judges, one per class: UTS #46 refuses
+/// it, a `%` outside an IPv6 zone id, a last label that reads as a number but is no IPv4 address
+/// (ASCII and full width). v1.5.5 booted with every one of them and matched it to nothing: its
+/// validator refused only a `/` entry (v1.5.5 crates/busbar/src/config_validate/mod.rs:1998-2005).
+const NO_HOST_ENTRIES: [&str; 10] = [
+    "b\u{fc}cher\u{ff1c}.example",
+    "%6c%6fcalhost",
+    "169%2e254%2e169%2e254",
+    "1.2.3.4.5",
+    "999.1.1.1",
+    "foo.127",
+    "x.0",
+    "db.1",
+    "0x",
+    "\u{ff11}.\u{ff12}.\u{ff13}.\u{ff14}.\u{ff15}",
+];
+
+/// A config valid on its own: the baseline `test_validate_empty_chain_carries_no_requirement`
+/// validates clean.
+fn no_host_entries_baseline() -> RootCfg {
+    crate::test_support::register_neutral_test_plane();
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
+    cfg
+}
+
+/// RED (1.5.5 parity): a metadata host-list entry that names no host BOOTS, as it did on 1.5.5, in
+/// each of the three lists. It is dropped from matching, and config load names the key and the
+/// entry in exactly one warning line (BUSBAR-3024), worded as the refusal it replaces.
+#[test]
+fn test_a_metadata_entry_naming_no_host_boots_with_one_warning_line() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = entries.clone();
+    cfg.allow_metadata_hosts = entries.clone();
+    cfg.providers
+        .get_mut("myprovider")
+        .expect("valid_maps names `myprovider`")
+        .allow_metadata_hosts = entries.clone();
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+    assert!(
+        result.is_ok(),
+        "a metadata entry naming no host booted on 1.5.5 and must boot now; got: {result:?}"
+    );
+    let msgs = cap.messages();
+    for key in [
+        "security.blocked_metadata_hosts",
+        "security.allow_metadata_hosts",
+        "provider 'myprovider' allow_metadata_hosts",
+    ] {
+        for entry in NO_HOST_ENTRIES {
+            let head = format!("{key} entry '{entry}' maps to no host: ");
+            let lines: Vec<&String> = msgs.iter().filter(|m| m.starts_with(&head)).collect();
+            assert_eq!(
+                lines.len(),
+                1,
+                "one warning line for `{entry}` in {key}: {msgs:?}"
+            );
+            assert!(
+                lines[0].contains("so it matches nothing and is dropped. ")
+                    && lines[0].contains("diag=BUSBAR-3024"),
+                "the warning names the entry as dropped and carries BUSBAR-3024: {}",
+                lines[0]
+            );
+        }
+    }
+    assert_eq!(
+        msgs.iter()
+            .filter(|m| m.contains("maps to no host"))
+            .count(),
+        3 * NO_HOST_ENTRIES.len(),
+        "exactly one line per dropped entry per key: {msgs:?}"
+    );
+
+    // The exact lines, one per reason, as the operator reads them.
+    for said in [
+        "security.blocked_metadata_hosts entry 'db.1' maps to no host: its last label reads as a \
+         number but it is no IPv4 address a URL client reads, so it matches nothing and is \
+         dropped. Write an address as a dotted quad, or a name whose last label is not a number, \
+         or remove it",
+        "security.allow_metadata_hosts entry '%6c%6fcalhost' maps to no host: it holds a '%' \
+         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it \
+         matches nothing and is dropped. Write the host decoded (the name or address it spells), \
+         or remove it",
+        "provider 'myprovider' allow_metadata_hosts entry 'b\u{fc}cher\u{ff1c}.example' maps to \
+         no host: UTS #46 refuses it, so it is no name a URL client would dial, so it matches \
+         nothing and is dropped. Write the host in ASCII (an internationalized name as its \
+         punycode 'xn--' form), or remove it",
+    ] {
+        assert!(
+            msgs.iter()
+                .any(|m| m == &format!("{said} diag=BUSBAR-3024")),
+            "{said}: {msgs:?}"
+        );
+    }
+
+    // Mappable and judgeable entries boot with no warning at all.
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = vec![
+        "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}".to_string(),
+        "169.254.169.254".to_string(),
+        "2852039166".to_string(),
+        "0177.0.0.1".to_string(),
+        "fd00:ec2::254".to_string(),
+        "fe80::1%eth0".to_string(),
+        "metadata.google.internal.".to_string(),
+    ];
+    cfg.allow_metadata_hosts = vec![
+        "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example".to_string(),
+        "metadata.example.com".to_string(),
+    ];
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+    assert!(result.is_ok(), "mappable entries boot; got: {result:?}");
+    assert_eq!(
+        cap.count("maps to no host"),
+        0,
+        "a mappable entry is never warned about: {:?}",
+        cap.messages()
+    );
+}
+
+/// The dropped entries leave the hardened guard whole: with every list full of entries that name
+/// no host (the `%`-escaped spelling of the IMDS address among them, as an allow entry), the real
+/// internal targets are still refused, at the config's own reader and at boot.
+#[test]
+fn test_a_dropped_metadata_entry_lifts_no_real_target() {
+    let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
+    for target in [
+        "https://169.254.169.254/latest/meta-data/",
+        "https://169.254.170.2/v2/credentials",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://100.100.100.200/latest/meta-data/",
+    ] {
+        assert!(
+            ssrf_blocked_host(target, &entries, false, &entries).is_some(),
+            "a dropped allow entry must lift nothing: `{target}` stays blocked"
+        );
+    }
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = entries.clone();
+    cfg.allow_metadata_hosts = entries.clone();
+    let provider = cfg
+        .providers
+        .get_mut("myprovider")
+        .expect("valid_maps names `myprovider`");
+    provider.allow_metadata_hosts = entries.clone();
+    provider.base_url = "https://169.254.169.254/".into();
+    let errs = validate(&cfg).expect_err("the IMDS address stays refused");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("targets a blocked cloud-metadata host")),
+        "the metadata check still refuses the IMDS base_url: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("maps to no host")),
+        "an entry naming no host is a warning, never an error: {errs:?}"
+    );
+}
+
+/// TWIN (1.5.5 parity): a `/` entry is the one class 1.5.5 refused at boot (v1.5.5
+/// crates/busbar/src/config_validate/mod.rs:1998-2005, called at :68-77 and :320-324), so it is
+/// still refused with 1.5.5's exact text and gets no warning line of its own.
+#[test]
+fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = vec!["169.254.0.0/16".to_string()];
+    cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
+    cfg.providers
+        .get_mut("myprovider")
+        .expect("valid_maps names `myprovider`")
+        .allow_metadata_hosts = vec!["169.254.169.254/32".to_string()];
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let errs = tracing::subscriber::with_default(subscriber, || validate(&cfg))
+        .expect_err("a CIDR entry is refused at boot, as on 1.5.5");
+    for (key, entry) in [
+        ("security.blocked_metadata_hosts", "169.254.0.0/16"),
+        ("security.allow_metadata_hosts", "10.0.0.0/8"),
+        (
+            "provider 'myprovider' allow_metadata_hosts",
+            "169.254.169.254/32",
+        ),
+    ] {
+        let said = format!(
+            "{key} entry '{entry}' contains '/' (CIDR is not supported here): these lists are matched by EXACT IP or hostname, so a CIDR/slash entry silently never matches and is a no-op. List exact IPs/hostnames instead (e.g. '169.254.169.254', not '169.254.0.0/16')"
+        );
+        assert!(errs.iter().any(|e| e == &said), "{said}: {errs:?}");
+    }
+    assert_eq!(
+        cap.count("maps to no host"),
+        0,
+        "a CIDR entry gets only its 1.5.5 refusal: {:?}",
+        cap.messages()
+    );
 }
 
 #[test]
@@ -3720,27 +3954,18 @@ fn test_hook_on_error_terminating_chain_ok() {
         );
     }
 
-    // A ranking-strategy fallback terminates the chain when the plugin is compiled in; when it
-    // is compiled out, naming one is a boot error (compliance-by-compilation).
+    // A ranking-strategy fallback terminates the chain when the build links a ranking row (a test
+    // build always links the kernel's ranking double). A build that links none refuses it at boot
+    // (compliance-by-compilation): the composition root's build without its `hooks-ranking`
+    // feature, proven where that build is made (`scripts/no-plugins-gate.sh`, RED-B).
     let mut cfg = hooks_test_cfg();
     let mut c = gate_hook("test-hook", 150);
     c.on_error = "cheapest".to_string();
     cfg.hooks.insert("c".to_string(), c);
-    let result = validate(&cfg);
-    #[cfg(feature = "hooks-ranking")]
-    if let Err(errs) = result {
+    if let Err(errs) = validate(&cfg) {
         assert!(
             !errs.iter().any(|e| e.contains("on_error")),
-            "a strategy fallback must be accepted when compiled in; got: {errs:?}"
-        );
-    }
-    #[cfg(not(feature = "hooks-ranking"))]
-    {
-        let errs = result.expect_err("a strategy fallback without the plugin must be rejected");
-        assert!(
-            errs.iter()
-                .any(|e| e.contains("WITHOUT the `hooks-ranking` feature")),
-            "{errs:?}"
+            "a strategy fallback must be accepted when a ranking row is linked; got: {errs:?}"
         );
     }
 }
@@ -5231,7 +5456,7 @@ fn test_validate_secret_module_resolvability() {
     // A NON-built-in module (a `kind: secret` PLUGIN reference such
     // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
     // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
-    // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
+    // module-EXISTENCE check is DEFERRED to `registry_refusal` at plugin pre-flight (see the
     // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
     // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
     let (mut providers, models, pools) = valid_maps();
@@ -5380,7 +5605,10 @@ advanced:
     assert_eq!(cfg.per_request_fee, 1);
     assert!(cfg.rate_card.as_ref().unwrap().contains_key("claude"));
     assert!(cfg.groups.contains_key("eng"));
-    assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
+    assert_eq!(
+        cfg.store.as_ref().unwrap().module,
+        crate::test_support::store_double::KEY
+    );
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 
@@ -5429,7 +5657,7 @@ store:
 /// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
 /// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
 /// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
-/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes a
+/// deferred `registry_refusal` pre-flight (proven in the main tests module). This closes a
 /// regression where `validate` hard-rejected every plugin-backed secret module.
 #[test]
 fn test_validate_accepts_plugin_backed_secret_module_config() {
@@ -6019,8 +6247,9 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
 /// with the last dialect extraction; this is the strongest proof available before it.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let empty_registry =
-        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
+    let empty_registry = crate::ingress::protocols::Registry::new(
+        crate::ingress::protocols::merged_boot_decls(&[], &[]),
+    );
     let known: &'static [&'static str] = empty_registry.codec_protocols();
     assert!(
         known.is_empty(),
@@ -6413,79 +6642,84 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
 
 /// A neutral plane declaring billable classes. Every hook is a no-op: the only thing under test is
 /// the declaration the kernel reads. Registered under isolation, so no sibling test sees it.
-static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "class-plane",
-        fallback: false,
-        config_section: "tools",
-        scope_kinds: &[],
-        subject_noun: "class thing",
-        admin_noun: "class-thing",
-        audit_kind: "class-thing",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "class-plane",
+            fallback: false,
+            config_section: "tools",
+            scope_kinds: &[],
+            subject_noun: "class thing",
+            admin_noun: "class-thing",
+            audit_kind: "class-thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: || &[],
+        // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
+        provider_dialects: crate::ingress::protocols::known_protocols,
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
 
 /// One declared billable class in `family`.
-const fn bc(class: &'static str, family: &'static str) -> crate::plane::registry::BillableClass {
-    crate::plane::registry::BillableClass { class, family }
+const fn bc(
+    class: &'static str,
+    family: &'static str,
+) -> crate::plane_driver::registry::BillableClass {
+    crate::plane_driver::registry::BillableClass { class, family }
 }
 
 /// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
 /// four reserved tiers plus two open classes.
-static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "flat-plane",
-        fallback: true,
-        config_section: "pools",
-        billable_classes: &[
-            bc("input", "token"),
-            bc("output", "token"),
-            bc("cache_read", "token"),
-            bc("cache_write", "token"),
-            bc("search_units", "count"),
-            bc("images", "count"),
-        ],
-        ..CLASS_PLANE.declaration
-    },
-    ..CLASS_PLANE
-};
+static FLAT_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "flat-plane",
+            fallback: true,
+            config_section: "pools",
+            billable_classes: &[
+                bc("input", "token"),
+                bc("output", "token"),
+                bc("cache_read", "token"),
+                bc("cache_write", "token"),
+                bc("search_units", "count"),
+                bc("images", "count"),
+            ],
+            ..CLASS_PLANE.declaration
+        },
+        ..CLASS_PLANE
+    };
 
 fn card_yaml(y: &str) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
     serde_yaml::from_str(y).expect("a card parses")
@@ -6510,7 +6744,7 @@ fn plane_card(
 /// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
     let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
@@ -6532,7 +6766,7 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
 /// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m", "n"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
@@ -6544,7 +6778,8 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
 /// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
+    let _iso =
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "class-plane",
@@ -6575,19 +6810,20 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 
 /// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
 /// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
-static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "door-fee-plane",
-        billable_classes: &[
-            bc("calls", "count"),
-            bc("bytes", "byte"),
-            bc(busbar_contract::plane::PER_REQUEST, "count"),
-        ],
-        fee_units: &[busbar_contract::plane::PER_REQUEST],
-        ..CLASS_PLANE.declaration
-    },
-    ..CLASS_PLANE
-};
+static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "door-fee-plane",
+            billable_classes: &[
+                bc("calls", "count"),
+                bc("bytes", "byte"),
+                bc(busbar_contract::plane::PER_REQUEST, "count"),
+            ],
+            fee_units: &[busbar_contract::plane::PER_REQUEST],
+            ..CLASS_PLANE.declaration
+        },
+        ..CLASS_PLANE
+    };
 
 /// SEAM-L(m), FEE-UNIT VALIDATION PARITY: a door plane's fee unit is no priced class. The card
 /// that priced the plane's lane before it was served through its door (its declared classes, no
@@ -6596,7 +6832,8 @@ static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registr
 /// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+    let _iso =
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
@@ -6632,13 +6869,13 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
 #[test]
 fn a_dropped_in_planes_declared_classes_are_honoured() {
     let names = ["frames".to_string(), "widgets".to_string()];
-    let classes: Vec<crate::plane::registry::BillableClass> = names
+    let classes: Vec<crate::plane_driver::registry::BillableClass> = names
         .into_iter()
         .map(|s| bc(Box::leak(s.into_boxed_str()), "count"))
         .collect();
-    let dropped: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let dropped: &'static crate::plane_driver::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
                 key: "dropped-plane",
                 config_section: "agents",
                 billable_classes: Box::leak(classes.into_boxed_slice()),
@@ -6646,7 +6883,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[dropped]);
+    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[dropped]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
     let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
@@ -6665,8 +6902,10 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
 /// plus `units: { search_units: 0 }`) passes.
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
-    let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE, &CLASS_PLANE]);
+    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+        &FLAT_PLANE,
+        &CLASS_PLANE,
+    ]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0, typo_class: 1 } }\n",
@@ -6699,9 +6938,9 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
-    let session: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let session: &'static crate::plane_driver::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
                 key: "session-plane",
                 config_section: "streams",
                 fee_units: &[PER_SESSION],
@@ -6709,8 +6948,10 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
             },
             ..CLASS_PLANE
         }));
-    let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session, &CLASS_PLANE]);
+    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+        session,
+        &CLASS_PLANE,
+    ]);
     let fees = |plane: &str, per_request, per_session| {
         let f = PlaneFees {
             per_request,
@@ -6741,11 +6982,11 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
 #[test]
 fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     use busbar_kernel_ledger::cost::PER_SESSION;
-    const CLASSES: &[crate::plane::registry::BillableClass] =
+    const CLASSES: &[crate::plane_driver::registry::BillableClass] =
         &[bc("calls", "count"), bc(PER_SESSION, "count")];
-    let session: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let session: &'static crate::plane_driver::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
                 key: "session-plane",
                 config_section: "live",
                 billable_classes: CLASSES,
@@ -6754,7 +6995,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session]);
+    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[session]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));

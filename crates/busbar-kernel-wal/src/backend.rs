@@ -330,15 +330,16 @@ impl SegmentFactory for MemoryFactory {
         _unix_ms: u64,
         bytes: &[u8],
     ) -> io::Result<Option<PathBuf>> {
-        self.segments
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .quarantined
-            .push(QuarantinedBytes {
-                segment: index,
-                offset,
-                bytes: bytes.to_vec(),
-            });
+        let kept = QuarantinedBytes {
+            segment: index,
+            offset,
+            bytes: bytes.to_vec(),
+        };
+        let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
+        // Damage left in place is found again at every open; the same bytes are kept once.
+        if !held.quarantined.contains(&kept) {
+            held.quarantined.push(kept);
+        }
         Ok(None)
     }
 }
@@ -464,6 +465,32 @@ impl DirectoryFactory {
         self.dir.join(format!("{index:016}.wal"))
     }
 
+    /// A quarantine copy of `segment_name` already in the directory that holds exactly `bytes`.
+    /// The copy was synced, and the directory holding it, before the recovery that made it went on,
+    /// so it is as durable as a fresh one.
+    fn identical_copy(&self, segment_name: &str, bytes: &[u8]) -> io::Result<Option<PathBuf>> {
+        let prefix = format!("{segment_name}.quarantine-");
+        let mut candidates: Vec<PathBuf> = std::fs::read_dir(&self.dir)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(&prefix))
+            })
+            .collect();
+        candidates.sort();
+        for path in candidates {
+            let same_length = std::fs::metadata(&path)
+                .map(|m| m.len() == bytes.len() as u64)
+                .unwrap_or(false);
+            if same_length && std::fs::read(&path).is_ok_and(|held| held == bytes) {
+                return Ok(Some(path));
+            }
+        }
+        Ok(None)
+    }
+
     /// The index a file name in the directory stands for, or `None` if this crate did not name it.
     ///
     /// Strict about the shape it accepts — the fixed width and the extension both — because the
@@ -534,8 +561,11 @@ impl SegmentFactory for DirectoryFactory {
     }
 
     /// `<segment>.quarantine-<unix_ms>` beside the segment, created fresh — never over an existing
-    /// file, so a second recovery of the same damage writes a second copy rather than replacing the
-    /// first. The file's data is synced, then the directory holding it, and only then does this
+    /// file. Damage recovery set aside is left in place and found again at every boot, so a copy
+    /// already beside the segment holding exactly these bytes is the copy, and its path is the
+    /// answer: a node restarting over the same damage does not write it out once per boot. Any
+    /// other copy, a partial one included, is never touched, and a new file is made beside it. The
+    /// file's data is synced, then the directory holding it, and only then does this
     /// return; a failure of either is this call's error, so recovery does not cut. The name does not end in `.wal`, so [`DirectoryFactory::highest_index`] never reads
     /// a quarantine as a segment.
     fn quarantine(
@@ -547,13 +577,14 @@ impl SegmentFactory for DirectoryFactory {
     ) -> io::Result<Option<PathBuf>> {
         use std::io::Write as _;
         let segment = self.segment_path(index);
-        let stem = format!(
-            "{}.quarantine-{unix_ms}",
-            segment
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        );
+        let segment_name = segment
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(path) = self.identical_copy(&segment_name, bytes)? {
+            return Ok(Some(path));
+        }
+        let stem = format!("{segment_name}.quarantine-{unix_ms}");
         let mut attempt = 0u32;
         let (path, mut file) = loop {
             let name = if attempt == 0 {
@@ -582,10 +613,9 @@ impl SegmentFactory for DirectoryFactory {
     }
 }
 
-// ── Directory durability ─────────────────────────────────────────────────────────────────────────
 // The rule the loader's `durable` module states for every other file busbar publishes, kept here
 // for the log's own segment files and quarantine copies: this crate takes no edge onto the loader
-// (lane-gb-loader-wal-edge), so the log keeps its own copy of the one rule rather than a dependency.
+//, so the log keeps its own copy of the one rule rather than a dependency.
 
 /// The directory whose ENTRY creating or removing `path` changes. A relative `path` with no parent
 /// resolves to ".", where it actually lives.

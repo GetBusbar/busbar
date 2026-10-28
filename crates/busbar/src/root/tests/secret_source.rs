@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SECRET'S SOURCE NEVER REACHES A CALLER (coordinator ruling 2026-10-07, the cell the retired tool-plane crate's
-//! `credential_secret_leak_tests` was until #511 deleted it): on every door plane this build links,
+//! A SECRET'S SOURCE NEVER REACHES A CALLER: on every door plane this build links,
 //! a secret reference that does not resolve leaves the caller-facing status line, headers and body
 //! free of its source (the variable's name, the file's path, the reference as written) and of the
 //! words a source's refusal is phrased in ("environment variable", "is unset", the file source's
@@ -126,15 +125,6 @@ pub(super) fn missing(case: &str) -> String {
         ))
         .display()
         .to_string()
-}
-
-/// A member program's `env` secret reference resolves through the linked secret plugins at
-/// CONFIG TIME (its need's declaration, the connector's refresher) and is held for its spawns, as
-/// the root's boot installs them (the first install holds; this is the same one).
-fn member_secrets_installed() {
-    let _ = busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
 }
 
 /// The tool door's `tools:` section: one member, `fs`, that is the program
@@ -264,7 +254,6 @@ fn every_linked_door_plane_is_driven() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
-    member_secrets_installed();
     let cases = [
         (
             "tools-program-env",
@@ -297,7 +286,6 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
-    member_secrets_installed();
     let instance = "tools-program-apply";
     let _published = Published(instance);
     let var = unset("TOOLS_PROGRAM_APPLY");
@@ -606,6 +594,6 @@ async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_i
     assert_eq!(status, StatusCode::OK, "the kept generation serves");
 }
 
-// The scan's fixed-class half and its kept RED arm (status row 127).
+// The scan's fixed-class half and its kept RED arm.
 #[path = "secret_source_class.rs"]
 mod class;

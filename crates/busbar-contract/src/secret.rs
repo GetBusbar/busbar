@@ -9,17 +9,18 @@
 //! failure as FAIL-CLOSED (an unresolvable secret refuses boot, never resolves empty).
 //!
 //! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
-//! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
-//! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
-//! every rendering is byte-identical. The `env`/`file` sources are ordinary secret-kind plugins in
-//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN, "Plugins"), called through the
-//! secret kind table; the kernel reaches every loaded secret plugin through [`SecretAxis`] and
-//! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
-//! this crate once that reference merged here, when `busbar-api` retired.
+//! contract's, #35(a)). The error is [`SecretModuleError`] here because
+//! [`crate::kinds::SecretError`] is a different type (#35 de-collision); its `Debug` keeps the
+//! historical `SecretError` label so every rendering is byte-identical. The `env`/`file` sources
+//! are ordinary secret-kind plugins in their own repos (one secret plugin per source; THE DESIGN,
+//! "Plugins"), called through the secret kind table; the kernel reaches every loaded secret plugin
+//! through [`SecretAxis`] and [`SecretCalls`]. The [`SecretResolve`] seam followed the config
+//! secret reference it takes into this crate once that reference merged here, when `busbar-api`
+//! retired.
 
 use crate::secret_ref::SecretRef;
 
-/// The result type every [`SecretModule`] call returns.
+/// The result type every secret module call returns.
 pub type SecretResult<T> = Result<T, SecretModuleError>;
 
 /// The taxonomy a [`SecretModuleError`] carries: distinguishes a
@@ -106,41 +107,6 @@ impl From<&str> for SecretModuleError {
     }
 }
 
-/// One secret module - a resolver from a secret reference's `settings` map to the secret bytes.
-/// Stateless per call: one module instance serves EVERY reference naming it, each carrying its own
-/// `settings` (the `{ module: vault, settings: { path: kv/x } }` shape), so `resolve` takes the
-/// settings per call rather than at construction. Off every hot path (secrets resolve at boot /
-/// first use), so a plain synchronous call is the whole contract.
-pub trait SecretModule: Send + Sync + 'static {
-    /// Resolve one reference's settings to the secret bytes. FAIL-CLOSED: an unknown setting, a
-    /// missing source, or an EMPTY value is an error, never `Ok(vec![])` - the engine additionally
-    /// rejects an empty success defensively.
-    fn resolve(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> SecretResult<Vec<u8>>;
-
-    /// Resolve with the caller's ADVISORY deadline, in milliseconds from now (`None` = the caller
-    /// set no bound). The wire request has always carried this field and the dispatcher has always
-    /// dropped it on the floor, so a module that CAN bound its own upstream call — an HTTP vault
-    /// client, a socket to an agent — had no way to learn what bound to apply, and the engine's
-    /// deadline was enforced only by whatever timeout the engine itself wrapped the call in.
-    ///
-    /// Defaulted to [`resolve`](Self::resolve) so it is purely additive: a module that cannot bound
-    /// itself, or does not care, implements nothing and behaves exactly as before. The deadline is
-    /// ADVISORY — honoring it is a courtesy that lets the module fail fast with its own error rather
-    /// than be abandoned mid-call; it is never the only thing standing between the engine and a hung
-    /// module.
-    fn resolve_with_deadline(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-        deadline_ms: Option<u64>,
-    ) -> SecretResult<Vec<u8>> {
-        let _ = deadline_ms;
-        self.resolve(settings)
-    }
-}
-
 /// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
 /// `SecretResolver`. A plane only needs to turn a [`SecretRef`] into bytes or a UTF-8 string;
 /// naming this trait — not the core struct — keeps the plane free of an engine dependency. The
@@ -224,6 +190,11 @@ pub trait SecretCalls: Send + Sync {
 /// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
 /// alias). Installed once, in the root's rows; the kernel names nothing behind it.
 pub trait SecretAxis: Send + Sync {
+    /// The SUGARS the admitted secret plugins' Statements declare (audit contract-admin #10, Law 1:
+    /// the shorthand a reference may use is each plugin's own declaration): what the host reads
+    /// its configuration's secret references against, naming no source itself.
+    fn sugars(&self) -> crate::secret_ref::Sugars;
+
     /// Whether a secret plugin answers `module`, linked or dropped in.
     fn answers(&self, module: &str) -> bool;
 

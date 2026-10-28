@@ -12,15 +12,16 @@
 
 use busbar_contract::UpstreamAddress;
 
-/// The environment a `stdio` child is spawned under is the node's credential hand-off: the whole
-/// reason the arm names it rather than inheriting it is that inheriting it hands the child every
-/// secret the node holds. Naming it puts those values inside an ABI type that the code formatting
-/// it — a transport author's log line, a configuration dump — is code this tree cannot read.
+/// The environment a member-program child is spawned under is the node's credential hand-off: the
+/// whole reason the arm names it rather than inheriting it is that inheriting it hands the child
+/// every secret the node holds. Naming it puts those values inside an ABI type that the code
+/// formatting it — a transport author's log line, a configuration dump — is code this tree cannot
+/// read.
 #[test]
 fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
     let a = UpstreamAddress::Program {
         path: "/usr/bin/grid-server",
-        args: &["--stdio"],
+        args: &["--serve"],
         env: &[("GITHUB_TOKEN", "ghp_live-SECRET")],
         extras: &[],
     };
@@ -61,7 +62,7 @@ fn the_socket_arms_still_print_what_they_carry() {
     // The call-per-path family is a socket that DECLARES its method rather than an arm of its
     // own, and a declared fact is a wire fact and not a credential: it prints whole, which is what
     // a transport author's log line is read to check.
-    let grpc = UpstreamAddress::Socket {
+    let per_path = UpstreamAddress::Socket {
         authority: "10.0.0.7:443",
         sni: None,
         extras: &[(
@@ -69,7 +70,7 @@ fn the_socket_arms_still_print_what_they_carry() {
             "/pkg.Service/Method",
         )],
     };
-    let printed = format!("{grpc:?}");
+    let printed = format!("{per_path:?}");
     assert!(
         printed.contains("10.0.0.7:443") && printed.contains("/pkg.Service/Method"),
         "{printed}"

@@ -102,8 +102,8 @@ impl KernelSeal {
     ///
     /// The seal TRAIT the kernel-built views take, [`KernelSeal`](crate::plugin::KernelSeal), is
     /// SEALED, and it has exactly three implementors, all at the foot of this file: a real
-    /// [`Pass`], a real [`Grant`], and `plugin::TestKernelSeal`. The third exists only when the
-    /// dev-only `test-seal` feature is on — the contract's one named dev-only exemption (#65, item
+    /// [`Pass`], a real [`Grant`], and `plugin::TestKernelSeal`. The third exists only in this
+    /// crate's own unit tests and when the dev-only `test-seal` feature is on — the contract's one named dev-only exemption (#65, item
     /// 112), declared in the plugin module so a plane's own harness can name it, and absent from
     /// every release build because no non-dev dependency edge enables the feature. So in a release
     /// build the only way to obtain a `&dyn KernelSeal` is to hold a real `Pass` or `Grant`, the
@@ -115,7 +115,7 @@ impl KernelSeal {
         KernelSeal(())
     }
 
-    /// Hand a seal to the kernel, and to nothing else (#65; ARCHITECT ruling 2026-10-14).
+    /// Hand a seal to the kernel, and to nothing else.
     ///
     /// The seal goes to `__busbar_kernel_root`, a symbol only `busbar-kernel` defines. The kernel
     /// wraps it in a type private to the kernel and hands it back boxed as `dyn Any`: the kernel
@@ -303,13 +303,13 @@ impl<C: Capability> std::fmt::Debug for Grant<C> {
 // `plugin::TestKernelSeal` is declared in the plugin module so that a PLANE can name it — a plane
 // may not name THIS module at all (section 1.2) — but its impls belong here, beside `Pass` and
 // `Grant`, because this directory is the one place a reader (and `kernel-seal-impls`) has to look
-// to enumerate every type that can present a seal. Feature-gated, so it does not exist in a
-// release build.
+// to enumerate every type that can present a seal. Gated on this crate's own tests and the dev-only
+// feature, so it does not exist in a release build.
 
-#[cfg(feature = "test-seal")]
+#[cfg(any(test, feature = "test-seal"))]
 impl crate::plugin::sealed::KernelSealed for crate::plugin::TestKernelSeal {}
 
-#[cfg(feature = "test-seal")]
+#[cfg(any(test, feature = "test-seal"))]
 impl crate::plugin::KernelSeal for crate::plugin::TestKernelSeal {
     fn seal_origin(&self) -> &'static str {
         "test-seal: a fixture, not a kernel"

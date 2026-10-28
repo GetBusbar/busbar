@@ -23,7 +23,7 @@ use crate::config::{AsIdentity, OauthAsCfg};
 use crate::plane::AsPlane;
 
 /// A plane with the operator's ceiling set to `grant`. Registration needs no turning on: the
-/// 1.6.0 ruling is that it is on whenever the plane is.
+/// rule is that it is on whenever the plane is.
 fn plane(grant: &[&str]) -> AsPlane {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
@@ -158,7 +158,7 @@ async fn a_client_that_names_itself_after_the_deployment_is_refused() {
 
 /// REGISTRATION IS ON WHENEVER THE PLANE IS. THE FLIPPED PROOF: this test used to pin the
 /// opposite — registration absent-not-refusing when the operator left the toggle off — and the
-/// 1.6.0 ruling deleted the toggle, so the same three layers are now pinned in the ON direction:
+/// toggle was deleted, so the same three layers are now pinned in the ON direction:
 /// the derived path exists, the metadata document advertises the endpoint (`oauth-as` routes from
 /// that document, so an unadvertised endpoint would be an unrouted path), and a registration with
 /// no asked-for scope is ADMITTED under an untouched (empty-by-default is exercised above) ceiling.
@@ -197,4 +197,95 @@ async fn registration_is_on_whenever_the_plane_is() {
         .register_dynamic_client(&attempt(None, None), None)
         .await
         .expect("registration is one of the three always-on mechanisms and must admit a client");
+}
+
+/// Open registration is throttled. Before the fix no limiter was installed, so
+/// `oauth-as` allowed every unauthenticated registration and each wrote a client nothing reclaimed.
+/// The shipped budget is 60 registrations a window, globally.
+#[tokio::test]
+async fn open_registration_is_throttled() {
+    let plane = plane(&[]);
+    for n in 0..oauth_as::rate_limit::DEFAULT_CLIENT_REGISTRATION_CAPACITY {
+        plane
+            .server()
+            .register_dynamic_client(&attempt(None, None), None)
+            .await
+            .unwrap_or_else(|e| panic!("registration {n} inside the budget was refused: {e:?}"));
+    }
+    let refused = plane
+        .server()
+        .register_dynamic_client(&attempt(None, None), None)
+        .await
+        .expect_err("a registration past the budget was admitted");
+    assert!(
+        matches!(refused, RegistrationFailure::Unauthorized),
+        "expected the throttle's refusal, got {refused:?}"
+    );
+}
+
+/// A self-registered client that has held nothing for the idle period is reclaimed
+/// by the sweep, in this process's records. Before the fix a registered client was never deleted.
+/// One that still holds a live refresh token is kept, and so is a client nobody registered.
+#[tokio::test]
+async fn an_idle_self_registered_client_is_reclaimed_and_a_busy_one_kept() {
+    use oauth_as::client::ClientId;
+    use oauth_as::store::Storage as _;
+    async fn register(plane: &AsPlane) -> ClientId {
+        ClientId::new(
+            plane
+                .server()
+                .register_dynamic_client(&attempt(None, None), None)
+                .await
+                .expect("registers")
+                .client_id,
+        )
+    }
+    let plane = plane(&[]);
+    let store = plane.server().store();
+    let idle = register(&plane).await;
+    let busy = register(&plane).await;
+    let now = std::time::SystemTime::now();
+    let past_idle =
+        now + crate::policy::REGISTERED_CLIENT_IDLE + std::time::Duration::from_secs(60);
+    let mut refresh = oauth_as::token::RefreshTokenRecord::new(
+        "rt-busy",
+        busy.clone(),
+        Some("busbar-operator".to_string()),
+        oauth_as::scope::ScopeSet::default(),
+        "fam-busy",
+    );
+    refresh.expires_at = Some(past_idle + crate::policy::REGISTERED_CLIENT_IDLE);
+    let _ = store
+        .put_refresh_token(refresh)
+        .await
+        .expect("issues a refresh token");
+    let provisioned = oauth_as::client::Client {
+        client_id: ClientId::new("operator-made"),
+        auth: oauth_as::client::ClientAuth::Public,
+        grant_types: vec![oauth_as::grant::GrantType::AuthorizationCode],
+        redirect_uris: vec!["https://app.example.com/cb".to_string()],
+        allowed_scopes: oauth_as::scope::ScopeSet::default(),
+        default_scopes: oauth_as::scope::ScopeSet::default(),
+        name: None,
+        registration: None,
+    };
+    store.put_client(provisioned).await.expect("stores");
+
+    store.sweep_expired(past_idle).await.expect("sweeps");
+    assert!(
+        store.get_client(&idle).await.expect("reads").is_none(),
+        "an idle self-registered client was kept"
+    );
+    assert!(
+        store.get_client(&busy).await.expect("reads").is_some(),
+        "a self-registered client holding a live refresh token was reclaimed"
+    );
+    assert!(
+        store
+            .get_client(&ClientId::new("operator-made"))
+            .await
+            .expect("reads")
+            .is_some(),
+        "a client nobody registered was reclaimed"
+    );
 }

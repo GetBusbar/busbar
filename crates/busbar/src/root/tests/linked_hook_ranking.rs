@@ -30,7 +30,10 @@ use crate::root::loader::PluginRegistry;
 
 /// The hook axis the shipped binary installs, over an empty registry: the linked rows alone.
 fn linked_axis() -> Arc<dyn HookAxis> {
-    crate::root::hooks::axis(&Arc::new(PluginRegistry::empty())).expect("the linked hook rows")
+    crate::root::hooks::axis(
+        &(Arc::new(PluginRegistry::empty()) as Arc<dyn busbar_contract::plugin_rows::PluginRows>),
+    )
+    .expect("the linked hook rows")
 }
 
 /// An axis over the kernel's ranking double alone, on the same dispatcher.
@@ -176,6 +179,42 @@ fn cases() -> Vec<(&'static str, Vec<Row>, RoutingDecision)> {
         ("fastest", Vec::new(), RoutingDecision::Abstain),
         ("least_busy", Vec::new(), RoutingDecision::Abstain),
         ("usage", Vec::new(), RoutingDecision::Abstain),
+        // An infinity is a key like any other, ordered as 1.5.5 ordered it (the v1.5.5 ranking
+        // natives' `lib.rs:77-80`, `:99-102`): never dropped as absent.
+        (
+            "cheapest",
+            vec![
+                (0, Some(f64::INFINITY), None, 1, None),
+                (1, Some(f64::INFINITY), None, 1, None),
+            ],
+            prefer(&[0, 1]),
+        ),
+        (
+            "cheapest",
+            vec![
+                (0, Some(3.0), None, 1, None),
+                (1, Some(f64::NEG_INFINITY), None, 1, None),
+                (2, None, None, 1, None),
+            ],
+            prefer(&[1, 0, 2]),
+        ),
+        (
+            "fastest",
+            vec![
+                (0, None, Some(f64::INFINITY), 1, None),
+                (1, None, Some(10.0), 1, None),
+            ],
+            prefer(&[1, 0]),
+        ),
+        (
+            "usage",
+            vec![
+                (0, None, None, 1, Some(0.5)),
+                (1, None, None, 1, None),
+                (2, None, None, 1, Some(f64::INFINITY)),
+            ],
+            prefer(&[2, 0, 1]),
+        ),
     ]
 }
 
@@ -256,7 +295,7 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
     );
 }
 
-/// The twin of the kernel's test of the same name, on the REAL door (ARCHITECT Q-SO9): each of
+/// The twin of the kernel's test of the same name, on the REAL door: each of
 /// the four strategy words, opened through the hook axis and called through the hook seam,
 /// answers exactly the decision 1.5.5's in-process native answered on the ranking parity cases.
 /// Every answer is `Ok`: the call never fails, times out or reaches `on_error`. Its deadline is

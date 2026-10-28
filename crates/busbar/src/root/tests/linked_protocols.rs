@@ -1,10 +1,9 @@
 //! THE PROTOCOL AXIS AS THE SHIPPED BUILD LINKS IT — the registry and detection folds over the REAL
 //! declarations the root installs, read off the linked table (`crate::LINKED.protocols`), never named.
 //!
-//! These assertions moved here from the composition root's integration suites (ARCHITECT on N4,
-//! option (b)): what they prove is a property of the composition — the host's folds over what this
+//! These assertions moved here from the composition root's integration suites: what they prove is a property of the composition — the host's folds over what this
 //! build links — so the root holds them. The protocol names, paths, headers and bodies they are held
-//! to are fixture DATA (`fixtures/linked_protocols.json`, ARCHITECT F-T), so this source names no
+//! to are fixture DATA, so this source names no
 //! plane. The registry's own machinery over synthetic declarations is the kernel's to prove
 //! (`busbar-kernel`'s `proto` tests, `registry_fold`).
 //!
@@ -14,8 +13,8 @@
 use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
-use busbar_kernel::proto::streaming_content_types as event_content_types;
-use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path, Registry};
+use busbar_kernel::ingress::protocols::streaming_content_types as event_content_types;
+use busbar_kernel::ingress::protocols::{detect_protocol, residual_dialect_for_path, Registry};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -39,7 +38,7 @@ fn linked_decls() -> Vec<&'static ProtocolDecl> {
 /// any fold is read, so no verdict depends on which test ran first.
 fn registered() {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
 }
 
@@ -73,7 +72,7 @@ fn headers(v: &Value) -> HeaderMap {
 
 /// The cell a protocol declares, read off the process registry the linked table seeded.
 fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
-    busbar_kernel::proto::decl_for(proto).and_then(|d| d.handler)
+    busbar_kernel::ingress::protocols::decl_for(proto).and_then(|d| d.handler)
 }
 
 // ══ THE SURFACE THAT MUST NOT MOVE ═══════════════════════════════════════════════════════════════
@@ -86,7 +85,7 @@ fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     registered();
     assert_eq!(
-        busbar_kernel::proto::known_protocols(),
+        busbar_kernel::ingress::protocols::known_protocols(),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the protocol name set AND ITS ORDER are operator-visible: the order indexes telemetry's \
          metric families and the set is what the config validator accepts"
@@ -99,7 +98,7 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
 fn the_derived_protocol_list_is_not_empty() {
     registered();
     assert!(
-        !busbar_kernel::proto::known_protocols().is_empty(),
+        !busbar_kernel::ingress::protocols::known_protocols().is_empty(),
         "the codec-protocol list is derived from the declarations; an empty one means the built-in \
          table stopped being read, and every operator config would be refused with no cause named"
     );
@@ -116,7 +115,7 @@ fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
         "the absorbed event-stream content types"
     );
     assert_eq!(
-        busbar_kernel::proto::array_stream_shim_keys(),
+        busbar_kernel::ingress::protocols::array_stream_shim_keys(),
         strs(&FIXTURE["array_stream_shim_keys"]).as_slice(),
         "absorbed proto::array_stream_shim_keys()"
     );
@@ -139,7 +138,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
             .unwrap_or_else(|| panic!("{} declares no handler", decl.name));
         let mut candidates: Vec<OpVerb> = OpVerb::ALL
             .iter()
-            .chain(busbar_kernel::proto::declared_verbs())
+            .chain(busbar_kernel::ingress::protocols::declared_verbs())
             .copied()
             .collect();
         candidates.sort_unstable_by_key(|op| op.name());
@@ -171,7 +170,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
 fn every_declared_verb_has_a_serving_handler() {
     registered();
     assert!(
-        !busbar_kernel::proto::declared_verbs().is_empty(),
+        !busbar_kernel::ingress::protocols::declared_verbs().is_empty(),
         "the registry must declare at least the linked planes' verbs"
     );
     for decl in builtins().decls() {
@@ -199,7 +198,7 @@ fn every_declared_verb_has_a_serving_handler() {
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     registered();
     assert!(
-        !busbar_kernel::proto::known_protocols().is_empty(),
+        !busbar_kernel::ingress::protocols::known_protocols().is_empty(),
         "the exclusion below is asserted against a NON-EMPTY codec fold"
     );
     let codec_less: Vec<&'static ProtocolDecl> = linked_decls()
@@ -207,11 +206,11 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
         .filter(|d| d.codec.is_none())
         .collect();
     for decl in codec_less {
-        let d = busbar_kernel::proto::decl_for(decl.name).expect("it declares itself");
+        let d = busbar_kernel::ingress::protocols::decl_for(decl.name).expect("it declares itself");
         assert!(d.codec.is_none());
         assert!(d.handler.is_some(), "{} serves operations", d.name);
         assert!(
-            !busbar_kernel::proto::known_protocols().contains(&d.name),
+            !busbar_kernel::ingress::protocols::known_protocols().contains(&d.name),
             "a provider lane cannot name {}, which has no wire codec",
             d.name
         );
@@ -345,11 +344,11 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     }
 }
 
-// ══ THE METRIC LABELS ARE DECLARED DATA (ARCHITECT ruling 2026-10-16 item 4) ═════════════════════════
+// ══ THE METRIC LABELS ARE DECLARED DATA ═════════════════════════
 
 /// The fallback plane every linked door row folds to, as the composition root folds it: the one
 /// linked door whose Statement tail flags it the fallback.
-fn fallback_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+fn fallback_door_row() -> &'static busbar_kernel::plane_driver::registry::PlaneDecl {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     let mut fallbacks: Vec<_> = crate::LINKED
         .plane_doors
@@ -358,7 +357,7 @@ fn fallback_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         .filter(|reg| reg.fallback)
         .collect();
     assert_eq!(fallbacks.len(), 1, "one linked door is the fallback plane");
-    busbar_kernel::plane::door::fold(fallbacks.remove(0)).expect("the door folds")
+    busbar_kernel::plane_driver::door::fold(fallbacks.remove(0)).expect("the door folds")
 }
 
 /// **THE `/metrics` LABEL VOCABULARY IS UNCHANGED FROM 1.5.5.** The kernel banks
@@ -378,7 +377,7 @@ fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
     );
 }
 
-/// **THE PROVIDER PROTOCOLS ARE DECLARED DATA, AND 1.5.5'S** (ARCHITECT ruling 2026-10-16 item 3). The
+/// **THE PROVIDER PROTOCOLS ARE DECLARED DATA, AND 1.5.5'S**. The
 /// boot accepts a provider whose `protocol` a registered plane declares provider-capable (its
 /// door's `dialect_auth` lines flagged `DIALECT_PROVIDER`), and the validator's `must be one of:`
 /// tail and the lane build's `(supported: …)` list are that declaration, in order. Held to the 1.5.5

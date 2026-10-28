@@ -78,15 +78,6 @@ pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
 pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
-/// The reserved [`busbar_contract::records::VirtualKey::labels`] entry a SELF-SERVE binding records
-/// its minting identity provider under: the `identity-providers:` instance name that asserted the
-/// subject. The self group and the derived id are keyed by subject alone, and two providers backed by
-/// one module can both assert `oidc:alice`, so the binding remembers which one minted it and the
-/// self-serve mint refuses any other. A row without it (minted before the label existed) adopts the
-/// first provider that logs in. Kept off the key metric series (`snapshot::money`), so recording it
-/// changes no scrape.
-pub const SELF_KEY_PROVIDER_LABEL: &str = "busbar_self_provider";
-
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
@@ -384,7 +375,7 @@ fn model_deltas<'r>(
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -401,7 +392,7 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, u64>,
 ) -> Vec<(String, u64)> {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {
@@ -712,7 +703,7 @@ pub struct GovState {
     store: Arc<dyn RecordStore>,
     /// Both auth-path caches under ONE lock so `refresh` swaps them atomically — a reader can never
     /// observe a new `by_hash` against a stale `by_access_key_id`. See `GovCaches`.
-    caches: RwLock<GovCaches>,
+    caches: Arc<RwLock<GovCaches>>,
     /// Per-GROUP in-flight gauges for the `concurrent` limit metric (instantaneous - no window).
     /// Keyed by group NAME (stable across config applies, while `CostModel` group indices are
     /// not); values are `Arc`ed atomics so an [`AdmitGrant`] holds its release handles without
@@ -787,7 +778,7 @@ pub struct GovState {
     /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
     /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
     /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
-    refresh_lock: std::sync::Mutex<()>,
+    refresh_lock: Arc<std::sync::Mutex<()>>,
     /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`): each does a
     /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
     /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
@@ -795,6 +786,9 @@ pub struct GovState {
     /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
     /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
     self_mint_lock: std::sync::Mutex<()>,
+    /// Whether the self-serve mint holds an admin's state and the minting provider
+    /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
+    self_mint_holds: std::sync::atomic::AtomicBool,
     /// The configured store's store v3 slots (its typed records among them), when it was opened
     /// through a door ([`busbar_contract::store_calls::OpenedStore::calls`]): what the kernel's host
     /// services serve plane records over ([`Self::attach_store_calls`]).
@@ -806,6 +800,10 @@ pub struct GovState {
     caller_refs: crate::plane_driver::CallerRefs,
     /// The deployment keyset's caller-reference material, once the book binds the keyset.
     deployment_caller_ref: RwLock<Option<[u8; 32]>>,
+    /// This boot's random caller-reference key: the last resort when the node has neither signing
+    /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
+    /// Zeroised on drop and never logged (`GovState` has no `Debug`).
+    boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
@@ -864,6 +862,16 @@ pub enum SelfMintOp {
     Refresh,
 }
 
+/// Whether the self-serve mint holds an admin's state and the minting provider across a login (K3
+/// #17, #21): a subject whose binding an admin disabled, or that another identity provider minted,
+/// is refused (403), and the epoch probe treats ANY existing row as occupied, so a login never
+/// writes over a disabled, rotated or moved row. `false` is 1.5.5's behaviour, which this build keeps
+/// until the owner signs the change (Q128 u31): no refusal, and the probe skips only tombstoned rows,
+/// so a login re-enables an admin-disabled binding at its derived id (v1.5.5
+/// crates/busbar/src/governance/state.rs:431 skips only tombstones; :560 mints). The owner's
+/// signature flips this one line.
+pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = false;
+
 /// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
 /// subject, never a store failure; the token exchange maps every one to `Unbound` (403).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -872,7 +880,7 @@ pub enum SelfMintRefusal {
     /// login or refresh must not re-enable it or route around it with a fresh key.
     Disabled,
     /// The subject's binding was minted through a different identity provider
-    /// ([`SELF_KEY_PROVIDER_LABEL`]).
+    /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
 }
 

@@ -124,7 +124,7 @@ impl<'r> ExportRows<'r> {
         let name = &row.manifest.name;
         let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
         let image = match row.door() {
-            Some(door) => Image::Linked(LinkedRow::of(door).map_err(refused)?),
+            Some(door) => Image::Linked(LinkedRow::of_raw(door).map_err(refused)?),
             None => match row.manifest.stated_rendering()? {
                 Some(stated) => Image::Dropped(stated),
                 None => return Err(format!("export plugin '{name}': {NO_DOOR}")),
@@ -232,6 +232,10 @@ impl<'r> ExportRows<'r> {
 
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
+    ///
+    /// `check` runs on an instance opened for it alone, over the settings of the first instance
+    /// that opens. An instance whose settings do not open is already refused by its own probe, and
+    /// the checks across the others still run.
     #[must_use]
     pub fn check(
         &self,
@@ -240,27 +244,29 @@ impl<'r> ExportRows<'r> {
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
         let row = self.row(module)?;
-        let first = instances
-            .first()
-            .map_or_else(|| "{}".to_string(), |(_, s)| s.to_string());
-        let named = instances.first().map_or(module, |(n, _)| n.as_str());
-        match self.load(row, &label(named), None) {
-            Ok(p) => {
-                let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), first.as_bytes())
-                else {
-                    return Some(Vec::new());
-                };
-                let listed: Vec<(String, Vec<u8>)> = instances
-                    .iter()
-                    .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
-                    .collect();
-                Some(
-                    export_door::check(opened.plugin(), phase, &listed)
-                        .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
-                )
-            }
-            Err(_) => Some(Vec::new()),
+        let listed: Vec<(String, Vec<u8>)> = instances
+            .iter()
+            .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
+            .collect();
+        let none = [(module.to_string(), b"{}".to_vec())];
+        let candidates = if listed.is_empty() {
+            &none[..]
+        } else {
+            &listed[..]
+        };
+        for (named, settings) in candidates {
+            let Ok(p) = self.load(row, &label(named), None) else {
+                return Some(Vec::new());
+            };
+            let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), settings) else {
+                continue;
+            };
+            return Some(
+                export_door::check(opened.plugin(), phase, &listed)
+                    .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+            );
         }
+        Some(Vec::new())
     }
 
     /// OPEN one instance of `module` with `settings` under the host's instance `label`.
@@ -285,7 +291,8 @@ impl<'r> ExportRows<'r> {
         })?;
         let text = settings.to_string();
         let p = self.load(row, label, Some(settings))?;
-        crate::observe::grant_series(
+        // Held by the instance: its grant goes with it.
+        let grant = crate::observe::grant_series(
             self.dispatcher.observing(),
             &row.manifest.name,
             row.first_party(),
@@ -293,8 +300,9 @@ impl<'r> ExportRows<'r> {
         )?;
         // The destinations its manifest declares: `open` binds each to the path the operator's
         // settings give it, and `disk.append` serves the instance those only.
-        p.grant_destinations(&row.manifest.declares.destinations);
-        let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
+        p.grant_destinations(&row.manifest.declares);
+        let opened =
+            ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?.holding(grant);
         // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
         // export door that states `ready` is awaited once its instance is open over the host's
         // tables, before it is served, as a store's and an auth door's are. Only this, the open that

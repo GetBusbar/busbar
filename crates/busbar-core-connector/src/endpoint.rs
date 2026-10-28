@@ -3,12 +3,16 @@
 
 //! THE ENDPOINT CHECK — a pure function over an open's target, run before any dial.
 //!
-//! An owner-answered, accepted difference from 1.5.5: the connector refuses a cloud METADATA host
-//! by name, and the whole IPv4 link-local range they live in, and (ARCHITECT, PB-100: metadata and
-//! link-local are refused on every need, whatever its egress class) IPv6 link-local, fe80::/10.
-//! A plugin that could reach
-//! `169.254.169.254` could read the host's cloud credentials, so no need, no configuration and no
-//! plugin opens one.
+//! Two checks. [`named`]: a target names a host at all; every dial asks it. [`check`]: that host is
+//! no cloud METADATA host, by name or in the whole IPv4 link-local range they live in, and no IPv6
+//! link-local address (fe80::/10). A dial the destination judge judges ([`crate::DialJudge`]: every
+//! open, declare-time admission and pinned need) asks [`named`] alone and leaves metadata and
+//! link-local to the ONE guard ([`crate::guard`], THE DESIGN §5 "Destination guard — ONE check for
+//! every outbound connection"), which refuses them in every class and is where the 1.5.5 provider
+//! carve-outs (`allow_metadata_hosts`, `security.allow_metadata_hosts`,
+//! `security.allow_all_metadata`) and an IP or CIDR allowlist entry naming the address admit them;
+//! a second, stricter refusal ahead of it would make those unreachable. Only a dial no judge
+//! judges ([`crate::compose::Connection::dial`], an IP literal dialled as written) asks [`check`].
 //!
 //! The target is read by the contract's one URL and host reader (`busbar_contract::net`) and judged
 //! against its one metadata list, the list the destination guard reads too — this file kept a
@@ -67,15 +71,28 @@ impl std::error::Error for EndpointRefusal {}
 /// [`EndpointRefusal::MetadataHost`] when the host is a cloud metadata host in any spelling;
 /// [`EndpointRefusal::NoHost`] when no host can be read.
 pub fn check(target: &str) -> Result<(), EndpointRefusal> {
-    let Some(host) = target_host(target) else {
-        return Err(EndpointRefusal::NoHost {
-            target: target.to_owned(),
-        });
-    };
+    let host = host_of(target)?;
     if host_is_cloud_metadata(&host) || host_is_link_local_v6(&host) {
         return Err(EndpointRefusal::MetadataHost { host });
     }
     Ok(())
+}
+
+/// Check that an open's `target` names a host, read by the one shared reader ([`target_host`]):
+/// the endpoint check a judged dial asks, its metadata and link-local refusal the guard's.
+///
+/// # Errors
+///
+/// [`EndpointRefusal::NoHost`] when no host can be read.
+pub fn named(target: &str) -> Result<(), EndpointRefusal> {
+    host_of(target).map(drop)
+}
+
+/// The host `target` names, or the refusal naming the target.
+fn host_of(target: &str) -> Result<String, EndpointRefusal> {
+    target_host(target).ok_or_else(|| EndpointRefusal::NoHost {
+        target: target.to_owned(),
+    })
 }
 
 #[cfg(test)]

@@ -258,6 +258,7 @@ fn listening_plane(target_from: &str) -> Candidate {
         aliases: Vec::new(),
         sugar: Vec::new(),
         verbs: vec!["agents".into()],
+        selecting: Vec::new(),
         schemes: Vec::new(),
         needs: vec![ReadNeed {
             direction: DIRECTION_INBOUND,
@@ -279,6 +280,7 @@ fn listening_plane(target_from: &str) -> Candidate {
             bytes: Arc::new(Vec::new()),
         },
         disk: false,
+        orders: true,
     }
 }
 
@@ -360,7 +362,7 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
 
 use busbar_contract::plugin::Kind;
 
-/// RED (TODO step 9): at 3g each seat is dealt only its own section, reserved sub-keys stripped,
+/// RED: at 3g each seat is dealt only its own section, reserved sub-keys stripped,
 /// and a plugin's validation refusal names the operator's file position in 1.5.5's form.
 #[test]
 fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
@@ -588,7 +590,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
         .plugins_dir(dir.clone())
-        .plugin_trust(trust_policy)
+        .plugin_admission(&crate::root::admission::ADMISSION)
         .build();
     let router = busbar_core_admin::build_router(app);
     let request = axum::http::Request::builder()
@@ -701,7 +703,7 @@ fn features_reached(manifest: &str, root: &str) -> std::collections::BTreeSet<St
 
 /// THE RELEASE ARTIFACT NEVER CARRIES THE HARNESS SEAM (ARCHITECT ruling, busbar #700, condition b):
 /// the release builds (`scripts/release-build.sh`, both `scripts/pgo-build.sh` builds) compile
-/// `-p busbar` with its default features and name no `--features` or `--all-features`, and the
+/// the default distribution (`dist/default`) with its default features and name no `--features` or `--all-features`, and the
 /// default feature set does not reach `test-harness`. RED arm: a manifest whose default reaches it
 /// through another feature is caught, so the walk is not vacuous.
 #[test]
@@ -730,7 +732,10 @@ fn the_release_feature_set_excludes_test_harness() {
             .collect();
         assert!(!builds.is_empty(), "{script} names its release build");
         for b in builds {
-            assert!(b.contains("-p busbar"), "{script}: {b}");
+            assert!(
+                b.contains("--manifest-path dist/default/Cargo.toml --bin busbar"),
+                "{script} builds the default distribution: {b}"
+            );
             assert!(
                 !b.contains("--features") && !b.contains("--all-features"),
                 "{script}'s release build must take busbar's default features: {b}"
@@ -765,5 +770,106 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
             r#"{"pools":{"tier":{"members":[{"model":"m"}]},"work":{"members":[{"model":"m"}]}}}"#
                 .to_owned()
         )]
+    );
+}
+
+// ── THE DROPPED-IN SECRET ROWS ──
+
+/// The process's one secret axis (`root::linked::secret_rows`) is shared by every test here that
+/// writes its dropped-in rows: each holds this while its rows are in play.
+static SECRET_ROWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A dropped-in secret plugin the running node admitted, answering `name`.
+fn dropped_secret(name: &str) -> Candidate {
+    Candidate {
+        kind: KindCode::Secret,
+        name: name.into(),
+        version: "1.0.0".into(),
+        aliases: Vec::new(),
+        sugar: Vec::new(),
+        verbs: Vec::new(),
+        selecting: Vec::new(),
+        schemes: Vec::new(),
+        needs: Vec::new(),
+        stated: Vec::new(),
+        origin: Origin::Dropped {
+            file: format!("{name}.tar.gz"),
+            bytes: Arc::new(Vec::new()),
+        },
+        disk: false,
+        orders: true,
+    }
+}
+
+/// A DRY RUN LEAVES THE LIVE SECRET ROWS ALONE (row 159, audit root A-4): the registry build is
+/// stage 1, Discover, which `--validate` and the admin config-validate run too (BUSBAR-1.6.0.md
+/// l.456-457: "`--validate` runs stages 0–2 … nothing dials"; "A validation refusal keeps the
+/// running generation"), and the secret plugins are opened in stage 3 (l.444, l.448). So a registry
+/// build over a configuration with `plugins.enabled: false` leaves the dropped-in secret plugin
+/// the running node admitted answering its word: a `{module: <it>}` reference keeps resolving.
+///
+/// RED before the fix: `root::boot::registry` put the build's dropped-in secret set on the
+/// process's one secret axis (`admit_dropped` → `set_dropped`), so the dry run's empty set replaced
+/// the running node's and the module stopped answering.
+#[test]
+fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
+    use busbar_contract::secret::SecretAxis as _;
+    let _held = SECRET_ROWS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let rows = crate::root::linked::secret_rows();
+    rows.set_dropped([dropped_secret("row159-live-vault")]);
+    assert!(
+        rows.answers("row159-live-vault"),
+        "the running node's dropped-in secret answers"
+    );
+
+    let off = PluginsCfg::default();
+    assert!(
+        !off.enabled,
+        "the dry run's configuration turns the plugins directory off"
+    );
+    crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
+        .expect("a build with the plugins directory off is the linked rows alone");
+    let answers = rows.answers("row159-live-vault");
+    rows.set_dropped(std::iter::empty());
+    assert!(
+        answers,
+        "a dry run's registry build replaced the running node's dropped-in secret rows"
+    );
+}
+
+/// GREEN TWIN of the dry-run test above: the admission the committing builds make (boot's scan and
+/// the app build, through the install record's `secret_admit`) still REPLACES the dropped-in secret
+/// rows with its own registry's set (BUSBAR-1.6.0.md §3, stages 3a/3e open the secret plugins).
+/// Added with the fix: before it, the registry build was the only admission, so there was no
+/// separate committing path to name.
+#[test]
+fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
+    use busbar_contract::secret::SecretAxis as _;
+    let _held = SECRET_ROWS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let rows = crate::root::linked::secret_rows();
+    rows.set_dropped([dropped_secret("row159-stale-vault")]);
+
+    let off = PluginsCfg::default();
+    let registry = crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
+        .expect("a build with the plugins directory off is the linked rows alone");
+    // The app build's path: the kernel holds the registry as the contract's rows view and hands it
+    // to the install record's admission, which reads it back as the registry this root built.
+    let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
+    admit_secrets(&plugin_rows).expect("no dropped-in secret contests a word");
+    let answers = rows.answers("row159-stale-vault");
+    rows.set_dropped(std::iter::empty());
+    assert!(
+        !answers,
+        "the committing build's admission kept a dropped-in secret its registry no longer has"
+    );
+    // The app build reaches that admission only through the root's install record.
+    assert!(
+        include_str!("../linked.rs")
+            .contains("secret_admit: Some(crate::root::boot::admit_secrets)"),
+        "the root's install record stopped carrying its secret admission"
     );
 }

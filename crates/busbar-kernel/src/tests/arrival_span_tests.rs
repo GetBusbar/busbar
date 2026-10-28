@@ -117,7 +117,7 @@ fn opened(
     seen
 }
 
-/// THE ENTRY SPAN AN ARRIVAL OPENS (status row 173): the first fact of its verb the request meets,
+/// THE ENTRY SPAN AN ARRIVAL OPENS: the first fact of its verb the request meets,
 /// in the snapshot's order (an entry fact by its head fields and its path pattern, a raw affix by
 /// its affixes), else its routed claim's own. An entry fact that states no span ends the reading
 /// with none; a named path segment is recorded, percent-decoded, as the span's field. A fact is no
@@ -187,9 +187,10 @@ fn an_arrival_opens_the_first_fact_it_meets_else_its_claims_span() {
         opened(&spans, 1, "GET", "/own/x", &[]).is_empty(),
         "another verb"
     );
-    assert!(
-        opened(&spans, 0, "POST", "/z/signed", &[]).is_empty(),
-        "a raw affix stating no span is no fact"
+    assert_eq!(
+        name(opened(&spans, 0, "POST", "/z/signed", &[])),
+        vec!["entry_span_test_own"],
+        "a raw affix stating no span is no fact: the reading passes it to the claim's own span"
     );
     assert!(
         opened(&spans, 1, "POST", "/q", &[]).is_empty(),

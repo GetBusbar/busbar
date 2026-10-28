@@ -28,13 +28,6 @@ pub mod auth_door;
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
-/// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
-/// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
-/// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
-/// transport row through it too (`transport_door_conformance_tests`).
-#[cfg(any(test, feature = "conformance"))]
-#[allow(unsafe_code)] // REVIEWED: the published suite drives raw doors and plants faults
-pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 #[allow(unsafe_code)] // REVIEWED: THE ONE DISPATCHER: every crossing of the memory ABI
@@ -57,11 +50,6 @@ pub mod highwater;
 #[allow(unsafe_code)] // REVIEWED: lends the hook door its frame
 pub mod hook_door;
 mod host;
-/// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
-/// and the published conformance suite's `far_ends`), for a build that cannot link the process's
-/// connector. No TLS library: TLS stays in the connector.
-#[cfg(any(test, feature = "test-support", feature = "conformance"))]
-pub mod https_conns;
 pub mod observe;
 pub mod open_once;
 pub mod registry;
@@ -71,7 +59,7 @@ pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
-/// TEST ONLY: a real door restated with one `tcp` need (the bind tests' subject; no plugin).
+/// TEST ONLY: a real door restated with one stream need (the bind tests' subject; no plugin).
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/needs_restated.rs"]
@@ -79,22 +67,10 @@ mod needs_restated;
 pub mod sign;
 #[allow(unsafe_code)] // REVIEWED: the staged image's `memfd` and its file descriptors
 mod stage;
-/// NEVER SHIPPED: the facts the test connection tables stand in for, read from data
-/// (`stand_in.json`), so no Rust source of this crate names a transport.
-#[cfg(any(test, feature = "test-support", feature = "conformance"))]
-pub mod stand_in;
 pub mod store_adapter;
 #[allow(unsafe_code)] // REVIEWED: lends the store door its request (`Lend`)
 pub mod store_v3;
 pub mod tarball;
-/// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
-/// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
-#[cfg(any(test, feature = "test-support", feature = "conformance"))]
-pub mod tcp_conns;
-/// TEST ONLY: a local token issuer (an ES256 key, its JWKS, signed tokens) for the tests of a host
-/// that loads a token-verifying auth plugin (`test-support`).
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_issuer;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
@@ -102,6 +78,35 @@ pub mod test_issuer;
 #[doc(hidden)]
 #[path = "tests/test_support.rs"]
 pub mod test_support;
+
+/// TEST ONLY: the composition root's door fixtures (status row 195): doors built by the contract's
+/// door macro, whose expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no
+/// such expansion. Under `test-support`, which only the root's `[dev-dependencies]` turns on.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
+#[path = "../tests/fixtures/root_door_fixtures.rs"]
+pub mod root_door_fixtures;
+
+/// TEST ONLY: busbar-test-kit's source (the published conformance suite and the test connection
+/// tables), compiled into this crate's own tests so the suite's unit tests run over this crate's
+/// door fixtures.
+#[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: the published suite drives raw doors and plants faults
+#[path = "../../busbar-test-kit/src/conformance/mod.rs"]
+pub mod conformance;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/https_conns.rs"]
+pub mod https_conns;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/stand_in.rs"]
+pub mod stand_in;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/tcp_conns.rs"]
+pub mod tcp_conns;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/test_issuer.rs"]
+pub mod test_issuer;
 
 /// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
 pub mod rows;
@@ -131,60 +136,6 @@ pub use registry::{
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
-
-/// THE LOADER RE-EXPORTS NO CONTRACT TYPE (BOOT-LOOP step 3, ruling R2). A type the contract owns
-/// is named from `busbar_contract::abi::*`, the crate that owns it; the loader path to it does not
-/// compile. Each block below is one former loader re-export, and each must stay a compile error.
-///
-/// ```compile_fail
-/// use busbar_plugin_loader::EndpointRequest;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::EndpointResponse;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::Route;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::RouteAuth;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::RouteMethod;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::CheckPhase;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ExportField;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ExportStream;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HostResult;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HttpRequest;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HttpResponse;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ColdEntry;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotDeclStr;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotPlaneDecl;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotHostVtable;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotStatusClass;
-/// ```
-pub mod contract_types_are_named_from_the_contract {}
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
@@ -284,8 +235,7 @@ pub fn plugin_library_filename(crate_snake: &str) -> String {
 /// (`GET /admin/plugins`), which is the surface an operator uses to answer "did my install land".
 /// On unix the extension is part of the name and `.SO` is a DIFFERENT file from `.so`, so folding
 /// case there would make this claim a file is a library on the strength of a name the loader would
-/// not resolve. One question, each platform's own answer — the same shape as the absolute-path check
-/// in `mcp::config`.
+/// not resolve. One question, each platform's own answer.
 fn is_library_file(file: &str) -> bool {
     if cfg!(target_os = "windows") {
         // BYTES, not a `&str` slice: `file[file.len() - 4..]` panics when byte `len - 4` is not a
@@ -340,23 +290,11 @@ mod tests;
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
-/// The cold kinds' both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
+/// The both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
 /// linked door and the dropped-in door, its rows and its opened instance compared.
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]
 mod both_ways;
-
-/// No rlib the test binary links exports `busbar_plugin_door` (the fat-LTO duplicate-symbol guard).
-#[cfg(test)]
-#[path = "tests/door_symbol_tests.rs"]
-mod door_symbol_tests;
-
-/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
-/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
-/// open one module.
-#[cfg(test)]
-#[path = "tests/auth_conformance_tests.rs"]
-mod auth_conformance_tests;
 
 /// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
 /// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
@@ -428,7 +366,7 @@ mod dispatch_kind_hook_tests;
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
 
-/// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
+/// The both-ways harness on the memory ABI: one door loaded LINKED and DROPPED IN
 /// through the one dispatcher, one script, two transcripts compared.
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings

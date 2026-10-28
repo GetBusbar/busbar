@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A DATAGRAM SESSION, on the data listener (ARCHITECT rulings, row 132: the seam (a)-(d), the
-//! channels ruling and the pairing ruling).
+//! A DATAGRAM SESSION, on the data listener.
 //!
 //! A door plane's claim whose carrier a DATAGRAM framer answers is an HTTP unit whose answer turns
 //! it into a duplex session on a host carrier, as an upgrade does for a stream: the request body is
@@ -35,7 +34,8 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use super::Stated;
 
-/// How many channel messages a session's caller side holds for the plane before the session ends.
+/// How many channel messages a session's caller side holds before the session ends, either way:
+/// for the plane, and from it before the far end opens a channel.
 const CALLER_QUEUE: usize = 1024;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -58,7 +58,7 @@ impl ClaimDoors {
         self.0.get(claim).cloned()
     }
 
-    /// THE CLAIM DOORS BOOT BINDS (ARCHITECT ruling, row 132 seam (d)): one for every inbound
+    /// THE CLAIM DOORS BOOT BINDS: one for every inbound
     /// listener in the one list of listeners whose transport a DATAGRAM framer answers, bound on
     /// the address its `{listen}` block names, its task on the calling worker. A listener over any
     /// other transport is no claim door (the data listener and the stream listeners bind those);
@@ -246,7 +246,8 @@ pub struct CallerLeg {
     pairing: Mutex<Option<Arc<Pairing>>>,
     /// The channel a written piece goes to: the first channel the association named.
     channel: Mutex<Option<u64>>,
-    /// Pieces the plane wrote before the channel opened.
+    /// Pieces the plane wrote before the channel opened, at most `CALLER_QUEUE`; none once the leg
+    /// closed.
     held: Mutex<VecDeque<(Vec<u8>, bool)>>,
     to_session: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
 }
@@ -312,8 +313,18 @@ impl CallerLeg {
     fn write(&self, bytes: &[u8], text: bool, now: Instant) -> bool {
         let channel = *lock(&self.channel);
         let Some(channel) = channel else {
-            lock(&self.held).push_back((bytes.to_vec(), text));
-            return true;
+            if lock(&self.to_session).is_none() {
+                return false;
+            }
+            let mut held = lock(&self.held);
+            if held.len() < CALLER_QUEUE {
+                held.push_back((bytes.to_vec(), text));
+                return true;
+            }
+            drop(held);
+            // A far end that opens no channel while the plane writes ends the session.
+            self.failed();
+            return false;
         };
         let (Some(door), Some(id)) = (self.door.upgrade(), *lock(&self.id)) else {
             return false;

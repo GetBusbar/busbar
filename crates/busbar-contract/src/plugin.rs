@@ -112,13 +112,6 @@ impl Kind {
         Self::Hook,
         Self::Export,
     ];
-
-    /// The kind whose root key is `key`, or `None` for a key no kind owns (a core-owned key, or a
-    /// plane's declared verb).
-    #[must_use]
-    pub fn owning_root_key(key: &str) -> Option<Kind> {
-        Self::ALL.into_iter().find(|k| k.root_key() == Some(key))
-    }
 }
 
 /// Where a kind is configured: one root key the kernel knows, or the verbs each plane plugin
@@ -292,9 +285,10 @@ pub trait KernelSeal: sealed::KernelSealed {
 ///
 /// What it does NOT do is re-open the forgery:
 ///
-/// - It is `#[cfg(feature = "test-seal")]`, and **no non-dev dependency edge in this workspace
-///   turns that feature on**. In a release build this type does not exist, so nothing shipped can
-///   name it.
+/// - It is `#[cfg(any(test, feature = "test-seal"))]`: this crate's own unit tests (whose
+///   `Secret<T>` cell presents it) and the dev-only feature, and **no non-dev dependency edge in
+///   this workspace turns that feature on**. In a release build this type does not exist, so
+///   nothing shipped can name it.
 /// - A crate must opt in LOUDLY, in its own `[dev-dependencies]`, under a feature whose name says
 ///   what it is. That is an edit a reviewer sees, unlike the old `struct FakeSeal; impl KernelSeal
 ///   for FakeSeal` which any file could write silently.
@@ -305,7 +299,7 @@ pub trait KernelSeal: sealed::KernelSealed {
 /// its two `impl` blocks live in [`crate::caps::token`] with every other implementor of this
 /// trait, which is both where `qa/construction.toml`'s `kernel-seal-impls` rule requires them and
 /// the point of that rule — one directory holds every type that can present a seal.
-#[cfg(feature = "test-seal")]
+#[cfg(any(test, feature = "test-seal"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestKernelSeal;
 

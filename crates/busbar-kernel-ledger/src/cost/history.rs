@@ -220,15 +220,17 @@ impl History {
         let count = self.entries.partition_point(|e| e.seq <= at);
         HistoryView {
             entries: &self.entries[..count],
-            at,
+            at: Some(at),
         }
     }
 
-    /// The whole history as it stands. Equivalent to snapshotting at the head.
+    /// The whole history as it stands. Equivalent to snapshotting at the head, and naming no
+    /// snapshot at all for a history nothing has been appended to: [`History::head`] answers `None`
+    /// there for the reason it gives, and a view of it must not answer zero in its place.
     pub fn current(&self) -> HistoryView<'_> {
         HistoryView {
             entries: &self.entries,
-            at: self.head().unwrap_or(HistorySeq::OPENING),
+            at: self.head(),
         }
     }
 
@@ -260,7 +262,7 @@ impl History {
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryView<'a> {
     entries: &'a [CardEntry],
-    at: HistorySeq,
+    at: Option<HistorySeq>,
 }
 
 impl HistoryView<'_> {
@@ -355,8 +357,9 @@ impl HistoryView<'_> {
         (stored_cut(until) || (from <= after && after < until)).then_some(until)
     }
 
-    /// The snapshot this view is.
-    pub fn seq(&self) -> HistorySeq {
+    /// The snapshot this view is: the seq it was taken at, or `None` for the current view of a
+    /// history nothing has been appended to, which has no snapshot to name.
+    pub fn seq(&self) -> Option<HistorySeq> {
         self.at
     }
 

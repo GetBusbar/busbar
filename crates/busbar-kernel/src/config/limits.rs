@@ -84,11 +84,10 @@ pub const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
 pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// Default ceiling on a honored upstream `Retry-After` (seconds). Mirrors `store.rs` (24h).
 pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
-/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes). The literal lives ONCE, in
-/// the neutral `proxy` module (which owns the process-global this seeds), so the serde default here
-/// and the accessor a plane reads can never drift apart.
+/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes): the egress unit's
+/// default, so the serde default here and the accessor a plane reads can never drift apart.
 pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
-    crate::proxy::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
+    busbar_kernel_egress::upstream::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
 /// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
 /// upstream reads already apply (`proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
 /// body must NOT be buffered whole into memory via an unbounded `resp.bytes()` read — that OOMs
@@ -177,7 +176,7 @@ pub fn default_max_auto_provisioned_groups() -> usize {
     0
 }
 pub fn default_hook_content_max_bytes() -> usize {
-    crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES
+    crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES
 }
 pub fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
@@ -536,8 +535,63 @@ static INSTALLED: std::sync::RwLock<Option<LimitsResolved>> = std::sync::RwLock:
 /// The currently-installed limits, or `None` when nothing has been installed (boot, or a test
 /// process that never installed). Every accessor resolves that `None` to its own historical
 /// default constant.
+///
+/// On the thread running a configuration build ([`BuildScope`]) this answers the CANDIDATE's limits
+/// instead: the build reads the values it is building with, while every other thread — the live
+/// traffic the running generation serves — keeps reading the published ones until the candidate
+/// goes live ([`publish`]). THE DESIGN §6 item 8: "A reload builds and checks new lists, swaps them
+/// in atomically ... and is refused, leaving the running generation serving, if any check fails."
 pub fn installed() -> Option<LimitsResolved> {
+    if let Some(candidate) = BUILDING.with(|b| b.borrow().clone()) {
+        return Some(candidate);
+    }
     INSTALLED.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+std::thread_local! {
+    /// The limits of the configuration being built ON THIS THREAD, if one is ([`BuildScope`]).
+    static BUILDING: std::cell::RefCell<Option<LimitsResolved>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// THE CANDIDATE'S LIMITS, VISIBLE TO ITS OWN BUILD AND TO NOTHING ELSE. Entered at the top of a
+/// configuration build and dropped at its end (`Ok` or `Err` alike): while it is held, [`installed`]
+/// on this thread answers the candidate's limits, and the process-wide slot every other thread reads
+/// is untouched. Nothing is published by entering or leaving it — a refused build changes no live
+/// limit at any moment, which is the whole point. `!Send` (it restores a thread-local), so it can
+/// never be dropped on a thread other than the one that entered it.
+#[must_use = "the candidate's limits are visible to the build only while the scope is held"]
+pub struct BuildScope {
+    /// What this thread's scope held before (a nested build restores its parent's candidate).
+    outer: Option<LimitsResolved>,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl BuildScope {
+    /// Make `resolved` the limits this thread's build reads.
+    pub fn enter(resolved: &LimitsResolved) -> Self {
+        let outer = BUILDING.with(|b| b.borrow_mut().replace(resolved.clone()));
+        Self {
+            outer,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for BuildScope {
+    fn drop(&mut self) {
+        let outer = self.outer.take();
+        BUILDING.with(|b| *b.borrow_mut() = outer);
+    }
+}
+
+/// PUBLISH a generation's limits process-wide: the one writer of the live slot (and of the derived
+/// caps mirrored out of it) outside the test surface. Called when a generation goes live — the swap
+/// that installs it (`state::AppHandle::swap`) and the build's commit (`InstalledLimits::keep`, the
+/// boot generation's only publication) — never while a candidate is still being built or judged.
+pub fn publish(resolved: &LimitsResolved) {
+    *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
+    mirror_derived_caps(Some(resolved));
 }
 
 /// TEST-ONLY. Serializes every test in a binary that MUTATES the process-global slot above
@@ -560,9 +614,8 @@ pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_
 
 /// Install (or RE-install) the resolved limits process-wide, unconditionally and with no rollback.
 ///
-/// TEST-ONLY. Production installs through [`InstallGuard`], never through this: a config that is
-/// subsequently REJECTED must not leave its limits behind, and an unconditional install is exactly
-/// what made that possible. The remaining consumer is the one test whose SUBJECT is racing the live
+/// TEST-ONLY. Production publishes through [`publish`] when a generation goes live, never through
+/// this. The remaining consumer is the one test whose SUBJECT is racing the live
 /// cap by re-installing it in a hot loop with no rollback between iterations — `InstallGuard` cannot
 /// serve that (a guard restores on drop, but the test wants the value to keep flipping mid-run).
 #[cfg(any(test, feature = "test-support"))]
@@ -579,29 +632,23 @@ pub fn install(resolved: &LimitsResolved) {
 /// use `InstallGuard` for that, because a broken `InstallGuard::drop` would then silently repair the
 /// very state the assertions inspect. Mirrors the derived caps exactly as every other mutation does,
 /// so a raw poke cannot leave the `proxy` globals disagreeing with the accessors.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn set_installed(slot: Option<LimitsResolved>) {
     mirror_derived_caps(slot.as_ref());
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = slot;
 }
 
-/// INSTALL FOR THE DURATION OF A BUILD, AND ROLL BACK UNLESS THE BUILD SUCCEEDS.
+/// TEST-ONLY. INSTALL A POSTURE PROCESS-WIDE FOR A TEST'S DURATION, AND ROLL IT BACK ON DROP
+/// unless [`InstallGuard::commit`] is called.
 ///
-/// busbar-core's `build_app_from_config` installs the candidate limits FIRST — it has to, because
-/// the build reads them through the deep-call-stack accessors (the store open, the health-probe
-/// fallbacks, the routing policy timeout) — but every step AFTER the install is fallible: semantic
-/// validation, the plugin pre-flight, secret-ref resolution, the store open. Before this guard, a
-/// rejected apply left the REJECTED config's limits installed process-wide while the old `App` kept
-/// serving, and no error path put them back. That broke the surface's central promise that an
-/// invalid apply changes nothing, and it did so in the worst direction: the values `validate_limits`
-/// exists to reject — e.g. a `request_body_max_bytes` below its floor — are precisely the ones that
-/// got installed anyway, because the range check runs after the install. A 400-ed
-/// `POST /config/apply` could shrink the live SigV4 auth-middleware buffer and the cross-protocol
-/// translate buffer under a still-running gateway, 401-ing larger Bedrock requests.
-///
-/// So: snapshot, install, and restore on drop unless [`InstallGuard::commit`] is called. Rollback on
-/// the DROP rather than on each `return Err` is what makes it total — a build step added later
-/// cannot forget to unwind, and neither can a `?`.
+/// Production no longer installs through this: a configuration build reads its candidate's limits
+/// through a thread-local [`BuildScope`] and the live slot is written only by [`publish`] when the
+/// generation goes live, so a refused build never has its limits in force anywhere. (This guard was
+/// the build's install, and it put the candidate's limits — the very values validation exists to
+/// refuse — in front of live traffic for the length of the build.) Tests that need a non-default
+/// posture in force process-wide (a small body cap, a short handshake bound) still use it, because
+/// they want exactly the process-wide effect, undone on drop.
+#[cfg(any(test, feature = "test-support"))]
 #[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
 pub struct InstallGuard {
     /// What was installed before — `None` when nothing was (boot, or a test process).
@@ -609,6 +656,7 @@ pub struct InstallGuard {
     committed: bool,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InstallGuard {
     /// Snapshot the currently-installed limits and install `resolved` in their place.
     pub fn install(resolved: &LimitsResolved) -> Self {
@@ -628,6 +676,7 @@ impl InstallGuard {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for InstallGuard {
     fn drop(&mut self) {
         if !self.committed {
@@ -647,17 +696,17 @@ fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
     let cap = slot
         .map(|l| l.upstream_error_body_max_bytes)
         .unwrap_or(DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
-    crate::proxy::set_max_upstream_buffered_bytes(cap);
+    busbar_kernel_egress::upstream::set_max_upstream_buffered_bytes(cap);
     // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
     // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
     let translate_cap = slot
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
-    crate::proxy::set_max_translate_body_bytes(translate_cap);
-    // The hook CONTENT ceiling, with the uninstalled fallback the proxy global starts at, so a
+    busbar_kernel_egress::upstream::set_max_translate_body_bytes(translate_cap);
+    // The hook CONTENT ceiling, with the uninstalled fallback the hooks global starts at, so a
     // rejected apply's ceiling goes back with the rest of its limits (audit kernel-K1 #5).
     let hook_content = slot
         .map(|l| l.hook_content_max_bytes)
-        .unwrap_or(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
-    crate::proxy::set_hook_content_max_bytes(hook_content);
+        .unwrap_or(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    crate::hooks::set_hook_content_max_bytes(hook_content);
 }

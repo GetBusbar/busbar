@@ -31,6 +31,16 @@ pub struct Ticket {
 }
 
 impl Ticket {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Ticket { …, ..Ticket::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        slot: 0,
+        generation: 0,
+    };
+}
+
+impl Ticket {
     /// No ticket: the call may not pend.
     pub const NONE: Ticket = Ticket {
         slot: 0,
@@ -54,6 +64,17 @@ pub struct CompletionHandle {
     pub seq: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+impl CompletionHandle {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `CompletionHandle { …, ..CompletionHandle::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self {
+        ticket: Ticket::ZERO,
+        seq: 0,
+        _reserved: 0,
+    };
 }
 
 /// The host's context for one plugin instance: an opaque handle the host verifies on every call.

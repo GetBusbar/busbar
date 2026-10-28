@@ -1,6 +1,6 @@
 # Config at a glance
 
-One whole, realistic `config.yaml` (Busbar 1.5.3) on a single page. It is a **map, not a
+One whole, realistic `config.yaml` (Busbar 1.6.0) on a single page. It is a **map, not a
 reference**: every section header links to the exhaustive per-field docs in
 [configuration.md](configuration.md), so you can see the shape of a complete deployment and click
 straight through to the detail for any part. For the per-field tables with defaults and validation
@@ -18,7 +18,9 @@ built-ins (`keys`, `admin-tokens`, `cheapest`) are referenced bare. Beyond that:
 a concept is the only place it is defined; every secret is a reference (`{ env: VAR }` /
 `{ file: /path }` / `{ module: <secret-plugin> }`); an omitted list means "all", an explicit `[]`
 means "none"; a setting shared by every entity in a section is a RESERVED key at that section's level
-(`pools.hooks`, `pools.upstream_credentials`), where LISTS combine ADDITIVELY and SCALARS OVERRIDE;
+(`pools.hooks`, `pools.upstream_credentials`, and `tools.hooks`/`agents.hooks` on the MCP and A2A
+planes, whose failover pools sit under their own section as `tools.pools`/`agents.pools`), where
+LISTS combine ADDITIVELY and SCALARS OVERRIDE;
 windows are nouns (`minute|hour|day|month|total`); unknown keys fail boot.
 
 ## Transport: [`listen` / `tls`](configuration.md#listen)
@@ -39,9 +41,9 @@ tls:                            # absent = plain HTTP. Each field is a SECRET RE
 
 ## Plugins: [`plugins`](configuration.md#plugins)
 
-One signed artifact format, trust model, and loader for all four plugin kinds (**store**,
-**secret**, **auth**, and **hook**), every one loaded **in-process** over the hybrid ABI (see
-[plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-hook-webrequest`
+One signed artifact format, trust model, and loader for all seven plugin kinds (**store**,
+**secret**, **auth**, **hook**, **export**, **plane** and **transport**), every one loaded
+**in-process** over the memory ABI (see [plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-hook-webrequest`
 plugin forwards to an HTTPS sidecar.
 
 ```yaml
@@ -104,7 +106,7 @@ groups:
   search-team:
     parent: acme                           # acyclic; leaf limits are sub-capped by every ancestor
     limits:
-      - { budget: 5000, per: month, pool: frontier }   # optional `pool:` = per-(group, pool) budget
+      - { budget: 5000, per: month, pool: chat }       # optional `pool:` = per-(group, pool) budget
     child_default: { limits: [ { budget: 500, per: month } ] }   # template for auto-provisioned children
 ```
 
@@ -112,8 +114,9 @@ groups:
 
 ```yaml
 rate_card:                      # the ONLY cost source: per-model token rates in abstract MICRO-units.
-  claude-sonnet-4-5:            # ALL-OR-NOTHING: present = must cover every configured model AND
-    { input_utok: 3, output_utok: 15, cache_read_utok: 0, cache_write_utok: 4,
+  gpt-4o-mini: { input_utok: 0.15, output_utok: 0.6 }
+  gpt-4o:                       # ALL-OR-NOTHING: present = must cover every configured model AND
+    { input_utok: 2.5, output_utok: 10, cache_read_utok: 1.25, cache_write_utok: 0,
       units: { search_units: 0, classifications: 0, web_fetch_requests: 0, unitemized_tokens: 0,
                images: 0, audio_ms: 0, guardrail_automated_reasoning_policies: 0,
                guardrail_automated_reasoning_policy_units: 0, guardrail_content_policy_image_units: 0,
@@ -192,7 +195,7 @@ pools:                                      # a pool is weighted lanes with shar
     breaker:                                # per-(pool, lane) circuit breaking  → #breaker
       trip: { mode: error_rate, window_secs: 30, threshold: 0.5, min_requests: 5 }
     failover: { timeout_secs: 30, max_hops: 3 }   # per-request retry budget  → #failover
-    on_exhausted: { fallback_pool: overflow }     # reject | least_bad | fallback_pool | { queue: { max_ms } }  → #on_exhausted
+    on_exhausted: least_bad                       # reject | least_bad | { fallback_pool: <pool> } | { queue: { max_ms } }  → #on_exhausted
     affinity: { mode: session }                   # session pinning  → #affinity
 ```
 
@@ -236,7 +239,8 @@ providers_file: providers.yaml  # provider catalog pointer (overridden by the --
   any one entry of the flat/`pools` card (declared classes per plane: `pools` = `input`, `output`,
   `cache_read`, `cache_write`, `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units` · `tools` = `tool_calls`, `bytes` · `agents` = `bytes` ·
   `decisions` = `decision`, `input_tokens`, `output_tokens` · `streams` = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`,
-  `text_tokens_out`, `cached_tokens`, `audio_seconds_in`, `tool_calls`). A plane section with no
+  `text_tokens_out`, `audio_seconds_in`, `tool_calls`, `image_tokens_in`, `video_tokens_in`; `cached_tokens` is carried
+  as attribution only, never billed). A plane section with no
   card of its own is unaffected.
 - **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact
   boot pipeline (config + plugins) with zero side effects. A clean validate means a clean boot.

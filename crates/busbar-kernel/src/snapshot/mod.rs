@@ -357,23 +357,6 @@ pub fn refresh_scrape_gauges(app: &App) {
     }
 }
 
-/// THE HOST'S OWN COUNTERS onto the recorder at scrape time: what the composition root installed
-/// ([`crate::preflight::RootInstall::host_counters`]), none when it installed nothing.
-pub fn refresh_host_counters() {
-    if let Some(read) = crate::preflight::root_rows().host_counters {
-        emit_host_counters(&read());
-    }
-}
-
-/// Each of `counters` as one described counter family, set to its cumulative value: the host
-/// holds the count, so a scrape states it ([`metrics::Counter::absolute`]) and never adds to it.
-pub(crate) fn emit_host_counters(counters: &[(&'static str, &'static str, u64)]) {
-    for &(name, help, value) in counters {
-        metrics::describe_counter!(name, help);
-        metrics::counter!(name).absolute(value);
-    }
-}
-
 /// `busbar_lane_state` for ONE breaker cell, read from that cell alone — never folded with any
 /// other pool's cell on the same lane:
 /// * `1` — the cell is HalfOpen: a recovery probe is in flight on THIS cell right now.
@@ -638,7 +621,7 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // declared first-party in its manifest (K9b, K9c); the host names none of them.
 
 // App-retype WEDGE 3: the `busbar_tap_notifications_dropped_total` metric NAME moved to the substrate
-// tap fan-out (`busbar_kernel::proxy::proxy_vocab::spawn_bounded_tap`) with core's `spawn_bounded_tap`
+// tap fan-out (`busbar_kernel::hooks::taps::spawn_bounded_tap`) with core's `spawn_bounded_tap`
 // retirement — the ONE shared 1024-permit tap gate now lives there and emits this counter byte-identically,
 // so core no longer names the const (the string is pinned equal substrate-side).
 
@@ -863,12 +846,12 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             Some(source)
         }
         Err(e) => {
-            // The log line is 1.5.5's, frozen in the root legacy table (`snapshot_recorder_failed`):
+            // The log line is 1.5.5's, frozen in the root migration table (`snapshot_recorder_failed`):
             // 1.5.5's recorder carried its exporter's name, which the host does not spell.
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
                 "{}: {e}",
-                crate::config::legacy::text("snapshot_recorder_failed")
+                crate::config::migration_table::text("snapshot_recorder_failed")
             );
             None
         }

@@ -6,7 +6,7 @@
 //! living outside core) calls back through. The dialect crate owns the URL parsing (its statement
 //! about its own URL space); core owns the resolution + forward + error shaping, reached here.
 //!
-//! Mirrors `crate::plane_host::EngineHostImpl`: a stateless core object each method drives against the
+//! Mirrors `crate::plane_driver::EngineHostImpl`: a stateless core object each method drives against the
 //! live engine recovered from the opaque [`busbar_kernel::ingress::arrival::ArrivalCtx`] the dialect
 //! threads back. App-retype WEDGE 3 (THE FLIP): the payload the dialect threads back is now the NEUTRAL
 //! [`busbar_kernel::ingress::arrival::ArrivalPayload`] carrying an `Arc<dyn EngineHost>` (minted
@@ -54,7 +54,7 @@ impl ArrivalHost for CoreArrivalHost {
         kind: &str,
         message: &str,
     ) -> Response {
-        crate::proxy::ingress_error(proto, status, kind, message)
+        crate::ingress::ingress_error(proto, status, kind, message)
     }
 
     fn envelope_dialect(&self, ctx: &ArrivalCtx, path: &str) -> &'static str {
@@ -79,11 +79,11 @@ impl ArrivalHost for CoreArrivalHost {
     }
 
     fn kind_not_found(&self) -> &'static str {
-        crate::proxy::KIND_NOT_FOUND
+        busbar_contract::protocol::KIND_NOT_FOUND
     }
 
     fn kind_invalid_request(&self) -> &'static str {
-        crate::proxy::KIND_INVALID_REQUEST
+        busbar_contract::protocol::KIND_INVALID_REQUEST
     }
 
     fn err_type_not_found(&self) -> &'static str {

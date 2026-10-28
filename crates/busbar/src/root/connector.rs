@@ -22,7 +22,6 @@ use busbar_core_connector::pool::PoolPosture;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
-use busbar_kernel::egress::trust::{install_egress_trust_host, GuardedEgressTrust};
 use busbar_kernel::host_services::DestJudge;
 
 use crate::root::loader::dispatch::{
@@ -106,8 +105,8 @@ pub fn entries(
 
 /// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
 /// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
-/// directory's sorted order (the loader's plugin file listing), each the one instance the
-/// legacy seam serves too. The order is the declaration's, never the order things loaded in, so the
+/// directory's sorted order (the loader's plugin file listing), each the one instance the boot
+/// opened for it. The order is the declaration's, never the order things loaded in, so the
 /// ADDRESS carrier (`Transports::address_carrier`: the first carrier whose claim serves a port) is
 /// the same carrier on every boot of one deployment.
 ///
@@ -125,13 +124,6 @@ pub fn declared(
     Ok(linked)
 }
 
-/// WHERE THE ROOT'S WIRES FIND THEIR CARRIER: the process's one connector's address carrier, asked at
-/// each dial (none before the connector is built, or when it serves no carrier).
-#[must_use]
-pub fn address_carrier() -> busbar_core_connector::carrier::AddressCarrier {
-    Arc::new(|| ONE.get().and_then(|c| c.address_via()).map(|via| via.door))
-}
-
 /// The claim of the carrier a root listener accepts through, for its boot line; `host` when the
 /// connector serves no address carrier (the host's own listener).
 #[must_use]
@@ -141,8 +133,8 @@ pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'stat
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
-/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
-/// it behind the egress-trust capability it hears every config commit: its metadata lists
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Held by the root's rules
+/// (`root::door_steps::Rules::hearing`), it hears every config commit: its metadata lists
 /// (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at each one, as 1.5.5 re-read
 /// them at every reload. An allowlist entry the guard cannot read refuses the boot, naming it.
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
@@ -161,21 +153,6 @@ pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
     process::dest_judge(d)
 }
 
-/// Install the deployment's one destination guard behind the egress-trust capability (ARCHITECT
-/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials and before the boot
-/// build commits: every config commit is raised to it there. The same capability carries the one
-/// TLS wrap every kernel outbound connection is secured with — the connector's
-/// (`busbar_core_connector::tls::engine::Layer`; THE DESIGN: TLS stays in the connector, and the
-/// kernel names no TLS library), and the one name lookup every kernel resolve-then-pin asks
-/// (`busbar_core_connector::hostio::SystemNames`; row 130 E2: the kernel resolves no name itself).
-pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
-    install_egress_trust_host(Arc::new(GuardedEgressTrust(
-        dest,
-        Arc::new(busbar_core_connector::tls::engine::Layer),
-        Arc::new(busbar_core_connector::hostio::SystemNames),
-    )));
-}
-
 /// The connector's pool posture off the deployment's transport settings: 1.5.5's
 /// `limits.pool_max_idle_per_host` and `limits.pool_idle_timeout_secs`.
 #[must_use]
@@ -184,6 +161,14 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
         max_idle_per_host: settings.pool_max_idle_per_host,
         idle_timeout: std::time::Duration::from_secs(settings.pool_idle_timeout_secs),
     }
+}
+
+/// THE CONNECTOR'S SECRET RESOLVER, the one the boot hands `process::build_with_secrets`: a member
+/// program's `env` secret references resolve through the linked secret plugins at config time and
+/// are held for the spawns. A door's root cells build their connector with this same resolver.
+#[must_use]
+pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
+    busbar_kernel::config::secret::resolve_linked_string_at_config
 }
 
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, each opened
@@ -208,7 +193,7 @@ pub fn boot(
     // here and never taken from a submitter: the first submit is made on the control runtime,
     // whose thread then waits synchronously on worker ops (the boot's `ready`).
     crate::root::dispatch::dispatcher().install_runtime(io_reactor());
-    let built = process::build(
+    let built = process::build_with_secrets(
         || {
             declared(
                 entries(doors, settings)?,
@@ -223,19 +208,23 @@ pub fn boot(
         // opened on.
         crate::root::dispatch::dispatcher().conn_waker(),
         pool_posture(settings),
+        // A member program's `env` secret references resolve through the linked secret plugins
+        // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at
+        // a plane's load or a config apply, and the connector's refresher — and are held for the
+        // spawns, which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a
+        // request).
+        spawn_secret_resolver(),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");
         std::process::exit(2);
     });
-    let one = install(connector).unwrap_or_else(|_| {
+    // THE ONE PROXY CHOICE (status row 130 E5a) is the connector's own: it read the process
+    // environment and every framed dial it makes honours it. The kernel dials nothing to hand it.
+    install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
-    });
-    // THE ONE PROXY CHOICE (status row 130 E5a): the connector read the process environment; the
-    // kernel's remaining egress engine takes the same value and reads none of its own.
-    busbar_kernel::egress::engine::install_proxy(one.proxy());
-    one
+    })
 }
 
 /// THE REACTOR A SOCKET A PLUGIN OPENS FROM A DISPATCHER WORKER REGISTERS ON
@@ -246,9 +235,6 @@ pub(crate) fn install_io_reactor() {
     busbar_core_connector::io::install_process_reactor(io_reactor());
 }
 
-// TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
-// on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
-// with that wait (D2/D3; 1.6.0-TODO.md).
 /// A ROOT TEST'S OWN DISPATCHER on the connector's I/O runtime, as [`boot`] installs the process's:
 /// its workers' crossings run inside that runtime, and a socket armed off a task goes on its
 /// reactor. Without it a worker enters no runtime, and a dial made on a worker is refused.

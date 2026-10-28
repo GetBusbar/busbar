@@ -12,23 +12,29 @@
 //!   refuse, ABSTAIN otherwise.
 //! * [`broken`] (`hook_broken_door`) — the same plugin whose `decide` answers two verbs at once
 //!   (PREFER and REJECT), which `check_decide` refuses: the host must answer FAULT.
+//! * [`ordering`] (linked only) — the conforming plugin whose `decide` answers PREFER, for the
+//!   proof that a hook which declared `hook.orders: false` is refused when it orders.
 //! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
-//!   the host refuses at load (ARCHITECT Q-SO8).
+//!   the host refuses at load.
 //! * [`panicking`] (linked only) — the same plugin whose `decide` PANICS: the SDK's door catches
 //!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
+//! * [`configurable`] (linked only) — the conforming plugin whose `configure` acknowledges a pushed
+//!   `{"reject_over_messages": <n>}` and gates on it from then on.
 //!
 //! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
 //! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, plus an
 //! optional `"sleep_ms"` the conforming `decide` sleeps before it answers (a slow gate, for the
 //! loader's own budget and `max_inflight` proofs), and an optional `"reject_session": "<octets>"`
-//! (the request view's opaque session, ARCHITECT RULING 2026-10-03).
+//! (the request view's opaque session).
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use busbar_contract::abi::hook::{
-    cancel, DecideIn, DecideOut, Tail, CLASS_GATE, PROMPT_NO, USER_NO, VERB_ABSTAIN,
-    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
+    cancel, ConfigureIn, ConfigureOut, DecideIn, DecideOut, Tail, CLASS_GATE, PROMPT_NO, USER_NO,
+    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
@@ -42,10 +48,14 @@ pub const TAIL: &Tail = &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMP
 pub const NAME: &str = "both-ways-hook";
 /// The broken door's Statement name.
 pub const BROKEN_NAME: &str = "both-ways-hook-broken";
+/// The ordering door's Statement name.
+pub const ORDERING_NAME: &str = "both-ways-hook-ordering";
 /// The untailed door's Statement name.
 pub const UNTAILED_NAME: &str = "both-ways-hook-untailed";
 /// The panicking door's Statement name.
 pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
+/// The configurable door's Statement name.
+pub const CONFIGURABLE_NAME: &str = "both-ways-hook-configurable";
 
 /// The status a rejected request is answered with.
 pub const REJECT_STATUS: u16 = 429;
@@ -55,7 +65,7 @@ pub const MAX_INFLIGHT: u32 = 8;
 
 /// The instance: the most messages a request may carry before it is rejected, how long its
 /// `decide` sleeps first, and the session whose requests it rejects, if any.
-pub struct Gate(u64, u64, Option<Vec<u8>>);
+pub struct Gate(AtomicU64, u64, Option<Vec<u8>>);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -68,8 +78,8 @@ impl Life for Gate {
         Self::parse(settings)
     }
 
-    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        Ok(Refreshed::default())
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        Self::parse(settings).map(|_| Refreshed::default())
     }
 }
 
@@ -80,15 +90,19 @@ impl Gate {
             .get("sleep_ms")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        let over = settings
-            .get("reject_over_messages")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))?;
+        let over = Self::over(&settings)?;
         let session = settings
             .get("reject_session")
             .and_then(serde_json::Value::as_str)
             .map(|s| s.as_bytes().to_vec());
-        Ok(Gate(over, sleep_ms, session))
+        Ok(Gate(AtomicU64::new(over), sleep_ms, session))
+    }
+
+    fn over(settings: &serde_json::Map<String, serde_json::Value>) -> Result<u64, Refusal> {
+        settings
+            .get("reject_over_messages")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))
     }
 }
 
@@ -113,7 +127,8 @@ impl SafeSlot for Decide {
             std::thread::sleep(std::time::Duration::from_millis(gate.1));
         }
         let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
-        if input.request.message_count > gate.0 || gate.2.as_deref() == Some(session) {
+        let over = gate.0.load(Ordering::Acquire);
+        if input.request.message_count > over || gate.2.as_deref() == Some(session) {
             out.set(|o| &o.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
             out.set(|o| &o.reject_status, REJECT_STATUS);
         } else {
@@ -141,6 +156,25 @@ impl SafeSlot for DecideBroken {
     }
 }
 
+/// `decide`, ORDERING: PREFER (a hook that ranks), the verb a hook declaring `orders: false` never
+/// answers.
+pub struct DecideOrders;
+
+impl SafeSlot for DecideOrders {
+    type In = DecideIn;
+    type Out = DecideOut;
+    type State = Held<Gate>;
+
+    fn call(
+        _: Instance<'_, Held<Gate>>,
+        _: Lent<'_, DecideIn>,
+        mut out: Out<'_, DecideOut>,
+    ) -> Outcome {
+        out.set(|o| &o.verbs, VERB_PREFER);
+        Outcome::Ready
+    }
+}
+
 /// `decide`, PANICKING: the slot body panics before it answers.
 pub struct DecidePanics;
 
@@ -151,6 +185,36 @@ impl SafeSlot for DecidePanics {
 
     fn call(_: Instance<'_, Held<Gate>>, _: Lent<'_, DecideIn>, _: Out<'_, DecideOut>) -> Outcome {
         panic!("the panicking hook fixture's decide panics")
+    }
+}
+
+/// `configure`, CONFIGURABLE: a pushed `reject_over_messages` is the gate's from now on, and its
+/// version acknowledged.
+pub struct Configure;
+
+impl SafeSlot for Configure {
+    type In = ConfigureIn;
+    type Out = ConfigureOut;
+    type State = Held<Gate>;
+
+    fn call(
+        instance: Instance<'_, Held<Gate>>,
+        input: Lent<'_, ConfigureIn>,
+        mut out: Out<'_, ConfigureOut>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return Outcome::Refused;
+        };
+        let over =
+            settings_object(input.field(|i| &i.settings).bytes()).and_then(|s| Gate::over(&s));
+        match over {
+            Ok(over) => {
+                held.life().0.store(over, Ordering::Release);
+                out.set(|o| &o.acked_version, input.version);
+                Outcome::Ready
+            }
+            Err(e) => out.fail(e),
+        }
     }
 }
 
@@ -171,6 +235,12 @@ impl<I: AbiIn, O: AbiOut> SafeSlot for Refuse<I, O> {
 /// other op [`Refuse`]s. `hook_door!(name, decide)` states the name with [`TAIL`].
 macro_rules! hook_door {
     (@statement $statement:expr, $decide:ty) => {
+        hook_door!(@statement $statement, $decide, super::Refuse<
+            busbar_contract::abi::hook::ConfigureIn,
+            busbar_contract::abi::hook::ConfigureOut,
+        >);
+    };
+    (@statement $statement:expr, $decide:ty, $configure:ty) => {
         busbar_contract::plugin_door! {
             ops: busbar_contract::abi::hook::Ops,
             statement: $statement,
@@ -185,10 +255,7 @@ macro_rules! hook_door {
                     busbar_contract::abi::hook::NotifyIn,
                     busbar_contract::abi::mechanism::call::OutHead,
                 >>,
-                configure: busbar_contract::abi::sdk::Safe<super::Refuse<
-                    busbar_contract::abi::hook::ConfigureIn,
-                    busbar_contract::abi::hook::ConfigureOut,
-                >>,
+                configure: busbar_contract::abi::sdk::Safe<$configure>,
                 status: busbar_contract::abi::sdk::Safe<super::Refuse<
                     busbar_contract::abi::mechanism::call::InHead,
                     busbar_contract::abi::hook::StatusOut,
@@ -225,6 +292,11 @@ pub mod broken {
     hook_door!(super::BROKEN_NAME, super::DecideBroken);
 }
 
+/// The conforming plugin whose `decide` answers an order.
+pub mod ordering {
+    hook_door!(super::ORDERING_NAME, super::DecideOrders);
+}
+
 /// The conforming plugin with NO hook tail: refused at load.
 pub mod untailed {
     hook_door!(
@@ -240,4 +312,20 @@ pub mod untailed {
 /// The conforming plugin whose `decide` panics.
 pub mod panicking {
     hook_door!(super::PANICKING_NAME, super::DecidePanics);
+}
+
+/// The conforming plugin whose `configure` sets its gate.
+pub mod configurable {
+    hook_door!(
+        @statement busbar_contract::abi::sdk::hook::statement_with_tail(
+            busbar_contract::abi::sdk::door::statement(
+                super::CONFIGURABLE_NAME,
+                "1.6.0",
+                super::MAX_INFLIGHT,
+            ),
+            super::TAIL,
+        ),
+        super::Decide,
+        super::Configure
+    );
 }

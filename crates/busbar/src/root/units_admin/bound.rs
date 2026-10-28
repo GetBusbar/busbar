@@ -29,7 +29,8 @@ use busbar_core_admin::GovernanceError;
 use busbar_kernel::host_services::{KernelServices, TrustRefused};
 use busbar_kernel::trust::book::{KeyRow, Ruling};
 
-use super::{AdminAnswer, AmendmentJournal, LedgerView};
+use super::{AdminAnswer, AmendmentJournal, LedgerView, VerifySnapshot};
+use busbar_kernel_ledger::checkpoint::Checkpoint;
 
 /// Which plane THIS node serves under a key, and what it declares: `None` for a key no plane is
 /// registered under, and for a registered plane this node has not configured (Law 7). A predicate
@@ -108,21 +109,35 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
     use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
-    let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
+    // THE SAME RE-DERIVATION THE CHECKPOINTS READ SERVES (ARCHITECT A1): each held checkpoint is
+    // handed over as the chain re-derives it, checked as it arrives, and only the latest is kept
+    // for the book check below, so the verb holds one checkpoint's figures beside the walk's.
     let mut findings: Vec<Finding> = Vec::new();
-    for checkpoint in &checkpoints {
+    let mut count = 0usize;
+    let mut since: Option<Checkpoint> = None;
+    let snapshot = ledger.verify_snapshot_anchored(&mut |checkpoint| {
         if !checkpoint.body_hash_verifies() {
             findings.push(Finding::CheckpointEdited {
                 checkpoint_seq: checkpoint.checkpoint_seq,
             });
         }
-    }
-    for pair in checkpoints.windows(2) {
-        findings.extend(sequences_are_monotonic(&pair[0], &pair[1]));
-    }
-    let since = checkpoints.last();
-    let book_verified = match (since, &book) {
-        (Some(since), Some(now)) => {
+        if let Some(previous) = &since {
+            findings.extend(sequences_are_monotonic(previous, checkpoint));
+        }
+        count += 1;
+        since = Some(checkpoint.clone());
+    });
+    let VerifySnapshot {
+        read,
+        book,
+        anchored,
+    } = snapshot;
+    // A held checkpoint the chain does not reproduce is a finding naming its sequence number, and
+    // the book is then measured against no checkpoint: the last one handed over is not the head.
+    let unreadable = read.err();
+    let since = since.as_ref();
+    let book_verified = match (since, &book, &unreadable) {
+        (Some(since), Some(now), None) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
                 verify(since, now, anchored.as_ref())
@@ -144,6 +159,9 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
     let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    if let Some(unreadable) = &unreadable {
+        findings.push(unreadable.to_string());
+    }
     // EVERY BALANCE WITH NO FIGURE (#42): its balance, window, lane and refusal, in words.
     findings.extend(
         refused
@@ -181,7 +199,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             .map(|finding| format!("stored chain: {finding}")),
     );
     answer(&serde_json::json!({
-        "checkpoints": checkpoints.len(),
+        "checkpoints": count,
         "since": since.map(|c| serde_json::json!({
             "checkpoint_seq": c.checkpoint_seq,
             "node": c.node,
@@ -477,7 +495,7 @@ pub(crate) fn trust_decide_effect(
 pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     Arc::new(move |key: &str| {
         let snapshot = app.load();
-        busbar_kernel::plane::registry::plane_decls()
+        busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .map(|decl| decl.declaration)
             .find(|decl| decl.key == key && snapshot.plane_configured(decl))
@@ -517,8 +535,8 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
 }
 
 /// THE REPLAY CACHE the two Q71(2) writes share (contract D-3): per `(actor, "<verb>:<key>")`, the
-/// SHA-256 of the body the first call carried and the packed answer it produced.
-pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], Vec<u8>)>;
+/// SHA-256 of the body the first call carried and the answer it produced.
+pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], AdminAnswer)>;
 
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
@@ -538,7 +556,7 @@ pub(crate) fn replayable(
     unit: &super::AdminRequest,
     body: &[u8],
     effect: impl FnOnce() -> Result<AdminAnswer, GovernanceError>,
-) -> Result<Vec<u8>, GovernanceError> {
+) -> Result<AdminAnswer, GovernanceError> {
     use busbar_core_admin::idempotency::Probe;
 
     let Some(header) = unit
@@ -548,7 +566,7 @@ pub(crate) fn replayable(
         .map(|(_, value)| value.as_str())
         .filter(|value| !value.is_empty())
     else {
-        return effect().map(|a| a.pack());
+        return effect();
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
     let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
@@ -560,24 +578,21 @@ pub(crate) fn replayable(
             409,
             "conflict",
             "this Idempotency-Key was already used with a different request body",
-        )
-        .pack()),
+        )),
         Probe::InFlight => Ok(refused(
             409,
             "conflict",
             "a request with this Idempotency-Key is already in flight",
-        )
-        .pack()),
-        Probe::NoKey => effect().map(|a| a.pack()),
+        )),
+        Probe::NoKey => effect(),
         Probe::Reserved(reservation) => match effect() {
             Ok(answer) if (200..300).contains(&answer.status) => {
-                let packed = answer.pack();
-                reservation.commit((digest, packed.clone()), unit.at);
-                Ok(packed)
+                reservation.commit((digest, answer.clone()), unit.at);
+                Ok(answer)
             }
             other => {
                 reservation.clear();
-                other.map(|a| a.pack())
+                other
             }
         },
     }

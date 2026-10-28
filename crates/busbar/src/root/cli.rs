@@ -33,10 +33,7 @@
 //! reads the plane and protocol lists and every axis must be installed before any reader.
 
 use busbar_kernel::{config, config_validate, diagnostics};
-use busbar_kernel::{
-    load_config_from_disk, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
-};
+use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS};
 
 use crate::{build_info_line, safe_mode_requested};
 
@@ -124,11 +121,19 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
     out
 }
 
-/// Whether `arg` is a flag a linked plane declares — the first word of one of its `Flags:` rows.
 /// EVERY PLANE'S `busbar --help` ROWS: each linked row's (its `cli-help` axis), then each linked
-/// plane door's, read off its tail's `cli_help` without binding it, in the contract's grammar
-/// (`busbar_contract::abi::plane::cli_help`: its tagline, `Flags:` and `ENDPOINTS` rows), in manifest
-/// order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
+/// plane door's, read off its tail's `cli_help` without binding it, then each plane door dropped
+/// into the configured `plugins.dir`, read off its signed manifest ([`dropped_help`]), in the
+/// contract's grammar (`busbar_contract::abi::plane::cli_help`: its tagline, `Flags:` and
+/// `ENDPOINTS` rows), in manifest order. A door whose tail cannot be read contributes nothing here;
+/// its boot refuses it.
+///
+/// COMPILED IN OR DROPPED IN, ONE PATH (BUSBAR-1.6.0.md l.2179, Part 2 #2; audit busbar-src r4
+/// S-2): the plane axis is installed before the command line is read (`main`'s
+/// `register_planes`, which discovers the dropped-in doors), so a dropped-in plane's flag is
+/// accepted, asks for the line serve and moves the logs to stderr exactly as the same plane's
+/// compiled in does. With no configuration to read there is no `plugins.dir`, and only the linked
+/// planes' rows are read.
 pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
     // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
     // each door's lent out as one slice: nothing is leaked to give them their `'static` life.
@@ -150,9 +155,46 @@ pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
     });
     let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
     rows.extend(door_rows.iter().map(Vec::as_slice));
+    rows.extend(dropped_rows().iter().map(Vec::as_slice));
     rows
 }
 
+/// The rows of the plane doors the boot discovered in the configured `plugins.dir`
+/// (`root::boot::discover_planes`), read once the discovery has run and kept for the process (the
+/// directory is scanned once per boot). Before the discovery there are none, and nothing is kept.
+fn dropped_rows() -> &'static [Vec<super::linked::CliHelpRow>] {
+    static TEXTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    static ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
+        std::sync::OnceLock::new();
+    let Some(candidates) = crate::root::boot::DOOR_CANDIDATES.get() else {
+        return &[];
+    };
+    let texts = TEXTS.get_or_init(|| dropped_help(candidates));
+    ROWS.get_or_init(|| {
+        texts
+            .iter()
+            .map(|text| busbar_contract::abi::plane::cli_help::rows(text).collect())
+            .collect()
+    })
+}
+
+/// THE DROPPED-IN PLANES' HELP: each dropped-in candidate's tail `cli_help`, read off its SIGNED
+/// MANIFEST's Statement rendering with no dlopen
+/// (`loader::dispatch::kinds::plane::rendered_cli_help`), in discovery order. A linked candidate
+/// adds none (its rows are read off its door, above), and neither does a rendering that does not
+/// read back: admitting the plane refuses it.
+pub(crate) fn dropped_help(candidates: &[crate::root::loader::boot::Candidate]) -> Vec<String> {
+    use crate::root::loader::boot::Origin;
+    use crate::root::loader::dispatch::kinds::plane::rendered_cli_help;
+    candidates
+        .iter()
+        .filter(|c| matches!(c.origin, Origin::Dropped { .. }))
+        .filter_map(|c| rendered_cli_help(&c.stated).ok().flatten())
+        .collect()
+}
+
+/// Whether `arg` is a flag a plane declares, compiled in or dropped in — the first word of one of
+/// its `Flags:` rows.
 pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
     planes
         .iter()
@@ -234,10 +276,10 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             }
             Some(0)
         }
-        // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag: it
-        // proceeds to the ordinary boot and is read again inside `run()`, where the line-serve flag
-        // swaps the two listeners for the process's own stdin/stdout. Recognised here so it is not
-        // refused as an unknown argument.
+        // A flag a plane declares (its `Flags:` row), compiled in or dropped in, is not an
+        // exit-and-print flag: it proceeds to the ordinary boot and is read again inside `run()`,
+        // where the line-serve flag swaps the two listeners for the process's own stdin/stdout.
+        // Recognised here so it is not refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
@@ -321,49 +363,66 @@ fn validate_config_command() -> i32 {
     if let Some(doc) = loaded.overlay_doc.take() {
         config::overlay::merge_into(&mut cfg, doc);
     }
-    if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
-        eprintln!(
-            "[error] {}: config validation failed:\n  - {}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-            errs.join("\n  - ")
-        );
-        return 1;
-    }
-    // THE DESTINATION GUARD, as boot builds it: a bad `advanced.allow_destinations` entry fails
-    // here as it fails the boot.
-    if let Err(e) = crate::root::connector::guard_for(&cfg.destinations()) {
-        eprintln!(
-            "[error] {}: config validation failed:\n  - {e}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
-        );
-        return 1;
-    }
-    // PLUGIN PRE-FLIGHT — the EXACT pipeline boot runs (`plugins_preflight` is shared with
-    // `build_app_from_config`), so a clean `--validate` means the plugin half of boot succeeds too:
-    // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase
-    // scan of every tarball (structural -> trust -> conflict), and store resolution. Manifest-only:
-    // nothing is `dlopen`ed, no store is opened — zero side effects.
-    let registry = match preflight_plugins_and_secrets(&loaded.deploy, &cfg) {
+    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and the admin dry run run:
+    // the semantic pass; the destination guard as boot builds it (a bad `advanced.allow_destinations`
+    // entry fails here as it fails the boot); the plugin pre-flight boot shares (consistency, trust,
+    // the three-phase tarball scan, store resolution); and every secret module and reference
+    // against that registry. Manifest-only: nothing is `dlopen`ed, no store is opened, nothing is
+    // fetched. `--validate` alone also RESOLVES every built-in secret: boot and the admin paths warn
+    // on an unresolvable secret by design, but an operator asking whether the config is good gets
+    // the strict answer.
+    let destination_guard =
+        |c: &config::RootCfg| crate::root::connector::guard_for(&c.destinations()).map(|_| ());
+    let registry = match config_validate::check(
+        &cfg,
+        config_validate::Check {
+            plugins: &loaded.deploy.plugins,
+            unset_env_vars: &unset_env_vars,
+            root: &destination_guard,
+            fetch: None,
+            resolve_builtins: true,
+        },
+    ) {
         Ok(r) => r,
-        Err(e) => {
+        Err(config_validate::Refusal::Config(errs)) => {
+            eprintln!(
+                "[error] {}: config validation failed:\n  - {}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                errs.join("\n  - ")
+            );
+            return 1;
+        }
+        Err(config_validate::Refusal::Root(e)) => {
+            eprintln!(
+                "[error] {}: config validation failed:\n  - {e}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            );
+            return 1;
+        }
+        Err(config_validate::Refusal::Plugins(e)) => {
             eprintln!(
                 "[error] {}: {e}",
                 diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
             return 1;
         }
+        Err(config_validate::Refusal::Unresolved(e)) => {
+            eprintln!(
+                "[error] {}: {e}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            );
+            return 1;
+        }
     };
-
-    // STRICT SECRETS, `--validate` only. The pre-flight above is shared with boot and admin apply,
-    // where an unresolvable secret WARNS by design. Here the operator is asking whether the config
-    // is good, so an env var that is not set is an answer, not a footnote.
-    if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
+    // The kernel hands back the contract's view of the registry this root's build made
+    // (`root::boot::registry_rows`); the stages below read the registry itself.
+    let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
         eprintln!(
-            "[error] {}: {e}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            "[error] {}: the plugin rows are not this root's registry",
+            diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
         );
         return 1;
-    }
+    };
     // STAGES 0-2 (BUSBAR-1.6.0.md §3: `--validate` runs Plan, Discover and Select, and nothing is
     // opened): what the configuration uses, each dropped-in plugin's stated facts, the plugins it
     // selects, and the version refusal for a selected plugin built for another host.

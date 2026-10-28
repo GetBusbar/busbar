@@ -115,31 +115,9 @@ fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
         Some(2),
         "1.5003 rounds to the nearer 2"
     );
-}
-
-/// **HALF-AWAY-FROM-ZERO IS THE OTHER RULE IN #44, AND IT IS NOT THIS ONE.**
-///
-/// #44 carries two rounding rules in one sentence and they apply to different terms:
-/// *"only a 'per-N-units' division term uses banker's (half-to-even) rounding; card-build-time
-/// quantization stays half-away-from-zero (byte-identity)"*. Card-build quantisation is
-/// [`crate::cost::nano_rate`], once, at the boundary where an operator's configured decimal becomes
-/// an integer rate. The tier is not that term, and at a tie the two rules give different money —
-/// which is exactly why the row names them separately.
-///
-/// Written as a test rather than a comment so that a future reader who reaches for the wrong half
-/// of the row gets a NO instead of a plausible-looking diff.
-#[test]
-fn the_tier_does_not_use_the_card_builds_rounding_rule() {
-    // At 7.5, half-away-from-zero gives 8 and half-to-even gives 8 too: agreement, not evidence.
-    assert_eq!(checked_apply_tier(15, 5_000), Some(8));
-    // At 2.5 they part: half-away-from-zero gives 3, half-to-even gives 2. The tier gives 2.
-    assert_eq!(
-        checked_apply_tier(5, 5_000),
-        Some(2),
-        "not 3 — the tier is not card-build quantisation"
-    );
-    assert_eq!(checked_apply_tier(25, 5_000), Some(12), "not 13");
-    assert_eq!(checked_apply_tier(45, 5_000), Some(22), "not 23");
+    assert_eq!(checked_apply_tier(45, 5_000), Some(22), "22.5: not 23");
+    assert_eq!(checked_apply_tier(10_000, 9_999), Some(9_999));
+    assert_eq!(checked_apply_tier(10_000, 9_000), Some(9_000));
 }
 
 /// **BYTE-NEUTRALITY AT THE ONLY TIER THIS TREE EVER ASKS FOR.**
@@ -219,7 +197,6 @@ fn fifteen_nano_units_at_half_price_bill_seven() {
         arrived_ms: 0,
         arrived_mono: 0,
         estimated: false,
-        cached: None,
     };
     let priced = price_at_card(HistorySeq::OPENING, &card, &posting).expect("the card prices it");
     assert_eq!(

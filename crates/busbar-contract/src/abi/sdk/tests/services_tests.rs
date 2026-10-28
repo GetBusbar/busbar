@@ -852,7 +852,7 @@ extern "C" fn claims(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) 
     )
 }
 
-/// THE RECORDS WRAPPERS (K-RECORDS; TODO step 3b H2 records): `records.get` answers the record as
+/// THE RECORDS WRAPPERS (K-RECORDS): `records.get` answers the record as
 /// a view into the caller's buffer, absent as `None`, a short buffer as the size to re-call with,
 /// and pends only on a ticket; a FOUND without its record broke the rule.
 #[test]
@@ -1507,5 +1507,205 @@ fn sign_failures_are_errors() {
         services(&sign_table(Some(signs_nothing))).sign(handle(), b"x", &mut buf, &mut spans),
         Err(ServiceError::Broken),
         "a READY sign with no key id and no signature is a broken host"
+    );
+}
+
+/// The secret [`holds_secrets`] keeps for its one live credential.
+const LIVE_SECRET: &[u8] = b"s3cr3t";
+
+/// The fixed dummy [`holds_secrets`] answers for an id it does not hold.
+const DUMMY_SECRET: &[u8] = b"dummy-secret-0000";
+
+/// The bytes of [`holds_secrets`]'s long credential: past the wrapper's first buffer.
+const LONG_SECRET: [u8; 300] = [0x5a; 300];
+
+/// How many crossings [`holds_secrets`] answered for the id `long` (each test reads its own id's
+/// count: the tests run at once).
+static LONG_CROSSINGS: AtomicU8 = AtomicU8::new(0);
+
+/// How many crossings [`holds_secrets`] answered for the id `probe`.
+static PROBE_CROSSINGS: AtomicU8 = AtomicU8::new(0);
+
+/// A credential source for the kind `signing-key`: `AKID` live with [`LIVE_SECRET`]; `long` live
+/// with [`LONG_SECRET`] (the short answer first); `slow` pends (on no ticket too: the wrapper's
+/// check must catch it); any other id the fixed [`DUMMY_SECRET`], not live. Any other kind is
+/// REFUSED.
+extern "C" fn holds_secrets(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: the wrapper hands a `RecordsSecretIn` naming its live texts and buffers.
+    let i = unsafe { input.cast::<RecordsSecretIn>().read_unaligned() };
+    // SAFETY: as above.
+    let (kind, id) = unsafe {
+        (
+            std::slice::from_raw_parts(i.kind.ptr, i.kind.len),
+            std::slice::from_raw_parts(i.id.ptr, i.id.len),
+        )
+    };
+    match id {
+        b"long" => LONG_CROSSINGS.fetch_add(1, Ordering::SeqCst),
+        b"probe" => PROBE_CROSSINGS.fetch_add(1, Ordering::SeqCst),
+        _ => 0,
+    };
+    if kind != b"signing-key" {
+        return answer(out, Outcome::Refused, 0, 0, 0);
+    }
+    let not_live = crate::abi::host::service::SECRET_NOT_LIVE;
+    match id {
+        b"AKID" => write_rows(i.into, &[(&b""[..], LIVE_SECRET)], SECRET_LIVE, false, out),
+        b"long" => write_rows(
+            i.into,
+            &[(&b""[..], &LONG_SECRET[..])],
+            SECRET_LIVE,
+            false,
+            out,
+        ),
+        b"slow" => answer(out, Outcome::Pending, 0, 0, 0),
+        _ => write_rows(i.into, &[(&b""[..], DUMMY_SECRET)], not_live, false, out),
+    }
+}
+
+/// A credential source that answers READY, live, with no secret written.
+extern "C" fn holds_no_secret(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Ready, SECRET_LIVE, 0, 0)
+}
+
+fn secret_table(slot: Option<ServiceFn>) -> HostSlots {
+    HostSlots {
+        records_secret: slot,
+        ..table(None)
+    }
+}
+
+/// THE SAFE `records.secret` (ARCHITECT ruling on the auth kit's credential read): READY hands the
+/// secret's bytes and the live verdict in a holder the plugin owns; an id the host does not hold is
+/// READY too, with the host's dummy and NOT live (absent is `live == false`, never an error, so the
+/// plugin's check runs over the dummy in equal time); PENDING surfaces as `Poll::Pending`, for the
+/// op to answer PENDING and the host's wake to re-enter it; a secret past the first buffer is
+/// re-called once inside the call. RED before the wrapper: the SDK had no safe call, and an auth
+/// plugin crossed the raw slot in an `unsafe` module of its own.
+#[test]
+fn records_secret_answers_the_secret_and_its_liveness_and_pends_on_a_ticket() {
+    let t = secret_table(Some(holds_secrets));
+    let s = services(&t);
+    let Poll::Ready(Ok(live)) = s.records_secret(ticketed(0), "signing-key", "AKID") else {
+        panic!("a held credential is READY");
+    };
+    assert_eq!(live.secret(), LIVE_SECRET);
+    assert!(live.live());
+    let Poll::Ready(Ok(unknown)) = s.records_secret(ticketed(1), "signing-key", "nobody") else {
+        panic!("an unknown id is READY, as a held one is");
+    };
+    assert_eq!(
+        unknown.secret(),
+        DUMMY_SECRET,
+        "the host's dummy, not nothing"
+    );
+    assert!(!unknown.live(), "an unknown id is absent: not live");
+    assert!(s
+        .records_secret(ticketed(2), "signing-key", "slow")
+        .is_pending());
+    let Poll::Ready(Ok(long)) = s.records_secret(ticketed(3), "signing-key", "long") else {
+        panic!("a long secret is re-called once and READY");
+    };
+    assert_eq!(long.secret(), &LONG_SECRET[..]);
+    assert_eq!(
+        LONG_CROSSINGS.load(Ordering::SeqCst),
+        2,
+        "the short answer and its one re-call"
+    );
+    assert!(
+        !format!("{live:?}").contains("s3cr3t"),
+        "the holder's Debug never shows the secret"
+    );
+}
+
+#[test]
+fn records_secret_failures_are_errors() {
+    assert_eq!(
+        services(&secret_table(None))
+            .records_secret(ticketed(0), "signing-key", "AKID")
+            .map(|r| r.map(|s| s.live())),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    assert_eq!(
+        services(&secret_table(Some(holds_secrets)))
+            .records_secret(ticketed(0), "undeclared", "AKID")
+            .map(|r| r.map(|s| s.live())),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
+    );
+    // PENDING on no ticket breaks the service's rule.
+    assert_eq!(
+        services(&secret_table(Some(holds_secrets)))
+            .records_secret(handle(), "signing-key", "slow")
+            .map(|r| r.map(|s| s.live())),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        services(&secret_table(Some(holds_no_secret)))
+            .records_secret(ticketed(0), "signing-key", "AKID")
+            .map(|r| r.map(|s| s.live())),
+        Poll::Ready(Err(ServiceError::Broken)),
+        "a READY with no secret in span 0 is a broken host"
+    );
+}
+
+/// THE HOLDER ZEROIZES: wiping a [`CredentialSecret`] zeroes every byte its buffer held, and the
+/// holder is `ZeroizeOnDrop` (its one secret field is a `Zeroizing`, whose drop runs the same
+/// wipe). RED against a holder over a plain `Vec`: the bytes outlive the wipe.
+#[test]
+fn the_secret_holder_zeroizes() {
+    fn wipes_on_drop<T: ZeroizeOnDrop>() {}
+    wipes_on_drop::<CredentialSecret>();
+    let t = secret_table(Some(holds_secrets));
+    let Poll::Ready(Ok(mut held)) = services(&t).records_secret(ticketed(0), "signing-key", "AKID")
+    else {
+        panic!("a held credential is READY");
+    };
+    let at = held.secret.as_ptr();
+    let cap = held.secret.capacity();
+    assert!(cap >= LIVE_SECRET.len());
+    held.zeroize();
+    // SAFETY: a wiped `Vec` keeps its allocation (`Vec::zeroize` zeroes the whole capacity and
+    // clears the length); `held` is alive, so `cap` bytes at `at` are still its own.
+    let after = unsafe { std::slice::from_raw_parts(at, cap) };
+    assert!(after.iter().all(|b| *b == 0), "every byte is zeroed");
+    assert!(held.secret().is_empty());
+    assert!(!held.live());
+}
+
+/// ONE VERIFY'S HANDLES: [`VerifyOp`] issues the call's handles in order from `0`, so a body that
+/// runs again from the top re-issues the same ones; on no ticket its `records.secret` is PENDING at
+/// once with no crossing (the kit answers that `verify` REFUSED).
+#[test]
+fn a_verify_op_issues_its_handles_in_order_and_never_crosses_ticketless() {
+    use crate::abi::sdk::auth_door::VerifyOp;
+    let t = secret_table(Some(holds_secrets));
+    let ticket = ticketed(0).ticket;
+    let op = VerifyOp::new(Some(services(&t)), ticket);
+    assert_eq!(op.handle(), ticketed(0));
+    assert_eq!(op.handle(), ticketed(1));
+    let Poll::Ready(Ok(live)) = op.records_secret("signing-key", "AKID") else {
+        panic!("READY on a ticket");
+    };
+    assert_eq!(live.secret(), LIVE_SECRET);
+    let none = VerifyOp::new(Some(services(&t)), Ticket::NONE);
+    assert!(none.records_secret("signing-key", "probe").is_pending());
+    assert_eq!(
+        PROBE_CROSSINGS.load(Ordering::SeqCst),
+        0,
+        "no crossing on no ticket"
+    );
+    assert_eq!(
+        VerifyOp::new(None, ticket)
+            .records_secret("signing-key", "AKID")
+            .map(|r| r.map(|s| s.live())),
+        Poll::Ready(Err(ServiceError::Unserved))
     );
 }

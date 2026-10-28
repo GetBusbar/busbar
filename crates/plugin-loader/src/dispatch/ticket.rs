@@ -48,6 +48,12 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// The store of this route's dispatcher: the services' kept results and the driver tickets'
+    /// held exchanges (`super::held`); `None` = none.
+    fn store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        None
+    }
+
     /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
         None
@@ -64,6 +70,11 @@ pub(crate) trait WakeRoute: Send + Sync {
     /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         let _ = t;
+        None
+    }
+
+    /// The INLINE tickets of this route's dispatcher (`super::inline`); `None` = none.
+    fn inline(&self) -> Option<std::sync::Arc<super::inline::InlineTickets>> {
         None
     }
 }
@@ -88,6 +99,10 @@ pub(crate) struct InstanceWake {
     /// The settings keys the instance's manifest declares DESTINATIONS (granted once, by the
     /// opener that read the manifest): `disk.append` serves this instance those only.
     pub(crate) destinations: OnceLock<Vec<String>>,
+    /// How many archives the manifest declares each granted destination keeps when the host rolls
+    /// it over (`declares.keep`), granted with the destinations; a key not named takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`].
+    pub(crate) keep: OnceLock<std::collections::BTreeMap<String, u32>>,
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).
     pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
@@ -143,7 +158,8 @@ impl Waking {
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
 /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
 /// worker, which alone knows the generation).
-pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
     // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
     // counted by the worker, never silently lost here.
     // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes

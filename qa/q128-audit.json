@@ -1,6 +1,0 @@
-{
- "about": "THE Q128 ARCHITECTURE AUDIT RECORD (docs/design/BUSBAR-1.6.0.md l.2910-2912, DEV-GREEN item 5; 1.6.0-QUESTIONS.md Q128, owner 2026-10-01, option A): one fresh, independent architecture audit on the DEV-GREEN candidate sha, graded against the Laws and THE DESIGN; it passes with no open BLOCK findings and a clean audit ledger. The auditor writes `candidate` (the 40-hex commit read), `auditor`, and one entry per finding: id, severity (BLOCK, HIGH, MEDIUM or LOW), status (open or closed; a closed finding names the change that closed it in closed_by), scope, title, evidence (path:line and what it shows) and cite (the Law or DESIGN line it is graded against). The candidate's tree must be this tree in every path but this record, which names the candidate by id and so cannot be inside it. `cargo xtask q128 audit` judges this record and the audit ledger on the current tree, writes target/q128-audit.json, and exits 1 on any open BLOCK. `candidate` is null until the audit is made.",
- "candidate": null,
- "auditor": null,
- "findings": []
-}

@@ -745,6 +745,13 @@ impl AuthInstance {
             .as_ref()
             .is_none_or(tokio::task::JoinHandle::is_finished)
     }
+
+    /// The dispatcher instance this auth instance serves on, held weakly: a test reads whether
+    /// anything still keeps it once this instance is dropped.
+    #[cfg(test)]
+    pub(crate) fn instance(&self) -> std::sync::Weak<crate::dispatch::plugin::Instance> {
+        Arc::downgrade(&self.shared.plugin.inner)
+    }
 }
 
 impl Drop for AuthInstance {
@@ -1021,7 +1028,8 @@ impl Drop for Submitted {
 }
 
 #[path = "auth_login.rs"]
-mod login;
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub mod login;
 
 #[cfg(test)]
 #[path = "tests/auth_door_tests.rs"]

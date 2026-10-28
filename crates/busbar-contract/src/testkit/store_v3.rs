@@ -191,14 +191,66 @@ pub fn stale_release_exactly_once<H: Harness>(h: &H) {
     );
 }
 
+/// A release on window 0 is final (`abi::store` slice life (e)): a partial release of a window-0
+/// slice takes back what it names, the spent rest stays counted, and the slice closes, so another
+/// release of it returns `0`.
+pub fn window_zero_release_is_final<H: Harness>(h: &H) {
+    let ops = Ops::case(5);
+    let s = h.open();
+    let key = CellKey {
+        bucket: "window-0",
+        pool: None,
+        dimension: Dimension::NanoUnits,
+        window_start: 0,
+    };
+    let caps = [Cap {
+        key,
+        cap: 10,
+        config_gen: 1,
+    }];
+    ready(s.window_caps(&mut Op::detached(), ops.op(), &caps)).expect("the cap is pushed");
+    let draw = |amount: u64| {
+        let cells = [Cell { key, amount }];
+        let mut grants = Vec::new();
+        ready(s.reserve(
+            &mut Op::detached(),
+            ops.op(),
+            7,
+            cells.iter().copied(),
+            &mut grants,
+        ))
+        .map(|()| grants.into_iter().next().expect("one grant per cell"))
+    };
+    let g = draw(6).expect("a window-0 draw within its cap");
+    // The holder spent 4 of its 6 and hands back 2.
+    assert_eq!(
+        release(&ops, &s, 7, g.slice_id, 2).expect("a release is never refused"),
+        2,
+        "a window-0 release takes back the unspent it names"
+    );
+    assert_eq!(
+        release(&ops, &s, 7, g.slice_id, 4).expect("a repeat is answered"),
+        0,
+        "a window-0 slice stayed open after its release: a release on window 0 is final"
+    );
+    // Spent 4 stay counted: 6 more fill the cap of 10, and nothing past it is granted.
+    draw(6).expect("the returned 2 are drawable");
+    assert_eq!(
+        draw(1).map(|g| g.granted),
+        Err(ReserveRefused::Exhausted { cell: 0 }),
+        "the spent part of a released window-0 slice was not counted"
+    );
+}
+
 /// Every case a store a fleet shares runs, in order, over ONE durable state: the epochs the cases
-/// present only rise from one case to the next (2, 2, 3, then 5 and 6), so each case also stands
+/// present only rise from one case to the next (2, 2, 3, then 5, 6 and 7), so each case also stands
 /// alone on a fresh state.
 pub fn fleet_store<H: Harness>(h: &H) {
     stale_epoch_refused(h);
     valid_until_bounded(h);
     epoch_survives_restart(h);
     stale_release_exactly_once(h);
+    window_zero_release_is_final(h);
 }
 
 /// A node-local store's single-node rule (one constant epoch, slices that never expire) and the
@@ -215,4 +267,5 @@ pub fn single_node_store<H: Harness>(h: &H) {
     );
     draw(&ops, &s, "local", 1, 1).expect("a single-node store never answers StaleEpoch");
     stale_release_exactly_once(h);
+    window_zero_release_is_final(h);
 }

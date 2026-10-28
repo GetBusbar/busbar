@@ -1,8 +1,9 @@
 # What dev must pass to move into qa: gates, the oracle against the 1.5.5 golden, conformance, the
-# 1.6.0 done-oracle, the Q128 architecture audit (`cargo xtask q128 audit`) and the feature-gated
-# suites. ModernCI names a branch file for the branch being moved, so the move dev -> qa reads this
-# file. predev is retired (OWNER 2026-10-16): lanes land on dev through .ci/default.yaml, and this
-# move judges dev's head. All six green on dev's head is DEV-GREEN; the landing into qa is the
+# 1.6.0 done-oracle, the Q128 architecture audit (`cargo xtask q128 audit`), the feature-gated
+# suites and every registered gate's red proof (selftest-1..4, row 191). ModernCI names a branch
+# file for the branch being moved, so the move dev -> qa reads this file. predev is retired (OWNER
+# 2026-10-16): lanes land on dev through .ci/default.yaml, and this move judges dev's head. Every
+# check green on dev's head is DEV-GREEN; the landing into qa is the
 # owner's approval (docs/design/BUSBAR-1.6.0.md Part 6).
 to: qa
 # Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
@@ -161,7 +162,7 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
-  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated]
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
 checks:
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
@@ -174,8 +175,9 @@ checks:
     # The base-relative rules read history: only a backend with the repo's history runs this check.
     requires: [cc, git-history]
   oracle:
-    # cargo links with the system C linker: only a backend with a C compiler may run this check.
-    requires: [cc]
+    # cargo links with the system C linker: only a backend with a C compiler may run this check; the
+    # store-persist cells' live backends run in docker.
+    requires: [cc, docker]
     # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
     # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
     # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
@@ -196,10 +198,25 @@ checks:
       fi
       cargo build --locked --release -p busbar --bin busbar
       ./bin/oracle fetch-golden
+      # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
+      # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
+      # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
+      # backends up for this run (testing/shadow-oracle/scripts/oracle-box-store-services.sh), under
+      # run-unique names on free ports, export the three URLs, and remove them when the check ends.
+      sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+      free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
+      export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
+      export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
+      trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
+      . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
+      bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
+    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
+    outputs: [target/oracle/reports/]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.
@@ -213,8 +230,10 @@ checks:
       T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"
       mkdir -p "$T/bin"
       case "$(uname -m)" in
-        aarch64|arm64) GOARCH=arm64; NODEARCH=arm64; NODE_SHA=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061 ;;
-        x86_64) GOARCH=amd64; NODEARCH=x64; NODE_SHA=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339 ;;
+        aarch64|arm64) GOARCH=arm64; NODEARCH=arm64; NODE_SHA=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061
+          BX_SHA=38e890e1a162bfdbf32fbe91404991dc4fc28e55b0de901b34374a061bab4d2c; UVARCH=aarch64; UV_SHA=9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14 ;;
+        x86_64) GOARCH=amd64; NODEARCH=x64; NODE_SHA=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339
+          BX_SHA=4fe4cc38adf48169132749b6ca22a990928db0118e3407584ee553723115d287; UVARCH=x86_64; UV_SHA=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220 ;;
         *) echo "conformance tools: no pins for $(uname -m)"; exit 1 ;;
       esac
       fetch() { # url sha256 dest
@@ -243,13 +262,44 @@ checks:
         fetch "https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-$NODEARCH.tar.xz" "$NODE_SHA" "$T/node.txz"
         rm -rf "$T/node"; mkdir "$T/node"; tar -C "$T/node" --strip-components=1 -xJf "$T/node.txz"
       fi
-      export PATH="$T/bin:$T/go/bin:$T/node/bin:$PATH"
+      # docker buildx v0.38.0 (sha256 checked): the OIDF suite's `docker compose up --build` needs
+      # buildx >= 0.17 and the backend's is older. The CLI plugin lives in a docker config dir of this
+      # check's own (DOCKER_CONFIG); no root, and the backend's docker is otherwise untouched.
+      D="${MODERNCI_CACHE_DIR:-$T}/docker"
+      mkdir -p "$D/cli-plugins"
+      fetch "https://github.com/docker/buildx/releases/download/v0.38.0/buildx-v0.38.0.linux-$GOARCH" "$BX_SHA" "$D/cli-plugins/docker-buildx"
+      chmod +x "$D/cli-plugins/docker-buildx"
+      export DOCKER_CONFIG="$D"
+      # Python >= 3.10 for the a2a and mcp control peers (the backend's python3 is 3.9): CPython
+      # 3.12.15 installed by uv 0.13.1 (uv sha256 checked here; uv checks the interpreter's own
+      # sha256), in a venv of the check's own whose python3 is first on PATH, holding the PyYAML the
+      # llm rig parses its specs with (pyyaml==6.0.2, its pin). The rigs' own venvs are made from it.
+      if [ ! -x "$T/uv/uv" ]; then
+        fetch "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-$UVARCH-unknown-linux-gnu.tar.gz" "$UV_SHA" "$T/uv.tgz"
+        rm -rf "$T/uv"; mkdir "$T/uv"; tar -C "$T/uv" --strip-components=1 -xzf "$T/uv.tgz"
+      fi
+      export UV_PYTHON_INSTALL_DIR="$T/python" UV_CACHE_DIR="$T/uv-cache"
+      # The webrtc-browser rig installs its own pinned Playwright (npm ci) and browsers
+      # (`npx playwright install chromium firefox`); ModernCI's playwright-deps capability provides only
+      # the system libraries they load. The browsers go in this check's cache, never $HOME/.cache, which
+      # every concurrent job on a backend shares.
+      export PLAYWRIGHT_BROWSERS_PATH="${MODERNCI_CACHE_DIR:-$T}/ms-playwright"
+      "$T/uv/uv" python install 3.12.15
+      if [ ! -x "$T/py/bin/python3" ] || [ "$("$T/py/bin/python3" -c 'import sys; print(sys.version.split()[0])')" != 3.12.15 ]; then
+        rm -rf "$T/py"; "$T/uv/uv" venv --managed-python --python 3.12.15 --seed "$T/py"
+      fi
+      "$T/uv/uv" pip install --python "$T/py/bin/python3" pyyaml==6.0.2
+      export PATH="$T/py/bin:$T/bin:$T/go/bin:$T/node/bin:$PATH"
+      python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
+      docker buildx version
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
       cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
     needs: [oracle]
     # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
     # backend probed to have all of these, and says which one is missing otherwise.
-    requires: [cc, docker, docker-compose, docker-amd64, python3-venv, curl, git]
+    # playwright-deps: the browser libraries webrtc-browser's chromium and firefox load (a backend
+    # capability; until a backend has it the check waits and says why, never runs without it).
+    requires: [cc, docker, docker-compose, docker-amd64, playwright-deps, python3-venv, curl, git]
     # The rig logs, fetched with `modernci call artifact --check conformance` (a red suite's reason).
     outputs: [target/conformance-record]
   verify-done:
@@ -312,5 +362,38 @@ checks:
       timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
     # Absolute at this rung, as every check of this move (no `baseline`: qa holds no suites to be
     # measured against).
+    requires: [cc, git-history]
+    needs: [gates]
+  # EVERY REGISTERED GATE'S RED PROOF on dev's head (row 191), ABSOLUTE like `gates`: a gate that
+  # cannot be shown to go RED proves nothing when it is green. `cargo xtask selftest --shard=K/4`
+  # is the K-th of 4 round-robin slices of the registry (every gate in exactly one), one `xtask
+  # selftest <gate>` process per gate. The base-relative plants read dev's previous commit, as the
+  # gates check does. The same shards run on demand in .ci/default.yaml.
+  selftest-1:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=1/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-2:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=2/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-3:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=3/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-4:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=4/4
     requires: [cc, git-history]
     needs: [gates]

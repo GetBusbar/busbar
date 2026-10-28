@@ -396,14 +396,15 @@ field is rewritten to the selected lane's model.
 
 ### 7. Two-stage failure disposition
 
-Every non-2xx upstream response is run through a pipeline that decides **who is at
+Every attempt's answer is run through a pipeline that decides **who is at
 fault** and therefore what to do (`crates/busbar-kernel/src/breaker.rs`, over the breaker unit's
-`crates/busbar-kernel-breaker/src/normalize.rs` and `crates/busbar-kernel-breaker/src/classify.rs`):
+`crates/busbar-kernel-breaker/src/classify.rs`). The breaker reads facts, never a wire: the
+transport states its own fault reading on the answer's frame, the kernel adds the one fact only
+it holds (no answer came at all), and what a body means is the plane's verdict.
 
 ```
-Stage 1a  proto.reader().extract_error(status, body)  → RawUpstreamError
-Stage 1b  normalize_raw_error(raw, provider.error_map) → CanonicalSignal (StatusClass)
-Stage 2   classify(signal)                             → Disposition
+Stage 1   the transport's fault reading, or no answer at all     → Reading
+Stage 2   classify(reading)                                      → Disposition
 ```
 
 `Disposition` is matched **exhaustively** (a project invariant: no `_ =>` catch-all
@@ -459,14 +460,14 @@ on A2A. Three identities, one state machine:
 | plane | breaker target | live on the dispatch path? |
 |---|---|---|
 | LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
-| MCP | one registered tool server | yes: the kernel's walk admits each member through the host's `breaker_admit` slot (`crates/busbar-kernel/src/plane_host/breaker.rs`) before every leg |
+| MCP | one registered tool server | yes: the MCP door is a door plane, so the root seals its egress with the breaker over every member's cell (`compose_egress`, `crates/busbar/src/root/door_steps.rs`), and the kernel's plane driver walks each `tools/call` through those cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
 | A2A | one registered agent | yes: the door plane states the agent as its unit's route at `arrive` (its `agent_door.rs`, in GetBusbar/busbar-plane-a2a), and the kernel's plane driver walks that route through the same breaker cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
 
 **One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
 `breaker:` key under `tools:` or `agents:`, and both sections `deny_unknown_fields`, so
 a config that writes one fails at boot. On MCP and A2A the breaker therefore runs on
-built-in defaults, through the kernel's failover walk (`crates/busbar-kernel/src/failover/mod.rs`),
+built-in defaults, through the kernel's route walk (`crates/busbar-kernel-egress/src/walk.rs`),
 which reaches the same breaker cells the LLM plane uses and adds no second state machine.
 
 **What generalises, and what it took to generalise it.** The state machine and the cause
