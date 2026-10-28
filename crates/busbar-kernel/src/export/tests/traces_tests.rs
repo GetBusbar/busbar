@@ -12,7 +12,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 
 static SEEN: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> = std::sync::Mutex::new(Vec::new());
 
-fn capture(facts: &[(ExportField, Value)]) {
+fn capture(facts: &[(ExportField, Value)], _: Option<&Value>) {
     SEEN.lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(facts.to_vec());
@@ -28,7 +28,7 @@ fn field(facts: &[(ExportField, Value)], f: ExportField) -> Option<&Value> {
 /// RED: a producer that dropped the parent link (or the trace id) would fail the joins below.
 #[test]
 fn a_closed_span_becomes_one_record_joined_to_its_trace() {
-    let subscriber = tracing_subscriber::registry().with(Producer(capture));
+    let subscriber = tracing_subscriber::registry().with(Producer(capture, no_records));
     tracing::subscriber::with_default(subscriber, || {
         let outer =
             tracing::debug_span!("named", pool = "p1", secret = "not-a-field", key_id = "k1");
@@ -80,7 +80,7 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
         &mut errors,
     );
     assert!(errors.is_empty(), "{errors:?}");
-    let granted = record(sub, &facts);
+    let granted = record(sub, &facts, None);
     assert_eq!(
         *granted,
         serde_json::json!({"trace_id": "01", "model": "m1"})
@@ -89,14 +89,14 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
         &[ExportStream::Logs],
         ExportStream::Logs.default_fields(),
     );
-    let ungranted = record(logs_only, &facts);
+    let ungranted = record(logs_only, &facts, None);
     assert_eq!(*ungranted, serde_json::json!({}));
 }
 
 static RECORDED: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> =
     std::sync::Mutex::new(Vec::new());
 
-fn capture_recorded(facts: &[(ExportField, Value)]) {
+fn capture_recorded(facts: &[(ExportField, Value)], _: Option<&Value>) {
     RECORDED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -110,7 +110,7 @@ fn capture_recorded(facts: &[(ExportField, Value)]) {
 /// none of the three.
 #[test]
 fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
-    let subscriber = tracing_subscriber::registry().with(Producer(capture_recorded));
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_recorded, no_records));
     tracing::subscriber::with_default(subscriber, || {
         let span = tracing::debug_span!(
             "forward",
@@ -152,5 +152,114 @@ fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
             .count(),
         1,
         "a field recorded twice is one fact: {facts:?}"
+    );
+}
+
+/// No sink takes full span records.
+fn no_records() -> bool {
+    false
+}
+
+/// Some sink takes full span records.
+fn records() -> bool {
+    true
+}
+
+static FULL: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
+fn capture_full(_: &[(ExportField, Value)], span: Option<&Value>) {
+    FULL.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(span.cloned());
+}
+
+/// THE FULL SPAN RECORD (status row 173; K9e-2): what the previous release's
+/// tracing-opentelemetry 0.33 layer exported for a span, in its attribute order and types: the
+/// code location, `thread.id` (an integer), `thread.name`, `target`, the span's fields as recorded
+/// (a `u64` its text), then `busy_ns` and `idle_ns` (integers); each event in it with `level`,
+/// `target`, its fields and its code location; its status, an error once an ERROR event lands; its
+/// start and its end in nanoseconds. RED before the producer kept it: no record at all.
+#[test]
+fn a_span_record_carries_what_the_previous_exporter_sent() {
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_full, records));
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::span!(
+            target: "busbar::proxy::engine",
+            tracing::Level::DEBUG,
+            "forward",
+            pool = "p1",
+            op = tracing::field::Empty,
+            request_id = tracing::field::Empty
+        );
+        span.record("request_id", 7_u64);
+        {
+            let _entered = span.enter();
+            tracing::warn!(hint = 1_i64, "slow");
+        }
+        drop(span);
+        let failing = tracing::debug_span!("failing");
+        failing.in_scope(|| tracing::error!("broke"));
+    });
+    let seen = std::mem::take(&mut *FULL.lock().unwrap_or_else(|e| e.into_inner()));
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    let keys = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|kv| kv["key"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let value = |v: &Value, key: &str| -> Value {
+        v.as_array()
+            .and_then(|a| a.iter().find(|kv| kv["key"] == key))
+            .map_or(Value::Null, |kv| kv["value"].clone())
+    };
+    let forward = &seen[0];
+    assert_eq!(forward["name"], "forward");
+    assert_eq!(
+        keys(&forward["attributes"]),
+        [
+            "code.file.path",
+            "code.module.name",
+            "code.line.number",
+            "thread.id",
+            "thread.name",
+            "target",
+            "pool",
+            "request_id",
+            "busy_ns",
+            "idle_ns"
+        ]
+    );
+    let attributes = &forward["attributes"];
+    assert_eq!(value(attributes, "target"), "busbar::proxy::engine");
+    assert_eq!(value(attributes, "pool"), "p1");
+    assert_eq!(value(attributes, "request_id"), "7", "a u64 is its text");
+    assert!(value(attributes, "thread.id").is_i64());
+    assert!(value(attributes, "code.line.number").is_i64());
+    assert!(value(attributes, "busy_ns").is_i64());
+    assert!(value(attributes, "idle_ns").is_i64());
+    assert!(forward["end_ns"].as_u64() >= forward["start_ns"].as_u64());
+    assert_eq!(forward["status"]["code"], "unset");
+    let event = &forward["events"][0];
+    assert_eq!(event["name"], "slow");
+    assert_eq!(
+        keys(&event["attributes"]),
+        [
+            "level",
+            "target",
+            "hint",
+            "code.file.path",
+            "code.module.name",
+            "code.line.number"
+        ]
+    );
+    assert_eq!(value(&event["attributes"], "level"), "WARN");
+    assert_eq!(value(&event["attributes"], "hint"), 1);
+    assert_eq!(
+        seen[1]["status"]["code"], "error",
+        "an ERROR event marks it"
     );
 }
