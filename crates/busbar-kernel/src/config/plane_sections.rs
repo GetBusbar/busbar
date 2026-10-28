@@ -581,6 +581,13 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
 
+    /// The refusal for the first secret reference this section holds at a position its plane did
+    /// NOT declare secret (OWNER RULING, CHIP-REVIEW-v4 change 2), or `None`. A section with no
+    /// declared paths of its own to police (a raw-captured or typed in-tree section) answers `None`.
+    fn undeclared_secret_ref(&self) -> Option<String> {
+        None
+    }
+
     /// Is `name` a REGISTRATION in this section (a `tools:` server / an `agents:` agent)? The
     /// membership check the config resolver and the admin write path consult without naming the
     /// plane's registry type.

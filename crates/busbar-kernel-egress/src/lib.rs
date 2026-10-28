@@ -58,8 +58,6 @@ pub mod attempt;
 pub mod exhaustion;
 pub mod pool;
 pub mod ports;
-// The query-parameter auth fields (the auth ABI's FIELD_QUERY) on the request target.
-pub mod query_auth;
 pub mod race;
 pub mod select;
 // The network readers of the folded trust unit (`trust::net`).

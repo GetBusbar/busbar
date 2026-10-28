@@ -38,7 +38,7 @@ fn linked_decls() -> Vec<&'static ProtocolDecl> {
 /// any fold is read, so no verdict depends on which test ran first.
 fn registered() {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::ingress::protocols::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
 }
 
@@ -138,7 +138,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
             .unwrap_or_else(|| panic!("{} declares no handler", decl.name));
         let mut candidates: Vec<OpVerb> = OpVerb::ALL
             .iter()
-            .chain(busbar_kernel::ingress::protocols::declared_verbs())
+            .chain(busbar_kernel::test_support::protocols::declared_verbs())
             .copied()
             .collect();
         candidates.sort_unstable_by_key(|op| op.name());
@@ -170,7 +170,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
 fn every_declared_verb_has_a_serving_handler() {
     registered();
     assert!(
-        !busbar_kernel::ingress::protocols::declared_verbs().is_empty(),
+        !busbar_kernel::test_support::protocols::declared_verbs().is_empty(),
         "the registry must declare at least the linked planes' verbs"
     );
     for decl in builtins().decls() {
