@@ -2251,18 +2251,14 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
 #[test]
 fn red_a_service_length_over_the_byte_cap_is_refused_before_any_copy() {
     crate::dispatch_tests::assert_child_passes(
-        "oversize_service_lengths_child",
+        "red_a_service_length_over_the_byte_cap_is_refused_before_any_copy",
         "a service length over the byte cap was copied",
+        oversize_service_lengths_child,
     );
 }
 
-#[test]
-#[ignore = "child process of red_a_service_length_over_the_byte_cap_is_refused_before_any_copy"]
+/// The child half of the test above, in a process of its own.
 fn oversize_service_lengths_child() {
-    assert!(
-        std::env::var_os(crate::dispatch_tests::CHILD_ENV).is_some(),
-        "the child half of red_a_service_length_over_the_byte_cap_is_refused_before_any_copy"
-    );
     let b = [7_u8; 8];
     let past = u32::MAX as usize + 1;
     let s = AbiStr {

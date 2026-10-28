@@ -24,10 +24,16 @@
 //!     at pack time and at load (`KindAbi`, naming the rebuild); a manifest stating another kind ABI,
 //!     or another kind, is refused before `dlopen`.
 //!
-//! Both tests are `#[ignore]`d: busbar's own suite has no plugin to point them at. plugin-ci.yml
-//! runs them with `--ignored` and requires them to RUN.
+//! An example, not a test: busbar's own suite has no plugin to point it at. plugin-ci.yml runs it
+//! (`cargo run --example dropped_conformance`) over the plugin it built, and requires both proofs
+//! to pass.
 
-#![cfg(unix)]
+/// Both proofs, in order; either one failing panics, and the run exits non-zero.
+fn main() {
+    a_plugin_built_from_the_c_header_alone_passes_its_kinds_script();
+    a_plugin_built_against_another_kind_abi_is_refused();
+    println!("dropped conformance: 2 proofs passed");
+}
 
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
@@ -89,7 +95,7 @@ fn script_inputs() -> serde_json::Value {
 
 /// The sources again, into a library with `defines` (`-D`). The system C compiler is REQUIRED.
 fn rebuild(name: &str, defines: &[String]) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+    let dir = std::env::temp_dir()
         .join("dropped-conformance")
         .join(format!("{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("the build dir");
@@ -400,8 +406,6 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
 
 /// **THE PROOF.** The plugin, built from the header alone, is admitted by the one dropped-in path
 /// and answers its kind's script as the kind's contract requires.
-#[test]
-#[ignore = "plugin-ci.yml's C path runs it with --ignored over the plugin it built"]
 fn a_plugin_built_from_the_c_header_alone_passes_its_kinds_script() {
     for src in sources() {
         let text = std::fs::read_to_string(&src).expect("the plugin's source");
@@ -435,8 +439,6 @@ fn a_plugin_built_from_the_c_header_alone_passes_its_kinds_script() {
 /// THE RED ARM, KEPT: the same sources built against another kind ABI version — newer and older —
 /// are refused at pack time and at load, naming the rebuild; a manifest stating another version or
 /// another kind is refused before the library is opened. The conforming build loads beside them.
-#[test]
-#[ignore = "plugin-ci.yml's C path runs it with --ignored over the plugin it built"]
 fn a_plugin_built_against_another_kind_abi_is_refused() {
     let lib = lib();
     let stated = stated(&lib);
