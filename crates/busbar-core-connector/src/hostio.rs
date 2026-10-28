@@ -185,6 +185,31 @@ impl Table {
         free.live -= 1;
         slot.swap(None)
     }
+
+    /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
+    /// from here on.
+    fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut gone = Vec::new();
+        for slot in self
+            .segments
+            .iter()
+            .filter_map(OnceLock::get)
+            .flat_map(|s| s.iter())
+        {
+            if !slot.load_full().is_some_and(|e| e.owner == owner) {
+                continue;
+            }
+            if let Some(e) = slot.swap(None) {
+                if let Some(next) = e.id.checked_add(GENERATION) {
+                    free.released.push(next);
+                }
+                free.live -= 1;
+                gone.push(e);
+            }
+        }
+        gone
+    }
 }
 
 /// THE HOST'S I/O (module docs).
@@ -651,18 +676,7 @@ impl IoHost for HostIo {
     }
 
     fn reap(&self, owner: u64) {
-        let mut gone = Vec::new();
-        self.handles
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, e| {
-                let held = e.owner == owner;
-                if held {
-                    gone.push(Arc::clone(e));
-                }
-                !held
-            });
-        gone.iter().for_each(|e| ended(e));
+        self.handles.reap(owner).iter().for_each(|e| ended(e));
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
