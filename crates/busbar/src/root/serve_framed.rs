@@ -41,13 +41,68 @@ pub(super) fn stream_framer(
     (!door.facts().datagram && door.facts().duplex.contains(&carrier)).then_some(door)
 }
 
-/// The stream, shared by the unit's caller side and the answer that may refuse it; `None` once
-/// it is closed.
-pub(super) type Shared = Arc<Mutex<Option<FramedStream>>>;
+/// The stream, shared by the unit's caller side and the answer that may refuse it.
+///
+/// ITS FRAMER IS CROSSED WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
+/// host lock): a write takes the stream out, has it framed, and puts it back; a close takes it and
+/// renders its closing block outside the lock. A close made while a write has it out is handed to
+/// that write, which makes it on the way back, so a framer crossing that hangs holds up only the
+/// one caller inside it.
+pub(super) type Shared = Arc<Mutex<Slot>>;
 
-fn lock(s: &Shared) -> MutexGuard<'_, Option<FramedStream>> {
+/// A close handed to the write that has the stream out.
+type Close = Box<dyn FnOnce(FramedStream) + Send>;
+
+/// Where the stream is.
+pub(super) struct Slot {
+    /// The stream while nobody has it out; `None` while a write has it, and once it is closed.
+    stream: Option<FramedStream>,
+    /// A write has the stream out.
+    out: bool,
+    /// The close made while it was out, for that write to make.
+    then: Option<Close>,
+}
+
+/// The stream `stream`, shared.
+pub(super) fn shared(stream: FramedStream) -> Shared {
+    Arc::new(Mutex::new(Slot {
+        stream: Some(stream),
+        out: false,
+        then: None,
+    }))
+}
+
+fn lock(s: &Shared) -> MutexGuard<'_, Slot> {
     s.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+/// CLOSE the stream with `close`: here, with no lock held; or, while a write has it out, by that
+/// write as it puts it back. Nothing once it is closed.
+fn close_with(s: &Shared, close: impl FnOnce(FramedStream) + Send + 'static) {
+    let mut slot = lock(s);
+    if let Some(stream) = slot.stream.take() {
+        drop(slot);
+        close(stream);
+        return;
+    }
+    if slot.out && slot.then.is_none() {
+        slot.then = Some(Box::new(close));
+    }
+}
+
+/// The closing field block `block` sent as the answer's trailers, once.
+fn send_trailers(trailers: &Trailers, block: &[HeadWords]) {
+    let sender = trailers
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some(sender) = sender {
+        let _gone = sender.send(block_head(block).1);
+    }
+}
+
+/// Where the closing block's trailers go, once.
+type Trailers = Arc<Mutex<Option<oneshot::Sender<HeaderMap>>>>;
 
 /// A closing field block as an answer's head: its `:status` line, where it has one, and its
 /// fields (every other line, in order; a line the wire cannot carry is not sent).
@@ -77,9 +132,10 @@ pub(super) fn refused(stream: &Shared, rendered: Option<Rendered>) -> Response {
         || (refusal_status(ReasonCode::PlanePanic), Vec::new()),
         |r| (r.status, r.body),
     );
-    let block = lock(stream)
-        .take()
-        .map(|mut s| s.refuse(&body, status, false));
+    // Taken out first: the framer renders the refusal with no lock held. A stream a write has out
+    // (or one already closed) answers the refusal's own status.
+    let taken = lock(stream).stream.take();
+    let block = taken.map(|mut s| s.refuse(&body, status, false));
     match block {
         Some(Ok(block)) => whole(status, &block),
         _ => stated((status, Vec::new()), Body::empty()),
@@ -102,7 +158,7 @@ pub(super) fn whole(status: u32, block: &[HeadWords]) -> Response {
 pub(super) struct FramedCaller {
     inner: IngressCaller,
     stream: Shared,
-    trailers: Mutex<Option<oneshot::Sender<HeaderMap>>>,
+    trailers: Trailers,
 }
 
 impl FramedCaller {
@@ -114,7 +170,7 @@ impl FramedCaller {
         Self {
             inner,
             stream,
-            trailers: Mutex::new(Some(trailers)),
+            trailers: Arc::new(Mutex::new(Some(trailers))),
         }
     }
 
@@ -123,31 +179,46 @@ impl FramedCaller {
     /// is closed as a plane fault instead), sent as the answer's trailers.
     fn finish(&self, status: u32, message: &[u8], details: &[u8]) {
         let head_sent = self.inner.stated().is_some();
-        let Some(mut s) = lock(&self.stream).take() else {
-            return;
-        };
-        let block = s
-            .finish(status, message, details)
-            .or_else(|_| s.refuse(&[], refusal_status(ReasonCode::PlanePanic), head_sent));
-        let Ok(block) = block else {
-            return;
-        };
-        let sender = self
-            .trailers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(sender) = sender {
-            let _gone = sender.send(block_head(&block).1);
-        }
+        let (message, details) = (message.to_vec(), details.to_vec());
+        let trailers = Arc::clone(&self.trailers);
+        close_with(&self.stream, move |mut s| {
+            let block = s
+                .finish(status, &message, &details)
+                .or_else(|_| s.refuse(&[], refusal_status(ReasonCode::PlanePanic), head_sent));
+            if let Ok(block) = block {
+                send_trailers(&trailers, &block);
+            }
+        });
     }
 
-    /// Frame one reply message's bytes (`ends` = they complete it) and write the body bytes.
+    /// Frame one reply message's bytes (`ends` = they complete it) and write the body bytes. The
+    /// stream is out of its slot while its framer is crossed; a close made meanwhile is made here,
+    /// as it is put back.
     async fn framed(&self, bytes: &[u8], ends: bool) -> bool {
-        let wire = match lock(&self.stream).as_mut() {
-            Some(s) => s.emit(bytes, ends),
-            None => return false,
+        let taken = {
+            let mut slot = lock(&self.stream);
+            let taken = slot.stream.take();
+            slot.out = taken.is_some();
+            taken
         };
+        let Some(mut s) = taken else {
+            return false;
+        };
+        let wire = s.emit(bytes, ends);
+        let close = {
+            let mut slot = lock(&self.stream);
+            slot.out = false;
+            match slot.then.take() {
+                Some(close) => Some((close, s)),
+                None => {
+                    slot.stream = Some(s);
+                    None
+                }
+            }
+        };
+        if let Some((close, s)) = close {
+            close(s);
+        }
         match wire {
             Ok(w) if w.is_empty() => true,
             Ok(w) => self.inner.write(&w).await,
@@ -205,20 +276,12 @@ impl Stated for FramedCaller {
         if self.inner.stated().is_none() {
             return;
         }
-        let Some(mut s) = lock(&self.stream).take() else {
-            return;
-        };
-        let Ok(block) = s.refuse(&[], refusal_status(reason), true) else {
-            return;
-        };
-        let sender = self
-            .trailers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(sender) = sender {
-            let _gone = sender.send(block_head(&block).1);
-        }
+        let trailers = Arc::clone(&self.trailers);
+        close_with(&self.stream, move |mut s| {
+            if let Ok(block) = s.refuse(&[], refusal_status(reason), true) {
+                send_trailers(&trailers, &block);
+            }
+        });
     }
 }
 
@@ -246,3 +309,7 @@ impl Drop for FramedCaller {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/serve_framed_lock.rs"]
+mod lock_tests;

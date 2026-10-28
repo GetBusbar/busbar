@@ -11,7 +11,7 @@ use crate::diagnostics::{
     CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
     CONFIG_RATE_CARD_ALL_ZERO,
 };
-use crate::plane::registry::plane_decl_for;
+use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
@@ -337,8 +337,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
-    for decl in crate::plane::registry::plane_decls()
+    let mut known_protocols: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
+    for decl in crate::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
@@ -1081,7 +1081,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1565,7 +1565,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
 /// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
 fn priced_classes(
-    d: &crate::plane::registry::PlaneDecl,
+    d: &crate::plane_driver::registry::PlaneDecl,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
@@ -1586,8 +1586,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         for (key, r) in card {
             // `lane` is the whole key on the flat card; empty on a plane card's presence key.
             let (plane, lane) = split_plane_lane(key);
-            let at =
-                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let at = crate::plane_driver::registry::plane_decl_for(plane)
+                .map_or(plane, |d| d.config_section);
             let path = format!(
                 "{at}{}rate_card['{lane}']",
                 if at.is_empty() { "" } else { "." }
@@ -1708,7 +1708,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // units: exactly the classes the plane's lane was priced by before it was served through
         // its door, so a configuration that booted then boots now and an unpriced class still
         // refuses (#42).
-        for d in crate::plane::registry::plane_decls() {
+        for d in crate::plane_driver::registry::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
                 .iter()
@@ -2256,6 +2256,11 @@ fn validate_providers_with(
         // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
         // the fail-OPEN answer), but it refuses ONCE and says why.
         validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
+        // The provider's options (every key that is not busbar's), judged by the plane that speaks
+        // its dialect against that dialect's list, in the plane's words.
+        if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
+            errors.push(refusal);
+        }
 
         // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
         // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/
