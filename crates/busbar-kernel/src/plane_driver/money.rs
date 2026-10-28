@@ -323,7 +323,7 @@ impl PlaneMoney {
         let m = &open.money;
         if !open.ledgered {
             let counts = reported(&open.last);
-            self.ledger(m, &counts);
+            self.ledger(m, open.provider.as_deref(), &counts);
             // A DELIVERED end meters one request against the serving member, tokens or none
             // (v1.5.5 proxy/usage.rs:31-40 and :99-106). A stream its far end cut is metered too:
             // the plane's ledger, not the cut, says what it spent.
@@ -380,13 +380,16 @@ impl PlaneMoney {
     /// Ledger `counts` (class index, amount) under the unit's lane, pool and arrival window. A sum
     /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
     /// the plane check refuses a class counted twice, so a validated report never gets here.
-    fn ledger(&self, m: &UnitMoney, counts: &[(u32, u64)]) {
+    /// `provider` is the serving member's (once an attempt committed): the metering row the classes
+    /// mirror onto is the one the unit's request meters on, so spend is always attributed.
+    fn ledger(&self, m: &UnitMoney, provider: Option<&str>, counts: &[(u32, u64)]) {
         let counts = &usage_only(m, counts);
         let units = named(&m.classes, counts, u64::checked_add)
             .or_else(|| named(&m.classes, counts, |a, b| Some(a.saturating_add(b))))
             .unwrap_or_default();
-        self.gov
-            .record_usage(&m.cost, &m.key, &m.pool, &m.lane, &units, m.arrived);
+        self.gov.record_usage_served(
+            &m.cost, &m.key, &m.pool, &m.lane, provider, &units, m.arrived,
+        );
     }
 
     /// THE METERING ROW for a delivered (or reported-billed) unit: one request against the serving
@@ -558,7 +561,7 @@ impl MoneySeam for PlaneMoney {
             }
             money
         };
-        self.ledger(&money, &bill.billed);
+        self.ledger(&money, provider.as_deref(), &bill.billed);
         // A cancelled stream meters only when it bills a reported count (1.5.5's drop path billed
         // the usage the far end had reported through the same ledger_and_meter; none, no row).
         if bills(&money, &bill.billed) {
@@ -600,7 +603,7 @@ impl MoneySeam for PlaneMoney {
             // (the bucket cells and the metering row are write-behind; the durable write is the
             // flusher's, never a store call on this thread), and it neither awaits nor crosses a
             // plugin. record_metering is the same in-memory, sharded accumulator.
-            self.ledger(&money, &counts);
+            self.ledger(&money, provider.as_deref(), &counts);
             if bills(&money, &counts) {
                 self.meter(&money, provider.as_deref(), &counts);
             }
@@ -654,7 +657,7 @@ impl MoneySeam for PlaneMoney {
             owed
         };
         let (money, provider, counts) = owed;
-        self.ledger(&money, &counts);
+        self.ledger(&money, provider.as_deref(), &counts);
         if bills(&money, &counts) {
             self.meter(&money, provider.as_deref(), &counts);
         }
