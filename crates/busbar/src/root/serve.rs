@@ -3373,15 +3373,18 @@ impl DataRoutes {
             far: OnceLock::new(),
         };
         let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
-        let Some((opened, ctx, slot)) = node.open_borrowed(
-            unit,
-            arrived,
-            &door.principal,
-            &self.post,
-            &units,
-            (self.pin)(),
-            served.facts.audit_kind,
-        ) else {
+        let Some((opened, ctx, slot)) = node
+            .open_borrowed(
+                unit,
+                arrived,
+                &door.principal,
+                &self.post,
+                &units,
+                (self.pin)(),
+                served.facts.audit_kind,
+            )
+            .await
+        else {
             let _ = verdict.send(Err(None));
             return;
         };
@@ -3590,17 +3593,17 @@ impl DataRoutes {
     /// resolved; the unit driven inside the response, so a caller that goes away drops it.
     async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
         let (door, arrival, body) = self.arrived(plane, claim, req);
-        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
-        let datagram_carrier = self.served.planes[plane]
+        // The claim's carrier and the framer that answers it, looked up once.
+        let framed = self.served.planes[plane]
             .snapshot
             .claims
             .get(claim as usize)
-            .map(|c| c.carrier.clone())
-            .and_then(|c| {
-                self.framer_for(&c)
-                    .filter(|d| d.facts().datagram)
-                    .map(|d| (d, c))
-            });
+            .and_then(|c| self.framer_for(&c.carrier).map(|d| (d, c.carrier.as_str())));
+        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
+        let datagram_carrier = framed
+            .as_ref()
+            .filter(|(d, _)| d.facts().datagram)
+            .map(|(d, c)| (Arc::clone(d), (*c).to_owned()));
         if let Some(carried) = datagram_carrier {
             return self.open_datagram(carried, door, arrival).await;
         }
@@ -3615,13 +3618,8 @@ impl DataRoutes {
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
         // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
         // framer frames this stream alone. A claim stating neither is the data listener's own.
-        let carrier = self.served.planes[plane]
-            .snapshot
-            .claims
-            .get(claim as usize)
-            .map(|c| c.carrier.clone());
         if let Some((door, carrier)) =
-            carrier.and_then(|c| framed_by(&c, |s| self.framer_for(s)).map(|d| (d, c)))
+            framed.and_then(|(d, c)| framed_by(c, |_| Some(Arc::clone(&d))).map(|door| (door, c)))
         {
             let head: Vec<(String, Vec<u8>)> = arrival
                 .fields
@@ -3630,7 +3628,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, &carrier, &target, &head,
+                door, carrier, &target, &head,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
@@ -3866,9 +3864,9 @@ impl DataRoutes {
         };
         let units = served.driver.unit(&steps, &far, caller, arrival, 0);
         let money = Arc::clone(&served.money);
-        let facts = live.facts.clone();
+        let held = Arc::clone(&live);
         let late: crate::root::linked::node::Late =
-            Box::new(move || report_of(&money, unit, &facts));
+            Box::new(move || report_of(&money, unit, &held.facts));
         // THE UNIT'S REQUEST SPAN (`forward`) opens as its route leg begins, once it is admitted
         // and its pool is known, as the previous release's did ([`DoorSteps`]'s `request_span`).
         let ended = node
@@ -4500,11 +4498,11 @@ impl IngressReply {
                 // wrote, sent under its length.
                 Ok(h) if whole_answer(&h.1) => {
                     let mut body = body;
-                    let mut whole = Vec::new();
+                    let mut whole = Whole::default();
                     while let Ok(bytes) = body.try_recv() {
-                        whole.extend_from_slice(&bytes);
+                        whole.push(bytes);
                     }
-                    return stated(unlengthed(h), Body::from(whole));
+                    return stated(unlengthed(h), Body::from(whole.into_bytes()));
                 }
                 Ok(h) => {
                     if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
@@ -4559,7 +4557,7 @@ fn whole_answer(fields: &HeadFields) -> bool {
         fields
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(field))
-            .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
+            .map(|(_, value)| String::from_utf8_lossy(value))
     };
     named(b"content-length").is_some()
         && !named(b"content-type").is_some_and(|v| streamed_media(&v))
@@ -4588,13 +4586,13 @@ fn unlengthed((status, mut fields): Head) -> Head {
 
 /// Every piece the unit writes until it ends, the unit driven meanwhile (its writes wait on this
 /// side), then whatever it wrote last.
-async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u8> {
-    let mut whole = Vec::new();
+async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes {
+    let mut whole = Whole::default();
     loop {
         tokio::select! {
             biased;
             piece = body.recv() => match piece {
-                Some(bytes) => whole.extend_from_slice(&bytes),
+                Some(bytes) => whole.push(bytes),
                 None => {
                     let _ = unit.await;
                     break;
@@ -4602,13 +4600,38 @@ async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u
             },
             _ = &mut unit => {
                 while let Ok(bytes) = body.try_recv() {
-                    whole.extend_from_slice(&bytes);
+                    whole.push(bytes);
                 }
                 break;
             }
         }
     }
-    whole
+    whole.into_bytes()
+}
+
+/// A whole answer's pieces, joined: a lone piece is kept as written, never copied.
+#[derive(Default)]
+struct Whole {
+    one: Option<Bytes>,
+    many: Vec<u8>,
+}
+
+impl Whole {
+    fn push(&mut self, piece: Bytes) {
+        match self.one.take() {
+            None if self.many.is_empty() => self.one = Some(piece),
+            first => {
+                if let Some(first) = first {
+                    self.many.extend_from_slice(&first);
+                }
+                self.many.extend_from_slice(&piece);
+            }
+        }
+    }
+
+    fn into_bytes(self) -> Bytes {
+        self.one.unwrap_or_else(|| Bytes::from(self.many))
+    }
 }
 
 /// A unit the data door drives: what it rendered for its caller when it ended before any byte.

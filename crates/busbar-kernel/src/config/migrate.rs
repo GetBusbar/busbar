@@ -24,6 +24,9 @@
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
+#[path = "migrate_1_6.rs"]
+mod upgrade_1_6;
+
 /// The 1.5.x store-module text this migration and its refusals print, read off the ROOT LEGACY
 /// TABLE the composition root hands in ([`crate::config::migration_table`]; moved from
 /// `data/legacy_store_modules.toml`): frozen text naming store backends no crate in the kernel
@@ -433,6 +436,8 @@ pub fn migrate_config_with(
     // 1.4.x `governance:` database into `store:`, so only a config that still names no store gains
     // the one 1.5.x ran it on.
     migrate_store_required(&mut root, &mut changes);
+    // 1.5.5 -> 1.6.0 over core's own keys: last, so it sees every key in its settled 1.6.0 place.
+    upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;

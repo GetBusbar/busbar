@@ -120,6 +120,10 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         self.0.default_inbound_style()
     }
 
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        crate::root::door_steps::declared_styles()
+    }
+
     fn check_outbound(
         &self,
         style: &str,

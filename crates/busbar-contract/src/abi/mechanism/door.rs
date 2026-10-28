@@ -385,7 +385,10 @@ pub struct Statement {
     pub extensions: Blob,
     /// The settings keys whose values are secret references. The kernel resolves them, in this
     /// order, into [`super::lifecycle::OpenIn::secrets`]. Every kind uses it (auth, store, export and
-    /// secret-service credentials).
+    /// secret-service credentials). Each is a `.`-separated path; a `*` segment matches any key or
+    /// index, and a lending host appends a wildcard path's matches after the exact paths' entries,
+    /// leaving `{"$secret": <index>}` where each was (`crate::secret_fields`). A secret reference at
+    /// a settings position no path names is refused.
     pub secret_refs: *const AbiStr,
     /// How many.
     pub secret_refs_len: usize,
