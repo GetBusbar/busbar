@@ -9186,7 +9186,8 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 /// legitimate workflow — and `tls`, the block beside it with the identical failure mode, already
 /// accepts exactly that. The operator gets a loud warn naming the field and the restart
 /// consequence; rejecting instead would make a config they can legally write into `config.yaml`
-/// un-PUT-able.
+/// un-PUT-able. The reference sits at `token`, the field the memory store declares secret (a
+/// reference at an undeclared field is refused, G14).
 #[tokio::test]
 async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
     let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("storesecret").await;
@@ -9200,7 +9201,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": migrated_store_module(), "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": migrated_store_module(), "settings": { "token": { "env": var } } }
             })
             .to_string(),
         )
@@ -9220,7 +9221,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         doc.root
             .as_ref()
             .and_then(|r| r.store.as_ref())
-            .is_some_and(|s| s.settings.contains_key("licenseKey")),
+            .is_some_and(|s| s.settings.contains_key("token")),
         "the staged reference reaches the overlay"
     );
 
