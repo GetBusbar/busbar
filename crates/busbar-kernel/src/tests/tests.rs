@@ -2519,7 +2519,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             }
         }
     }
-    let _registry = crate::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = crate::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);

@@ -121,7 +121,8 @@ fn the_memory_store_states_its_facts_in_its_tail() {
 
 #[test]
 fn keys_round_trip_through_the_table() {
-    let s = open();
+    let store = open();
+    let s: &dyn RecordStore = &store;
     s.put_key(&key("a")).expect("put");
     s.put_key(&key("b")).expect("put");
     assert_eq!(s.get_key("a").expect("get").map(|k| k.id), Some("a".into()));
@@ -146,7 +147,8 @@ fn keys_round_trip_through_the_table() {
 
 #[test]
 fn the_tombstone_precondition_crosses_as_a_failure() {
-    let s = open();
+    let store = open();
+    let s: &dyn RecordStore = &store;
     s.put_key(&key("a")).expect("put");
     s.delete_key("a").expect("delete");
     let err = s
@@ -167,7 +169,8 @@ fn usage_adds_through_the_bridge_mint_distinct_op_ids() {
 
 #[test]
 fn credentials_cross_as_secret_blobs_and_read_back() {
-    let s = open();
+    let store = open();
+    let s: &dyn RecordStore = &store;
     s.put_key(&key("k1")).expect("key");
     let secret = CredentialSecret {
         meta: CredentialMeta {
@@ -202,7 +205,8 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
 
 #[test]
 fn audit_appends_and_a_fork_fails() {
-    let s = open();
+    let store = open();
+    let s: &dyn RecordStore = &store;
     let a = AuditRecord {
         seq: 1,
         ts: 1,
@@ -438,8 +442,11 @@ fn metering_and_audit_batches_apply_through_the_typed_surface() {
             .await
             .expect("audit");
     });
-    assert_eq!(s.list_metering(86_400).expect("list").len(), 1);
-    assert_eq!(s.list_audit().expect("list"), vec![a]);
+    assert_eq!(
+        RecordStore::list_metering(&s, 86_400).expect("list").len(),
+        1
+    );
+    assert_eq!(RecordStore::list_audit(&s).expect("list"), vec![a]);
 }
 
 #[test]
