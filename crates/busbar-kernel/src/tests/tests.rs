@@ -2841,6 +2841,156 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     server.abort();
 }
 
+/// An admin module that panics on the credential `boom` and passes every other one.
+struct PanickingAdminModule;
+impl crate::auth::AuthModule for PanickingAdminModule {
+    fn name(&self) -> &'static str {
+        "panicking-admin"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> crate::auth::AuthVerdict {
+        assert_ne!(
+            candidate,
+            Some("boom"),
+            "deliberate admin-chain panic (request-panic boundary test)"
+        );
+        crate::auth::AuthVerdict::Pass
+    }
+}
+
+/// BOTH SERVED ROUTERS CARRY THE REQUEST-PANIC BOUNDARY. The data and admin routers come from
+/// `build_split_routers_serving`, the builder the node serves: a panic inside a data route's
+/// handler, and one inside the admin auth chain, each answer `500` in busbar's standard JSON error
+/// body, the same client is served on its next requests, and each panic is logged once at `error`
+/// with the request's path.
+#[tokio::test(flavor = "current_thread")]
+async fn both_served_routers_answer_a_panic_500_log_it_and_keep_serving() {
+    use crate::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    crate::snapshot::init();
+    let cap = crate::test_support::warn_capture::WarnCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
+
+    const BOOM: &str = "/panic-boundary-test/boom";
+    const FINE: &str = "/panic-boundary-test/fine";
+    let door = |path: &str, panics: bool| PlaneRouteSpec {
+        path: path.to_string(),
+        method: RouteMethod::Post,
+        auth: RouteAuth::None,
+        handler: std::sync::Arc::new(move |_: PlaneReqCtx| {
+            Box::pin(async move {
+                assert!(
+                    !panics,
+                    "deliberate data-route panic (request-panic boundary test)"
+                );
+                axum::response::Response::new(axum::body::Body::from("fine"))
+            })
+        }),
+    };
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["panicking-admin".to_string()])
+        .admin_module("panicking-admin", Box::new(PanickingAdminModule))
+        .build();
+    let (data, admin, _handle) = crate::build_split_routers_serving(
+        app,
+        vec![door(BOOM, true), door(FINE, false)],
+        1 << 20,
+        0,
+        false,
+    );
+    let serve = |router: Router| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (addr, server)
+    };
+    let (data_addr, data_server) = serve(data).await;
+    let (admin_addr, admin_server) = serve(admin).await;
+    let client = reqwest::Client::new();
+
+    async fn json_500(r: reqwest::Response) -> serde_json::Value {
+        assert_eq!(r.status().as_u16(), 500, "the one request fails with 500");
+        let ct = r
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.starts_with("application/json"),
+            "content-type was `{ct}`"
+        );
+        let v: serde_json::Value = r.json().await.expect("the 500 body is JSON");
+        assert!(
+            v["error"].is_object(),
+            "busbar's standard error body, got {v}"
+        );
+        v
+    }
+
+    // THE DATA ROUTER: a handler panic.
+    let r = client
+        .post(format!("http://{data_addr}{BOOM}"))
+        .body("x")
+        .send()
+        .await
+        .expect("a panicking data route still produces a response");
+    json_500(r).await;
+    for _ in 0..3 {
+        let ok = client
+            .post(format!("http://{data_addr}{FINE}"))
+            .body("x")
+            .send()
+            .await
+            .expect("the data listener keeps serving after a request panicked");
+        assert_eq!(ok.status().as_u16(), 200);
+        assert_eq!(ok.text().await.unwrap(), "fine");
+    }
+
+    // THE ADMIN ROUTER: a panic in its auth chain.
+    let r = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("boom")
+        .send()
+        .await
+        .expect("a panicking admin chain still produces a response");
+    let v = json_500(r).await;
+    assert_eq!(
+        v["error"]["code"], "internal",
+        "the admin envelope's own code, got {v}"
+    );
+    let next = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("not-boom")
+        .send()
+        .await
+        .expect("the admin listener keeps serving after a request panicked");
+    assert_ne!(
+        next.status().as_u16(),
+        500,
+        "the next admin request is judged, not failed"
+    );
+    let health = client
+        .get(format!("http://{admin_addr}/healthz"))
+        .send()
+        .await
+        .expect("the admin listener keeps serving");
+    assert_eq!(health.status().as_u16(), 200);
+
+    // EACH PANIC IS LOGGED, ONCE, WITH ITS PATH.
+    let logged = cap.messages();
+    for path in [BOOM, "/api/v1/admin/keys"] {
+        let lines: Vec<_> = logged
+            .iter()
+            .filter(|m| m.contains("a request handler panicked") && m.contains(path))
+            .collect();
+        assert_eq!(lines.len(), 1, "{path}: {logged:?}");
+    }
+    data_server.abort();
+    admin_server.abort();
+}
+
 /// On the native-API root the boundary's 500 is the frozen admin envelope's own `internal` code —
 /// never the `not_found` the root's 404/405 branch would otherwise hand a 500.
 #[tokio::test]
