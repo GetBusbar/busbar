@@ -726,27 +726,23 @@ fn escape_into(line: &mut String, text: &[u8]) {
 
 /// THE HOST LOG'S COPY of a plugin's WARN or ERROR line (1.5.5 printed its plugins' and planes'
 /// warnings in busbar's own log, and a log pipeline that watches only that log must still see
-/// them): one host line at the same level, tagged with the plugin instance and its kind, the text
-/// escaped as the plugin's file holds it. Lines below WARN stay in the plugin's file alone.
-fn mirror(tag: &Tag, level: LogLevel, text: &[u8]) {
+/// them): one host line at the same level, written as 1.5.5 wrote it, the record's message and
+/// fields without the module path the plugin's file leads with, escaped as the file holds it. The
+/// line carries no field 1.5.5's never did, so it reads byte for byte as 1.5.5's; the plugin's own
+/// file names the instance. Lines below WARN stay in the plugin's file alone.
+fn mirror(_tag: &Tag, level: LogLevel, text: &[u8]) {
     if !matches!(level, LogLevel::Error | LogLevel::Warn) {
         return;
     }
+    let text = String::from_utf8_lossy(text);
+    let said_raw = text
+        .split_once(": ")
+        .map_or(text.as_ref(), |(_, rest)| rest);
     let mut said = String::new();
-    escape_into(&mut said, text);
+    escape_into(&mut said, said_raw.as_bytes());
     match level {
-        LogLevel::Error => tracing::error!(
-            target: MIRROR_TARGET,
-            plugin = %tag.instance,
-            kind = %tag.kind,
-            "{said}"
-        ),
-        _ => tracing::warn!(
-            target: MIRROR_TARGET,
-            plugin = %tag.instance,
-            kind = %tag.kind,
-            "{said}"
-        ),
+        LogLevel::Error => tracing::error!(target: MIRROR_TARGET, "{said}"),
+        _ => tracing::warn!(target: MIRROR_TARGET, "{said}"),
     }
 }
 

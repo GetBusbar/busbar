@@ -800,8 +800,9 @@ impl tracing::Subscriber for Shared {
 /// **A DROPPED-IN PLUGIN'S WARNING REACHES BUSBAR'S OWN LOG** (owner ruling 2026-10-27, the 1.5.5
 /// upgrade): 1.5.5 printed its plugins' warnings in busbar's log, and a log pipeline that watches
 /// only that log must still see them. The dropped-in witness logs at every level; its WARN line is
-/// in its own file AND is one host line at WARN, tagged with the plugin instance, while its INFO and
-/// DEBUG lines stay in its file alone. RED before the mirror: the host log holds no such line.
+/// in its own file AND is one host line at WARN, written as 1.5.5 wrote it (the message, without
+/// the module path the plugin's file leads with), while its INFO and DEBUG lines stay in its file
+/// alone. RED before the mirror: the host log holds no such line.
 #[test]
 fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     const MIRRORED: &str = "mirror-witness";
@@ -831,17 +832,19 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     let ours: Vec<HostLine> = host
         .lines()
         .into_iter()
-        .filter(|(target, _, plugin, _)| target == super::MIRROR_TARGET && plugin == MIRRORED)
+        .filter(|(target, _, _, _)| target == super::MIRROR_TARGET)
         .collect();
     assert!(
         ours.iter()
-            .any(|(_, level, _, message)| *level == tracing::Level::WARN
-                && message == "log_witness: log from the plugin, a"),
-        "busbar's own log carries the plugin's WARN line, tagged with the plugin: {ours:?}"
+            .any(|(_, level, plugin, message)| *level == tracing::Level::WARN
+                && message == "log from the plugin, a"
+                && plugin.is_empty()),
+        "busbar's own log carries the plugin's WARN line as 1.5.5 wrote it: {ours:?}"
     );
     assert!(
-        ours.iter()
-            .all(|(_, level, _, _)| *level <= tracing::Level::WARN),
+        !ours
+            .iter()
+            .any(|(_, _, _, message)| message.contains("tracing at debug from the plugin")),
         "only WARN and ERROR lines are copied to busbar's log: {ours:?}"
     );
 }
