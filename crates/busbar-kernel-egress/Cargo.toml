@@ -14,5 +14,3 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
-futures = { workspace = true }
-bytes = { workspace = true }

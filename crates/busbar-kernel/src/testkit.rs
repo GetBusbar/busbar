@@ -24,6 +24,6 @@ pub static TEST_SEAM: crate::test_support::seam::TestPlaneSeam =
 /// Register the synthetic protocols and the neutral fallback plane. Idempotent: both registrations
 /// are per name.
 fn install() {
-    crate::ingress::protocols::register_test_protocols(neutral_protocols::NEUTRAL_PROTOCOLS);
+    crate::test_support::protocols::register_test_protocols(neutral_protocols::NEUTRAL_PROTOCOLS);
     crate::test_support::register_neutral_test_plane();
 }

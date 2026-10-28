@@ -281,7 +281,48 @@ pub use crate::settlement::{
 /// cannot report usage, and the ledger cannot decide who the caller is — not because they are well
 /// behaved, but because the value they would need does not exist in their scope.
 // contract: the sealed unit traits (auth, trust, scope, admission, egress, usage, ledger, audit)
-pub trait Units {
+pub trait Units: UnitEnds {
+    /// THE DOOR, AWAITED: arrival through admit — with the plane's screen between Approve and the
+    /// door — as the ONE governance step the loop awaits before a unit is admitted. Statically
+    /// dispatched: no allocation per unit.
+    ///
+    /// A unit that answers the seats one at a time ([`DoorSeats`]) is a unit with no more said: its
+    /// door is [`by_seats`], which asks them in the loop's order. A kernel implementor that answers
+    /// the whole door itself (the plane driver's unit) awaits whatever its door waits on.
+    ///
+    /// NOTHING IS AWAITED AFTER ADMIT. The admission a door answers is a hold the loop puts into the
+    /// unit's cell and guards against the caller going away only once this future has returned; an
+    /// await between the door's yes and that return would hold an admission no guard covers, and a
+    /// caller dropping the unit there would lose it. Whatever a door must wait on, it waits on
+    /// before it admits.
+    fn govern<'a>(
+        &'a self,
+        ctx: &'a UnitCtx,
+        door: Door<'a>,
+    ) -> impl Future<Output = Result<Governed, Refusal>> + Send + 'a;
+}
+
+/// A UNIT THAT ANSWERS ITS DOOR SEAT BY SEAT is a unit: its door is [`by_seats`] over its own seats.
+impl<T: DoorSeats + UnitEnds + ?Sized> Units for T {
+    fn govern<'a>(
+        &'a self,
+        ctx: &'a UnitCtx,
+        door: Door<'a>,
+    ) -> impl Future<Output = Result<Governed, Refusal>> + Send + 'a {
+        by_seats(self, ctx, door)
+    }
+}
+
+/// Both halves of a unit answered seat by seat, as one object a seam can hand across as a value
+/// (`Arc<dyn SeatedUnits>`): a unit by the impl above.
+pub trait SeatedUnits: DoorSeats + UnitEnds {}
+
+impl<T: DoorSeats + UnitEnds + ?Sized> SeatedUnits for T {}
+
+/// THE SEATS UP TO THE DOOR, answered one at a time, in the loop's order, by [`by_seats`]: the
+/// shape a unit that has no door of its own answers [`Units::govern`] through. Every seat is
+/// required: a unit that forgets one does not compile.
+pub trait DoorSeats: Sync {
     /// The kernel's own gate: size, rate, source and the budgets, before any plane is known.
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival>;
 
@@ -339,7 +380,11 @@ pub trait Units {
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
     ) -> SeatVerdict<Admit>;
+}
 
+/// THE SEATS AFTER THE DOOR: Route, Meter, the two audit doors, the bytes and the evidence the exit
+/// settles by. Object-safe, so a unit handed across a seam as a value can be driven to its end.
+pub trait UnitEnds: Sync {
     /// Dial, send, relay — all under the hold, with the meter running.
     ///
     /// Lent the SAME destinations Verify sealed and Approve and Admit already saw, rather than a
@@ -412,7 +457,7 @@ pub trait Units {
 /// neither needs to be. This trait is that single seam, stated: one method, one future, one place the loop yields.
 ///
 /// A plane whose Route answers in place does not implement this at all — [`run_unit`] supplies a leg
-/// that is ready on its first poll, over that plane's own [`Units::route`], and the loop body it
+/// that is ready on its first poll, over that plane's own [`UnitEnds::route`], and the loop body it
 /// drives is the same one. A plane whose Route awaits an upstream implements it and is reached
 /// through [`run_unit_async`], which parks no thread and drops the leg when the caller goes away.
 pub trait RouteAwait {
@@ -425,7 +470,7 @@ pub trait RouteAwait {
     /// allocation, on the one step that is about to dial an upstream, buys a seam a plane implements
     /// by writing `async move` and the loop reads as a single await.
     ///
-    /// Lent the same sealed destinations [`Units::route`] is, for the same reason: an awaited leg
+    /// Lent the same sealed destinations [`UnitEnds::route`] is, for the same reason: an awaited leg
     /// is still Route, and Route consumes what Verify sealed rather than re-deriving it.
     fn route_leg<'a>(
         &'a self,
@@ -475,9 +520,9 @@ pub type RouteLeg<'a> = std::pin::Pin<Box<dyn Future<Output = SeatVerdict<Route>
 /// The loop has exactly one await, and this is what the synchronous entry point puts in it: a future
 /// that is ready the first time it is polled. It is what makes [`run_unit`] a DRIVER of the loop
 /// body rather than a second copy of it.
-struct Blocking<'u, U>(&'u U);
+struct Blocking<'u, U: ?Sized>(&'u U);
 
-impl<U: Units> RouteAwait for Blocking<'_, U> {
+impl<U: Units + ?Sized> RouteAwait for Blocking<'_, U> {
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,
@@ -496,7 +541,6 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
 }
 
 /// Everything one run of the loop borrows.
-#[derive(Debug)]
 pub struct Run<'r> {
     /// The unit's hold cell, in the in-flight table.
     pub cell: &'r HoldCell,
@@ -518,6 +562,36 @@ pub struct Run<'r> {
     pub canary: &'r Canary,
     /// A test rig's spend count. The exit does not read it: it settles by the one reported figure.
     pub meter: &'r AccrualMeter,
+    /// Who keeps the unit's record-to-be as it runs ([`UnitTaps`]): handed its audit door's facts
+    /// and pass, how it ended, and where Route was lent to go. `None` hands the audit door's facts
+    /// back to the units themselves ([`UnitEnds::audited`]).
+    pub taps: Option<&'r dyn UnitTaps>,
+}
+
+impl std::fmt::Debug for Run<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Run")
+            .field("cell", &self.cell)
+            .field("parent", &self.parent)
+            .field("leases", &self.leases)
+            .field("gauge", &self.gauge)
+            .field("canary", &self.canary)
+            .field("meter", &self.meter)
+            .field("taps", &self.taps.is_some())
+            .finish()
+    }
+}
+
+/// THE UNIT'S RECORD-TO-BE, KEPT BY WHOEVER DRIVES IT: the three facts the loop hands its driver
+/// as the unit runs, so a node keeps its units' records without standing a wrapper in front of
+/// every seat.
+pub trait UnitTaps: Sync {
+    /// The audit door sealed these facts with this pass (in place of [`UnitEnds::audited`]).
+    fn audited(&self, ctx: &UnitCtx, facts: AuditFacts, pass: Pass<Audit>);
+    /// The unit ended as `outcome`: told just before its bytes are encoded.
+    fn ended_as(&self, ctx: &UnitCtx, outcome: Outcome);
+    /// Route is about to be lent `destinations`, the set Verify sealed.
+    fn routed(&self, ctx: &UnitCtx, destinations: &[VerifiedDestination]);
 }
 
 /// How a unit finished, from the loop's point of view.
@@ -556,23 +630,37 @@ fn presented<S: Step>(pass: &Pass<S>, ctx: &UnitCtx) -> bool {
 /// Run one unit through every step, and end it exactly once — for a plane whose Route answers in
 /// place.
 ///
-/// The same loop body as [`run_unit_async`], driven here rather than on a runtime: the leg it awaits
-/// is this plane's own [`Units::route`] wrapped in a `Ready`, so the one await answers on its first
-/// poll and the whole unit runs to its end on the calling thread, exactly as it always has. Nothing
-/// is spawned, nothing is scheduled, and no caller that was synchronous yesterday has to change.
-pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> Ended {
+/// The same loop body as [`run_unit_async`], driven here to its end on the calling thread rather than
+/// on a runtime: the leg it awaits is this plane's own [`UnitEnds::route`] wrapped in a `Ready`.
+/// The door ([`Units::govern`]) may wait on something; when it does the calling thread parks until
+/// it is woken, so this is for a caller that is not itself on an async runtime's worker. Nothing is
+/// spawned and nothing is scheduled.
+pub fn run_unit<U: Units + ?Sized>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+) -> Ended {
     let blocking = Blocking(units);
-    let mut loop_ = std::pin::pin!(run_unit_async(kernel, units, ctx, run, &blocking));
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match loop_.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(ended) => ended,
-        // Unreachable, and provably so: the loop awaits in exactly two places, the screen and the
-        // leg, both the ones `Blocking` hands it (the screen its default), and each answers on its
-        // first poll. `Blocking` is private to this file and is the only leg this entry point can
-        // be given, so there is no caller — inside the kernel or outside it — that can make this
-        // arm happen.
-        std::task::Poll::Pending => {
-            unreachable!("the synchronous loop's one await is ready on its first poll")
+    block_on(run_unit_async(kernel, units, ctx, run, &blocking))
+}
+
+/// Drive `f` to its end on the calling thread, parking it while `f` waits and unparking it when `f`
+/// is woken: the synchronous driver's one way to await a door that waits.
+fn block_on<T>(f: impl Future<Output = T>) -> T {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        match f.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(value) => break value,
+            std::task::Poll::Pending => std::thread::park(),
         }
     }
 }
@@ -587,7 +675,7 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
 /// worker, and the only thing this task occupies while the upstream thinks is its own in-flight
 /// slot. Drop the future and the unit is cancelled — see [`Abandoned`] for what the caller going
 /// away costs and what it does not.
-pub async fn run_unit_async<U: Units, R: RouteAwait>(
+pub async fn run_unit_async<U: Units + ?Sized, R: RouteAwait + Sync>(
     kernel: &Kernel,
     units: &U,
     ctx: &UnitCtx,
@@ -608,7 +696,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     // it stops is refused before anything is admitted. A caller that goes away during it leaves the
     // arrival hold to the sweep: it is the unit's one hold, and the canary counts it so.
     let pending = HoldCount(Some(run.canary));
-    let opened = open_to_door(seal, units, ctx, &run, || route.screen(ctx)).await;
+    let opened = open_to_door(seal, units, ctx, &run, Some(route)).await;
     pending.disarm();
     if !matches!(opened, Ok((Admission::Accrual(_), _))) {
         run.canary.hold_opened();
@@ -623,13 +711,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = audit_pass(seal, ctx.call);
-            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
-                units.audited(ctx, facts, pass);
-            }
-            let _bytes = units
-                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-                .into_result(seal);
+            sealed_end(seal, units, run.taps, ctx, &outcome, Some(&refusal));
             exit(kernel, units, ctx, run, outcome, false)
         }
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
@@ -687,6 +769,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 None => {
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
+                    let taps = run.taps;
                     let mut abandoned = Abandoned {
                         kernel,
                         units,
@@ -694,7 +777,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                         ctx,
                         ending: Some((run, settling)),
                     };
-                    let outcome = under_hold(kernel, units, route, ctx, &destinations).await;
+                    let outcome = under_hold(kernel, units, route, taps, ctx, &destinations).await;
                     abandoned.reached(outcome)
                 }
             }
@@ -702,28 +785,59 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     }
 }
 
-/// THE GOVERNANCE-TO-DOOR CHAIN, factored so both the one-shot loop and a session opener run the
-/// SAME arrival→decode→authenticate→verify→approve→admit, in the same order, minting the same tokens.
+/// THE DOOR A UNIT'S GOVERNANCE IS ASKED THROUGH ([`Units::govern`]): the kernel's authority for the
+/// length of the one call, and whose screen stands before the door, where the caller has one. The
+/// screen is asked for only once a unit is approved: a refused unit and a challenge round build none.
+pub struct Door<'d> {
+    pub(crate) seal: &'d KernelSeal,
+    pub(crate) screens: Option<&'d (dyn RouteAwait + Sync)>,
+}
+
+impl<'d> Door<'d> {
+    /// The screen before the door, for an approved unit: `None` when the caller screens nothing.
+    pub(crate) fn screen(&self, ctx: &'d UnitCtx) -> Option<Screen<'d>> {
+        self.screens.map(|route| route.screen(ctx))
+    }
+}
+
+impl std::fmt::Debug for Door<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Door")
+            .field("screens", &self.screens.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the door answered a unit it let through ([`Units::govern`]): its admission, the destinations
+/// Verify sealed (EMPTY for a challenge round, which never reaches Verify), and the slip the door
+/// named its capped groups on — `None` for a challenge round, which draws no lease. Only the kernel
+/// builds one, so only a kernel implementor answers the door other than seat by seat.
+#[derive(Debug)]
+pub struct Governed {
+    pub(crate) admission: Admission,
+    pub(crate) destinations: Vec<VerifiedDestination>,
+    pub(crate) lease: Option<GroupLeaseSlip>,
+}
+
+/// THE GOVERNANCE-TO-DOOR CHAIN, SEAT BY SEAT: arrival→decode→authenticate→verify→approve→(the
+/// screen)→admit, in that order, each seat lent its own token: [`Units::govern`] for a unit that
+/// answers the seats one at a time ([`DoorSeats`]).
 ///
-/// Returns the door's [`Admission`] on a pass, alongside the destinations [`Units::verify`] sealed —
-/// EMPTY for a challenge round, which never reaches verify at all — or the [`Refusal`] of the step
-/// that stopped the unit. No response is shaped here and nothing is settled — that is the caller's,
-/// whichever caller it is: [`run_unit_async`] carries the sealed set on to Route and Meter, under the
-/// hold, and [`open_unit`] stops at the door and hands it back. Written as the one chain it always
-/// was, moved verbatim out of [`run_unit_async`], so the order reads top to bottom and a refusal
-/// simply stops the chain.
+/// Returns what the door let through ([`Governed`]) or the [`Refusal`] of the step that stopped the
+/// unit. No response is shaped here and nothing is settled — that is the caller's: [`run_unit_async`]
+/// carries the sealed set on to Route and Meter, under the hold, and [`open_unit`] stops at the door
+/// and hands it back. The order reads top to bottom and a refusal simply stops the chain.
 ///
 /// The destinations travel in the SAME `Result` the admission does, rather than a second one beside
 /// it, because they are exactly as much this call's answer as the admission is: Approve and Admit
 /// already read them here, and a caller that carries the `Admission` forward without the set Verify
 /// sealed it against is the verify-then-act gap this return type exists to close.
-async fn open_to_door<'s, U: Units>(
-    seal: &KernelSeal,
-    units: &U,
-    ctx: &UnitCtx,
-    run: &Run<'_>,
-    screen: impl FnOnce() -> Screen<'s>,
-) -> Result<(Admission, Vec<VerifiedDestination>), Refusal> {
+pub async fn by_seats<'a, U: DoorSeats + ?Sized>(
+    units: &'a U,
+    ctx: &'a UnitCtx,
+    door: Door<'a>,
+) -> Result<Governed, Refusal> {
+    let seal = door.seal;
     let authenticated = units
         .arrival(&Pass::<Arrival>::mint_bound(seal, ctx.call), ctx)
         .into_result(seal)
@@ -807,7 +921,11 @@ async fn open_to_door<'s, U: Units>(
                             )
                             .into_result(seal)
                     })
-                    .map(|_admitted| (Admission::ZeroHold, Vec::new()))
+                    .map(|_admitted| Governed {
+                        admission: Admission::ZeroHold,
+                        destinations: Vec::new(),
+                        lease: None,
+                    })
             }
             Authenticated::Principal(principal) => {
                 let approved = units
@@ -831,7 +949,7 @@ async fn open_to_door<'s, U: Units>(
                     });
                 // THE SCREEN BEFORE THE DOOR ([`RouteAwait::screen`]; a gate-first plane's hooks):
                 // a unit it stops is refused at Approve's seat, before anything is admitted.
-                screened_by(approved, screen, seal, ctx.call)
+                screened_by(approved, &door, ctx, seal)
                     .await
                     .and_then(|destinations| {
                         // The slip the door names its capped groups on, for the length of the one
@@ -849,18 +967,17 @@ async fn open_to_door<'s, U: Units>(
                                 &groups,
                             )
                             .into_result(seal);
-                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
-                        // said yes, so from here until this unit's end the node is running it, and
-                        // the lease is what says so. A refusal draws nothing — there is no slot to
-                        // count — and neither does a challenge round, which now faces this same
-                        // door but opens no reservation behind it (see the arm above).
-                        if admitted.is_ok() {
-                            draw_lease(ctx, run, &groups);
-                        }
+                        // THE LEASE is drawn by the loop on the one answer that entitles a unit to
+                        // it, so the slip travels back with the yes ([`Governed::lease`]); a refusal
+                        // draws nothing, and neither does a challenge round (see the arm above).
                         // The sealed set travels WITH the admission from here on, so Route and
                         // Meter consume the exact set Approve and Admit just read rather than a
                         // recomputation of it.
-                        admitted.map(|admission| (admission, destinations))
+                        admitted.map(|admission| Governed {
+                            admission,
+                            destinations,
+                            lease: Some(groups),
+                        })
                     })
             }
         }
@@ -868,19 +985,42 @@ async fn open_to_door<'s, U: Units>(
     door_answer(to_door).await
 }
 
+/// THE DOOR, as the loop asks it ([`Units::govern`]), and the lease drawn on its yes.
+async fn open_to_door<U: Units + ?Sized>(
+    seal: &KernelSeal,
+    units: &U,
+    ctx: &UnitCtx,
+    run: &Run<'_>,
+    screens: Option<&(dyn RouteAwait + Sync)>,
+) -> Result<(Admission, Vec<VerifiedDestination>), Refusal> {
+    let governed = units.govern(ctx, Door { seal, screens }).await;
+    governed.map(|governed| {
+        // THE LEASE, drawn on the one answer that entitles a unit to it. The door said yes, so from
+        // here until this unit's end the node is running it, and the lease is what says so.
+        if let Some(groups) = &governed.lease {
+            draw_lease(ctx, run, groups);
+        }
+        (governed.admission, governed.destinations)
+    })
+}
+
 /// An approved unit's screen ([`RouteAwait::screen`]), its stop stamped at Approve's seat; a unit
 /// already refused is not screened.
-async fn screened_by<'s>(
+async fn screened_by<'d>(
     approved: Result<Vec<VerifiedDestination>, Refusal>,
-    screen: impl FnOnce() -> Screen<'s>,
+    door: &Door<'d>,
+    ctx: &'d UnitCtx,
     seal: &KernelSeal,
-    call: CallId,
 ) -> Result<Vec<VerifiedDestination>, Refusal> {
     match approved {
-        Ok(destinations) => screen()
-            .await
-            .map(|()| destinations)
-            .map_err(|refusal| screened(seal, call, refusal)),
+        // The screen is built here, for an approved unit, and nowhere else.
+        Ok(destinations) => match door.screen(ctx) {
+            Some(screen) => screen
+                .await
+                .map(|()| destinations)
+                .map_err(|refusal| screened(seal, ctx.call, refusal)),
+            None => Ok(destinations),
+        },
         Err(refusal) => Err(refusal),
     }
 }
@@ -892,23 +1032,6 @@ async fn door_answer<T>(
     match to_door {
         Ok(chain) => chain.await,
         Err(refusal) => Err(refusal),
-    }
-}
-
-/// The screen a caller with none hands the chain (the session opener): it screens nothing.
-fn no_screen<'s>() -> Screen<'s> {
-    Box::pin(std::future::ready(Ok(())))
-}
-
-/// The value of a future that answers on its first poll: the session opener's chain, whose one
-/// await is [`no_screen`].
-fn at_once<T>(f: impl Future<Output = T>) -> T {
-    let mut f = std::pin::pin!(f);
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match f.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(v) => v,
-        // Unreachable: the chain's one await is the screen, and the opener's screens nothing.
-        std::task::Poll::Pending => unreachable!("the opener's chain answers on its first poll"),
     }
 }
 
@@ -972,26 +1095,25 @@ pub enum SessionOpen {
 /// The result says only whether the door passed; a refusing plane's own response is the plane's to
 /// carry (it shaped it at its refusing step), exactly as the substrate session opener carries it.
 ///
-/// Sync: every step up to and including the door is synchronous (only Route awaits, and a session has
-/// no Route here), so a synchronous `begin_session` calls this directly.
-pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> SessionOpen {
+/// Awaited on the caller's runtime, as the one-shot loop is: the door ([`Units::govern`]) may wait
+/// on something before it admits, and the opener waits with it rather than assuming it will not.
+pub async fn open_unit<U: Units + ?Sized>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+) -> SessionOpen {
     let seal = &kernel.seal;
     let bound_ctx = bound(kernel, ctx);
     let ctx = &bound_ctx;
-    match at_once(open_to_door(seal, units, ctx, &run, no_screen)) {
+    match open_to_door(seal, units, ctx, &run, None).await {
         // The door refused, at or before Admit: nothing was charged. Audit the refusal and encode
         // its bytes — the same two doors a refused one-shot leaves through, minus the settling exit
         // (a session that never opened has no reservation to settle).
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = audit_pass(seal, ctx.call);
-            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
-                units.audited(ctx, facts, pass);
-            }
-            let _bytes = units
-                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-                .into_result(seal);
+            sealed_end(seal, units, run.taps, ctx, &outcome, Some(&refusal));
             SessionOpen::Refused
         }
         // The door passed at ZeroHold. Record the admission (success-audit + encode) and hand the
@@ -999,13 +1121,7 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         // `under_hold`, no `exit`.
         Ok((_admission, destinations)) => {
             let outcome = Outcome::Completed;
-            let pass = audit_pass(seal, ctx.call);
-            if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
-                units.audited(ctx, facts, pass);
-            }
-            let _bytes = units
-                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-                .into_result(seal);
+            sealed_end(seal, units, run.taps, ctx, &outcome, None);
             SessionOpen::Admitted {
                 route: Pass::<Route>::mint_bound(seal, ctx.call),
                 destinations,
@@ -1107,7 +1223,7 @@ enum Settling {
 /// [`reached`](Abandoned::reached) is how a unit that finished on its own takes its end back out. A
 /// guard whose terminal has been taken does nothing when it is dropped, which is the whole of the
 /// arming.
-struct Abandoned<'k, 'r, U: Units, R: RouteAwait> {
+struct Abandoned<'k, 'r, U: Units + ?Sized, R: RouteAwait> {
     kernel: &'k Kernel,
     units: &'k U,
     /// Where an abandoned unit's end is handed, so it is posted rather than dropped.
@@ -1117,7 +1233,7 @@ struct Abandoned<'k, 'r, U: Units, R: RouteAwait> {
     ending: Option<(Run<'r>, Settling)>,
 }
 
-impl<U: Units, R: RouteAwait> Abandoned<'_, '_, U, R> {
+impl<U: Units + ?Sized, R: RouteAwait> Abandoned<'_, '_, U, R> {
     /// The unit reached its own end: take the terminal back out and run it there.
     fn reached(&mut self, outcome: Outcome) -> Ended {
         match self.ending.take() {
@@ -1133,7 +1249,7 @@ impl<U: Units, R: RouteAwait> Abandoned<'_, '_, U, R> {
     }
 }
 
-impl<U: Units, R: RouteAwait> Drop for Abandoned<'_, '_, U, R> {
+impl<U: Units + ?Sized, R: RouteAwait> Drop for Abandoned<'_, '_, U, R> {
     fn drop(&mut self) {
         if let Some((run, settling)) = self.ending.take() {
             // The end is REACHED here — the audit door seals it, the cell is emptied and the leases
@@ -1161,7 +1277,7 @@ impl<U: Units, R: RouteAwait> Drop for Abandoned<'_, '_, U, R> {
 /// Every admitted unit's end is here — completed, failed, or abandoned by the caller — and there is
 /// no second copy of it for the shapes the door answered with, because the shape decides only which
 /// of the two settles the last line runs.
-fn terminal<U: Units>(
+fn terminal<U: Units + ?Sized>(
     kernel: &Kernel,
     units: &U,
     ctx: &UnitCtx,
@@ -1207,13 +1323,7 @@ fn terminal<U: Units>(
         },
         other => (outcome, other),
     };
-    let pass = audit_pass(seal, ctx.call);
-    if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
-        units.audited(ctx, facts, pass);
-    }
-    let _bytes = units
-        .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-        .into_result(seal);
+    sealed_end(seal, units, run.taps, ctx, &outcome, None);
     match settling {
         Settling::Exit(reached_admitted) => {
             exit(kernel, units, ctx, run, outcome, reached_admitted)
@@ -1274,13 +1384,14 @@ fn terminal<U: Units>(
 /// The Route leg is awaited here and nowhere else, which is what makes the drop that cancels a unit
 /// land in one known place with one known guard over it.
 ///
-/// `destinations` is the SAME set [`Units::verify`] sealed and [`open_to_door`] carried through
+/// `destinations` is the SAME set [`DoorSeats::verify`] sealed and [`open_to_door`] carried through
 /// Approve and Admit — passed to both Route and Meter here rather than let either re-derive its own,
 /// which is what makes "verify-then-act" true of this loop rather than merely stated by it.
-async fn under_hold<U: Units, R: RouteAwait>(
+async fn under_hold<U: Units + ?Sized, R: RouteAwait>(
     kernel: &Kernel,
     units: &U,
     route: &R,
+    taps: Option<&dyn UnitTaps>,
     ctx: &UnitCtx,
     destinations: &[VerifiedDestination],
 ) -> Outcome {
@@ -1291,6 +1402,9 @@ async fn under_hold<U: Units, R: RouteAwait>(
     if !presented(&token, ctx) {
         Outcome::Failed(StepName::Route, ReasonCode::Replayed)
     } else {
+        if let Some(taps) = taps {
+            taps.routed(ctx, destinations);
+        }
         let leg = route.route_leg(&token, ctx, destinations).await;
         match leg.into_result(seal) {
             Err(refusal) => {
@@ -1318,6 +1432,36 @@ async fn under_hold<U: Units, R: RouteAwait>(
     }
 }
 
+/// THE AUDIT DOOR AND THE BYTES THAT LEAVE, for every end: the audit step seals the end (the refused
+/// door for a unit `refused` at or before Admit), its facts and pass go to the taps or back to the
+/// units, the taps are told how it ended, and the unit's bytes are encoded.
+fn sealed_end<U: Units + ?Sized>(
+    seal: &KernelSeal,
+    units: &U,
+    taps: Option<&dyn UnitTaps>,
+    ctx: &UnitCtx,
+    outcome: &Outcome,
+    refused: Option<&Refusal>,
+) {
+    let pass = audit_pass(seal, ctx.call);
+    let sealed = match refused {
+        Some(refusal) => units.audit_refused(&pass, ctx, refusal),
+        None => units.audit(&pass, ctx, outcome),
+    };
+    if let Ok(facts) = sealed.into_result(seal) {
+        match taps {
+            Some(taps) => taps.audited(ctx, facts, pass),
+            None => units.audited(ctx, facts, pass),
+        }
+    }
+    if let Some(taps) = taps {
+        taps.ended_as(ctx, *outcome);
+    }
+    let _bytes = units
+        .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, outcome)
+        .into_result(seal);
+}
+
 /// THE AUDIT PASS, minted here and at no other site in the kernel.
 ///
 /// THE DESIGN §7 (U14 and the class-registration ruling, `BUSBAR-1.6.0.md` l.1061-1071): one audit
@@ -1336,7 +1480,7 @@ pub(crate) fn audit_pass(seal: &KernelSeal, call: CallId) -> Pass<Audit> {
 /// THE AUDIT PASS OF A KERNEL-VERB UNIT: an administrative request the root answers directly
 /// rather than walking it through this loop. Such a unit holds nothing, is charged nothing and has no
 /// Route leg to await, so it has no hold to settle and no exit to leave through — but it still gets
-/// its one audit record (U14), and that record is sealed by a pass minted here, from [`audit_pass`],
+/// its one audit record (U14), and that record is sealed by a pass minted here, from `audit_pass`,
 /// for a call of its own. One pass per unit: the caller asks once, when it seals the record.
 ///
 /// Public because the admin surface lives in the composition root, another crate; `pub(crate)`
@@ -1356,7 +1500,7 @@ fn drop_arrival(_hold: Hold) {}
 /// same breath — every end, whatever it was — settles per the table, and seals the end. If the cell
 /// is already empty the node's sweep got here first and this call does nothing at all, which is the
 /// only correct answer: a unit is settled once.
-pub fn exit<U: Units>(
+pub fn exit<U: Units + ?Sized>(
     kernel: &Kernel,
     units: &U,
     ctx: &UnitCtx,

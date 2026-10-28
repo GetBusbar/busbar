@@ -6,7 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::ingress::protocols::PROTO_ANTHROPIC;
+use busbar_kernel::test_support::protocols::PROTO_ANTHROPIC;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -2601,7 +2601,6 @@ fn write_named_map_fixture(
             "test-provider:
   protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
 "
         ),
     )
