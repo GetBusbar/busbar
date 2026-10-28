@@ -140,10 +140,14 @@ shard_filter() {  # shard_filter <k> <n> -> the anchored regex selecting exactly
 if [ "${1:-}" = "shard-filter" ]; then shard_filter "${2:?shard-filter <k> <n>}" "${3:?shard-filter <k> <n>}"; exit 0; fi
 if [ "${1:-}" = "shard-cover" ]; then
   n="${2:?shard-cover <n>}"
-  filters="$(for k in $(seq 1 "$n"); do shard_filter "$k" "$n" || exit 3; done)" || exit 3
-  python3 - "$n" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$filters" <<'PY' || exit 3
+  # The N filters together name every id, more than one argv string may hold (Linux caps one at
+  # 128 KiB), so they reach python through a file.
+  filters="$(mktemp)" || exit 3
+  for k in $(seq 1 "$n"); do shard_filter "$k" "$n" >>"$filters" || { rm -f "$filters"; exit 3; }; done
+  python3 - "$n" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$filters" <<'PY' || { rm -f "$filters"; exit 3; }
 import json, re, sys
-n, data, filters = int(sys.argv[1]), sys.argv[2], sys.argv[3].split("\n")
+n, data = int(sys.argv[1]), sys.argv[2]
+filters = open(sys.argv[3]).read().rstrip("\n").split("\n")
 ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
 if len(filters) != n:
     sys.exit(f"oracle shard-cover: {len(filters)} filters for {n} shards")
@@ -159,14 +163,17 @@ if bad:
     sys.exit("oracle shard-cover: the shards do not cover the corpus exactly once:\n  " + "\n  ".join(bad[:20]))
 print(f"oracle shard-cover: {n} shards select all {len(ids)} cells of cells.json, each exactly once")
 PY
+  rm -f "$filters"
   exit 0
 fi
 if [ "${1:-}" = "shard-verify" ]; then
   k="${2:?shard-verify <k> <n> <report-dir>}" n="${3:?shard-verify <k> <n> <report-dir>}" rep="${4:?shard-verify <k> <n> <report-dir>}"
-  owned="$(shard_ids "$k" "$n")" || exit 3
-  python3 - "$k" "$n" "$rep" "$owned" <<'PY' || exit 3
+  owned="$(mktemp)" || exit 3
+  shard_ids "$k" "$n" >"$owned" || { rm -f "$owned"; exit 3; }
+  python3 - "$k" "$n" "$rep" "$owned" <<'PY' || { rm -f "$owned"; exit 3; }
 import sys
-k, n, rep, owned = sys.argv[1], sys.argv[2], sys.argv[3], set(filter(None, sys.argv[4].split("\n")))
+k, n, rep = sys.argv[1], sys.argv[2], sys.argv[3]
+owned = set(filter(None, open(sys.argv[4]).read().split("\n")))
 try:
     selected = set(filter(None, open(f"{rep}/selected-ids.txt").read().split("\n")))
 except OSError as e:
@@ -178,6 +185,7 @@ if missing:
     sys.exit(f"oracle shard-verify: shard {k}/{n} did not select {len(missing)} of its {len(owned)} cells: {missing[:10]}. Refusing.")
 print(f"oracle shard-verify: shard {k}/{n} selected all {len(owned)} cells it owns")
 PY
+  rm -f "$owned"
   exit 0
 fi
 # shard-selftest: each guard refuses what it exists to refuse, before its green is trusted.
