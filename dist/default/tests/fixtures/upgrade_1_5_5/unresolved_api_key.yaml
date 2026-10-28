@@ -1,0 +1,11 @@
+# A 1.5.5 deployment whose provider key names an environment variable that is not set. 1.5.5 ran
+# the provider with no key; 1.6.0 refuses to start, and `busbar --migrate-config` names it in a
+# TODO rather than invent a key. Driven by tests/config_migrate_1_5_5.rs.
+listen: "127.0.0.1:0"
+store: { module: memory }
+providers:
+  mock:
+    api_key: { env: BUSBAR_T_UPGRADE_UNSET_KEY }
+models:
+  test-model:
+    provider: mock
