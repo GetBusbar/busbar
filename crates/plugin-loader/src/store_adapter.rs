@@ -56,8 +56,8 @@
 //! database is the previous release's supported shape and must keep booting.
 
 use busbar_contract::migration::{
-    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyHead, LegacyLedgerRows,
-    LegacyMigrationSource,
+    MigrationCapDimension, MigrationFamily, MigrationFigure, MigrationFigures, MigrationHead,
+    MigrationLedgerRows, MigrationSource,
 };
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
@@ -224,16 +224,16 @@ impl StoreAdapter {
     /// node whose store is briefly unreachable must still boot, but the reason travels with the
     /// answer and is said out loud: a migration that seals a zero opening balance over a chain that
     /// was really there has broken the chain, and the one thing it may not do is break it quietly.
-    pub fn legacy_audit_head(&self) -> LegacyAuditHead {
+    pub fn migration_audit_head(&self) -> MigrationAuditHead {
         match self.store().list_audit_tail(1) {
-            Ok(tail) => LegacyAuditHead {
+            Ok(tail) => MigrationAuditHead {
                 head: match tail.last() {
-                    Some(entry) => LegacyHead {
+                    Some(entry) => MigrationHead {
                         seq: Some(entry.seq),
                         hash: Some(entry.hash.clone()),
-                        ..LegacyHead::empty()
+                        ..MigrationHead::empty()
                     },
-                    None => LegacyHead::empty(),
+                    None => MigrationHead::empty(),
                 },
                 unreadable: None,
             },
@@ -244,8 +244,8 @@ impl StoreAdapter {
                      migration seals a zero opening balance over a chain whose head is unknown. \
                      If that store held audit rows, this node's chain starts again from nothing."
                 );
-                LegacyAuditHead {
-                    head: LegacyHead::empty(),
+                MigrationAuditHead {
+                    head: MigrationHead::empty(),
                     unreadable: Some(format!("the previous release's audit tail: {e}")),
                 }
             }
@@ -256,11 +256,11 @@ impl StoreAdapter {
     /// metering rows for each named day.
     ///
     /// Reads only. A row the store would not answer for is NAMED in
-    /// [`LegacyCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
+    /// [`MigrationCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
     /// node booting and must not vanish either.
-    pub fn legacy_cells_read(&self, plan: &LegacyReadPlan) -> LegacyCells {
+    pub fn migration_cells_read(&self, plan: &MigrationReadPlan) -> MigrationCells {
         let store = self.store();
-        let mut cells = LegacyCells::default();
+        let mut cells = MigrationCells::default();
         // Where each bucket's balance already sits in `cells.balances`. The vector's ORDER is the
         // plan's order and stays that way — this index only replaces the scan that found the slot,
         // which grew with the square of a deployment's virtual-key count on the one read that runs
@@ -281,10 +281,10 @@ impl StoreAdapter {
                         continue;
                     }
                     cells.cells_read += 1;
-                    let mut push = |lane: &str, dimension: LegacyCapDimension, amount: u64| {
+                    let mut push = |lane: &str, dimension: MigrationCapDimension, amount: u64| {
                         if amount != 0 {
-                            cells.figures.push(LegacyFigure {
-                                family: LegacyFamily::Window,
+                            cells.figures.push(MigrationFigure {
+                                family: MigrationFamily::Window,
                                 bucket: bucket.clone(),
                                 window: *window,
                                 lane: lane.to_string(),
@@ -294,17 +294,17 @@ impl StoreAdapter {
                             });
                         }
                     };
-                    push("", LegacyCapDimension::Requests, ledger.requests);
+                    push("", MigrationCapDimension::Requests, ledger.requests);
                     push(
                         "",
-                        LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                        MigrationCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                         ledger.billable_requests,
                     );
                     for model in &ledger.models {
                         for (unit, count) in &model.usage_units {
                             push(
                                 &model.model,
-                                LegacyCapDimension::Class(unit.clone()),
+                                MigrationCapDimension::Class(unit.clone()),
                                 *count,
                             );
                         }
@@ -331,10 +331,10 @@ impl StoreAdapter {
                 Ok(rows) => {
                     for row in rows {
                         cells.cells_read += 1;
-                        let mut push = |dimension: LegacyCapDimension, amount: u64| {
+                        let mut push = |dimension: MigrationCapDimension, amount: u64| {
                             if amount != 0 {
-                                cells.figures.push(LegacyFigure {
-                                    family: LegacyFamily::Meter,
+                                cells.figures.push(MigrationFigure {
+                                    family: MigrationFamily::Meter,
                                     bucket: row.key_id.clone(),
                                     window: *day,
                                     lane: row.model.clone(),
@@ -344,9 +344,9 @@ impl StoreAdapter {
                                 });
                             }
                         };
-                        push(LegacyCapDimension::Requests, row.requests);
+                        push(MigrationCapDimension::Requests, row.requests);
                         push(
-                            LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                            MigrationCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                             row.billable_requests,
                         );
                         for (unit, amount) in [
@@ -355,7 +355,7 @@ impl StoreAdapter {
                             (UNIT_CACHE_READ, row.tokens_cache_read),
                             (UNIT_CACHE_WRITE, row.tokens_cache_write),
                         ] {
-                            push(LegacyCapDimension::Class(unit.to_string()), amount);
+                            push(MigrationCapDimension::Class(unit.to_string()), amount);
                         }
                     }
                 }
@@ -380,7 +380,7 @@ impl StoreAdapter {
         window: u64,
         group_buckets: &[(String, u64)],
         days: &[u64],
-    ) -> Result<LegacyReadPlan, RecordStoreError> {
+    ) -> Result<MigrationReadPlan, RecordStoreError> {
         let mut windows: Vec<(String, u64)> = self
             .store()
             .list_keys()?
@@ -388,15 +388,15 @@ impl StoreAdapter {
             .map(|key| (key.id, window))
             .collect();
         windows.extend(group_buckets.iter().cloned());
-        Ok(LegacyReadPlan {
+        Ok(MigrationReadPlan {
             windows,
             days: days.to_vec(),
         })
     }
 
     /// The migration's source over this adapter's store, reading exactly `plan`.
-    pub fn legacy_ledger_rows(&self, plan: LegacyReadPlan) -> LegacyStoreRows {
-        LegacyStoreRows {
+    pub fn migration_ledger_rows(&self, plan: MigrationReadPlan) -> MigrationStoreRows {
+        MigrationStoreRows {
             adapter: self.clone(),
             plan,
             cells: std::sync::OnceLock::new(),
@@ -419,17 +419,17 @@ pub const BILLABLE_REQUESTS_CLASS: &str = "billable_requests";
 /// enumerable across that seam. Naming what will be read also means the read is bounded and
 /// reviewable, which a full-store walk at boot would not be.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyReadPlan {
+pub struct MigrationReadPlan {
     /// The (bucket, window) pairs whose token ledger to read.
     pub windows: Vec<(String, u64)>,
     /// The metering day buckets to read.
     pub days: Vec<u64>,
 }
 
-impl LegacyReadPlan {
+impl MigrationReadPlan {
     /// A plan naming nothing. Reading it produces no figures, which seals a zero opening balance.
     pub fn nothing() -> Self {
-        LegacyReadPlan::default()
+        MigrationReadPlan::default()
     }
 
     /// Whether this plan names anything at all.
@@ -442,21 +442,21 @@ impl LegacyReadPlan {
 ///
 /// The two travel together because the empty head has two very different meanings — "there was
 /// nothing there" and "the store would not say" — and a caller handed only the head cannot tell
-/// them apart. The reason joins the same named-reason channel [`LegacyCells::unreadable`] carries,
+/// them apart. The reason joins the same named-reason channel [`MigrationCells::unreadable`] carries,
 /// so one unanswered read is reported rather than either stopping a boot or vanishing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyAuditHead {
+pub struct MigrationAuditHead {
     /// The head itself. Empty when the store had nothing to say AND when it would not say.
-    pub head: LegacyHead,
+    pub head: MigrationHead,
     /// Why the head is empty, when it is empty because the store would not answer.
     pub unreadable: Option<String>,
 }
 
 /// What the previous release's cells held.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyCells {
+pub struct MigrationCells {
     /// One figure per bucket, day, lane, provider and dimension that held anything.
-    pub figures: Vec<LegacyFigure>,
+    pub figures: Vec<MigrationFigure>,
     /// The opening balance per bucket, from the enforcement ledger.
     pub balances: Vec<(String, i128)>,
     /// How many rows were read to arrive at those figures.
@@ -475,38 +475,39 @@ pub struct LegacyCells {
 /// and — on a store being written by something else — could answer the two questions from two
 /// different moments.
 #[derive(Debug, Clone)]
-pub struct LegacyStoreRows {
+pub struct MigrationStoreRows {
     adapter: StoreAdapter,
-    plan: LegacyReadPlan,
-    cells: std::sync::OnceLock<LegacyCells>,
-    audit: std::sync::OnceLock<LegacyAuditHead>,
+    plan: MigrationReadPlan,
+    cells: std::sync::OnceLock<MigrationCells>,
+    audit: std::sync::OnceLock<MigrationAuditHead>,
 }
 
-impl LegacyStoreRows {
+impl MigrationStoreRows {
     /// What this source will read.
-    pub fn plan(&self) -> &LegacyReadPlan {
+    pub fn plan(&self) -> &MigrationReadPlan {
         &self.plan
     }
 
     /// The reading, taken on first use and kept.
-    pub fn cells(&self) -> &LegacyCells {
+    pub fn cells(&self) -> &MigrationCells {
         self.cells
-            .get_or_init(|| self.adapter.legacy_cells_read(&self.plan))
+            .get_or_init(|| self.adapter.migration_cells_read(&self.plan))
     }
 
     /// The chain head, taken on first use and kept — for the same reason the cells are: the head a
     /// caller reads and the reason it reports must describe one reading of one store.
-    pub fn audit_head(&self) -> &LegacyAuditHead {
-        self.audit.get_or_init(|| self.adapter.legacy_audit_head())
+    pub fn audit_head(&self) -> &MigrationAuditHead {
+        self.audit
+            .get_or_init(|| self.adapter.migration_audit_head())
     }
 }
 
-impl LegacyMigrationSource for LegacyStoreRows {
+impl MigrationSource for MigrationStoreRows {
     /// The chain head, with the per-bucket balances the cells hold hung off it — one object that
     /// read one store, so the head and the figures cannot disagree about what was there.
-    fn read_head(&self) -> LegacyHead {
+    fn read_head(&self) -> MigrationHead {
         let cells = self.cells();
-        LegacyHead {
+        MigrationHead {
             balances: cells.balances.clone(),
             cells_read: cells.cells_read,
             ..self.audit_head().head.clone()
@@ -514,14 +515,14 @@ impl LegacyMigrationSource for LegacyStoreRows {
     }
 }
 
-impl LegacyLedgerRows for LegacyStoreRows {
-    fn read_figures(&self) -> LegacyFigures {
+impl MigrationLedgerRows for MigrationStoreRows {
+    fn read_figures(&self) -> MigrationFigures {
         let cells = self.cells();
         // An unread chain head joins the unread cells on the one channel the migration report
         // already prints, so "the store would not say" reaches an operator whichever read it was.
         let mut unreadable = cells.unreadable.clone();
         unreadable.extend(self.audit_head().unreadable.clone());
-        LegacyFigures {
+        MigrationFigures {
             figures: cells.figures.clone(),
             unreadable,
         }
