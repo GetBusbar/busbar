@@ -1,23 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SUITE'S HOST CONNECTOR, ONCE FOR EVERY PLUGIN REPO: the adapter that implements the suite's
-//! `host:` seam (`conformance::Host`) the way busbar's composition root composes the process's one
-//! connector, carrier -> [TLS] -> framer (`BUSBAR-1.6.0.md` THE DESIGN §5):
+//! THE SUITE'S HOST, ONCE FOR EVERY PLUGIN REPO: what implements the suite's `host:` seam
+//! (`conformance::Host`), in one of two forms, by what the plugin's needs reach.
 //!
-//! * busbar's own `Connector`, its framer entries the transport doors the PLUGIN names (the
-//!   carrier and the framers its needs name: busbar links no transport plugin), each loaded through
-//!   the loader's one load and opened as the root opens a transport door;
-//! * the connector's own TLS, trusting the platform roots plus the suite's TEST trust anchors
-//!   ([`anchors`]), never handed to the plugin;
-//! * a dial judge that admits loopback only: the suite dials the REAL local endpoints its settings
-//!   name, never the network.
+//! * [`stream_host`]: a plugin whose needs are plain streams (`tcp`) is served by the test kit's
+//!   stream table ([`TcpConns`](crate::tcp_conns::TcpConns)), upgraded with the connector's own
+//!   client TLS. It links no transport plugin.
+//! * [`host`]: a plugin whose needs are framed (`http`, `grpc`, ...) is served by busbar's own
+//!   `Connector`, carrier -> [TLS] -> framer (`BUSBAR-1.6.0.md` THE DESIGN §5), over the
+//!   transport doors the PLUGIN names (busbar links no transport plugin), each loaded through the
+//!   loader's one load and opened as the root opens a transport door, with a dial judge that
+//!   admits loopback only.
 //!
-//! [`far_end`] is a TLS far end whose certificate chains to [`anchors`]; [`tls_front`] fronts a
-//! plugin's live backend with the host's TLS. A plugin repo states its doors and far end once:
+//! Either way the TLS trusts the platform roots plus the suite's TEST trust anchors ([`anchors`]),
+//! never handed to the plugin. [`far_end`] is a TLS far end whose certificate chains to the
+//! anchors; [`tls_front`] fronts a plugin's live backend with them. A plugin repo states its far
+//! end, and its doors where its needs are framed, once:
 //!
 //! ```ignore
-//! // tests/support/conformance_host.rs
+//! // tests/support/conformance_host.rs: plain stream needs
+//! busbar_test_kit::conformance_host! { far_end: "localhost:41859" }
+//!
+//! // framed needs
 //! busbar_test_kit::conformance_host! {
 //!     far_end: "localhost:52049",
 //!     doors: [
@@ -51,7 +56,9 @@ pub use busbar_contract::conn::{ConnWake, DeclaredConns};
 use busbar_contract::transport::EgressTrust;
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
 use busbar_core_connector::registry::{Entry, Transports};
-use busbar_core_connector::test_support::{private_ca, ServerTls, StdServerSession, TestCa};
+use busbar_core_connector::test_support::{
+    private_ca, ClientTls, ServerTls, StdClientSession, StdServerSession, TestCa,
+};
 use busbar_core_connector::{Connector, Judged, Verdict};
 use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
 use busbar_plugin_loader::dispatch::{
@@ -62,6 +69,9 @@ use busbar_plugin_loader::dispatch::{
 /// The framer doors a host serves, as the root links them: (claim, door). The plugin names them
 /// (the carrier and the framers its needs name), so busbar links no transport plugin.
 pub type Doors = &'static [(&'static str, MacroDoor)];
+
+/// The suite's `host:` seam, as the macro's `host` states it.
+pub use crate::conformance::Host;
 
 /// The suite's test CA: [`anchors`] is its certificate, [`far_end`] serves a leaf it signed.
 fn ca() -> &'static TestCa {
@@ -103,6 +113,73 @@ pub fn host(
         Some(Arc::new(tls)),
         wake,
     ))
+}
+
+/// THE STREAM HOST (`conformance::Host`, for plain stream needs): the test kit's stream table,
+/// each connection upgraded with the connector's client TLS. One per leg.
+///
+/// # Panics
+/// The anchors do not parse, or the connector's client TLS does not build.
+#[must_use]
+pub fn stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
+    let trust = EgressTrust {
+        extra_anchors: anchors.map(pem_certs).unwrap_or_default(),
+        ..EgressTrust::default()
+    };
+    let tls = ClientTls::new(&trust)
+        .unwrap_or_else(|e| panic!("the host's connection security does not build: {e}"));
+    Arc::new(crate::tcp_conns::TcpConns::with_tls(
+        wake,
+        Arc::new(StreamTls(tls)),
+    ))
+}
+
+/// The connector's client TLS as the stream table's dial: the handshake runs to completion on the
+/// blocking socket, verified against the trust it was built with.
+struct StreamTls(ClientTls);
+
+impl crate::tcp_conns::SecureDial for StreamTls {
+    fn secure(
+        &self,
+        server: &str,
+        verify_off: bool,
+        tcp: TcpStream,
+    ) -> std::io::Result<Box<dyn crate::tcp_conns::SecuredSock>> {
+        if verify_off {
+            // The suite's needs always verify; an unverified upgrade is not served here.
+            return Err(std::io::Error::other("an unverified upgrade is not served"));
+        }
+        Ok(Box::new(Secured(self.0.connect_std(server, tcp)?)))
+    }
+}
+
+/// One secured stream.
+struct Secured(StdClientSession);
+
+impl Read for Secured {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl Write for Secured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl crate::tcp_conns::SecuredSock for Secured {
+    fn tcp(&self) -> &TcpStream {
+        self.0.tcp()
+    }
+
+    fn close(&mut self) {
+        self.0.close();
+    }
 }
 
 /// The connector's I/O thread: a single-threaded runtime of its own whose reactor drives every
@@ -564,8 +641,8 @@ fn tls_echo() -> String {
 ///
 /// # Panics
 /// When it does not.
-pub fn the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(doors: Doors) {
-    let c = host(doors, Arc::new(|_, _| {}), Some(anchors()));
+pub fn the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(host: Host) {
+    let c = host(Arc::new(|_, _| {}), Some(anchors()));
     assert_eq!(
         upgraded_echo(c.as_ref(), &tls_echo()),
         Ok(b"hello".to_vec())
@@ -577,8 +654,8 @@ pub fn the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(doors: Doo
 ///
 /// # Panics
 /// When it is not.
-pub fn red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(doors: Doors) {
-    let c = host(doors, Arc::new(|_, _| {}), None);
+pub fn red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(host: Host) {
+    let c = host(Arc::new(|_, _| {}), None);
     let answer = upgraded_echo(c.as_ref(), &tls_echo());
     assert!(answer.is_err(), "upgraded over an untrusted CA: {answer:?}");
 }
@@ -589,7 +666,7 @@ pub fn red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(doors: Doo
 ///
 /// # Panics
 /// When it does not.
-pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(doors: Doors) {
+pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(host: Host) {
     use busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED;
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("a local listener");
@@ -608,7 +685,7 @@ pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(doors
         String::from_utf8_lossy(&seen).into_owned()
     });
 
-    let c = host(doors, Arc::new(|_, _| {}), None);
+    let c = host(Arc::new(|_, _| {}), None);
     assert!(c.serves_scheme("http"), "the host serves http");
     c.declare(
         OWNER,
@@ -641,24 +718,35 @@ pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(doors
     c.close(OWNER, id).expect("closed");
 }
 
-/// A plugin repo's suite host: its far end and its transport doors, stated once. Expands to
-/// `FAR_END`, `DOORS`, `host` (the suite's `host:`), `anchors` (its `tls:`), `far_end`,
-/// `tls_front`, and the host's own proof as `#[test]`s; `http_need: true` adds the http framer's.
+/// A plugin repo's suite host, stated once: its far end, and its transport doors where its needs
+/// are framed. Expands to `FAR_END`, `host` (the suite's `host:`), `anchors` (its `tls:`),
+/// `far_end`, `tls_front`, and the host's own proof as `#[test]`s. With no `doors` the host is
+/// [`stream_host`](crate::conformance_host::stream_host); with `doors` it is
+/// [`host`](crate::conformance_host::host) over them, and `http_need: true` adds the http
+/// framer's proof.
 #[macro_export]
 macro_rules! conformance_host {
+    (far_end: $at:expr $(,)?) => {
+        /// THE HOST (`busbar_test_kit::conformance::Host`): the stream table. One per leg.
+        #[allow(dead_code)]
+        #[must_use]
+        pub fn host(
+            wake: $crate::conformance_host::ConnWake,
+            anchors: Option<&str>,
+        ) -> std::sync::Arc<dyn $crate::conformance_host::DeclaredConns> {
+            $crate::conformance_host::stream_host(wake, anchors)
+        }
+
+        $crate::conformance_host!(@common $at);
+    };
     (far_end: $at:expr, doors: [$(($claim:expr, $door:expr)),+ $(,)?] $(,)?) => {
         $crate::conformance_host! { far_end: $at, doors: [$(($claim, $door)),+], http_need: false }
     };
     (far_end: $at:expr, doors: [$(($claim:expr, $door:expr)),+ $(,)?], http_need: $http:tt $(,)?) => {
-        /// Where [`far_end`] listens: loopback, a port of this repo's own.
-        #[allow(dead_code)]
-        pub const FAR_END: &str = $at;
         /// The transport doors the host serves: (claim, door).
         pub const DOORS: $crate::conformance_host::Doors = &[$(($claim, $door)),+];
-        #[allow(unused_imports)]
-        pub use $crate::conformance_host::{anchors, Answer, Preamble};
 
-        /// THE HOST CONNECTOR (`busbar_test_kit::conformance::Host`): one per leg.
+        /// THE HOST CONNECTOR (`busbar_test_kit::conformance::Host`) over [`DOORS`]: one per leg.
         #[allow(dead_code)]
         #[must_use]
         pub fn host(
@@ -667,6 +755,16 @@ macro_rules! conformance_host {
         ) -> std::sync::Arc<dyn $crate::conformance_host::DeclaredConns> {
             $crate::conformance_host::host(DOORS, wake, anchors)
         }
+
+        $crate::conformance_host!(@common $at);
+        $crate::conformance_host!(@http $http);
+    };
+    (@common $at:expr) => {
+        /// Where [`far_end`] listens: loopback, a port of this repo's own.
+        #[allow(dead_code)]
+        pub const FAR_END: &str = $at;
+        #[allow(unused_imports)]
+        pub use $crate::conformance_host::{anchors, Answer, Preamble};
 
         /// THE SUITE'S TLS FAR END at [`FAR_END`], answering by `answer`.
         #[allow(dead_code)]
@@ -682,20 +780,18 @@ macro_rules! conformance_host {
 
         #[test]
         fn the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors() {
-            $crate::conformance_host::the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(DOORS);
+            $crate::conformance_host::the_hosts_tls_upgrade_verifies_against_the_suites_test_anchors(host);
         }
 
         #[test]
         fn red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused() {
-            $crate::conformance_host::red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(DOORS);
+            $crate::conformance_host::red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(host);
         }
-
-        $crate::conformance_host!(@http $http);
     };
     (@http true) => {
         #[test]
         fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer() {
-            $crate::conformance_host::an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(DOORS);
+            $crate::conformance_host::an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(host);
         }
     };
     (@http false) => {};
