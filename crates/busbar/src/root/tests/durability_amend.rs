@@ -4,9 +4,9 @@
 //! Tests for `durability/amend.rs`: the node amendment journal survives a restart.
 //!
 //! A restart is proven with two real processes over one data directory, as a node restarts: the
-//! parent test runs this same test binary twice, filtered to [`restart_phase`] — first to seal a
-//! correction and an access on the booted node's journal, then, in a fresh process whose node
-//! journal starts empty, to read them back off the one its boot rebuilt. Each phase boots through
+//! parent test runs this same test binary twice, filtered to itself — first to seal a correction and
+//! an access on the booted node's journal, then, in a fresh process whose node journal starts empty,
+//! to read them back off the one its boot rebuilt. Each phase boots through
 //! [`crate::root::boot::book`] itself, over an `App` built off the real construction path.
 
 use super::*;
@@ -78,24 +78,27 @@ fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::st
     (book.durability, Arc::new(app))
 }
 
-/// ONE HALF OF THE RESTART, run only in a child process the restart tests below start
-/// ([`run_phase`], `--ignored`). Ignored so the default run never counts it as a pass: alone it
-/// proves nothing, and run without its phase it fails (status row 114).
-#[test]
-#[ignore = "child process of the restart tests: run_phase runs it with --ignored"]
-fn restart_phase() {
+/// In a child process [`run_phase`] started: run its phase and answer `true`. In the test's own
+/// process: `false`, and the test goes on to start its phases.
+fn child_phase() -> bool {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
-        panic!("restart_phase is the child half of the restart tests: run them, not this");
+        return false;
     };
+    restart_phase(&phase, &dir);
+    true
+}
+
+/// ONE HALF OF THE RESTART, run in a child process of the test that names it.
+fn restart_phase(phase: &str, dir: &str) {
     if phase == "store" {
         store_phase();
         return;
     }
-    let (book, app) = boot(std::path::Path::new(&dir));
+    let (book, app) = boot(std::path::Path::new(dir));
     // The journal the boot rebuilt and bound: the one the booted App carries.
     let journal = Arc::clone(&app.amendments);
     let recorded = counts(1_000);
-    match phase.as_str() {
+    match phase {
         "seal" => {
             correct_counts(
                 &journal,
@@ -377,15 +380,26 @@ fn store_phase() {
 /// as never made (the money reverted). See the `store` phase.
 #[test]
 fn a_chain_past_one_memory_segment_keeps_its_corrections_and_marker_over_the_store() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-store");
-    run_phase("store", &dir.0);
+    run_phase(
+        "a_chain_past_one_memory_segment_keeps_its_corrections_and_marker_over_the_store",
+        "store",
+        &dir.0,
+    );
 }
 
-/// Run [`restart_phase`] in a fresh process of this test binary.
-fn run_phase(phase: &str, dir: &std::path::Path) {
+/// Run `phase` in a fresh process of this test binary: the test `test` again, which runs the phase
+/// ([`child_phase`]).
+fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::durability::amend::tests::restart_phase"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .args([
+            "--exact",
+            &format!("root::durability::amend::tests::{test}"),
+        ])
+        .args(["--test-threads", "1", "--nocapture"])
         .env(PHASE, phase)
         .env(DIR, dir)
         .env("BUSBAR_DATA_DIR", dir)
@@ -404,8 +418,15 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
 #[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-verify");
-    run_phase("tamper", &dir.0);
+    run_phase(
+        "verify_reports_an_edit_to_the_held_amendment_run",
+        "tamper",
+        &dir.0,
+    );
 }
 
 /// A CORRECTED COUNT AND A CONTENT ACCESS SURVIVE A RESTART. The first process seals a root
@@ -415,9 +436,13 @@ fn verify_reports_an_edit_to_the_held_amendment_run() {
 /// only, the second process read the count as recorded and found no access.
 #[test]
 fn a_corrected_count_and_a_content_access_survive_a_restart() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-restart");
-    run_phase("seal", &dir.0);
-    run_phase("read", &dir.0);
+    let test = "a_corrected_count_and_a_content_access_survive_a_restart";
+    run_phase(test, "seal", &dir.0);
+    run_phase(test, "read", &dir.0);
 }
 
 /// A NODE WITH NO DATA DIRECTORY rebuilds nothing, so it binds nothing: the node journal stays

@@ -329,6 +329,7 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -791,7 +792,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=076065fc5c500e3da964b627a4a4191f347951a2#076065fc5c500e3da964b627a4a4191f347951a2"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2#dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2"
 dependencies = [
  "busbar-contract",
  "sha2",
@@ -809,6 +810,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -879,11 +881,13 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=7fc1dd8065f7bb95f93530426217a71b63ab7727#7fc1dd8065f7bb95f93530426217a71b63ab7727"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=72a7f4102734e47e1c2ac997a597b1b5453ef8e7#72a7f4102734e47e1c2ac997a597b1b5453ef8e7"
 dependencies = [
  "busbar-contract",
+ "httpdate",
  "serde_json",
  "tungstenite",
+ "zeroize",
 ]
 
 [[package]]
