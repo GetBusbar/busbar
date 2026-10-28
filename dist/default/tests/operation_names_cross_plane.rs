@@ -42,7 +42,7 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
         .iter()
         .copied()
         .chain(
-            busbar_kernel::ingress::protocols::declared_verbs()
+            busbar_kernel::test_support::protocols::declared_verbs()
                 .iter()
                 .copied(),
         )

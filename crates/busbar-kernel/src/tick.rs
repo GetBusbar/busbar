@@ -3,18 +3,14 @@
 
 //! The clock's work: what a node does when nothing arrived.
 //!
-//! Two jobs, both of them the same idea — a thing that is not happening still has to be accounted
-//! for.
+//! A thing that is not happening still has to be accounted for.
 //!
 //! **The node tick** sweeps. A task can disappear: a runtime shuts down, a thread is cancelled, a
 //! future is dropped. The unit it was running still has a hold in its cell, and the sweep is the
 //! SECOND holder of a key to that cell. It takes the hold and settles it, so a lost task costs
 //! exactly one tick of delay and never a lost posting. A unit that is merely SLOW is a different
-//! thing and gets a different answer: an alarm, and a drain, and — where the protocol is one whose
-//! long silences are normal — no ending at all.
-//!
-//! **Drain** is how a node stops without cutting anyone off mid-sentence, and the fleet rule is how
-//! a node decides whether stopping is even the right thing to do when it cannot reach the store.
+//! thing and gets a different answer: an alarm, and — where the protocol is one whose long silences
+//! are normal — no ending at all.
 //!
 //! **The beat** is the clock lending itself to the compiled-in crates (THE DESIGN §1: "one clock,
 //! which also drives every plugin's tick"). A crate with time-driven work starts no timer and no

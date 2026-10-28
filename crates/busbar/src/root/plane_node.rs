@@ -493,7 +493,7 @@ impl Node {
                 &self.durability_token,
                 principal,
                 arrived,
-                card_in_force(card, arrived.ms()),
+                card,
                 outcome,
                 lines,
                 0,
@@ -994,7 +994,7 @@ impl Node {
             &self.durability_token,
             &principal,
             arrived,
-            card_in_force(history.as_ref(), arrived.ms()),
+            history.as_ref(),
             outcome,
             lines,
             fee_count,
@@ -1531,7 +1531,6 @@ impl LateAccrual {
             seal,
         } = self;
         let book = crate::root::durability::SharedBook::over(Arc::clone(&held));
-        let card = card_in_force(Some(&history), arrived.ms());
         // A unit that did not complete and whose reading counts nothing at all (no class, no
         // billable request: a unit a gate hook refused before its dial) leaves no line of counts on
         // the book: the exit's posting closes its hold, as when no reading arrived.
@@ -1559,7 +1558,7 @@ impl LateAccrual {
                         &durability_token,
                         &principal,
                         arrived,
-                        card,
+                        Some(&history),
                         outcome,
                         lines,
                         0,
@@ -1591,7 +1590,7 @@ impl LateAccrual {
                 &durability_token,
                 &principal,
                 arrived,
-                card,
+                Some(&history),
                 outcome,
                 report_lines(&report),
                 report.fee_count,
@@ -2302,10 +2301,12 @@ struct OpenUnit {
 /// and it is posted here onto the same book, balance and window a returned end settles on
 /// ([`Node::settle_end`], the node's one posting site; no second seal). The root opens each unit's
 /// facts at admission (its principal, its pinned arrival, the card history it was admitted under)
-/// and closes them when the unit returns; an end posts at most once.
+/// and closes them when the unit returns; an end posts at most once. The facts are split across
+/// the in-flight table's shards by unit key, so a unit takes one shard's lock, never a
+/// process-wide one.
 pub struct NodeEndPost {
     node: Arc<Node>,
-    open: Mutex<OpenUnits>,
+    open: Vec<Mutex<OpenUnits>>,
 }
 
 impl std::fmt::Debug for NodeEndPost {
@@ -2320,12 +2321,14 @@ impl NodeEndPost {
     pub fn new(node: Arc<Node>) -> Self {
         NodeEndPost {
             node,
-            open: Mutex::new(HashMap::new()),
+            open: (0..busbar_kernel::inflight::SHARDS)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OpenUnits> {
-        self.open
+    fn lock(&self, key: UnitKey) -> std::sync::MutexGuard<'_, OpenUnits> {
+        self.open[(key.get() as usize) & (busbar_kernel::inflight::SHARDS - 1)]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -2344,7 +2347,7 @@ impl NodeEndPost {
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
     ) {
-        self.lock().insert(
+        self.lock(key).insert(
             key,
             OpenUnit {
                 principal,
@@ -2357,14 +2360,14 @@ impl NodeEndPost {
 
     /// Unit `key`'s hold landed on the chain at `seq`.
     fn held(&self, key: UnitKey, seq: Option<u64>) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.ran.hold = seq;
         }
     }
 
     /// Unit `key`'s Route leg was lent the sealed `destinations`.
     fn routed(&self, key: UnitKey, destinations: &[VerifiedDestination]) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.ran.verified = lanes_of(destinations);
         }
     }
@@ -2378,14 +2381,14 @@ impl NodeEndPost {
         facts: busbar_contract::caps::AuditFacts,
         pass: Pass<Audit>,
     ) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.door = Some((facts, pass));
         }
     }
 
     /// The operation class unit `key`'s audit door stated, once that door handed its facts back.
     fn door_class(&self, key: UnitKey) -> Option<OpClassId> {
-        self.lock()
+        self.lock(key)
             .get(&key)
             .and_then(|open| open.sealing.door.as_ref().map(|(facts, _)| facts.op_class))
     }
@@ -2393,7 +2396,7 @@ impl NodeEndPost {
     /// Unit `key`'s encode door was told how it ended: the outcome a session's record carries
     /// ([`Node::seal_session`]).
     fn ended_as(&self, key: UnitKey, outcome: Outcome) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(outcome);
         }
     }
@@ -2401,7 +2404,7 @@ impl NodeEndPost {
     /// Session `key`'s open hook stage stopped it for `reason` after its door passed: its record
     /// says it was refused there, at the head of its route leg where the hook stage runs.
     pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(Outcome::Refused(
                 busbar_contract::caps::StepName::Route,
                 reason,
@@ -2412,7 +2415,7 @@ impl NodeEndPost {
     /// What session `key` consumed, as its plane reported it at its end: the amount its record
     /// carries. `None` for a session whose money never opened.
     pub fn reported(&self, key: UnitKey, report: Option<Reported>) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.report = report.map(Report::of);
         }
     }
@@ -2420,18 +2423,26 @@ impl NodeEndPost {
     /// Unit `key` returned: its facts close and come out for the record its one line seals
     /// ([`Node::drive_borrowed`]).
     fn take(&self, key: UnitKey) -> Option<OpenUnit> {
-        self.lock().remove(&key)
+        self.lock(key).remove(&key)
     }
 
     /// Unit `key` returned: its end is the node's exit arm's to post, never this site's.
     pub fn close(&self, key: UnitKey) {
-        self.lock().remove(&key);
+        self.lock(key).remove(&key);
     }
 
     /// How many units' facts are open (a witness: every unit closes).
     #[must_use]
     pub fn open_units(&self) -> usize {
-        self.lock().len()
+        self.open
+            .iter()
+            .map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+            })
+            .sum()
     }
 }
 
@@ -2447,7 +2458,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
         // The member of the verified set this attempt dials is where the unit goes: the last
         // attempt's is the one its record names.
-        let facts = self.lock().get_mut(&record.unit).map(|open| {
+        let facts = self.lock(record.unit).get_mut(&record.unit).map(|open| {
             open.sealing.ran.dialled = record.lane;
             (open.principal.clone(), open.arrived)
         });
@@ -2470,7 +2481,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
 /// is. A unit with no open facts keeps nothing.
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
     fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
-        if let Some(open) = self.lock().get_mut(&record.unit) {
+        if let Some(open) = self.lock(record.unit).get_mut(&record.unit) {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
     }
@@ -2484,7 +2495,7 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
 impl busbar_kernel::plane_driver::Checkpointer for NodeEndPost {
     fn checkpoint(&self, key: UnitKey, accrued: &busbar_kernel::plane_driver::Accrued) {
         let facts = self
-            .lock()
+            .lock(key)
             .get(&key)
             .map(|open| (open.principal.clone(), open.arrived));
         let Some((principal, arrived)) = facts else {
@@ -2503,7 +2514,7 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
-        let facts = self.lock().remove(&ctx.key);
+        let facts = self.lock(ctx.key).remove(&ctx.key);
         if let Some(open) = facts {
             // The unit's one audit record is sealed with its one line, as a returned end's is.
             let parent = match ctx.origin {
@@ -2670,7 +2681,8 @@ impl Ran {
 
 impl Sealing {
     /// Seal the record beside the line just written: its outcome is how the unit ended, its amount
-    /// is the line's counts (none for a refused unit), and the book stamps this boot's incarnation.
+    /// is the line's counts (none for a refused unit) at the card in force when it arrived, off the
+    /// history `card` pinned at its door, and the book stamps this boot's incarnation.
     #[allow(clippy::too_many_arguments)]
     fn seal(
         self,
@@ -2678,7 +2690,7 @@ impl Sealing {
         token: &Grant<busbar_contract::caps::DurableWrite>,
         principal: &PrincipalId,
         arrived: Arrived,
-        rate_card_version: u64,
+        card: Option<&crate::root::kernel::PinnedHistory>,
         outcome: Outcome,
         lines: Vec<RecordLine>,
         fee_count: u32,
@@ -2690,11 +2702,14 @@ impl Sealing {
         // applied"): the hold its admission opened on the chain and the settlement its one line
         // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
         // running, in order, with its head; a hook that failed is recorded failed, never dropped.
+        // And the policy generation it ran under: the configuration whose card was in force at its
+        // arrival, off the same pin at the same instant its card version is read.
         let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
         let destination = ran.destination(line.served);
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
             settle_ref: line.settled_at.map(|seq| seq.to_string()),
+            policy_epoch: policy_in_force(card, arrived.ms()),
             hooks_applied: ran.hooks,
             ..Controls::default()
         };
@@ -2724,7 +2739,7 @@ impl Sealing {
                 lines: if refused { Vec::new() } else { lines },
                 tier_bp: 10_000,
                 fee_count: if refused { 0 } else { fee_count },
-                rate_card_version,
+                rate_card_version: card_in_force(card, arrived.ms()),
                 bucket_chain_ref: String::new(),
             },
             controls,
@@ -2891,6 +2906,36 @@ pub(crate) fn card_in_force(
 ) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
         .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
+}
+
+/// THE POLICY GENERATION a unit ran under (THE DESIGN §1, `BUSBAR-1.6.0.md` l.190-193: the fixed
+/// record's "controls"): the policy epoch of the configuration whose card was in force when the unit
+/// ARRIVED, off the same pinned history at the same instant [`card_in_force`] resolves its card at —
+/// so a configuration applied after the door, or effective after the arrival, is not the one named.
+///
+/// The root counts its configuration resolutions, and every configured entry records the one that
+/// produced it (`RootHistory::resolutions`, `Author::Config`). An amendment corrects a price and is
+/// no configuration, so it is passed over for the configured entry beneath it. Where no configured
+/// entry covers the instant — no history pinned, or only the opening entry — there is no generation
+/// to name, and the record carries 0, the journal's own "no epoch to report" (`Entry::new`).
+pub(crate) fn policy_in_force(
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    arrived_ms: u64,
+) -> u64 {
+    card.and_then(|pinned| {
+        pinned
+            .view()
+            .entries()
+            .iter()
+            .rev()
+            .filter(|entry| entry.covers(arrived_ms))
+            .find_map(|entry| match entry.author() {
+                busbar_kernel_ledger::cost::Author::Config { policy_epoch } => Some(*policy_epoch),
+                busbar_kernel_ledger::cost::Author::Opening
+                | busbar_kernel_ledger::cost::Author::Amend { .. } => None,
+            })
+    })
+    .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------------------------
