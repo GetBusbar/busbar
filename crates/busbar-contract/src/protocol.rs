@@ -37,13 +37,8 @@ pub const ERR_TYPE_PERMISSION: &str = "permission_error";
 pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
 /// Error `type` for a rate-limit / throttle response.
 pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
-/// Error `type` for a transient upstream failure.
-pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
 /// Error `type` for a billing-quota exhaustion (HTTP 429).
 pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
-/// Internal kind for an overloaded upstream; a dialect whose wire has no overloaded type maps it to
-/// `server_error`.
-pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
 /// Error `type` for a generic upstream/API failure; also the agnostic forward-layer kind
 /// ([`KIND_API_ERROR`] aliases this).
 pub const ERR_TYPE_API_ERROR: &str = "api_error";
@@ -58,13 +53,9 @@ pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 //    defined here.
 /// Agnostic forward kind for a generic upstream/API failure.
 pub const KIND_API_ERROR: &str = ERR_TYPE_API_ERROR;
-/// Bare `overloaded` — DELIBERATELY distinct from [`ERR_TYPE_OVERLOADED`] ("overloaded_error", one
+/// Bare `overloaded` — DELIBERATELY distinct from `overloaded_error` (one
 /// dialect's wire spelling): this is busbar's own agnostic kind for a relayed upstream 503.
 pub const KIND_OVERLOADED: &str = "overloaded";
-/// Bare `timeout` — distinct from one dialect's `timeout_error` wire spelling.
-pub const KIND_TIMEOUT: &str = "timeout";
-/// Transient upstream-failure forward kind (aliases the `server_error` type).
-pub const KIND_SERVER_ERROR: &str = ERR_TYPE_SERVER_ERROR;
 /// Caller-authentication failure forward kind (aliases the `authentication_error` type).
 pub const KIND_AUTHENTICATION: &str = ERR_TYPE_AUTHENTICATION;
 /// Caller-permission failure forward kind (aliases the `permission_error` type).
@@ -84,11 +75,6 @@ pub const KIND_REQUEST_TOO_LARGE: &str = ERR_TYPE_REQUEST_TOO_LARGE;
 /// context-length refusal and the kernel's failover accounting both key on.
 pub const DISPOSITION_CONTEXT_LENGTH: &str = crate::upstream::Disposition::ContextLength.label();
 
-/// Provider error-code token emitted when a request exceeds the model's context-window limit.
-/// Returned for `StatusClass::ContextLength` and drives the per-protocol writer to emit the native
-/// context-length error category.
-pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
-
 // ── THE MEDIA-TYPE AND USER-AGENT LITERALS a declaration defaults to and a codec writes.
 /// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
 /// surfaces. One const so the literal isn't repeated across egress/health/observability.
@@ -102,21 +88,9 @@ pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
 /// sending none. A codec-less protocol declaration states it as its egress user-agent default.
 pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
 
-/// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
-/// layer reads to classify a translation/parse error). A busbar-internal signal, NOT a wire shape, so
-/// it lives in the agnostic proto layer; the per-protocol readers reference it rather than re-spelling
-/// the literal.
-pub const SIGNAL_IR_PARSE: &str = "ir_parse";
-
 /// An IR-level error, currently an alias for [`CanonicalSignal`](crate::upstream::CanonicalSignal)
 /// (the normalized error signal).
 pub type IrError = crate::upstream::CanonicalSignal;
-
-/// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
-/// translate step failed after first byte). BOTH the kernel's forward engine (event-stream/forward
-/// abort path) and a plane's binary event-stream reassembler emit it without either re-spelling the
-/// literal. Single source of truth so the abort text a client sees is identical on every framing.
-pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
 /// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
 ///
@@ -357,7 +331,7 @@ pub struct ClaimStrength(pub u16);
 /// `Some` at the tightest rung this protocol claims for that request, `None` when it does not claim
 /// it at all. The kernel's generic fold folds every registered protocol's predicate in
 /// registration order and keeps the tightest claim. A shape: a dialect names it through this crate
-/// alone, and reads a field through [`head_field`].
+/// alone.
 pub type ClaimsFn = fn(HeadFields<'_>, &str) -> Option<ClaimStrength>;
 
 /// A request head as a plane receives it: its fields in order, each name and value as bytes (the
@@ -365,21 +339,6 @@ pub type ClaimsFn = fn(HeadFields<'_>, &str) -> Option<ClaimStrength>;
 /// never as a transport's header type.
 /// TRANSITIONAL: drains at codec-seam (c).
 pub type HeadFields<'a> = &'a [(&'a [u8], &'a [u8])];
-
-/// The value of the FIRST field in `fields` named `name` (in any case) whose value is a legal header
-/// value (every byte `>= 0x20` but DEL, or a tab), or `None` when no such field is present. A field
-/// whose value is not legal is passed over, never read, so a predicate sees exactly the first value
-/// a header map built from the same fields would hold.
-#[must_use]
-pub fn head_field<'a>(fields: HeadFields<'a>, name: &str) -> Option<&'a [u8]> {
-    fields
-        .iter()
-        .find(|(n, v)| {
-            n.eq_ignore_ascii_case(name.as_bytes())
-                && v.iter().all(|b| (*b >= 0x20 && *b != 0x7f) || *b == b'\t')
-        })
-        .map(|(_, v)| *v)
-}
 
 /// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
 /// path SHAPE ALONE (no headers). Narrower than [`ClaimsFn`] — it is the arm the mount table falls

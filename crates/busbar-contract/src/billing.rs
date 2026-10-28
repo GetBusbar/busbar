@@ -96,28 +96,6 @@ pub enum Billing {
     Counted { class: String, count: u64 },
 }
 
-/// RENDER AN EXACT DURATION BACK ONTO THE WIRE, AND THE ONLY PLACE A BILLABLE QUANTITY BECOMES A
-/// DOUBLE.
-///
-/// The usage object busbar echoes to the caller is JSON, and a JSON number in a
-/// [`serde_json::Value`] can only be built from an integer or an `f64` — there is no constructor
-/// that takes a decimal string unless `serde_json`'s `arbitrary_precision` feature is turned on for
-/// the whole workspace, which would change `Number`'s representation for every unrelated read in the
-/// tree. So the conversion happens HERE, once, at the boundary where the number stops being a
-/// quantity and becomes a rendering of one — exactly the shape of the #44 card-build exemption, and
-/// for the same reason: a boundary is where a decimal is allowed, a runtime path is not.
-///
-/// IT IS BYTE-IDENTICAL, AND THAT IS MEASURED RATHER THAN HOPED. `micros / 1e6` and parsing the
-/// original decimal text produce THE SAME DOUBLE, bit for bit, for every quantity the scale can
-/// hold: checked over 200,009 values spanning zero to a thousand hours, zero differed. So a response
-/// busbar echoes carries the same bytes it carried before the quantity became exact.
-#[must_use]
-pub fn duration_seconds_to_wire(seconds: Count) -> f64 {
-    // Both operands are exactly representable and the division is correctly rounded, so the result
-    // is the nearest double to the exact decimal — which is precisely what parsing the text gives.
-    seconds.micros() as f64 / 1_000_000.0_f64
-}
-
 // ── The neutral usage_units billing spine (1.6.0 M1b) ───────────────────────────────────────────
 //
 // `Usage` is the ONE neutral carrier a plane hands core: a SINGLE opaque name-keyed unit map. The

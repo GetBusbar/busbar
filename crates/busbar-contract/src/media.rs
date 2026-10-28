@@ -1,26 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MEDIA CARRIERS (DECISIONS #83: contract = shapes) — the opaque media payload values a plane
-//! fills and every other plane must encode identically, plus the base64 codec they cross the
-//! JSON/binary boundary with.
-//!
-//! Two distinct value types, deliberately NOT unified: a single one-of type is lossy for image
-//! output.
-//!
-//! - [`MediaBlob`] — AUDIO. A single representation (bytes OR base64 OR uri), enforced by a one-of
-//!   enum. Carries optional PCM parameters because headerless raw PCM (`audio/L16` and similar
-//!   codec-only formats) keeps sample-rate / channels / bit-depth in the operation's contract, not
-//!   the bytes.
-//! - [`ImageOutput`] — IMAGE. ADDITIVE: a single image may legitimately return base64 AND a url/uri
-//!   at once (upstreams vary — some return only a URL, some a bucket URI, some base64), and
-//!   losslessness requires keeping every form present — so optionals, never a one-of.
-//!
-//! Relocated from `busbar-substrate-values::media`, which re-exports every item under its historical
-//! path. The raw-bytes arm is RE-EXPRESSED over this crate's own [`SlabBytes`] (a shared, windowed
-//! byte slab): the reference-counted foreign buffer the substrate carried is banned from this
-//! surface (`tests/bounded_limits.rs`), so a raw audio body is a slab here and the host converts at
-//! its transport boundary.
+//! The base64 codec media payloads cross the JSON/binary boundary with, shared by every plane that
+//! carries media. The media carriers themselves are the llm plane's own.
 
 use crate::bounded::SlabBytes;
 
@@ -106,46 +88,6 @@ pub fn base64_decode(input: &str) -> Option<SlabBytes> {
         return None;
     }
     Some(SlabBytes::from(out))
-}
-
-/// Audio payload — exactly ONE representation, enforced. `B64` is the lossless common denominator
-/// across upstreams; `Bytes` is a raw binary response body.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MediaPayload {
-    Bytes(SlabBytes),
-    B64(String),
-}
-
-/// Sample parameters for headerless raw PCM (`audio/L16;codec=pcm;rate=24000` and similar codec-only
-/// MIME types), where the wire bytes carry no container header. `None` on `MediaBlob.pcm` for
-/// self-describing formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PcmParams {
-    pub sample_rate: u32,
-    pub channels: u8,
-    pub bit_depth: u8,
-}
-
-/// A single audio payload (transcription input / speech output). One representation + its MIME type,
-/// plus PCM parameters iff the MIME type is headerless raw PCM.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MediaBlob {
-    pub payload: MediaPayload,
-    pub mime_type: String,
-    pub pcm: Option<PcmParams>,
-}
-
-/// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
-/// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
-/// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ImageOutput {
-    pub b64: Option<String>,
-    pub url: Option<String>,
-    pub mime_type: Option<String>,
-    pub revised_prompt: Option<String>, // dall-e-3
-    pub seed: Option<u64>,              // SDXL / Stable Image
-    pub finish_reason: Option<String>,  // SUCCESS / CONTENT_FILTERED / "Filter reason: …"
 }
 
 #[cfg(test)]

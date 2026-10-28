@@ -1,84 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BILLABLE DURATION IS AN EXACT DECIMAL, AND ITS WIRE RENDERING IS BYTE-IDENTICAL (#81).
-//!
-//! Two claims, both proven by sweeping rather than by a handful of pretty numbers — a quantity that
-//! round-trips for the values someone thought to write down is not a quantity that round-trips.
+//! THE BILLABLE DURATION IS AN EXACT DECIMAL (#81). Its wire rendering, and the sweep that proves
+//! it byte-identical, are the llm plane's own.
 
-use super::{duration_seconds_to_wire, Billing, Count};
-
-/// A 64-bit xorshift, so the sweep draws from integers and the proof of exactness does not itself
-/// rest on a double.
-struct Xorshift(u64);
-
-impl Xorshift {
-    fn step(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
-/// The exact decimal spelling of a micro-second count, built by integer arithmetic.
-fn decimal_text(micros: i128) -> String {
-    Count::from_micros(micros).to_decimal_string()
-}
-
-/// THE BYTE-IDENTITY CLAIM, SWEPT.
-///
-/// `duration_seconds_to_wire` must produce THE SAME DOUBLE as parsing the original decimal text,
-/// bit for bit — otherwise a response busbar echoes would carry different bytes than it carried
-/// before the quantity became exact, and that is an oracle divergence dressed up as a refactor.
-#[test]
-fn the_wire_rendering_is_the_same_double_the_text_used_to_parse_to() {
-    let mut checked = 0usize;
-    let check = |micros: i128| {
-        let text = decimal_text(micros);
-        let rendered = duration_seconds_to_wire(Count::from_micros(micros));
-        let parsed: f64 = text
-            .parse()
-            .expect("a decimal this crate wrote is parseable");
-        assert_eq!(
-            rendered.to_bits(),
-            parsed.to_bits(),
-            "`{text}` renders to a different double than it parses to"
-        );
-        // And the JSON both sides would emit is the same bytes, which is the claim that matters.
-        assert_eq!(
-            serde_json::to_string(&serde_json::json!({ "seconds": rendered }))
-                .expect("a finite number serializes"),
-            serde_json::to_string(&serde_json::json!({ "seconds": parsed }))
-                .expect("a finite number serializes"),
-        );
-    };
-
-    // Every micro-second in the first hundredth of a second: the fine structure.
-    for micros in 0..10_000i128 {
-        check(micros);
-        checked += 1;
-    }
-    // Realistic audio durations, out to a thousand hours, drawn from the integer generator.
-    let mut rng = Xorshift(0xDEAD_BEEF_CAFE_F00D);
-    for _ in 0..100_000 {
-        check(i128::from(rng.step() % 3_600_000_000));
-        checked += 1;
-    }
-    // The boundaries a renderer trips on: whole seconds, and one micro either side of them.
-    for whole in 0..1_000i128 {
-        for delta in -1..=1i128 {
-            let micros = whole * 1_000_000 + delta;
-            if micros >= 0 {
-                check(micros);
-                checked += 1;
-            }
-        }
-    }
-    assert!(checked > 100_000, "only {checked} values swept");
-}
+use super::{Billing, Count};
 
 /// THE MONEY DAMAGE A DOUBLE DOES, shown rather than described.
 ///

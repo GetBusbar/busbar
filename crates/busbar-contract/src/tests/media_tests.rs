@@ -67,34 +67,6 @@ fn base64_decode_treats_padding_as_terminal() {
     assert_eq!(base64_decode("QQ==\n").as_deref(), Some(&b"A"[..]));
 }
 
-#[test]
-fn image_output_is_additive_b64_and_url_coexist() {
-    let img = ImageOutput {
-        b64: Some("iVBORw0KGgo=".into()),
-        url: Some("https://example/img.png".into()),
-        ..Default::default()
-    };
-    // BOTH PRESENT IS A SHAPE THIS TYPE CAN HOLD, and the construction above compiling is the whole
-    // of that proof — a one-of (an enum, or a single field) could not have been written. Restating
-    // `img.b64.is_some() && img.url.is_some()` after building it with both was an assertion on the
-    // fixture's own literal: it could not fail, whatever `ImageOutput` did.
-    //
-    // The two fields are independent storage, not two spellings of one slot: an output carrying only
-    // the URL is a DIFFERENT value from one carrying only the inline payload, and both differ from
-    // the one carrying both. A single-slot representation would collapse at least two of the three.
-    let b64_only = ImageOutput {
-        b64: img.b64.clone(),
-        ..Default::default()
-    };
-    let url_only = ImageOutput {
-        url: img.url.clone(),
-        ..Default::default()
-    };
-    assert_ne!(b64_only, url_only);
-    assert_ne!(img, b64_only);
-    assert_ne!(img, url_only);
-}
-
 /// The compile-time reverse table must be exactly what the per-call loop it replaced would have
 /// built: same 6-bit value for every base64 digit, `255` (reject) for every other byte. A hoisted
 /// table that drifted from the alphabet would decode payloads wrongly rather than loudly.

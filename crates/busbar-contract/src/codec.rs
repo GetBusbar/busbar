@@ -270,26 +270,6 @@ pub trait CodecHost: Sync {
 /// by. A verb absent from a row is the no-handler 404, exactly as an arm returning `None` was.
 pub type Cell = (OpVerb, &'static dyn OperationHandler);
 
-/// THE ROW LOOKUP every [`RequestHandler::operation_handler`] is — stated once so there are not
-/// seven copies of a linear scan. Rows are single-digit in length, so this is a handful of pointer
-/// comparisons and is not worth a map.
-pub fn cell_of(cells: &'static [Cell], op: OpVerb) -> Option<&'static dyn OperationHandler> {
-    cells
-        .iter()
-        .find(|(candidate, _)| *candidate == op)
-        .map(|(_, handler)| *handler)
-}
-
-/// THE (verb → upstream path) LOOKUP, for the protocols whose egress paths are constants rather
-/// than templates. Same table shape, same reason it is data: `resolve_operation` reads these very
-/// constants on the ingress side, so the two directions cannot drift.
-pub fn path_of(paths: &'static [(OpVerb, &'static str)], op: OpVerb) -> Option<&'static str> {
-    paths
-        .iter()
-        .find(|(candidate, _)| *candidate == op)
-        .map(|(_, path)| *path)
-}
-
 /// A pure per-(protocol × operation) codec. Feed it wire, assert the IR; feed it IR, assert the wire.
 /// That is the entire contract — the load-bearing discipline that makes the matrix scale. It knows
 /// NOTHING about routing: no `Lane`, no path, no model. The path is the `RequestHandler`'s concern.
