@@ -1387,6 +1387,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         };
         let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
+        // The admin socket is BOUND before any data worker serves, as 1.5.5 bound both listeners
+        // before either served: once the data door's `/healthz` answers, a connection to the admin
+        // surface is queued, never refused (a client that waits on `/healthz` and then calls the
+        // admin API must not race the admin bind). It is served below, after the data workers start.
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener =
+            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
+                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
+            );
         let data_handles = serve_thread_per_core(
             data_workers,
             listen.clone(),
@@ -1397,13 +1408,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
-        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
-        let admin_via = root::connector::the().address_via();
-        let admin_listener =
-            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
-                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
-            );
         tracing::debug!(
             listen = %admin_listen,
             carrier = %root::connector::carrier_name(admin_via.as_ref()),
