@@ -22,7 +22,7 @@ permissions:
 
 env:
   # busbar-release at the commit whose `plugin index` this tag runs (a busbar-release dev commit).
-  BUSBAR_RELEASE_REV: 1b17da9d0b60d3331255b1ee2b6b69036d46bd63
+  BUSBAR_RELEASE_REV: 04d311ea103a0fac211e834d5e5a75e259e6669d
   CARGO_TERM_COLOR: never
 
 jobs:
