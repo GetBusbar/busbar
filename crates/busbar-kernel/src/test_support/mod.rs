@@ -678,9 +678,9 @@ impl LaneSpec {
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
             None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
-            Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
+            Some(style) => {
+                busbar_kernel::plane_driver::route_input::AuthStyleInput::Named(style.to_string())
+            }
         };
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),

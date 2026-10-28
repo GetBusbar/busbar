@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::services::HookAsk;
 
+use crate::inflight::SHARDS;
+
 /// What a unit's hook stage answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageAnswer {
@@ -69,14 +71,28 @@ pub struct UnitRecord {
     pub depth: u32,
 }
 
-/// Every unit in flight, by unit key, and the hook stage each one's route leg stated.
+/// What the kernel holds for one unit: its record, the hook stage its route leg stated, and the
+/// caller credential it lends its passthrough member (the caller-credential lending), held while
+/// the unit runs and dropped (zeroised) at its end.
 #[derive(Default)]
+struct UnitEntry {
+    record: Option<Arc<UnitRecord>>,
+    stage: Option<Arc<dyn UnitHookStage>>,
+    lent: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+}
+
+/// Every unit in flight, by unit key, split across the in-flight table's shards by the key so a
+/// request takes one shard's lock, never a process-wide one.
 pub struct UnitRecords {
-    inner: Mutex<HashMap<u64, Arc<UnitRecord>>>,
-    stages: Mutex<HashMap<u64, Arc<dyn UnitHookStage>>>,
-    /// The caller credential each unit lends its passthrough member (the caller-credential
-    /// lending), held while the unit runs and dropped (zeroised) at its end.
-    lent: Mutex<HashMap<u64, busbar_contract::redacted::Secret<Vec<u8>>>>,
+    shards: Vec<Mutex<HashMap<u64, UnitEntry>>>,
+}
+
+impl Default for UnitRecords {
+    fn default() -> Self {
+        Self {
+            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
+        }
+    }
     /// What admitted each unit, for `ticket.take`: `Some` the record of the ticket the gate spent
     /// admitting it, `None` a key. Taken once; the unit's end drops what was never taken.
     tickets: Mutex<HashMap<u64, Option<Vec<u8>>>>,
@@ -84,35 +100,25 @@ pub struct UnitRecords {
 
 impl std::fmt::Debug for UnitRecords {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UnitRecords")
-            .field("inner", &self.inner)
-            .finish_non_exhaustive()
+        f.debug_struct("UnitRecords").finish_non_exhaustive()
     }
 }
 
 impl UnitRecords {
-    fn lock(&self) -> MutexGuard<'_, HashMap<u64, Arc<UnitRecord>>> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn lock_stages(&self) -> MutexGuard<'_, HashMap<u64, Arc<dyn UnitHookStage>>> {
-        self.stages.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self, unit: u64) -> MutexGuard<'_, HashMap<u64, UnitEntry>> {
+        self.shards[(unit as usize) & (SHARDS - 1)]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// The unit `unit` is admitted with `record`.
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
-        self.lock().insert(unit, Arc::new(record));
+        self.lock(unit).entry(unit).or_default().record = Some(Arc::new(record));
     }
 
     /// The unit `unit` ended: its record goes, its hook stage, and the credential it lent.
     pub fn ended(&self, unit: u64) {
-        let mut records = self.lock();
-        records.remove(&unit);
-        self.lock_stages().remove(&unit);
-        self.lent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&unit);
+        self.lock(unit).remove(&unit);
         self.lock_tickets().remove(&unit);
     }
 
@@ -142,46 +148,38 @@ impl UnitRecords {
     /// connector keys a binding by (instance, need, member, target origin); a request naming no
     /// member gets no binding).
     pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Secret<Vec<u8>>) {
-        self.lent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(unit, credential);
+        self.lock(unit).entry(unit).or_default().lent = Some(credential);
     }
 
     /// The route leg of `unit` states its hook stage. Only a unit in flight holds one: for any
     /// other the stage is dropped (`false`). The first stage stated stands.
     pub fn staged(&self, unit: u64, stage: Arc<dyn UnitHookStage>) -> bool {
-        let records = self.lock();
-        if !records.contains_key(&unit) {
-            return false;
+        match self.lock(unit).get_mut(&unit) {
+            Some(entry) if entry.record.is_some() => {
+                entry.stage.get_or_insert(stage);
+                true
+            }
+            _ => false,
         }
-        self.lock_stages().entry(unit).or_insert(stage);
-        true
     }
 
     /// The hook stage of `unit`, while it is in flight and its route leg stated one.
     #[must_use]
     pub fn stage(&self, unit: u64) -> Option<Arc<dyn UnitHookStage>> {
-        let records = self.lock();
-        if !records.contains_key(&unit) {
-            return None;
-        }
-        self.lock_stages().get(&unit).cloned()
+        let shard = self.lock(unit);
+        let entry = shard.get(&unit).filter(|e| e.record.is_some())?;
+        entry.stage.clone()
     }
 
     /// The record of `unit`, while it is in flight.
     #[must_use]
     pub fn get(&self, unit: u64) -> Option<Arc<UnitRecord>> {
-        self.lock().get(&unit).cloned()
+        self.lock(unit).get(&unit)?.record.clone()
     }
 }
 
 impl busbar_contract::conn::LendCredential for UnitRecords {
     fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Secret<Vec<u8>>> {
-        self.lent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&unit)
-            .cloned()
+        self.lock(unit).get(&unit)?.lent.clone()
     }
 }
