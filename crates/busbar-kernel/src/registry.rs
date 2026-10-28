@@ -8,16 +8,10 @@
 //! it, calls it and consumes what it returns. This file is that list, plus two things that follow
 //! from it.
 //!
-//! **Generations.** The mechanism a plugin reload needs, built and proven but not yet driven. A new
-//! generation is a new number; entries say which generations they are live for; a unit pins the
-//! generation it started at and would keep calling the same plugins all the way to its end while a
-//! replacement was installed underneath it. Today NOTHING in production installs one: the node
-//! builds its registry once, at boot (`register` only), and the real configuration reload —
-//! `AppHandle::swap` — never touches a registry, so every unit pins [`Generation::FIRST`].
-//! [`Registry::replace`] and [`Registry::retire`] are exercised by the battery alone, and `entries`
-//! is push-only: a reload wired to `replace` would retain every replaced plugin for the process's
-//! life, with no compaction and no oldest-pinned-generation watermark to release it. Whoever wires a
-//! reload to this registry owes both.
+//! **Generations.** The node builds its registry once, at boot (`register` only), and the
+//! configuration reload (`AppHandle::swap`) never touches a registry, so the registry is at
+//! [`Generation::FIRST`] for the process's life and every unit pins it. No replace or retire is
+//! built: a capability that is never constructed does not ship (Part 1 l.1925-1928).
 //!
 //! **Claims.** A claim says "these bytes are mine". The question is asked at boot, over every pair,
 //! and [`overlaps`] is deliberately CONSERVATIVE: where the shapes are not comparable it answers
@@ -46,10 +40,6 @@ impl Generation {
     /// The generation as a number, for the journal.
     pub fn get(self) -> u64 {
         self.0
-    }
-
-    fn next(self) -> Generation {
-        Generation(self.0 + 1)
     }
 }
 
@@ -88,8 +78,6 @@ impl std::error::Error for RegistryError {}
 struct Registered {
     key: &'static str,
     kind: PluginKind,
-    since: Generation,
-    until: Option<Generation>,
     plugin: Arc<dyn Plugin>,
 }
 
@@ -132,82 +120,22 @@ impl Registry {
         if self.live(kind, key).is_some() {
             return Err(RegistryError::DuplicateKey { kind, key });
         }
-        self.entries.push(Registered {
-            key,
-            kind,
-            since: self.generation,
-            until: None,
-            plugin,
-        });
+        self.entries.push(Registered { key, kind, plugin });
         Ok(self.generation)
     }
 
-    /// Swap a plugin for a new one, opening a new generation. No production caller (see the module
-    /// doc's "Generations").
-    ///
-    /// The old entry is not deleted: it stays reachable at every generation it was live for, so a
-    /// unit that started before the swap finishes against what it started with — and nothing ever
-    /// releases it.
-    pub fn replace(&mut self, plugin: Arc<dyn Plugin>) -> Generation {
-        let (key, kind) = (plugin.key(), plugin.kind());
-        let next = self.retire(kind, key);
-        self.entries.push(Registered {
-            key,
-            kind,
-            since: next,
-            until: None,
-            plugin,
-        });
-        next
-    }
-
-    /// Retire a plugin as of the next generation. No production caller, like [`Registry::replace`].
-    pub fn retire(&mut self, kind: PluginKind, key: &str) -> Generation {
-        let next = self.generation.next();
-        for entry in &mut self.entries {
-            if entry.kind == kind && entry.key == key && entry.until.is_none() {
-                entry.until = Some(next);
-            }
-        }
-        self.generation = next;
-        next
-    }
-
-    /// Look a plugin up as of the current generation.
+    /// Look a plugin up.
     pub fn resolve(&self, kind: PluginKind, key: &str) -> Option<Arc<dyn Plugin>> {
-        self.resolve_at(kind, key, self.generation)
-    }
-
-    /// Look a plugin up as of the generation a unit pinned.
-    pub fn resolve_at(
-        &self,
-        kind: PluginKind,
-        key: &str,
-        at: Generation,
-    ) -> Option<Arc<dyn Plugin>> {
-        self.entries
-            .iter()
-            .find(|e| {
-                e.kind == kind
-                    && e.key == key
-                    && e.since <= at
-                    && e.until.map(|until| at < until).unwrap_or(true)
-            })
-            .map(|e| Arc::clone(&e.plugin))
+        self.live(kind, key).map(|e| Arc::clone(&e.plugin))
     }
 
     /// How many plugins of a kind are live now.
     pub fn count(&self, kind: PluginKind) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| e.kind == kind && e.until.is_none())
-            .count()
+        self.entries.iter().filter(|e| e.kind == kind).count()
     }
 
     fn live(&self, kind: PluginKind, key: &str) -> Option<&Registered> {
-        self.entries
-            .iter()
-            .find(|e| e.kind == kind && e.key == key && e.until.is_none())
+        self.entries.iter().find(|e| e.kind == kind && e.key == key)
     }
 }
 
