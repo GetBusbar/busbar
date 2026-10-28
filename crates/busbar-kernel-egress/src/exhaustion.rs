@@ -73,7 +73,7 @@ pub fn retry_after_secs(
 /// A DRAINED member (`weight: 0`) stays a candidate here: the previous release ranked every
 /// admissible member of the candidate list on this path (v1.5.5 `proxy/engine/walk.rs:1126-1130`),
 /// and drain only ever kept a member out of the weighted selection (v1.5.5 `proxy/select.rs:282`,
-/// `store/in_memory/mod.rs:870`). Q128 kernel-egress LOW 4, closed as 1.5.5 parity.
+/// `store/in_memory/mod.rs:870`). This is 1.5.5 parity.
 ///
 /// It ranks `members`, the pool's admissible members AS THE UNIT'S HOOKS KEPT THEM, and no others:
 /// a required restriction holds through the last resort, as v1.5.5's ranked only its restricted

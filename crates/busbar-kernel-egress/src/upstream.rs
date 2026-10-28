@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the egress unit does to an upstream exchange's bytes and headers (#83a O1): the operator
+//! What the egress unit does to an upstream exchange's bytes and headers: the operator
 //! body caps, the network-failure labels a transient failure is recorded with, and the
 //! client-header mechanics stripped from a request head before it goes upstream.
 
@@ -51,8 +51,7 @@ pub const ERR_NET_CONNECT: &str = "connect";
 /// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
 
-// ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (OWNER HARD RULE 2026-10-02, "BUSBAR IS
-//    INVISIBLE TO UPSTREAMS") ──────────────────────────────────────────────────────────────────────
+// CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM.
 //
 // What a client sends goes out. On a same-dialect route a plane forwards EVERY client header; a
 // translated route forwards none (the plane translates what maps and drops the rest, and no header
@@ -73,8 +72,8 @@ pub const ERR_NET_TIMEOUT: &str = "timeout";
 /// The fields the upstream connection derives for itself, beyond HTTP's hop-by-hop set.
 ///
 /// `accept-encoding` is here because busbar reads the answer to meter it and decodes no content
-/// coding: a client's `gzip` would make the far end compress what busbar must read (escalated
-/// 2026-10-02, PROTO-FIXES; the owner's ruling decides whether it stays).
+/// coding: a client's `gzip` would make the far end compress what busbar must read, and 1.5.5
+/// sent none (pinned by `a_clients_accept_encoding_never_goes_upstream`).
 pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
 
 /// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
