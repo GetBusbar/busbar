@@ -1791,10 +1791,12 @@ struct OpenUnit {
 /// and its one audit record is sealed here as a returned end's is ([`Node::seal_end`]; no second
 /// seal). The root opens each unit's
 /// facts at admission (its principal, its pinned arrival, the card history it was admitted under)
-/// and closes them when the unit returns; an end posts at most once.
+/// and closes them when the unit returns; an end posts at most once. The facts are split across
+/// the in-flight table's shards by unit key, so a unit takes one shard's lock, never a
+/// process-wide one.
 pub struct NodeEndPost {
     node: Arc<Node>,
-    open: Mutex<OpenUnits>,
+    open: Vec<Mutex<OpenUnits>>,
 }
 
 impl std::fmt::Debug for NodeEndPost {
@@ -1809,12 +1811,14 @@ impl NodeEndPost {
     pub fn new(node: Arc<Node>) -> Self {
         NodeEndPost {
             node,
-            open: Mutex::new(HashMap::new()),
+            open: (0..busbar_kernel::inflight::SHARDS)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OpenUnits> {
-        self.open
+    fn lock(&self, key: UnitKey) -> std::sync::MutexGuard<'_, OpenUnits> {
+        self.open[(key.get() as usize) & (busbar_kernel::inflight::SHARDS - 1)]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -1833,7 +1837,7 @@ impl NodeEndPost {
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
     ) {
-        self.lock().insert(
+        self.lock(key).insert(
             key,
             OpenUnit {
                 principal,
@@ -1846,7 +1850,7 @@ impl NodeEndPost {
 
     /// Unit `key`'s Route leg was lent the sealed `destinations`.
     fn routed(&self, key: UnitKey, destinations: &[VerifiedDestination]) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.ran.verified = lanes_of(destinations);
         }
     }
@@ -1860,14 +1864,14 @@ impl NodeEndPost {
         facts: busbar_contract::caps::AuditFacts,
         pass: Pass<Audit>,
     ) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.door = Some((facts, pass));
         }
     }
 
     /// The operation class unit `key`'s audit door stated, once that door handed its facts back.
     fn door_class(&self, key: UnitKey) -> Option<OpClassId> {
-        self.lock()
+        self.lock(key)
             .get(&key)
             .and_then(|open| open.sealing.door.as_ref().map(|(facts, _)| facts.op_class))
     }
@@ -1875,7 +1879,7 @@ impl NodeEndPost {
     /// Unit `key`'s encode door was told how it ended: the outcome a session's record carries
     /// ([`Node::seal_session`]).
     fn ended_as(&self, key: UnitKey, outcome: Outcome) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(outcome);
         }
     }
@@ -1883,7 +1887,7 @@ impl NodeEndPost {
     /// Session `key`'s open hook stage stopped it for `reason` after its door passed: its record
     /// says it was refused there, at the head of its route leg where the hook stage runs.
     pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(Outcome::Refused(
                 busbar_contract::caps::StepName::Route,
                 reason,
@@ -1894,7 +1898,7 @@ impl NodeEndPost {
     /// What session `key` consumed, as its plane reported it at its end: the amount its record
     /// carries. `None` for a session whose money never opened.
     pub fn reported(&self, key: UnitKey, report: Option<Reported>) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.report = report.map(Report::of);
         }
     }
@@ -1902,18 +1906,26 @@ impl NodeEndPost {
     /// Unit `key` returned: its facts close and come out for the record its one line seals
     /// ([`Node::drive_borrowed`]).
     fn take(&self, key: UnitKey) -> Option<OpenUnit> {
-        self.lock().remove(&key)
+        self.lock(key).remove(&key)
     }
 
     /// Unit `key` returned: its end is the node's exit arm's to post, never this site's.
     pub fn close(&self, key: UnitKey) {
-        self.lock().remove(&key);
+        self.lock(key).remove(&key);
     }
 
     /// How many units' facts are open (a witness: every unit closes).
     #[must_use]
     pub fn open_units(&self) -> usize {
-        self.lock().len()
+        self.open
+            .iter()
+            .map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+            })
+            .sum()
     }
 }
 
@@ -1929,7 +1941,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
         // The member of the verified set this attempt dials is where the unit goes: the last
         // attempt's is the one its record names.
-        self.lock()
+        self.lock(record.unit)
             .get_mut(&record.unit)
             .map(|open| open.sealing.ran.dialled = record.lane)
             .ok_or(busbar_kernel_egress::ports::DurabilityUnavailable)
@@ -1946,7 +1958,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
 /// is. A unit with no open facts keeps nothing.
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
     fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
-        if let Some(open) = self.lock().get_mut(&record.unit) {
+        if let Some(open) = self.lock(record.unit).get_mut(&record.unit) {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
     }
@@ -1956,7 +1968,7 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
-        let facts = self.lock().remove(&ctx.key);
+        let facts = self.lock(ctx.key).remove(&ctx.key);
         if let Some(open) = facts {
             // The unit's one audit record is sealed with its one line, as a returned end's is.
             let parent = match ctx.origin {
