@@ -31,6 +31,9 @@ pub mod hook;
 pub mod export;
 // A URL AS A LOG LINE MAY NAME IT: userinfo and secret-looking query values masked.
 pub mod mask;
+// A CONFIGURED URL'S CREDENTIAL, KEPT TO ITS ONE USE: its Basic header, the ambiguous-url refusal,
+// and the scrub of a text that may quote it.
+pub mod url;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;

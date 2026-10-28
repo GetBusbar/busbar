@@ -200,7 +200,7 @@ impl PlaneRouteSpec {
 /// needs to answer, sourced from the SAME extractors the old typed handlers used, but assembled by
 /// core so the plane names no `axum` extractor and no `Arc<AppHandle>` router state.
 ///
-/// The auth-carried fields ([`Self::gov`], [`Self::principal`], [`Self::caller_principal`]) are the
+/// The auth-carried fields ([`Self::gov`], [`Self::principal`]) are the
 /// ALREADY-RESOLVED identity the auth middleware attached to the request BEFORE the handler runs —
 /// surfaced here rather than re-derived, so a `Key`-auth handler reads the resolved caller without
 /// re-running the identity chain (which would double-run it and change behaviour). They are `Option`
@@ -220,15 +220,6 @@ pub struct PlaneReqCtx {
     /// The buffered request body (already subject to the router's body-size cap layer, which fires
     /// BEFORE this handler, exactly as before).
     pub body: Bytes,
-    /// Any path-template captures (`{name}` → value), in match order. Empty for a concrete-path
-    /// route (every current MCP route). Present so a parameterised plane route can read its captures
-    /// without an `axum::extract::Path` extractor.
-    pub path_params: Vec<(String, String)>,
-    /// The resolved caller principal id — the authenticated key id, or `None` on an ungoverned or
-    /// open route. The one identity fact a `Key`-auth handler needs to bind request-scoped state to
-    /// the caller, surfaced from the middleware-resolved [`Self::gov`] so the handler never re-runs
-    /// the identity chain.
-    pub caller_principal: Option<String>,
     /// The middleware-resolved governance request context (the caller's virtual key), or `None` on a
     /// `RouteAuth::None` route where the middleware bypassed the chain and attached nothing.
     pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
@@ -250,12 +241,6 @@ pub struct PlaneReqCtx {
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.
     pub engine: Arc<dyn Any + Send + Sync>,
-    /// The NEUTRAL host seam — the `EngineHost` the core adapter minted over the request's live
-    /// engine snapshot, so the plane reaches host capabilities (the clock, and later gate/govern/…)
-    /// by calling typed methods on it rather than naming `busbar_kernel::plane_host::*_over`. Carried
-    /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
-    /// App-sever removes, `host` is the durable seam that replaces it.
-    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,
