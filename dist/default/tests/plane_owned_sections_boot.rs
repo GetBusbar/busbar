@@ -14,7 +14,7 @@
 
 mod common;
 
-use busbar_kernel::plane::registry::{
+use busbar_kernel::plane_driver::registry::{
     check_owned_config_claims, register_test_plane, PlaneDecl, CORE_OWNED_CONCRETE_SECTIONS,
 };
 

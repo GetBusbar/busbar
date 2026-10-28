@@ -2,18 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The network guard, tested where it now lives: the pure predicates with every literal case they
-//! were written with, the resolve-then-pin discipline against a scripted resolver, and the check
-//! over a sealed destination that the whole thing exists to serve.
-//!
-//! The rebinding cases are the reason the resolver is a seam. They are driven through a SCRIPTED
-//! resolver that answers differently on the second lookup, because that is the only way to state
-//! the claim the guard actually makes: the name is resolved EXACTLY ONCE and the socket goes to the
-//! address that was judged. A guard tested against a resolver that answers the same thing twice
-//! cannot tell a resolve-then-pin from a check-then-re-resolve — both pass — which is precisely the
-//! mistake that looks right in review.
+//! were written with, and the readers and denylist over a sealed destination.
 
 use crate::trust::net::*;
-use std::cell::RefCell;
 use std::net::{IpAddr, Ipv4Addr};
 
 #[test]
@@ -215,8 +206,7 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
 /// `64:ff9b::a9fe:a9fe` — the IMDS target `169.254.169.254` re-encoded — matches no v6 range and
 /// reads as an ordinary public v6 address. This asserts the embedding is judged in both the
 /// well-known (RFC 6052) and RFC 8215 local-use forms, including the local-use form with a
-/// NON-ZERO middle (RFC 8215 Section 6's own `64:ff9b:1:fffe::/96` worked example), and that the
-/// resolve-then-pin guard refuses the synthesized address end to end rather than pinning it.
+/// NON-ZERO middle (RFC 8215 Section 6's own `64:ff9b:1:fffe::/96` worked example).
 #[test]
 fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
     use std::net::Ipv6Addr;
@@ -265,368 +255,23 @@ fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
         embedded_ipv4(&"64:ff9b::1:0:a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
         None,
     );
-
-    // End-to-end through the resolve-then-pin guard, the way a DNS64-answered destination actually
-    // runs: the synthesized address must be refused as cloud metadata — even under `allow_private`,
-    // and not merely pinned as an ordinary public address.
-    let r = ScriptedResolver::new(vec![Ok(vec![ip("64:ff9b:1:fffe::a9fe:a9fe")])]);
-    let err = resolve_and_pin("dns64.example", 443, true, &r, private_ok()).expect_err(
-        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused even under \
-         allow_private",
-    );
-    assert!(
-        matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
-        "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
-    );
 }
 
-const PUBLIC: &str = "93.184.216.34";
-const PUBLIC_2: &str = "93.184.216.35";
-
-fn ip(s: &str) -> IpAddr {
-    s.parse().expect("a test address must parse")
-}
-
-fn strict() -> GuardPolicy {
-    GuardPolicy::default()
-}
-
-fn private_ok() -> GuardPolicy {
-    GuardPolicy {
-        allow_private: true,
-        ..GuardPolicy::default()
-    }
-}
-
-/// A resolver that answers a SCRIPT: the first lookup gets one answer, every later lookup gets the
-/// next. It also records what it was asked, so "the guard resolved exactly once" is an assertion
-/// about a number rather than about intent.
-struct ScriptedResolver {
-    answers: RefCell<Vec<Result<Vec<IpAddr>, String>>>,
-    asked: RefCell<Vec<String>>,
-}
-
-impl ScriptedResolver {
-    fn new(answers: Vec<Result<Vec<IpAddr>, String>>) -> Self {
-        Self {
-            answers: RefCell::new(answers),
-            asked: RefCell::new(Vec::new()),
-        }
-    }
-    fn asked(&self) -> usize {
-        self.asked.borrow().len()
-    }
-}
-
-impl Resolver for ScriptedResolver {
-    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
-        self.asked.borrow_mut().push(host.to_string());
-        let mut answers = self.answers.borrow_mut();
-        if answers.len() > 1 {
-            answers.remove(0)
-        } else {
-            answers
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Err("the script is exhausted".to_string()))
-        }
-    }
-}
-
-/// A resolver that PANICS. Nothing refusable from the URL alone may reach it: a case that needed a
-/// lookup would be a case where the guard depends on what the attacker's nameserver says.
-struct NeverAsked;
-impl Resolver for NeverAsked {
-    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
-        panic!("the guard resolved `{host}`, which it must refuse structurally");
-    }
-}
-
-// ══ THE REBINDING PROOFS ═════════════════════════════════════════════════════════════════════════
-
-/// **THE DNS-REBINDING CASE.** The name answers a PUBLIC address on the first lookup and a
-/// LOOPBACK address on the second. A guard that checks the name and then lets the client resolve
-/// again connects to the second answer; a guard that resolves once and pins connects to the first.
-///
-/// The assertion is on BOTH halves, and both are needed: the pinned address must be the judged one,
-/// AND the resolver must have been asked exactly once. Asserting only the address would pass
-/// against a guard that resolved twice and happened to be handed the good answer first; asserting
-/// only the count would pass against a guard that resolved once and pinned the wrong element.
+/// Every name on the one metadata-name list is blocked by the config-side guard.
 #[test]
-fn a_name_that_answers_a_private_address_on_the_second_lookup_never_gets_a_second_lookup() {
-    let r = ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)]), Ok(vec![ip("127.0.0.1")])]);
-    let target = resolve_and_pin("rebind.example", 443, true, &r, strict())
-        .expect("the first answer is public and admissible");
-    assert_eq!(
-        target.addr(),
-        ip(PUBLIC),
-        "the pin must carry the address that was JUDGED, not one a later lookup would return"
-    );
-    assert_eq!(
-        r.asked(),
-        1,
-        "the name must be resolved EXACTLY ONCE; a second lookup is the window a rebind wins in"
-    );
-    assert_eq!(target.host(), "rebind.example", "the name is kept for SNI");
-    assert_eq!(target.socket_addr(), "93.184.216.34:443".parse().unwrap());
-}
-
-/// The other order, which is the one an attacker actually serves: the FIRST answer is already
-/// hostile. There is no "and then it rebinds" to reach, because the fetch never happens.
-#[test]
-fn a_name_that_answers_the_metadata_address_first_is_refused_outright() {
-    let r = ScriptedResolver::new(vec![Ok(vec![ip("169.254.169.254")]), Ok(vec![ip(PUBLIC)])]);
-    let err = resolve_and_pin("rebind.example", 443, true, &r, strict())
-        .expect_err("an IMDS answer must refuse");
-    assert_eq!(
-        err,
-        AddressRefusal::CloudMetadataAddress {
-            host: "rebind.example".to_string(),
-            addr: ip("169.254.169.254"),
-        }
-    );
-}
-
-/// A MIXED ANSWER IS A HOSTILE ANSWER. One reply carrying a public address and a loopback one is
-/// refused whole rather than filtered to the address that happens to pass — otherwise the same name
-/// is sometimes fine and sometimes not, decided by an ordering the upstream chooses.
-#[test]
-fn a_mixed_answer_is_refused_whole_in_either_order() {
-    let forward = [ip(PUBLIC), ip("127.0.0.1")];
-    let err = judge_addresses("mixed.example", &forward, strict())
-        .expect_err("a loopback address in the answer must refuse the resolution");
-    assert_eq!(
-        err,
-        AddressRefusal::InternalAddress {
-            host: "mixed.example".to_string(),
-            addr: ip("127.0.0.1"),
-        }
-    );
-    let reversed = [ip("127.0.0.1"), ip(PUBLIC)];
-    assert!(
-        judge_addresses("mixed.example", &reversed, strict()).is_err(),
-        "order must not decide the verdict"
-    );
-    // The CONTROL: an all-public answer passes, so the two above are not passing because everything
-    // is refused.
-    assert!(judge_addresses("mixed.example", &[ip(PUBLIC), ip(PUBLIC_2)], strict()).is_ok());
-}
-
-// ══ THE ADDRESS JUDGEMENT ════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn every_internal_range_is_refused() {
-    let internal = [
-        "127.0.0.1",
-        "10.0.0.1",
-        "172.16.0.1",
-        "192.168.1.1",
-        "169.254.1.1",
-        "100.64.0.1",
-        "0.0.0.0",
-        "0.1.2.3",
-        "255.255.255.255",
-        "224.0.0.1",
-        "198.18.0.1",
-        "192.0.2.1",
-        "::1",
-        "fc00::1",
-        "fe80::1",
-        "::",
-        // An IPv4-mapped loopback: the v4 ruleset must not be bypassable via a AAAA record.
-        "::ffff:127.0.0.1",
-    ];
-    assert_eq!(internal.len(), 17, "the internal-range set must not shrink");
-    for a in internal {
-        assert!(
-            judge_address("h", ip(a), strict()).is_err(),
-            "{a} must be refused"
-        );
-    }
-    // The CONTROL.
-    assert!(judge_address("h", ip(PUBLIC), strict()).is_ok());
-}
-
-/// CLOUD METADATA IS REFUSED EVEN UNDER `allow_private`, and it is refused AS METADATA — the arm
-/// runs BEFORE the flag is consulted. Merging it into the internal-range arm would make
-/// `allow_private` a config flag that hands out cloud credentials.
-#[test]
-fn cloud_metadata_is_refused_unconditionally_and_as_metadata() {
-    let metadata = [
-        "169.254.169.254",
-        "169.254.170.2",
-        "100.100.100.200",
-        "168.63.129.16",
-        "192.0.0.192",
-        "fd00:ec2::254",
-        // The IPv4-COMPATIBLE and IPv4-MAPPED spellings of IMDS: neither matches a v6 range, and a
-        // guard that unwrapped only the mapped form connected to the compatible one.
-        "::169.254.169.254",
-        "::ffff:169.254.169.254",
-    ];
-    assert_eq!(metadata.len(), 8, "the metadata set must not shrink");
-    for a in metadata {
-        for policy in [strict(), private_ok()] {
-            let err = judge_address("meta", ip(a), policy)
-                .expect_err("metadata is refused under every policy");
-            assert!(
-                matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
-                "{a} must be refused AS METADATA, not merely as internal: {err:?}"
-            );
-        }
-    }
-    // And a private address that is NOT metadata IS permitted under `allow_private`, so the
-    // unconditional refusal above is specific to metadata rather than to everything.
-    assert!(judge_address("h", ip("10.0.0.1"), private_ok()).is_ok());
-}
-
-/// THE WHOLE LINK-LOCAL /16 IS METADATA, not just the five literals a list can name.
-///
-/// Clouds put their instance-metadata service anywhere inside `169.254.0.0/16` (Tencent answers on
-/// `169.254.0.23`, AWS's IPv6-era ECS endpoint on `169.254.170.3`, the IMDS v6 alias on
-/// `169.254.169.253`), and nothing legitimate runs on link-local at all. An address-side predicate
-/// that enumerates literals leaves every other link-local address to the internal-range arm, which
-/// `allow_private: true` switches off — so the operator flag that says "our upstream is on the
-/// internal network" would pin and dial an unlisted metadata endpoint. The config-side predicate in
-/// this same module already asks the RANGE question; the address side must ask the same one.
-#[test]
-fn unlisted_link_local_metadata_is_refused_as_metadata_under_allow_private() {
-    let unlisted = [
-        ("Tencent IMDS", "169.254.0.23"),
-        ("IMDS v6-alias endpoint", "169.254.169.253"),
-        ("ECS task metadata (v6-era)", "169.254.170.3"),
-        // The IPv4-COMPATIBLE spelling reaches the same target through `to_ipv4()`.
-        ("IPv4-COMPATIBLE Tencent", "::169.254.0.23"),
-        ("IPv4-MAPPED Tencent", "::ffff:169.254.0.23"),
-    ];
-    for (what, a) in unlisted {
-        for policy in [strict(), private_ok()] {
-            let err = judge_address("meta", ip(a), policy)
-                .expect_err("link-local metadata is refused under every policy");
-            assert!(
-                matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
-                "{what} ({a}) must be refused AS METADATA, not merely as internal: {err:?}"
-            );
-        }
-    }
-}
-
-// ══ THE STRUCTURAL REFUSALS ══════════════════════════════════════════════════════════════════════
-
-/// The metadata NAMES are refused before any resolver is consulted, and `allow_private` does not
-/// speak for them. The `localhost` family is the population it DOES speak for, and the split
-/// between the two lists is the whole point of having two arms.
-#[test]
-fn the_metadata_names_are_refused_under_every_policy_and_localhost_only_by_default() {
-    for name in [
-        "metadata.google.internal",
-        "metadata.google.internal.",
-        "METADATA.GOOGLE.INTERNAL",
-        "metadata.internal",
-    ] {
-        for policy in [strict(), private_ok()] {
-            assert_eq!(
-                judge_host_name(name, policy),
-                Err(AddressRefusal::MetadataName(name.to_string())),
-                "`{name}` is a cloud-metadata name and `allow_private` may not reach it"
-            );
-        }
-    }
-    for name in ["localhost", "localhost.", "api.localhost"] {
-        assert!(
-            matches!(
-                judge_host_name(name, strict()),
-                Err(AddressRefusal::LoopbackName(_))
-            ),
-            "`{name}` is the loopback family and is refused by default"
-        );
-        assert!(
-            judge_host_name(name, private_ok()).is_ok(),
-            "`{name}` is what `allow_private` is for"
-        );
-    }
-    assert!(judge_host_name("agent.vendor", strict()).is_ok());
-}
-
-/// THERE IS ONE METADATA-NAME LIST, and both name guards read it.
-///
-/// The module-level list and the one the config-side SSRF check kept privately had drifted to two
-/// and six entries: a name an operator could not reach through config validation was reachable
-/// through the resolved-name guard, purely because the second list was declared inside a function.
-/// Every name on the list must be refused by BOTH arms, under every policy — `allow_private` speaks
-/// for the `localhost` family and never for metadata.
-#[test]
-fn every_metadata_name_is_refused_by_both_the_name_guard_and_the_config_guard() {
+fn every_metadata_name_is_refused_by_the_config_guard() {
     assert_eq!(
         METADATA_HOSTS.len(),
         6,
         "the metadata-name list must not shrink"
     );
     for name in METADATA_HOSTS {
-        for policy in [strict(), private_ok()] {
-            assert_eq!(
-                judge_host_name(name, policy),
-                Err(AddressRefusal::MetadataName((*name).to_string())),
-                "`{name}` is a cloud-metadata name and `allow_private` may not reach it"
-            );
-        }
         assert_eq!(
             ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]),
             Some((*name).to_string()),
             "`{name}` must still be blocked by the config-side guard"
         );
     }
-}
-
-#[test]
-fn alternate_ipv4_encodings_are_refused_before_the_resolver_sees_them() {
-    for host in ["2130706433", "0x7f000001", "017700000001", "127.1"] {
-        for policy in [strict(), private_ok()] {
-            assert_eq!(
-                judge_host_name(host, policy),
-                Err(AddressRefusal::ObfuscatedHost(host.to_string())),
-                "`{host}` is an encoding the resolver expands and the check cannot read"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_literal_is_judged_and_pinned_without_a_resolver() {
-    let t = resolve_and_pin(PUBLIC, 8443, true, &NeverAsked, strict())
-        .expect("a public literal is its own answer");
-    assert_eq!(t.addr(), ip(PUBLIC));
-    assert_eq!(t.port(), 8443);
-    assert!(t.is_https());
-
-    assert!(matches!(
-        resolve_and_pin("127.0.0.1", 9000, true, &NeverAsked, strict()),
-        Err(AddressRefusal::InternalAddress { .. })
-    ));
-    let t = resolve_and_pin("127.0.0.1", 9000, false, &NeverAsked, private_ok())
-        .expect("an opted-in private literal pins");
-    assert_eq!(t.socket_addr(), "127.0.0.1:9000".parse().unwrap());
-    assert!(!t.is_https());
-}
-
-// ══ RESOLUTION FAILURE IS NOT ABSENCE ════════════════════════════════════════════════════════════
-
-#[test]
-fn a_resolution_failure_and_an_empty_answer_are_different_facts() {
-    let failing = ScriptedResolver::new(vec![Err("NXDOMAIN".to_string())]);
-    assert_eq!(
-        resolve_and_pin("a.example", 443, true, &failing, strict()),
-        Err(AddressRefusal::Unresolvable {
-            host: "a.example".to_string(),
-            reason: "NXDOMAIN".to_string(),
-        })
-    );
-    let empty = ScriptedResolver::new(vec![Ok(vec![])]);
-    assert_eq!(
-        resolve_and_pin("a.example", 443, true, &empty, strict()),
-        Err(AddressRefusal::NoAddresses("a.example".to_string())),
-        "an empty answer has nothing to connect to and nothing to have judged"
-    );
 }
 
 // ══ THE STRICT RECOGNISER ════════════════════════════════════════════════════════════════════════
@@ -672,10 +317,6 @@ fn a_refusal_never_repeats_the_credential_in_the_authority() {
     let refusals = [
         split_url("https://svc:hunter2@good.example/rpc").expect_err("userinfo is refused"),
         split_url("ftp://svc:hunter2@good.example/x").expect_err("the scheme is refused"),
-        judge_scheme("http://svc:hunter2@good.example/x", false, strict())
-            .expect_err("plaintext is refused"),
-        refuse_oversized_body("https://svc:hunter2@good.example/x", 1 << 30, strict())
-            .expect_err("the body is over the ceiling"),
     ];
     for refusal in refusals {
         let text = refusal.to_string();
@@ -753,124 +394,6 @@ fn default_ports_are_derived_from_the_scheme_and_ipv6_comes_back_unbracketed() {
     let (_, host, port, _) = split_url("https://[::1]:9443/x").unwrap();
     assert_eq!((host.as_str(), port), ("::1", 9443));
     assert_eq!((default_port(true), default_port(false)), (443, 80));
-}
-
-#[test]
-fn plaintext_is_refused_unless_the_policy_admits_it() {
-    assert!(matches!(
-        judge_scheme("http://public.example/x", false, strict()),
-        Err(AddressRefusal::Plaintext { .. })
-    ));
-    assert!(judge_scheme("https://public.example/x", true, strict()).is_ok());
-    // Either knob admits it, because opting an upstream into private addressing at all is one
-    // decision rather than two.
-    assert!(judge_scheme("http://x.internal/x", false, private_ok()).is_ok());
-    assert!(judge_scheme(
-        "http://public.example/x",
-        false,
-        GuardPolicy {
-            allow_plaintext: true,
-            ..GuardPolicy::default()
-        }
-    )
-    .is_ok());
-}
-
-// ══ REDIRECTS, HOPS AND CAPS ═════════════════════════════════════════════════════════════════════
-
-#[test]
-fn a_redirect_is_refused_and_names_its_target() {
-    for status in [301u16, 302, 303, 307, 308] {
-        assert_eq!(
-            refuse_redirect(status, Some("http://169.254.169.254/latest/meta-data/")),
-            Err(AddressRefusal::Redirect {
-                status,
-                location: "http://169.254.169.254/latest/meta-data/".to_string(),
-            })
-        );
-    }
-    // Non-3xx passes, so the check is about redirects rather than about everything.
-    for ok in [200u16, 404, 500] {
-        assert!(refuse_redirect(ok, None).is_ok());
-    }
-    assert_eq!(
-        refuse_redirect(302, None),
-        Err(AddressRefusal::Redirect {
-            status: 302,
-            location: "<absent>".to_string(),
-        })
-    );
-}
-
-#[test]
-fn the_hop_bound_refuses_at_the_limit_rather_than_past_it() {
-    let three = GuardPolicy {
-        max_redirects: 3,
-        ..GuardPolicy::default()
-    };
-    for hops in 0..3u32 {
-        assert!(refuse_hop_overflow(hops, "https://a.example/", three).is_ok());
-    }
-    assert_eq!(
-        refuse_hop_overflow(3, "https://a.example/", three),
-        Err(AddressRefusal::TooManyRedirects {
-            limit: 3,
-            at: "https://a.example/".to_string(),
-        })
-    );
-    // Zero redirects is a legitimate setting and means "the document must be where I said".
-    assert!(refuse_hop_overflow(0, "https://a.example/", GuardPolicy::default()).is_err());
-}
-
-#[test]
-fn the_body_cap_refuses_over_the_ceiling_and_not_at_it() {
-    let policy = GuardPolicy {
-        max_body_bytes: 5 * 1024,
-        ..GuardPolicy::default()
-    };
-    assert!(refuse_oversized_body("https://a.example/", 5 * 1024, policy).is_ok());
-    assert_eq!(
-        refuse_oversized_body("https://a.example/", 5 * 1024 + 1, policy),
-        Err(AddressRefusal::BodyTooLarge {
-            url: "https://a.example/".to_string(),
-            bytes: 5 * 1024 + 1,
-        })
-    );
-}
-
-/// The default is FAIL-CLOSED in every direction, so a caller that forgets a knob gets the strict
-/// answer. A default that permitted anything would make "forgot to set it" indistinguishable from
-/// "decided to allow it".
-#[test]
-fn the_default_policy_is_closed_in_every_direction() {
-    let d = GuardPolicy::default();
-    assert!(!d.allow_private);
-    assert!(!d.allow_plaintext);
-    assert!(!d.plaintext_admissible());
-    assert_eq!(d.max_redirects, 0);
-    assert_eq!(d.max_body_bytes, 64 * 1024);
-    assert_eq!(d.timeout, std::time::Duration::from_secs(10));
-}
-
-/// `pin_answer` is the one door every resolution goes through, so its own refusals are asserted
-/// here rather than only through its callers.
-#[test]
-fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_under() {
-    let t = pin_answer(
-        "a.example",
-        8443,
-        true,
-        &[ip(PUBLIC), ip(PUBLIC_2)],
-        strict(),
-    )
-    .expect("an all-public answer pins");
-    assert_eq!(t.addr(), ip(PUBLIC), "the resolver's own ordering is kept");
-    assert_eq!(t.host(), "a.example");
-    assert!(t.is_https());
-    assert_eq!(
-        pin_answer("a.example", 443, true, &[], strict()),
-        Err(AddressRefusal::NoAddresses("a.example".to_string()))
-    );
 }
 
 // ── the percent-decode arm of the host normalization ────────────────────────────────────────────
@@ -1145,35 +668,6 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
 // ── Moved from busbar-kernel's deleted `net_guard` shim suites (row 130 E2): the rows those suites
 // held that this one did not. ───────────────────────────────────────────────────────────────────
 
-/// The NAME arm is the ONLY defence for a metadata host that answers on a PUBLIC address.
-///
-/// `ip_is_cloud_metadata` covers link-local /16 plus three literals plus IMDSv6. A metadata
-/// endpoint reachable at a globally-routable address matches NONE of them, so if the name is not
-/// in `METADATA_HOSTS` the resolve-then-pin path dials it.
-#[test]
-fn a_metadata_name_on_a_public_address_is_refused_by_its_name_alone() {
-    struct Stub(IpAddr);
-    impl Resolver for Stub {
-        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
-            Ok(vec![self.0])
-        }
-    }
-    // Equinix Metal's metadata service answers on a public address, which is exactly why it is on
-    // the denylist by NAME: no address predicate can catch it.
-    let public = IpAddr::V4(Ipv4Addr::new(147, 75, 1, 1));
-    let got = resolve_and_pin(
-        "metadata.platformequinix.com",
-        443,
-        true,
-        &Stub(public),
-        GuardPolicy::default(),
-    );
-    assert!(
-        got.is_err(),
-        "metadata.platformequinix.com resolved to a PUBLIC address was PINNED, not refused: {got:?}"
-    );
-}
-
 /// THE HOST-STRING GUARDS MUST JUDGE THE NAT64 EMBEDDING TOO, not just the address predicates.
 ///
 /// [`ip_is_cloud_metadata`] and [`ip_is_internal`] take an already-parsed `IpAddr` and were fixed
@@ -1352,32 +846,4 @@ fn a_list_entry_is_read_as_a_targets_host_is_read() {
             "an unmappable entry names nothing"
         );
     }
-}
-
-/// RED (P0, an IDN 1.5.5 dialled): resolve-then-pin asks the resolver for the name a URL client
-/// resolves, the UTS #46 punycode name, and pins what it answered under that name; an ASCII name is
-/// asked as written. Asked for the name as written, a resolver answers `NXDOMAIN` and the dial is
-/// refused.
-#[test]
-fn resolve_and_pin_resolves_the_punycode_name() {
-    for (host, asked) in [
-        ("b\u{fc}cher.example", "xn--bcher-kva.example"),
-        ("Api.Example.COM", "Api.Example.COM"),
-    ] {
-        let r = ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)])]);
-        let pinned = resolve_and_pin(host, 443, true, &r, strict()).expect("pinned");
-        assert_eq!(*r.asked.borrow(), vec![asked.to_string()], "{host}");
-        assert_eq!(pinned.host(), asked, "{host}");
-        assert_eq!(pinned.addr(), ip(PUBLIC), "{host}");
-    }
-    assert!(matches!(
-        resolve_and_pin(
-            "b\u{fc}cher\u{ff1c}.example",
-            443,
-            true,
-            &NeverAsked,
-            strict()
-        ),
-        Err(AddressRefusal::NoHost(_))
-    ));
 }

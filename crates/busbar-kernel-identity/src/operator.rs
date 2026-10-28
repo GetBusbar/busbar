@@ -9,10 +9,10 @@
 //! row answers the provider key, over the token's digest, and hands the result here.
 //!
 //! The provider key and the principal id are frozen configuration text naming a module no crate in
-//! the kernel declares. They sit in the composition root's legacy table, and the root hands them in
-//! with its linked auth rows as [`OperatorWords`] (BUSBAR-1.6.0.md:173, "sit in the root legacy
-//! table"). The kernel hands the provider on as `op`, so neither this module nor the kernel names
-//! an instance.
+//! the kernel declares. They sit in the composition root's migration table, and the root hands them
+//! in with its linked auth rows as [`OperatorWords`] (BUSBAR-1.6.0.md:173, "sit in the root
+//! migration table"). The kernel hands the provider on as `op`, so neither this module nor the
+//! kernel names an instance.
 
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
 pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
 
-/// THE OPERATOR CREDENTIAL'S FROZEN WORDS, as the composition root's legacy table spells them: the
+/// THE OPERATOR CREDENTIAL'S FROZEN WORDS, as the composition root's migration table spells them: the
 /// provider configuration names it by (the `auth.admin_auth:` default, the one `module:` whose
 /// definition may carry `token:`, and a reserved hook name) and the principal id it identifies the
 /// operator as. Kind-neutral values; which words they are is the root's business.
@@ -102,7 +102,7 @@ pub fn answered(op: &str) -> bool {
 
 /// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
 /// spelling: the key itself or the row's canonical name (one plugin, one identity, whichever name
-/// config gives it). The kernel adds the names its legacy table gives the key.
+/// config gives it). The kernel adds the names its migration table gives the key.
 pub fn names(op: &str, module: &str) -> bool {
     module == op
         || linked()
