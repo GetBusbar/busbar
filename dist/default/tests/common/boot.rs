@@ -134,10 +134,7 @@ pub fn healthz_answers(port: u16) -> bool {
     }
     let mut buf = String::new();
     let _ = s.read_to_string(&mut buf);
-    buf.lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        == Some("200")
+    buf.lines().next().and_then(|l| l.split_whitespace().nth(1)) == Some("200")
 }
 
 /// The node's whole log, printed to the test's stderr when the test panics while this guard is
