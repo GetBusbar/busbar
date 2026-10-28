@@ -472,28 +472,10 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
-# A transport whose door is its crate root's one public item (transitional until its own door-root
-# round names it below): the row reads `door` and everything else off its Statement
-# (`linked_transport!`).
+# A transport whose door is its crate root's one public item: the row reads `door` and everything
+# else off its Statement (`linked_transport!`).
 busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming::door"
-
-# THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
-# has `fn door()` as its only public item): `<plugin crate> = "<crate>::door"`, the door its door
-# macro emits, a `DoorFn` answering a `&'static Door` (SEALED: a `Door`'s fields are private behind
-# the contract's one `unsafe` constructor; busbar-transport-grpc links transitionally until its own
-# repo's round names it here). A crate named here is linked by its door alone: the generated tables
-# read that door and nothing else, hand it to the loader's safe `admit_linked` (which admits it
-# through `open_linked`, the dlopen path's own checks), and read every fact its axis needs (a
-# transport's key, layers and session; an auth or store row's name; a store's `ephemeral`; an
-# export's name, alias and `declares`; a secret or plane door's `declares`) off the admitted door's
-# Statement (`root::door_root`). A crate not named here is TRANSITIONAL: it keeps its `linked-entry`
-# (else `<crate>::linked`) reads until its own door-root round names it here, and the transitional
-# arm is deleted once every crate is (#1495). A door-root row may name only axes that read its door,
-# and no `linked-entry` or `linked-declares` row. ARCHITECT ruling (row 195; l.272-274): this root
-# generates the linked table and alone depends on the plugin crates; the loader names none; this
-# root stays `forbid(unsafe_code)`.
-[package.metadata.busbar.door-root]
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
@@ -628,6 +610,8 @@ busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit", features = ["
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
 # loader's fake-call store harness and oracle-cache locator are `test-support` only.
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
+# The local token issuer and the framed connection table the auth chain tests serve its JWKS on.
+busbar-test-kit = { path = "../../crates/busbar-test-kit" }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
@@ -826,7 +810,7 @@ members = ["."]
 
 [workspace.dependencies]
 # THE LLM PLANE, pinned from its own repo like every other plane.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "c4b8599250ff7996af33494bfe56e4526f5526b8" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "bb66a830bb4bb9ecbf737765fa330c06766a8c7d" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "b1337ce8805b1f9ee2e3f83bbf907e232559191f" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "b1337ce8805b1f9ee2e3f83bbf907e232559191f" }
@@ -916,7 +900,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "f60e04d580d121b0b4113169518659369b186ff9" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "14a35c50338822967e2a2d2f52e7b823788a436a" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in

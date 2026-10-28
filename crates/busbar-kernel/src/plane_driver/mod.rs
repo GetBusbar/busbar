@@ -56,6 +56,7 @@
 mod answer;
 mod cancel;
 mod close;
+pub mod dispatch;
 pub mod door;
 mod epoch;
 mod far_end;
@@ -64,6 +65,7 @@ pub mod host;
 mod money;
 mod needs;
 mod probe;
+pub mod registry;
 mod route;
 pub mod route_input;
 pub mod route_tables;
@@ -112,6 +114,7 @@ pub use host::{
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
+pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
 
 use crate::auth::CallerRefKey;
