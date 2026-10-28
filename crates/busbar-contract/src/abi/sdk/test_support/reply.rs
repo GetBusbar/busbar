@@ -547,6 +547,27 @@ impl Reply for crate::abi::export::StatusOut {
     type Owned = Vec<u8>;
 }
 
+impl sealed::Take for crate::abi::export::ScrapeOut {
+    fn head(&mut self) -> &mut OutHead {
+        &mut self.head
+    }
+    fn clear(&mut self, _: Token) {
+        clear_head(&mut self.head);
+    }
+    /// The bytes land in the buffer the `in` lent, which the caller holds; `written` and `needed`
+    /// stay on the `out`. The kit does not know the buffer's capacity here, so the capacity judged
+    /// is what was written.
+    fn take(&self, _: Outcome, _: Token) {
+        judged(crate::abi::export::validate::check_scrape(
+            self,
+            self.written,
+        ));
+    }
+}
+impl Reply for crate::abi::export::ScrapeOut {
+    type Owned = ();
+}
+
 impl sealed::Take for crate::abi::auth::IdentifyOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head

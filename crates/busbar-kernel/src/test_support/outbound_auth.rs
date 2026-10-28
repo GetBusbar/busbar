@@ -116,11 +116,11 @@ struct LinkedAuthRow {
 
 impl LinkedAuthRow {
     /// The build's table entry `(key, canonical, door)`: its key, its canonical name and the former
-    /// names the root legacy table gives its key (the loader's `Manifest::answers_to` over a linked
+    /// names the root migration table gives its key (the loader's `Manifest::answers_to` over a linked
     /// row).
     fn of_table(row: &LinkedAuth) -> Self {
         let mut words = vec![row.0.to_string(), row.1.to_string()];
-        words.extend(crate::config::legacy::former_names(row.0));
+        words.extend(crate::config::migration_table::former_names(row.0));
         Self {
             key: row.0.to_string(),
             words,

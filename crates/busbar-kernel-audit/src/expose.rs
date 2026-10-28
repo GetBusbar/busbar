@@ -35,7 +35,7 @@
 //! JSON is written out by hand rather than derived. The bodies must be byte-deterministic (a
 //! counter-signer that hashes what it fetched needs the same bytes twice), the numeric fields that
 //! are 128-bit go out as TEXT because a JSON number wide enough to hold them is not safely
-//! readable by most parsers — and `i128` through an `f64` is exactly the loss #81 bans — and the
+//! readable by most parsers — and `i128` through an `f64` is exactly the loss the recipe forbids — and the
 //! member order has to be the recipe's order rather than a serializer's.
 
 use crate::heads::SignedHead;
@@ -149,7 +149,7 @@ fn push_record(out: &mut String, record: &AuditRecord) {
     member_opt(out, "signature", record.signature.as_deref());
     out.push(',');
     member_opt(out, "key_id", record.key_id.as_deref());
-    // Which recipe THIS record was sealed under (#34). The body's own `recipe` names the recipe the
+    // Which recipe THIS record was sealed under. The body's own `recipe` names the recipe the
     // node seals under now; a window that straddles a recipe change holds records of both, and a
     // verifier reads each record's rules off the record.
     out.push(',');

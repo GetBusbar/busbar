@@ -34,7 +34,7 @@ use openapi::openapi_doc_seamed;
 
 // The admin service's modules, by the paths the moved tests spell (`crate::verb::…`).
 #[allow(unused_imports)]
-use busbar_core_admin::{admin_codec, restart, v1, verb, witness};
+use busbar_core_admin::{admin_codec, restart, v1, verb};
 
 /// Install the process-wide test environment exactly once: the root's linked hook names, then the
 /// operator credential's registry row, every test-linked plane (`linked::install`) and the admin

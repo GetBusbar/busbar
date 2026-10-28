@@ -46,7 +46,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
     // this in-crate unit test names no plane, no plane crate and no plane config type (the full
     // end-to-end builder path is covered by the plane crate's own integration tests).
     let mut builder = crate::new_test_app().hook_env(env);
-    let tools = busbar_kernel::plane::registry::plane_decl_for_config_section("tools")
+    let tools = busbar_kernel::plane_driver::registry::plane_decl_for_config_section("tools")
         .expect("a plane is registered to own the `tools:` section");
     builder.set_container_hooks(
         tools.key,
@@ -79,7 +79,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             None => {
                 let defs =
                     std::collections::BTreeMap::from([(tools.config_section, cfg.clone_box())]);
-                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                let ctx = busbar_kernel::plane_driver::registry::BuildCtx {
                     endpoint_slot: None,
                     plane_defs: &defs,
                     public_url: None,
