@@ -809,7 +809,7 @@ members = ["."]
 
 [workspace.dependencies]
 # THE LLM PLANE, pinned from its own repo like every other plane.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "fd12acfac946137c2f1bbc5fe90e8346535570bf" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "9e7804ef89c3e382e535da185a17104011a2fc65" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "ea92a077b0b43038196261fc78b5cd26569def07" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "ea92a077b0b43038196261fc78b5cd26569def07" }
@@ -899,7 +899,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "543fb7ec162e0ef6e28a6e92e2710d3e91197c4e" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "29c3e8a3cb6766603e4e3ca8d2bc42bb21e0dc1b" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in

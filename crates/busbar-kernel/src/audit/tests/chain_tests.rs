@@ -25,7 +25,8 @@
 
 use super::*;
 
-use crate::audit_ring::{AuditEntry, AuditInput};
+use crate::audit::audit_entry_record::AuditInput;
+use crate::audit_ring::AuditEntry;
 
 // ══ THE FOURTH STREAM ════════════════════════════════════════════════════════════════════════════
 //

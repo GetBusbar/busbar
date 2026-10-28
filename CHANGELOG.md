@@ -839,7 +839,7 @@ each dialect translates, field by field, is listed in the generated
   `units:` map with every LLM open class at 0 (0 keeps each free). A rate-card entry with a key busbar does not
   know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
   unitless: a `currency` key is refused, as in 1.5.5.
-- 1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.
+- 1.6.0 Changed: a provider entry (in `config.yaml` and in the `providers.yaml` catalog) takes the provider's own request headers and query parameters under their wire names (`OpenAI-Organization`, `api-version`, `x-goog-user-project`, ...) beside busbar's keys, which include the lane-capability keys `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`; any other key is refused at startup: "providers.<p>: unknown key `x`: it is not a busbar provider key and not an option of the provider's dialect; the <d> dialect accepts ...".
   They set how a request that crosses protocols is written for that upstream's models: the
   output-token cap key an OpenAI-protocol upstream receives, and whether an Anthropic-protocol
   upstream gets adaptive thinking and native structured outputs. Each key is optional, and an
