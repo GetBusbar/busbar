@@ -142,7 +142,7 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
                 .or_insert_with(|| source.clone());
         }
     }
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         let Some(admin_routes) = decl.admin_routes else {
             continue;
         };

@@ -65,7 +65,7 @@ fn linked_row(row: &LinkedRow) -> LinkedPlugin {
             LinkedPlugin::auth_door_named(canonical, key, door)
         }
     };
-    let former = busbar_kernel::config::legacy::former_names(&row.manifest.alias);
+    let former = busbar_kernel::config::migration_table::former_names(&row.manifest.alias);
     row.with_former_names(former)
 }
 
