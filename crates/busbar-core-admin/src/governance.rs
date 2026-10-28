@@ -51,6 +51,10 @@ impl GovernanceError {
 
 /// The governance seam.
 pub trait Governance {
+    /// What an executed verb answers with. Opaque to this crate: the integrator's own answer shape
+    /// passes through `Verbs::execute` unchanged, so nothing on the way has to frame or unframe it.
+    type Answer;
+
     /// `// contract:` every legacy verb's actual effect but the two key mints (answered by the served
     /// handlers in `crate::keys`). `Verbs::execute` has already checked scope and rate class by the
     /// time a call reaches here; this call's only job is the verb's own domain effect over already-admitted
@@ -60,7 +64,7 @@ pub trait Governance {
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Vec<u8>, GovernanceError>;
+    ) -> Result<Self::Answer, GovernanceError>;
 
     /// `// contract:` the actual effect of a new 1.6.0 verb, once `Verbs::execute` has checked its
     /// scope and rate class. `Verbs::execute` never calls this for a refused verb. Each new verb is
@@ -71,7 +75,7 @@ pub trait Governance {
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Vec<u8>, GovernanceError>;
+    ) -> Result<Self::Answer, GovernanceError>;
 
     /// `// contract:` the answer to one of the five 1.6.0 ledger views
     /// ([`crate::verb::LEDGER_VERBS`]), once `Verbs::execute` has checked its scope. A view reads
@@ -93,7 +97,7 @@ pub trait Governance {
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Vec<u8>, GovernanceError> {
+    ) -> Result<Self::Answer, GovernanceError> {
         let (_, _, _) = (verb, admin, request);
         Err(GovernanceError::NotFound)
     }
@@ -129,7 +133,7 @@ pub trait Governance {
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Vec<u8>, GovernanceError> {
+    ) -> Result<Self::Answer, GovernanceError> {
         let (_, _, _) = (verb, admin, request);
         Err(GovernanceError::NotFound)
     }
