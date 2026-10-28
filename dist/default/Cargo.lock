@@ -725,7 +725,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=e3a6976d1944b840501ee6e9b02cbe10d020b5ed#e3a6976d1944b840501ee6e9b02cbe10d020b5ed"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=77980108dad5d87fe45043e85cb30d60d2f6561b#77980108dad5d87fe45043e85cb30d60d2f6561b"
 dependencies = [
  "busbar-contract",
  "bytes",
