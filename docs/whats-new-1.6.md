@@ -36,6 +36,18 @@ What `--migrate-config` does for you:
 - **Rewrites the old hook spellings.** `plugin:` becomes `module:` and a single-stage `at:` becomes
   `phase:`. The old spellings still work in 1.6.0; the rewrite just puts your file in the documented
   form. A saved config overlay is rewritten the same way when Busbar starts.
+- **Pins the 1.6.0 plugins.** Each plugin your config uses that this binary does not carry gets a
+  `plugins.fetch` pin to its 1.6.0 release, found in the release index; a pin to a 1.5.5-era
+  release is rewritten. A 1.5.5 build left beside its 1.6.0 build only warns at startup.
+- **Lets each plugin migrate its own settings.** Core never edits inside a plugin's section: each
+  plugin's own migration does, and its report lines are printed under its name. Your webhook
+  exporter's auth header that 1.5.5 never sent is removed that way, and the private provider and
+  sign-in hosts you used are reported and added to `advanced.allow_destinations`, exactly those
+  hosts.
+- **Keeps your bill.** A `rate_card:` entry gains `units:` at `0` for every unit 1.5.5 never billed.
+- **Keeps your users signed in.** A sign-in provider whose users 1.5.5 let through with no grant
+  gets an explicit `role_bindings.<provider>."*": {}`, with a warning to tighten it.
+- **Drops block-list entries that never matched.** An entry naming no usable host is removed.
 - **Leaves everything else exactly as you wrote it.** Pools, members, weights, providers and models
   are not touched. When there is nothing to decide, the output has no banner and no comments: it
   reads like a file you wrote by hand.
@@ -55,7 +67,9 @@ What carries over without the migration doing anything:
   1.5.5, with the same warning naming the config key that replaces them.
 - **Your CI.** `--validate` reads the same references startup reads, with no network and no side
   effects, so running the 1.6.0 binary's `--validate` in CI tells you before you deploy whether it
-  will start. The three exceptions are marked in the list at the end of this page.
+  will start. The cases it cannot see are marked in the list at the end of this page.
+- **Your log pipeline.** Plugins write their own log files, and every plugin warning and error is
+  also a line of busbar's own log, tagged with the plugin's name.
 
 The full step-by-step guide is [Migrating from 1.5.x to 1.6.0](migration-1.6.md).
 
@@ -208,17 +222,17 @@ migration does about it.
 | A config must have a `store:` block. | Nothing. | Yes, `--migrate-config` adds it. |
 | Hook `plugin:` and `at:` keys are the old spellings. | Nothing; they still work. | Yes, `--migrate-config` rewrites them. |
 | A plugin named by its 1.5.5 name. | Nothing. | Yes, the old name still resolves. |
-| 1.5.5 builds of the SQLite, Postgres, MySQL and Valkey stores, the OIDC, GitHub and LDAP sign-in plugins, the Vault secret plugin and the web-request hook do not load in 1.6.0. | Install their 1.6.0 releases before you restart. Your data carries over: the new store plugin opens the same database. If your config downloads plugins with `plugins.fetch`, update each pin to the 1.6.0 release (the repositories are now named `busbar-<kind>-<name>`). | No. |
+| 1.5.5 builds of the SQLite, Postgres, MySQL and Valkey stores, the OIDC, GitHub and LDAP sign-in plugins, the Vault secret plugin and the web-request hook do not load in 1.6.0. | Nothing, on a host with network. Your data carries over: the new store plugin opens the same database. On a host with no network, copy the 1.6.0 tarballs into `plugins.dir`. | Yes, `--migrate-config` pins each 1.6.0 release in `plugins.fetch` and rewrites old pins; an old build beside its 1.6.0 build only warns. |
 | A plugin built by someone else for 1.5.5 does not load. | Its author rebuilds it with [the SDK migration guide](plugin-sdk-migration-1.6.md). | No. |
-| A `rate_card:` must price every billable unit a provider reports, not only tokens. | Add a `units:` map to each entry, with every listed unit at `0` to keep 1.5.5's bill exactly ([how](migration-1.6.md#a-card-must-configure-every-billable-unit-its-plane-counts)). | No. |
-| A provider or identity provider on a private or loopback address (a local ollama or vLLM, an in-cluster gateway, an internal DNS name) is refused by default. `--validate` does not catch this. | Name the host, address or range in `advanced.allow_destinations`, or set `advanced.block_private_addresses: false` to keep 1.5.5's behaviour. | No. |
-| A provider `api_key` reference that does not resolve stops startup instead of running the provider with an empty key. | Fix the reference, or write `api_key: none` for a provider that takes no key. The migration does not guess this for you, because guessing wrong would disarm a provider that needs a key. | No, by design. |
-| A metadata block-list entry that names no usable host (for example `db.1`) is no longer silently ignored. | Remove it; it never matched anything. | No. |
-| A webhook exporter's auth header that cannot be built as an HTTP header is refused at validation. 1.5.5 silently sent the webhook without it. | Fix the header or remove it. | No. |
+| A `rate_card:` must price every billable unit a provider reports, not only tokens. | Nothing, to keep 1.5.5's bill exactly; set real rates when you want to bill those units ([how](migration-1.6.md#a-card-must-configure-every-billable-unit-its-plane-counts)). | Yes, `--migrate-config` adds every unit at `0`. |
+| A provider or identity provider on a private or loopback address (a local ollama or vLLM, an in-cluster gateway, an internal DNS name) is refused by default. `--validate` names a provider URL the guard will refuse; it cannot see an identity provider's. | Nothing. | Yes, `--migrate-config` adds exactly the hosts the provider's plane and the sign-in plugins report to `advanced.allow_destinations`. |
+| A provider `api_key` reference that does not resolve stops startup instead of running the provider with an empty key. | Fix the reference, or write `api_key: none` for a provider that takes no key. The migration does not guess this for you, because guessing wrong would disarm a provider that needs a key. | No, by design; `--migrate-config` names each one in a TODO. |
+| A metadata block-list entry that names no usable host (for example `db.1`) is no longer silently ignored. | Nothing. | Yes, `--migrate-config` removes it; it never matched anything. |
+| A webhook exporter's auth header that cannot be built as an HTTP header is refused at validation. 1.5.5 silently sent the webhook without it. | Nothing. | Yes, the exporter's own migration removes it and says 1.5.5 never sent it. |
 | A `file:` secret that is a directory, device or pipe is refused. | Point it at a regular file. | No. |
-| A signed-in user that your role bindings grant nothing is refused (401). 1.5.5 let such users through with no pool limits and no budget. | Bind their roles in `role_bindings`. | No. |
+| A signed-in user that your role bindings grant nothing is refused (401). 1.5.5 let such users through with no pool limits and no budget. | Review the binding the migration wrote and tighten it. | Yes, `--migrate-config` writes `role_bindings.<provider>."*": {}` (every pool, no budget) with a warning. |
 | An identity provider reached by a DNS name whose discovery or key URL redirects to a private address fails sign-in. `--validate` does not catch this. | Point the issuer at the address it finally serves from. | No. |
-| Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). Not caught by `--validate`. | Add that directory to your log collection. | No. |
+| Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). | Nothing: every plugin warning and error is also a line of busbar's own log, tagged with the plugin. Add the directory to your log collection for the rest. | Yes. |
 
 ### Behaviour you might see, with nothing to change
 
