@@ -880,21 +880,20 @@ pub(crate) const fn neutral_sibling_decl(
 /// section-name prose (`the_refusal_message_is_actionable`) moved to
 /// `crates/busbar/tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
 ///
-/// Returns the [`registry::TestRegistryIsolation`] guard, which the caller holds for its test body's
+/// Returns the [`crate::test_support::planes::TestRegistryIsolation`] guard, which the caller holds for its test body's
 /// lifetime: the registered set stays exactly these three regardless of what ran before it or runs
 /// concurrently with it.
 #[cfg(test)]
-pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsolation {
+pub(crate) fn isolated_three_plane_test_registry(
+) -> crate::test_support::planes::TestRegistryIsolation {
     static ALPHA: registry::PlaneDecl =
         neutral_sibling_decl("alpha", "alpha-section", "alpha thing");
     static BETA: registry::PlaneDecl = neutral_sibling_decl("beta", "beta-section", "beta thing");
     static GAMMA: registry::PlaneDecl =
         neutral_sibling_decl("gamma", "gamma-section", "gamma thing");
-    // `TestRegistryIsolation::seeded`, NOT `empty()` followed by `register_test_plane`: the guard
-    // holds `TEST_REGISTRY_SERIAL` for its whole lifetime, and `register_test_plane` takes that same
-    // (non-reentrant) lock — calling it after `empty()` on this thread would self-deadlock. `seeded`
-    // installs the three decls atomically under the one lock acquisition instead.
-    registry::TestRegistryIsolation::seeded(&[&ALPHA, &BETA, &GAMMA])
+    // `seeded`, NOT `empty()` followed by `register_test_plane`: the guard holds the registration
+    // lock for its whole lifetime, so a registration on this thread would self-deadlock.
+    crate::test_support::planes::TestRegistryIsolation::seeded(&[&ALPHA, &BETA, &GAMMA])
 }
 
 #[cfg(test)]

@@ -58,7 +58,7 @@ pub(crate) trait Answer: Send {
     /// What writing the answer comes to.
     type Out: Send;
     /// A WHOLE answer: `head` (its stated length taken out) and every byte the unit wrote.
-    fn whole(self, head: Head, body: Vec<u8>) -> impl Future<Output = Self::Out> + Send;
+    fn whole(self, head: Head, body: Bytes) -> impl Future<Output = Self::Out> + Send;
     /// A framed answer CLOSED BEFORE ITS FIRST BODY BYTE: `head` and the framer's closing block,
     /// as ONE header block, no body.
     fn closed(self, head: Head, block: HeaderMap) -> impl Future<Output = Self::Out> + Send;
@@ -129,11 +129,11 @@ impl Reply {
                 // wrote, sent under its length.
                 Ok(h) if whole_answer(&h.1) => {
                     let mut body = body;
-                    let mut whole = Vec::new();
+                    let mut whole = Whole::default();
                     while let Ok(bytes) = body.try_recv() {
-                        whole.extend_from_slice(&bytes);
+                        whole.push(bytes);
                     }
-                    sink.whole(unlengthed(h), whole).await
+                    sink.whole(unlengthed(h), whole.into_bytes()).await
                 }
                 Ok(h) => {
                     if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
@@ -178,7 +178,7 @@ pub(crate) fn whole_answer(fields: &HeadFields) -> bool {
         fields
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(field))
-            .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
+            .map(|(_, value)| String::from_utf8_lossy(value))
     };
     named(b"content-length").is_some()
         && !named(b"content-type").is_some_and(|v| streamed_media(&v))
@@ -207,13 +207,13 @@ pub(crate) fn unlengthed((status, mut fields): Head) -> Head {
 
 /// Every piece the unit writes until it ends, the unit driven meanwhile (its writes wait on this
 /// side), then whatever it wrote last.
-pub(crate) async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u8> {
-    let mut whole = Vec::new();
+pub(crate) async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes {
+    let mut whole = Whole::default();
     loop {
         tokio::select! {
             biased;
             piece = body.recv() => match piece {
-                Some(bytes) => whole.extend_from_slice(&bytes),
+                Some(bytes) => whole.push(bytes),
                 None => {
                     let _ = unit.await;
                     break;
@@ -221,13 +221,38 @@ pub(crate) async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUni
             },
             _ = &mut unit => {
                 while let Ok(bytes) = body.try_recv() {
-                    whole.extend_from_slice(&bytes);
+                    whole.push(bytes);
                 }
                 break;
             }
         }
     }
-    whole
+    whole.into_bytes()
+}
+
+/// A whole answer's pieces, joined: a lone piece is kept as written, never copied.
+#[derive(Default)]
+struct Whole {
+    one: Option<Bytes>,
+    many: Vec<u8>,
+}
+
+impl Whole {
+    fn push(&mut self, piece: Bytes) {
+        match self.one.take() {
+            None if self.many.is_empty() => self.one = Some(piece),
+            first => {
+                if let Some(first) = first {
+                    self.many.extend_from_slice(&first);
+                }
+                self.many.extend_from_slice(&piece);
+            }
+        }
+    }
+
+    fn into_bytes(self) -> Bytes {
+        self.one.unwrap_or_else(|| Bytes::from(self.many))
+    }
 }
 
 /// A UNIT RUNNING ON ITS OWN TASK after its head (ARCHITECT ruling 2026-10-07, STREAM-CEILING): it
@@ -1514,7 +1539,7 @@ impl ConnAnswer {
 impl Answer for ConnAnswer {
     type Out = bool;
 
-    async fn whole(self, head: Head, body: Vec<u8>) -> bool {
+    async fn whole(self, head: Head, body: Bytes) -> bool {
         let response = crate::root::serve::HyperAnswer(crate::root::serve::unrendered_response)
             .whole(head, body)
             .await;

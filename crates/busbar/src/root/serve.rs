@@ -4009,17 +4009,17 @@ impl DataRoutes {
         // The listener's scheme, for a stream another framer frames.
         let scheme = req.scheme;
         let (door, arrival, body) = self.arrived(plane, claim, req, minted);
-        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
-        let datagram_carrier = self.served.planes[plane]
+        // The claim's carrier and the framer that answers it, looked up once.
+        let framed = self.served.planes[plane]
             .snapshot
             .claims
             .get(claim as usize)
-            .map(|c| c.carrier.clone())
-            .and_then(|c| {
-                self.framer_for(&c)
-                    .filter(|d| d.facts().datagram)
-                    .map(|d| (d, c))
-            });
+            .and_then(|c| self.framer_for(&c.carrier).map(|d| (d, c.carrier.as_str())));
+        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
+        let datagram_carrier = framed
+            .as_ref()
+            .filter(|(d, _)| d.facts().datagram)
+            .map(|(d, c)| (Arc::clone(d), (*c).to_owned()));
         if let Some(carried) = datagram_carrier {
             return self.open_datagram(carried, door, arrival).await;
         }
@@ -4035,13 +4035,8 @@ impl DataRoutes {
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
         // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
         // framer frames this stream alone. A claim stating neither is the data listener's own.
-        let carrier = self.served.planes[plane]
-            .snapshot
-            .claims
-            .get(claim as usize)
-            .map(|c| c.carrier.clone());
         if let Some((door, carrier)) =
-            carrier.and_then(|c| framed_by(&c, |s| self.framer_for(s)).map(|d| (d, c)))
+            framed.and_then(|(d, c)| framed_by(c, |_| Some(Arc::clone(&d))).map(|door| (door, c)))
         {
             let head: Vec<(String, Vec<u8>)> = arrival
                 .fields
@@ -4050,7 +4045,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, &carrier, &target, &head, scheme,
+                door, carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
@@ -4293,9 +4288,9 @@ impl DataRoutes {
         };
         let units = served.driver.unit(&steps, &far, caller, arrival, 0);
         let money = Arc::clone(&served.money);
-        let facts = live.facts.clone();
+        let held = Arc::clone(&live);
         let late: crate::root::linked::node::Late =
-            Box::new(move || report_of(&money, unit, &facts));
+            Box::new(move || report_of(&money, unit, &held.facts));
         // THE UNIT'S REQUEST SPAN (`forward`) opens as its route leg begins, once it is admitted
         // and its pool is known, as the previous release's did ([`DoorSteps`]'s `request_span`).
         let ended = node
@@ -4893,7 +4888,7 @@ where
 {
     type Out = Response;
 
-    async fn whole(self, head: Head, body: Vec<u8>) -> Response {
+    async fn whole(self, head: Head, body: Bytes) -> Response {
         stated(head, Body::from(body))
     }
 

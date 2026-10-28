@@ -153,6 +153,7 @@ impl GovState {
             deployment_caller_ref: RwLock::new(None),
             boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
+            at_rest: RwLock::new(None),
             denylist,
             refresh_lock,
             self_mint_lock: std::sync::Mutex::new(()),
@@ -400,6 +401,11 @@ impl GovState {
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
+        // REFUSED, before anything is written, on a node with no at-rest key: the credential could
+        // only be stored in the clear.
+        let Some(keys) = self.at_rest_keys() else {
+            return Err(RecordStoreError(super::at_rest::NO_KEY_REFUSAL.to_string()));
+        };
         let (binding, generation) = signed_binding(spec, now)?;
         let (public_id, secret_value) = super::issue_credential(shape).store()?;
         let secret_value = Secret::new(secret_value);
@@ -410,22 +416,28 @@ impl GovState {
         // The credential is row-looked-up (by its public id), unlike the signed token above (see
         // CredentialMeta's doc). `secret_form: Recoverable`: its verifier re-derives from the
         // plaintext, so it cannot be a one-way digest.
+        let meta = CredentialMeta {
+            id: cred_id,
+            key_id: binding.id.clone(),
+            kind: kind.to_string(),
+            slot: 0,
+            public_id: public_id.clone(),
+            secret_form: SecretForm::Recoverable,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            revoked_at: None,
+            revoke_reason: None,
+            revision: 0,
+        };
+        // Sealed under the at-rest key before the store sees it: no store holds a recoverable
+        // secret in the clear.
+        let sealed = keys
+            .seal(&meta, secret_value.expose(&crate::seal::lend()).as_bytes())
+            .map_err(RecordStoreError)?;
         let secret = CredentialSecret {
-            meta: CredentialMeta {
-                id: cred_id,
-                key_id: binding.id.clone(),
-                kind: kind.to_string(),
-                slot: 0,
-                public_id: public_id.clone(),
-                secret_form: SecretForm::Recoverable,
-                created_at: now,
-                updated_at: now,
-                expires_at: None,
-                revoked_at: None,
-                revoke_reason: None,
-                revision: 0,
-            },
-            secret: format!("v1:plain:{}", secret_value.expose(&crate::seal::lend())),
+            meta,
+            secret: sealed,
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
@@ -1058,6 +1070,146 @@ impl GovState {
         let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
         *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
         self.refresh_caller_refs();
+    }
+
+    /// Install the AT-REST KEYS (`credentials.at_rest`, resolved at boot and on every apply or
+    /// reload that declares them). `true` when they differ from the keys installed before (by
+    /// kid), which is when a reload re-wraps ([`Self::rewrap_credentials`]).
+    pub fn set_at_rest_keys(&self, keys: Option<super::at_rest::AtRestKeys>) -> bool {
+        let kids = |k: Option<&super::at_rest::AtRestKeys>| {
+            k.map(|k| (k.kid().to_string(), k.previous_kid().map(str::to_string)))
+        };
+        let next = keys.map(Arc::new);
+        let mut slot = self.at_rest.write().unwrap_or_else(|e| e.into_inner());
+        let changed = kids(slot.as_deref()) != kids(next.as_deref());
+        *slot = next;
+        changed
+    }
+
+    /// Whether a recoverable credential can be minted (an at-rest key is configured).
+    pub fn at_rest_enabled(&self) -> bool {
+        self.at_rest_keys().is_some()
+    }
+
+    /// The current at-rest keys, as a cheap `Arc` clone.
+    fn at_rest_keys(&self) -> Option<Arc<super::at_rest::AtRestKeys>> {
+        self.at_rest
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// RE-WRAP every stored recoverable credential that is not sealed under the at-rest `key` yet
+    /// but opens: one sealed under `previous`, or a pre-1.6.0 `v1:plain` row. Each is re-sealed
+    /// under `key` and written back through the store, so `previous` can be retired once a pass
+    /// reports none pending. Run at boot, and on a reload that changes the keys.
+    ///
+    /// Idempotent, and safe across nodes sharing the store: see [`Self::rewrap_rows`]. A row that
+    /// opens under neither key is left as it is (it does not authenticate; the read WARNs).
+    ///
+    /// # Errors
+    /// The store could not list the credentials, or refresh the cache afterwards.
+    pub fn rewrap_credentials(&self, now: u64) -> RecordStoreResult<super::at_rest::Rewrap> {
+        if self.at_rest_keys().is_none() {
+            return Ok(super::at_rest::Rewrap::default());
+        }
+        let rows = self.store.list_credentials_since(0)?;
+        self.rewrap_rows(rows, now)
+    }
+
+    /// The re-wrap over `rows` (as listed from the store), at `now`.
+    ///
+    /// ACROSS NODES: each row is CLAIMED first, through the store's single-use test-and-set
+    /// (`redeem_plane_token`, the store side of `records.claim`), under a token naming the new kid,
+    /// the row and a digest of the envelope it was read with. Exactly one node wins a row; a node
+    /// that loses it counts it pending. A claim stands [`super::at_rest::REWRAP_CLAIM_SECS`], so a
+    /// node that won and died before writing leaves the row to the next boot or reload after that.
+    /// A store that keeps no claims answers every claim lost (fail-closed): nothing is re-wrapped,
+    /// every row still opens under `previous`, and the pass reports them pending.
+    ///
+    /// NEVER REVIVES A REVOKED ROW: the store's write is an upsert of the whole row, so just before
+    /// writing, the row's metadata is read again and the write is skipped unless it is still there
+    /// and still unrevoked.
+    ///
+    /// # Errors
+    /// The store could not refresh the cache afterwards.
+    pub fn rewrap_rows(
+        &self,
+        rows: Vec<CredentialSecret>,
+        now: u64,
+    ) -> RecordStoreResult<super::at_rest::Rewrap> {
+        let mut pass = super::at_rest::Rewrap::default();
+        let Some(keys) = self.at_rest_keys() else {
+            return Ok(pass);
+        };
+        for row in rows {
+            if row.meta.revoked_at.is_some() {
+                continue;
+            }
+            let Some(plain) = super::at_rest::stale(&keys, &row.meta, &row.secret) else {
+                continue;
+            };
+            let digest = ring::digest::digest(&ring::digest::SHA256, row.secret.as_bytes());
+            let token = format!(
+                "{}:{}:{}",
+                keys.kid(),
+                row.meta.id,
+                hex::encode(&digest.as_ref()[..16])
+            );
+            let claimed = self
+                .store
+                .redeem_plane_token(
+                    super::at_rest::REWRAP_CLAIM_KIND,
+                    &token,
+                    now.saturating_add(super::at_rest::REWRAP_CLAIM_SECS),
+                    now,
+                )
+                .unwrap_or(false);
+            if !claimed {
+                pass.pending += 1;
+                continue;
+            }
+            let current = self
+                .store
+                .list_credentials(&row.meta.key_id)
+                .ok()
+                .and_then(|metas| metas.into_iter().find(|m| m.id == row.meta.id));
+            // Written with the row's metadata as it stands now, not as it was listed.
+            let Some(meta) = current.filter(|m| m.revoked_at.is_none()) else {
+                continue;
+            };
+            let written = keys.seal(&meta, plain.as_bytes()).and_then(|sealed| {
+                self.store
+                    .put_credential(&CredentialSecret {
+                        meta,
+                        secret: sealed,
+                    })
+                    .map_err(|e| e.to_string())
+            });
+            match written {
+                Ok(()) => pass.resealed += 1,
+                Err(e) => {
+                    pass.pending += 1;
+                    diag_warn!(
+                        crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+                        kind = %row.meta.kind,
+                        error = %e,
+                        "a recoverable credential could not be re-sealed under \
+                         credentials.at_rest.key; it still opens under the key it was sealed under"
+                    );
+                }
+            }
+        }
+        if pass.resealed > 0 {
+            self.refresh()?;
+            crate::audit_ring::AUDIT.record_by(
+                "credential.at_rest.rewrap",
+                &format!("kid:{} rows:{}", keys.kid(), pass.resealed),
+                crate::audit_ring::OUTCOME_APPLIED,
+                "busbar",
+            );
+        }
+        Ok(pass)
     }
 
     /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
@@ -2583,12 +2735,18 @@ impl GovState {
         public_id: &str,
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
-        // Owned copies, out of the cache lock before the revocation check takes its own: two
-        // allocations on either path.
+        let keys = self.at_rest_keys();
+        // Owned copies, out of the cache lock before the revocation check takes its own. The
+        // stored envelope is opened here, at the read: the cache holds it sealed.
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
             Some((key, cred)) => {
-                let plain = cred.plaintext().filter(|_| cred.meta.is_live(now));
-                (key.id.clone(), plain.map(str::to_string), key.enabled)
+                let plain = if cred.meta.is_live(now) {
+                    super::at_rest::open(keys.as_deref(), &cred.meta, &cred.secret)
+                        .map(|p| p.to_string())
+                } else {
+                    None
+                };
+                (key.id.clone(), plain, key.enabled)
             }
             None => (String::new(), None, false),
         };

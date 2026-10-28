@@ -137,6 +137,78 @@ pub trait StoreCalls: Send + Sync {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>>;
+    /// `put_key`. An implementation that does not serve one of these 1.5.5 ops REFUSES it.
+    fn put_key<'a>(&'a self, key: &'a crate::records::VirtualKey) -> StoreCall<'a, ()> {
+        let _ = key;
+        unserved("put_key")
+    }
+    /// `get_key`.
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<crate::records::VirtualKey>> {
+        let _ = id;
+        unserved("get_key")
+    }
+    /// `list_keys`: every key, tombstones included.
+    fn list_keys(&self) -> StoreCall<'_, Vec<crate::records::VirtualKey>> {
+        unserved("list_keys")
+    }
+    /// `delete_key`.
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        let _ = id;
+        unserved("delete_key")
+    }
+    /// `put_key_with_credential`: the key and its credential, kept together or not at all.
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a crate::records::VirtualKey,
+        secret: &'a crate::records::CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        let _ = (key, secret);
+        unserved("put_key_with_credential")
+    }
+    /// `list_credentials`: a key's credentials, without their secrets.
+    fn list_credentials<'a>(
+        &'a self,
+        key_id: &'a str,
+    ) -> StoreCall<'a, Vec<crate::records::CredentialMeta>> {
+        let _ = key_id;
+        unserved("list_credentials")
+    }
+    /// `revoke_credential`.
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        let _ = (id, reason);
+        unserved("revoke_credential")
+    }
+    /// `list_credentials_since`.
+    fn list_credentials_since(
+        &self,
+        since: u64,
+    ) -> StoreCall<'_, Vec<crate::records::CredentialSecret>> {
+        let _ = since;
+        unserved("list_credentials_since")
+    }
+    /// `add_denylist`.
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        let _ = (sub, reason);
+        unserved("add_denylist")
+    }
+    /// `list_denylist`.
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        unserved("list_denylist")
+    }
+    /// `list_metering`: one bucket's metering rows.
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<crate::records::MeteringRow>> {
+        let _ = bucket;
+        unserved("list_metering")
+    }
+    /// `list_audit`: the legacy audit table, oldest first from genesis.
+    fn list_audit(&self) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+        unserved("list_audit")
+    }
+    /// `list_audit_tail`: the legacy audit table's last `limit` records.
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+        let _ = limit;
+        unserved("list_audit_tail")
+    }
     /// `upsert_plane_record`.
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()>;
     /// `get_plane_record`: the body.
@@ -169,6 +241,26 @@ pub trait StoreCalls: Send + Sync {
         expires_at: u64,
         now: u64,
     ) -> StoreCall<'a, bool>;
+    /// `list_plane_record_parents`: every distinct parent `kind`'s records name. An implementation
+    /// that does not serve it REFUSES it.
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        let _ = kind;
+        not_served("list_plane_record_parents")
+    }
+    /// `purge_plane_records_before`: `kind`'s records older than `before` removed, as the store's
+    /// retention rule for the kind reads it; how many went. An implementation that does not serve
+    /// it REFUSES it.
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        let _ = (kind, before);
+        not_served("purge_plane_records_before")
+    }
+}
+
+/// The answer of a [`StoreCalls`] op an implementation does not serve: REFUSED, naming the op.
+fn not_served<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
+    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
+        "this store does not serve {op}"
+    )))))
 }
 
 // THE STORE AXIS (WIRE-STORE Q8/Q9: the kernel receives the store kind's axis from the
@@ -230,4 +322,11 @@ pub trait StoreAxis: Send + Sync {
     /// Why it will not open: the door refused the load, or the store refused its settings (in the
     /// store's own words).
     fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String>;
+}
+
+/// The answer of a 1.5.5 [`StoreCalls`] op an implementation does not serve: REFUSED, naming it.
+fn unserved<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
+    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
+        "this store does not serve {op}"
+    )))))
 }
