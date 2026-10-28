@@ -237,8 +237,6 @@ fn a_split_field_block_continues_its_value() {
 #[test]
 fn a_full_stream_is_marked_after_the_fill() {
     let mut out: FramerOut = zeroed();
-    let mut o = Out::new(&mut out);
-    mark_stream_full(&mut o);
-    drop(o);
+    mark_stream_full(&mut Out::new(&mut out));
     assert_eq!(out.yielded.flags, YIELD_STREAM_FULL);
 }
