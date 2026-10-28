@@ -310,3 +310,23 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
         assert_eq!(io.held(), 0);
     });
 }
+
+/// A released handle is never made again: its slot holds the next handle under a new generation,
+/// and the old one still answers "no such handle" for its maker and every other caller.
+#[test]
+fn a_released_handle_is_never_made_again() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        io.admit(ticket(50), Admission::Bind("127.0.0.1:0".into()));
+        let (old, _) = io.listen(OWNER, ticket(50), "127.0.0.1:0").unwrap();
+        io.close(OWNER, old).unwrap();
+        io.admit(ticket(51), Admission::Bind("127.0.0.1:0".into()));
+        let (new, _) = io.listen(OWNER, ticket(51), "127.0.0.1:0").unwrap();
+        assert_ne!(new, old, "a released handle was made again");
+        assert!(matches!(io.ends(OWNER, old), Err(IoRefusal::Refused(_))));
+        assert!(matches!(io.close(OWNER, old), Err(IoRefusal::Refused(_))));
+        assert!(io.ends(OWNER, new).is_ok());
+        io.close(OWNER, new).unwrap();
+        assert_eq!(io.held(), 0);
+    });
+}
