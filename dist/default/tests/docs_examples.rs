@@ -14,7 +14,7 @@
 //!   config.yaml. Other shapes (`config-section=X`, `providers`, `settings-patch`,
 //!   `request=METHOD PATH`, `skip=reason`) are NOT implemented.
 //! - **Secrets are stood in for, not required.** `--validate` RESOLVES built-in `env`/`file` secret
-//!   references and fails when one cannot (see `main.rs`'s `validate_builtin_secrets_resolve`), so a
+//!   references and fails when one cannot (see `builtins_resolve` in `busbar-kernel`'s `config_validate/secret_refs.rs`), so a
 //!   marked example naming a real-looking variable would otherwise fail on THIS MACHINE's
 //!   environment rather than on anything written in the doc. `run_validate` below extracts the names
 //!   the example references and gives each a placeholder, and points `file:` refs at a scratch file.

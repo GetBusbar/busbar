@@ -300,13 +300,14 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327#df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=f82441c9db087c6ab68f9c9f3f283cf16c1b4198#f82441c9db087c6ab68f9c9f3f283cf16c1b4198"
 dependencies = [
  "busbar-contract",
  "hex",
  "ring",
  "serde",
  "serde_json",
+ "tracing",
  "zeroize",
 ]
 
@@ -458,6 +459,7 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
+ "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -763,7 +765,6 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "base64 0.22.1",
  "busbar-contract",
  "ed25519-dalek",
  "flate2",
@@ -772,7 +773,6 @@ dependencies = [
  "hex",
  "libc",
  "libloading",
- "ring",
  "serde",
  "serde_json",
  "tar",
@@ -807,6 +807,20 @@ source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=1367f8c318f2f
 dependencies = [
  "busbar-contract",
  "sha2",
+]
+
+[[package]]
+name = "busbar-test-kit"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

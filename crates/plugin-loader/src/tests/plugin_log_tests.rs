@@ -724,3 +724,127 @@ fn a_reconfigured_level_and_directory_reach_a_live_sink() {
         "{b}"
     );
 }
+
+/// The host log's own events, as a global subscriber sees them: `(target, level, plugin, message)`.
+type HostLine = (String, tracing::Level, String, String);
+
+/// A minimal global subscriber that keeps every event (busbar's own log, as the host writes it).
+struct HostLog(std::sync::Mutex<Vec<HostLine>>);
+
+impl HostLog {
+    /// The process's one host log, installed once as the global subscriber.
+    fn installed() -> &'static HostLog {
+        static LOG: std::sync::OnceLock<&'static HostLog> = std::sync::OnceLock::new();
+        LOG.get_or_init(|| {
+            let log: &'static HostLog = Box::leak(Box::new(HostLog(Default::default())));
+            tracing::subscriber::set_global_default(Shared(log))
+                .expect("no other global subscriber in this test binary");
+            log
+        })
+    }
+
+    fn lines(&self) -> Vec<HostLine> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+struct Shared(&'static HostLog);
+
+#[derive(Default)]
+struct Fields {
+    plugin: String,
+    message: String,
+}
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        match field.name() {
+            "plugin" => self.plugin = format!("{value:?}"),
+            "message" => self.message = format!("{value:?}"),
+            _ => {}
+        }
+    }
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        match field.name() {
+            "plugin" => self.plugin = value.to_string(),
+            "message" => self.message = value.to_string(),
+            _ => {}
+        }
+    }
+}
+
+impl tracing::Subscriber for Shared {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        let meta = event.metadata();
+        self.0 .0.lock().unwrap_or_else(|p| p.into_inner()).push((
+            meta.target().to_string(),
+            *meta.level(),
+            fields.plugin,
+            fields.message,
+        ));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// **A DROPPED-IN PLUGIN'S WARNING REACHES BUSBAR'S OWN LOG** (owner ruling 2026-10-27, the 1.5.5
+/// upgrade): 1.5.5 printed its plugins' warnings in busbar's log, and a log pipeline that watches
+/// only that log must still see them. The dropped-in witness logs at every level; its WARN line is
+/// in its own file AND is one host line at WARN, written as 1.5.5 wrote it (the message, without
+/// the module path the plugin's file leads with), while its INFO and DEBUG lines stay in its file
+/// alone. RED before the mirror: the host log holds no such line.
+#[test]
+fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
+    const MIRRORED: &str = "mirror-witness";
+    let host = HostLog::installed();
+    let dir = scratch("mirror");
+    let s = Arc::new(
+        config(&dir, LogLevel::Trace)
+            .sink(MIRRORED, witness::KIND, Arc::new(NoSink))
+            .expect("the sink opens")
+            .with_clock(fixed_clock),
+    );
+    let p = dropped(s.clone());
+    std::thread::spawn(move || {
+        open(&p);
+        tick(&p, witness::LOG);
+    })
+    .join()
+    .expect("the script runs");
+    s.flush();
+    let file = std::fs::read_to_string(config(&dir, LogLevel::Trace).path_for(MIRRORED))
+        .unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        file.contains(" WARN  mirror-witness export log_witness: log from the plugin, a"),
+        "the plugin's own file keeps the line:\n{file}"
+    );
+    let ours: Vec<HostLine> = host
+        .lines()
+        .into_iter()
+        .filter(|(target, _, _, _)| target == super::MIRROR_TARGET)
+        .collect();
+    assert!(
+        ours.iter()
+            .any(|(_, level, plugin, message)| *level == tracing::Level::WARN
+                && message == "log from the plugin, a"
+                && plugin.is_empty()),
+        "busbar's own log carries the plugin's WARN line as 1.5.5 wrote it: {ours:?}"
+    );
+    assert!(
+        !ours
+            .iter()
+            .any(|(_, _, _, message)| message.contains("tracing at debug from the plugin")),
+        "only WARN and ERROR lines are copied to busbar's log: {ours:?}"
+    );
+}
