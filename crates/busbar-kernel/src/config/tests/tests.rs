@@ -624,7 +624,7 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
 
 // `test_shipped_example_config_resolves` lives in the composition root
 // (crates/busbar/src/root/tests/auth_bindings.rs): the shipped config.yaml names the operator
-// credential by the root legacy table's word, which the kernel does not spell (ARCHITECT
+// credential by the root migration table's word, which the kernel does not spell (ARCHITECT
 // 2026-09-30, KERNEL-AUTH-ZERO Q2).
 
 /// Tests sharing a process-global env var use a set -> interpolate -> remove
@@ -3146,7 +3146,7 @@ fn reserved_hook_names_are_frozen() {
 
     // (a) The kernel's declared frozen list is EXACTLY these words — spelled out literally so a
     //     diff shows a reviewer precisely which word someone tried to add. The operator
-    //     credential's provider completes the 1.5.3 space; it is the root legacy table's word, and
+    //     credential's provider completes the 1.5.3 space; it is the root migration table's word, and
     //     the root pins the whole space with it (`root::tests::legacy_table`).
     assert_eq!(
         frozen,

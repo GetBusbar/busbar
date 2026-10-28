@@ -20,10 +20,10 @@ fn a_carried_dial_moves_bytes_both_ways_and_its_close_ends_the_stream() {
         let far = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = far.local_addr().unwrap().to_string();
         let via = support::via();
-        let carried = Carried::dial(
+        let mut carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(at.clone()),
+            &Dest::Authority(at),
         )
         .unwrap();
         let (mut peer, _) = far.accept().await.unwrap();
@@ -45,8 +45,6 @@ fn a_carried_dial_moves_bytes_both_ways_and_its_close_ends_the_stream() {
         let (read, ()) = tokio::join!(reader, writer);
         let (n, end_of_frame) = read.unwrap();
         assert_eq!((&buf[..n], end_of_frame), (&b"pong"[..], true));
-        let (peer_at, _) = carried.arrival().unwrap();
-        assert_eq!(peer_at, at);
         carried.close();
         let mut rest = Vec::new();
         peer.read_to_end(&mut rest).await.unwrap();

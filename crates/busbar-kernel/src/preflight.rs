@@ -448,7 +448,7 @@ pub(crate) fn builtin_ranking_known(name: &str) -> bool {
 }
 
 /// Whether a `kind: hook` row this build LINKS answers `module` on the hook axis (its Statement
-/// name, an alias, a former name the root legacy table gives it, or a hook word it claims): the
+/// name, an alias, a former name the root migration table gives it, or a hook word it claims): the
 /// linked half of the claim table boot opens hooks through (ARCHITECT Q-P4-13).
 pub(crate) fn linked_hook_answers(module: &str) -> bool {
     linked_hook_axis().is_some_and(|axis| axis.linked(module))
