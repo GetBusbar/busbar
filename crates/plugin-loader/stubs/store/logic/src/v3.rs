@@ -956,6 +956,18 @@ impl StoreSlots for MemoryStore {
         Step::Ready(RecordStore::purge_plane_records_before(self, kind, before))
     }
 
+    fn purge_plane_records(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        Step::Ready(RecordStore::purge_plane_records(
+            self, kind, before, retention,
+        ))
+    }
+
     fn delete_plane_record(
         &self,
         _: &mut Op<'_>,

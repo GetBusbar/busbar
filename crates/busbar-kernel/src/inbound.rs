@@ -1296,7 +1296,7 @@ impl Inbound {
     }
 
     /// The state a walk records into: a request's unit, or a connection's `Peer` verdict.
-    fn with_state<R>(&self, target: Target, f: impl FnOnce(&mut UnitState) -> R) -> Option<R> {
+    fn with_unit_state<R>(&self, target: Target, f: impl FnOnce(&mut UnitState) -> R) -> Option<R> {
         match target {
             Target::Unit(unit) => self.units().get_mut(&unit).map(f),
             Target::Peer(key) => self.peers().get_mut(&key).map(f),
@@ -1419,15 +1419,15 @@ impl Inbound {
             // refused sender or a bearer not bound to this resource is stopped before any auth.
             let first = matches!(target, Target::Unit(_))
                 && me
-                    .with_state(target, |u| !std::mem::replace(&mut u.screened, true))
+                    .with_unit_state(target, |u| !std::mem::replace(&mut u.screened, true))
                     .unwrap_or(false);
             if first {
                 match screen(&table, &head).await {
                     Screened::Clear(proven) => {
-                        me.with_state(target, |u| u.proven = proven.map(Secret::new));
+                        me.with_unit_state(target, |u| u.proven = proven.map(Secret::new));
                     }
                     Screened::Refused(refusal) => {
-                        me.with_state(target, |u| u.screen_refusal = Some(refusal));
+                        me.with_unit_state(target, |u| u.screen_refusal = Some(refusal));
                         return Ok(Answer {
                             flow: FLOW_STOP,
                             unit,
@@ -1437,7 +1437,7 @@ impl Inbound {
                 }
             }
             if me
-                .with_state(target, |u| u.screen_refusal.is_some())
+                .with_unit_state(target, |u| u.screen_refusal.is_some())
                 .unwrap_or(false)
             {
                 return Ok(Answer {
@@ -1448,7 +1448,7 @@ impl Inbound {
             }
             for p in positions {
                 let undecided = me
-                    .with_state(target, |u| {
+                    .with_unit_state(target, |u| {
                         (u.fixed().is_none()).then(|| u.answers.get(p.index).copied().flatten())
                     })
                     .ok_or(UNIT_FOREIGN)?;
@@ -1531,7 +1531,7 @@ impl Inbound {
                 // A DPoP-proven token (RFC 9449, [`screen`]) is the candidate the position is
                 // lent, as the old chain lent it (`ChainHead::request`).
                 req.credential = me
-                    .with_state(target, |u| {
+                    .with_unit_state(target, |u| {
                         u.proven.as_ref().map(|p| {
                             Secret::new(p.expose(&crate::seal::lend()).as_bytes().to_vec())
                         })
@@ -1557,7 +1557,7 @@ impl Inbound {
                 me.record(target, p.index, &p.provider, judging, &table);
             }
             let (flow, strips) = me
-                .with_state(target, |u| {
+                .with_unit_state(target, |u| {
                     let flow = match u.fixed() {
                         Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
                         Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
@@ -1590,7 +1590,7 @@ impl Inbound {
             Judging::Keys(head, signed) => {
                 let app = &table.listener.app;
                 let proven = self
-                    .with_state(target, |u| {
+                    .with_unit_state(target, |u| {
                         u.proven
                             .as_ref()
                             .map(|p| p.expose(&crate::seal::lend()).clone())
@@ -1625,7 +1625,7 @@ impl Inbound {
                 (judged, identity, a.strips, None)
             }
         };
-        self.with_state(target, |u| {
+        self.with_unit_state(target, |u| {
             for s in strips {
                 if !u.strips.contains(&s) {
                     u.strips.push(s);

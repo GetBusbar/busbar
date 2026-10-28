@@ -1028,7 +1028,14 @@ fn red_an_answer_heads_status_rides_its_emit_and_the_resume_of_a_parked_one() {
         std::task::Poll::Ready(Ok(y)) => assert_eq!(y.wire, b"head"),
         other => panic!("the parked head emit completes: {other:?}"),
     }
+    // The double calls its auth on every emit of stream 1, so the body parks too; answered, it
+    // crosses on its resume.
     f.emit(1, b"body", true, false).unwrap();
+    door.host.complete(9);
+    match f.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(_)) => {}
+        other => panic!("the body emit completes: {other:?}"),
+    }
     assert_eq!(
         door.inner.emitted_statuses.lock().unwrap().as_slice(),
         &[204, 101, 0],

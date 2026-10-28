@@ -855,6 +855,20 @@ impl Store for MemoryStore {
         Ok((before_len - records.len()) as u64)
     }
 
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> StoreResult<u64> {
+        // The rule is the one the purge is handed (`Retention::drops`), never one read off the
+        // kind's name.
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| !(k == kind && retention.drops(r.ts, before, r.disposition)));
+        Ok((before_len - records.len()) as u64)
+    }
+
     fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
         // Absent is a no-op, per the trait. Every `seq` under the identity goes, so deleting a
         // parent's record cannot leave part of a chain behind.

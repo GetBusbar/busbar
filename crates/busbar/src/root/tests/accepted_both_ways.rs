@@ -78,14 +78,14 @@ struct Rig {
 
 /// THE LOCAL ISSUER, one per test process: an ES256 key whose JWKS is served only to a need trusting
 /// its certificate, through the stand-in connection table the auth axis reaches it by.
-fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
         let scheme = axum::http::uri::Scheme::HTTPS;
         let url = format!("{scheme}://issuer.doors-alike.invalid");
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(&url, "doors-alike");
-        let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
+        let issuer = busbar_test_kit::test_issuer::Issuer::start(&url, "doors-alike");
+        let conns = busbar_test_kit::https_conns::HttpsConns::new();
         conns.serve_issuer(&issuer);
         busbar_plugin_loader::auth_axis::stand_in_conns(Arc::new(conns));
         issuer
@@ -266,7 +266,7 @@ fn rig(instance: &'static str, chain: Chain, max_inbound: usize) -> Rig {
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -277,6 +277,7 @@ fn rig(instance: &'static str, chain: Chain, max_inbound: usize) -> Rig {
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("the connector builds");
     let via = connector
