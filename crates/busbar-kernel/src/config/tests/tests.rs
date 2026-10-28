@@ -4429,6 +4429,41 @@ fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
     assert_eq!(crate::config::providers::judge_options("p", &plain), Ok(()));
 }
 
+/// A `providers.yaml` CATALOG entry follows the same rule as a `config.yaml` one (owner ruling
+/// 2026-10-27: "we provide this file so it should be perfect; if the user modified it, refuse"):
+/// its keys beyond busbar's are its options, and every entry, referenced or not, is judged at
+/// resolve, the refusal naming the file and the key. A typed key's refusal keeps 1.5.5's path and
+/// position. RED on dev: the catalog silently dropped a key it did not read.
+#[test]
+fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
+    let defs = crate::config::providers::catalog_from_str(
+        "p:\n  protocol: openai\n  base_url: https://api.example.com\n  bogus_key: true\n\
+         q:\n  protocol: openai\n  base_url: https://api.example.com\n  stray: 1\n",
+    )
+    .expect("the catalog reads; its options are judged at resolve");
+    assert_eq!(defs["p"].options.keys().collect::<Vec<_>>(), ["bogus_key"]);
+    let mut deploy = base_deploy();
+    deploy
+        .providers
+        .insert("p".to_string(), provider_deploy("K"));
+    let errors = resolve(&deploy, &defs).expect_err("a stray catalog key is refused");
+    let no_plane = |name: &str, key: &str| {
+        format!(
+            "providers.yaml: providers.{name}: unknown field `{key}`: no loaded plane speaks this \
+             provider's dialect, so it takes no option"
+        )
+    };
+    assert!(errors.contains(&no_plane("p", "bogus_key")), "{errors:?}");
+    assert!(
+        errors.contains(&no_plane("q", "stray")),
+        "an entry config.yaml does not reference is judged too: {errors:?}"
+    );
+    let e = crate::config::providers::catalog_from_str("p:\n  protocol: [1]\n  base_url: x\n")
+        .expect_err("a typed key of the wrong type")
+        .to_string();
+    assert!(e.starts_with("p.protocol: invalid type: sequence"), "{e}");
+}
+
 /// An option written twice in one entry is refused.
 #[test]
 fn an_option_written_twice_is_refused() {
