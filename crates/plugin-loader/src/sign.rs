@@ -1007,7 +1007,7 @@ pub enum FirstPartyUnverified {
     /// The manifest carries a RELEASE SEAL ([`crate::release_trust`]) whose chain does not hold:
     /// the refusal, and the id of every root key this build trusts.
     Release {
-        refusal: crate::release_trust::SealRefusal,
+        refusal: Box<crate::release_trust::SealRefusal>,
         trusted_keys: Vec<String>,
     },
 }
@@ -1114,7 +1114,7 @@ fn first_party_sealed<'k>(
     bytes: &[u8],
     keys: &'k [FirstPartyKey],
     checks: crate::release_trust::Checks,
-    seal: Result<(Vec<u8>, Vec<u8>), String>,
+    seal: Result<crate::release_trust::wire::SealBytes, String>,
     target: &str,
 ) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
     use crate::release_trust::{verify_release, Seal, SealRefusal, Subject};
@@ -1126,10 +1126,10 @@ fn first_party_sealed<'k>(
         ));
     }
     let (keys_doc, targets_doc) = seal.map_err(|why| FirstPartyUnverified::Release {
-        refusal: SealRefusal::Malformed {
+        refusal: Box::new(SealRefusal::Malformed {
             doc: "release seal",
             why,
-        },
+        }),
         trusted_keys: trusted_keys(),
     })?;
     let canonical = sha256_hex(&canonical_manifest_bytes(manifest));
@@ -1149,7 +1149,7 @@ fn first_party_sealed<'k>(
         checks,
     )
     .map_err(|refusal| FirstPartyUnverified::Release {
-        refusal,
+        refusal: Box::new(refusal),
         trusted_keys: trusted_keys(),
     })?;
     Ok(keys

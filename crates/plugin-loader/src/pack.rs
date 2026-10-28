@@ -284,12 +284,12 @@ fn public_key(spec: &str) -> Result<ReleaseKey, String> {
         .map_err(|e| format!("key '{spec}': {e}"))
 }
 
+/// A command's `--flag value` pairs.
+type FlagPairs = Vec<(String, String)>;
+
 /// A command's arguments: `--flag value` pairs from `known` (each at most once), and the
 /// positionals.
-fn flag_args(
-    args: &[String],
-    known: &[&str],
-) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+fn flag_args(args: &[String], known: &[&str]) -> Result<(Vec<String>, FlagPairs), String> {
     let mut pos = Vec::new();
     let mut flags: Vec<(String, String)> = Vec::new();
     let mut it = args.iter();

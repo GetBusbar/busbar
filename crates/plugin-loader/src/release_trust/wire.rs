@@ -165,11 +165,14 @@ pub fn verify(key: &ReleaseKey, msg: &[u8], sig: &[u8]) -> bool {
 
 // ── the envelope ────────────────────────────────────────────────────────────────────────────────
 
+/// Each `(keyid, signature)` of an envelope.
+type KeyedSigs = Vec<(String, Vec<u8>)>;
+
+/// A seal's two documents: the keys document's bytes, then the release manifest's.
+pub type SealBytes = (Vec<u8>, Vec<u8>);
+
 /// An envelope over `signed`: the signed bytes and each `(keyid, signature)`.
-fn read_envelope(
-    bytes: &[u8],
-    what: &str,
-) -> Result<(Value, Vec<u8>, Vec<(String, Vec<u8>)>), String> {
+fn read_envelope(bytes: &[u8], what: &str) -> Result<(Value, Vec<u8>, KeyedSigs), String> {
     let v: Value =
         serde_json::from_slice(bytes).map_err(|e| format!("the {what} is not JSON: {e}"))?;
     let obj = v
@@ -550,7 +553,7 @@ pub fn format_time(t: u64) -> String {
 }
 
 fn leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 fn days_in_month(y: u64, m: u64) -> u64 {
@@ -617,7 +620,7 @@ pub fn write_seal(keys: &[u8], targets: &[u8]) -> Result<String, String> {
 
 /// The seal in a manifest `signature`: `None` when it is not a seal, else its two documents'
 /// bytes.
-pub fn read_seal(signature: &str) -> Option<Result<(Vec<u8>, Vec<u8>), String>> {
+pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
     let body = signature.trim().strip_prefix(SEAL_PREFIX)?;
     Some((|| {
         let v: Value =
