@@ -1269,6 +1269,12 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
+    /// Whether connection security is set and its handshake has completed: what
+    /// [`Self::peer_cert_hash`] is read off.
+    pub(crate) fn secured(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
+    }
+
     /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
     /// (the channel-binding input; SHA-256 unless the certificate is signed with SHA-384 or
     /// SHA-512, [`crate::tls::client::end_point_digest`]), lower-case hex, once a handshake

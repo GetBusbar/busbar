@@ -39,6 +39,7 @@ use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT, RECEIVE_BUFFER_BYTES};
+use crate::map;
 
 /// The wakers of every lease waiting on a member's program, woken together: the program's pipes
 /// are driven with this waker, so a frame read for one lease wakes them all.
@@ -138,15 +139,6 @@ pub(crate) struct Member {
 
 /// The next member's supervision key: process-wide, from `1`.
 static NEXT_SUPERVISION_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn map(f: &Failure) -> ConnError {
-    match f {
-        Failure::Refused(_) => ConnError::Refused,
-        Failure::Timeout => ConnError::Timeout,
-        Failure::Closed => ConnError::Closed,
-        Failure::Failed(_) => ConnError::Fault,
-    }
-}
 
 /// A piece of `kind` that filled `len` bytes.
 fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {

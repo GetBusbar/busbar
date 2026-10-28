@@ -1459,6 +1459,118 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     });
 }
 
+/// The test carrier, with an `accept` that HANGS once armed: it says it is inside the crossing,
+/// then does not come back until the test lets it.
+struct HangingAccept {
+    inner: TestDoor,
+    gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl FramerDoor for HangingAccept {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Accept(..)) {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// RED before a listener was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs
+/// under a host lock): the listener's mutex was held across the carrier's `accept`, so a second
+/// accept beside one that hung waited on the plugin for as long as it hung. Now the second answers
+/// PENDING at once, and is woken once the first puts the listener back.
+#[test]
+fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_back() {
+    let rt = worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let door = Arc::new(HangingAccept {
+            inner: TestDoor::identity("bytes"),
+            gate: std::sync::Mutex::new(None),
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&wakes);
+        let c = Arc::new(Connector::serving(
+            Transports::new(vec![Entry {
+                door: Arc::clone(&door) as Arc<dyn FramerDoor>,
+                alpn: Vec::new(),
+            }])
+            .unwrap(),
+            loopback_literals(),
+            None,
+            Arc::new(move |_, _| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        c.listen(
+            OWNER,
+            NeedId(0),
+            "127.0.0.1:0",
+            None,
+            crate::listen::AcceptLimits::default(),
+        )
+        .expect("listens");
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *door.gate.lock().unwrap() = Some((entered_tx, held_back));
+        let accepting = Arc::clone(&c);
+        let on = handle.clone();
+        let first = std::thread::spawn(move || {
+            let _rt = on.enter();
+            accepting.accept(OWNER, NeedId(0), 3).map(|_| ())
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the first accept reaches the carrier");
+        let (beside_tx, beside) = std::sync::mpsc::channel();
+        let also = Arc::clone(&c);
+        let second = std::thread::spawn(move || {
+            beside_tx
+                .send(also.accept(OWNER, NeedId(0), 4).map(|_| ()))
+                .unwrap();
+        });
+        let answered = beside
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an accept beside a hung carrier accept returned while it still hangs");
+        assert_eq!(answered, Err(ConnError::Pending));
+        let before = wakes.load(Ordering::SeqCst);
+        release.send(()).unwrap();
+        assert_eq!(
+            first.join().unwrap(),
+            Err(ConnError::Pending),
+            "nobody knocked"
+        );
+        second.join().unwrap();
+        assert!(
+            wakes.load(Ordering::SeqCst) > before,
+            "the accept that found the listener out is woken once it is back"
+        );
+    });
+}
+
 /// The refusal of a userinfo in a need's target STAYS for every target the need's own
 /// settings did not give it — a need with no `target_from`, a member path, a path outside its
 /// settings. Such a target carrying a userinfo — a URL's `user:pass@` or a bare `user@host:port` —

@@ -52,10 +52,10 @@
 //! are the ones where continuing would be worse: the opening could not be signed, the ledger's own
 //! records could not be read or written, or the figures do not fit in a ledger figure.
 
-use crate::root::loader::store_adapter::{LegacyReadPlan, StoreAdapter};
+use crate::root::loader::store_adapter::{MigrationReadPlan, StoreAdapter};
 use busbar_kernel_ledger::checkpoint::CheckpointSecret;
 use busbar_kernel_ledger::migration::{
-    migrate, LegacyLedgerRows, MigrationError, MigrationRecords, Outcome,
+    migrate, MigrationError, MigrationLedgerRows, MigrationRecords, Outcome,
 };
 
 /// What the root reads out of configuration to decide which of the previous release's rows to read.
@@ -168,7 +168,7 @@ pub fn run(
             // strictly better than either refusing to boot or reporting a complete opening that is
             // not one.
             Err(e) => (
-                LegacyReadPlan {
+                MigrationReadPlan {
                     windows: cfg.group_buckets.clone(),
                     days: cfg.metering_days.clone(),
                 },
@@ -176,7 +176,7 @@ pub fn run(
             ),
         };
 
-    let rows = adapter.legacy_ledger_rows(plan);
+    let rows = adapter.migration_ledger_rows(plan);
     let outcome = seal_opening(&rows, records, cfg, wall, secret)?;
     Ok(Migration {
         outcome,
@@ -194,7 +194,7 @@ pub fn run(
 ///
 /// As [`run`].
 pub fn seal_opening(
-    rows: &dyn LegacyLedgerRows,
+    rows: &dyn MigrationLedgerRows,
     records: &mut dyn MigrationRecords,
     cfg: &MigrationConfig,
     wall: u64,

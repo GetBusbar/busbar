@@ -190,7 +190,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     // Every app build reads the plane registry, so holding it isolated keeps every other test's
     // commit out of this one's window.
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
     let boot = deployment(

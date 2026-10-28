@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT LEGACY TABLE, held to 1.5.5: one test per retired word. Each installs the root's table
+//! THE ROOT MIGRATION TABLE, held to 1.5.5: one test per retired word. Each installs the root's table
 //! (as `main` does), then holds `--migrate-config`'s rewrite and change line, and boot's 1.x refusal,
-//! to the bytes 1.5.5 printed for that word (`src/root/tests/fixtures/legacy_retired_1_5_5.yaml`). The words
+//! to the bytes 1.5.5 printed for that word (`src/root/tests/fixtures/retired_1_5_5.yaml`). The words
 //! and the bytes are data; this file spells neither.
 
-use super::{install, LEGACY_ROWS};
+use super::{install, MIGRATION_ROWS};
 
 /// The 1.5.5 golden entry `n` of the retired words.
 fn golden(n: usize) -> serde_yaml::Value {
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(include_str!("fixtures/legacy_retired_1_5_5.yaml"))
-            .expect("the golden parses");
+    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!("fixtures/retired_1_5_5.yaml"))
+        .expect("the golden parses");
     doc["retired"][n].clone()
 }
 
@@ -28,10 +27,10 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
     let g = golden(n);
     let (word, module) = (field(&g, "word"), field(&g, "module"));
     assert!(
-        LEGACY_ROWS
+        MIGRATION_ROWS
             .iter()
             .any(|(k, v)| *k == format!("retired.store.{word}") && *v == module),
-        "the root legacy table carries no `retired.store.{word}` row answering to `{module}`"
+        "the root migration table carries no `retired.store.{word}` row answering to `{module}`"
     );
     let raw = format!(
         "store:\n  module: {word}\n  settings: {{ url: \"kv://127.0.0.1:6379/0\" }}\n\
@@ -55,7 +54,7 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
 
     // Boot and `--validate`: the 1.x refusal names the word with 1.5.5's marker.
     let dir = std::env::temp_dir().join(format!(
-        "busbar-legacy-{n}-{}-{}",
+        "busbar-migration-{n}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -162,7 +161,7 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     }
 
     let dir = std::env::temp_dir().join(format!(
-        "busbar-legacy-obs-{}-{}",
+        "busbar-migration-obs-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -215,16 +214,15 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
 /// its 1.5.5 bytes fails here rather than shipping unproven.
 #[test]
 fn every_retired_row_has_a_1_5_5_golden() {
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(include_str!("fixtures/legacy_retired_1_5_5.yaml"))
-            .expect("the golden parses");
+    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!("fixtures/retired_1_5_5.yaml"))
+        .expect("the golden parses");
     let golden: Vec<String> = doc["retired"]
         .as_sequence()
         .expect("a list")
         .iter()
         .map(|g| format!("retired.store.{}", field(g, "word")))
         .collect();
-    let rows: Vec<String> = LEGACY_ROWS
+    let rows: Vec<String> = MIGRATION_ROWS
         .iter()
         .filter(|(k, _)| k.starts_with("retired."))
         .map(|(k, _)| (*k).to_string())
@@ -232,7 +230,7 @@ fn every_retired_row_has_a_1_5_5_golden() {
     assert_eq!(rows, golden);
 }
 
-/// A test build of the kernel stands the frozen rows in (`legacy_rows` in its frozen-text fixture);
+/// A test build of the kernel stands the frozen rows in (`migration_rows` in its frozen-text fixture);
 /// they are the root's table, row for row.
 #[test]
 fn the_kernel_test_stand_in_is_the_root_table() {
@@ -240,9 +238,9 @@ fn the_kernel_test_stand_in_is_the_root_table() {
         "../../../../busbar-kernel/tests/fixtures/frozen_customer_text.yaml"
     ))
     .expect("the kernel fixture parses");
-    let mut stand_in: Vec<(String, String)> = doc["legacy_rows"]
+    let mut stand_in: Vec<(String, String)> = doc["migration_rows"]
         .as_mapping()
-        .expect("`legacy_rows`")
+        .expect("`migration_rows`")
         .iter()
         .map(|(k, v)| {
             (
@@ -251,7 +249,7 @@ fn the_kernel_test_stand_in_is_the_root_table() {
             )
         })
         .collect();
-    let mut root: Vec<(String, String)> = LEGACY_ROWS
+    let mut root: Vec<(String, String)> = MIGRATION_ROWS
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
@@ -261,38 +259,38 @@ fn the_kernel_test_stand_in_is_the_root_table() {
 }
 
 // ── THE TABLE IS THE RENDER OF plugins.yaml ─────────────────────────────────────────────────────
-// One home per fact: the words live in plugins.yaml (`legacy:` and each entry's `retired:`); the
-// manifest's `[package.metadata.busbar.legacy]` is their render, and an edit to either side alone is
+// One home per fact: the words live in plugins.yaml (`migration:` and each entry's `retired:`); the
+// manifest's `[package.metadata.busbar.migration]` is their render, and an edit to either side alone is
 // red here, with the table to paste printed.
 
 const MANIFEST: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
-const HEADER: &str = "[package.metadata.busbar.legacy]";
-const NOTE: &str = "# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each\n\
-# entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the\n\
+const HEADER: &str = "[package.metadata.busbar.migration]";
+const NOTE: &str = "# THE ROOT MIGRATION TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`migration:` and each\n\
+# entry's `retired:` and `former_names:`); src/root/tests/migration_table.rs is red on an edit and prints the\n\
 # render to paste.\n\
-# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.\n";
+# build.rs emits it as `MIGRATION_ROWS`, which the root hands to the kernel before any config is read.\n";
 
 fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
     v[k].as_str().map(str::to_string)
 }
 
-/// The table's rows, in order: the `legacy:` block's frozen 1.5.5 text, sorted by key; then, per
+/// The table's rows, in order: the `migration:` block's frozen 1.5.5 text, sorted by key; then, per
 /// entry in registry order with a `retired:` list, one `retired.<kind>.<word> = "<alias>"` row per
 /// word and the entry's `manifest.<alias>` / `asset.<alias>` rows (each defaulting to the repo); and,
 /// per entry with a `former_names:` list, one `former.<alias> = "<name> …"` row (space-separated),
 /// which a linked row of the plugin answers by.
 fn rows(registry: &str) -> Vec<(String, String)> {
     let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
-    let mut out: Vec<(String, String)> = doc["legacy"]
+    let mut out: Vec<(String, String)> = doc["migration"]
         .as_mapping()
         .map(|m| {
             m.iter()
                 .map(|(k, v)| {
-                    let k = k.as_str().expect("a `legacy:` key is a string");
-                    let v = v
-                        .as_str()
-                        .unwrap_or_else(|| panic!("plugins.yaml legacy: `{k}` must be a string"));
+                    let k = k.as_str().expect("a `migration:` key is a string");
+                    let v = v.as_str().unwrap_or_else(|| {
+                        panic!("plugins.yaml migration: `{k}` must be a string")
+                    });
                     (k.to_string(), v.to_string())
                 })
                 .collect()
@@ -377,7 +375,7 @@ fn drift(manifest: &str, registry: &str) -> Option<String> {
 
 /// The committed manifest's table IS the render of the committed plugins.yaml.
 #[test]
-fn the_committed_legacy_table_is_the_render() {
+fn the_committed_migration_table_is_the_render() {
     if let Some(reason) = drift(MANIFEST, REGISTRY) {
         panic!("{reason}");
     }
@@ -449,26 +447,28 @@ fn former_names_render_as_one_row_of_the_alias() {
 }
 
 /// The root's table answers a linked plugin's former names by its alias
-/// (`busbar_kernel::config::legacy::former_names`), from the committed plugins.yaml.
+/// (`busbar_kernel::config::migration_table::former_names`), from the committed plugins.yaml.
 #[test]
 fn a_linked_plugin_reads_its_former_names_by_its_alias() {
     install();
     assert_eq!(
-        busbar_kernel::config::legacy::former_names("webrequest"),
+        busbar_kernel::config::migration_table::former_names("webrequest"),
         ["busbar-webrequest"]
     );
-    assert!(busbar_kernel::config::legacy::former_names("planted-never-renamed").is_empty());
+    assert!(
+        busbar_kernel::config::migration_table::former_names("planted-never-renamed").is_empty()
+    );
 }
 
-/// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 source it is verbatim from (a
+/// Every frozen `migration:` row of plugins.yaml cites the v1.5.5 source it is verbatim from (a
 /// `# … v1.5.5:crates/…` comment above it, or, for a 1.5.5 MANIFEST NAME, the published release
 /// tarball it was read off: `# GetBusbar/<repo> release v<x.y.z>: <asset> manifest.json name`), and
 /// every row parsed.
 #[test]
-fn every_legacy_row_cites_v1_5_5() {
+fn every_migration_row_cites_v1_5_5() {
     let block: Vec<&str> = REGISTRY
         .lines()
-        .skip_while(|l| *l != "legacy:")
+        .skip_while(|l| *l != "migration:")
         .skip(1)
         .take_while(|l| l.starts_with("  ") || l.is_empty())
         .collect();
@@ -488,11 +488,14 @@ fn every_legacy_row_cites_v1_5_5() {
         let key = t.split_once(':').expect("a row").0;
         assert!(
             cited,
-            "legacy row `{key}` carries no v1.5.5 citation above it"
+            "migration row `{key}` carries no v1.5.5 citation above it"
         );
         (cited, n) = (false, n + 1);
     }
     let doc: serde_yaml::Value = serde_yaml::from_str(REGISTRY).expect("plugins.yaml parses");
-    assert_eq!(n, doc["legacy"].as_mapping().expect("`legacy:`").len());
+    assert_eq!(
+        n,
+        doc["migration"].as_mapping().expect("`migration:`").len()
+    );
     assert!(n > 0);
 }
