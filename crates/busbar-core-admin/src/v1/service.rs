@@ -166,7 +166,7 @@ fn metered_row<'a>(
 /// signed LEDGER-SIMPLE entry pins that read byte for byte, and 1.5.5's usage rows had no such field.
 pub(crate) fn row_carries_classes(provider: &str) -> bool {
     matches!(
-        busbar_kernel::plane::registry::plane_decl_for(provider),
+        busbar_kernel::plane_driver::registry::plane_decl_for(provider),
         Some(decl) if !decl.fallback
     )
 }
@@ -179,7 +179,7 @@ pub(crate) fn row_carries_classes(provider: &str) -> bool {
 /// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
 /// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
 pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match busbar_kernel::plane::registry::plane_decl_for(provider) {
+    match busbar_kernel::plane_driver::registry::plane_decl_for(provider) {
         Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
             "{}{}{model}",
             decl.key,
@@ -273,8 +273,11 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
 /// the latest `priced_from_ms` among this key's rows on this lane that is not after the epoch
 /// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
 /// its `was` — so it is the unit's latest counts minus what it recorded.
+///
+/// `corrections` is the row's own share — the usage read indexes the node's list by (key, lane)
+/// once and hands each row only what can land on it; every condition is still checked here.
 pub fn row_count_corrections(
-    corrections: &[amend::Amendment],
+    corrections: &[&amend::Amendment],
     key_id: &str,
     lane: &str,
     window: (u64, u64),
@@ -1326,7 +1329,7 @@ fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
 // this fold names no plane registry type. A plane with no per-registration gates declares `None` and
 // is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(reresolve) = decl.reresolve_gates {
             reresolve(next);
         }
@@ -1340,7 +1343,7 @@ fn plane_named_def_list(
     section: NamedMapSection,
     app: &busbar_kernel::state::App,
 ) -> Vec<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
             f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
@@ -1354,7 +1357,7 @@ fn plane_named_def_get(
     app: &busbar_kernel::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| {
             f(

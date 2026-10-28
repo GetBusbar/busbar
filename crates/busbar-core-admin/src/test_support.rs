@@ -50,7 +50,7 @@ pub fn plane_component_schemas() -> Vec<(&'static str, String, serde_json::Value
         }
     };
     let mut out = Vec::new();
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         let Some(schemas) = decl.openapi_schemas else {
             continue;
         };

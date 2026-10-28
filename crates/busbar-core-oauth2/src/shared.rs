@@ -6,8 +6,7 @@
 //!
 //! The server's records live as kernel-owned plane-record kinds under one fixed kernel label
 //! ([`LABEL`]), written through the store's existing plane-record verbs and its one atomic step,
-//! the single-use token redemption (`redeem_plane_token`). No store ABI is added (ARCHITECT ruling,
-//! core-oauth2 #2, option A):
+//! the single-use token redemption (`redeem_plane_token`). No store ABI is added:
 //!
 //! * **One record per client, versioned.** Everything a client holds — its registration, the
 //!   revocation barriers recorded against it, its codes, tokens, refresh tokens, pushed requests,
@@ -537,8 +536,6 @@ impl Shared {
         )))
     }
 
-    // ── the per-client bucket ─────────────────────────────────────────────────────────────
-
     async fn bucket(&self, client_id: &str) -> Result<Bucket, StorageError> {
         Ok(self
             .read_cell::<Bucket>("bucket", &digest(client_id))
@@ -566,8 +563,6 @@ impl Shared {
         })
         .await
     }
-
-    // ── the indexes: a credential (or family, subject) to the client holding it ──────────────
 
     /// Index the credential (or family) `key` of kind `ix` to the one client it was minted for.
     async fn index(&self, ix: &str, key: &str, client_id: &str) -> Result<(), StorageError> {
@@ -620,8 +615,6 @@ impl Shared {
         Ok(ix.clients.into_keys().collect())
     }
 
-    // ── the token-family barrier ──────────────────────────────────────────────────────────
-
     async fn family_barred(&self, family_id: Option<&str>) -> Result<bool, StorageError> {
         let Some(family) = family_id else {
             return Ok(false);
@@ -631,8 +624,6 @@ impl Shared {
             .await?;
         Ok(bar.times.is_some())
     }
-
-    // ── the device user-code index (global: one live grant per user code) ───────────────────
 
     async fn hold_user_code(
         &self,
@@ -677,8 +668,6 @@ impl Shared {
             .await?
             .1)
     }
-
-    // ── the consent screen's records ─────────────────────────────────────────────────────
 
     /// Record that the browser holding session `id` is `subject`, until `ttl` from now.
     pub(crate) async fn open_session(
@@ -790,8 +779,6 @@ impl Shared {
             .claim("shown", &digest(request_uri), secs_of(until))
             .await?)
     }
-
-    // ── the signing key, minted once per deployment ───────────────────────────────────────
 
     async fn stored_key(&self) -> Result<Option<Vec<u8>>, StorageError> {
         let Some(body) = self.get_body("key", "signing").await? else {

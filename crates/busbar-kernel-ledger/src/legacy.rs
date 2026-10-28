@@ -242,33 +242,3 @@ impl LegacyRows for SummedRows {
             .retain(|(_, _, window), _| !windows.contains(window));
     }
 }
-
-/// The head the migration reads and the seam it reads it through: the contract's, because the
-/// store adapter implements the seam on the other side of it.
-pub use busbar_contract::migration::{LegacyHead, LegacyMigrationSource};
-
-/// The opening entries a migration seals: one per bucket, at the named card version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpeningBalance {
-    /// Which bucket.
-    pub bucket: String,
-    /// What it opens at.
-    pub amount: i128,
-    /// Which card version the opening was priced under.
-    pub rate_card_version: u64,
-}
-
-/// Turn what the previous release held into the opening balances a migration seals.
-///
-/// An empty head produces an empty list, which seals a migration at zero. That is the whole of the
-/// special case, and it is not special: nothing was there, so nothing opens.
-pub fn opening_balances(head: &LegacyHead, rate_card_version: u64) -> Vec<OpeningBalance> {
-    head.balances
-        .iter()
-        .map(|(bucket, amount)| OpeningBalance {
-            bucket: bucket.clone(),
-            amount: *amount,
-            rate_card_version,
-        })
-        .collect()
-}

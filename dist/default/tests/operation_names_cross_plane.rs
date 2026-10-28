@@ -25,14 +25,15 @@ fn register_planes() {
 fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
     register_planes();
     // The keys come from the roster just registered, never from literals here.
-    let plane_keys: Vec<&'static str> = busbar_kernel::plane::plane_keys().collect();
+    let plane_keys: Vec<&'static str> =
+        busbar_kernel::plane_driver::dispatch::plane_keys().collect();
     assert!(
         plane_keys.len() >= 3,
         "the registered roster declares at least three plane keys: {plane_keys:?}"
     );
     let mut identities: Vec<&'static str> = plane_keys.clone();
     identities.extend(
-        busbar_kernel::proto::registry::registry()
+        busbar_kernel::ingress::protocols::registry()
             .decls()
             .iter()
             .map(|d| d.name),
@@ -41,7 +42,7 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
         .iter()
         .copied()
         .chain(
-            busbar_kernel::proto::registry::declared_verbs()
+            busbar_kernel::ingress::protocols::declared_verbs()
                 .iter()
                 .copied(),
         )

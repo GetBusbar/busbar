@@ -1476,6 +1476,19 @@ pub(crate) async fn list_keys(
     }
 }
 
+/// What the rotate's blocking section settled.
+enum RotateOutcome {
+    /// Re-minted: the key's state and the new credential.
+    Rotated(
+        &'static str,
+        Box<busbar_kernel::governance::RotatedCredential>,
+    ),
+    /// No live key under that id.
+    Unknown,
+    /// The key's binding is past the caller's mint ceiling; nothing was re-minted.
+    PastCeiling(String),
+}
+
 /// POST /api/v1/admin/keys/{id}/rotate — re-issue an existing key's CREDENTIAL in place: the id (and
 /// with it budgets, rate windows, usage, audit attribution) is unchanged, the PREVIOUS credential
 /// stops authenticating immediately and fleet-wide, and the new one is returned exactly once,
@@ -1550,26 +1563,21 @@ pub(crate) async fn rotate_key(
     // delete that lands between rotate's read and write is clobbered by rotate's put — RESURRECTING
     // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
-    // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
-    // `expires_at` would receive (rotate takes no body today) — and, being a mint, under the SAME
-    // lifetime ceiling (`auth.policy.max_ttl` and the caller's role cap): a default is clamped,
-    // never refused, so a rotate is answered exactly as before wherever no ceiling is configured.
-    // The pool and mode ceilings are not asked: a rotate re-mints the key's existing binding.
+    // A ROTATE IS A MINT OF THE KEY'S OWN BINDING, judged by the mint's ceiling
+    // (`auth.policy.max_ttl`, `auth.policy.mint_ceilings.<role>`): the re-minted token is a working
+    // credential for every pool the key is bound to, under the mode it was minted with. So the
+    // caller's ceiling is asked about exactly that binding — read under the gate, the same read the
+    // rotate makes — and a binding past it is refused before anything is re-minted, as `POST /keys`
+    // refuses it: a delegated admin held to some pools cannot obtain a token for others by rotating
+    // a key it could never have minted. The lifetime is the default a mint with no `expires_in` /
+    // `expires_at` receives (rotate takes no body), clamped to the ceiling, never refused, so a
+    // rotate is answered exactly as before wherever no ceiling is configured.
     let now = busbar_kernel::store::now();
-    let caller_roles: &[String] = principal.0.as_ref().map_or(&[], |p| p.roles.as_slice());
-    let ttl = app
-        .mint_policy
-        .check_mint(&MintRequest {
-            roles: caller_roles,
-            requested_pools: Some(&[]),
-            requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
-            explicit_ttl: false,
-            requested_mode: None,
-        })
-        // A default naming no pools and no mode is clamped, never refused; were it refused, the
-        // token would be minted already expired rather than past the ceiling (fail closed).
-        .unwrap_or(0);
-    let exp = now.saturating_add(ttl);
+    let caller_roles: Vec<String> = principal
+        .0
+        .as_ref()
+        .map_or_else(Vec::new, |p| p.roles.clone());
+    let policy = std::sync::Arc::clone(&app.mint_policy);
     // Claimed in the store before the rotate becomes irreversible, as the mint is.
     let replay_store = gov.store();
     let claim = match idem_reservation.as_ref() {
@@ -1587,18 +1595,48 @@ pub(crate) async fn rotate_key(
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
-    let res = tokio::task::spawn_blocking(move || {
-        let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        // `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
-        // than after the `.await` below — a rotated key can still be `disabled` or `revoked` (rotate
-        // does not touch `enabled` or the denylist, only tombstoned keys refuse to rotate at all, see
-        // `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed, not just `enabled`.
-        gov.rotate_key(&gid, exp)
-            .map(|opt| opt.map(|rotated| (key_state(&rotated.key, &gov), rotated)))
-    })
+    let res = tokio::task::spawn_blocking(
+        move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
+            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            // A tombstoned row is not rotatable (`GovState::rotate_key`), so it answers unknown
+            // before any ceiling is asked about it.
+            let Some(key) = gov
+                .store()
+                .get_key(&gid)?
+                .filter(|k| k.deleted_at.is_none())
+            else {
+                return Ok(RotateOutcome::Unknown);
+            };
+            let pools: Option<Vec<String>> = key
+                .allowed_scopes
+                .as_ref()
+                .map(|list| list.iter().map(|s| s.value.clone()).collect());
+            let ttl = match policy.check_mint(&MintRequest {
+                roles: &caller_roles,
+                requested_pools: pools.as_deref(),
+                requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
+                explicit_ttl: false,
+                requested_mode: key.binding_mode.as_deref(),
+            }) {
+                Ok(ttl) => ttl,
+                Err(msg) => return Ok(RotateOutcome::PastCeiling(msg)),
+            };
+            // `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
+            // than after the `.await` below — a rotated key can still be `disabled` or `revoked`
+            // (rotate does not touch `enabled` or the denylist, only tombstoned keys refuse to
+            // rotate at all, see `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed,
+            // not just `enabled`.
+            Ok(match gov.rotate_key(&gid, now.saturating_add(ttl))? {
+                Some(rotated) => {
+                    RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
+                }
+                None => RotateOutcome::Unknown,
+            })
+        },
+    )
     .await;
     match res {
-        Ok(Ok(Some((state, rotated)))) => {
+        Ok(Ok(RotateOutcome::Rotated(state, rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
             body["state"] = json!(state);
@@ -1614,15 +1652,21 @@ pub(crate) async fn rotate_key(
             settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
             json_response(StatusCode::OK, body)
         }
-        // All three arms below are the transaction's OWN fail-closed outcomes, reached only after
+        // All four arms below are the transaction's OWN fail-closed outcomes, reached only after
         // the `.await` completed normally (never on genuine cancellation) — safe to free the
         // reservation for a legitimate retry.
-        Ok(Ok(None)) => {
+        Ok(Ok(RotateOutcome::Unknown)) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             settle_in_store(replay_store, claim, Settled::Released).await;
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
+        }
+        Ok(Ok(RotateOutcome::PastCeiling(msg))) => {
+            if let Some(r) = idem_reservation.take() {
+                r.clear();
+            }
+            key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields)
         }
         Ok(Err(e)) => {
             if let Some(r) = idem_reservation.take() {

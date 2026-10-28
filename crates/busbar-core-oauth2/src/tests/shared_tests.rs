@@ -809,7 +809,7 @@ fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCo
     )
 }
 
-/// RED (row 159): a cell the sweep retired never blocks the cell made again under its id. The sweep
+/// A cell the sweep retired never blocks the cell made again under its id. The sweep
 /// retires an emptied bucket at version 2 under the claim on version 3, which stands for two
 /// minutes; a client whose records come back inside them climbs to version 3 again. Before the fix
 /// that write lost the retirement's claim on every attempt and answered a storage error (a login
@@ -861,7 +861,7 @@ async fn a_retired_cell_never_blocks_its_own_recreation() {
     );
 }
 
-/// RED (row 159): with the store, a second answer to one request on one session is spent, once, as
+/// With the store, a second answer to one request on one session is spent, once, as
 /// the in-process table spends it. Before the fix the spend claim named only the session and the
 /// request, so it stood from the first answer's spend and a second answer could never be spent:
 /// `/authorize` sent the operator back to the consent screen for the session's life.
@@ -898,7 +898,7 @@ async fn a_second_answer_on_one_session_is_spent_once() {
     );
 }
 
-/// RED (row 159): in the deployment's store, a self-registered client whose bucket has held nothing
+/// In the deployment's store, a self-registered client whose bucket has held nothing
 /// for the idle period is reclaimed by the sweep, bucket and all. Before the fix a bucket holding a
 /// client never held nothing, so it was kept for good.
 #[tokio::test]
@@ -984,7 +984,7 @@ fn names(store: &OneStore, name: &str, word: &str) -> bool {
         .any(|(_, (_, body))| body.windows(word.len()).any(|w| w == word.as_bytes()))
 }
 
-/// RED (audit core-oauth2 #4): a subject's index entry for a client is reclaimed once that client
+/// A subject's index entry for a client is reclaimed once that client
 /// no longer holds a consent of the subject, and only then; once no client holds one, nothing of
 /// the subject's index is left. Two clients hold `alice`'s consent; one is withdrawn, then the
 /// other. Before the fix every subject index row was kept forever.
