@@ -1292,6 +1292,41 @@ macro_rules! plugin_door {
     };
 }
 
+/// THE ONE DOOR MACRO (BUSBAR-1.6.0 §2): an arm per kind, every one laid out by
+/// [`plugin_door!`](crate::plugin_door) over the one trampoline. Anything else is a `plugin_door!`
+/// door, spelled as there (`ops:`, `statement:`, `lifecycle:`, ...).
+///
+/// * `hook: P, statement: S` — a hook plugin over its
+///   [`HookOpen`](crate::abi::sdk::hook::HookOpen) `P`, every slot the SDK's own
+///   ([`abi::sdk::hook`](crate::abi::sdk::hook)).
+///
+/// ```ignore
+/// busbar_contract::export_plugin! {
+///     hook: MyOpen,
+///     statement: busbar_contract::abi::sdk::door::statement("my-hook", "1.0.0", 64),
+/// }
+/// ```
+#[macro_export]
+macro_rules! export_plugin {
+    (hook: $open:ty, statement: $statement:expr $(,)?) => {
+        $crate::plugin_door! {
+            ops: $crate::abi::hook::Ops,
+            statement: $statement,
+            lifecycle: life($crate::abi::sdk::hook::HookLife<$open>),
+            kind_ops: {
+                decide: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Decide<$open>>,
+                transform: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Transform<$open>>,
+                notify: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Notify<$open>>,
+                configure: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Configure<$open>>,
+                status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status<$open>>,
+                describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe<$open>>,
+                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Serve<$open>>,
+            },
+        }
+    };
+    ($($door:tt)*) => { $crate::plugin_door! { $($door)* } };
+}
+
 /// THE ONE EXPORT. Invoked once, in a plugin's thin `cdylib` crate, with the logic crate's door:
 /// `busbar_contract::export_door!(crate_x::door);`. Emits the ONE `#[no_mangle]` symbol
 /// [`DOOR_SYMBOL`](crate::abi::mechanism::DOOR_SYMBOL), forwarding to that door — the same
