@@ -33,7 +33,7 @@ use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 /// The stream `Content-Type` every declared protocol states, folded at boot.
 use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
-use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
+use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable, ServeTables};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
@@ -921,6 +921,10 @@ pub struct Served {
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
     pub claim_doors: serve_datagram::ClaimDoors,
+    /// THE PUBLISHED INSTANCES' ADMIN TABLE these planes were published into: the generation's
+    /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
+    /// mount ([`public_routes`]).
+    pub tables: ServeTables,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -1055,6 +1059,7 @@ pub fn compose_served(
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -1097,6 +1102,7 @@ pub fn compose_served(
         &money,
         Some(&egress),
         stage.as_ref(),
+        tables,
     )?;
     served.post = Some(post);
     served.epoch = epoch;
@@ -1567,13 +1573,13 @@ pub struct DoorEgress<'a> {
 /// a [`PlaneInstance`] on `dispatcher` (unit tickets on worker 0, where its driver ticket is
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
 /// facts and the money steps `money` builds for it, the pools its section states, and its admin
-/// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
-/// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
-/// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
-/// configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
-/// hooks); without, no hook binds. The data routes are the data router's
-/// construction ([`data_routes`]).
+/// routes published on `tables`, the generation's admin table (`plane_driver::serve`, K-SERVE). A
+/// plane whose section is absent stays bound and unopened, as before. With `egress`, each plane's
+/// egress is sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every
+/// walk is exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's
+/// hook configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
+/// hooks); without, no hook binds. The data routes are the data router's construction
+/// ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -1589,6 +1595,7 @@ pub fn compose_planes(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
@@ -1609,6 +1616,7 @@ pub fn compose_planes(
         hooks,
         &clock,
         &scope,
+        tables,
     )
 }
 
@@ -1635,8 +1643,12 @@ pub(crate) fn compose_planes_over(
     hooks: Option<&HookStage>,
     clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     scope: &busbar_contract::config_time::ConfigScope,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
-    let mut served = Served::default();
+    let mut served = Served {
+        tables: tables.clone(),
+        ..Served::default()
+    };
     if doors.is_empty() {
         return Ok(served);
     }
@@ -1764,18 +1776,20 @@ pub(crate) fn compose_planes_over(
             .collect();
         // The admin router's fallback is this table, so a kernel admin route always matches first
         // and is never shadowed; no route is reserved beyond that.
-        publish(
-            ServeTable {
-                instance: instance.clone(),
-                audit_kind: served_facts.audit_kind.to_string(),
-                calls,
-                caps: BufferCaps::default(),
-                routes,
-                records: Some((Arc::clone(&kernel), caller)),
-            },
-            &[],
-        )
-        .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
+        served
+            .tables
+            .publish(
+                ServeTable {
+                    instance: instance.clone(),
+                    audit_kind: served_facts.audit_kind.to_string(),
+                    calls,
+                    caps: BufferCaps::default(),
+                    routes,
+                    records: Some((Arc::clone(&kernel), caller)),
+                },
+                &[],
+            )
+            .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
         let declared = plugin.declared();
         // EVERY REPORTED CLASS IS REGISTERED (THE DESIGN §7): the classes a plane may report are the
         // ones its tail declares, linked or dropped in, registered once at its composition, so its
@@ -3237,6 +3251,7 @@ pub(crate) fn line_routes(
 /// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
 /// public serve path. A verb the router does not mount is left out.
 fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
+    let tables = &served.tables;
     served
         .planes
         .iter()
@@ -3250,21 +3265,26 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                 path: r.target.clone(),
                 method,
                 auth: RouteAuth::None,
-                handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                    Box::pin(async move {
-                        let target = ctx
-                            .uri
-                            .path_and_query()
-                            .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
-                        busbar_kernel::plane_driver::serve::answer_public(
-                            ctx.method.as_str(),
-                            &ctx.path,
-                            &target,
-                            &ctx.headers,
-                            ctx.body,
-                        )
-                        .await
-                    })
+                handler: Arc::new({
+                    let tables = tables.clone();
+                    move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let tables = tables.clone();
+                        Box::pin(async move {
+                            let target = ctx
+                                .uri
+                                .path_and_query()
+                                .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
+                            tables
+                                .answer_public(
+                                    ctx.method.as_str(),
+                                    &ctx.path,
+                                    &target,
+                                    &ctx.headers,
+                                    ctx.body,
+                                )
+                                .await
+                        })
+                    }
                 }),
             })
         })

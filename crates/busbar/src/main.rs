@@ -958,6 +958,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 )
             })
         }),
+        &app.serve_tables,
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());

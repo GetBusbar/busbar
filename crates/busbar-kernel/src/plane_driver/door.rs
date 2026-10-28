@@ -847,7 +847,8 @@ fn default_section<const I: usize>() -> Box<dyn PlaneCfg> {
 /// The door's stated admin routes as the admin router mounts them (ARCHITECT Q-L3B-VERBS): each
 /// non-public route at its stated verb and target, a read at `read-only` and anything else at
 /// `full`, audited under its stated word; every one served by the instance's own `serve` op
-/// (`plane_driver::serve::served_at`), its answer framed in the admin taxonomy.
+/// (`ServeTables::served_at` over the live generation's table), its answer framed in the admin
+/// taxonomy.
 fn admin_routes<const I: usize>(
     _slot: &dyn std::any::Any,
 ) -> Vec<crate::admin_verbs::AdminRouteSpec> {
@@ -974,7 +975,7 @@ async fn admin_reply(
         consumed: ctx.consumed.as_ref(),
         principal: ctx.principal.as_ref(),
     };
-    match crate::plane_driver::serve::served_at(req, ctx.body).await {
+    match ctx.serve.served_at(req, ctx.body).await {
         None => AdminReply::Refused(PlaneVerbError::NotFound),
         Some(Err(unserved)) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
             "the plane did not serve `{verb} {path}`: {unserved:?}"

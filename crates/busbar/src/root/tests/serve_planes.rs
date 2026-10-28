@@ -34,19 +34,11 @@ pub(super) fn post() -> Arc<NodeEndPost> {
     Arc::new(NodeEndPost::new(crate::root::plane_node::node()))
 }
 
-/// THE ADMIN TABLE IS THE PROCESS'S ONE: every test that publishes a plane's admin routes holds
-/// this while its plane is published, and withdraws it ([`Published`]) before letting go. It is
-/// the root's one lock over the process-wide admin surfaces ([`crate::root::PUBLISHING`]).
+/// THE OPERATOR AUDIT RING IS THE PROCESS'S ONE: a test that counts the audit rows its door's
+/// admin routes sealed holds this while it does ([`crate::root::PUBLISHING`]). Each composition
+/// publishes its admin routes into its own generation's table (`App::serve_tables`), so no test
+/// withdraws another's.
 pub(crate) use crate::root::PUBLISHING;
-
-/// A published instance, withdrawn from the admin table when the test lets go of it.
-pub(crate) struct Published(pub(crate) &'static str);
-
-impl Drop for Published {
-    fn drop(&mut self) {
-        busbar_kernel::plane_driver::serve::withdraw(self.0);
-    }
-}
 
 /// The test plane's example `cdylib` beside this test binary. Not built is a failure in every run,
 /// never a skip: a composition proof without its plane proves nothing.
@@ -101,8 +93,9 @@ pub(crate) fn composed_services() -> Arc<LateServices> {
     late
 }
 
-/// An admin request on the admin router's plane table: its status, or `None` (the router's 404).
-fn admin(path: &str) -> Option<u16> {
+/// An admin request on `tables`, the admin router's plane table: its status, or `None` (the
+/// router's 404).
+fn admin(tables: &busbar_kernel::plane_driver::serve::ServeTables, path: &str) -> Option<u16> {
     let req = axum::http::Request::builder()
         .method("POST")
         .uri(format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX))
@@ -112,11 +105,7 @@ fn admin(path: &str) -> Option<u16> {
         .enable_all()
         .build()
         .expect("a runtime");
-    rt.block_on(async {
-        busbar_kernel::plane_driver::serve::answer(req)
-            .await
-            .map(|r| r.status().as_u16())
-    })
+    rt.block_on(async { tables.answer(req).await.map(|r| r.status().as_u16()) })
 }
 
 #[test]
@@ -124,7 +113,6 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-configured";
     let _one = PUBLISHING.blocking_lock();
-    let _published = Published(instance);
     let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let mut sections = BTreeMap::new();
@@ -139,6 +127,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         &money,
         None,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("the door plane composes (the plane_driver_test_plane example cdylib, current: run `cargo build --workspace --examples`)");
     assert_eq!(served.planes.len(), 1, "one plane composed");
@@ -156,12 +145,12 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         "its open published its claims"
     );
     assert_eq!(
-        admin("/items/composed/act"),
+        admin(&served.tables, "/items/composed/act"),
         Some(200),
         "its audited admin route is served by its `serve` op"
     );
     assert_eq!(
-        admin("/items/composed/hook"),
+        admin(&served.tables, "/items/composed/hook"),
         None,
         "a public route is never on the admin table"
     );
@@ -183,6 +172,7 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
         &money,
         None,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("nothing to compose is not a refusal");
     assert!(served.planes.is_empty(), "LAW 7: no section, no plane");
@@ -200,6 +190,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
         &money,
         None,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("an empty composition");
     assert!(served.planes.is_empty());
@@ -297,7 +288,6 @@ test_plane_owned:
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-plane-bound";
     let _one = PUBLISHING.blocking_lock();
-    let _published = Published(instance);
     let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
@@ -310,6 +300,7 @@ test_plane_owned:
         &money,
         None,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("the door plane composes");
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
@@ -559,7 +550,6 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-pools-refresh-refused";
     let _one = PUBLISHING.blocking_lock();
-    let _published = Published(instance);
     let plane = bound(instance, &dispatcher);
     let late = composed_services();
     let served = compose_planes(
@@ -571,6 +561,7 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
         &money,
         None,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("the door plane composes");
     let composed = &served.planes[0].live;

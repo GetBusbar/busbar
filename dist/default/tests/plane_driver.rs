@@ -1170,9 +1170,14 @@ fn serve_table(
     (plugin, table)
 }
 
-/// One admin request through the admin router's fallback: its status and body, or `None` when no
-/// published instance names the path (the router's own `404`).
-fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
+/// One admin request through the admin router's fallback over `tables`: its status and body, or
+/// `None` when no published instance names the path (the router's own `404`).
+fn admin(
+    tables: &busbar_kernel::plane_driver::serve::ServeTables,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> Option<(u16, String)> {
     let req = axum::http::Request::builder()
         .method(method)
         .uri(format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX))
@@ -1187,7 +1192,7 @@ fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         .build()
         .expect("a runtime");
     rt.block_on(async {
-        let resp = busbar_kernel::plane_driver::serve::answer(req).await?;
+        let resp = tables.answer(req).await?;
         let status = resp.status().as_u16();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -1217,7 +1222,7 @@ fn rows(resource: &str) -> Vec<String> {
 /// A route that overlaps another instance's, or a kernel route, is refused at publish.
 #[test]
 fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
-    use busbar_kernel::plane_driver::serve::{publish, serve, withdraw, Unserved};
+    use busbar_kernel::plane_driver::serve::{serve, ServeTables, Unserved};
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1228,13 +1233,16 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");
         // Unpublished: nothing mounts.
-        assert_eq!(admin("POST", &act, "go"), None, "{way:?}");
+        let tables = ServeTables::default();
+        assert_eq!(admin(&tables, "POST", &act, "go"), None, "{way:?}");
         let (_plugin, table) = serve_table(way, "the-instance");
         let calls = table.calls.clone();
         assert_eq!(table.routes.len(), 2, "{way:?}: both routes are copied");
-        publish(table.clone(), &[]).expect("the instance publishes");
+        tables
+            .publish(table.clone(), &[])
+            .expect("the instance publishes");
 
-        let served = admin("POST", &act, "go").expect("a declared route is served");
+        let served = admin(&tables, "POST", &act, "go").expect("a declared route is served");
         assert_eq!(
             served,
             (200, format!("served {act} fields=x-trace")),
@@ -1242,28 +1250,44 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         );
         let resource = format!("testkind:{item}");
         assert_eq!(rows(&resource), ["applied"], "{way:?}");
-        let malformed = admin("POST", &act, "malformed");
+        let malformed = admin(&tables, "POST", &act, "malformed");
         assert_eq!(malformed.map(|r| r.0), Some(400), "{way:?}");
         assert_eq!(
             rows(&resource),
             ["applied"],
             "{way:?}: a malformed body is not audited"
         );
-        let disagree = admin("POST", &act, "disagree");
+        let disagree = admin(&tables, "POST", &act, "disagree");
         assert_eq!(disagree.map(|r| r.0), Some(400), "{way:?}");
         assert_eq!(rows(&resource), ["applied", "rejected"], "{way:?}");
 
-        assert_eq!(admin("POST", &format!("/items/{item}/other"), "go"), None);
-        assert_eq!(admin("POST", &format!("/items/{item}/hook"), "go"), None);
-        assert_eq!(admin("GET", &act, "").map(|r| r.0), Some(405), "{way:?}");
+        assert_eq!(
+            admin(&tables, "POST", &format!("/items/{item}/other"), "go"),
+            None
+        );
+        assert_eq!(
+            admin(&tables, "POST", &format!("/items/{item}/hook"), "go"),
+            None
+        );
+        assert_eq!(
+            admin(&tables, "GET", &act, "").map(|r| r.0),
+            Some(405),
+            "{way:?}"
+        );
 
         assert_eq!(
-            admin("POST", &act, "short").map(|r| r.0),
+            admin(&tables, "POST", &act, "short").map(|r| r.0),
             Some(200),
             "{way:?}"
         );
-        assert_eq!(admin("POST", &act, "short-twice").map(|r| r.0), Some(502));
-        assert_eq!(admin("POST", &act, "bad-audit").map(|r| r.0), Some(502));
+        assert_eq!(
+            admin(&tables, "POST", &act, "short-twice").map(|r| r.0),
+            Some(502)
+        );
+        assert_eq!(
+            admin(&tables, "POST", &act, "bad-audit").map(|r| r.0),
+            Some(502)
+        );
         assert_eq!(rows(&resource).len(), 3, "{way:?}: a FAULT writes no row");
 
         let past = tokio::runtime::Builder::new_current_thread()
@@ -1284,24 +1308,30 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
             instance: "another".to_string(),
             ..table.clone()
         };
-        let refused = publish(other, &[]).expect_err("an overlapping instance is refused");
+        let refused = tables
+            .publish(other, &[])
+            .expect_err("an overlapping instance is refused");
         assert_eq!(refused.with, "the-instance", "{way:?}");
         let kernel = [("POST", "/items/{id}/act")];
-        let refused =
-            publish(table.clone(), &kernel).expect_err("a kernel route is never shadowed");
+        let refused = tables
+            .publish(table.clone(), &kernel)
+            .expect_err("a kernel route is never shadowed");
         assert_eq!(refused.with, "kernel", "{way:?}");
-        publish(table, &[]).expect("a refresh of the same instance publishes");
+        tables
+            .publish(table, &[])
+            .expect("a refresh of the same instance publishes");
 
-        withdraw("the-instance");
+        tables.withdraw("the-instance");
         assert_eq!(
-            admin("POST", &act, "go"),
+            admin(&tables, "POST", &act, "go"),
             None,
             "{way:?}: withdrawn, nothing mounts"
         );
     }
 }
 
-/// The process's one table of published instances: one test publishes at a time.
+/// The process's one operator audit ring the served routes write their rows on: one test serves at
+/// a time.
 static PUBLISHED: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// RED (SEAM-4o): a PUBLIC route the published snapshot states (`ROUTE_PUBLIC`) is served on the
@@ -1312,14 +1342,15 @@ static PUBLISHED: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// out of every table, so nothing served them.
 #[test]
 fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
-    use busbar_kernel::plane_driver::serve::{answer_public, publish, withdraw};
+    use busbar_kernel::plane_driver::serve::ServeTables;
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let (_plugin, table) = serve_table(way, "the-public-instance");
-        publish(table, &[]).expect("the instance publishes");
+        let tables = ServeTables::default();
+        tables.publish(table, &[]).expect("the instance publishes");
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("authorization", "Bearer someone".parse().unwrap());
         headers.insert("cookie", "session=secret".parse().unwrap());
@@ -1330,9 +1361,9 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
                 .build()
                 .expect("a runtime");
             rt.block_on(async {
-                let resp =
-                    answer_public(method, path, path, &headers, axum::body::Bytes::from("go"))
-                        .await;
+                let resp = tables
+                    .answer_public(method, path, path, &headers, axum::body::Bytes::from("go"))
+                    .await;
                 let status = resp.status().as_u16();
                 let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
                     .await
@@ -1353,7 +1384,7 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
             "{way:?}: the admin route is not public"
         );
         assert_eq!(call("POST", "/nowhere").0, 404, "{way:?}");
-        withdraw("the-public-instance");
+        tables.withdraw("the-public-instance");
         assert_eq!(call("POST", &hook).0, 404, "{way:?}: withdrawn");
     }
 }
@@ -1365,7 +1396,7 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
 #[test]
 fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else() {
     use busbar_contract::abi::plane::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
-    use busbar_kernel::plane_driver::serve::{answer_public, publish, withdraw};
+    use busbar_kernel::plane_driver::serve::ServeTables;
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1377,7 +1408,8 @@ fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else(
                 route.flags |= ROUTE_CARRIES_OWN_TOKEN;
             }
         }
-        publish(table, &[]).expect("the instance publishes");
+        let tables = ServeTables::default();
+        tables.publish(table, &[]).expect("the instance publishes");
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("authorization", "Bearer own-token".parse().unwrap());
         headers.insert("cookie", "session=secret".parse().unwrap());
@@ -1389,21 +1421,22 @@ fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else(
             .build()
             .expect("a runtime");
         let (status, body) = rt.block_on(async {
-            let resp = answer_public(
-                "POST",
-                &hook,
-                &hook,
-                &headers,
-                axum::body::Bytes::from("go"),
-            )
-            .await;
+            let resp = tables
+                .answer_public(
+                    "POST",
+                    &hook,
+                    &hook,
+                    &headers,
+                    axum::body::Bytes::from("go"),
+                )
+                .await;
             let status = resp.status().as_u16();
             let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
                 .await
                 .expect("a body");
             (status, String::from_utf8_lossy(&body).into_owned())
         });
-        withdraw("the-token-instance");
+        tables.withdraw("the-token-instance");
         assert_eq!(
             (status, body),
             (200, format!("public {hook} fields=authorization,x-trace")),

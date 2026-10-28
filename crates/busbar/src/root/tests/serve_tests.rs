@@ -46,7 +46,7 @@ use busbar_plane_decisions::plane_door::door as decisions_door;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(feature = "plane-decisions")]
-use super::planes_tests::{composed_services, money, Published, PUBLISHING};
+use super::planes_tests::{composed_services, money, PUBLISHING};
 #[cfg(feature = "plane-decisions")]
 use super::{compose_planes, compose_planes_over, door_routes, DoorEgress};
 #[cfg(feature = "plane-decisions")]
@@ -225,7 +225,6 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-served";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
 
     // THE CONNECTOR, over every linked transport door (the default distribution links the http
@@ -366,6 +365,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
@@ -460,7 +460,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door";
-    let _published = Published(instance);
     let app = busbar_kernel::test_support::TestApp::new().build();
     // RED ARM: a data router built without the door's routes does not hand the claim to the plane.
     let (bare, _admin, _handle) =
@@ -509,6 +508,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &money,
         None,
         None,
+        &app.serve_tables,
     )
     .expect("the door plane composes");
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
@@ -551,7 +551,6 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-carriers";
-    let _published = Published(instance);
     let app = busbar_kernel::test_support::TestApp::new().build();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
@@ -594,6 +593,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         &money,
         None,
         None,
+        &app.serve_tables,
     )
     .expect("the door plane composes");
     // The same verb and path again, over a second carrier.
@@ -652,7 +652,7 @@ pub(super) mod session_door {
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     use crate::root::plane_node::{Node, NodeEndPost};
-    use crate::root::serve::planes_tests::{composed_services, Published, PUBLISHING};
+    use crate::root::serve::planes_tests::{composed_services, PUBLISHING};
     use crate::root::serve::{compose_planes, DoorEgress};
 
     /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
@@ -856,7 +856,6 @@ pub(super) mod session_door {
 
     /// The session door, served as production composes it, and what each root-leg cell reads.
     pub(in crate::root::serve) struct SessionDoor {
-        _published: Published,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -953,7 +952,6 @@ pub(super) mod session_door {
     pub(in crate::root::serve) fn name() -> Option<String> {
         let _one = PUBLISHING.blocking_lock();
         let instance = "session-door-name";
-        let _published = Published(instance);
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         session_door(instance, &dispatcher, connector() as Arc<dyn DeclaredConns>)
             .map(|plane| plane.name().to_owned())
@@ -1022,7 +1020,6 @@ pub(super) mod session_door {
         // The scrape's `/metrics` is mounted on a test app built with the recorder installed.
         busbar_kernel::snapshot::init();
         let budget = opts.budget;
-        let published = Published(instance);
         let (port, heard) = match (opts.far_end, opts.far) {
             (Some(far_end), _) => far_end,
             (None, Some(script)) => far_end_scripted(script).await,
@@ -1204,6 +1201,7 @@ pub(super) mod session_door {
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
             }),
             stage.as_ref(),
+            &busbar_kernel::plane_driver::serve::ServeTables::default(),
         ) {
             Ok(served) => served,
             Err(refusal) => return Some(Err(refusal)),
@@ -2496,7 +2494,7 @@ mod tools_door {
         tool_digest, tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing,
         Rig, STALL, TOOL_DESCRIPTION,
     };
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     type Heard = tokio::sync::mpsc::UnboundedReceiver<String>;
 
@@ -2649,7 +2647,6 @@ mod tools_door {
         busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trip";
-        let _published = Published(instance);
         let (bad, mut bad_heard) = answering_calls_with(503).await;
         let (good, mut good_heard) = tool_server().await;
         let mut tools = registration("tripper", bad, "");
@@ -2711,7 +2708,6 @@ mod tools_door {
     async fn a_tripped_tool_server_is_refused_before_dispatch_without_waiting() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-fastfail";
-        let _published = Published(instance);
         let (port, mut heard) = answering_calls_with(503).await;
         let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
         // The failures that open the cell: each reached the server.
@@ -2754,7 +2750,6 @@ mod tools_door {
     async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-reroute";
-        let _published = Published(instance);
         let (bad, mut bad_heard) = answering_calls_with(503).await;
         let (good, mut good_heard) = tool_server().await;
         let d = tool_digest();
@@ -2870,7 +2865,6 @@ mod tools_door {
     async fn a_pool_serves_every_call_from_its_primary_while_it_is_healthy() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-in-order";
-        let _published = Published(instance);
         let (primary, mut primary_heard) = tool_server().await;
         let (twin, mut twin_heard) = tool_server().await;
         let d = tool_digest();
@@ -2916,7 +2910,6 @@ mod tools_door {
     async fn one_transient_failure_does_not_bench_a_sole_member() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-one-blip";
-        let _published = Published(instance);
         let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (port, mut heard) = tool_server_replying(Arc::new(move |r: &str| {
             if r.contains("\"tools/list\"") {
@@ -2974,7 +2967,6 @@ mod tools_door {
     async fn a_stalled_tool_server_is_answered_within_its_timeout() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-stall";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server_replying(Arc::new(|r: &str| {
             if r.contains("\"tools/list\"") {
                 let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
@@ -3035,7 +3027,6 @@ mod tools_door {
     async fn a_failed_dial_keeps_the_not_dispatched_words() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-dial-failed";
-        let _published = Published(instance);
         // One connection served (the verification's tool list), then the port is closed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -3116,7 +3107,6 @@ mod tools_door {
     async fn a_rewrite_hook_rewrites_the_arguments_on_the_composed_door() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-tap";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
 
@@ -3173,7 +3163,6 @@ mod tools_door {
     async fn a_gate_hook_refuses_the_call_before_it_is_dispatched() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-gate";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let gated = hook_parity::rig(
             instance,
@@ -3233,7 +3222,6 @@ mod tools_door {
     async fn every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-audit";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
             app
@@ -3313,7 +3301,6 @@ mod tools_door {
     async fn a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-decode";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("decoded", port, ""), &|app| {
             app
@@ -3366,7 +3353,6 @@ mod tools_door {
     async fn only_a_caller_the_chain_authenticates_reaches_the_tool_server() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-authenticate";
-        let _published = Published(instance);
         std::env::set_var(SUBJECT, "busbar-own-subject");
         let (port, mut heard) = tool_server().await;
         let extra = format!(
@@ -3444,7 +3430,6 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT, "busbar-own-subject");
         let instance = "serve-door-tools-verify";
-        let _published = Published(instance);
         let (granted, mut granted_heard) = tool_server().await;
         let (fenced, mut fenced_heard) = tool_server().await;
         let mut tools = registration("granted", granted, "");
@@ -3505,7 +3490,6 @@ mod tools_door {
     async fn a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-single-503";
-        let _published = Published(instance);
         let (port, mut heard) = answering_calls_with(503).await;
         let rig = rig_tools(instance, port, registration("solo", port, ""), &|app| app);
 
@@ -3532,7 +3516,6 @@ mod tools_door {
     async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-meter-row";
-        let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
             app
@@ -3601,7 +3584,6 @@ mod tools_door {
         use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-budget";
-        let _published = Published(instance);
         let group = "serve-door-tools-budget-group";
         let limit = LimitCfg {
             metric: LimitMetric::Budget,
@@ -3716,7 +3698,6 @@ mod tools_door {
         busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-disposition";
-        let _published = Published(instance);
         let (faulted, mut faulted_heard) = answering_calls_with(400).await;
         let (failing, mut failing_heard) = answering_calls_with(503).await;
         let mut tools = registration("faulted", faulted, "");
@@ -3800,7 +3781,6 @@ mod tools_door {
         busbar_kernel::snapshot::init();
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metrics";
-        let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let row = door_boundary::row();
         door_boundary::registry(row);
@@ -3881,7 +3861,6 @@ mod tools_door {
     async fn a_rug_pulled_tool_is_detected_demoted_and_refused_before_it_is_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-trust";
-        let _published = Published(instance);
         let live = Arc::new(std::sync::Mutex::new(tool_listing()));
         let (port, mut heard) = tool_server_listing(Arc::clone(&live)).await;
         let rig = rig_tools(
@@ -3928,7 +3907,6 @@ mod tools_door {
         use crate::root::door_steps::tests::tool_door::Ledger;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-netguard";
-        let _published = Published(instance);
         let (walled, mut walled_heard) = tool_server().await;
         let (reached, mut reached_heard) = tool_server().await;
         let mut tools = registration("walled", walled, "");
@@ -4004,7 +3982,6 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT, "busbar-own-subject");
         let instance = "serve-door-tools-egress";
-        let _published = Published(instance);
         let (plain, mut plain_heard) = tool_server().await;
         let (lent, mut lent_heard) = tool_server().await;
         let (exchanged, mut exchanged_heard) = tool_server().await;
@@ -4079,7 +4056,6 @@ mod tools_door {
     async fn each_grant_sees_and_calls_only_its_own_catalogue() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-catalogue";
-        let _published = Published(instance);
         let (port, mut heard) =
             tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
@@ -4265,7 +4241,6 @@ mod tools_door {
     async fn a_tripped_servers_exhausted_walk_is_refused_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-bytes";
-        let _published = Published(instance);
         let (port, mut heard) = answering_calls_with(503).await;
         let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
@@ -4312,7 +4287,6 @@ mod tools_door {
     async fn an_exhausted_walk_whose_tool_left_the_catalogue_is_refused_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-unlisted";
-        let _published = Published(instance);
         let (port, mut heard) = stalling_calls().await;
         let rig = rig_tools(
             instance,
@@ -4362,7 +4336,6 @@ mod tools_door {
     async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-task";
-        let _published = Published(instance);
         let (port, mut heard) = stalling_calls().await;
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
             "stall:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  timeout: 2s\n  \
@@ -4405,7 +4378,6 @@ mod tools_door {
     async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-exhausted-task-tripped";
-        let _published = Published(instance);
         let (port, mut heard) = answering_calls_with(503).await;
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
             "flaky:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
@@ -4764,6 +4736,7 @@ async fn serve_configured(
         &(Arc::new(crate::root::egress_ports::NodeClock::new())
             as Arc<dyn busbar_kernel_egress::ports::Clock>),
         &busbar_contract::config_time::ConfigScope::config_time(),
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )?;
     let live = Arc::clone(&served.planes[0].live);
     served.post = Some(Arc::clone(&post));
@@ -4853,7 +4826,6 @@ async fn call_once(
 async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_one_503() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-stated";
-    let _published = Published(instance);
     let linked = declaring(STATES_NO_BENCH);
     assert_eq!(
         crate::root::linked::door_breaker(&linked, None, &decisions_name())
@@ -4905,7 +4877,6 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
 async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-absent";
-    let _published = Published(instance);
     // The door's row states a `declares` section without the fact; the shipped table has no row
     // for it (the MCP door's row states the fact for the MCP plane alone).
     let silent = declaring("{}");
@@ -4954,7 +4925,7 @@ use super::hook_seat_tests::{
     Script as SeatScript, REWRITTEN,
 };
 #[cfg(linked_driver_proofs)]
-use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
+use super::planes_tests::PUBLISHING as ONE_PUBLISHER;
 
 /// A served chat completion, marked by the member that answered it.
 #[cfg(linked_driver_proofs)]
@@ -4975,7 +4946,6 @@ const MALFORMED: &str = r#"{"error":{"message":"bad request","type":"invalid_req
 async fn the_pools_door_trips_a_failing_members_breaker_cell() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-breaker-trip";
-    let _published = Withdrawn(instance);
     let (down, twin) = (
         seat_far_end(503, OVERLOADED).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5006,7 +4976,6 @@ async fn the_pools_door_trips_a_failing_members_breaker_cell() {
 async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-breaker-fastfail";
-    let _published = Withdrawn(instance);
     let (down, twin) = (
         seat_far_end(503, OVERLOADED).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5042,7 +5011,6 @@ async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
 async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-failover";
-    let _published = Withdrawn(instance);
     let (down, twin) = (
         seat_far_end(503, OVERLOADED).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5073,7 +5041,6 @@ async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
 async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-disposition";
-    let _published = Withdrawn(instance);
     let (refusing, twin) = (
         seat_far_end(400, MALFORMED).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5106,7 +5073,6 @@ async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
 async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-egress-auth";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5131,7 +5097,6 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
 async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-metrics";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5160,7 +5125,6 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
 async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-budget";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5198,7 +5162,6 @@ async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
 async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-failed-fee-refund";
-    let _published = Withdrawn(instance);
     let down = seat_far_end(503, OVERLOADED).await;
     let rig = rig(
         instance,
@@ -5229,7 +5192,6 @@ async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
 async fn the_pools_door_seals_one_audit_record_per_unit() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-audit";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5325,7 +5287,6 @@ async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident
 async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal_is_full() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-full-journal";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5367,7 +5328,6 @@ async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal
 async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-gate";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5395,7 +5355,6 @@ async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
 async fn the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-gate-money";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5428,7 +5387,6 @@ async fn the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee() {
 async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-tap";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -5455,7 +5413,6 @@ async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
 async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-catalogue";
-    let _published = Withdrawn(instance);
     let (a, b) = (
         seat_far_end(200, SERVED_BY_TWIN).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5496,7 +5453,6 @@ async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches()
 async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-dropped-controls";
-    let _published = Withdrawn(instance);
     // The far dialect is the plane's own door word (`untranslatable_dialect`), and so is its answer:
     // a message whose usage carries a member the caller's dialect has no form for.
     let far_dialect = door_word("untranslatable_dialect");
@@ -5567,7 +5523,6 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
 async fn the_pools_doors_hooks_see_each_candidates_standing() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-signals";
-    let _published = Withdrawn(instance);
     let (a, b) = (
         seat_far_end(200, SERVED_BY_TWIN).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5713,7 +5668,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_upgrades_a_null_stream_options_and_keeps_the_usage_chunk_back() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-null-stream-options";
-        let _published = Withdrawn(instance);
         let (state, server) = mock(vec![event_stream(vec![
             r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#.to_string(),
             r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
@@ -5767,7 +5721,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_replaces_every_caller_credential_with_the_members() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-caller-credentials";
-        let _published = Withdrawn(instance);
         let (state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
@@ -5837,7 +5790,6 @@ mod pools_door_walk_and_breaker {
         };
 
         let instance = "rehome-walk-all-down";
-        let published = Withdrawn(instance);
         let down = rig(
             instance,
             RigOpts {
@@ -5849,10 +5801,8 @@ mod pools_door_walk_and_breaker {
         let (down_status, _, down_body) = down.chat().await;
         let down_failures = failures(&down);
         drop(down);
-        drop(published);
 
         let instance = "rehome-walk-all-refused";
-        let _published = Withdrawn(instance);
         let (first, second) = (
             seat_far_end(200, SERVED_BY_TWIN).await,
             seat_far_end(200, SERVED_BY_TWIN).await,
@@ -5901,7 +5851,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_audits_an_unmapped_content_part_by_its_wire_path() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-unmapped-part";
-        let _published = Withdrawn(instance);
         let far_dialect = door_word("messages_dialect");
         let (state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
@@ -5978,7 +5927,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_relays_every_event_of_a_streamed_answer() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-ten-events";
-        let _published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Sse {
             events: events(10),
             abort_at_index: None,
@@ -6017,7 +5965,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_fails_over_a_fault_before_the_first_byte_and_cools_the_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-pre-first-byte";
-        let _published = Withdrawn(instance);
         let (_failing, down) = mock(vec![MockResponse::ServerError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: serde_json::json!({ "error": "lane 0 failed" }),
@@ -6055,7 +6002,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_records_a_cut_after_the_first_byte_and_does_not_fail_over() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-midstream-abort";
-        let _published = Withdrawn(instance);
         let (_cut, cutting) = mock(vec![MockResponse::Sse {
             events: events(5),
             abort_at_index: Some(1),
@@ -6106,7 +6052,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_trips_on_an_own_credential_401_but_not_on_a_passthrough_one() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-401";
-        let published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Auth {
             status: StatusCode::UNAUTHORIZED,
         }])
@@ -6131,10 +6076,8 @@ mod pools_door_walk_and_breaker {
         assert_eq!((snap.err, snap.streak), (0, 0), "nothing recorded");
         assert!(!snap.dead);
         drop(passthrough);
-        drop(published);
 
         let instance = "rehome-walk-own-401";
-        let _published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Auth {
             status: StatusCode::UNAUTHORIZED,
         }])
@@ -6169,7 +6112,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_forwards_the_callers_token_on_a_passthrough_pool() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-token";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let rig = rig(
             instance,
@@ -6198,7 +6140,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_tries_each_member_once_before_its_terminal() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-exclusions";
-        let _published = Withdrawn(instance);
         let fars = [
             seat_far_end(500, r#"{"error":"transient failure"}"#).await,
             seat_far_end(500, r#"{"error":"transient failure"}"#).await,
@@ -6228,7 +6169,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_caps_the_walk_at_one_attempt_per_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-cap";
-        let _published = Withdrawn(instance);
         let fars = [
             seat_far_end(500, r#"{"error":"transient failure"}"#).await,
             seat_far_end(500, r#"{"error":"transient failure"}"#).await,
@@ -6259,7 +6199,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_never_retries_a_callers_fault_on_another_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-client-fault-once";
-        let _published = Withdrawn(instance);
         let fars = [
             seat_far_end(
                 400,
@@ -6318,7 +6257,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_takes_a_member_down_on_a_mapped_billing_code() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-billing-code";
-        let _published = Withdrawn(instance);
         let (rig, _, _server) = mapped_member(
             instance,
             MockResponse::Billing {
@@ -6346,7 +6284,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_cools_a_member_on_a_mapped_rate_limit_code() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-rate-limit-code";
-        let _published = Withdrawn(instance);
         let (rig, _, _server) = mapped_member(
             instance,
             MockResponse::RateLimit {
@@ -6371,7 +6308,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_cools_a_member_on_a_bare_rate_limit() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-rate-limit-bare";
-        let _published = Withdrawn(instance);
         let (rig, _, _server) = mapped_member(
             instance,
             MockResponse::RateLimit {
@@ -6393,7 +6329,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_cools_a_member_on_a_server_error() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-server-error";
-        let _published = Withdrawn(instance);
         let (rig, _, _server) = mapped_member(
             instance,
             MockResponse::ServerError {
@@ -6419,7 +6354,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_takes_a_member_down_on_a_refused_own_credential() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-auth-down";
-        let _published = Withdrawn(instance);
         let (rig, (status, _, text), _server) = mapped_member(
             instance,
             MockResponse::Auth {
@@ -6459,7 +6393,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_classifies_by_the_mapped_code_not_the_status() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-code-drives-mapped";
-        let published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Billing {
             status: StatusCode::PAYMENT_REQUIRED,
             code: "1113",
@@ -6482,10 +6415,8 @@ mod pools_door_walk_and_breaker {
             "the mapped billing code takes the member down"
         );
         drop(mapped);
-        drop(published);
 
         let instance = "rehome-walk-code-drives-unmapped";
-        let _published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({ "error": "not a known error" }),
@@ -6518,7 +6449,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_relays_a_callers_fault_verbatim_and_counts_it_apart() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-client-fault";
-        let _published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::BAD_REQUEST,
             body: serde_json::json!({ "error": "invalid_request", "message": "bad input" }),
@@ -6559,7 +6489,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_sheds_an_exhausted_pool_with_a_retry_after() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-exhaustion";
-        let _published = Withdrawn(instance);
         let limited = || MockResponse::RateLimit {
             status: StatusCode::TOO_MANY_REQUESTS,
             provider_signal: Some("1302"),
@@ -6752,7 +6681,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_yields_a_session_pinned_to_a_tripped_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-sticky-yields";
-        let _published = Withdrawn(instance);
         let (tripped, healthy) = (
             seat_far_end(200, SERVED_BY_TWIN).await,
             seat_far_end(200, SERVED_BY_TWIN).await,
@@ -6818,7 +6746,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_fails_a_context_length_refusal_over_without_a_penalty() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-context-length";
-        let _published = Withdrawn(instance);
         let (_refusing_state, refusing) = mock(vec![too_long(200_000)]).await;
         let (_serving_state, serving) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
@@ -6854,7 +6781,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_serves_a_too_long_request_from_the_larger_window() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-larger-window";
-        let _published = Withdrawn(instance);
         let (_small_state, small) = mock(vec![too_long(8_000)]).await;
         let (large_state, large) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
@@ -6892,7 +6818,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_ends_a_too_long_request_at_its_terminal_without_a_penalty() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-same-window";
-        let _published = Withdrawn(instance);
         let (_first_state, first) = mock(vec![too_long(8_000)]).await;
         let (_second_state, second) = mock(vec![too_long(8_000)]).await;
         let rig = rig(
@@ -6925,7 +6850,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_records_one_success_per_clean_stream_end() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-clean-ends";
-        let _published = Withdrawn(instance);
         const RUNS: usize = 8;
         let clean = || {
             MockResponse::Sse {
@@ -6967,7 +6891,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_presents_no_credential_for_a_passthrough_caller_with_none() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-passthrough-none";
-        let _published = Withdrawn(instance);
         let (state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
@@ -7014,7 +6937,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_keeps_a_real_mid_stream_failure_with_its_member() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-real-midstream";
-        let _published = Withdrawn(instance);
         let (_bad_state, bad) = mock(vec![MockResponse::SseTransportError {
             ok_events: vec![
                 r#"{"choices":[{"delta":{"content":"MEMBER-1-REAL-FIRST-FRAME"}}]}"#.to_string(),
@@ -7077,7 +6999,6 @@ mod pools_door_walk_and_breaker {
     async fn the_pools_door_reroutes_a_tripped_primary_to_its_twin_without_dialling_it() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-tripped-primary";
-        let _published = Withdrawn(instance);
         let (primary_state, primary) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: messages_answer_saying("from the primary"),
@@ -7238,7 +7159,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_wrong_key_in_every_dialects_own_envelope() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-wrong-key-envelopes";
-        let _published = Withdrawn(instance);
         let (rig, far) = keyed(instance).await;
 
         for path in [door_word("generate_path"), door_word("generate_v1_path")] {
@@ -7307,7 +7227,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_wrong_key_on_the_second_chat_and_respond_surfaces() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-wrong-key-chat-v2";
-        let _published = Withdrawn(instance);
         let (rig, _far) = keyed(instance).await;
 
         let (status, head, body) = with_wrong_key(&rig, door_word("chat_v2_path")).await;
@@ -7338,7 +7257,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_wrong_bearer_on_converse_with_a_403() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-wrong-bearer-converse";
-        let _published = Withdrawn(instance);
         let (rig, _far) = keyed(instance).await;
         let (status, head, body) = rig
             .send_bare(
@@ -7367,7 +7285,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_wrong_key_on_both_generate_paths_as_a_bad_argument() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-wrong-key-generate";
-        let _published = Withdrawn(instance);
         let (rig, _far) = keyed(instance).await;
         for path in [door_word("generate_path"), door_word("generate_v1_path")] {
             let (status, head, body) = rig
@@ -7437,7 +7354,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_in_the_messages_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-messages";
-        let _published = Withdrawn(instance);
         let (rig, far) = over_budget(instance).await;
         let (status, head, body) = rig
             .send("POST", door_word("messages_path"), Some(chat_on_p()))
@@ -7457,7 +7373,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_on_chat() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-chat";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_budget(instance).await;
         let (status, head, body) = rig.chat().await;
         assert_eq!(status, 429);
@@ -7474,7 +7389,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_on_the_respond_surface() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-respond";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_budget(instance).await;
         let (status, _, body) = rig
             .send(
@@ -7496,7 +7410,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_on_the_second_chat_surface() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-chat-v2";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_budget(instance).await;
         let (status, _, body) = rig
             .send(
@@ -7521,7 +7434,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_on_generate() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-generate";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_budget(instance).await;
         let (status, _, body) = rig
             .send(
@@ -7546,7 +7458,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_on_converse() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-converse";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_budget(instance).await;
         let (status, head, body) = rig
             .send(
@@ -7572,7 +7483,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_the_request_past_its_groups_rate() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-two";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let limits = [limit(LimitMetric::Requests, 2, LimitWindow::Minute)];
         let rig = rig(
@@ -7613,7 +7523,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_exhausted_rate_on_chat() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-chat";
-        let _published = Withdrawn(instance);
         let (rig, far) = over_rpm(instance).await;
         let (status, head, body) = rig.chat().await;
         assert_eq!(status, 429);
@@ -7630,7 +7539,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_exhausted_rate_on_the_respond_surface() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-respond";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_rpm(instance).await;
         let (status, head, body) = rig
             .send(
@@ -7652,7 +7560,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_exhausted_rate_on_the_second_chat_surface() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-chat-v2";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_rpm(instance).await;
         let (status, head, body) = rig
             .send(
@@ -7679,7 +7586,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_exhausted_rate_on_generate() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-generate";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_rpm(instance).await;
         let (status, head, body) = rig
             .send(
@@ -7703,7 +7609,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_exhausted_rate_on_converse() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-converse";
-        let _published = Withdrawn(instance);
         let (rig, _far) = over_rpm(instance).await;
         let (status, head, body) = rig
             .send(
@@ -7731,7 +7636,6 @@ mod pools_door_refusals {
     async fn the_pools_door_puts_no_internal_prefix_on_a_forward_layer_error() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-no-router-prefix";
-        let _published = Withdrawn(instance);
         let closed = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
             listener.local_addr().expect("its address").port()
@@ -7789,7 +7693,6 @@ mod pools_door_refusals {
             "messages": [{"role": "user", "content": "hi"}]});
 
         let instance = "rehome-gate-leak-restricted";
-        let published = Withdrawn(instance);
         let restricted = rig(
             instance,
             RigOpts {
@@ -7806,11 +7709,9 @@ mod pools_door_refusals {
         assert_eq!(status, 403, "a pool the key may not reach");
         assert_leak_free(&String::from_utf8_lossy(&body), &restricted.key_id, pool);
         drop(restricted);
-        drop(published);
 
         let empty = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
         let instance = "rehome-gate-leak-broke";
-        let published = Withdrawn(instance);
         let broke = rig(
             instance,
             RigOpts {
@@ -7835,11 +7736,9 @@ mod pools_door_refusals {
         assert!(text.contains("ThrottlingException"), "{text}");
         assert_leak_free(&text, &broke.key_id, pool);
         drop(broke);
-        drop(published);
 
         let closed = [limit(LimitMetric::Requests, 0, LimitWindow::Minute)];
         let instance = "rehome-gate-leak-throttled";
-        let _published = Withdrawn(instance);
         let throttled = rig(
             instance,
             RigOpts {
@@ -7869,7 +7768,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_ad_hoc_route_naming_the_wrong_provider() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-adhoc-mismatch";
-        let _published = Withdrawn(instance);
         let (first, second) = (
             seat_far_end(200, SERVED_BY_TWIN).await,
             seat_far_end(200, SERVED_BY_TWIN).await,
@@ -7909,7 +7807,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_an_exhausted_rate_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-rate-every-dialect";
-        let _published = Withdrawn(instance);
         let (rig, far) = over_rpm(instance).await;
         for (path, request) in every_dialect() {
             let (status, head, body) = rig.send("POST", path, Some(request)).await;
@@ -7935,7 +7832,6 @@ mod pools_door_refusals {
     async fn the_pools_door_refuses_a_spent_budget_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-budget-every-dialect";
-        let _published = Withdrawn(instance);
         let (rig, far) = over_budget(instance).await;
         for (path, request) in every_dialect() {
             let (status, _, body) = rig.send("POST", path, Some(request)).await;
@@ -7956,7 +7852,6 @@ mod pools_door_refusals {
     async fn the_pools_door_fails_closed_on_a_key_naming_an_unconfigured_group() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-ghost-group";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
         let rig = rig(
@@ -8091,7 +7986,6 @@ fn streamed_chat() -> serde_json::Value {
 async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-outlives-timeout";
-    let _published = Withdrawn(instance);
     let far = far_end_scripted(stream_pausing(3_000)).await;
     let rig = rig(
         instance,
@@ -8121,7 +8015,6 @@ async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_time
 async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-ceiling";
-    let _published = Withdrawn(instance);
     let far = far_end_scripted(stream_pausing(4_000)).await;
     let rig = rig(
         instance,
@@ -8159,7 +8052,6 @@ async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
 async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-cut";
-    let _published = Withdrawn(instance);
     let far = far_end_scripted(SeatScript {
         head: STREAM_HEAD.to_string(),
         pieces: vec![(0, frame(FRAMES[0])), (50, frame(FRAMES[1]))],
@@ -8193,7 +8085,6 @@ async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_by
 async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-buffered-cut";
-    let _published = Withdrawn(instance);
     let far = far_end_scripted(SeatScript {
         head: format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
@@ -8248,7 +8139,6 @@ fn whole_cut_after(prefix: usize, hold_ms: u64) -> SeatScript {
 async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-nonstream-cut";
-    let _published = Withdrawn(instance);
     let far = far_end_scripted(whole_cut_after(WHOLE.len() - 1, 0)).await;
     let late = rig(
         instance,
@@ -8261,10 +8151,8 @@ async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_repo
     let _ = late.chat().await;
     assert_eq!(late.tokens_after().await, 1590, "the far end's own report");
     drop(late);
-    drop(_published);
 
     let instance = "serve-door-nonstream-cut-early";
-    let _published = Withdrawn(instance);
     let usage_at = WHOLE.find(r#","usage""#).expect("the usage member");
     let far = far_end_scripted(whole_cut_after(usage_at, 0)).await;
     let rig = rig(
@@ -8290,7 +8178,6 @@ async fn the_pools_door_bills_nothing_for_a_non_stream_answer_the_caller_dropped
     use http_body_util::BodyExt as _;
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-nonstream-drop";
-    let _published = Withdrawn(instance);
     let usage_at = WHOLE.find(r#","usage""#).expect("the usage member");
     let far = far_end_scripted(whole_cut_after(usage_at, 5_000)).await;
     let rig = rig(
@@ -8491,7 +8378,6 @@ mod pools_door_money {
         use http_body_util::BodyExt as _;
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-dropped-floor";
-        let _published = Withdrawn(instance);
         let whole = answer_1590();
         let prefix = whole.find(r#""stop_reason""#).expect("a stop reason");
         let far = far_end_scripted(cut_after(whole, prefix, 5_000)).await;
@@ -8554,7 +8440,6 @@ mod pools_door_money {
     async fn the_pools_door_bills_a_whole_answer_its_own_usage_once() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-whole-once";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, answer_1590()).await;
         let rig = messages_member(instance, far.port).await;
         let (status, _, body) = rig
@@ -8587,7 +8472,6 @@ mod pools_door_money {
     async fn the_pools_door_bills_nothing_for_a_whole_answer_cut_before_its_usage() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-cut-before-usage";
-        let _published = Withdrawn(instance);
         let whole = answer_1590();
         let prefix = whole.find(r#""stop_reason""#).expect("a stop reason");
         let far = far_end_scripted(cut_after(whole, prefix, 0)).await;
@@ -8617,7 +8501,6 @@ mod pools_door_money {
     async fn the_pools_door_bills_what_a_cut_whole_answer_reported() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-cut-after-usage";
-        let _published = Withdrawn(instance);
         let whole = answer_1590();
         let far = far_end_scripted(cut_after(whole, whole.len() - 1, 0)).await;
         let rig = messages_member(instance, far.port).await;
@@ -8672,7 +8555,6 @@ mod pools_door_money {
     async fn the_pools_door_charges_a_translated_answers_tokens_against_the_token_limit() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-tpm-whole";
-        let _published = Withdrawn(instance);
         inside_one_minute().await;
         let ok = || MockResponse::Ok {
             status: StatusCode::OK,
@@ -8714,7 +8596,6 @@ mod pools_door_money {
     async fn the_pools_door_charges_a_translated_stream_tokens_against_the_token_limit() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-tpm-stream";
-        let _published = Withdrawn(instance);
         inside_one_minute().await;
         let streamed = || {
             event_stream(vec![
@@ -8766,7 +8647,6 @@ mod pools_door_money {
             &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
         );
         let instance = "rehome-money-over-cap";
-        let _published = Withdrawn(instance);
         let (_state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: serde_json::json!({
@@ -8817,7 +8697,6 @@ mod pools_door_money {
     async fn the_pools_door_counts_a_pool_refusal_and_charges_no_fee() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-pool-refusal";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let rig = rig(
             instance,
@@ -8867,7 +8746,6 @@ mod pools_door_money {
     async fn the_pools_door_names_the_blocking_group_and_records_nothing() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-finance-blocked";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
         let rig = rig(
@@ -8944,7 +8822,6 @@ mod pools_door_money {
             ),
         ];
         for (instance, path, request) in dialects {
-            let _published = Withdrawn(instance);
             let (_state, server) = mock(vec![event_stream(vec![
                 r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#.to_string(),
                 r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
@@ -9006,7 +8883,6 @@ mod pools_door_money {
     async fn the_pools_door_refuses_a_spent_budget_without_charging_anything() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-over-budget-untouched";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let limits = [limit(LimitMetric::Budget, 100, LimitWindow::Total)];
         let rig = rig(
@@ -9067,7 +8943,6 @@ mod pools_door_money {
     async fn the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-streamed-row";
-        let published = Withdrawn(instance);
         let far = far_end_scripted(stream_pausing(0)).await;
         let streamed = rig(
             instance,
@@ -9115,10 +8990,8 @@ mod pools_door_money {
             vec!["m0 in=11 out=7 cr=0 cw=0 req=1 billable=1".to_string()]
         );
         drop(streamed);
-        drop(published);
 
         let instance = "rehome-money-failed-row";
-        let _published = Withdrawn(instance);
         let down = seat_far_end(503, OVERLOADED).await;
         let failed = rig(
             instance,
@@ -9161,7 +9034,6 @@ mod pools_door_money {
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-dead-stream";
-        let _published = Withdrawn(instance);
         let far = far_end_scripted(SeatScript {
             head: STREAM_HEAD.to_string(),
             pieces: vec![
@@ -9226,7 +9098,6 @@ mod pools_door_money {
             ),
         ] {
             let _one = ONE_PUBLISHER.lock().await;
-            let _published = Withdrawn(instance);
             let far = far_end_scripted(SeatScript {
                 head: STREAM_HEAD.to_string(),
                 pieces,
@@ -9264,7 +9135,6 @@ mod pools_door_money {
 async fn the_pools_door_pins_a_session_to_one_member() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-affinity";
-    let _published = Withdrawn(instance);
     let fars = [
         seat_far_end(200, SERVED_BY_TWIN).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -9335,7 +9205,6 @@ async fn the_pools_door_pins_a_session_to_one_member() {
 async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-affinity-header";
-    let _published = Withdrawn(instance);
     let fars = [
         seat_far_end(200, SERVED_BY_TWIN).await,
         seat_far_end(200, SERVED_BY_TWIN).await,
@@ -9490,7 +9359,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_times_and_attributes_a_served_unit() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-served";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let duration_count = format!(
             "{}_count",
@@ -9536,7 +9404,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_an_unknown_model_under_the_bounded_label() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-unknown-model";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let probe = "zzz-unbounded-cardinality-probe-9f3a";
         let (status, _, _) = rig
@@ -9567,7 +9434,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_a_malformed_body() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-malformed";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let before = unresolved_client_errors();
         assert_eq!(
@@ -9587,7 +9453,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_an_unresolvable_invoke_body() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-invoke";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let before = unresolved_client_errors();
         let (status, _, _) = rig
@@ -9610,7 +9475,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_a_missing_model() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-missing-model";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let before = unresolved_client_errors();
         let (status, _, _) = rig
@@ -9633,7 +9497,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_a_non_object_body() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-non-object";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let before = unresolved_client_errors();
         let (status, _, _) = rig
@@ -9656,7 +9519,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_an_unsupported_action() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-unsupported";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let before = unresolved_client_errors();
         let (status, _, _) = rig
@@ -9681,7 +9543,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_bounds_its_pool_label_to_what_is_configured() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-label-bounds";
-        let _published = Withdrawn(instance);
         let (rig, _far) = serving(instance).await;
         let counted =
             |pool: &str| metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &[("pool", pool)]);
@@ -9721,7 +9582,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_a_fallback_pool_the_key_may_reach() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-fallback-acl";
-        let _published = Withdrawn(instance);
         let (state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
@@ -9762,7 +9622,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_an_ad_hoc_provider_route() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-adhoc";
-        let _published = Withdrawn(instance);
         let (state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
@@ -9804,7 +9663,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_serves_a_model_named_directly() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-route-direct-model";
-        let _published = Withdrawn(instance);
         let (state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
             body: messages_answer(),
@@ -9907,7 +9765,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_releases_the_probe_of_a_dropped_queued_dispatch() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-probe-queued-drop";
-        let _published = Withdrawn(instance);
         let (holding, holding_release) = (
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(tokio::sync::Notify::new()),
@@ -9974,7 +9831,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_sheds_a_queued_request_at_the_queues_bound() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-queue-times-out";
-        let _published = Withdrawn(instance);
         let answer = door_word("messages_answer");
         let slow = far_end_scripted(SeatScript {
             head: format!(
@@ -10036,7 +9892,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_never_reverts_a_newer_probe_on_a_stale_end() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-probe-stale-end";
-        let _published = Withdrawn(instance);
         let (started, release) = (
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(tokio::sync::Notify::new()),
@@ -10104,7 +9959,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_releases_the_probe_of_a_dropped_dispatch() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-probe-dropped";
-        let _published = Withdrawn(instance);
         let (started, release) = (
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(tokio::sync::Notify::new()),
@@ -10194,7 +10048,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_shows_no_signal_nobody_declared() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-signal-undeclared";
-        let _published = Withdrawn(instance);
         let (rig, _fars) = ranked(instance, &[Signal::CandidateBreakerState]).await;
         assert_eq!(rig.chat().await.0, 200);
         let bag = bag_of(&rig, "m0");
@@ -10210,7 +10063,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_shows_a_tripped_members_breaker_open() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-signal-open";
-        let _published = Withdrawn(instance);
         let (rig, _fars) = ranked(instance, &[Signal::CandidateBreakerState]).await;
         rig.app.store.force_open_in("p", 0, now() + 3600);
         let _ = rig.chat().await;
@@ -10229,7 +10081,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_shows_the_error_rate_as_the_windows_fraction() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-signal-error-rate";
-        let _published = Withdrawn(instance);
         let (rig, _fars) = ranked(instance, &[Signal::CandidateErrorRate]).await;
         let cfg = busbar_kernel::store::BreakerCfg::default();
         rig.app
@@ -10257,7 +10108,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_never_collects_an_undeclared_p95() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-signal-undeclared-p95";
-        let _published = Withdrawn(instance);
         let (rig, _fars) = ranked(instance, &[Signal::CandidateErrorRate]).await;
         assert_eq!(rig.chat().await.0, 200);
         assert!(
@@ -10282,7 +10132,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_seals_an_error_end_as_one_error_record() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-audit-error-end";
-        let _published = Withdrawn(instance);
         let answer = door_word("messages_answer");
         let far = far_end_scripted(SeatScript {
             head: format!(
@@ -10331,7 +10180,6 @@ mod pools_door_counts_and_routes {
     async fn the_pools_door_counts_one_ok_per_probe_not_per_pool() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-probe-ok-once";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let rig = rig(
             instance,
@@ -10409,7 +10257,6 @@ async fn trip(
 async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_cell_opens() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-trip";
-    let _published = Published(instance);
     let (port, mut heard) = far_end_failing_first(MAX_FAILURES).await;
     let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
     assert!(serving.ready(), "the member's cell starts closed");
@@ -10446,7 +10293,6 @@ async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_ce
 async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-fastfail";
-    let _published = Published(instance);
     let holding = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let held = Arc::clone(&holding);
     let (port, mut heard) = far_end_answering(Arc::new(move |_| {
@@ -10493,7 +10339,6 @@ async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
 async fn a_decisions_providers_answers_are_classified_before_the_plane_relays_them() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-disposition";
-    let _published = Published(instance);
     let (port, mut heard) = far_end_answering(Arc::new(|n| match n {
         0 | 1 => Answer::Says("400 Bad Request", CALLER_FAULT),
         2 => Answer::Says("503 Service Unavailable", UNAVAILABLE),
@@ -10574,7 +10419,6 @@ async fn a_decisions_providers_answers_are_classified_before_the_plane_relays_th
 async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-audit-chain";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let one_an_hour = busbar_kernel::config::groups::LimitCfg {
         metric: busbar_kernel::config::groups::LimitMetric::Requests,
@@ -10661,7 +10505,6 @@ async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_e
 async fn a_served_decisions_unit_counts_its_upstream_attempt_under_the_planes_lane() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-metrics";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let serving = serve_over(&crate::LINKED, instance, port).await;
     let lane = serving.lane();
@@ -10707,7 +10550,6 @@ async fn a_decisions_provider_is_handed_the_planned_credential_and_never_the_cal
     const CALLER_SECRET: &str = "caller-own-provider-key";
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-egress-auth";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let serving = serve_over(&crate::LINKED, instance, port).await;
 
@@ -10799,7 +10641,6 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     use busbar_kernel::config::groups::LimitWindow;
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-budget";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let serving = serve_governed(
         &crate::LINKED,
@@ -10845,7 +10686,6 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
 
     // A budget whose window never rolls names no wait, as 1.5.5 named none.
     let instance = "serve-door-budget-total";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let serving = serve_governed(
         &crate::LINKED,
@@ -10873,7 +10713,6 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
 async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-verify";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let other = Some(vec!["elsewhere".to_string()]);
     let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, other).await;
@@ -10901,7 +10740,6 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
 
     // THE CONTROL: the same door, the key granted every pool, is served and dials.
     let instance = "serve-door-verify-control";
-    let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
     let (status, _wait, reached) = call_through(&serving, &mut heard).await;
@@ -10954,7 +10792,6 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
 async fn the_pools_door_answers_an_unknown_model_with_1_5_5s_404_naming_it() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-unknown-model";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -10995,7 +10832,6 @@ async fn the_pools_door_answers_an_unknown_model_with_1_5_5s_404_naming_it() {
 async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-untranslatable-2xx";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, door_word("unreadable_answer")).await;
     let rig = rig(
         instance,
@@ -11044,7 +10880,6 @@ mod door_money_gaps;
 async fn the_pools_door_refunds_the_budget_unit_of_an_answer_it_cannot_translate() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-untranslatable-budget";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, door_word("unreadable_answer")).await;
     let rig = rig(
         instance,
@@ -11078,7 +10913,6 @@ async fn the_pools_door_refunds_the_budget_unit_of_an_answer_it_cannot_translate
 async fn the_pools_door_bills_a_delivered_cross_dialect_answer_once_and_keeps_its_budget_unit() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-crossdialect-delivered-budget";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, door_word("messages_answer")).await;
     let rig = rig(
         instance,
@@ -11170,7 +11004,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
         rt.block_on(async {
             let _one = ONE_PUBLISHER.lock().await;
             let instance = "serve-door-alarm-silence";
-            let _published = Withdrawn(instance);
             let far = seat_far_end(200, door_word("messages_answer")).await;
             // Member 1 sits at a closed port, so pool `pb`'s request fails upstream: the path a
             // stall or lane alarm would ride.
@@ -11268,7 +11101,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
 async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-key-row-expired";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, door_word("messages_answer")).await;
     let rig = rig(
         instance,
@@ -11365,7 +11197,6 @@ fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
 async fn a_model_plane_request_is_counted_exactly_once() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-counted-once";
-    let _published = Withdrawn(instance);
     busbar_kernel::snapshot::init();
     let rig = rig(
         instance,
@@ -11405,7 +11236,6 @@ async fn a_model_plane_request_is_counted_exactly_once() {
 async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-model-families";
-    let _published = Withdrawn(instance);
     busbar_kernel::snapshot::init();
     let rig = rig(
         instance,

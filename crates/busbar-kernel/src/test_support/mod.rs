@@ -943,6 +943,10 @@ pub struct TestApp {
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
     plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_kernel::test_support::TestAppSeam)>>,
+    /// THE ADMIN TABLE this generation is lent ([`TestApp::serve_tables`]), as the composition root
+    /// lends the boot generation the table it publishes its door planes into. An empty one when a
+    /// test lends none.
+    serve_tables: crate::plane_driver::serve::ServeTables,
 }
 
 impl Default for TestApp {
@@ -952,6 +956,14 @@ impl Default for TestApp {
 }
 
 impl TestApp {
+    /// LEND this generation `tables`, the admin table its stated admin routes and the admin
+    /// router's fallback answer off — the one a test's composed door planes were published into.
+    #[must_use]
+    pub fn serve_tables(mut self, tables: crate::plane_driver::serve::ServeTables) -> Self {
+        self.serve_tables = tables;
+        self
+    }
+
     /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
     pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {
         self.plane_sections = Some(sections.iter().copied().collect());
@@ -1007,6 +1019,7 @@ impl TestApp {
             container_hooks: std::collections::BTreeMap::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
+            serve_tables: crate::plane_driver::serve::ServeTables::default(),
         }
     }
 
@@ -1554,6 +1567,8 @@ impl TestApp {
         for f in finalizers {
             f(&mut self);
         }
+        // The admin table this generation is lent, as `appbuild` carries the prior generation's.
+        let serve_tables = self.serve_tables.clone();
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
@@ -1835,6 +1850,7 @@ impl TestApp {
             Vec::new()
         };
         let app = std::sync::Arc::new(crate::state::App {
+            serve_tables,
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.

@@ -317,8 +317,14 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
 /// THE ADMIN SURFACE'S FALLBACK: a path no route above matched is a published plane instance's
 /// admin route, served by its `serve` op (`busbar_kernel::plane_driver::serve`, ARCHITECT C2c S5
 /// Q1), or the unmatched `404`. The auth middleware has already judged it like every admin path.
-async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
-    busbar_kernel::plane_driver::serve::answer(req)
+/// The table is the live generation's (`App::serve_tables`).
+async fn plane_serve_or_not_found(
+    State(handle): State<Arc<AppHandle>>,
+    req: axum::extract::Request,
+) -> Response {
+    let tables = handle.load().serve_tables.clone();
+    tables
+        .answer(req)
         .await
         .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
 }
@@ -393,6 +399,7 @@ fn mount_one_admin_spec(
                     // the request on to a plane strikes the one and keeps the other.
                     consumed: consumed.map(|axum::Extension(c)| c),
                     query,
+                    serve: handle.load().serve_tables.clone(),
                 };
                 finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
             }

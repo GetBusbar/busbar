@@ -36,7 +36,7 @@ use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::planes_tests::{composed_services, Published, PUBLISHING};
+use super::planes_tests::{composed_services, PUBLISHING};
 use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -1205,6 +1205,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         Some(&stage),
         &clock,
         &busbar_contract::config_time::ConfigScope::config_time(),
+        &app.serve_tables,
     );
     let _ = std::fs::remove_file(&key_file);
     let mut served = served?;
@@ -1317,7 +1318,6 @@ impl DoorRig {
 async fn migrated_request_hook_seats_after_admit_before_candidate() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-reject";
-    let _published = Published(instance);
     let ran = run(instance, true).await;
     assert_eq!(
         ran.status, 451,
@@ -1375,7 +1375,6 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
 async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-serve";
-    let _published = Published(instance);
     let ran = run(instance, false).await;
     assert_eq!(ran.status, 200, "the live lane serves the request");
     assert!(
@@ -1532,7 +1531,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
         ("serve-hook-seats-one-posting-buffered", false),
         ("serve-hook-seats-one-posting-streamed", true),
     ] {
-        let _published = Published(instance);
         let far = if streamed {
             far_end_with_the_split_streamed().await
         } else {
@@ -1594,7 +1592,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 async fn a_served_units_usage_is_accrued_exactly_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-accrued-once";
-    let _published = Published(instance);
     let far = far_end_answering(200, SPLIT_ANSWER).await;
     let rig = rig(
         instance,
