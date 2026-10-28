@@ -126,20 +126,23 @@ fn text(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
-/// What a READY `begin_login` answered, copied out of the plugin memory its lease holds.
-fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
+/// What a READY `begin_login` answered, copied out of the plugin memory its lease holds; `None`
+/// when malformed. The one reading of an answer: the auth conformance suite spells it from here.
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
     match out.shape {
         BEGIN_AUTHORIZE => text(out.authorize_url)
             .filter(|u| !u.is_empty())
             .map(LoginOutcome::Authorize),
         BEGIN_FORM => {
-            if out.form.is_null() || out.form_len == 0 || out.form_len > FORM_MAX {
+            if out.form_len == 0 || out.form_len > FORM_MAX {
                 return None;
             }
-            // SAFETY: the kind's check refused a NULL form with a count; the form is `form_len`
-            // (bounded above) `LoginField`s of plugin memory, held under the op's lease, which is
-            // released only after this copy.
-            let fields = unsafe { std::slice::from_raw_parts(out.form, out.form_len) };
+            // SAFETY: formed only through the one capped reader (THE DESIGN §11.13 M1), which
+            // refuses a NULL, over-long or misaligned form; what passes is `form_len` (bounded
+            // above) `LoginField`s of plugin memory, held under the op's lease, which is released
+            // only after this copy.
+            let fields = unsafe { crate::dispatch::validate::lent(out.form, out.form_len) }?;
             let fields = fields
                 .iter()
                 .map(|f: &LoginField| {

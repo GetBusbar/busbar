@@ -14,14 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::proxy::egress_unit::{
-    ports::{
-        Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
-        Unavailable, UpstreamStatus,
-    },
-    Failover, Member, OnExhausted, Pool, WeightedFloor,
-};
 use busbar_contract::abi::transport::{
     FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
 };
@@ -33,6 +25,14 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
+use busbar_kernel_egress::{
+    ports::{
+        Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
+        Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
+        Unavailable, UpstreamStatus,
+    },
+    Failover, Member, OnExhausted, Pool, WeightedFloor,
+};
 
 use super::*;
 use crate::plane_driver::{FarEnd, OutboundRequest, Pick};
@@ -724,6 +724,59 @@ async fn one_attempt_end_to_end() {
     );
     drop(far);
     assert_eq!(r.table.closed.load(Ordering::SeqCst), 1);
+}
+
+/// ONE READ BUFFER PER UNIT (row 159 K2#4): every read of the far end is lent the unit's one
+/// [`READ_BYTES`] buffer, allocated at its first read and back with the far end after each, never a
+/// fresh zeroed one per read; each piece leaves it as a copy of its own length.
+#[tokio::test]
+async fn every_read_is_lent_the_units_one_buffer() {
+    let r = rig(
+        &[(
+            "a.test",
+            Script::Answer(200, None, vec![b"hel", b"lo", b"!"]),
+        )],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(
+        far.scratch.lock().unwrap().is_empty(),
+        "no buffer before the first read"
+    );
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let mut held: Option<*const u8> = None;
+    let mut body = Vec::new();
+    loop {
+        let p = far.next(&t).await.expect("a piece through the last");
+        far.judged(&t, FAULT_NONE);
+        let at = {
+            let buf = far.scratch.lock().unwrap();
+            assert_eq!(
+                buf.len(),
+                READ_BYTES,
+                "the buffer is back with the far end after the read"
+            );
+            buf.as_ptr()
+        };
+        assert_eq!(
+            *held.get_or_insert(at),
+            at,
+            "the same buffer, read after read"
+        );
+        assert_eq!(
+            p.bytes.capacity(),
+            p.bytes.len(),
+            "a piece is a copy of its own length, never the read buffer"
+        );
+        body.extend_from_slice(&p.bytes);
+        if p.last {
+            break;
+        }
+    }
+    assert_eq!(body, b"hello!");
 }
 
 /// STEP 24, CAP 529: an overloaded far end is a transient failure with its Retry-After recorded,
@@ -2066,7 +2119,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
             restricts: vec![Restrict {
                 tags_any: vec!["baa".to_string()],
                 on_empty: crate::config::PolicyOnError::Reject,
-                name: "compliance",
+                name: "compliance".into(),
             }],
             ..Constraint::default()
         },

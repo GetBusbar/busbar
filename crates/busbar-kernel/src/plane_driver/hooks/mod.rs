@@ -4,7 +4,7 @@
 //! THE HOOK STAGE ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "Hooks"; ARCHITECT K5,
 //! 2026-10-02): the request-stage hooks run at the head of the route leg, after admission, over the
 //! plane's own projection of the unit's request (`project`, pure, ticketless), in the order the
-//! previous release ran them for an LLM unit:
+//! previous release ran them:
 //!
 //! 1. the REWRITE chain (`prompt: rw` gates, the global ones then the pool's): each hook sees the
 //!    request as the previous one left it; a rewrite goes back to the plane (`ProjectIn::rewrite`),
@@ -53,11 +53,11 @@ use crate::diagnostics::{
     ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
+use crate::hooks::taps::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::hooks::{
     content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
-use crate::proxy::proxy_vocab::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hook_wire::HookStageProjection;
@@ -173,6 +173,9 @@ pub struct Bind<'a> {
     pub principal: Option<&'a str>,
     /// The dialect the unit arrived in: the index into the plane's dialects.
     pub dialect: u32,
+    /// The unit's correlation id, where its host minted one (`DriverSteps::request_span`); the
+    /// binder mints one from the process's counter where it is `None`.
+    pub request_id: Option<u64>,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -447,7 +450,7 @@ impl HookBinder for BoundHooks {
         Some(parts.bind(
             bind,
             (&self.caller, &self.dialects),
-            (self.next_request_id)(),
+            bind.request_id.unwrap_or_else(|| (self.next_request_id)()),
         ))
     }
 
@@ -468,7 +471,9 @@ impl HookBinder for BoundHooks {
 /// THE BINDER OVER THE DEPLOYMENT'S OWN HOOK CONFIGURATION: the engine host the composition root
 /// mints over the generation (its global and per-pool rewrites, gates, policies and taps, its
 /// declared signals and its one request-id counter), with what `caller` knows of a verified
-/// principal.
+/// principal. A plane's own section-level attach (`<section>.hooks:`) binds beside the globals: its
+/// rewrites after the global ones and before the pool's, its gates in the one priority-sorted chain
+/// (THE DESIGN section 1: every plane gets every capability, its section's hooks included).
 pub struct HostHooks {
     /// The generation's engine host.
     pub host: Arc<dyn crate::plane_driver::EngineHost>,
@@ -476,6 +481,9 @@ pub struct HostHooks {
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.
     pub dialects: Vec<String>,
+    /// The plane's registry key: its section's own attach is resolved under it, at
+    /// [`crate::hooks::SECTION_SCOPE`]. Empty = no plane section (none bound).
+    pub plane_key: String,
 }
 
 impl HookBinder for HostHooks {
@@ -488,9 +496,20 @@ impl HookBinder for HostHooks {
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
         let h = &*self.host;
+        // THE SECTION'S OWN ATTACH, then the pool's: one scope after the globals.
+        let (mut rewrites, mut gates) = if self.plane_key.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                h.plane_rewrites_of(&self.plane_key, crate::hooks::SECTION_SCOPE),
+                h.plane_gates_of(&self.plane_key, crate::hooks::SECTION_SCOPE),
+            )
+        };
+        rewrites.extend(h.pool_rewrites(bind.pool).iter().cloned());
+        gates.extend(h.pool_gates(bind.pool).iter().cloned());
         let parts = Parts::of(
             (h.rewrite_hooks(), h.global_gates()),
-            (h.pool_rewrites(bind.pool), h.pool_gates(bind.pool)),
+            (rewrites.as_slice(), gates.as_slice()),
             h.pool_policy(bind.pool).cloned(),
             StageTaps {
                 request: h.tap_hooks().to_vec(),
@@ -500,7 +519,11 @@ impl HookBinder for HostHooks {
             },
             *h.requested_signals(),
         )?;
-        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
+        Some(parts.bind(
+            bind,
+            (&self.caller, &self.dialects),
+            bind.request_id.unwrap_or_else(|| h.next_request_id()),
+        ))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -570,7 +593,7 @@ pub struct Restrict {
     /// What an empty intersection does.
     pub on_empty: PolicyOnError,
     /// The deciding hook.
-    pub name: &'static str,
+    pub name: std::sync::Arc<str>,
 }
 
 /// THE CONSTRAINT THE HOOKS PUT ON THE WALK.
@@ -581,7 +604,7 @@ pub struct Constraint {
     /// The order the walk tries them in (`None` = the walk's own pick).
     pub order: Option<Vec<usize>>,
     /// The policy that ordered or restricted, when one did.
-    pub policy: Option<&'static str>,
+    pub policy: Option<std::sync::Arc<str>>,
     /// Every restrict the hooks decided, re-applied to a fallback pool's members.
     pub restricts: Vec<Restrict>,
 }
@@ -719,6 +742,18 @@ pub(crate) enum Stopped {
     Veto(Veto),
     /// The plane could not read the request a hook had to see.
     Unreadable,
+    /// The plane answered FAULT to a `project` where no rewrite hook was known to be configured
+    /// (the unit's first `project`; the gate-first stage's is made before its entry is bound): the
+    /// caller decides whether a configured rewrite hook makes it the shared 500 ([`fault_veto`]) or
+    /// the hooks judge the body as 1.5.5 judged one it could not parse, a Null body, and the
+    /// request proceeds. `marked`: the plane marked the FAULT as its own word on an unparseable
+    /// body (`abi::plane::project_fault_unparseable`); an unmarked FAULT (a panic, no crossing, a
+    /// quarantined or broken plane) never takes the Null view, and is the shared 500 where a
+    /// rewrite is configured or unreadable otherwise.
+    Unparseable {
+        /// The plane's unparseable-body mark was on the FAULT.
+        marked: bool,
+    },
 }
 
 /// A hook's refusal, clamped and sanitised.
@@ -735,6 +770,14 @@ pub(crate) struct Veto {
 #[path = "../gated.rs"]
 pub mod gated;
 pub use gated::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
+
+/// The shared refusal of a FAULT `project` (`busbar_contract::abi::plane::PROJECT_FAULT_*`).
+fn fault_veto() -> Stopped {
+    veto(
+        busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE,
+    )
+}
 
 fn veto(status: u16, text: impl Into<String>) -> Stopped {
     Stopped::Veto(Veto {
@@ -782,7 +825,7 @@ enum Decided {
     /// This ranked order.
     Order {
         order: Vec<usize>,
-        name: &'static str,
+        name: std::sync::Arc<str>,
     },
     /// No opinion: the walk's own pick.
     Weighted,
@@ -792,12 +835,12 @@ enum Decided {
     RejectRequest {
         status: u16,
         message: String,
-        name: &'static str,
+        name: std::sync::Arc<str>,
     },
     /// Only members carrying one of these tags.
     Restrict {
         tags_any: Vec<String>,
-        name: &'static str,
+        name: std::sync::Arc<str>,
         on_empty: PolicyOnError,
     },
 }
@@ -823,15 +866,16 @@ fn fault_clear(key: &str) {
     }
 }
 
-/// Map a decision: an order normalised against the candidates (an empty one abstains), a reject
-/// clamped and sanitised (for every producer), a restrict carried with its `on_empty`.
-fn map_decision(
-    decision: RoutingDecision,
-    name: &'static str,
+/// Map a ranking hook's answer: an order normalised against the candidates (an empty one
+/// abstains), a reject clamped and sanitised (for every producer), a restrict carried with its
+/// `on_empty`.
+fn map_answer(
+    answer: RoutingDecision,
+    name: std::sync::Arc<str>,
     candidates: &[Candidate<'_>],
     on_empty: &PolicyOnError,
 ) -> Decided {
-    match decision {
+    match answer {
         RoutingDecision::Prefer(order) => {
             let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
             match RoutingDecision::from_ranked(order, &valid) {
@@ -858,7 +902,7 @@ fn map_decision(
 fn coerce_on_error(
     on_error: &PolicyOnError,
     candidates: &[Candidate<'_>],
-    name: &'static str,
+    name: std::sync::Arc<str>,
 ) -> Decided {
     if failed_call_refuses(on_error) {
         return Decided::Reject;
@@ -935,9 +979,9 @@ impl Asked<'_> {
         )
         .await
         {
-            Ok(Ok(decision)) => {
+            Ok(Ok(answer)) => {
                 fault_clear(&key);
-                let decided = map_decision(decision, policy.name(), self.candidates, on_empty);
+                let decided = map_answer(answer, policy.name_arc(), self.candidates, on_empty);
                 let ran = applied(policy.name(), head_of(&decided), false);
                 return (decided, Some(ran));
             }
@@ -959,7 +1003,7 @@ impl Asked<'_> {
                         "routing policy still failing; applying on_error fallback"
                     );
                 }
-                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
+                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name_arc())
                     .await
             }
             Err(_) => {
@@ -980,7 +1024,7 @@ impl Asked<'_> {
                         "routing policy deadline still exceeded; applying on_error fallback"
                     );
                 }
-                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
+                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name_arc())
                     .await
             }
         };
@@ -997,7 +1041,7 @@ impl Asked<'_> {
         terminal: &PolicyOnError,
         req: &RoutingRequest<'_>,
         ctx: &RoutingContext<'_>,
-        failed: &'static str,
+        failed: std::sync::Arc<str>,
     ) -> Decided {
         for fb in chain {
             let fb_req = RoutingRequest {
@@ -1023,16 +1067,16 @@ impl Asked<'_> {
             )
             .await
             {
-                Ok(Ok(decision)) => {
+                Ok(Ok(answer)) => {
                     fault_clear(&key);
                     crate::diag_debug!(
                         ON_ERROR_FALLBACK_ANSWERED,
-                        policy = failed,
+                        policy = &failed[..],
                         fallback = fb.policy.name(),
                         pool = self.pool,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return map_decision(decision, fb.policy.name(), self.candidates, &fb.on_empty);
+                    return map_answer(answer, fb.policy.name_arc(), self.candidates, &fb.on_empty);
                 }
                 Ok(Err(e)) => {
                     if fault_enter(&key) {
@@ -1152,18 +1196,46 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
 /// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
 /// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
 /// as one, and the plane applies it as nothing, as 1.5.5 did
-/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines).
+/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines). The reply is
+/// serialized straight from the hook's values, never copied into a JSON tree first; its two keys
+/// keep the order a JSON object of them serializes in.
 fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "messages": rw.messages,
-        "tools": rw.tools,
-    }))
+    #[derive(serde::Serialize)]
+    struct Crossing<'a> {
+        messages: &'a [serde_json::Value],
+        tools: &'a [serde_json::Value],
+    }
+    serde_json::to_vec(&Crossing {
+        messages: &rw.messages,
+        tools: &rw.tools,
+    })
     .unwrap_or_default()
+}
+
+/// THE UNIT'S CORRELATION ID on its request span (v1.5.5 `proxy/engine/mod.rs:120` recorded it on
+/// `forward` as a native `u64`): on the `forward` its host opened around the unit when the current
+/// span is that one (status row 173: never a second span of the same name beneath it), else on a
+/// `forward` of the kernel's own, as before a host opened one.
+pub(crate) fn record_request_id(request_id: u64) {
+    let current = tracing::Span::current();
+    let hosts = current
+        .metadata()
+        .is_some_and(|m| m.name() == "forward" && m.fields().field("request_id").is_some());
+    if hosts {
+        current.record("request_id", request_id);
+    } else {
+        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+        span.record("request_id", request_id);
+    }
 }
 
 #[cfg(test)]
 #[path = "tests/rewrite_crossing_tests.rs"]
 mod rewrite_crossing_tests;
+
+#[cfg(test)]
+#[path = "tests/section_attach_tests.rs"]
+mod section_attach_tests;
 
 /// The buffers one `project` crossing lends.
 struct ProjectBufs {
@@ -1177,8 +1249,10 @@ const MESSAGES_CAP: usize = 64;
 
 impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// `project`, ticketless, with the one re-call a short answer earns; `rewrite` is a
-    /// request-stage hook's rewrite for the plane to apply first.
-    fn project(&self, rewrite: Option<&[u8]>) -> Result<Projection, Stopped> {
+    /// request-stage hook's rewrite for the plane to apply first. `faultable`: a rewrite hook is
+    /// configured for the unit (or this call carries a rewrite), so the plane's FAULT is the shared
+    /// 500; otherwise a FAULT is [`Stopped::Unparseable`].
+    fn project(&self, rewrite: Option<&[u8]>, faultable: bool) -> Result<Projection, Stopped> {
         let a = &self.arrival;
         let unit = self.lock().unit;
         let body = self.lock().body.clone().unwrap_or_else(|| a.body.clone());
@@ -1250,6 +1324,26 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 i.arena_buf = bufs.arena.as_mut_ptr();
                 i.arena_cap = bufs.arena.len();
             });
+        // FAULT where a rewrite hook is configured (v1.5.5 `proxy/engine/mod.rs:728`, `:749`: the
+        // document is materialized before any hook runs, and a body that will not parse is the
+        // shared 500) or the call carried a rewrite: always the shared 500, whatever the hook's
+        // `on_error` says, and the body is never forwarded (`abi::plane::project_faults`).
+        if busbar_contract::abi::plane::project_faults(outcome, faultable || rewrite.is_some()) {
+            tracing::error!(
+                "the plane could not apply a request rewrite it must not leave unapplied; \
+                 rejecting rather than forwarding the body un-rewritten"
+            );
+            return Err(fault_veto());
+        }
+        // The plane's own FAULT over a body it could not parse (`PROJECT_FAULT_UNPARSEABLE`), with
+        // no rewrite configured or carried, is no 500: the caller judges the request as 1.5.5
+        // judged a body it could not parse, a Null body (`proxy/engine/mod.rs:957-961`). Every
+        // other FAULT (a panic, no crossing, a quarantined or broken plane, no mark) is unreadable.
+        if outcome == AbiOutcome::Fault {
+            return Err(Stopped::Unparseable {
+                marked: busbar_contract::abi::plane::project_fault_unparseable(outcome, &o),
+            });
+        }
         if outcome != AbiOutcome::Ready {
             return Err(Stopped::Unreadable);
         }
@@ -1423,21 +1517,44 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .principal
             .as_ref()
             .map(|p| p.as_str().to_string());
-        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
+        let (dialect, request_id) = {
+            let st = self.lock();
+            (st.decoded.as_ref().map_or(0, |d| d.dialect), st.request_id)
+        };
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
             dialect,
+            request_id,
         }) else {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on its span (never a formatted string), the
-        // same value every hook payload and tap of the unit carries.
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
-        let mut view = match self.project(None) {
+        // The unit's correlation id, a native `u64` on the unit's request span (never a formatted
+        // string): the same value every hook payload and tap of the unit carries.
+        record_request_id(hooks.request_id);
+        // A rewrite hook configured for the unit (a global or the pool's: v1.5.5 `:728`) has the
+        // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
+        // shared 500 and no hook is invoked.
+        let faultable = !hooks.rewrites.is_empty();
+        // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+        let first = self.project(None, faultable).map_err(|e| match e {
+            Stopped::Unparseable { marked: false } => Stopped::Unreadable,
+            other => other,
+        });
+        let mut view = match first {
             Ok(view) => view,
+            // FAULT with no rewrite configured (no hook, no pool rewrite): 1.5.5 materialized the
+            // document for the gates and, when it would not parse, the gates judged a Null body
+            // and the request proceeded (v1.5.5 `proxy/engine/mod.rs:957-961`); the base policy
+            // and the taps read no document (`.ok()`, `:170`, `:1330`). Only a configured rewrite
+            // made it the shared 500. The gates and the policy judge the zeroed view, the request
+            // proceeding.
+            Err(Stopped::Unparseable { .. }) => Projection {
+                pool: walk_pool.clone(),
+                dialect: hooks.dialect.clone(),
+                ..Projection::default()
+            },
             // A request the plane cannot read is the request's failure where a hook must judge
             // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
             // shape (the previous release's stage capture), the request proceeding.
@@ -1481,16 +1598,26 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
-                    match self.project(Some(&bytes)) {
+                    match self.project(Some(&bytes), true) {
                         Ok(next) => {
                             if let Some(body) = &next.rewritten {
-                                self.lock().body = Some(Arc::from(body.as_slice()));
+                                self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                             }
                             view = next;
                         }
-                        Err(stopped) => {
+                        // The plane refused the rewrite: the hook's failure, by its `on_error`;
+                        // otherwise the unit goes on as it stood before that rewrite.
+                        Err(fault @ Stopped::Veto(_)) => {
+                            // A FAULT project: the shared 500, never the hook's `on_error`.
                             self.lock().hooked = Some((hooks, view));
-                            return Err(stopped);
+                            return Err(fault);
+                        }
+                        Err(_) => {
+                            if let Some((status, message)) = gated::refused_rewrite(&**hook, &pool)
+                            {
+                                self.lock().hooked = Some((hooks, view));
+                                return Err(veto(status, message));
+                            }
                         }
                     }
                 }
@@ -1550,7 +1677,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             kept.sort_unstable();
             constraint.keep = Some(kept);
         }
-        self.lock().route_policy = constraint.policy;
+        self.lock().route_policy = constraint.policy.clone();
         if constraint != Constraint::default() {
             self.far.constrain(token, constraint);
         }
@@ -1568,7 +1695,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         (keep, constraint): (&mut HashSet<usize>, &mut Constraint),
         ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
-        let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
+        let mut gate_order: Option<(Vec<usize>, std::sync::Arc<str>)> = None;
         if !hooks.gates.is_empty() {
             let shown = candidates_of(all, hooks, keep);
             let asked = Asked {
@@ -1599,14 +1726,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } => {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                             "status" => status.to_string(),
                         )
                         .increment(1);
                         crate::diag_debug!(
                             DECISION_GATE_REJECTED,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             status,
                             message = %message,
@@ -1634,20 +1761,20 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     constraint.restricts.push(Restrict {
                         tags_any: tags_any.clone(),
                         on_empty: on_empty.clone(),
-                        name,
+                        name: Arc::clone(name),
                     });
                     if narrow(keep, all, tags_any) {
                         metrics::counter!(
                             ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                         )
                         .increment(1);
-                        constraint.policy = Some(name);
+                        constraint.policy = Some(Arc::clone(name));
                     } else if matches!(on_empty, PolicyOnError::Weighted) {
                         crate::diag_debug!(
                             DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             "decision gate restrict left no eligible lane; on_empty: weighted \
                              escape — this gate's restriction is skipped"
@@ -1655,14 +1782,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } else {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                             "status" => "503".to_string(),
                         )
                         .increment(1);
                         crate::diag_debug!(
                             DECISION_GATE_RESTRICT_REJECT,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             "decision gate restrict left no eligible lane (on_empty: reject)"
                         );
@@ -1686,7 +1813,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             if let Some((_, name)) = &gate_order {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => *name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1714,7 +1841,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             Decided::Order { order, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1734,14 +1861,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             } => {
                 metrics::counter!(
                     ROUTE_POLICY_REJECTIONS_TOTAL,
-                    "policy" => name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                     "status" => status.to_string(),
                 )
                 .increment(1);
                 crate::diag_debug!(
                     ROUTING_POLICY_REJECTED,
-                    policy = name,
+                    policy = &name[..],
                     pool = pool,
                     status,
                     message = %message,
@@ -1757,12 +1884,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 constraint.restricts.push(Restrict {
                     tags_any: tags_any.clone(),
                     on_empty: on_empty.clone(),
-                    name,
+                    name: Arc::clone(&name),
                 });
                 if narrow(keep, all, &tags_any) {
                     metrics::counter!(
                         ROUTE_POLICY_SELECTIONS_TOTAL,
-                        "policy" => name,
+                        "policy" => name.to_string(),
                         "pool" => pool.to_string(),
                     )
                     .increment(1);
@@ -1771,7 +1898,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else if matches!(on_empty, PolicyOnError::Weighted) {
                     crate::diag_debug!(
                         ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
-                        policy = name,
+                        policy = &name[..],
                         pool = pool,
                         "routing policy restrict left no eligible lane; on_empty: weighted \
                          escape to full-pool SWRR"
@@ -1780,14 +1907,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else {
                     metrics::counter!(
                         ROUTE_POLICY_REJECTIONS_TOTAL,
-                        "policy" => name,
+                        "policy" => name.to_string(),
                         "pool" => pool.to_string(),
                         "status" => "503".to_string(),
                     )
                     .increment(1);
                     crate::diag_debug!(
                         ROUTING_POLICY_RESTRICT_REJECT,
-                        policy = name,
+                        policy = &name[..],
                         pool = pool,
                         "routing policy restrict left no eligible lane (on_empty: reject)"
                     );
@@ -2044,6 +2171,7 @@ impl SessionStage {
                     pool: &self.pool,
                     principal: self.principal.as_deref(),
                     dialect: self.arrived_in,
+                    request_id: None,
                 })
             })
             .as_ref()

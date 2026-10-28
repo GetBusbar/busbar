@@ -621,7 +621,7 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // declared first-party in its manifest (K9b, K9c); the host names none of them.
 
 // App-retype WEDGE 3: the `busbar_tap_notifications_dropped_total` metric NAME moved to the substrate
-// tap fan-out (`busbar_kernel::proxy::proxy_vocab::spawn_bounded_tap`) with core's `spawn_bounded_tap`
+// tap fan-out (`busbar_kernel::hooks::taps::spawn_bounded_tap`) with core's `spawn_bounded_tap`
 // retirement — the ONE shared 1024-permit tap gate now lives there and emits this counter byte-identically,
 // so core no longer names the const (the string is pinned equal substrate-side).
 
@@ -846,12 +846,12 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             Some(source)
         }
         Err(e) => {
-            // The log line is 1.5.5's, frozen in the root legacy table (`snapshot_recorder_failed`):
+            // The log line is 1.5.5's, frozen in the root migration table (`snapshot_recorder_failed`):
             // 1.5.5's recorder carried its exporter's name, which the host does not spell.
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
                 "{}: {e}",
-                crate::config::legacy::text("snapshot_recorder_failed")
+                crate::config::migration_table::text("snapshot_recorder_failed")
             );
             None
         }

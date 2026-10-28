@@ -1091,26 +1091,17 @@ pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
         let Some(entries) = doc.named_maps.get(section.key()) else {
             continue;
         };
-        for (name, patch) in entries {
-            // PER-ENTRY MERGE, not replace. The stored entry is a PATCH over whatever base config
-            // says for this name, so recording one field never restates the rest of the entry, and
-            // a field the operator later changes in `config.yaml` keeps taking effect unless the
-            // patch names it. For a name base config does not define, the target is `null` and the
-            // merge degrades to exactly the replace this used to do, which is what makes the change
-            // safe over every overlay already on disk.
-            let mut merged = section
-                .entry_as_document(deploy, name)
-                .unwrap_or(serde_json::Value::Null);
-            crate::config::patch::merge_entry(&mut merged, patch);
-            // The MERGED document faces the one typed `deny_unknown_fields` parse, so the grammar
-            // did not move: a patch is judged by the same structs `config.yaml` is, and a patch that
-            // would produce an invalid entry is dropped WHOLE rather than half-applied.
-            if let Err(e) = section.insert(deploy, name, &merged) {
+        for (name, def) in entries {
+            // WHOLE-ENTRY REPLACE, as 1.5.5 applied it (v1.5.5 crates/busbar/src/config/overlay.rs
+            // :887-904, parity, Q128 arch u29): the stored definition IS the entry, so a field the
+            // overlay entry does not name never leaks in from a same-named base entry, and an
+            // explicit `null` inside it reaches the typed parse exactly as the operator PUT it.
+            if let Err(e) = section.insert(deploy, name, def) {
                 diag_error!(
                     CONFIG_OVERLAY_PATCH_UNPARSABLE,
                     section = section.key(), entry = %name, error = %e,
-                    "config overlay holds a `{}` patch that does not produce a definition this \
-                     binary can parse; it is NOT applied (edit or remove it, then reload)",
+                    "config overlay holds a `{}` definition this binary cannot parse; it is NOT \
+                     applied (edit or remove it, then reload)",
                     section.key()
                 );
             }

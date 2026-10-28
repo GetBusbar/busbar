@@ -88,3 +88,85 @@ fn a_missing_session_is_a_plain_miss() {
     let s = SessionStore::new(64, None);
     assert!(s.get::<u8>(SessionKey(42), GATE, 0).is_none());
 }
+
+/// K5#5: A PUT DOES BOUNDED WORK UNDER THE LOCK. The store is process-wide at a production capacity of
+/// 65,536 and the gate's incremental-scan tenant puts on every gated request; a put that walked every
+/// slot (the `retain` over the whole map, then a `min_by_key` scan per eviction) serialised every
+/// worker behind that walk. A put now drops at most `SWEEP_PER_PUT` expired slots, earliest expiry
+/// first. On dev the one put below drops every expired slot at once, so the count falls to one.
+#[test]
+fn a_put_drops_a_bounded_batch_of_expired_slots_not_the_whole_backlog() {
+    let backlog = 4 * SWEEP_PER_PUT as u64;
+    let s = SessionStore::new(10_000, None);
+    for i in 0..backlog {
+        s.put(SessionKey(i), GATE, Arc::new(i), 0, false, Some(10));
+    }
+    assert_eq!(s.len() as u64, backlog);
+    s.put(SessionKey(u64::MAX), GATE, Arc::new(0u64), 100, false, None);
+    assert_eq!(
+        s.len() as u64,
+        backlog + 1 - SWEEP_PER_PUT as u64,
+        "one put walked the whole expired backlog"
+    );
+    // The earliest-expiring are the ones dropped; the rest still read as misses, never as values.
+    assert!(s.get::<u64>(SessionKey(backlog - 1), GATE, 100).is_none());
+    // The backlog drains a batch per put.
+    for i in 0..3 {
+        s.put(
+            SessionKey(u64::MAX - 1 - i),
+            GATE,
+            Arc::new(0u64),
+            100,
+            false,
+            None,
+        );
+    }
+    assert_eq!(s.len(), 4, "the backlog drains in bounded batches");
+}
+
+/// An expired slot makes room before a live one is evicted: the bounded sweep runs ahead of the LRU
+/// bound, so a live slot that is older in recency than an expired one still survives the overflow.
+#[test]
+fn an_expired_slot_is_dropped_before_a_live_lru_slot_is_evicted() {
+    let s = SessionStore::new(2, None);
+    s.put(SessionKey(1), GATE, Arc::new(1u8), 0, false, None); // live, least recently touched
+    s.put(SessionKey(2), GATE, Arc::new(2u8), 5, false, Some(10)); // expires at 15
+    s.put(SessionKey(3), GATE, Arc::new(3u8), 20, false, None); // over cap at 20
+    assert!(s.get::<u8>(SessionKey(1), GATE, 30).is_some());
+    assert!(s.get::<u8>(SessionKey(3), GATE, 30).is_some());
+    assert_eq!(s.len(), 2);
+}
+
+/// Replacing, touching, pinning and removing keep the recency and expiry orders in step with the
+/// slots: a replaced slot is judged by its NEW touch and TTL, a removed slot is never chosen as a
+/// victim, and a slot re-put as pinned leaves both orders.
+#[test]
+fn replace_touch_pin_and_remove_keep_the_orders_in_step() {
+    let s = SessionStore::new(2, None);
+    s.put(SessionKey(1), GATE, Arc::new(1u8), 10, false, Some(100)); // expires at 110
+    s.put(SessionKey(2), GATE, Arc::new(2u8), 20, false, None);
+    // Replace session 1 with no TTL: its old expiry must not drop the new value.
+    s.put(SessionKey(1), GATE, Arc::new(11u8), 30, false, None);
+    assert_eq!(*s.get::<u8>(SessionKey(1), GATE, 40).unwrap(), 11);
+    // Past the old expiry, an overflow evicts session 2 (LRU), not the replaced session 1.
+    s.put(SessionKey(3), GATE, Arc::new(3u8), 200, false, None);
+    assert!(s.get::<u8>(SessionKey(2), GATE, 210).is_none());
+    assert_eq!(*s.get::<u8>(SessionKey(1), GATE, 210).unwrap(), 11);
+    // A removed slot is gone from the orders: the next overflow chooses between live slots only.
+    assert!(s.remove(SessionKey(3), GATE));
+    s.put(SessionKey(4), GATE, Arc::new(4u8), 220, false, None);
+    s.put(SessionKey(5), GATE, Arc::new(5u8), 230, false, None);
+    assert!(
+        s.get::<u8>(SessionKey(1), GATE, 240).is_none(),
+        "session 1 was LRU"
+    );
+    assert!(s.get::<u8>(SessionKey(4), GATE, 240).is_some());
+    assert!(s.get::<u8>(SessionKey(5), GATE, 240).is_some());
+    // Re-put session 4 pinned: it leaves the recency order, so overflow never picks it.
+    s.put(SessionKey(4), GATE, Arc::new(9u8), 250, true, None);
+    s.put(SessionKey(6), GATE, Arc::new(6u8), 260, false, None);
+    s.put(SessionKey(7), GATE, Arc::new(7u8), 270, false, None);
+    assert_eq!(*s.get::<u8>(SessionKey(4), GATE, 280).unwrap(), 9);
+    assert!(s.get::<u8>(SessionKey(7), GATE, 280).is_some());
+    assert_eq!(s.len(), 2);
+}

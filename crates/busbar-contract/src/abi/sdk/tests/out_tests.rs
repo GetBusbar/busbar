@@ -363,9 +363,9 @@ fn a_route_entry_already_kept_is_named_without_allocating() {
     let mut again: ArriveOut = zeroed();
     let name = String::from("entry");
     let mut out = Out::kept(&mut again, &kept, &reporting, holders());
-    crate::abi::CountingAlloc::reset();
+    crate::alloc_counter::reset();
     out.route(ROUTE_DIRECT, &name);
-    let allocations = crate::abi::CountingAlloc::count();
+    let allocations = crate::alloc_counter::allocations();
     drop(name);
     assert_eq!(
         allocations, 0,

@@ -190,20 +190,48 @@ fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
     assert!(again > 1, "the other lane still refreshes its lease");
 }
 
-/// RED (row 159): NO STATIC HOLDS THE NODE'S LEASE. Before, `store_identity.rs` kept the boot's
-/// lease and the store it is held in in a process-wide `static HELD`; it is now kept on the lane
-/// the boot hands its book.
+/// A RETAINED BATCH LARGER THAN THE LANE IS TAKEN ONCE THE LANE IS EMPTY (audit root r4 B-3;
+/// ARCHITECT 2026-10-07 H3 ruling, `store_chain.rs` module docs: a full lane fails closed "until the
+/// store takes what is queued. No record is dropped."; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998: the
+/// kernel writes exactly what it is told, one sealed line per unit). While the store refuses, the
+/// fail-closed node still journals what it may (admin units, checkpoints, accruals), so the batch
+/// the journal retains and re-offers outgrows the lane's bound. Beside what waits, that batch is
+/// still turned away (the bound holds, the green twin); once the store took everything, the empty
+/// lane takes it whole, and the node admits once it drains.
+///
+/// RED before the fix: the lane took a batch only if it fit beside what waits, so a retained batch
+/// over the bound was turned away even by an empty lane: `refuses_money` stayed `Some` for good and
+/// the batch, held only in memory, never reached the store.
 #[test]
-fn no_static_holds_the_nodes_lease() {
-    let held: Vec<&str> = include_str!("../durability/store_identity.rs")
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .filter(|code| {
-            code.contains("static ")
-                && ["HELD", "Held", "NodeLease", "StoreCalls", "LEASE_TICKS"]
-                    .iter()
-                    .any(|name| code.contains(name))
-        })
-        .collect();
-    assert!(held.is_empty(), "a static holds the node's lease: {held:?}");
+fn a_retained_batch_larger_than_the_lane_is_taken_once_the_lane_is_empty() {
+    let slots = RecordSlots::new();
+    slots.refuse(true);
+    let lane = JournalLane::with_capacity(slots.calls(), "test-store", 2).expect("the lane starts");
+    let mut shipper = lane.shipper();
+    shipper.ship(&[record(5, 1, 10)]).expect("one fits");
+    let retained: Vec<Record> = (2..=6).map(|seq| record(5, seq, 10)).collect();
+    assert!(
+        shipper.ship(&retained).is_err(),
+        "beside what waits, a batch over the bound is turned away, to be retained by the journal"
+    );
+    assert_eq!(lane.pending(), 1, "what the lane holds is never dropped");
+    assert!(
+        lane.refuses_money().is_some(),
+        "the node fails closed meanwhile"
+    );
+
+    slots.refuse(false);
+    assert!(lane.drain(WAIT), "the store takes what waited");
+    shipper
+        .ship(&retained)
+        .expect("the empty lane takes the retained batch whole, however large");
+    assert!(lane.drain(WAIT), "the store takes the retained batch");
+    assert!(lane.refuses_money().is_none(), "the node admits again");
+    assert_eq!(
+        read_chain(slots.calls().as_ref(), 5)
+            .expect("reads back")
+            .len(),
+        6,
+        "every record reached the store, once"
+    );
 }

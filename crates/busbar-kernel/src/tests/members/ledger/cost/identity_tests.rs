@@ -17,27 +17,10 @@
 //! cases must be identical on every machine and every run, and a money property that only fails on
 //! someone else's seed is not a property.
 
+use super::super::fixtures::Rng;
 use super::fixtures::*;
 use busbar_kernel_ledger::cost::{derive_spend_cents, derive_spend_micros, STANDARD_TIER_BP};
 use busbar_kernel_ledger::cost::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
-
-/// A deterministic sequence. Same numbers everywhere, forever.
-struct Seq(u64);
-
-impl Seq {
-    fn next(&mut self) -> u64 {
-        self.0 = self
-            .0
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        self.0 >> 11
-    }
-
-    /// A value in `[0, bound)`.
-    fn below(&mut self, bound: u64) -> u64 {
-        self.next() % bound
-    }
-}
 
 /// The class names the generated reports draw from — a mix of the older release's four and some
 /// open ones, so open classes take part in the identity too.
@@ -52,7 +35,7 @@ const CLASSES: [&str; 6] = [INPUT, OUTPUT, CACHE_READ, CACHE_WRITE, "audio", "im
 /// sides pinned at the top rather than because they agreed.
 #[test]
 fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
-    let mut seq = Seq(0x5EED_1234_ABCD_0001);
+    let mut seq = Rng::seeded(0x5EED_1234_ABCD_0001);
     for case in 0..10_000u32 {
         // A card over one lane: each class priced at up to ten thousand micro-units, to three
         // decimal places, so the rounding step at resolve is genuinely exercised.

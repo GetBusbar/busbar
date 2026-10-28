@@ -63,8 +63,12 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 /// of outbound auth instances ([`crate::root::door_steps::process_auths`]): an outbound style is
 /// served by the same opened instance whichever build binds it, its tick schedule running once.
 pub fn auth_axis(
-    registry: Arc<crate::root::loader::PluginRegistry>,
+    registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    // The rows the kernel holds, read back as the registry this root built them as; rows this root
+    // did not build (a test build's rows double) are answered over this build's linked rows.
+    let registry = crate::root::loader::rows::registry_arc(registry)
+        .unwrap_or_else(|| Arc::new(crate::root::boot::linked_registry()));
     Arc::new(RootAuthAxis(
         crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher())
             .with_conns(conns)
@@ -131,19 +135,8 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
-        self.serving_presenting(style, settings, None)
-    }
-
-    // TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the legacy lane's endpoint Basic, handed across the axis.
-    fn serving_presenting(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        endpoint_basic: Option<&[u8]>,
-    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
-        let endpoint = endpoint_basic.and_then(crate::root::userinfo::UserinfoBasic::from_value);
         Ok(crate::root::door_steps::process_auths()
-            .serving_with(style, settings, endpoint)?
+            .serving(style, settings)?
             .map(
                 |(auth, decl)| busbar_contract::auth_calls::OutboundServing {
                     auth,

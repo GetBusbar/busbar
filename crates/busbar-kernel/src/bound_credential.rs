@@ -181,14 +181,17 @@ impl CredentialProvider for BoundCredential {
         // place. A plugin that cannot answer now (a token refreshing after it expired) presents
         // nothing for this request, as 1.5.5's lane did while its refresh was failing.
         let answered = self.auth.fields_now(self.handle, &self.request(key, ctx));
+        // Every field the plugin answers is credential material: its header is marked sensitive,
+        // so `http`'s `Debug` never prints it and an h2 encoder never indexes it in HPACK. The
+        // bytes are unchanged. The dialect's statics below are not credentials and stay unmarked.
         let mut headers: Vec<(HeaderName, HeaderValue)> = match answered {
             Some(Fields::Ready(fields)) => fields
                 .into_iter()
                 .filter_map(|f| {
-                    Some((
-                        HeaderName::from_bytes(&f.name).ok()?,
-                        HeaderValue::from_bytes(f.value.expose(&crate::seal::lend())).ok()?,
-                    ))
+                    let mut value =
+                        HeaderValue::from_bytes(f.value.expose(&crate::seal::lend())).ok()?;
+                    value.set_sensitive(true);
+                    Some((HeaderName::from_bytes(&f.name).ok()?, value))
                 })
                 .collect(),
             _ => Vec::new(),
@@ -243,7 +246,7 @@ pub fn bind_presenting(
     axis: &dyn AuthAxis,
     binding: &StyleBinding,
     credential: &[u8],
-    endpoint: Option<&crate::egress::engine::UrlUserinfo>,
+    endpoint: Option<&UrlUserinfo>,
 ) -> Result<Arc<dyn CredentialProvider>, String> {
     let serving = axis
         .serving_presenting(
@@ -309,6 +312,100 @@ pub fn prebuild_auth(
     Some(headers)
 }
 
+/// THE BASIC VALUE A URL'S USERINFO SPELLS (row 74, F25), held opaque: a token endpoint's
+/// `user:pass@` reaches the auth axis that presents it on the mint ([`bind_presenting`]) and is
+/// never handed to a plane. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+///
+/// 1.5.5 built every provider request with reqwest over `{base_url}{path}`, its credential after
+/// (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1669-1670`, `proxy/engine/walk.rs:583-584`,
+/// `health.rs:313-314`). reqwest 0.12.28's `RequestBuilder::new`
+/// (`src/async_impl/request.rs:169-182`) took the URL's userinfo out (`extract_authority`,
+/// `:581-605`: percent-decoded, nothing when the user is empty and there is
+/// no password) and added it as `authorization: Basic base64(user:pass)`, sensitive
+/// (`src/util.rs:4-25`). This is that value. It moved here, unchanged, from the kernel's deleted
+/// outbound engine (u30): it is a credential, not transport, and the hop that presents a base URL's
+/// userinfo is the connector's framer through the member's binding (`root::userinfo`).
+///
+/// `Debug` prints a marker and the header is sensitive.
+#[derive(Clone)]
+pub struct UrlUserinfo(HeaderValue);
+
+impl UrlUserinfo {
+    /// The Basic value `url`'s authority spells, or `None` when it spells no user and no password.
+    /// The authority ends at the first `/`, `?`, `#` or `\`, and the userinfo is everything before
+    /// its LAST `@`; the user is what precedes the first `:`, the pass what follows it (an empty
+    /// pass is none). Both are percent-decoded as reqwest decoded them: a user that does not decode
+    /// to UTF-8 presents nothing, a pass that does not is no pass (`extract_authority`'s two arms).
+    #[must_use]
+    pub fn of(url: &str) -> Option<Self> {
+        use base64::Engine as _;
+        use zeroize::Zeroize as _;
+        let (_, rest) = url.split_once("://")?;
+        let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+        let (spelled, _) = rest[..end].rsplit_once('@')?;
+        let (user, pass) = match spelled.split_once(':') {
+            Some((user, pass)) => (user, Some(pass).filter(|p| !p.is_empty())),
+            None => (spelled, None),
+        };
+        let mut plain = percent_decoded(user)?;
+        // A pass that does not decode is no pass, as reqwest's `password` arm read it.
+        let mut pass = pass.and_then(percent_decoded);
+        if plain.is_empty() && pass.is_none() {
+            return None;
+        }
+        plain.push(':');
+        if let Some(pass) = pass.as_mut() {
+            plain.push_str(pass);
+            pass.zeroize();
+        }
+        let mut encoded = base64::engine::general_purpose::STANDARD.encode(plain.as_bytes());
+        plain.zeroize();
+        let value = HeaderValue::from_maybe_shared(bytes::Bytes::from(format!("Basic {encoded}")));
+        encoded.zeroize();
+        let mut value = value.ok()?;
+        value.set_sensitive(true);
+        Some(Self(value))
+    }
+
+    /// The field value, for the axis that presents it.
+    pub(crate) fn value(&self) -> &HeaderValue {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for UrlUserinfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UrlUserinfo(<redacted>)")
+    }
+}
+
+/// `%XX` sequences decoded to bytes, the result read as UTF-8 (`None` when it is not). A `%` that
+/// opens no two-digit hex escape is kept as written, as the percent-decoder reqwest used kept it.
+fn percent_decoded(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match (bytes[i], bytes.get(i + 1), bytes.get(i + 2)) {
+            (b'%', Some(&h), Some(&l)) if hex(h).is_some() && hex(l).is_some() => {
+                let (h, l) = (hex(h).unwrap_or(0), hex(l).unwrap_or(0));
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b, _, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 #[cfg(test)]
 #[path = "tests/bound_credential_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/bound_credential_sensitive_tests.rs"]
+mod sensitive_tests;

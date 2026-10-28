@@ -162,7 +162,7 @@ mod plugin {
 
 fn table() -> &'static crate::abi::secret::Ops {
     // SAFETY: the macro's `'static` door and table.
-    unsafe { &*(*plugin::door()).ops.cast::<crate::abi::secret::Ops>() }
+    unsafe { &*plugin::door().ops.cast::<crate::abi::secret::Ops>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {
@@ -347,6 +347,25 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
         Outcome::Ready
     );
     assert_eq!(co.disposition, DISPOSITION);
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// RED (secret ABI defect 13, transport 9): a release of a lease the instance does not hold, or
+/// with no instance, is REFUSED naming why. Before, it was a bare REFUSED with no text.
+#[test]
+fn an_unknown_lease_is_refused_in_words() {
+    let said = |inst: *mut c_void| {
+        let mut input: ReleaseIn = zeroed();
+        input.head = in_head::<ReleaseIn>(slot::RELEASE);
+        input.lease = 999;
+        let mut out = out_head::<OutHead>();
+        let o = call(table().head.release, inst, &input, &mut out);
+        (o, text(out.error))
+    };
+    let (_, inst, _) = open(b"{}", &[blob(b"s3cret")]);
+    let words = (Outcome::Refused, NO_SUCH_LEASE.to_string());
+    assert_eq!(said(inst), words);
+    assert_eq!(said(ptr::null_mut()), words, "no instance");
     assert_eq!(close(inst), Outcome::Ready);
 }
 

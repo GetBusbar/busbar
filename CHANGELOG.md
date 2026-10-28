@@ -26,22 +26,32 @@ does not exist.
   dialect the plane carries, not the plane itself. Since this plane did not exist in any published
   1.5.5 release, there is nothing to migrate — refusal text, log lines, the audit record kind and
   the plane's diagnostic all read `streaming` in 1.6.0. See [the voice guide](docs/voice.md).
+- **Decisions.** A `decisions:` block declares the decisions plane (the first-party
+  `busbar-plane-decisions` plugin, pinned in this release). Each `decisions.models.<name>` entry
+  names a provider whose protocol is one of the plane's two dialects, and the plane serves it as a
+  byte-for-byte passthrough: `jev` at `POST /v1/systemone`, `nanojev` at `POST /api/evaluate`. A
+  provider of any other protocol is refused at validate and boot. The plane does not serve
+  `/v1/models`, so `GET /v1/models` answers exactly as in 1.5.5. Its card is `decisions.rate_card`
+  (`decision`, `input_tokens`, `output_tokens`) and it takes `decisions.fees.per_request`.
 
 Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
 wildcard grants over every registered server: close the data-plane chain, or drop the block.
 
-A plane is opened once, at start, when its section is configured. A config apply, reload or named
-definition write that first writes the section of a plane this process started without is accepted,
-validated and stored, but that plane serves nothing until the next restart. The answer says so the
-way 1.5.5 named a newly declared plugin route: `reload_to_apply` lists the section and `note`
-explains, on `POST /config/apply`, `POST /config/reload` and the named-definition write. `GET
-/config` lists the same sections under `reload_to_apply`. Every field is omitted when nothing is
-pending, so a 1.5.5 configuration's answers are unchanged.
+A plane is loaded once, at start, when the configuration uses it. A plane that the configuration
+did not use at start cannot take its first section on a running process. A `POST /config/apply`,
+`POST /config/reload` or `POST /config/validate` whose document first writes such a section is
+refused whole with `400`, and nothing is stored or changed. The message names the section and the
+plane and says to write the section in the config file and restart. If a plane was loaded at start
+but not opened, a change that first writes its section is accepted. That plane serves nothing until
+the next restart, and the answer says so the way 1.5.5 named a newly declared plugin route:
+`reload_to_apply` lists the section and `note` explains. `GET /config` lists the same sections under
+`reload_to_apply`. Every one of these fields is omitted when nothing is pending, so a 1.5.5
+configuration's answers are unchanged.
 
 ### Behaviour identical to 1.5.5
 
-Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
+Measured by the shadow oracle — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
 config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
@@ -61,14 +71,24 @@ Everything else in this release is identical to 1.5.5, apart from the improvemen
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
+- **A key refresh link rotates only from busbar's own page.** `GET /auth/token?method=<m>&refresh=1`
+  rotates the caller's key only when the browser reports a same-origin navigation (the key page's
+  "Refresh key" link). From any other site, a typed URL or a non-browser client it re-shows the
+  current key instead. 1.5.5 rotated from any origin, so another site could revoke a signed-in
+  user's key.
+- **An identified principal with no grant is refused.** A caller that an auth module identifies
+  (for example an IdP-verified user) but that earns no governance key, because it has no roles or its
+  roles are unbound, now gets `401` (`NoGrant`). 1.5.5 admitted such a caller ungoverned: no pool
+  ACL, no budget, and its spend was booked to `anonymous`. Bind the principal's roles in
+  `role_bindings` to admit it.
 - **A `store:` block is required.** `busbar --validate` and boot refuse a config without one, and tell
   you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
   **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
-  (spec line 555, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
-  4211-4216). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
+  (spec line 557, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
+  4365-4378). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
 - **A published 1.5.5 JSON-contract plugin no longer loads.** Plugins speak the memory ABI only; boot
   refuses a 1.5.5 plugin, including the four published store plugins, with a message naming the
-  rebuild against the 1.6.0 SDK (spec lines 1271 and 1385-1388, section 11.8, "an owner-signed
+  rebuild against the 1.6.0 SDK (spec lines 1387-1389, section 11.8, "an owner-signed
   customer-visible break"). A compiled-in plugin and a dropped-in one are the same thing.
   **Migration:** install the 1.6.0 releases and rebuild any third-party plugin; see
   [the SDK migration note](docs/plugin-sdk-migration-1.6.md) and [the plugin guide](docs/plugins.md).
@@ -77,7 +97,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   internal DNS name needs an entry in the allowlist (spec lines 616-620, "the default-true change from
   1.5.5 is signed off").
 - **A hook with `on_error: reject` whose transform fails answers 503, and a hook granted
-  `prompt: ro|rw` sees tool-call arguments and tool results** (spec line 1356, the two owner-signed
+  `prompt: ro|rw` sees tool-call arguments and tool results** (spec line 1358, the two owner-signed
   exceptions of 2026-10-02, HOOK Q1 and Q2). Both are described further below.
 - **A store refuses a different record at an already-used task-event sequence as a fork**, where the
   published store plugin overwrote it (spec lines 1200-1202, Q79-fork-refusal, "signed as an accepted
@@ -87,6 +107,26 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
 
 ### Security
+
+- **A metadata host-list entry is read the way the destination it guards is read.**
+  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.
+  On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
+  `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
+  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries that warn are a `%`
+  outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
+  non-ASCII that UTS #46 cannot map. Every other ASCII host gets 1.5.5's verdicts and texts, and a CIDR
+  entry is still refused with 1.5.5's text (owner-approved 2026-10-21).
+- **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
+  1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect to a cloud metadata or IPv6 link-local host from any host, and a redirect to a private or loopback host (an IP literal, or the localhost name) unless the hop that sent it is itself on a private or loopback host; each hop is judged by the host that redirected, so a chain that leaves through a public host cannot come back into the private network. The check reads the literal host only, with no DNS lookup, so an identity provider reached by any other DNS name counts as public.
+  The refusal names the URL that was asked, not the redirect target:
+  `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` or
+  `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed`. An identity
+  provider on a private IP or at `localhost` may redirect to private or loopback hosts. One reached by
+  any other DNS name (e.g. `keycloak.corp`) counts as public, so its redirect to a private or loopback
+  host is refused, where 1.5.5 followed it. A redirect to a DNS name that resolves privately is
+  followed, and the dial guard judges it. A public-to-public https redirect is still followed. 1.5.5
+  followed up to 10 https redirects with no address check; every other error text is 1.5.5's
+  (owner-approved 2026-10-21; the DNS-name rule owner-approved 2026-10-22).
 
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
@@ -191,12 +231,17 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The SigV4 auth plugin signs the request it sends.** 1.6.0 Changed: the SigV4 auth plugin signs the real method, query string and content type of each outbound request it signs; a POST of `application/json` with no query string signs byte-for-byte as 1.5.5 did.
+  1.5.5 only ever signed that one shape. The query is canonicalised as SigV4 requires, and a repeated
+  header name is comma-merged as the AWS spec says (owner-approved 2026-10-21).
 - **A configuration apply's limits go live with it.** A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits. 1.5.5 put them in force before
   validating them, for the length of the build.
 - **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
   it.
-- **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
-  lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
+- **Error and warning lines carry a diagnostic code.** `[error]`, `[warn]` and `warning:` lines on
+  stderr are prefixed `BUSBAR-NNNN:`, and boot log lines carry `diag=BUSBAR-NNNN`. A few `[warn]`
+  lines are still printed without a code, among them the `BUSBAR_WORKER_THREADS` and
+  `BUSBAR_PROVIDERS` deprecation warnings and the jemalloc and memfd lines.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
 - **OTLP trace export works.** A `module: otlp` export instance delivered nothing in 1.5.5: every
@@ -230,15 +275,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   answered out of Busbar's own state selects no upstream and relays no frame. Additive: no existing
   row changed shape, and no other verb's attribution moved.
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`
-  carry `fires_at` (the resolved stage set), `groups` and `phase`; the overlay-section 404 lists
+  carry `fires_at` (the resolved stage set), `groups` and `phase`; the unknown-overlay-section 400 lists
   the sections that now exist (`identity-providers`, `export`, `tools`, `agents`); `openapi.json`
   describes the MCP and A2A endpoints and reports the running build version in `info.version` (1.5.5
   shipped a stale `1.5.4`).
 - `openapi.json`'s overlay-section `delete` endpoint documents the grown section list in its `400`
   response and a new `409` cross-section-reference guard (deleting a definition another config
   section still references by bare name is refused).
-- **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
-  (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …). A group limit's refusals keep 1.5.5's words
+- **Validation messages keep 1.5.5's key lists.** An `expected one of` list names exactly the keys
+  1.5.5 named; the plane keys (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, `decisions`, …)
+  parse but are not named in it. A group limit's refusals keep 1.5.5's words
   and list only 1.5.5's metrics, though the four new group-limit metrics (`tokens_input`,
   `tokens_output`, `tokens_cache_read`, `tokens_cache_write`) parse. Same refusal, same exit code in
   every case.
@@ -250,7 +296,8 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   (`api_key: 483920175534`) is the spelling nobody thinks to check. Busbar now answers every
   inline spelling with one message that names the rule and never echoes the value: *a secret value
   must be a REFERENCE, never an inline literal (the value is not echoed): use `{ env: <VAR> }`,
-  `{ file: <path> }`, or `{ module: <secret-module>, settings: {…} }`*. Same refusal, same exit
+  `{ file: <path> }`, `{ module: <secret-module>, settings: {…} }`, or the bare scalar `none` to
+  declare an upstream that takes NO credential*. Same refusal, same exit
   code, same config path, line and column.
 - **`--help` documents `-c`/`--config` and `--providers`; `--version` prints a second line.**
   `-c <path>` names config.yaml (flag > `BUSBAR_CONFIG` > `/etc/busbar/config.yaml`) and
@@ -383,9 +430,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
   still never refunded.
 - **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.** New reads
-  `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new write
-  `POST /api/v1/admin/ledger/amend-rate-history` (a plain `full`-scope admin verb), and an optional `?as_of=<history_seq>`
-  on the existing ledger reads. Money stays unitless, exactly as in 1.5.5: a rate card is plain
+  `GET /api/v1/admin/ledger/{totals,checkpoints,reconciliation,migration,openapi.json}`, a new write
+  `POST /api/v1/admin/ledger/amend-rate-history` (a plain `full`-scope admin verb), and an optional
+  `?as_of=<history_seq>` on `GET /usage`. Money stays unitless, exactly as in 1.5.5: a rate card is plain
   numbers and busbar attaches no currency. No 1.5.5 path or field is changed; the new operations are
   described in the one administrative OpenAPI document served at `GET /api/v1/admin/openapi.json`.
 - **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
@@ -417,10 +464,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly nine entries of kind `breaking`
+The accepted-differences register for this release has exactly eight entries of kind `breaking`
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
-unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
-removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
+unchanged in both), one field removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
 endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
 history so a card's own effective date bounds what it reprices, one provider credential that no
 longer degrades to an empty key, and one Bedrock budget refusal that now answers an error Converse
@@ -430,7 +476,7 @@ instead, because each waives only a caller-additive or documentation-only surfac
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find eleven, not nine. One
+changed. A reader counting `kind: breaking` rows in the register will find eleven, not eight. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
 provider that answered 401 now authenticating.)
@@ -463,15 +509,6 @@ minted secret carries over.
   opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
   capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
   recorded spend to rise to what they actually used; no config change is needed.
-- 1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both
-  the buffered and the streamed path. Cohere reports usage twice — a raw `usage.tokens` bucket and
-  a separately-metered `usage.billed_units` bucket, and `billed_units` is what the operator is
-  invoiced upstream. 1.5.5 read only `tokens` and billed those; 1.6.0 bills `billed_units` where
-  the backend reports it, and now does so identically whether the completion was served buffered or
-  streamed (the two answers for one completion previously differed). Only Cohere populates these
-  fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
-  Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
-  token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
 - 1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google
   charges for. Vertex reports `usageMetadata.toolUsePromptTokenCount` beside `promptTokenCount`,
   not inside it — on a real `gemini-2.5-flash` capture the field is `32` while the entire
@@ -493,16 +530,16 @@ minted secret carries over.
   read (out of the prompt), `candidatesTokenCount` and `thoughtsTokenCount` are output — every
   integer count the pinned Gemini wire lock declares under `usageMetadata`, on the buffered, streamed
   and truncated-recovery paths. `totalTokenCount` is Google's sum, never a unit: when it exceeds the
-  itemized counts, busbar logs an audit WARN naming the gap and ledgers no invented units for it (a
-  pre-release build billed that gap as output). A translated response or stream reports the same
+  itemized counts, busbar logs a WARN naming the gap and ledgers it under the open class
+  `unitemized_tokens`, which the rate card prices (a pre-release build billed that gap as output). A translated response or stream reports the same
   itemized counts it ledgers. **Migration:** none.
-- 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
-  you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
-  follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
-  beside `at`, which is still served exactly as in 1.5.5 (always `null`) and tells a caller nothing.
+- 1.6.0 Changed: the hook view's `at` field is joined by `fires_at`. Every hook object served by
+  `GET /api/v1/admin/hooks[/{name}]`, and the follow-up read of a hook write, gains `fires_at` (the
+  resolved stage set), `groups` and `phase` beside `at`, which is still served exactly as in 1.5.5:
+  the hook's legacy `at:` key, or `null` for a hook written with `phase:`.
   **Migration:** `busbar --migrate-config` rewrites the single-stage tap `at: <stage>` config key
   for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that wants a
-  hook's stages reads `fires_at`, since `at` is always `null`. See
+  hook's stages reads `fires_at`, since `at` is `null` once the key is migrated. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
 - 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
   /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
@@ -522,9 +559,10 @@ minted secret carries over.
   earlier window reports, and a card edit inside a UTC day splits that day's row at the edit with
   each half keeping the card it was earned under. **Migration:** two figures you may have compared
   can now differ. The key and group budget reads (`GET /admin/keys/{id}/usage`,
-  `GET /admin/groups/{group}/usage`) still derive spend from the CURRENT card, because the
-  enforcement ledger they read carries no price instant yet — so after a rate-card edit they and
-  `/admin/usage` can report different money for the same consumption until that lands. To correct
+  `GET /admin/groups/{group}/usage`) price each card era of a bucket at the card in force for that
+  era, but a bucket read back from the durable store after a restart is priced at the card in force
+  when its window opened, so after a rate-card edit and a restart they and `/admin/usage` can report
+  different money for the same consumption. To correct
   what a past window was charged, post a correction through the new
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
@@ -545,13 +583,15 @@ minted secret carries over.
 - 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
   `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
   **Migration:** none; every 1.5.5 member is unchanged.
-- 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation`.
+- 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation` and `node`.
   Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
   already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in
   `GET /api/v1/admin/audit/range` names its own recipe in a `recipe` member. The digest also frames
   the node's boot `incarnation` after `unit_key`, so two boots that reuse a unit key seal different
-  records. `docs/audit-chain-digest-v4.md` publishes the new field order beside the v2 and v3 pages.
-  **Migration:** a third-party verifier adds the v4 order (v2 less `currency`, plus `incarnation`);
+  records, and the sealing `node` after `mono`. `docs/audit-chain-digest-v4.md` publishes the new
+  field order beside the v2 page (and the v3 page, kept as history; v3 never shipped).
+  **Migration:** a third-party verifier adds the v4 order (v2 less `currency`, plus `incarnation`
+  and `node`);
   no stored record is rewritten.
 - 1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.
   1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
@@ -585,12 +625,13 @@ minted secret carries over.
   insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
   not something a migration can read off the config file.
 
-Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
-than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
-`at: <stage>` key are rewritten by `busbar --migrate-config` and auto-migrated in a persisted
-overlay at boot; the accepted-then-ignored `persist:` field on `PUT /api/v1/admin/config/settings`
-is now a `400` naming the field; and the always-`null` `at` field on the hook view is joined by
-`fires_at`, which carries the resolved stages (`at` itself is still served, as in 1.5.5). Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
+Four 1.5.x spellings that were never the documented form are still accepted, and the config ones
+are rewritten for you: the hook `plugin:` key (the read-only alias of `module:`) and the
+single-stage tap `at: <stage>` key are accepted in config and in admin hook bodies, rewritten by
+`busbar --migrate-config` and auto-migrated in a persisted overlay at boot; the `persist:` field on
+`PUT /api/v1/admin/config/settings` is still accepted and ignored (a non-boolean value is a `400`);
+and the `at` field on the hook view is joined by `fires_at`, which carries the resolved stages
+(`at` itself is still served, as in 1.5.5). Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
 - A hook with `on_error: reject` whose transform fails answers 503 (fail closed, as the docs always
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
@@ -623,8 +664,9 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
 
 `BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
 and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read at the same points of the boot sequence as in
-1.5.5 and honoured exactly as before; each emits the 1.5.5 deprecation warning under one code,
-BUSBAR-3021, naming the config.yaml key that replaces it (`providers_file:` or `--providers`,
+1.5.5 and honoured exactly as before; each emits the 1.5.5 deprecation warning naming the
+config.yaml key that replaces it, under code BUSBAR-3021 except for `BUSBAR_PROVIDERS` and
+`BUSBAR_WORKER_THREADS`, whose warnings are still uncoded (`providers_file:` or `--providers`,
 `config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
 `advanced.upstream_h2_prior_knowledge`). `BUSBAR_PROVIDERS` pointing at a missing file refuses to
 boot, as it did in 1.5.5. `BUSBAR_CONFIG`, secret `{ env: NAME }` references, `RUST_LOG` and
@@ -639,8 +681,8 @@ plugin against the 1.6.0 SDK (see the SDK migration note) and install the rebuil
 upgrading. See [the plugin guide](docs/plugins.md).
 
 **Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is
-named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset
-prefix are that one name.** The repos moved (`GetBusbar/store-sqlite` → `GetBusbar/busbar-store-sqlite`,
+named `busbar-<kind>-<name>`, and the repo, the signed manifest name and the release asset prefix
+are that one name** (the crate keeps a `-plugin` suffix, e.g. `busbar-store-valkey-plugin`). The repos moved (`GetBusbar/store-sqlite` → `GetBusbar/busbar-store-sqlite`,
 `hashicorp-vault` → `busbar-secret-vault`, `webrequest-hook` → `busbar-hook-webrequest`, and likewise
 for the others; GitHub redirects every old URL). A plugin RELEASED from here on states its repo name
 as its manifest name (`busbar-store-valkey`, not `busbar-store-valkey-plugin`) and publishes
@@ -664,11 +706,6 @@ the first write under that `op_id` stands. The same `op_id` with the same fields
 original write, never applied twice. **Migration:** none; a store built against the 1.6.0 SDK
 answers it through the SDK's store door.
 
-**A plugin declares the contract-ABI range it supports** (`contract_abi: {min, max}` in its signed
-`declares` section), and Busbar refuses at load a plugin whose range shares no version with its own,
-naming both ranges. A manifest packed before the field existed is judged on its `abi_version` alone,
-as before.
-
 **Every plugin response now carries an observability envelope**, and the `export` kind's payload
 schema moves to v3 because of it. A plugin answers `{ result, metrics[], diagnostics[] }`: `result`
 is the kind-specific answer it always sent, and the other two are a back-channel that did not exist.
@@ -687,8 +724,7 @@ Busbar's own metrics recorder, while the same source built as a dropped-in `.so`
 silently lost every counter. Reaching a recorder is no longer representable from either build.
 
 **A plugin built for 1.6.0 speaks the memory ABI.** Every kind has exactly one ABI version and the
-host accepts only the current one. A sink that wants the observability back-channel implements one
-defaulted SDK method, `drain_observations`.
+host accepts only the current one.
 
 **A new `plugins.logs` block is accepted and checked, and plugin log lines move to per-plugin log files.** The block
 names the directory for per-plugin log files (`dir`, default `logs/plugins`), the default level
@@ -771,14 +807,14 @@ each dialect translates, field by field, is listed in the generated
   budget takes the correction and its `/groups` usage and `/metrics` bucket gauges agree with
   `/admin/usage`. Adjusts sealed before this read exactly as they did (unscoped).
 - **One OpenAPI document describes every administrative operation, and a node serves only what
-  it mounts.** The document is generated from the code and now also describes the 26 operations
-  1.6.0 adds — the money-governance verbs, the five ledger views and the three audit-chain reads —
+  it mounts.** The document is generated from the code and now also describes the 20 operations
+  1.6.0 adds — the twelve kernel verbs (nine money-governance, three trust), the five ledger views
+  and the three audit-chain reads —
   each marked `x-busbar-since: 1.6.0`. The `tools:`/`agents:` operations are marked
   `x-busbar-plane`, and `GET /api/v1/admin/openapi.json` serves the document filtered to the planes
   the node configured: a plane you did not configure contributes no operation and no schema, so a
-  node running a 1.5.5 config describes no `tools`/`agents` path. A verb this release resolves but
-  binds no effect to is marked `x-busbar-effect-bound: false` and documents the `404` it answers.
-  Every 1.5.5 operation's entry is unchanged; `info.x-busbar-marks` explains the marks. The full,
+  node running a 1.5.5 config describes no `tools`/`agents` path. A verb with no bound effect is not
+  served and the document does not describe it. Every 1.5.5 operation's entry is unchanged; `info.x-busbar-marks` explains the marks. The full,
   unfiltered document is the release asset and is served at
   `GET /api/v1/admin/ledger/openapi.json`. See [the admin API guide](docs/admin-api.md).
 - 1.6.0 Added: every node's `GET /api/v1/admin/openapi.json` describes the 1.6.0 core admin verbs, each marked `x-busbar-since: 1.6.0`.
@@ -813,9 +849,10 @@ each dialect translates, field by field, is listed in the generated
 - 1.6.0 Added: `GET /api/v1/admin/audit/keys` publishes the node's ed25519 public verifying key.
   The key set was empty before this release, because nothing was signed. With `data_dir` set, the
   keyset is minted at the first boot and kept in a `0600` file under `data_dir`, so the published
-  key survives a restart. Without `data_dir`, a new key is minted at each boot, and a signature made
-  under a previous boot cannot be re-verified. **Migration:** none; back up `data_dir` with the rest
-  of the node's state.
+  key survives a restart. Without `data_dir`, a configured store keeps the
+  key and every later boot reads it back; with neither a `data_dir` nor a store, a new key is minted
+  at each boot, and a signature made under a previous boot cannot be re-verified. **Migration:**
+  none; back up `data_dir` (or the store) with the rest of the node's state.
 - 1.6.0 Added: audit records and ledger checkpoints carry an ed25519 signature made by the node at seal time.
   The signature is verifiable against the key served at `GET /api/v1/admin/audit/keys`. Signing proves
   the node sealed the record. It does not prove the chain was never rewritten by someone holding
@@ -875,8 +912,9 @@ each dialect translates, field by field, is listed in the generated
   otherwise) so a running binary identifies which one it is. See "Running on 64-bit ARM" in
   [the operations guide](docs/operations.md).
 - **MCP and A2A traffic is on `/metrics`** as `busbar_plane_requests_total` and
-  `busbar_plane_request_duration_seconds`, labelled `plane` (`mcp` / `a2a`) with the same `outcome`
-  vocabulary as model traffic, refusals issued before the handler runs included. The model-plane
+  `busbar_plane_request_duration_seconds`, labelled `plane` (`mcp` / `a2a`), `ingress_protocol` and
+  `pool`; the counter also carries `outcome`, with the same vocabulary as model traffic (`ok`,
+  `exhausted`, `client_error`, `error`). Refusals issued before the handler runs are included. The model-plane
   families `busbar_requests_total` / `busbar_request_duration_seconds` are byte-identical to 1.5.5
   and did not gain a label; sum the two families for one query across every plane. See
   [the observability guide](docs/observability.md).
@@ -956,7 +994,7 @@ each dialect translates, field by field, is listed in the generated
   `protocolBinding: "GRPC"`. It is the same admission path, task store, budget and audit chain as
   the JSON-RPC call beside it.
 - **Busbar serves the A2A HTTP+JSON binding** as well as JSON-RPC, so a client built against the
-  REST binding can reach it: `POST /message:send`, `POST /message:stream`, `GET /tasks`, the
+  REST binding can reach it: `POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks`, the
   `pushNotificationConfigs` collection and the rest, with errors in that binding's own
   representation.
 - **A push notification now arrives when the agent finishes**, not only when Busbar happens to be
@@ -973,7 +1011,7 @@ each dialect translates, field by field, is listed in the generated
   block with no warning. Every dialect reads and writes attachments in its own native slot. Where a
   target genuinely cannot express one it is dropped with a `warn!` naming it.
 - **`limits.hook_content_max_bytes` bounds the model-plane content a content-granted hook is
-  shown** (default 65536; `0` disables). Over-cap content is omitted whole rather than truncated,
+  shown** (default `0`, unlimited; a non-zero ceiling is opt-in). Over-cap content is omitted whole rather than truncated,
   and `busbar_hook_content_truncated_total` counts it. The cap is applied on the model plane's two
   projections and not yet on the MCP/A2A gate projection.
 - **Client ID Metadata Documents are accepted**, so a `client_id` that is an HTTPS URL is fetched
@@ -983,6 +1021,11 @@ each dialect translates, field by field, is listed in the generated
 
 ### Changed
 
+- On a same-dialect Gemini route the upstream request keeps the client's `?alt=sse` query; 1.5.5 dropped it.
+- 1.6.0 Changed: an export plugin's log lines (its configuration refusals included) go to the plugin's own log file, not busbar.log.
+- 1.6.0 Changed: a postgres store that cannot open names the server's SQLSTATE and message (or the TLS failure) where 1.5.5 printed `db error` / `error performing TLS handshake`.
+- 1.6.0 Changed: a plugin's `interface_version` is its kind's memory-ABI contract version (hook 2, store 3).
+- 1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.
 - **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
   ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
   clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
@@ -1005,7 +1048,7 @@ each dialect translates, field by field, is listed in the generated
   content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to screen
   a prompt screens them through the field it already reads; and a request body Busbar cannot read
   is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).
-- The embedded OAuth 2.1 authorization server moved to `oauth-as` 0.9.1, a security release.
+- The embedded OAuth 2.1 authorization server moved to `oauth-as` 1.0.0.
   Nothing you write changes. The discovery document no longer advertises `introspection_endpoint`,
   a path Busbar has never mounted and which answered 404.
 - Usage sub-buckets survive a cross-protocol hop, so a bill reconciles line by line:
@@ -1066,6 +1109,7 @@ each dialect translates, field by field, is listed in the generated
 
 ### Fixed
 
+- 1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.
 - **`oauth_as:` could not mint an authorization code at all.** The consent session cookie was
   scoped to a sibling path of the endpoint that reads it, so the browser never sent it and every
   authorization-code flow bounced between `/authorize` and the consent screen forever. The cookie
@@ -1091,10 +1135,6 @@ each dialect translates, field by field, is listed in the generated
   rejected outright.
 - **Unmodeled request fields dropped at the cross-protocol seam are now named in the log.** Around
   forty keys went silently; most are correctly untranslatable, and the silence was the defect.
-- **`transport: stdio` is configurable on Windows at all.** The boot check requiring `command:` to
-  be an absolute path tested it with the unix spelling, so every drive-qualified or UNC path was
-  refused. It now refuses a bare name, a relative path and a drive-relative path in each platform's
-  own spelling.
 - **`GET /admin/plugins` no longer hides an installed plugin on Windows because of its filename's
   case.** The scan matched `.dll` case-sensitively on a case-insensitive filesystem, so a loadable
   plugin was reported absent on the one surface that answers "did my install land".

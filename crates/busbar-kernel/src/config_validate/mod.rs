@@ -7,10 +7,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
+    CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
+    CONFIG_RATE_CARD_ALL_ZERO,
 };
-use crate::plane::registry::plane_decl_for;
+use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
@@ -97,6 +98,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         &cfg.allow_metadata_hosts,
         &mut errors,
     );
+    // An entry that names no host the guard judges booted on 1.5.5 and matched nothing there. It
+    // still boots, is dropped from matching, and is named in one warning line each.
+    warn_unmappable_metadata_entries(
+        "security.blocked_metadata_hosts",
+        &cfg.blocked_metadata_hosts,
+    );
+    warn_unmappable_metadata_entries("security.allow_metadata_hosts", &cfg.allow_metadata_hosts);
 
     // The reasoning effort table drives word<->number projection at the egress seam (the
     // cross-protocol thinking carry). A zero entry would project thinking budgets below the floor
@@ -329,8 +337,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
-    for decl in crate::plane::registry::plane_decls()
+    let mut known_protocols: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
+    for decl in crate::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
@@ -1073,7 +1081,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1093,7 +1101,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     if let Some(auth) = &cfg.auth {
         // Every module named in the data-plane chain must resolve to EITHER the built-in `keys`
         // module OR a loadable `kind: auth` plugin. This function runs before the plugin registry
-        // exists (see this module's own doc + `preflight_plugins_and_secrets`'s doc comment: "the
+        // exists (see this module's own doc + `config_validate::check`'s doc comment: "the
         // plugin pre-flight... cannot run until the registry exists"), so it CANNOT tell a genuine
         // plugin name from a typo at this point — only `main.rs`'s post-resolve
         // `auth_plugin_refs`/registry check (run right after this) can. Only the names this function
@@ -1557,7 +1565,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
 /// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
 fn priced_classes(
-    d: &crate::plane::registry::PlaneDecl,
+    d: &crate::plane_driver::registry::PlaneDecl,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
@@ -1578,8 +1586,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         for (key, r) in card {
             // `lane` is the whole key on the flat card; empty on a plane card's presence key.
             let (plane, lane) = split_plane_lane(key);
-            let at =
-                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let at = crate::plane_driver::registry::plane_decl_for(plane)
+                .map_or(plane, |d| d.config_section);
             let path = format!(
                 "{at}{}rate_card['{lane}']",
                 if at.is_empty() { "" } else { "." }
@@ -1700,7 +1708,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // units: exactly the classes the plane's lane was priced by before it was served through
         // its door, so a configuration that booted then boots now and an unpriced class still
         // refuses (#42).
-        for d in crate::plane::registry::plane_decls() {
+        for d in crate::plane_driver::registry::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
                 .iter()
@@ -1834,8 +1842,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         None => errors.push(crate::config::store_required()),
         Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
-                "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
+                "store.module must be non-empty; use `{}` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
+                crate::config::migrated_store_module(),
                 crate::config::migrate::legacy_store_text("module_examples")
             ));
         }
@@ -1847,7 +1856,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // is trusted is resolved against the plugin REGISTRY — but this function runs at boot AND
     // `--validate` BEFORE the plugin pre-flight builds that registry, and captures none, so it
     // CANNOT tell an installed plugin from a typo. Therefore the module-EXISTENCE check is DEFERRED
-    // to the shared plugin pre-flight (`validate_secret_refs`, called from `plugins_preflight`'s two
+    // to the shared plugin pre-flight (`registry_refusal`, called from `plugins_preflight`'s two
     // call-sites) — the SAME deferral the `store.module` plugin reference already uses. Here we
     // validate ONLY the STRUCTURE that is checkable without the registry: the settings key each
     // loaded secret plugin's declared shorthand names (its Statement's `REWRITE_SUGAR`; audit
@@ -1878,12 +1887,12 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             errors.push(refusal);
         }
         // A module no loaded plugin declares a shorthand for is NOT rejected here: its existence is
-        // proven against the registry in `validate_secret_refs` at plugin pre-flight, which refuses
+        // proven against the registry in `registry_refusal` at plugin pre-flight, which refuses
         // an unknown module in 1.5.5's words.
     };
     // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
     // structural check here and the registry-backed module-existence check at plugin pre-flight
-    // (`validate_secret_refs`) can never drift over WHICH refs they cover.
+    // (`registry_refusal`) can never drift over WHICH refs they cover.
     for (what, r) in secret_refs(cfg) {
         check_secret(what, r);
     }
@@ -2099,6 +2108,71 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
     }
 }
 
+/// Warn once for every entry in a metadata host-list config key that names no host the destination
+/// guard can judge. An entry is read as a destination's host is read
+/// (`busbar_kernel_egress::trust::net::list_entry_host`: a non-ASCII entry mapped by UTS #46 to the
+/// ASCII name or address a URL client dials), so a full-width `１６９.２５４.１６９.２５４` names
+/// `169.254.169.254`; and it must then be a host the guard judges
+/// (`busbar_contract::net::judged_host`, the guard's one reading of every target and entry). An
+/// entry UTS #46 refuses, one holding a `%` outside an IPv6 zone id, or one ending in a number that
+/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) matches no destination.
+///
+/// 1.5.5 booted with such an entry and it matched nothing (it compared raw strings, and refused only
+/// a `/`, `reject_cidr_metadata_entries`), so the configuration still boots: the guard drops the
+/// entry from matching (`HostSet::parse`), the built-in denylist still blocks every real target, and
+/// this names the key, the entry and the reason in one warning line
+/// ([`CONFIG_METADATA_ENTRY_NAMES_NO_HOST`]). A `/` entry is left to its own 1.5.5 refusal.
+fn warn_unmappable_metadata_entries(key: &str, entries: &[String]) {
+    for entry in entries {
+        if let Some(line) = unmappable_metadata_warning(key, entry) {
+            diag_warn!(CONFIG_METADATA_ENTRY_NAMES_NO_HOST, "{line}");
+        }
+    }
+}
+
+/// The warning line for one metadata host-list entry that names no host, or `None` when it names
+/// one or is a `/` entry, which 1.5.5 refuses on its own ([`warn_unmappable_metadata_entries`]).
+fn unmappable_metadata_warning(key: &str, entry: &str) -> Option<String> {
+    if entry.contains('/') {
+        return None;
+    }
+    let (why, fix) = unmappable_metadata_entry(entry)?;
+    Some(format!(
+        "{key} entry '{entry}' maps to no host: {why}, so it matches nothing and is dropped. {fix}"
+    ))
+}
+
+/// Why a metadata host-list entry names no host the guard judges, and how to write it instead;
+/// `None` when it names one ([`warn_unmappable_metadata_entries`]).
+fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)> {
+    let trimmed = entry.trim();
+    if busbar_kernel_egress::trust::net::list_entry_host(trimmed).is_err() {
+        return Some((
+            "UTS #46 refuses it, so it is no name a URL client would dial",
+            "Write the host in ASCII (an internationalized name as its punycode 'xn--' form), or \
+             remove it",
+        ));
+    }
+    busbar_contract::net::judged_host(trimmed).err()?;
+    let bare = trimmed.trim_start_matches('[');
+    let zone = bare
+        .find('%')
+        .is_some_and(|at| bare[..at].parse::<std::net::Ipv6Addr>().is_ok());
+    Some(if trimmed.contains('%') && !zone {
+        (
+            "it holds a '%' escape outside an IPv6 zone id, which a URL client decodes before it \
+             dials",
+            "Write the host decoded (the name or address it spells), or remove it",
+        )
+    } else {
+        (
+            "its last label reads as a number but it is no IPv4 address a URL client reads",
+            "Write an address as a dotted quad, or a name whose last label is not a number, or \
+             remove it",
+        )
+    })
+}
+
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of
 /// truth `ssrf_blocked_host` enforces, surfaced for the `--print-metadata-blocklist` CLI flag and the
 /// startup count so `main.rs` does NOT duplicate the list. The CIDR / individual literals are spelled
@@ -2131,7 +2205,12 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
-pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
+#[cfg(test)]
+pub(crate) use secret_refs::registry_refusal;
+pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
+/// The one validator every caller runs.
+mod check;
+pub use check::{check, no_root_rules, Check, Refusal};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way
@@ -2239,6 +2318,10 @@ fn validate_providers_with(
             &format!("provider '{provider_name}' allow_metadata_hosts"),
             &provider_cfg.allow_metadata_hosts,
             errors,
+        );
+        warn_unmappable_metadata_entries(
+            &format!("provider '{provider_name}' allow_metadata_hosts"),
+            &provider_cfg.allow_metadata_hosts,
         );
         let allow_overrides: Vec<String> = provider_cfg
             .allow_metadata_hosts
@@ -2487,7 +2570,10 @@ fn validate_providers_with(
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
                 Err(e) => {
-                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
+                    errors.push(format!(
+                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        provider_cfg.api_key.describe()
+                    ));
                     String::new()
                 }
             };
@@ -2586,8 +2672,79 @@ fn outbound_credential_refusals(
     let Some(axis) = crate::preflight::linked_auth_axis() else {
         return Vec::new();
     };
-    axis.check_outbound(style, credential.as_bytes(), params)
-        .unwrap_or_default()
+    credential_refusals_from(axis.as_ref(), style, credential, params)
+}
+
+/// [`outbound_credential_refusals`] asked of `axis`, each refusal with the credential redacted
+/// ([`redact_credential`]): the text is a plugin's, and `--validate` prints it (H9).
+fn credential_refusals_from(
+    axis: &dyn busbar_contract::auth_calls::AuthAxis,
+    style: &str,
+    credential: &str,
+    params: &serde_json::Value,
+) -> Vec<String> {
+    let refusals = axis
+        .check_outbound(style, credential.as_bytes(), params)
+        .unwrap_or_default();
+    let needles = credential_needles(credential);
+    refusals
+        .into_iter()
+        .map(|text| redact_credential(text, &needles))
+        .collect()
+}
+
+/// What stands in a printed refusal where the credential was.
+const REDACTED_CREDENTIAL: &str = "[redacted]";
+
+/// A needle shorter than this is not searched for: a 1-3 byte credential (or half of one) would
+/// match ordinary words, and no real credential is that short.
+const MIN_NEEDLE: usize = 4;
+
+/// The spellings of `credential` a plugin's refusal could carry, longest first: the credential as
+/// resolved and trimmed, the secret half of a `client_id:client_secret` pair, a service account's
+/// `private_key`, and the base64 (standard and URL-safe, padded or not) of the credential, which is
+/// how a Basic header carries a `user:pass` pair.
+fn credential_needles(credential: &str) -> Vec<String> {
+    use base64::Engine as _;
+    let mut needles = vec![credential.to_string(), credential.trim().to_string()];
+    if let Some((_, secret)) = credential.trim().split_once(':') {
+        needles.push(secret.to_string());
+    }
+    if let Ok(serde_json::Value::Object(account)) = serde_json::from_str(credential) {
+        if let Some(serde_json::Value::String(key)) = account.get("private_key") {
+            // As parsed, and as JSON spells it (`\n` escaped), which is how a plugin quoting the
+            // account back would.
+            needles.push(key.clone());
+            if let Ok(quoted) = serde_json::to_string(key) {
+                needles.push(quoted.trim_matches('"').to_string());
+            }
+        }
+    }
+    for raw in [credential, credential.trim()] {
+        for engine in [
+            &base64::engine::general_purpose::STANDARD,
+            &base64::engine::general_purpose::STANDARD_NO_PAD,
+            &base64::engine::general_purpose::URL_SAFE,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ] {
+            needles.push(engine.encode(raw.as_bytes()));
+        }
+    }
+    needles.retain(|n| n.len() >= MIN_NEEDLE);
+    needles.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    needles.dedup();
+    needles
+}
+
+/// `text` with every occurrence of each needle replaced by [`REDACTED_CREDENTIAL`]. Text that
+/// carries none comes back as it was, byte for byte.
+fn redact_credential(mut text: String, needles: &[String]) -> String {
+    for needle in needles {
+        if text.contains(needle.as_str()) {
+            text = text.replace(needle.as_str(), REDACTED_CREDENTIAL);
+        }
+    }
+    text
 }
 
 /// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit
@@ -2729,3 +2886,7 @@ mod store_required_tests;
 #[cfg(test)]
 #[path = "tests/secret_shorthand_declared_tests.rs"]
 mod secret_shorthand_declared_tests;
+
+#[cfg(test)]
+#[path = "tests/credential_echo_tests.rs"]
+mod credential_echo_tests;

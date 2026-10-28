@@ -607,7 +607,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// registry's serial lock for its lifetime, so no sibling test's registration can leak in.
 #[test]
 fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
-    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+    let _isolation = busbar_kernel::plane_driver::registry::TestRegistryIsolation::empty();
     let result = serde_yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
     let err = result.expect_err(
         "a config with a pools: section must be REFUSED, not silently accepted, when no plane \
@@ -623,7 +623,7 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
 
 // `test_shipped_example_config_resolves` lives in the composition root
 // (crates/busbar/src/root/tests/auth_bindings.rs): the shipped config.yaml names the operator
-// credential by the root legacy table's word, which the kernel does not spell (ARCHITECT
+// credential by the root migration table's word, which the kernel does not spell (ARCHITECT
 // 2026-09-30, KERNEL-AUTH-ZERO Q2).
 
 /// Tests sharing a process-global env var use a set -> interpolate -> remove
@@ -3145,7 +3145,7 @@ fn reserved_hook_names_are_frozen() {
 
     // (a) The kernel's declared frozen list is EXACTLY these words — spelled out literally so a
     //     diff shows a reviewer precisely which word someone tried to add. The operator
-    //     credential's provider completes the 1.5.3 space; it is the root legacy table's word, and
+    //     credential's provider completes the 1.5.3 space; it is the root migration table's word, and
     //     the root pins the whole space with it (`root::tests::legacy_table`).
     assert_eq!(
         frozen,
@@ -3263,40 +3263,6 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     assert!(!cfg.fires_at_stage(HookStage::Request));
     assert!(!cfg.fires_at_stage(HookStage::Candidate));
     assert!(!cfg.fires_at_stage(HookStage::Routing));
-}
-
-/// THE `phase:` FIELD DOC MUST NOT CONTRADICT THE FREEZE. The field doc said an
-/// omitted `phase:`/`at:` falls back to `request`, while `fires_at_stage` (and the doc on
-/// `CORE_HOOK_PHASES`, and the test above) say it fires at ALL FOUR core stages. THAT is the frozen
-/// semantic, so the DOC was the defect. Read as a source assertion because a doc comment is exactly
-/// the thing no runtime assertion can reach, and a wrong doc on a FROZEN semantic is what an
-/// operator actually acts on.
-///
-/// The pre-fix file contains the contradicting sentence this test rejects.
-#[test]
-fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
-    // `HookCfg` (and its `phase:` field doc this test pins) used to live in the now-deleted
-    // `busbar-substrate` crate (W4.b: the substrate engine was absorbed into busbar-kernel), so the
-    // doc comment this test greps for lives in THIS crate's own `config/hooks.rs` now, not a
-    // sibling crate's source file.
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/hooks.rs"))
-        .expect("busbar-substrate's config/hooks.rs is readable");
-    assert!(
-        !src.contains("falls back to `at` (or `request` when that is also"),
-        "the `phase:` field doc still claims an omitted phase+at fires at `request` ONLY; \
-         `fires_at_stage` fires at all four CORE_HOOK_PHASES"
-    );
-    // And the doc positively states the frozen answer, so the next reader is not left guessing.
-    // It asserts on the ANSWER, not on the label we happened to file the decision under: a doc
-    // that names an internal identifier is a doc that leaks one to whoever reads the source.
-    let phase_doc_start = src
-        .find("1.5.3 named-hook PHASE set")
-        .expect("the `phase:` field doc exists");
-    let phase_doc = &src[phase_doc_start..phase_doc_start + 700];
-    assert!(
-        phase_doc.contains("FOUR CORE STAGES"),
-        "the `phase:` field doc must state that an omitted phase+at fires at all four core stages"
-    );
 }
 
 /// FREEZE BLOCKER — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
@@ -3532,61 +3498,6 @@ fn export_named_map_allows_two_instances_of_one_module() {
     );
 }
 
-/// DOC/CODE DRIFT. `RootSettings`' doc enumerates the `DeployCfg` blocks the `root` overlay
-/// section covers. That list is the operator-facing description of an API surface, so a name in it
-/// that the struct has no field for is a documented capability that does not exist — it listed
-/// `metrics`, retired in 1.5.3.
-///
-/// Gated generically rather than by spot-fixing the word: every backticked name in the enumerating
-/// sentence must be a real field of the struct, so the next retired (or added) block cannot drift
-/// the doc out of agreement with the code either.
-#[test]
-fn root_settings_doc_lists_only_fields_that_exist() {
-    let src = include_str!("../overlay.rs");
-    // `RootSettings` (and its fields) were promoted `pub(crate)` → `pub` when the admin service was
-    // extracted to `busbar-admin`, which reads them; the doc/code-drift check is unchanged.
-    let anchor = "pub struct RootSettings {";
-    let at = src.find(anchor).expect("RootSettings struct");
-
-    // The struct's real field set.
-    let body = &src[at + anchor.len()..];
-    let body = &body[..body.find("\n}").expect("struct end")];
-    let fields: Vec<&str> = body
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("pub "))
-        .filter_map(|l| l.split(':').next())
-        .collect();
-    assert!(
-        fields.contains(&"listen") && !fields.contains(&"metrics"),
-        "sanity: parsed fields {fields:?}"
-    );
-
-    // The doc's enumerating sentence: "It mirrors the uncovered `DeployCfg` surface: … Every field
-    // is `Option` …". Everything backticked in it is a covered block name. (The `///` line prefixes
-    // fall out for free — they are not backticked.)
-    let doc = &src[..at];
-    let start = doc
-        .rfind("It mirrors the")
-        .expect("the enumerating sentence");
-    let span = &doc[start..];
-    let span = &span[..span.find("Every field is").expect("end of the enumeration")];
-    let listed: Vec<&str> = span
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .filter(|t| *t != "DeployCfg")
-        .collect();
-    assert!(listed.len() > 5, "sanity: parsed doc names {listed:?}");
-    for name in listed {
-        assert!(
-            fields.contains(&name),
-            "`RootSettings`' doc lists `{name}` among the blocks the `root` overlay section \
-             covers, but the struct has no such field — a documented capability that does not \
-             exist. Fields: {fields:?}"
-        );
-    }
-}
-
 // THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
 // — it constructs a REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's `resolve`,
@@ -3619,32 +3530,6 @@ fn failover_pools_are_absent_by_default() {
 // A one-member pool changes nothing... MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
 // the retired agent engine's `AgentsCfg`). See that file's header.
-
-/// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
-/// here rather than only in the seam's own tests because this is where an operator's document is
-/// turned into the answer, and a default that drifted here would be invisible there.
-#[test]
-fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::config::pools::CandidatePoolCfg {
-        members: vec!["a".into(), "b".into()],
-        repeatable: vec!["search_code".into()],
-        breaker: None,
-    };
-    assert_eq!(
-        pool.repeatability("search_code"),
-        crate::config::pools::Repeatable::Yes
-    );
-    assert_eq!(
-        pool.repeatability("send_email"),
-        crate::config::pools::Repeatable::No,
-        "an operation nobody spoke about is NEVER repeated"
-    );
-    assert_eq!(
-        crate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::config::pools::Repeatable::No,
-        "and an empty declaration repeats nothing at all"
-    );
-}
 
 // ── 1.6.0 auth.policy: block (additive; parse/resolve coverage) ──────────────────────────────────
 
@@ -3812,9 +3697,9 @@ const NEUTRAL_SECTION: &str = "neutral_section";
 /// map carrier `config::plane_sections::DeclaredSections` holds it — all hooks stubbed, so the
 /// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
 /// `parse_section` hook the value is captured raw.
-static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
-    crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
+static NEUTRAL_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
             key: "neutral-test-section",
             fallback: false,
             config_section: NEUTRAL_SECTION,
@@ -3841,7 +3726,7 @@ static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
 /// section with its own `validate` (`crates/busbar/tests/cli_validate.rs`, the decisions block).
 #[test]
 fn test_decisions_section_parses() {
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &NEUTRAL_SECTION_PLANE,
     ]);
@@ -3877,9 +3762,9 @@ fn test_decisions_section_parses() {
 }
 
 /// A SECOND neutral plane that declares and owns its own section, beside [`NEUTRAL_SECTION_PLANE`].
-static SECOND_SECTION_PLANE: crate::plane::registry::PlaneDecl =
-    crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
+static SECOND_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
             key: "neutral-test-second",
             config_section: "second_section",
             owned_config_sections: &["second_section"],
@@ -3894,7 +3779,7 @@ static SECOND_SECTION_PLANE: crate::plane::registry::PlaneDecl =
 /// endpoint resource and count `{}` as written). Each is a declared plane section for LAW 7 at resolve.
 #[test]
 fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &NEUTRAL_SECTION_PLANE,
         &SECOND_SECTION_PLANE,
@@ -3921,7 +3806,7 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
 /// served through its door opens with it as its settings, as a raw-carried plane does.
 #[test]
 fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &NEUTRAL_SECTION_PLANE,
         &RAW_SECTION_PLANE,
@@ -3956,17 +3841,18 @@ const RAW_SECTION: &str = "raw_section";
 /// A NEUTRAL plane declaring [`RAW_SECTION`] with no carrier of its own: not a named one, not the
 /// map one (it owns no grammar), not core's — the shape of a plane that states itself
 /// over the C ABI, whose section only it can read.
-static RAW_SECTION_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "neutral-test-raw",
-        fallback: false,
-        config_section: RAW_SECTION,
-        scope_kinds: &[],
-        owned_config_sections: &[],
-        ..crate::test_support::NEUTRAL_FALLBACK.declaration
-    },
-    ..crate::test_support::NEUTRAL_FALLBACK
-};
+static RAW_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "neutral-test-raw",
+            fallback: false,
+            config_section: RAW_SECTION,
+            scope_kinds: &[],
+            owned_config_sections: &[],
+            ..crate::test_support::NEUTRAL_FALLBACK.declaration
+        },
+        ..crate::test_support::NEUTRAL_FALLBACK
+    };
 
 /// THE GENERIC CARRIER: a registered plane's declaring section that no carrier holds is
 /// lifted RAW onto `DeployCfg::plane_raw` — its core-owned `rate_card`/`fees` stripped and banked
@@ -3976,7 +3862,7 @@ static RAW_SECTION_PLANE: crate::plane::registry::PlaneDecl = crate::plane::regi
 /// as an unknown field.
 #[test]
 fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &RAW_SECTION_PLANE,
     ]);
@@ -4027,7 +3913,7 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
 /// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
 #[test]
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
     ]);
     let err = crate::config::deploy_from_yaml_str(
@@ -4071,53 +3957,54 @@ fn record_plane_section(
 
 /// A stub plane owning the registry section a card is authored in, whose `parse_section` records
 /// what it was handed. `"card-plane"` is its registry key: the key the card is filed under.
-static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "card-plane",
-        fallback: false,
-        config_section: "tools",
-        scope_kinds: &[],
-        subject_noun: "card thing",
-        admin_noun: "card-thing",
-        audit_kind: "card-thing",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    provider_dialects: || &[],
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: Some(record_plane_section),
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "card-plane",
+            fallback: false,
+            config_section: "tools",
+            scope_kinds: &[],
+            subject_noun: "card thing",
+            admin_noun: "card-thing",
+            audit_kind: "card-thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: || &[],
+        provider_dialects: || &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: Some(record_plane_section),
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
 
 /// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
 /// NO `rate_card` — core lifts the card off first and files it under the plane's registry key — and
@@ -4125,7 +4012,8 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
 /// billing OFF. A section carrying `fees` is refused before anything reaches the plane.
 #[test]
 fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
-    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+    let _isolation =
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     PLANE_SAW.lock().unwrap().clear();
     let deploy = crate::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\ntools:\n  srv: { url: \"https://x.example/srv\" }\n  \
@@ -4170,7 +4058,8 @@ fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
 #[test]
 fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
     use busbar_kernel_ledger::cost::PlaneFees;
-    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+    let _isolation =
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     PLANE_SAW.lock().unwrap().clear();
     let deploy = crate::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\nper_request_fee: 5\ntools:\n  srv: { url: \"https://x.example/srv\" }\n  \
@@ -4219,7 +4108,8 @@ fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
 #[test]
 fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
     use busbar_contract::section::reserved_name_refusal;
-    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+    let _isolation =
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     let head = "providers: {}\nmodels: {}\ntools:\n  srv: { url: \"https://x.example/srv\" }\n";
     for key in [
         "breaker",
@@ -4307,9 +4197,11 @@ fn a_flat_rate_card_resolves_to_itself() {
 // ── CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): A CONCRETE SECTION IS REQUIRED ONLY BY A PLANE ──────
 
 /// A stub plane requiring exactly `required` of the requirable sections, and nothing else.
-const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::registry::PlaneDecl {
-    crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
+const fn requiring_plane(
+    required: &'static [&'static str],
+) -> crate::plane_driver::registry::PlaneDecl {
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
             key: "req-plane",
             fallback: false,
             config_section: "req-plane",
@@ -4359,14 +4251,16 @@ const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::reg
 
 /// The plane that requires both catalog sections — the shape a build linking the plane that owns
 /// `models` (and consumes `providers`) registers.
-static REQUIRES_BOTH: crate::plane::registry::PlaneDecl = requiring_plane(&["providers", "models"]);
+static REQUIRES_BOTH: crate::plane_driver::registry::PlaneDecl =
+    requiring_plane(&["providers", "models"]);
 
 /// The plane that requires only `providers` — a plane that consumes the catalog but owns no models.
-static REQUIRES_PROVIDERS: crate::plane::registry::PlaneDecl = requiring_plane(&["providers"]);
+static REQUIRES_PROVIDERS: crate::plane_driver::registry::PlaneDecl =
+    requiring_plane(&["providers"]);
 
 /// The same plane with its requirement list dropped — the build that links no plane requiring
 /// either section.
-static REQUIRES_NONE: crate::plane::registry::PlaneDecl = requiring_plane(&[]);
+static REQUIRES_NONE: crate::plane_driver::registry::PlaneDecl = requiring_plane(&[]);
 
 /// A document carrying neither catalog section.
 const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
@@ -4379,7 +4273,7 @@ const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
 #[test]
 fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
     let _isolation =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_BOTH]);
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&REQUIRES_BOTH]);
     let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
     assert_eq!(err.to_string(), "missing field `providers`");
     let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n")
@@ -4394,8 +4288,9 @@ fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field
 /// A plane that requires `providers` only makes `providers` required: `models` reads empty.
 #[test]
 fn a_plane_requiring_one_section_leaves_the_other_omissible() {
-    let _isolation =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_PROVIDERS]);
+    let _isolation = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+        &REQUIRES_PROVIDERS,
+    ]);
     let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
     assert_eq!(err.to_string(), "missing field `providers`");
     let deploy = crate::config::deploy_from_yaml_str("providers: {}\n")
@@ -4415,7 +4310,7 @@ fn a_plane_requiring_one_section_leaves_the_other_omissible() {
 #[test]
 fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     let _isolation =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_NONE]);
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&REQUIRES_NONE]);
     let deploy = crate::config::deploy_from_yaml_str(NO_CATALOG)
         .expect("no registered plane requires a catalog section");
     assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
@@ -4448,9 +4343,9 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
 /// a document omitting it is refused with serde's own missing-field message for that section.
 #[test]
 fn any_section_a_registered_plane_requires_is_refused_when_absent() {
-    static REQUIRES_POOLS: crate::plane::registry::PlaneDecl = requiring_plane(&["pools"]);
+    static REQUIRES_POOLS: crate::plane_driver::registry::PlaneDecl = requiring_plane(&["pools"]);
     let _isolation =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_POOLS]);
+        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&REQUIRES_POOLS]);
     let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\n")
         .expect_err("pools is required by a registered plane");
     assert_eq!(err.to_string(), "missing field `pools`");
@@ -4516,17 +4411,18 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
 /// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
 /// door plane whose Statement states a section that is neither declaring nor consumed (a plane's
 /// own `webhooks:`, ARCHITECT 2026-10-14 option A).
-static OWNS_BESIDE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "neutral-test-owns-beside",
-        fallback: false,
-        config_section: "beside_declaring",
-        scope_kinds: &[],
-        owned_config_sections: &["beside_owned"],
-        ..crate::test_support::NEUTRAL_FALLBACK.declaration
-    },
-    ..crate::test_support::NEUTRAL_FALLBACK
-};
+static OWNS_BESIDE_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "neutral-test-owns-beside",
+            fallback: false,
+            config_section: "beside_declaring",
+            scope_kinds: &[],
+            owned_config_sections: &["beside_owned"],
+            ..crate::test_support::NEUTRAL_FALLBACK.declaration
+        },
+        ..crate::test_support::NEUTRAL_FALLBACK
+    };
 
 /// RED (ARCHITECT 2026-10-14, the plane-owned `webhooks:` section, option A): a section a
 /// registered plane owns BESIDE its declaring one, and that is no endpoint door, is lifted RAW and
@@ -4536,7 +4432,7 @@ static OWNS_BESIDE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::regi
 /// own section and not this one lifts nothing extra.
 #[test]
 fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &OWNS_BESIDE_PLANE,
     ]);

@@ -375,7 +375,7 @@ fn model_deltas<'r>(
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -392,7 +392,7 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, u64>,
 ) -> Vec<(String, u64)> {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {
@@ -703,7 +703,7 @@ pub struct GovState {
     store: Arc<dyn RecordStore>,
     /// Both auth-path caches under ONE lock so `refresh` swaps them atomically — a reader can never
     /// observe a new `by_hash` against a stale `by_access_key_id`. See `GovCaches`.
-    caches: RwLock<GovCaches>,
+    caches: Arc<RwLock<GovCaches>>,
     /// Per-GROUP in-flight gauges for the `concurrent` limit metric (instantaneous - no window).
     /// Keyed by group NAME (stable across config applies, while `CostModel` group indices are
     /// not); values are `Arc`ed atomics so an [`AdmitGrant`] holds its release handles without
@@ -778,7 +778,7 @@ pub struct GovState {
     /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
     /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
     /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
-    refresh_lock: std::sync::Mutex<()>,
+    refresh_lock: Arc<std::sync::Mutex<()>>,
     /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`): each does a
     /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
     /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
@@ -800,6 +800,10 @@ pub struct GovState {
     caller_refs: crate::plane_driver::CallerRefs,
     /// The deployment keyset's caller-reference material, once the book binds the keyset.
     deployment_caller_ref: RwLock<Option<[u8; 32]>>,
+    /// This boot's random caller-reference key: the last resort when the node has neither signing
+    /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
+    /// Zeroised on drop and never logged (`GovState` has no `Debug`).
+    boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

@@ -80,108 +80,95 @@ impl RoutingPolicy for Broken {
 /// (`test_support::hook_double`), opened through the kernel's hook axis port and told to answer
 /// `reply` verbatim (`raw_decide_reply`). The reply is lowered into the call's frame as the SDK
 /// lowers it, and the kernel's hook seam lowers the fixed answer back, so this drives the kernel's
-/// path whole: a reply that fails to parse yields `Err(..)` (→ the gate's `on_error`), a reply that
-/// parses to "no opinion" yields `Ok(Abstain)` (→ proceed). Nothing here re-implements the normalizer.
+/// path whole: a reply the hook got wrong (its typed fields do not parse) is `Ok(Abstain)`, as
+/// 1.5.5's host read it (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56`); only a hook that SAYS it
+/// could not answer is `Err(..)` (→ the gate's `on_error`). Nothing here re-implements the
+/// normalizer.
 fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
+    double_gate("raw_decide_reply", reply)
+}
+
+/// The hook double, opened with the one setting `key: value`.
+fn double_gate(key: &str, value: serde_json::Value) -> Arc<dyn RoutingPolicy> {
     let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
     let mut settings = serde_json::Map::new();
-    settings.insert("raw_decide_reply".into(), reply);
+    settings.insert(key.into(), value);
     env.open("reply-gate", &settings, "reply-gate", 5_000)
         .expect("the hook double opens through the axis")
 }
 
-/// A reply carrying a VALID `reject` beside a WRONG-TYPED sibling (`order` must be an array of
-/// integers) fails the 1.5.5 reply parse (`abi::sdk::hook::lower_decide_reply`) — and with `on_error: reject` that MUST refuse the
-/// request, never route it. This is the exact CF4 fail-open: the malformed reply used to be
-/// swallowed to `Abstain` (proceed), bypassing both the hook's `reject` and the operator's on_error.
+fn tool_subject(facts: &InvokeReq) -> GateSubject<'_> {
+    GateSubject {
+        facts,
+        container: "filesystem",
+        ingress_protocol: "example-protocol",
+        request_id: 1,
+        key: None,
+        session: None,
+        incremental: None,
+    }
+}
+
+/// A reply the hook got wrong is read as 1.5.5's host read it: a failed parse of the reply is
+/// ABSTAIN (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56`, `Err(_) => RoutingDecision::Abstain`),
+/// so the request PROCEEDS even under `on_error: reject`. That includes a valid `reject` beside a
+/// wrong-typed sibling: 1.5.5's `HookResponse` types `order` as `Vec<usize>` and `abstain` as
+/// `bool` (v1.5.5 `crates/busbar/src/hooks/wire.rs:431,433`), so the whole parse failed and the
+/// reject was never read. (This cell asserted the opposite, `on_error`, before the hook SDK's
+/// lowering was brought back to 1.5.5: that was the divergence, not 1.5.5's behaviour.)
 #[tokio::test]
-async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject() {
+async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_error_reject() {
     let facts = tool_call();
-    // `reject` is untyped (fail-closed by design); `order` is strictly `Vec<usize>`, so a string
-    // aborts the WHOLE parse.
+    for reply in [
+        serde_json::json!({ "reject": { "status": 403, "message": "screened" }, "order": "x" }),
+        serde_json::json!({ "reject": { "status": 403 }, "abstain": "yes" }),
+        serde_json::json!({ "order": "x" }),
+        serde_json::json!({ "abstain": "yes" }),
+        serde_json::json!("garbage"),
+        serde_json::json!(null),
+        serde_json::json!([1]),
+    ] {
+        let gates = gate(
+            reply_gate(reply.clone()),
+            crate::config::PolicyOnError::Reject,
+            true,
+            false,
+        );
+        assert!(
+            matches!(
+                decide(&gates, &tool_subject(&facts)).await,
+                GateVerdict::Proceed
+            ),
+            "1.5.5's host read the out-of-shape reply {reply} as abstain: the request proceeds"
+        );
+    }
+}
+
+/// A hook that SAYS it could not answer (`decide_result` → `Err`, the hook double's `fail_decide`)
+/// is FAILED, and `on_error: reject` refuses, as 1.5.5's host did (v1.5.5
+/// `crates/plugin-loader/src/hook.rs:173-175`, `HookReply::Failed` → `Err` → `on_error`). This is
+/// the one road to `on_error` from a hook that answered; an out-of-shape reply is not it.
+#[tokio::test]
+async fn a_hook_that_says_it_failed_resolves_on_error_reject() {
+    let facts = tool_call();
     let gates = gate(
-        reply_gate(serde_json::json!({
-            "reject": { "status": 403, "message": "screened" },
-            "order": "not-an-array",
-        })),
+        double_gate("fail_decide", serde_json::json!("the screen is down")),
         crate::config::PolicyOnError::Reject,
         true,
         false,
     );
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-    };
     assert!(
-        matches!(decide(&gates, &subject).await, GateVerdict::Reject { .. }),
-        "a malformed reply carrying a valid reject must fail CLOSED to on_error, not proceed"
-    );
-}
-
-/// A TOTALLY malformed reply (not even an object) fails to parse → the gate's `on_error` decides.
-#[tokio::test]
-async fn a_totally_malformed_reply_applies_on_error() {
-    let facts = tool_call();
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-    };
-
-    let closed = gate(
-        reply_gate(serde_json::json!("garbage")),
-        crate::config::PolicyOnError::Reject,
-        false,
-        false,
-    );
-    assert!(
-        matches!(decide(&closed, &subject).await, GateVerdict::Reject { .. }),
-        "`on_error: reject` refuses a request whose gate returned an unparseable reply"
-    );
-}
-
-/// `on_error: weighted` (the advisory posture) HONORS the operator's choice: a malformed reply from
-/// an advisory gate does NOT refuse — the fix routes a parse failure to `on_error`, whatever the
-/// operator set it to, so a non-reject terminal still proceeds.
-#[tokio::test]
-async fn a_malformed_reply_honors_a_non_reject_on_error() {
-    let facts = tool_call();
-    let open = gate(
-        reply_gate(serde_json::json!({
-            "reject": { "status": 403 },
-            "order": "not-an-array",
-        })),
-        crate::config::PolicyOnError::Weighted,
-        true,
-        false,
-    );
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-    };
-    assert!(
-        matches!(decide(&open, &subject).await, GateVerdict::Proceed),
-        "the operator chose `weighted`: a failed advisory gate proceeds, it does not refuse"
+        matches!(
+            decide(&gates, &tool_subject(&facts)).await,
+            GateVerdict::Reject { .. }
+        ),
+        "`on_error: reject` refuses a request whose gate said it could not answer"
     );
 }
 
 /// A GENUINE no-opinion reply still Abstains. An empty `{}` parses cleanly to a reply with
 /// no verbs → `Ok(Abstain)` → proceed, even under `on_error: reject`: a hook that legitimately has
-/// nothing to say is NOT turned into a hard failure by this fix.
+/// nothing to say is not a failure (v1.5.5 `crates/busbar/src/hooks/wire.rs:687-692`).
 #[tokio::test]
 async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     let facts = tool_call();
@@ -213,8 +200,9 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     }
 }
 
-/// A well-formed `reject` (the common case) still rejects through this seam — the parse-OK path is
-/// untouched, proving the fix narrowed only the parse-FAILURE case.
+/// A well-formed `reject` (the common case) rejects through this seam — the parse-OK path is
+/// 1.5.5's (v1.5.5 `crates/busbar/src/hooks/wire.rs:670-675`), and a parsed reject is the hook's own
+/// verdict, never `on_error`'s.
 #[tokio::test]
 async fn a_well_formed_reject_still_rejects() {
     let facts = tool_call();
@@ -1026,11 +1014,11 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+            crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
         }
     }
     let _restore = Restore;
-    crate::proxy::set_hook_content_max_bytes(8);
+    crate::hooks::set_hook_content_max_bytes(8);
 
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,

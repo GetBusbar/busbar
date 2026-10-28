@@ -471,8 +471,8 @@ fn raw_session_remove(
     // SAFETY: the SDK's `'static` door and its store table; every call passes the slot's own
     // `in`/`out` shapes, live for the call.
     unsafe {
-        let d = &*door();
-        let ops = &*d.ops.cast::<busbar_contract::abi::store::Ops>();
+        let d = door();
+        let ops = &*d.ops().cast::<busbar_contract::abi::store::Ops>();
         let mut oi: OpenIn = std::mem::zeroed();
         oi.head = in_head();
         oi.head.size = std::mem::size_of::<OpenIn>() as u32;
@@ -785,11 +785,11 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
 #[test]
 fn a_store_door_without_needs_states_none() {
     // SAFETY: the SDK's `'static` door and Statement.
-    let st = unsafe { *(*remote_denylist::door()).statement };
+    let st = unsafe { *remote_denylist::door().statement() };
     assert!(st.needs.is_null());
     assert_eq!(st.needs_len, 0);
     // SAFETY: as above.
-    let st = unsafe { *(*over_tcp::door()).statement };
+    let st = unsafe { *over_tcp::door().statement() };
     assert_eq!(st.needs_len, 1);
 }
 

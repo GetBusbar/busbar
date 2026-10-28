@@ -1159,13 +1159,13 @@ fn a_second_short_call_on_one_handle_is_fault() {
     let (mut b, mut s) = ([0u8; 4], [SPAN; 1]);
     let into = bufs(&mut b, &mut s);
     // SAFETY: the test's own buffers.
-    let first = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+    let first = unsafe { serve(&store, &nowhere(), &h, 0, Some(&into), eight(&runs)) };
     assert_eq!(first.outcome, Outcome::Failed);
     assert_eq!((first.needed_bytes, first.needed_items), (8, 1));
     assert_eq!((first.len, first.items), (0, 0), "nothing written");
     assert_eq!(b, [0; 4]);
     // SAFETY: as above.
-    let second = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+    let second = unsafe { serve(&store, &nowhere(), &h, 0, Some(&into), eight(&runs)) };
     assert_eq!(second.outcome, Outcome::Fault);
     assert_eq!(second.error, SECOND_SHORT);
     assert_eq!(runs.load(Ordering::SeqCst), 1);
@@ -1181,12 +1181,12 @@ fn a_recall_reads_the_stored_result_without_running_again() {
     let (mut small, mut s1) = ([0u8; 4], [SPAN; 1]);
     let into = bufs(&mut small, &mut s1);
     // SAFETY: the test's own buffers.
-    let short = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+    let short = unsafe { serve(&store, &nowhere(), &h, 0, Some(&into), eight(&runs)) };
     assert_eq!(short.outcome, Outcome::Failed);
     let (mut big, mut s2) = ([0u8; 8], [SPAN; 1]);
     let into = bufs(&mut big, &mut s2);
     // SAFETY: as above.
-    let recall = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+    let recall = unsafe { serve(&store, &nowhere(), &h, 0, Some(&into), eight(&runs)) };
     assert_eq!(
         (recall.outcome, recall.value, recall.len, recall.items),
         (Outcome::Ready, 1, 8, 1)
@@ -1194,7 +1194,7 @@ fn a_recall_reads_the_stored_result_without_running_again() {
     assert_eq!(&big, b"01234567");
     assert_eq!(s2[0].value.len, 8);
     // SAFETY: as above.
-    let again = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+    let again = unsafe { serve(&store, &nowhere(), &h, 0, Some(&into), eight(&runs)) };
     assert_eq!(again, recall);
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 
@@ -1504,7 +1504,7 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
     let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
     let into = bufs(&mut b, &mut s);
     // SAFETY: the test's own buffers.
-    let first = unsafe { serve(&store, &route, &h, Some(&into), pend()) };
+    let first = unsafe { serve(&store, &route, &h, 0, Some(&into), pend()) };
     assert_eq!(first.outcome, Outcome::Pending);
     let late = held
         .lock()
@@ -1515,7 +1515,7 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
     // The first op is over; a new op starts on the ticket, and its handle 0 pends.
     store.forget(TICKET);
     // SAFETY: as above.
-    let second = unsafe { serve(&store, &route, &h, Some(&into), pend()) };
+    let second = unsafe { serve(&store, &route, &h, 0, Some(&into), pend()) };
     assert_eq!(second.outcome, Outcome::Pending);
     let own = held.lock().unwrap().take().expect("the new op's completer");
 
@@ -1525,7 +1525,7 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
         "a completion of an op that is over wakes nothing"
     );
     // SAFETY: as above.
-    let resumed = unsafe { serve(&store, &route, &h, Some(&into), |_| panic!("ran twice")) };
+    let resumed = unsafe { serve(&store, &route, &h, 0, Some(&into), |_| panic!("ran twice")) };
     assert_eq!(
         resumed.outcome,
         Outcome::Pending,
@@ -1535,7 +1535,7 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
     own.complete(Stored::ready(9));
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![TICKET]);
     // SAFETY: as above.
-    let landed = unsafe { serve(&store, &route, &h, Some(&into), |_| panic!("ran twice")) };
+    let landed = unsafe { serve(&store, &route, &h, 0, Some(&into), |_| panic!("ran twice")) };
     assert_eq!(
         (landed.outcome, landed.value),
         (Outcome::Ready, 9),
@@ -1561,14 +1561,14 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
         let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
         let into = bufs(&mut b, &mut s);
         // SAFETY: the test's own buffers.
-        let a = unsafe { serve(&store, &nowhere(), h, Some(&into), eight(&runs)) };
+        let a = unsafe { serve(&store, &nowhere(), h, 0, Some(&into), eight(&runs)) };
         assert_eq!((a.outcome, a.value), (Outcome::Ready, 1));
     }
     assert_eq!(d.services().held(), 2, "one stored result per (ticket, n)");
     let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
     let into = bufs(&mut b, &mut s);
     // SAFETY: as above.
-    let replay = unsafe { serve(&store, &nowhere(), &heads[0], Some(&into), eight(&runs)) };
+    let replay = unsafe { serve(&store, &nowhere(), &heads[0], 0, Some(&into), eight(&runs)) };
     assert_eq!(replay.outcome, Outcome::Ready);
     assert_eq!(
         runs.load(Ordering::SeqCst),
@@ -1586,7 +1586,7 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     // SAFETY: as above.
-    let after = unsafe { serve(&store, &nowhere(), &heads[0], Some(&into), eight(&runs)) };
+    let after = unsafe { serve(&store, &nowhere(), &heads[0], 0, Some(&into), eight(&runs)) };
     assert_eq!(after.outcome, Outcome::Ready);
     assert_eq!(
         runs.load(Ordering::SeqCst),
@@ -2279,4 +2279,236 @@ fn oversize_service_lengths_child() {
     };
     assert!(blob_of(blob, "test.blob").is_none(), "a blob over the cap");
     assert_eq!(bytes_of(over(&b), "test.bytes"), Some(b.to_vec()));
+}
+
+/// Whether `d`'s instance is still served: a ticketless `clock.now` through its context. A
+/// quarantined instance's context names nothing, so the host answers it REFUSED.
+fn still_served(d: &Double) -> bool {
+    let mut reading = ClockReading {
+        size: 0,
+        _reserved: 0,
+        wall_ns: 0,
+        mono_ns: 0,
+    };
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0, size_of::<ClockNowIn>()),
+        reading: &mut reading,
+    };
+    let mut o = blank();
+    HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+        == Outcome::Ready
+}
+
+/// RED (status row 189, THE DESIGN §11.2: a host answer belongs to exactly one request): a handle
+/// on a ticket is bound to the service it was first used for. A fleet plugin reused handle 0 of
+/// one ticket for its record load and then for `entitlement.check`, and the host handed the check
+/// the stored answer of the first service. Here the first service is `records.claim`, whose
+/// CLAIM_WON is the same number as ENTITLED: the stale answer reads as "entitled". The reuse is a
+/// plugin fault: answered FAULT, the second service never reaches the kernel, never the first
+/// service's answer, and the instance is quarantined as a forged context is.
+#[test]
+fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_answer() {
+    let d = double();
+    let (ret, o) = call_claim(&d, &claim_in(1));
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::CLAIM_WON));
+    assert!(still_served(&d));
+
+    let check = EntitlementCheckIn {
+        head: head(
+            op::ENTITLEMENT_CHECK,
+            TICKET,
+            0,
+            size_of::<EntitlementCheckIn>(),
+        ),
+        target: text("item:card"),
+    };
+    let mut o = blank();
+    let ret =
+        HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&check).cast(), &mut o);
+    assert_eq!(
+        (ret.outcome(), o.value),
+        (Outcome::Fault, 0),
+        "a handle reused for another service is a plugin fault, never the first service's answer"
+    );
+    assert_eq!(error(&o), HANDLE_REBOUND);
+    assert!(
+        !d.route
+            .provider
+            .scoped
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, what, _)| *what == "entitlement.check"),
+        "the reused handle's service never reaches the kernel"
+    );
+    assert!(
+        !still_served(&d),
+        "the instance that reused the handle is quarantined"
+    );
+}
+
+/// RED (status row 189): a handle is bound to the REQUEST it was first used for, too. The same
+/// service on the same handle naming another key is a plugin fault, never the first key's record.
+#[test]
+fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines() {
+    let d = double();
+    let get = |key: &'static str, buf: &mut [u8; 16], spans: &mut [ItemSpan; 1]| {
+        let i = RecordsGetIn {
+            head: head(op::RECORDS_GET, TICKET, 0, size_of::<RecordsGetIn>()),
+            kind: text("approval"),
+            key: text(key),
+            into: bufs(buf, spans),
+        };
+        let mut o = blank();
+        let ret = HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o)
+    };
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 1]);
+    let (outcome, o) = get("k1", &mut buf, &mut spans);
+    assert_eq!((outcome, o.value), (Outcome::Ready, svc::FOUND));
+    assert_eq!(&buf[..4], b"k1=v");
+
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 1]);
+    let (outcome, o) = get("k2", &mut buf, &mut spans);
+    assert_eq!(
+        outcome,
+        Outcome::Fault,
+        "another request on a used handle is a plugin fault"
+    );
+    assert_eq!(o.len, 0);
+    assert_eq!(
+        buf, [0u8; 16],
+        "the first request's record is never handed out"
+    );
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().len(),
+        1,
+        "the second request never reaches the kernel"
+    );
+    assert!(!still_served(&d), "the instance is quarantined");
+}
+
+/// GREEN on both sides of row 189: the legitimate re-poll of the SAME request on the same handle
+/// (PENDING, then READY once the kernel answers) is the one re-use a handle allows. The plugin may
+/// rebuild the request between polls (other buffers, the same bytes); the re-poll reads the stored
+/// answer, the kernel is asked once, and the instance is never quarantined for it.
+#[test]
+fn a_repoll_of_the_same_request_on_its_handle_reads_the_answer_and_is_never_a_fault() {
+    let d = double();
+    let first = String::from("dest:a.example:443");
+    let poll = |dest: &str| {
+        let mut i = judge_in("", TICKET, 7, DEST_RESOLVE);
+        i.dest = over(dest.as_bytes());
+        call_judge(&d, &i)
+    };
+    assert_eq!(poll(&first).0.outcome(), Outcome::Pending);
+    let rebuilt = first.clone();
+    drop(first);
+    assert_eq!(
+        poll(&rebuilt).0.outcome(),
+        Outcome::Pending,
+        "the same request re-polled before the answer is still running"
+    );
+    let answer = d.route.provider.held.lock().unwrap().pop().unwrap();
+    answer(Stored::ready(DEST_INTERNAL));
+    let (ret, o) = poll(&rebuilt);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, DEST_INTERNAL));
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+    assert!(still_served(&d), "a re-poll is never a fault");
+}
+
+/// A second caller on `d`'s route (its dispatcher's store), with an identity of its own.
+fn beside(d: &Double, name: &str) -> HostCtx {
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake
+        .caller
+        .set(Caller {
+            instance: Arc::from(name),
+            plugin: Arc::from("double-plugin"),
+            kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        })
+        .is_ok());
+    crate::dispatch::handle::mint(wake).expect("the host mints a handle")
+}
+
+/// RED (audit loader-src PL1#4; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.1602-1603: "A pure op
+/// (`arrive`, `refusal`, `project`) or any call made with no ticket that calls a may-pend service
+/// gets REFUSED, never PENDING"): a ticket-less crossing that stamps another op's live ticket on
+/// its handle is REFUSED and the service never runs; so is a ticketed crossing's call naming a
+/// ticket other than its own. RED: only the handle the plugin wrote was read, so the pure op ran
+/// the service as a pending call whose completion woke the other op.
+#[test]
+fn red_a_service_handle_naming_another_crossings_ticket_is_refused_and_never_runs() {
+    let d = double();
+    let refused = "a service handle names the ticket of the crossing that calls it";
+    {
+        let _pure = crossing(Ticket::NONE);
+        let (ret, o) = call_judge(
+            &d,
+            &judge_in("https://api.example.com/", TICKET, 0, DEST_RESOLVE),
+        );
+        assert_eq!(
+            ret.outcome(),
+            Outcome::Refused,
+            "a pure op pended on another op's ticket"
+        );
+        assert_eq!(error(&o), refused);
+    }
+    {
+        let other = Ticket {
+            generation: TICKET.generation ^ 1,
+            ..TICKET
+        };
+        let _ticketed = crossing(other);
+        let (ret, o) = call_judge(
+            &d,
+            &judge_in("https://api.example.com/", TICKET, 0, DEST_RESOLVE),
+        );
+        assert_eq!(
+            ret.outcome(),
+            Outcome::Refused,
+            "an op pended on another op's ticket"
+        );
+        assert_eq!(error(&o), refused);
+    }
+    assert_eq!(
+        d.route.provider.judged.load(Ordering::SeqCst),
+        0,
+        "the service never ran"
+    );
+    assert!(d.route.wakes.lock().unwrap().is_empty());
+    // The GREEN twin: the crossing's own ticket pends.
+    let _own = crossing(TICKET);
+    let (ret, _) = call_judge(
+        &d,
+        &judge_in("https://api.example.com/", TICKET, 0, DEST_RESOLVE),
+    );
+    assert_eq!(ret.outcome(), Outcome::Pending);
+}
+
+/// RED (audit loader-src PL1#4; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.1611: "Every
+/// per-instance host registry keys by label"): two instances whose ops share one ticket each count
+/// their handles from 0, and each keeps its own result under its own handle 0: the second's call
+/// pends on its own request, is not judged a rebound of the first's, and neither reads the other's
+/// answer. RED: results were keyed by ticket and handle alone, so the second instance's handle 0
+/// named the first's result and the second was quarantined as a rebinder.
+#[test]
+fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
+    let d = double();
+    let second = beside(&d, "second");
+    let first_in = judge_in("https://a.example.com/", TICKET, 0, DEST_RESOLVE);
+    let second_in = judge_in("https://b.example.com/", TICKET, 0, DEST_RESOLVE);
+    assert_eq!(call_judge(&d, &first_in).0.outcome(), Outcome::Pending);
+    let mut o = blank();
+    let f = HOST_SLOTS.dest_judge.unwrap();
+    let ret = f(second, std::ptr::from_ref(&second_in).cast(), &mut o);
+    assert_eq!(
+        ret.outcome(),
+        Outcome::Pending,
+        "the second instance's own handle 0 was judged a rebound of the first's: {}",
+        error(&o)
+    );
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 2);
 }

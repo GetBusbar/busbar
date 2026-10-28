@@ -47,9 +47,9 @@ pub fn set_max_upstream_buffered_bytes(bytes: usize) {
 /// Historical default egress translate-body cap (bytes) — 32 MiB, the value read before any operator
 /// config is installed (unit tests, pre-boot). MUST equal core's `config::DEFAULT_REQUEST_BODY_MAX_BYTES`
 /// (the one knob that drives both the inbound `DefaultBodyLimit` and this egress translate cap); the two
-/// are pinned equal by construction and by core's `limits` tests. Owned HERE, in the neutral substrate,
-/// so a plane crate reads the cap without reaching into `busbar-core`.
-pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
+/// are pinned equal by construction and by core's `limits` tests. The one definition is the
+/// contract's, which a plane reads.
+pub use busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
 
 /// Process-global egress translate-body cap (bytes). Seeded to the historical default so an
 /// UNINSTALLED read (unit tests, pre-boot) is byte-identical to core's
@@ -153,10 +153,6 @@ pub async fn read_capped<E>(
 pub const ERR_NET_CONNECT: &str = "connect";
 /// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
-/// `err_type` recorded when the transport failed after the connection opened.
-pub const ERR_NET_TRANSPORT: &str = "transport";
-/// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
-pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 // ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (OWNER HARD RULE 2026-10-02, "BUSBAR IS
 //    INVISIBLE TO UPSTREAMS") ──────────────────────────────────────────────────────────────────────
@@ -183,6 +179,40 @@ pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 /// coding: a client's `gzip` would make the far end compress what busbar must read (escalated
 /// 2026-10-02, PROTO-FIXES; the owner's ruling decides whether it stays).
 pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
+
+/// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
+/// busbar sends no `accept-encoding`, so it never spends CPU or latency decoding what it reads to
+/// meter. A later config gate (gzip or br, with decompression limits) adds a variant here and its
+/// decoding on the answer side; every caller already asks [`upstream_encoding`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpstreamEncoding {
+    /// No content coding: no `accept-encoding` is sent.
+    Identity,
+}
+
+impl UpstreamEncoding {
+    /// The `accept-encoding` value busbar sends for this choice, or `None` to send none.
+    #[must_use]
+    pub const fn accept_encoding(self) -> Option<&'static str> {
+        match self {
+            Self::Identity => None,
+        }
+    }
+}
+
+/// THE ONE PLACE the upstream encoding is chosen. There is no gate in 1.6.0.
+#[must_use]
+pub const fn upstream_encoding() -> UpstreamEncoding {
+    UpstreamEncoding::Identity
+}
+
+/// Write busbar's own `accept-encoding` choice ([`upstream_encoding`]) onto an upstream head that
+/// [`strip_re_derived`] already cleared of the client's. Identity writes nothing.
+pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+    if let Some(value) = upstream_encoding().accept_encoding() {
+        fields.push((b"accept-encoding".to_vec(), value.as_bytes().to_vec()));
+    }
+}
 
 /// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
 pub const CONTROL_PREFIX: &str = "x-busbar-";
@@ -319,3 +349,7 @@ pub fn apply_client_headers(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/upstream_encoding_tests.rs"]
+mod upstream_encoding_tests;

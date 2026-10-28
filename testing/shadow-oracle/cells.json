@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2591,
+    "total": 2592,
     "by_plane": {
       "a2a": 468,
-      "core": 1008,
+      "core": 1009,
       "llm": 203,
       "mcp": 912
     },
@@ -66,7 +66,7 @@
       "a2a": 469,
       "admin.ops": 329,
       "admin.plugins": 7,
-      "auth.lifecycle": 3,
+      "auth.lifecycle": 4,
       "billing": 16,
       "boot.deprecated-env": 5,
       "boot.refusal": 223,
@@ -11971,6 +11971,17 @@
           "body.json.items.target"
         ]
       }
+    },
+    {
+      "id": "auth.lifecycle|aws-credential-chain-without-keys",
+      "plane": "core",
+      "family": "auth.lifecycle",
+      "driver": "script",
+      "script": {
+        "name": "aws-credential-chain-without-keys.sh"
+      },
+      "outcome": "ok",
+      "why": "POST /api/v1/admin/keys {\"issue_aws_credential\": true} on a node whose auth.chain does NOT name keys (chain: [], the admin on its token): 1.5.5 mints the AWS pair on the flag alone, whatever the chain (v1.5.5 crates/busbar/src/admin/mod.rs:919, :997-1000, :1103-1108, :1118). Recorded: the mint's status, its body's sorted field names and the shapes of the token (bbk_), the AccessKeyId (AKIA + 16 of [A-Z0-9]) and the secret access key (40 of [A-Za-z0-9+/]), and a plain mint's status and that it carries neither AWS field. The oracle's shared config names keys, so no other cell reaches this (busbar status row 186). Recorded from the published 1.5.5 binary."
     },
     {
       "id": "auth.lifecycle|key-expiry",

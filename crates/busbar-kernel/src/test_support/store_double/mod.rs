@@ -10,7 +10,7 @@
 //! The kernel reaches a store only through the store kind's door, and it names no store crate: not
 //! in `[dependencies]`, not behind a feature, not under a second name. A test build has no
 //! composition root, so the kernel's own tests that boot an app need a linked `kind: store` row
-//! whose key is the store a migrated 1.5.x config names ([`MIGRATED_STORE_MODULE`]), and the tests
+//! whose key is the store a migrated 1.5.x config names ([`KEY`]), and the tests
 //! that build a `GovState` need a store that keeps what it is told. A behaviour double the kernel's
 //! own tests need lives HERE, as a test-support module of the crate under test, LINKED only — not a
 //! workspace crate, not an example plugin, and not the shipped plugin taken under another name.
@@ -25,8 +25,6 @@
 //!
 //! EPHEMERAL: every counter, key and credential is lost with the handle. Poison-recovering locks
 //! (the governance surface must never panic on a request).
-
-use crate::config::MIGRATED_STORE_MODULE;
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
@@ -137,13 +135,6 @@ pub struct MemoryStore {
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
-    /// Test-only pinned clock for the retention sweep. `0` (the `Default`) means "use the real wall
-    /// clock" (`now()`); any non-zero value pins `self.now()` to that epoch-second so a test can make
-    /// the sweep's retention ceiling EXACTLY match the timestamp the test itself captured. This
-    /// removes the wall-clock race in the exact-boundary sweep tests, where a one-second tick between
-    /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
-    /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
-    clock: AtomicU64,
     /// Test-only planted fault: when set (an `open` whose settings carry
     /// `"panic_on_plane_append": true`), the door's `append_plane_record` slot PANICS inside the
     /// store body, so a test proves the door boundary turns a backend panic into a FAULT answer.
@@ -288,14 +279,6 @@ impl MemoryStore {
     fn next_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::Relaxed) + 1
     }
-    /// "Now" as the retention sweep sees it: the pinned test clock if set (`clock != 0`), else the
-    /// real wall clock. See the `clock` field.
-    fn now(&self) -> u64 {
-        match self.clock.load(Ordering::Relaxed) {
-            0 => now(),
-            pinned => pinned,
-        }
-    }
     fn plane_records(
         &self,
     ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
@@ -390,7 +373,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             keys.retain(|_, k| match k.deleted_at {
                 None => true, // live rows are never pruned
                 Some(deleted_at) => deleted_at.saturating_add(MAX_RETENTION_SECS) > n,
@@ -437,7 +420,7 @@ impl Store for MemoryStore {
         }
         let rev = self.next_revision();
         key.enabled = false;
-        key.deleted_at = Some(self.now());
+        key.deleted_at = Some(now());
         key.revision = rev;
         usage.retain(|(k, _), _| k != id);
         creds.retain(|_, c| c.meta.key_id != id);
@@ -507,7 +490,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             usage
                 .retain(|(_, window_start), _| window_start.saturating_add(MAX_RETENTION_SECS) > n);
         }
@@ -563,7 +546,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
@@ -621,7 +604,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = self.now();
+            let n = now();
             creds.retain(|_, c| match c.meta.revoked_at {
                 None => true, // live credentials are never pruned
                 Some(revoked_at) => revoked_at.saturating_add(MAX_RETENTION_SECS) > n,
@@ -703,12 +686,7 @@ impl Store for MemoryStore {
             return Err(StoreError(format!("revoke_credential: unknown id '{id}'")));
         };
         if c.meta.revoked_at.is_none() {
-            // `self.now()` (pinned-clock-aware), not the bare free function — the `creds` sweep
-            // added for the retention fix ages rows off `revoked_at` against `self.now()`, so
-            // stamping it from any other clock would desync the sweep's boundary from what a test
-            // (or, in prod, a paused/adjusted clock) actually pinned. Matches `delete_key`'s
-            // `deleted_at = Some(self.now())` for the same reason.
-            c.meta.revoked_at = Some(self.now());
+            c.meta.revoked_at = Some(now());
             c.meta.revoke_reason = Some(reason.to_string());
             c.meta.revision = self.next_revision();
         } // idempotent: already revoked
@@ -919,13 +897,23 @@ pub const NAME: &str = "store-double";
 
 /// THE STAND-IN LINKED ENTRY: `(key, ephemeral, door, canonical)`, the shape of the root's linked
 /// store rows ([`crate::preflight::LinkedStore`]). Its key is the store a migrated 1.5.x config names
-/// ([`MIGRATED_STORE_MODULE`]), so a fixture config's `store:` block resolves to it; it claims no
-/// default (Q-STORE = (B)).
-pub const STORE: crate::preflight::LinkedStore = (MIGRATED_STORE_MODULE, true, door, NAME);
+/// ([`KEY`]), so a fixture config's `store:` block resolves to it; it claims no default (Q-STORE =
+/// (B)).
+pub const STORE: crate::preflight::LinkedStore = (KEY, true, door, NAME);
+
+/// The key the double answers to: the frozen-text fixture's `store_1_5_default` row
+/// (`tests/fixtures/frozen_customer_text.yaml`, the table a test build reads in place of the root's),
+/// which [`crate::config::migrated_store_module`] reads. A const because the stand-in store axis is a
+/// const table; `store_required_tests::the_store_double_answers_to_the_migrated_store_module` holds the two
+/// equal.
+pub const KEY: &str = "memory";
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`) — what [`STORE`] registers,
 /// and what boot opens through the stand-in store axis.
 pub use v3::door;
+
+/// The same door as the `MACRO_DOOR` `store_door!` expands beside it (status rows 159 and 194).
+pub use v3::MACRO_DOOR;
 
 mod v3;

@@ -613,10 +613,9 @@ impl SegmentFactory for DirectoryFactory {
     }
 }
 
-// ── Directory durability ─────────────────────────────────────────────────────────────────────────
 // The rule the loader's `durable` module states for every other file busbar publishes, kept here
 // for the log's own segment files and quarantine copies: this crate takes no edge onto the loader
-// (lane-gb-loader-wal-edge), so the log keeps its own copy of the one rule rather than a dependency.
+//, so the log keeps its own copy of the one rule rather than a dependency.
 
 /// The directory whose ENTRY creating or removing `path` changes. A relative `path` with no parent
 /// resolves to ".", where it actually lives.

@@ -6,71 +6,27 @@
 //!
 //! * a role a chain position asserts resolves through `role_bindings.<provider>` to an admin scope,
 //!   capped by the provider's `max_admin_scope`;
-//! * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
+//! * a MISSING plugin at boot → a LOUD failure (never a silently-open front door);
 //! * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`);
 //! * a door's outstanding `verify` never parks the reactor: the request path submits it and awaits
 //!   it.
 //!
-//! The kernel's tests name no auth plugin (R-FIX3): a chain position here is an in-process test
-//! module (`auth::stand_in`), and an auth row that must not load is a structurally valid tarball whose
-//! library bytes are not a library. The FULL-CHAIN proofs over the REAL token-verifying module
-//! (GetBusbar/busbar-auth-oidc, R-FIX2: a signed JWT through the dropped-in door, a secret-ref setting
-//! delivered to it, the admin chain rebuilt on reload, the login-capability gate) live with the
-//! composition root, which links it: `crates/busbar/tests/auth_plugin_chain.rs`.
+//! The kernel's tests name no auth plugin (R-FIX3) and no loader (THE DESIGN l.322): a chain
+//! position here is an in-process test module (`auth::stand_in`), and the rows a plugins directory
+//! admits are the registry double's (`test_support::rows`). The FULL-CHAIN proofs over the REAL
+//! token-verifying module (GetBusbar/busbar-auth-oidc, R-FIX2: a signed JWT through the dropped-in
+//! door, a secret-ref setting delivered to it, the admin chain rebuilt on reload, the
+//! login-capability gate) live with the composition root, which links it:
+//! `crates/busbar/tests/auth_plugin_chain.rs`; an UNTRUSTED auth plugin the loader's scan skips is
+//! refused there too (`crates/busbar/tests/auth_plugin_chain_trust.rs`).
 //!
-//! Mirrors the store-plugin end-to-end packed test (`crate::tests`), reusing its plugin-dir /
-//! manifest helpers.
+//! Mirrors the store-plugin pre-flight tests (`crate::tests`), reusing their plugin-dir and row
+//! helpers.
 
 use crate::auth::{AuthMiddleware, ChainVerdict};
 use crate::config::{AuthCfg, AuthChainEntry, PluginsCfg};
-use crate::tests::{plugin_manifest, tmp_plugin_dir, unsigned_tarball};
+use crate::tests::{dropped, tmp_plugin_dir};
 use std::path::Path;
-
-/// The issuer every token in this file is signed by, and the audience it is bound to.
-const ISSUER: &str = "https://issuer.plugin-chain.invalid";
-const AUDIENCE: &str = "api://plugin-chain";
-
-/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`): an ES256 key, its JWKS
-/// served only to a need trusting the issuer's certificate (which the module names as its
-/// `ca_cert_pem`), and genuinely signed tokens. Starting it also binds the test build's auth axis to
-/// a connection table serving that JWKS (`https_conns`): the host fetches it for the module over its
-/// declared need, and the module does the whole verification.
-fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
-        std::sync::OnceLock::new();
-    ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain");
-        let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
-        conns.serve_issuer(&issuer);
-        busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
-        issuer
-    })
-}
-
-/// The module's `settings:` for the local issuer and [`AUDIENCE`].
-fn settings() -> serde_json::Map<String, serde_json::Value> {
-    issuer().settings(AUDIENCE)
-}
-
-/// A `kind: auth` row's manifest for the given name/alias whose library bytes are not a library
-/// (the store helper stamps kind=store; we retarget it to auth + the auth ABI so the scan admits
-/// its structure). Nothing ever loads it: it is the row a trust or presence refusal judges.
-fn auth_row_manifest(
-    name: &str,
-    alias: &str,
-    publisher: &str,
-) -> busbar_plugin_loader::sign::Manifest {
-    let mut m = plugin_manifest(name, alias, publisher);
-    m.kind = "auth".into();
-    m.abi_version = *busbar_plugin_loader::supported_abi("auth")
-        .iter()
-        .max()
-        .expect("auth abi");
-    m
-}
-
-/// The bytes an auth row carries where a library would be.
-const NOT_A_LIBRARY: &[u8] = b"an auth row whose library bytes are not a library";
 
 /// An enabled plugins config over `dir` that permits unsigned rows.
 fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
@@ -179,80 +135,23 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     );
 }
 
-/// FAIL-CLOSED: a configured auth plugin that is PRESENT but UNTRUSTED (unsigned under the default
-/// strict policy) is SKIPPED by the scan; both `plugins_preflight` and `AuthMiddleware::new` must
-/// fail LOUD — never silently drop the front-door module and admit everyone.
-#[test]
-fn untrusted_auth_plugin_fails_closed_not_open() {
-    let dir = tmp_plugin_dir("auth-plugin-untrusted");
-    let tarball = unsigned_tarball(
-        auth_row_manifest("acme-idp", "test-idp-double", "acme"),
-        NOT_A_LIBRARY,
-    );
-    std::fs::write(dir.join("idp.tar.gz"), tarball).unwrap();
-
-    // STRICT default trust: the unsigned auth plugin is skipped.
-    let strict = PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
-    let cfg = chain_with("test-idp-double", settings());
-    // Preflight refuses (names the module + carries the trust opt-in to set).
-    let err = crate::plugins_preflight(
-        None,
-        Some(&cfg),
-        &Default::default(),
-        &Default::default(),
-        &strict,
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("test-idp-double"),
-        "names the auth module: {err}"
-    );
-    assert!(
-        err.contains("allow_unsigned"),
-        "carries the trust reason: {err}"
-    );
-
-    // And the middleware itself fail-closes on the skipped plugin (the runtime load-time gate):
-    // the scan succeeds (skips are not fatal) but resolving the referenced module fails loud.
-    let registry = busbar_plugin_loader::scan_and_validate(
-        Path::new(&strict.dir),
-        &crate::test_support::trust_policy(&strict).unwrap(),
-    )
-    .expect("scan succeeds; the untrusted plugin is merely skipped");
-    let registry = std::sync::Arc::new(registry);
-    let mw_err = AuthMiddleware::new(
-        &cfg,
-        &registry,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .unwrap_err();
-    assert!(
-        mw_err.contains("test-idp-double"),
-        "middleware names the module: {mw_err}"
-    );
-    assert!(
-        mw_err.contains("not loaded") || mw_err.contains("was not loaded"),
-        "middleware fail-closes with the trust reason: {mw_err}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// FAIL-CLOSED: a configured auth plugin with NO matching tarball is a loud boot error at both
 /// gates — never silently skipped.
 #[test]
 fn missing_auth_plugin_is_loud_boot_failure() {
     let dir = tmp_plugin_dir("auth-plugin-missing");
     // A DIFFERENT (store) plugin present, so the dir is non-empty but the auth ref is absent.
-    let other = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), other).unwrap();
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
+    );
     let plugins = plugins_cfg_allow_unsigned(&dir);
-    let cfg = chain_with("test-idp-double", settings());
+    let cfg = chain_with("test-idp-double", serde_json::Map::new());
 
     let err = crate::plugins_preflight(
         None,
@@ -278,13 +177,16 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         "gives the two-part enabled?/in-folder? diagnosis: {err}"
     );
 
-    // The middleware's own resolution is equally loud.
-    let registry = busbar_plugin_loader::scan_and_validate(
-        Path::new(&plugins.dir),
-        &crate::test_support::trust_policy(&plugins).unwrap(),
+    // The middleware's own resolution is equally loud, over the registry the directory builds.
+    let registry = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
     )
-    .expect("scan");
-    let registry = std::sync::Arc::new(registry);
+    .expect("the directory builds");
     let mw_err = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -309,7 +211,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         dir: dir.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let cfg = chain_with("test-idp-double", settings());
+    let cfg = chain_with("test-idp-double", serde_json::Map::new());
     let err = crate::plugins_preflight(
         None,
         Some(&cfg),
@@ -347,7 +249,6 @@ fn keys_module_is_not_a_plugin_ref() {
         &Default::default(),
     )
     .expect("keys needs no plugin");
-    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,

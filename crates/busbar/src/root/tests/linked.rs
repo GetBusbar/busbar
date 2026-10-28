@@ -12,7 +12,7 @@ use super::*;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
-use busbar_kernel::plane::registry::merged_boot_plane_decls;
+use busbar_kernel::plane_driver::registry::merged_boot_plane_decls;
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
 /// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
@@ -119,11 +119,11 @@ fn a_linked_export_declares_stating_needs_boots() {
 /// scan names it.
 #[test]
 fn the_host_series_catalog_holds_every_series_the_host_defines() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("..");
     let sources = [
         "busbar-kernel/src/snapshot/mod.rs",
         "busbar-kernel/src/telemetry.rs",
-        "busbar-kernel/src/proxy/proxy_vocab.rs",
+        "busbar-kernel/src/hooks/taps.rs",
     ];
     let mut defined = Vec::new();
     for file in sources {
@@ -269,8 +269,9 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
     assert_eq!(stores, [true], "one linked store: ephemeral");
-    assert!(
-        !(crate::LINKED.stores[0].2)().is_null(),
+    assert_eq!(
+        (crate::LINKED.stores[0].2)().magic(),
+        busbar_contract::abi::mechanism::DOOR_MAGIC,
         "the linked store states its door"
     );
     let strategies = [
@@ -305,7 +306,7 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     assert_eq!(words, want, "the ranking door claims every strategy word");
 }
 
-/// WIRE-SECRET (THE DESIGN, "Plugins"; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
+/// WIRE-SECRET (THE DESIGN, "Plugins") — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
 /// DISPATCHER. `env` and `file` are the linked secret plugins the root's axis answers for, by the
 /// module alias their Statements declare; a reference resolves through the secret kind table on
 /// `root::dispatch`'s dispatcher, on one shared instance, and the refusal text is the plugin's own
@@ -366,8 +367,8 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-    let hooks = busbar_kernel::plane::registry::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
+    let hooks = busbar_kernel::plane_driver::registry::PlaneHooks {
+        wire_format_names: || &[busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON],
         provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,

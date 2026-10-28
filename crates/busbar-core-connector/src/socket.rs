@@ -7,7 +7,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::task::{Context, Poll};
 
@@ -35,7 +35,7 @@ pub fn address_of(authority: &str) -> Option<SocketAddr> {
 /// How long a dialled socket sits idle before the OS probes it (1.5.5's `tcp_keepalive`).
 pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The prefix of a UNIX-DOMAIN target (ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX: the
+/// The prefix of a UNIX-DOMAIN target (the
 /// connector serves unix-domain targets for operator-infrastructure needs): `unix:/absolute/path`.
 pub const UNIX_TARGET: &str = "unix:";
 
@@ -58,11 +58,12 @@ pub enum Sock {
     Unix(UnixStream),
 }
 
-impl AsRawFd for Sock {
-    fn as_raw_fd(&self) -> RawFd {
+/// The stream's own descriptor, lent for the borrow: what [`crate::io::register`] watches.
+impl AsFd for Sock {
+    fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
-            Self::Tcp(s) => s.as_raw_fd(),
-            Self::Unix(s) => s.as_raw_fd(),
+            Self::Tcp(s) => s.as_fd(),
+            Self::Unix(s) => s.as_fd(),
         }
     }
 }
@@ -106,7 +107,7 @@ impl Sock {
 }
 
 /// A connecting stream socket whose connect [`poll_connected`] can settle.
-pub trait Connecting: AsRawFd {
+pub trait Connecting: AsFd {
     /// The socket's pending error (`SO_ERROR`).
     ///
     /// # Errors

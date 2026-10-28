@@ -23,7 +23,9 @@
 //! [`RefreshIn`](super::mechanism::lifecycle::RefreshIn). The auth tail carries nothing for them.
 //!
 //! VERDICTS ARE ALWAYS `READY`. `FAILED` on `verify` is a module failure: the chain's error path,
-//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
+//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is a module failure too, and the host
+//! declines the login fail-closed, as 1.5.5 refused a login plugin that failed: an identity
+//! provider that could not answer is a READY [`LOGIN_OUTAGE`], never a `FAILED`. Both exclude the
 //! short-buffer answer ([`IdentifyOut`]).
 //!
 //! `verify` ON THE SPOT. The host may call `verify` TICKET-LESS (`Ticket::NONE`, on its own
@@ -314,6 +316,34 @@ impl AuthTail {
         credential_kinds: std::ptr::null(),
         credential_kinds_len: 0,
     };
+}
+
+/// HOW THE AUTH KIND TAIL IS MADE (status row 194): from [`AuthTail::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl AuthTail {
+    /// Nothing stated: every string absent, every list empty, every number zero; the head
+    /// sized to the whole tail.
+    pub const EMPTY: AuthTail = AuthTail {
+        head: KindTailHead {
+            size: core::mem::size_of::<AuthTail>() as u32,
+            _reserved: 0,
+        },
+        caps: 0,
+        facts: 0,
+        login_kind: 0,
+        inbound_points: 0,
+        styles: std::ptr::null(),
+        styles_len: 0,
+        operator_principal: AbiStr::ABSENT,
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
+    };
+
+    abi_lists! {
+        styles, styles_len: StyleDecl => styles_ptr, with_styles, with_raw_styles;
+        credential_kinds, credential_kinds_len: AbiStr
+            => credential_kinds_ptr, with_credential_kinds, with_raw_credential_kinds;
+    }
 }
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the

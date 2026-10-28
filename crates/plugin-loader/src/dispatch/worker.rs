@@ -536,7 +536,20 @@ pub(crate) struct Meta {
     units_held: bool,
     lifecycle: bool,
     drainable: bool,
+    /// An admitted unit's op ([`Dispatcher::submit_unit`]): counted in [`Instance::unit_ops`].
+    unit: bool,
     pub(crate) reply: Arc<dyn Settle>,
+}
+
+/// How an op submitted is admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admit {
+    /// Under the instance's `max_inflight` ([`Instance::acquire`]).
+    Cap,
+    /// On a driver ticket: outside `max_inflight`.
+    Driver,
+    /// An op of an admitted unit: outside `max_inflight`, and in flight for `close`.
+    Unit,
 }
 
 impl Meta {
@@ -548,6 +561,9 @@ impl Meta {
             self.instance.release(self.units);
             if self.drainable {
                 self.instance.drainable.fetch_sub(1, Ordering::AcqRel);
+            }
+            if self.unit {
+                self.instance.unit_ops.fetch_sub(1, Ordering::SeqCst);
             }
             if self.lifecycle {
                 self.instance.leave_lifecycle();
@@ -631,7 +647,8 @@ pub(crate) struct Current {
 /// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
 /// (a plane that names more before the host collects is told nothing new until it wakes again).
 #[derive(Debug, Default)]
-pub(crate) struct Driven {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
     /// How many `drive` crossings answered, and the last one's outcome: what a synchronous host
@@ -669,15 +686,15 @@ impl Driven {
     }
 
     /// How many `drive` crossings have answered so far.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn answers(&self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn answers(&self) -> u64 {
         self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
     }
 
     /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
     /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
         let until = Instant::now() + timeout;
         let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -694,8 +711,8 @@ impl Driven {
     }
 
     /// Every name held now, taken (none when none is); never waits.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn drain(&self) -> Vec<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn drain(&self) -> Vec<u64> {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
@@ -892,6 +909,10 @@ impl WakeRoute for Pool {
 
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         self.env.inline.waker_of(t)
+    }
+
+    fn inline(&self) -> Option<Arc<super::inline::InlineTickets>> {
+        Some(Arc::clone(&self.env.inline))
     }
 }
 
@@ -1418,9 +1439,20 @@ impl Worker {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
                     return Some(st);
                 }
+                // THE UNIT THE CANCELLED OP SERVES, read off the op's own `in` (`Kind::unit_of`): a
+                // plane keys its units from `arrive` and frees the one its `cancel` names
+                // (`PlaneCancelIn::unit`), so the client-drop path names it too, never `0`.
+                let unit = match cur.job.as_mut() {
+                    Some(job) => {
+                        let (input, _, _) = job.heads();
+                        (inst.unit_of)(op_slot, input.cast_const(), cur.meta.in_size as usize)
+                    }
+                    None => None,
+                };
                 // `cancel` may not pend: its head carries NONE; the cancelled ticket is its field.
                 // The kind's own frame (a plane's lends record buffers, SEAM-L(r)).
                 let mut frame = (inst.cancel_frame)();
+                frame.name_unit(unit.unwrap_or(0));
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
@@ -1583,6 +1615,74 @@ impl Worker {
         st.runnable.clear();
         st.free.clear();
         std::mem::take(&mut st.entries)
+    }
+
+    /// Of `gone`, the entries this worker held when it was replaced, the ORPHANS: an op of a
+    /// healthy instance (not `wedged`, the one whose crossing hung, and not faulted) that answered
+    /// PENDING and was waiting to be resumed, on a request ticket. Its plugin still holds the op's
+    /// state and may still read the memory it was lent, so it is sent `cancel` before its frame and
+    /// lent memory go ([`Orphan::cancel`]). The rest go with their `Meta`s' FAULT as before.
+    pub(crate) fn orphans(
+        &self,
+        gone: Vec<Entry>,
+        wedged: &Arc<Instance>,
+    ) -> (Vec<Orphan>, Vec<Entry>) {
+        let mut orphans = Vec::new();
+        let mut rest = Vec::new();
+        for (idx, e) in gone.into_iter().enumerate() {
+            let pending = e.driver.is_none()
+                && e.current.as_ref().is_some_and(|c| {
+                    c.pending
+                        && c.job.is_some()
+                        && !Arc::ptr_eq(&c.meta.instance, wedged)
+                        && !c.meta.instance.faulted.load(Ordering::Acquire)
+                });
+            if pending {
+                let ticket = self.ticket(idx as u32, e.generation);
+                orphans.push(Orphan { ticket, entry: e });
+            } else {
+                rest.push(e);
+            }
+        }
+        (orphans, rest)
+    }
+}
+
+/// A healthy instance's PENDING op on a worker that was replaced ([`Worker::orphans`]).
+pub(crate) struct Orphan {
+    ticket: Ticket,
+    entry: Entry,
+}
+
+impl Orphan {
+    /// Tell the plugin its op on the replaced worker ended: `cancel` of the op's ticket, a watched
+    /// ticket-less crossing ([`Instance::cancel_abandoned`]). Only once it has returned is the op's
+    /// frame, with the memory it lent the plugin, dropped, and its caller answered FAULT (THE DESIGN
+    /// `BUSBAR-1.6.0.md` l.324-325: "The memory a call lends a plugin lives until that call
+    /// completes, abandoned or not, for every kind").
+    pub(crate) fn cancel(mut self) {
+        if let Some(cur) = self.entry.current.as_mut() {
+            let unit = cur.job.as_mut().and_then(|job| {
+                let (input, _, _) = job.heads();
+                (cur.meta.instance.unit_of)(
+                    cur.meta.slot,
+                    input.cast_const(),
+                    cur.meta.in_size as usize,
+                )
+            });
+            let outcome = cur
+                .meta
+                .instance
+                .cancel_abandoned(self.ticket, cur.meta.class, unit);
+            if outcome != Outcome::Ready {
+                tracing::warn!(
+                    plugin = %cur.meta.instance.name(),
+                    outcome = ?outcome,
+                    "the cancel of an op orphaned by a replaced worker did not answer READY"
+                );
+            }
+        }
+        drop(self.entry);
     }
 }
 
@@ -1890,15 +1990,16 @@ impl Dispatcher {
     ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
+        let services: Arc<ServiceStore> = Arc::default();
         let env = Arc::new(Env {
             budgets: config.budgets,
             quarantine_after: config.quarantine_after.max(1),
             stats: Arc::default(),
-            services: Arc::default(),
+            inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
+            services,
             provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
-            inline: Arc::new(super::inline::InlineTickets::new(ticket_key)),
             observing: Arc::default(),
             ticket_key,
             latch: std::sync::OnceLock::new(),
@@ -2131,7 +2232,7 @@ impl Dispatcher {
             deadline_ns,
             None,
             Duration::ZERO,
-            false,
+            Admit::Cap,
         )
     }
 
@@ -2158,7 +2259,7 @@ impl Dispatcher {
             deadline_ns,
             Some(lent),
             Duration::ZERO,
-            false,
+            Admit::Cap,
         )
     }
 
@@ -2187,7 +2288,7 @@ impl Dispatcher {
             deadline_ns,
             Some(lent),
             watch,
-            false,
+            Admit::Cap,
         )
     }
 
@@ -2219,7 +2320,7 @@ impl Dispatcher {
             deadline_ns,
             Some(lent),
             Duration::ZERO,
-            true,
+            Admit::Unit,
         )
     }
 
@@ -2252,7 +2353,7 @@ impl Dispatcher {
             0,
             None,
             Duration::ZERO,
-            true,
+            Admit::Driver,
         );
         // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
         reply.owner = None;
@@ -2270,7 +2371,7 @@ impl Dispatcher {
         deadline_ns: u64,
         lent: Option<Lent>,
         watch: Duration,
-        driven: bool,
+        admit: Admit,
     ) -> Reply<I, O> {
         let inst = &plugin.inner;
         if ticket.is_none() {
@@ -2288,7 +2389,11 @@ impl Dispatcher {
         }
         // An op on a driver ticket, or of an admitted unit ([`Dispatcher::submit_unit`]), holds no
         // `max_inflight` unit.
-        let Some(units) = (if driven { Some(0) } else { inst.acquire(s) }) else {
+        let Some(units) = (if admit == Admit::Cap {
+            inst.acquire(s)
+        } else {
+            Some(0)
+        }) else {
             // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {
                 inst.leave_lifecycle();
@@ -2298,6 +2403,11 @@ impl Dispatcher {
         let drainable = class != DeadlineClass::WriteBehind;
         if drainable {
             inst.drainable.fetch_add(1, Ordering::AcqRel);
+        }
+        // An admitted unit's op is IN FLIGHT until it ends: `close` is refused while one is.
+        let unit = admit == Admit::Unit;
+        if unit {
+            inst.unit_ops.fetch_add(1, Ordering::SeqCst);
         }
         let slot = Arc::new(ReplySlot::new());
         let meta = Meta {
@@ -2311,6 +2421,7 @@ impl Dispatcher {
             units_held: true,
             lifecycle,
             drainable,
+            unit,
             reply: slot.clone(),
         };
         let job = Box::new(JobOf {

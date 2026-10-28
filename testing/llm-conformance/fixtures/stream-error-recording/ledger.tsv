@@ -1,4 +1,0 @@
-llm|anthropic|anthropic|request|stream_upstream_cut	PASS	HTTP 200 (fixture)	
-llm|bedrock|bedrock|request|stream_upstream_error	PASS	HTTP 200 (fixture)	
-llm|gemini|gemini|request|stream_upstream_error	PASS	HTTP 200 (fixture)	
-llm|openai|openai|request|stream_upstream_error	PASS	HTTP 200 (fixture)	

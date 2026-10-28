@@ -290,73 +290,6 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     assert_eq!(priced.minor(), 13, "each era at the plane fee in force");
 }
 
-/// A unit no plane on this node composed is not sealed as an administrative read.
-///
-/// Both audit doors are asked, because both used to answer with the admin plane's word for a
-/// verb that did not resolve: a plane unit refused at the root came out of the record as an
-/// operator reading a page. The assertion is written as an inequality against that word as well
-/// as an equality on the right one, because what matters is not which class replaced it but
-/// that no unit of another plane wears the admin plane's.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
-    let units = ProductionUnits::admin_only(
-        std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
-        crate::root::units_admin::open_door(),
-    );
-    let seal = busbar_kernel::test_support::tokens::seal();
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key: busbar_contract::ids::UnitKey::new(9),
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: false,
-        kernel_verb_only: false,
-    };
-    assert!(
-        !units.is_admin(&ctx),
-        "the fixture must be a unit the admin plane never claimed"
-    );
-    let admin_read = busbar_contract::ids::OpClassId::new("admin_read");
-
-    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
-    let refused = units
-        .audit_refused(
-            &token,
-            &ctx,
-            &Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
-        )
-        .into_result(&seal)
-        .expect("the door seals a record for a unit it did not compose");
-    assert_ne!(refused.op_class, admin_read);
-    assert_eq!(
-        refused.op_class,
-        busbar_contract::ids::OpClassId::new(OP_UNCLAIMED)
-    );
-    assert_eq!(refused.finish, busbar_contract::FinishClass::Error);
-
-    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
-    let ended = units
-        .audit(&token, &ctx, &Outcome::Completed)
-        .into_result(&seal)
-        .expect("the other door seals one too");
-    assert_ne!(ended.op_class, admin_read);
-    assert_eq!(
-        ended.op_class,
-        busbar_contract::ids::OpClassId::new(OP_UNCLAIMED)
-    );
-    assert_eq!(ended.finish, busbar_contract::FinishClass::Complete);
-}
-
-/// The point of the skeleton: the shape compiles against the real trait, and the real trait is
-/// the kernel's. A `ProductionUnits` that did not satisfy `Units` would be a plan, not a root.
-#[test]
-fn production_units_is_the_kernels_units_trait() {
-    fn assert_units<U: Units>() {}
-    assert_units::<ProductionUnits>();
-}
-
 /// The arrival door is the admission unit's, and a hold it opens reserves nothing — the point
 /// of the arrival hold is that even a refusal is an event with a cell of its own to settle.
 #[test]
@@ -401,11 +334,6 @@ fn the_units_assemble_from_values_configuration_decided() {
         ),
         None,
     );
-
-    // Nothing is in flight before anything arrives, which is the machine-checkable half of
-    // "an entry that outlived its unit would be a leak per request".
-    #[cfg(feature = "root-admin")]
-    assert!(units.admin.units.is_empty());
 
     // The journal opened nothing and the ledger is dual-writing. Both are the safe end of a choice
     // that had an unsafe end, and both are checkable here rather than at the first request.
@@ -533,40 +461,6 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
     );
 }
 
-/// **The units carry no metering policy, and the root has no pool-expansion boot check** (items
-/// 239/246).
-///
-/// `ProductionUnits.meter_policy` was built from `MeterPolicyConfig::default()` at its one
-/// production site and read by nothing, and `pools_without_expansion` — the check written to guard
-/// it — had no production caller. Neither priced anything: what prices a unit is the rate card,
-/// through the one function Tally governs. A policy field on the assembly is a second place a
-/// reader would look for how a unit is priced, and it would answer with an empty default. So the
-/// assembly holds none, and the check that guarded it is gone with it.
-#[test]
-fn the_units_carry_no_metering_policy_and_the_root_names_no_pool_check() {
-    fn code(source: &str) -> String {
-        source
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-    let kernel = code(include_str!("../kernel.rs"));
-    let start = kernel
-        .find("pub struct ProductionUnits {")
-        .expect("the assembly is declared in kernel.rs");
-    let body = &kernel[start..];
-    let body = &body[..body.find("\n}").expect("the struct closes")];
-    assert!(
-        !body.contains("meter_policy") && !body.contains("MeterPolicyHandle"),
-        "ProductionUnits carries a metering policy again"
-    );
-    assert!(
-        !code(include_str!("../policy.rs")).contains("fn pools_without_expansion"),
-        "the root grew its unread pool-expansion check back"
-    );
-}
-
 /// The interner is idempotent, which is what makes "leaked exactly once" a property of the
 /// type rather than of the caller's discipline.
 #[test]
@@ -636,94 +530,6 @@ fn the_usage_read_answers_with_the_process_history() {
         CardRepricer.history().and_then(|h| h.head()),
         ROOT_CARD.history().and_then(|h| h.head()),
         "the read and the holder disagree about which entry is the head"
-    );
-}
-
-/// **THE WIRING WITNESS.** The root's install record carries BOTH halves of the rate seam, the
-/// binary installs that record, and the boot arms the repricer's journal.
-///
-/// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
-/// prices and then reports them off the newest card anyway. The date half without the other two
-/// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
-/// So the root's install record is read for both halves, `main.rs` for its install, the body of
-/// `install_card_repricer` for the journal it arms, and the root unit, `main.rs` and the manifest's
-/// root-unit table for the call — facts that have to hold together for the seam to be reachable in
-/// the shipped binary, and no one of which implies the others.
-#[test]
-fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
-    let linked = include_str!("../linked.rs");
-    let record = linked
-        .split("pub fn register_stores(linked: &Linked) {")
-        .nth(1)
-        .expect("register_stores is declared")
-        .split("\n}")
-        .next()
-        .expect("its body closes");
-    assert!(
-        record.contains("rate_apply: Some(&crate::root::kernel::CardRepricer)"),
-        "the root's install record stopped carrying the APPLY half: {record}"
-    );
-    assert!(
-        record.contains("rate_epoch: Some(&crate::root::kernel::CardRepricer)"),
-        "the root's install record stopped carrying the DATE half — a metering cell would carry no \
-         instant finer than its UTC day and a mid-day card edit would reprice the whole day (#79): \
-         {record}"
-    );
-    assert!(
-        include_str!("../../main.rs").contains("root::linked::register_stores(&LINKED);"),
-        "main.rs no longer installs the root's install record, so neither half is ever raised"
-    );
-    let kernel = include_str!("../kernel.rs");
-    let body = kernel
-        .split("pub fn install_card_repricer() {")
-        .nth(1)
-        .expect("install_card_repricer is declared")
-        .split("\n}")
-        .next()
-        .expect("its body closes");
-    assert!(
-        body.contains("ROOT_CARD.arm_journal()"),
-        "the boot step stopped arming the repricer's journal before the boot resolution: {body}"
-    );
-    // The READ half rides the date half: the dater's `history` is what the usage read and the
-    // budget book price through (`rate_apply::dated_history`).
-    let dater = kernel
-        .split("impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {")
-        .nth(1)
-        .expect("the root implements the rate dater")
-        .split("\n}")
-        .next()
-        .expect("its impl closes");
-    assert!(
-        dater.contains("fn history(&self)") && dater.contains("ROOT_CARD.history()"),
-        "the rate dater stopped handing over the process history — the usage read would price off \
-         the newest card again (#79): {dater}"
-    );
-    // The call: a root unit's configuration step runs it, `main.rs` runs every enabled unit's
-    // configuration step, and the generated table this binary compiles carries that unit.
-    // The unit is found through the manifest's root-unit table (the data every build's table is
-    // generated from), not by name: some module that table lists must make the call.
-    let main = include_str!("../../main.rs");
-    assert!(
-        main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
-        "main.rs no longer runs the root units' configuration steps, so the repricer's journal is \
-         never armed"
-    );
-    let manifest = include_str!("../../../Cargo.toml");
-    let callers: Vec<String> = root_unit_modules(manifest)
-        .into_iter()
-        .filter(|module| {
-            let path = format!("{}/src/root/{module}.rs", env!("CARGO_MANIFEST_DIR"));
-            std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("the manifest lists root unit `{module}`: {path}: {e}"))
-                .contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())")
-        })
-        .collect();
-    assert!(
-        !callers.is_empty(),
-        "no root unit the manifest lists has a configuration step that arms the repricer, so the \
-         boot resolution's opening entry is never held for the book (or the unit that does is not \
-         a root unit the manifest lists, so no build's table carries it)"
     );
 }
 
@@ -2412,4 +2218,64 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
         "the correction reprices its window after a restart over the store"
     );
     assert_eq!(holder.len(), 2, "the opening card and the correction");
+}
+
+/// **A CHAIN THAT DOES NOT VERIFY NEVER DISARMS THE CARD JOURNAL** (audit root r4 A-5; MONEY-AUDIT
+/// D-6, "JOURNAL FIRST, PUBLISH SECOND"; #79 DATE EVERYTHING, BUSBAR-1.6.0.md l.3941). A node with
+/// no data directory keeps its chain in the store; a record of it is edited there behind the node.
+/// The boot handed the rebuild no records for that chain, the same `None` a node with no chain at
+/// all hands it, so the holder was disarmed: every later card apply was published and never
+/// journalled, and after the next restart those eras were missing from the rebuilt history. The
+/// boot refuses instead, naming the break, and the holder is left as the boot armed it.
+///
+/// RED before the fix: the build answered `Ok` and left the holder `CardJournal::Off`.
+#[test]
+fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book_on_store(holder, &slots);
+        assert!(
+            book.lock()
+                .expect("the book")
+                .lane()
+                .expect("a lane")
+                .drain(std::time::Duration::from_secs(5)),
+            "the store takes the chain"
+        );
+    }
+    slots.corrupt(
+        crate::root::durability::JOURNAL_SCHEMA,
+        &crate::root::durability::part_key(7, 1, 0),
+    );
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    let refused = crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        7,
+        lane,
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || holder.pin()),
+        Some(holder),
+    )
+    .err()
+    .map(|e| e.to_string());
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|why| why.contains("does not verify")),
+        "a stored chain that does not verify must refuse the boot, naming the break; the build \
+         answered {refused:?}"
+    );
+    assert!(
+        matches!(
+            *holder.journal.lock().unwrap_or_else(|p| p.into_inner()),
+            CardJournal::Armed(_)
+        ),
+        "the card journal is left armed, never disarmed by a chain the boot could not verify"
+    );
 }

@@ -1,0 +1,18 @@
+# THE REQUEST PATH'S SPANS, as 1.5.5 named them (status row 173; v1.5.5 docs/observability.md
+# l.162-174), read by the root's span delivery test. One request per row, tab-separated:
+#   entry span it opens ("-": none) | the fields that span records ("name=value", ";"-separated;
+#   "-": none) | the `ingress` its `forward` carries ("-": not asserted) | head fields it adds
+#   ("name: value", ";"-separated; "-": none) | path | body
+# 1.5.5 chose the entry by head fields first, then the path (proto/detect.rs protocol_id): it opened
+# gemini_ingress (ingress/mod.rs:788), bedrock_converse (:1043) and bedrock_converse_stream (:1070)
+# with no field, and none for a request it read as Anthropic, by its path or by its head. Ahead of
+# the ladder its named and ad-hoc routes (main.rs:3835-3836) opened `named` with `pool`
+# (ingress/mod.rs:1161) and `adhoc` with `provider` and `model` (:1292).
+gemini_ingress	-	gemini	-	/v1beta/models/test-model:generateContent	{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
+bedrock_converse	-	-	-	/model/test-model/converse	{"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+bedrock_converse_stream	-	-	-	/model/test-model/converse-stream	{"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+-	-	anthropic	-	/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
+gemini_ingress	-	-	x-goog-api-key: k	/v1/chat/completions	{"model":"test-model","messages":[{"role":"user","content":"hi"}]}
+-	-	-	anthropic-version: 2023-06-01	/v1beta/models/test-model:generateContent	{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
+named	pool=span-pool	-	-	/span-pool/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}
+adhoc	provider=mock;model=test-model	-	-	/mock/test-model/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}

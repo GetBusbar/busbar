@@ -110,17 +110,8 @@ reason = "BUILD ONLY: the protoc the a2a plane's `build.rs` drives, vendored so 
 # else refuses the render. `busbar-release plugin sync` renders each row into the listed repos only: its
 # `git` joins deny.toml's [sources] allow-git, and `name = { git, rev }` joins Cargo.toml's
 # [patch.crates-io]. busbar's `cargo xtask plugin-gates gitsources` validates the rows.
-[git-sources.str0m]
-git = "https://github.com/GetBusbar/str0m"
-rev = "a142c64e1fafc5cca029adda1507a51064f81902"
-repos = ["busbar-transport-webrtc"]
-reason = "H2 zeroize: str0m 0.24.1 plus zeroize-on-drop commits (keying material copy, SrtpKey and derived SRTP keys, ICE password); THE DESIGN §5 'keys are zeroised'. Upstream: pending owner approval to post."
-
-[git-sources.dimpl]
-git = "https://github.com/GetBusbar/dimpl"
-rev = "88f01226145c6a904986156e92610b1eb642f143"
-repos = ["busbar-transport-webrtc"]
-reason = "H2 zeroize: dimpl 0.7.4 plus a zeroize-on-drop commit (KeyingMaterial, the DTLS-exported SRTP keying material); THE DESIGN §5 'keys are zeroised'. Upstream: pending owner approval to post."
+# No rows today: the str0m, dimpl and ring forks were dropped (the webrtc plugin builds from crates.io,
+# OWNER 2026-10-25). A row is added here only under the rules above.
 
 # ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
 # Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's

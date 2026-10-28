@@ -72,7 +72,7 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::abi::mechanism::call::{
     Diag, MetricEntry, OutHead, RawOutcome, DIAG_LOG, DIAG_LOG_DROPPED,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::DOOR_SYMBOL;
@@ -565,13 +565,18 @@ unsafe impl Sync for OlderDoor {}
 fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const Door {
     &cell
         .get_or_init(|| {
-            // SAFETY: the linked door answers its `'static` Door; its table is the export kind's.
-            let door = unsafe { *FILE_DOOR() };
-            // SAFETY: as above.
-            let mut ops = unsafe { *door.ops.cast::<Ops>() };
+            let door = *FILE_DOOR();
+            // SAFETY: the linked door's table is the export kind's, `'static`.
+            let mut ops = unsafe { *door.ops().cast::<Ops>() };
             strip(&mut ops);
             let mut older = Box::new(OlderDoor(door, ops));
-            older.0.ops = std::ptr::from_ref(&older.1).cast::<OpsHead>();
+            let parts = DoorParts {
+                ops: std::ptr::from_ref(&older.1).cast::<OpsHead>(),
+                ..older.0.parts()
+            };
+            // SAFETY: the linked door's own `'static` Statement over the boxed table, built once
+            // and held for the process.
+            older.0 = unsafe { Door::__from_parts(parts) };
             older
         })
         .0
@@ -591,10 +596,12 @@ extern "C" fn door_without_check() -> *const Door {
 }
 
 /// Why the one load refuses `door`.
-fn refused_at_load(door: DoorFn) -> String {
+fn refused_at_load(door: busbar_contract::abi::sdk::door::RawDoorFn) -> String {
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    match LinkedRow::of(door).and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d))) {
+    match LinkedRow::of_raw(door)
+        .and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d)))
+    {
         Ok(_) => panic!("a door that predates an op was bound"),
         Err(e) => e.to_string(),
     }
@@ -1077,23 +1084,33 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let bytes = cdylib_bytes(file_cdylib());
     let (lib, staged) = crate::stage::load_library_from_bytes(&bytes, "#11-pre-envelope")
         .expect("stage the file sink cdylib");
-    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the library is leaked below, so the
-    // pointer stays valid for the life of the process.
-    let real_door: DoorFn = unsafe { *lib.get::<DoorFn>(DOOR_SYMBOL).expect("the image's door") };
+    // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; the library is leaked below, so
+    // the pointer stays valid for the life of the process.
+    let real_door: busbar_contract::abi::sdk::door::RawDoorFn = unsafe {
+        *lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
+            .expect("the image's door")
+    };
     std::mem::forget(lib);
     std::mem::forget(staged);
     // SAFETY: the image's door answers its `'static` Door; its ops table is the export kind's.
     let door = unsafe { *real_door() };
     // SAFETY: as above: the export kind's table, `'static` in the image.
-    let real_ops = unsafe { *door.ops.cast::<Ops>() };
+    let real_ops = unsafe { *door.ops().cast::<Ops>() };
     let _ = PRE_ENVELOPE_REAL.set(RealOps(real_ops));
     let shim = PRE_ENVELOPE_DOORS.get_or_init(|| {
         let mut shim = Box::new(ShimDoor(door, pre_envelope_ops(&real_ops)));
-        shim.0.ops = std::ptr::from_ref(&shim.1).cast::<OpsHead>();
+        let parts = DoorParts {
+            ops: std::ptr::from_ref(&shim.1).cast::<OpsHead>(),
+            ..shim.0.parts()
+        };
+        // SAFETY: the image's own `'static` Statement over the boxed shim table, built once and
+        // held for the process.
+        shim.0 = unsafe { Door::__from_parts(parts) };
         shim
     });
     assert_eq!(
-        shim.0.statement, door.statement,
+        shim.0.statement(),
+        door.statement(),
         "the image's own Statement"
     );
     PRE_ENVELOPE_PLUGIN_LOCAL
@@ -1102,7 +1119,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         .clear();
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    let row = LinkedRow::of(pre_envelope_door).expect("the image's Statement renders");
+    let row = LinkedRow::of_raw(pre_envelope_door).expect("the image's Statement renders");
     assert_eq!(
         row.statement,
         rendering_of(FILE_DOOR).expect("renders"),
@@ -1225,11 +1242,18 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             deliver(sink.as_ref(), &big_line(n));
         }
         until("both lines on disk", || ns(&path) == Some(vec![2]));
-        drop(sink);
+        // Read while the instance is live: its grant goes with it (§11.12 H2).
         let granted: Vec<bool> = series
             .iter()
             .map(|(s, k)| crate::observe::first_party_series(name, s, k))
             .collect();
+        drop(sink);
+        assert!(
+            series
+                .iter()
+                .all(|(s, k)| !crate::observe::first_party_series(name, s, k)),
+            "the grant goes with the instance"
+        );
         let transcript =
             serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
         (both_ways::row(&registry, name), transcript)
@@ -1764,15 +1788,62 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
     assert_eq!(linked, dropped, "both doors are bounded the same");
 }
 
-/// **K9e-2 — A FIRST-PARTY EGRESS CLASS IS GRANTED TO A FIRST-PARTY PLUGIN ONLY** (`BUSBAR-1.6.0.md`
-/// §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03). The OTLP trace sink's one need is in the
-/// `loopback-allowed` class (a collector's loopback plaintext), a first-party grant: LINKED, and
-/// DROPPED IN signed by the release key, it is admitted and opens through either door. RED ARM: the
-/// same cdylib dropped in by a THIRD party (allowlisted, trusted, not first-party) is refused at the
-/// load — the scan never admits it, and an instance naming it is refused with the grant's words —
-/// while the webhook sink, whose need is in the open web, is admitted from the same third party.
+/// **DROPPING AN INSTANCE NEVER WAITS ON A DELIVERY THAT NEVER WAKES** (`BUSBAR-1.6.0.md` §11.13
+/// M1: a host thread never waits on plugin code). The request-log WEBHOOK sink, LINKED, its one
+/// delivery pending on a far end that holds the request and never wakes it. Dropping the instance
+/// (a plugin removal, a config reload) gives the delivery a bounded grace, then abandons it on the
+/// dispatcher's client-drop path, the batch still lent to the op until it completes; the dropping
+/// thread returns. (RED: a write-behind delivery with no deadline is never cancelled or detached,
+/// the flusher's stop waited for it, and the drop joined the flusher, so the dropping thread hung
+/// forever.)
 #[test]
-fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
+fn dropping_an_instance_whose_delivery_never_wakes_returns() {
+    let name = "bn2-stuck";
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            stating(manifest(name, webhook_declares()), WEBHOOK_DOOR),
+            WEBHOOK_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    // No connection waker is installed: the held request is never woken.
+    let far = Arc::new(Far::default());
+    let sink = ExportRows::new(&registry, dispatcher())
+        .with_conns(far.clone())
+        .open(
+            name,
+            "export.bn2",
+            &serde_json::json!({
+                "url": format!("https://{STALL_TARGET}/in"),
+                "delivery_timeout_secs": 600,
+            }),
+        )
+        .expect("opens");
+    deliver(sink.as_ref(), &serde_json::json!({ "n": 0 }));
+    until("the delivery in flight", || far.stalled() == 1);
+    let (dropped, returned) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(sink);
+        let _ = dropped.send(());
+    });
+    let returned = returned.recv_timeout(Duration::from_secs(5));
+    if returned.is_err() {
+        // The dropping thread is stuck on the plugin: leave it, so the suite does not hang.
+        std::mem::forget(dropper);
+    }
+    assert!(
+        returned.is_ok(),
+        "dropping the instance returns within a bounded time while its delivery never wakes"
+    );
+}
+
+/// **K9e-2 — A LOOPBACK COLLECTOR THE OPERATOR TRUSTED LOADS, FIRST PARTY OR NOT** (`BUSBAR-1.6.0.md`
+/// §5; OWNER 2026-10-24, oracle BOOT-W23). The OTLP trace sink's one need is in the
+/// `loopback-allowed` class (a collector's loopback plaintext): LINKED, and DROPPED IN signed by
+/// the release key, it is admitted and opens through either door; the same cdylib dropped in by a
+/// THIRD party (allowlisted, trusted) is admitted and opens too, as 1.5.5 loaded it, and so is the
+/// webhook sink, whose need is in the open web. RED before: the third party's was refused.
+#[test]
+fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     let collector: DoorFn = TRACE_DOOR;
     let settings = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
     let doors = both(
@@ -1802,29 +1873,18 @@ fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
     );
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
-    // RED ARM: the same collector from a third party is refused at the load.
+    // The same collector from a third party the operator trusted is admitted and opens, as 1.5.5
+    // loaded it (OWNER 2026-10-24, oracle BOOT-W23: the opt-in is the operator's grant).
     let lib = cdylib_bytes(trace_cdylib());
     let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
     let registry = both_ways::dropped_third_party(trace_cdylib(), third, &lib);
-    assert!(
-        registry.resolve("k9e2-third-otlp").is_none(),
-        "never admitted"
-    );
-    let words = "declares a `http` need in the `loopback-allowed` egress class, which the host \
-                 grants to a first-party plugin only";
-    let skipped = registry
-        .unresolved_reason("k9e2-third-otlp")
-        .expect("the scan names its refusal");
-    assert_eq!(skipped.kind, crate::sign::RejectKind::EgressGrant);
-    assert!(skipped.reason.contains(words), "{}", skipped.reason);
-    let Err(refused) = ExportRows::new(&registry, dispatcher())
+    let row = registry.resolve("k9e2-third-otlp").expect("admitted");
+    assert!(!row.first_party());
+    ExportRows::new(&registry, dispatcher())
         .with_conns(Arc::new(Far::default()))
         .open("k9e2-third-otlp", "export.trace", &settings)
-    else {
-        panic!("a third party's collector opened");
-    };
-    assert!(refused.contains(words), "{refused}");
+        .expect("an operator-trusted collector opens");
 
     // The open web is any trusted plugin's: the webhook from the same third party is admitted.
     let lib = cdylib_bytes(webhook_cdylib());
@@ -2026,4 +2086,36 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         "{linked}"
     );
     assert_eq!(linked, dropped, "both doors carry the same request");
+}
+
+/// THE OPERATOR'S `keep` OUTRANKS THE MANIFEST'S (owner signed 2026-10-27, "Keep N, default 9"):
+/// the file sink's manifest declares no `keep` (the host's default, 1.5.5's truncation), and the
+/// operator's `keep: 2` beside `path` has the host rotate the file by rename, keeping its archive.
+/// RED before the host read the operator's key: the file was truncated and no archive kept.
+#[test]
+fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
+    let dir = scratch("keep-setting");
+    let path = dir.join("requests.jsonl");
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            stating(manifest("keep-fixture", file_declares()), FILE_DOOR),
+            FILE_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    let mut settings = file_settings(&path);
+    settings["keep"] = serde_json::json!(2);
+    let sink = ExportRows::new(&registry, dispatcher())
+        .open("keep-fixture", "export.tail", &settings)
+        .expect("opens");
+    for n in 1..=4 {
+        deliver(sink.as_ref(), &line(n, 600_000));
+    }
+    until("the four lines landed", || ns(&path) == Some(vec![3, 4]));
+    drop(sink);
+    assert_eq!(
+        ns_settled(&archive(&path, 1)),
+        Some(vec![1, 2]),
+        "the rotated lines are kept in the first archive"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

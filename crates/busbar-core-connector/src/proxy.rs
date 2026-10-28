@@ -8,9 +8,9 @@
 //!
 //! This is the ONE place the proxy environment is read (ARCHITECT ruling 2026-10-12, a move, not a
 //! copy): the parser is the kernel engine's former one (`busbar-kernel` `egress/engine/mod.rs`,
-//! `mod tunnel`), moved verbatim into here, and it fills the shared choice
-//! (`busbar_contract::proxy_route`), which the composition root hands the kernel's remaining
-//! engine; the kernel reads no environment of its own. The rules: scheme-scoped slots (https targets use
+//! `mod tunnel`, deleted with that engine, u30), moved verbatim into here, and it fills the choice
+//! ([`crate::proxy_route`]) every dial of this connector honours; the kernel dials nothing
+//! and reads no environment of its own. The rules: scheme-scoped slots (https targets use
 //! `HTTPS_PROXY`, everything else `HTTP_PROXY`, each falling back to `ALL_PROXY`, uppercase read
 //! before lowercase), `NO_PROXY` with reqwest's full rule set (host, domain suffix, IP literal,
 //! CIDR), `Proxy-Authorization: Basic` from the proxy URL's userinfo, an `https://` proxy refused
@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-pub use busbar_contract::proxy_route::{ProxyChoice, ProxyHop};
+pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
 /// The proxy env value as a REFUSAL may render it: userinfo replaced by `***`, everything
 /// else verbatim.

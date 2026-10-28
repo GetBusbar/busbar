@@ -21,8 +21,10 @@
 //! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
 //! the need that dialled it (THE DESIGN §5, a connection belongs to the instance that opened it; §8,
 //! the connector holds each need's trust), the entry, the authority, the security and the name
-//! offered, the egress class it was judged under, and the very seal of trust anchors it was held to
-//! (a destination sealed again is dialled afresh under its new seal). A dial
+//! offered, the egress class it was judged under, the very client config it was secured with (a
+//! need declared again under another operator CA is dialled afresh under its new trust), and the
+//! very seal of trust anchors it was held to (a destination sealed again is dialled afresh under
+//! its new seal). A dial
 //! stated `within` an address set is never pooled (its landing rule is per open). An idle
 //! connection is lent only after it has read what the far end sent while it sat idle, so one the far
 //! end closed or said goodbye on is closed here, never handed out.
@@ -88,25 +90,36 @@ pub(crate) struct PoolKey {
     /// The registration whose own sealed anchors the dial was held to (`None`: the destination's):
     /// a line that presented one registration's client identity is never lent to another's open.
     pub(crate) anchored_as: Option<String>,
+    /// The client config the dial was secured with (`None`: none): the need's own, its operator CA
+    /// on top of the public roots, or the connector's. A line verified under one is never lent to
+    /// an open secured with another, even of the same need declared again.
+    pub(crate) trust: Option<Same<rustls::ClientConfig>>,
     /// The seal of trust anchors the dial was held to (`None`: none): a line verified under one
     /// seal is never lent to an open held to another, even of the same destination sealed again.
-    pub(crate) sealed: Option<SealRef>,
+    pub(crate) sealed: Option<Same<Sealed>>,
 }
 
-/// One seal of trust anchors, by identity: two seals are the same only when they are one seal. The
-/// key holds the seal, so its address is never reused while a line keyed by it is pooled.
-#[derive(Debug, Clone)]
-pub(crate) struct SealRef(pub(crate) Arc<Sealed>);
+/// One trust a dial was held to (a client config, a seal of anchors), by identity: two are the
+/// same only when they are one. The key holds it, so its address is never reused while a line
+/// keyed by it is pooled.
+#[derive(Debug)]
+pub(crate) struct Same<T>(pub(crate) Arc<T>);
 
-impl PartialEq for SealRef {
+impl<T> Clone for Same<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> PartialEq for Same<T> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl Eq for SealRef {}
+impl<T> Eq for Same<T> {}
 
-impl std::hash::Hash for SealRef {
+impl<T> std::hash::Hash for Same<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         Arc::as_ptr(&self.0).hash(state);
     }
@@ -264,46 +277,74 @@ impl Pools {
     /// A line for `key` on `shard`, LENT (its holder counted): a live multiplexing one, in use or
     /// idle, first; else the most recently idled one that is still fresh. Every stale, spent or dead
     /// line met on the way is dropped from the pool, and closed when nobody holds it.
+    ///
+    /// An idle line is read for freshness with NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
+    /// runs under a host lock; reading it drives its connection): it is taken out of the pool while
+    /// it is read, and put back where it was, lent, when it is fresh.
     pub(crate) fn lend(&self, shard: usize, key: &PoolKey) -> Option<Arc<Line>> {
         if !self.keeps() {
             return None;
         }
         let now = Instant::now();
         self.reap_if_due(now);
+        let timeout = self.posture.idle_timeout;
         let mut spent = Vec::new();
-        let lent = {
-            let mut map = self.shards[shard].lock().expect("pool");
-            let entries = map.get_mut(key)?;
-            let timeout = self.posture.idle_timeout;
-            let mut lent = None;
-            // Newest first, as hyper-util's idle list pops.
-            let mut i = entries.len();
-            while i > 0 {
-                i -= 1;
-                let e = &mut entries[i];
-                let usable = match e.idle {
-                    Some(since) => now.duration_since(since) < timeout && e.line.fresh(),
-                    None => e.line.multiplexes(),
+        // Newest first, as hyper-util's idle list pops: the walk resumes below a line read stale.
+        let mut below = usize::MAX;
+        let lent = loop {
+            let (at, idle) = {
+                let mut map = self.shards[shard].lock().expect("pool");
+                let Some(entries) = map.get_mut(key) else {
+                    break None;
                 };
-                let dead = match e.idle {
-                    Some(_) => !usable,
-                    None => e.line.users() == 0,
+                let mut lent = None;
+                let mut claimed = None;
+                let mut i = below.min(entries.len());
+                while i > 0 {
+                    i -= 1;
+                    let (idle, users) = (entries[i].idle, entries[i].line.users());
+                    match idle {
+                        None if users == 0 => spent.push(entries.remove(i).line),
+                        None if entries[i].line.multiplexes() => {
+                            let line = Arc::clone(&entries[i].line);
+                            line.lend();
+                            lent = Some(line);
+                            break;
+                        }
+                        None => {}
+                        Some(since) if now.duration_since(since) < timeout => {
+                            claimed = Some((i, entries.remove(i).line));
+                            break;
+                        }
+                        Some(_) => spent.push(entries.remove(i).line),
+                    }
+                }
+                if entries.is_empty() {
+                    map.remove(key);
+                }
+                if lent.is_some() {
+                    break lent;
+                }
+                let Some(claimed) = claimed else {
+                    break None;
                 };
-                if dead {
-                    spent.push(entries.remove(i).line);
-                    continue;
-                }
-                if usable {
-                    e.idle = None;
-                    e.line.lend();
-                    lent = Some(Arc::clone(&e.line));
-                    break;
-                }
+                claimed
+            };
+            if idle.fresh() {
+                idle.lend();
+                let mut map = self.shards[shard].lock().expect("pool");
+                let entries = map.entry(key.clone()).or_default();
+                entries.insert(
+                    at.min(entries.len()),
+                    Entry {
+                        line: Arc::clone(&idle),
+                        idle: None,
+                    },
+                );
+                break Some(idle);
             }
-            if entries.is_empty() {
-                map.remove(key);
-            }
-            lent
+            spent.push(idle);
+            below = at;
         };
         for line in spent {
             if line.users() == 0 {
@@ -383,6 +424,26 @@ impl Pools {
             }
         }
         self.reap_if_due(now);
+    }
+
+    /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
+    /// closed now, never left for the idle reaper. Another instance's lines are untouched.
+    pub(crate) fn forget(&self, owner: InstanceId) {
+        let mut gone = Vec::new();
+        for shard in &*self.shards {
+            shard.lock().expect("pool").retain(|key, entries| {
+                if key.owner != owner {
+                    return true;
+                }
+                gone.extend(entries.drain(..).map(|e| e.line));
+                false
+            });
+        }
+        for line in gone {
+            if line.users() == 0 {
+                line.close();
+            }
+        }
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when

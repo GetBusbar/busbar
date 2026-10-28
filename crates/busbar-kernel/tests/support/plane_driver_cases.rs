@@ -83,6 +83,9 @@ pub(crate) struct Far {
     ceiling: Option<Duration>,
     /// How many times the walk asked it for a member.
     picks: std::sync::atomic::AtomicU32,
+    /// It tells the hooks the pool it walks and that pool's members ([`FarEnd::candidates`]), as
+    /// the kernel's own walk does; off, it names none.
+    names_its_pool: bool,
 }
 
 /// The greeting a held far end opens its answer with, before any frame is answered.
@@ -119,7 +122,16 @@ impl Far {
             arrived: tokio::sync::Notify::new(),
             ceiling: None,
             picks: std::sync::atomic::AtomicU32::new(0),
+            names_its_pool: false,
         }
+    }
+
+    /// This far end, telling the hooks the pool it walks (`pool-a`) and its members, as the
+    /// kernel's egress walk does: a pool's own hooks bind to the unit, and a policy ranks them.
+    #[allow(dead_code)] // built by the kernel's driver suite only
+    pub(crate) fn naming_its_pool(mut self) -> Self {
+        self.names_its_pool = true;
+        self
     }
 
     /// The same far end, stating `ceiling` as the unit's deadline once the route is known.
@@ -184,6 +196,25 @@ const PROVIDER: &str = "acme";
 const OVERLOADED: &str = "overloaded";
 
 impl FarEnd for Far {
+    fn candidates(&self, _: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
+        self.names_its_pool
+            .then(|| busbar_kernel::plane_driver::Candidates {
+                pool: POOL.to_string(),
+                members: self
+                    .members
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, m)| busbar_kernel::plane_driver::CandidateFacts {
+                        idx,
+                        model: (*m).to_string(),
+                        provider: PROVIDER.to_string(),
+                        weight: 1,
+                        ..Default::default()
+                    })
+                    .collect(),
+            })
+    }
+
     fn deadline_ns(&self, now_ns: u64) -> u64 {
         self.ceiling.map_or(0, |c| {
             now_ns.saturating_add(u64::try_from(c.as_nanos()).unwrap_or(u64::MAX))
@@ -475,7 +506,7 @@ fn arrival_by(method: &str, target: &str, body: &[u8]) -> Arrival {
         method: method.as_bytes().to_vec(),
         target: target.as_bytes().to_vec(),
         fields: vec![(b"content-type".to_vec(), b"text/plain".to_vec())],
-        body: Arc::from(body),
+        body: bytes::Bytes::copy_from_slice(body),
     }
 }
 
@@ -779,9 +810,16 @@ async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
             Far::new(&["wedge"], CHUNKS),
             Caller::default(),
         );
+        // The body's one owner, counted: every clone of the unit's `Bytes` shares it.
+        struct Counted(Arc<[u8]>);
+        impl AsRef<[u8]> for Counted {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
         let body: Arc<[u8]> = Arc::from(&b"wedged"[..]);
         let arrival = Arrival {
-            body: body.clone(),
+            body: bytes::Bytes::from_owner(Counted(body.clone())),
             ..arrival("/call", b"")
         };
         let units = r.driver.unit(&steps, &far, &caller, arrival, 0);

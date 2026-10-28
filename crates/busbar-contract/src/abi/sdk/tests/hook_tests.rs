@@ -9,6 +9,7 @@ use super::*;
 use crate::abi::hook::slot;
 use crate::abi::hook::validate::{check_decide, check_transform};
 use crate::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
+use crate::hook_wire::{OP_DECIDE, OP_TRANSFORM};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -286,18 +287,205 @@ fn an_explicit_false_or_null_verb_is_absent_and_a_bad_detail_still_rejects() {
     );
 }
 
+// THE 1.5.5 TABLES. Every row is one reply shape and the verdict 1.5.5's host normalized it to,
+// read off v1.5.5's source (`git show v1.5.5:<path>`); the comment on each row cites the line that
+// decides it. `W` = `crates/busbar/src/hooks/wire.rs`, `P` = `crates/busbar/src/hooks/plugin.rs`,
+// `L` = `crates/plugin-loader/src/hook.rs`, all at tag v1.5.5. A reply whose typed fields
+// (`HookResponse`, W:428-461: `order: Option<Vec<usize>>` W:431, `abstain: bool` W:433) do not
+// parse was ABSTAIN (P:51-56 decide, P:59-62 transform), never FAILED. What the host still does
+// after the lowering (W:516-526 the status clamp and message sanitiser, W:693-694 dropping an
+// unknown `idx`) is the kernel's, proven in `plane_driver::hooks::tests::wire_tests`.
+
+/// `decide`: each reply shape → 1.5.5's verdict.
 #[test]
-fn a_typed_field_mismatch_is_failed_not_an_abstain() {
-    // A valid reject beside a wrong-typed sibling: 1.5.5's host failed the whole parse (on_error).
-    let v = lower_decide_reply(Ok(json!({"reject": {"status": 403}, "order": "x"})));
-    assert!(matches!(v, Verdict::Failed(m) if m.starts_with("hook decide reply failed to parse")));
+fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
+    let reject = |status: Option<u16>, message: &str| Verdict::Reject {
+        status,
+        message: message.into(),
+    };
+    let rows = [
+        // W:690-692: no `order` → abstain.
+        (json!({}), Verdict::Abstain),
+        // W:690-694: an order is preferred (the host drops unknown idxs, W:693-694).
+        (json!({"order": [1, 0]}), Verdict::Prefer(vec![1, 0])),
+        // W:424-427: unknown keys are ignored.
+        (json!({"order": [1], "note": "x"}), Verdict::Prefer(vec![1])),
+        // W:431 (`Option`, null = absent) then W:690-692.
+        (json!({"order": null}), Verdict::Abstain),
+        // W:431 types `order` as `Vec<usize>`: the parse fails → P:54 abstain.
+        (json!({"order": "x"}), Verdict::Abstain),
+        // W:431: a negative idx is not a `usize` → P:54.
+        (json!({"order": [-1]}), Verdict::Abstain),
+        // W:431: a fractional idx is not a `usize` → P:54.
+        (json!({"order": [1.5]}), Verdict::Abstain),
+        // W:433 types `abstain` as `bool`: the parse fails → P:54.
+        (json!({"abstain": "yes"}), Verdict::Abstain),
+        // W:433 → P:54.
+        (json!({"abstain": 1}), Verdict::Abstain),
+        // W:687-689: abstain wins over order.
+        (json!({"abstain": true, "order": [1]}), Verdict::Abstain),
+        // W:687-694: `abstain: false` leaves the order.
+        (
+            json!({"abstain": false, "order": [1]}),
+            Verdict::Prefer(vec![1]),
+        ),
+        // Not an object: `HookResponse` does not parse → P:54.
+        (json!(null), Verdict::Abstain),
+        // W:431: the array's first element is read as `order`, `1` is no `Vec` → P:54.
+        (json!([1]), Verdict::Abstain),
+        // Not an object → P:54.
+        (json!("garbage"), Verdict::Abstain),
+        // Not an object → P:54.
+        (json!(42), Verdict::Abstain),
+        // Not an object → P:54.
+        (json!(true), Verdict::Abstain),
+        // A valid reject beside a wrong-typed sibling: the WHOLE parse fails (W:431) → P:54; the
+        // reject is never read.
+        (
+            json!({"reject": {"status": 403, "message": "no"}, "order": "x"}),
+            Verdict::Abstain,
+        ),
+        // The same through `abstain` (W:433) → P:54.
+        (
+            json!({"reject": {"status": 403}, "abstain": "yes"}),
+            Verdict::Abstain,
+        ),
+        // A valid restrict beside a wrong-typed sibling (W:433) → P:54.
+        (
+            json!({"restrict": {"tags_any": ["a"]}, "abstain": "yes"}),
+            Verdict::Abstain,
+        ),
+        // W:670-675: reject wins over order; its detail as stated (W:516-526 clamps on the host).
+        (
+            json!({"reject": {"status": 451, "message": "no"}, "order": [1]}),
+            reject(Some(451), "no"),
+        ),
+        // W:438-446, W:670-675: any reject but `false` rejects, a bad detail defaulted (W:516-526).
+        (json!({"reject": true}), reject(None, "")),
+        // W:516-522: a string status is no integer → the host's default.
+        (json!({"reject": {"status": "451"}}), reject(None, "")),
+        // W:671: `reject: false` is the explicit "not rejecting".
+        (
+            json!({"reject": false, "order": [1]}),
+            Verdict::Prefer(vec![1]),
+        ),
+        // W:442-443: `reject: null` is absent.
+        (
+            json!({"reject": null, "order": [1]}),
+            Verdict::Prefer(vec![1]),
+        ),
+        // W:679-686 with W:475-489: tags trimmed, empties dropped.
+        (
+            json!({"restrict": {"tags_any": [" a ", ""]}, "order": [0]}),
+            Verdict::Restrict(vec!["a".into()]),
+        ),
+        // W:681-683: a malformed restrict restricts to nothing (the gate's `on_empty`).
+        (json!({"restrict": {}}), Verdict::Restrict(Vec::new())),
+        // W:681-683, W:477-478: not an object → nothing.
+        (json!({"restrict": "a"}), Verdict::Restrict(Vec::new())),
+        // W:680: `restrict: false` is the explicit "not restricting".
+        (
+            json!({"restrict": false, "order": [0]}),
+            Verdict::Prefer(vec![0]),
+        ),
+        // W:666-695 never reads `rewrite` (a transform verb): no order → abstain.
+        (
+            json!({"rewrite": {"messages": [{"role": "user"}]}}),
+            Verdict::Abstain,
+        ),
+    ];
+    for (reply, want) in rows {
+        assert_eq!(
+            lower_decide_reply(Ok(reply.clone())),
+            want,
+            "1.5.5's host read the decide reply {reply} as {want:?}"
+        );
+    }
+    // L:173-175: a hook that SAID it could not answer (`HookReply::Failed`) is the operator's
+    // `on_error`, the one FAILED.
     assert_eq!(
         lower_decide_reply(Err("down".into())),
         Verdict::Failed("down".into())
     );
-    let t = lower_transform_reply(Ok(json!({"abstain": 1})));
-    assert!(
-        matches!(t, RewriteVerdict::Failed(m) if m.starts_with("hook transform reply failed to parse"))
+}
+
+/// `transform`: each reply shape → 1.5.5's verdict.
+#[test]
+fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
+    let rw = json!({"messages": [{"role": "user", "content": "x"}]});
+    let rewrite = |v: &serde_json::Value| RewriteVerdict::Rewrite(serde_json::to_vec(v).unwrap());
+    let reject = |status: Option<u16>, message: &str| RewriteVerdict::Reject {
+        status,
+        message: message.into(),
+    };
+    let rows = [
+        // W:539-542: no rewrite → abstain (the original body).
+        (json!({}), RewriteVerdict::Abstain),
+        // W:539-540 with W:499-510: a well-formed rewrite.
+        (json!({"rewrite": rw}), rewrite(&rw)),
+        // W:424-427: unknown keys are ignored.
+        (json!({"rewrite": rw, "note": 1}), rewrite(&rw)),
+        // W:528-530: `order`/`restrict` are decide verbs, ignored here.
+        (
+            json!({"order": [1], "restrict": {"tags_any": ["a"]}}),
+            RewriteVerdict::Abstain,
+        ),
+        // W:460 (`Option`, null = absent) → W:541.
+        (json!({"rewrite": null}), RewriteVerdict::Abstain),
+        // W:500: no `messages` → `parse_rewrite` None → W:541.
+        (json!({"rewrite": false}), RewriteVerdict::Abstain),
+        // W:500 → W:541.
+        (json!({"rewrite": {}}), RewriteVerdict::Abstain),
+        // W:501-503: an empty `messages` → W:541.
+        (
+            json!({"rewrite": {"messages": []}}),
+            RewriteVerdict::Abstain,
+        ),
+        // W:500: `messages` not an array → W:541.
+        (
+            json!({"rewrite": {"messages": "hi"}}),
+            RewriteVerdict::Abstain,
+        ),
+        // W:433 types `abstain` as `bool`: the parse fails → P:61 abstain.
+        (json!({"abstain": 1}), RewriteVerdict::Abstain),
+        // A valid rewrite beside a wrong-typed sibling (W:431): the WHOLE parse fails → P:61.
+        (
+            json!({"rewrite": rw, "order": "x"}),
+            RewriteVerdict::Abstain,
+        ),
+        // A valid reject beside a wrong-typed sibling (W:433) → P:61; the reject is never read.
+        (
+            json!({"reject": {"status": 451}, "abstain": "yes"}),
+            RewriteVerdict::Abstain,
+        ),
+        // Not an object → P:61.
+        (json!(null), RewriteVerdict::Abstain),
+        // W:431: `1` is no `Vec` → P:61.
+        (json!([1]), RewriteVerdict::Abstain),
+        // Not an object → P:61.
+        (json!("garbage"), RewriteVerdict::Abstain),
+        // W:533-538: reject wins over rewrite.
+        (
+            json!({"reject": {"status": 451, "message": "s"}, "rewrite": rw}),
+            reject(Some(451), "s"),
+        ),
+        // W:533-538: any reject but `false` rejects, its detail defaulted on the host (W:516-526).
+        (json!({"reject": true}), reject(None, "")),
+        // W:534: `reject: false` is the explicit "not rejecting".
+        (json!({"reject": false, "rewrite": rw}), rewrite(&rw)),
+    ];
+    for (reply, want) in rows {
+        assert_eq!(
+            lower_transform_reply(Ok(reply.clone())),
+            want,
+            "1.5.5's host read the transform reply {reply} as {want:?}"
+        );
+    }
+    // A hook's own `Err` from `transform_result` (added in 1.6.0; 1.5.5's `HookHandler` had no
+    // fallible transform, so no 1.5.5 hook could state it) is FAILED: the host's `on_error` decides.
+    assert_eq!(
+        lower_transform_reply(Err("down".into())),
+        RewriteVerdict::Failed("down".into())
     );
 }
 
@@ -584,7 +772,7 @@ fn a_validate_failure_states_its_text() {
 /// host's own slice (same pointer, same length), and the message text is the host's bytes, not a
 /// copy.
 #[test]
-fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
+fn red_the_content_body_a_hook_sees_is_the_hosts_own_bytes() {
     std::thread_local! {
         static SAW: std::cell::Cell<(usize, usize, usize)> = const { std::cell::Cell::new((0, 0, 0)) };
     }
@@ -789,6 +977,162 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     );
     assert_eq!(co.disposition, cancel::ABORTED);
     closed::<OpenForward>(p);
+}
+
+// ── a cancelled exchange closes its stream (status row 159) ─────────────────────────────────────
+
+/// The stream the closing connector's ESTABLISH answers.
+const HELD_STREAM: u64 = 9;
+/// What the closing connector's CLOSE was handed: the stream and the ticket it came on.
+static CLOSED: std::sync::Mutex<Vec<(u64, Ticket)>> = std::sync::Mutex::new(Vec::new());
+/// The same, for the connector whose ESTABLISH never completes.
+static DIALLING_CLOSED: std::sync::Mutex<Vec<(u64, Ticket)>> = std::sync::Mutex::new(Vec::new());
+
+/// Answer `o` in the SDK's `out`, with `value`.
+fn answered(out: *mut ServiceOut, o: Outcome, value: u64) -> RawOutcome {
+    // SAFETY: the SDK's `out`, live for the call.
+    let out = unsafe { &mut *out };
+    out.value = value;
+    out.outcome = RawOutcome::of(o);
+    RawOutcome::of(o)
+}
+
+/// An ESTABLISH that answers [`HELD_STREAM`] at once.
+extern "C" fn establish_at_once(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: every service `in` leads with a `ServiceHead`.
+    assert_eq!(unsafe { *i.cast::<ServiceHead>() }.op, service::ESTABLISH);
+    answered(o, Outcome::Ready, HELD_STREAM)
+}
+
+/// An ESTABLISH (or a request piece) that never completes: the op pends on it.
+extern "C" fn never_completes(_: HostCtx, _: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    answered(o, Outcome::Pending, 0)
+}
+
+/// Log the CLOSE `i` names into `log`.
+fn log_close(log: &std::sync::Mutex<Vec<(u64, Ticket)>>, i: *const c_void) {
+    // SAFETY: a CLOSE's `in` is a `StreamIn`.
+    let i = unsafe {
+        i.cast::<crate::abi::host::conn::connector::StreamIn>()
+            .read()
+    };
+    let mut log = log
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    log.push((i.stream, i.head.handle.ticket));
+}
+
+extern "C" fn close_logged(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    log_close(&CLOSED, i);
+    answered(o, Outcome::Ready, 0)
+}
+
+extern "C" fn close_logged_dialling(
+    _: HostCtx,
+    i: *const c_void,
+    o: *mut ServiceOut,
+) -> RawOutcome {
+    log_close(&DIALLING_CLOSED, i);
+    answered(o, Outcome::Ready, 0)
+}
+
+/// A connector whose ESTABLISH answers a stream at once and whose request never completes.
+static CLOSING_SLOTS: ConnectorSlots = ConnectorSlots {
+    size: std::mem::size_of::<ConnectorSlots>() as u32,
+    slots: SERVICES,
+    establish: Some(establish_at_once),
+    reject_endpoint: None,
+    side_stream: None,
+    read: None,
+    write: None,
+    upgrade_secure: None,
+    facts: None,
+    checkout: None,
+    checkin: None,
+    close: Some(close_logged),
+    random: None,
+    identity: None,
+    read_reply: None,
+    write_request: Some(never_completes),
+};
+
+/// A connector whose ESTABLISH never completes.
+static DIALLING_SLOTS: ConnectorSlots = ConnectorSlots {
+    size: std::mem::size_of::<ConnectorSlots>() as u32,
+    slots: SERVICES,
+    establish: Some(never_completes),
+    reject_endpoint: None,
+    side_stream: None,
+    read: None,
+    write: None,
+    upgrade_secure: None,
+    facts: None,
+    checkout: None,
+    checkin: None,
+    close: Some(close_logged_dialling),
+    random: None,
+    identity: None,
+    read_reply: None,
+    write_request: None,
+};
+
+/// Open a [`Forward`] hook over `conns`, run one `decide` to PENDING on [`TICKET`], cancel that
+/// ticket, and close the instance.
+fn cancel_a_pending_decide(conns: &'static ConnectorSlots) {
+    let tables = HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns,
+        services: std::ptr::null(),
+        io: std::ptr::null(),
+    };
+    let mut open: OpenIn = zeroed();
+    open.host = &tables;
+    let p = opened_with::<OpenForward>(&open);
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Pending
+    );
+    let mut c: CancelIn = zeroed();
+    c.ticket = TICKET;
+    let mut co: CancelOut = zeroed();
+    assert_eq!(
+        call::<life::Cancel<HookLife<OpenForward>>>(p, CANCEL, &c, &mut co),
+        Outcome::Ready
+    );
+    assert_eq!(co.disposition, cancel::ABORTED);
+    closed::<OpenForward>(p);
+}
+
+/// RED (status row 159, a cancelled exchange leaks its connection): a hook whose exchange
+/// established its stream and pends on the request is cancelled; the SDK drops the exchange it
+/// parked, and that closes the stream on the host, once, on no ticket (a close never pends).
+#[test]
+fn a_cancelled_exchange_closes_the_stream_it_established() {
+    cancel_a_pending_decide(&CLOSING_SLOTS);
+    let seen = CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(seen, vec![(HELD_STREAM, Ticket::NONE)]);
+}
+
+/// GREEN twin: an exchange cancelled before its stream was established closes nothing: the
+/// exchange it parked holds no stream, and the host is handed no CLOSE.
+#[test]
+fn a_cancelled_exchange_with_no_stream_closes_nothing() {
+    cancel_a_pending_decide(&DIALLING_SLOTS);
+    let seen = DIALLING_CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(seen.is_empty(), "{seen:?}");
 }
 
 /// A hook handed no connector answers its exchange unarmed, at once.

@@ -331,3 +331,58 @@ fn a_writable_piece_is_never_handed_up_as_a_frame() {
     let got: Vec<Vec<u8>> = y.pieces.iter().map(|p| p.bytes.clone()).collect();
     assert_eq!(got, vec![b"x".to_vec(), b"z".to_vec()]);
 }
+
+/// RED (row 159, a transport's size answer): `locate`'s short answer names the buffer sizes it
+/// needs, and the contract admits up to 4 GiB each. The host bounds what it gives a locate answer
+/// and refuses a larger ask as the transport's FAULT: it never allocates what the transport named
+/// past that bound, and never asks again.
+#[test]
+fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
+    let needed = busbar_contract::abi::mechanism::check::MAX_BYTES;
+    let door = TestDoor::new(
+        "big",
+        &["big"],
+        &[],
+        Knobs {
+            authority_needed: Some(needed),
+            ..Knobs::default()
+        },
+    );
+    let answer = locate(&door, "127.0.0.1:443");
+    let caps = door.locate_caps.lock().unwrap().clone();
+    assert_eq!(
+        caps.len(),
+        1,
+        "asked once, never again with the room the transport named: {caps:?}"
+    );
+    let refused = answer.expect_err("a size past the host's bound is refused");
+    assert_eq!(
+        refused.outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Fault,
+        "{refused}"
+    );
+    assert!(refused.error.contains("locate"), "{refused}");
+}
+
+/// GREEN twin: a short `locate` within the host's bound is asked again with the room it named,
+/// and located.
+#[test]
+fn a_short_locate_within_the_hosts_bound_is_asked_again_with_room() {
+    let door = TestDoor::new(
+        "roomy",
+        &["roomy"],
+        &[],
+        Knobs {
+            authority_needed: Some(300),
+            ..Knobs::default()
+        },
+    );
+    let l = locate(&door, "127.0.0.1:443").expect("located on the second ask");
+    assert_eq!(l.authority, "127.0.0.1:443");
+    let caps = door.locate_caps.lock().unwrap().clone();
+    assert_eq!(caps.len(), 2, "{caps:?}");
+    assert!(
+        caps[1] >= 300,
+        "the second ask has the room named: {caps:?}"
+    );
+}

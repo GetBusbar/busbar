@@ -27,11 +27,13 @@
 //! open endpoint is unbounded growth unless something bounds it. Two things do, and both are this
 //! plane's:
 //!
-//! 1. **A throttle.** The server is built with `oauth-as`'s shipped `FixedWindowRateLimiter`
-//!    (`plane::AsPlane::build_carrying`), carried from one config generation to the next, so a
-//!    reload hands no caller a fresh budget: at most 60 registrations a minute per process, a
-//!    refused one costing ten (the library's derivation is at its `rate_limit` module). The same
-//!    limiter bounds the authorization endpoint and client authentication at the token endpoint.
+//! 1. **A throttle.** Registration is bounded by the node's registration budget
+//!    (`plane::Registrations`), carried from one config generation to the next, so a reload hands
+//!    no caller a fresh budget: at most 60 registrations ADMITTED a minute per process (the
+//!    library's derivation is at its `rate_limit` module). A registration refused, or a body that
+//!    does not parse, spends none of it, so one caller's refusals cannot close registration for
+//!    everyone. `oauth-as`'s shipped `FixedWindowRateLimiter`, carried the same way, bounds the
+//!    authorization endpoint and client authentication at the token endpoint.
 //! 2. **Reclamation.** A self-registered client that has held nothing (no code, token, refresh
 //!    token, pushed request, device grant or consent) for [`REGISTERED_CLIENT_IDLE`] is deleted by
 //!    the sweep, in the deployment's store (`shared`) and in this process (`cimd::Records`) alike.
@@ -63,8 +65,8 @@ pub(crate) const REGISTERED_CLIENT_IDLE: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
 
 /// The policy for every deployment that configured `oauth_as:`: anyone may register, and
-/// registering buys exactly the operator's `default_grant`. There is no toggle — the 1.6.0 ruling
-/// is that all three registration mechanisms are ON whenever the plane is.
+/// registering buys exactly the operator's `default_grant`. There is no toggle:
+/// all three registration mechanisms are ON whenever the plane is.
 ///
 /// "Anyone may register" is the honest reading of what the operator asked for — the clients this
 /// mechanism exists for (Codex, ChatGPT, Claude.ai) have no prior relationship with the deployment
@@ -109,7 +111,7 @@ pub(super) fn name_impersonates_the_deployment(name: &str) -> bool {
 ///
 /// UNCONDITIONAL. Registration mounts whenever the plane does — `oauth-as` derives its route table
 /// from the metadata document, so the always-advertised `registration_endpoint` here and the
-/// always-mounted `/register` in `routes::mount` are two views of the same ruling and must agree.
+/// always-mounted `/register` in `routes::mount` are two views of the same rule and must agree.
 pub(crate) fn registration_config(
     identity: &AsIdentity,
 ) -> Box<oauth_as::registration::RegistrationConfig> {

@@ -137,8 +137,8 @@ pub trait TransportMeta {
     ///
     /// The other half of [`TransportMeta::STATUS_CLASS`]: that says WHICH FRAME carries the status,
     /// this says WHICH VOCABULARY wrote it. A number without its numbering is unreadable — `14` is
-    /// `UNAVAILABLE` in gRPC's and is not a status at all in HTTP's — and every
-    /// [`crate::wire::WireStatus`] a transport reports takes its namespace from here, so the
+    /// `UNAVAILABLE` in a trailer numbering and is not a status at all in a status-line one — and
+    /// every [`crate::wire::WireStatus`] a transport reports takes its namespace from here, so the
     /// declaration and the frames cannot disagree. `None` for a transport that reports no number,
     /// which is every transport whose `STATUS_CLASS` is `None`.
     const STATUS_NAMESPACE: Option<&'static str>;
@@ -149,8 +149,8 @@ pub trait TransportMeta {
     /// against the operator's binding config: `TLS`-configured binding + a transport that declares
     /// this `true` ⇒ it is handed a real rustls-backed wrap; `TLS`-configured binding + a transport
     /// that leaves this at the default `false` ⇒ the binding fails closed at boot rather than being
-    /// silently served in plaintext. A transport with no byte stream to wrap at all (stdio) simply
-    /// never overrides the default.
+    /// silently served in plaintext. A transport with no byte stream to wrap at all (one that talks
+    /// to a child process over its pipes) simply never overrides the default.
     const WRAPPABLE_BYTE_STREAM: bool = false;
     /// EVERY SCHEME THIS ENTRY ANSWERS FOR ([`Claim`]), in order; the first is the entry's own. A
     /// transport that answers for its own key alone makes the one claim its per-scheme constants

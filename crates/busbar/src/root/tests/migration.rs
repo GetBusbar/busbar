@@ -3,11 +3,12 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_kernel_ledger::migration::LegacyCapDimension;
+use busbar_kernel_ledger::migration::MigrationCapDimension;
 use busbar_kernel_ledger::migration::{
-    LegacyFamily, LegacyFigure, LegacyFigures, MigrationError, MigrationMarker, MigrationRecords,
+    MigrationError, MigrationFamily, MigrationFigure, MigrationFigures, MigrationMarker,
+    MigrationRecords,
 };
+use busbar_kernel_ledger::migration::{MigrationHead, MigrationSource};
 
 /// Records that keep the marker in this test's memory: the in-memory `MigrationRecords` double.
 ///
@@ -51,14 +52,14 @@ impl MigrationRecords for NodeLocalRecords {
 /// about the previous release's rows rather than about a return value.
 #[derive(Default)]
 struct SeededRows {
-    figures: Vec<LegacyFigure>,
+    figures: Vec<MigrationFigure>,
     reads: std::cell::Cell<u32>,
 }
 
-impl LegacyMigrationSource for SeededRows {
-    fn read_head(&self) -> LegacyHead {
+impl MigrationSource for SeededRows {
+    fn read_head(&self) -> MigrationHead {
         self.reads.set(self.reads.get() + 1);
-        LegacyHead {
+        MigrationHead {
             seq: Some(90),
             hash: Some("head".to_string()),
             balances: vec![("vk_a".to_string(), 6_000)],
@@ -67,10 +68,10 @@ impl LegacyMigrationSource for SeededRows {
     }
 }
 
-impl LegacyLedgerRows for SeededRows {
-    fn read_figures(&self) -> LegacyFigures {
+impl MigrationLedgerRows for SeededRows {
+    fn read_figures(&self) -> MigrationFigures {
         self.reads.set(self.reads.get() + 1);
-        LegacyFigures {
+        MigrationFigures {
             figures: self.figures.clone(),
             unreadable: Vec::new(),
         }
@@ -89,13 +90,13 @@ fn cfg() -> MigrationConfig {
 
 fn rows() -> SeededRows {
     SeededRows {
-        figures: vec![LegacyFigure {
-            family: LegacyFamily::Window,
+        figures: vec![MigrationFigure {
+            family: MigrationFamily::Window,
             bucket: "vk_a".to_string(),
             window: 86_400,
             lane: "gpt-4".to_string(),
             provider: String::new(),
-            dimension: LegacyCapDimension::Class("input".to_string()),
+            dimension: MigrationCapDimension::Class("input".to_string()),
             amount: 6_000,
         }],
         reads: std::cell::Cell::new(0),
@@ -208,7 +209,7 @@ fn a_deployment_with_nothing_behind_it_still_seals() {
     assert!(opening.checkpoint.body_hash_verifies());
 }
 
-/// THE OPENING IS SIGNED WITH THE CHAIN'S OWN KEY (OWNER Q71(3): one keyset, #82): the signer the
+/// THE OPENING IS SIGNED WITH THE CHAIN'S OWN KEY: the signer the
 /// boot hands the migration is the audit chain's, so the opening verifies against the audit keyset;
 /// a chain given no key offers no signer and the opening goes down unsigned rather than failing.
 #[test]

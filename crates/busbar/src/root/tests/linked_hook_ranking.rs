@@ -30,7 +30,10 @@ use crate::root::loader::PluginRegistry;
 
 /// The hook axis the shipped binary installs, over an empty registry: the linked rows alone.
 fn linked_axis() -> Arc<dyn HookAxis> {
-    crate::root::hooks::axis(&Arc::new(PluginRegistry::empty())).expect("the linked hook rows")
+    crate::root::hooks::axis(
+        &(Arc::new(PluginRegistry::empty()) as Arc<dyn busbar_contract::plugin_rows::PluginRows>),
+    )
+    .expect("the linked hook rows")
 }
 
 /// An axis over the kernel's ranking double alone, on the same dispatcher.
@@ -292,7 +295,7 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
     );
 }
 
-/// The twin of the kernel's test of the same name, on the REAL door (ARCHITECT Q-SO9): each of
+/// The twin of the kernel's test of the same name, on the REAL door: each of
 /// the four strategy words, opened through the hook axis and called through the hook seam,
 /// answers exactly the decision 1.5.5's in-process native answered on the ranking parity cases.
 /// Every answer is `Ok`: the call never fails, times out or reaches `on_error`. Its deadline is

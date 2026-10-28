@@ -59,7 +59,7 @@ fn a_bad_allowlist_entry_refuses_the_guard() {
     );
 }
 
-// ── THE METADATA CARVE-OUTS, AS A DEPLOYMENT WRITES THEM (ARCHITECT ruling on #413, DEST-GUARD) ──
+// ── THE METADATA CARVE-OUTS, AS A DEPLOYMENT WRITES THEM ──
 // A provider's `allow_metadata_hosts` admits a metadata address only in the provider class and only
 // for that provider's own URL host; no other class admits metadata through any carve-out (the 1.5.5
 // `security` keys included), and operator infrastructure refuses it whatever the carve-outs say.
@@ -190,27 +190,27 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     // Every app build reads the plane registry, so holding it isolated keeps every other test's
     // commit out of this one's window.
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
-    // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
-    // upstream: the guard installed here is process-wide (first install wins), and every other
-    // test's mock upstream is dialled through it by its loopback literal.
     let boot = deployment(
         &[],
         "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
          advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
-    // The boot path's own step: the guard goes behind the egress-trust capability, which is what
-    // hears a commit (no other test in this binary installs one).
-    crate::root::connector::install_egress_trust(judge.clone());
+    // The boot path's own step: the root's rules hold the guard, and every build judged by them
+    // raises its commit to it.
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(
+        crate::root::door_steps::Rules::hearing(judge.clone() as Arc<dyn DestJudge>),
+    );
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         None,
         "the boot config carves it out"
     );
-    busbar_kernel::test_support::build_once(deployment(&[], ""), None).expect("the reload builds");
+    busbar_kernel::test_support::build_once_under(deployment(&[], ""), None, &rules)
+        .expect("the reload builds");
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         Some(DEST_METADATA),
@@ -218,7 +218,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131): a deployment
+/// RED: a deployment
 /// whose provider has no `advanced.allow_destinations` entry is refused the private address its
 /// name answers with on a provider dial (its own configured host included); once the allowlist
 /// names it, the same dial is admitted. Operator infrastructure reaches the private address with
@@ -265,8 +265,7 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 
 /// RED against the pinned mint plugin's revisions b7d15c7137 and 2a776bd, which declared
 /// EGRESS_LOOPBACK_ALLOWED for its two mint needs (lib.rs:137): every outbound need a linked auth
-/// plugin's Statement declares is operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT
-/// CLASS (B)), so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
+/// plugin's Statement declares is operator infrastructure, so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
 /// non-loopback. Read off every linked auth row's own Statement, never a plugin's name. It rides
 /// EVERY linked auth row (`linked_every_auth`, build.rs), so the mint plugin's needs are among them
 /// and the cell always proves one; a build missing an auth row does not run it.
@@ -298,7 +297,7 @@ fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
     );
 }
 
-/// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
+/// RED: a plane's upstream need whose settings name a PROGRAM is dialled by
 /// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
 /// line row's door, found by what it does, never by name): the connector spawns the program
 /// (operator-infrastructure class; no shell, only its stated environment), its first line is one
@@ -355,7 +354,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             }
         };
         let mut line_framed = Vec::new();
-        for (n, (key, _)) in (0u32..).zip(doors) {
+        for (n, (key, _)) in (0u32..).zip(doors.iter()) {
             let need = ReadNeed {
                 direction: DIRECTION_OUTBOUND,
                 egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,

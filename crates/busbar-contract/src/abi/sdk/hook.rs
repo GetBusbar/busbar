@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
-//! typed views ([`Hook`]) or against the 1.5.5 JSON contract ([`HookHandler`], through
-//! [`json_hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's own.
+//! typed views ([`Hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's own.
 //!
 //! * [`Decoded`] — a `decide`/`transform` `in` read as a view borrowed from the host's `in` for
 //!   the call (text and the prompt body zero-copy), and
@@ -14,9 +13,10 @@
 //!   `out` and the host's buffers by [`write_verdict`] / [`write_rewrite`], with the one
 //!   short-buffer answer when a buffer is too small (nothing written, every `*_needed` stated).
 //! * [`lower_decide_reply`] / [`lower_transform_reply`] — a 1.5.5 JSON reply lowered to a verdict,
-//!   exactly as 1.5.5's host normalized it (reject > restrict > abstain > order; a reply that does not
-//!   parse is FAILED). The host keeps the rest of 1.5.5's normalizing: the status clamp, the
-//!   message sanitiser and cap, dropping an `idx` the candidates do not hold, the rewrite parse.
+//!   exactly as 1.5.5's host normalized it (reject > restrict > abstain > order; a reply whose
+//!   typed fields do not parse is ABSTAIN, as 1.5.5's host read it; only the hook's own `Err` is
+//!   FAILED). The host keeps the rest of 1.5.5's normalizing: the status clamp, the message
+//!   sanitiser and cap, dropping an `idx` the candidates do not hold.
 //!
 //! Built ON the SDK's safe layer (SDK-SAFE, ARCHITECT ruling 366) and its generic lifecycle
 //! (`abi::sdk::life`): every op is a [`SafeSlot`] over `Held<HookLife<P>>`, every read goes through
@@ -50,8 +50,8 @@ use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT,
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::{HookHandler, Instance, Lent, LentList, Out, SafeSlot};
-use crate::hook_wire::{HookStageProjection, OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
+use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
+use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
 use crate::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest,
 };
@@ -620,8 +620,11 @@ pub fn write_rewrite(
     Outcome::Ready
 }
 
-/// The 1.5.5 reply's typed fields: a wrong type in any of them fails the whole parse (FAILED),
-/// exactly as 1.5.5's host read it.
+/// The 1.5.5 reply, field for field 1.5.5's `HookResponse` (v1.5.5
+/// `crates/busbar/src/hooks/wire.rs:428-461`: the same fields, types, order and defaults, unknown
+/// keys ignored). A wrong type in any typed field fails the whole parse, and 1.5.5's host read a
+/// failed parse as ABSTAIN (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56` for `decide`, `:59-62`
+/// for `transform`): a hook that answered, but answered out of shape, has no opinion.
 #[derive(serde::Deserialize, Default)]
 struct Reply155 {
     #[serde(default)]
@@ -656,17 +659,21 @@ fn verb(v: &Option<serde_json::Value>) -> Option<&serde_json::Value> {
     v.as_ref().filter(|v| **v != serde_json::Value::Bool(false))
 }
 
-/// LOWER A 1.5.5 `decide` REPLY: reject > restrict > abstain > order; a reply whose typed fields
-/// do not parse is FAILED; a malformed restrict restricts to nothing (the gate's `on_empty`).
+/// LOWER A 1.5.5 `decide` REPLY exactly as 1.5.5's host normalized it (v1.5.5
+/// `crates/busbar/src/hooks/wire.rs:666-695`): reject > restrict > abstain > order; a malformed
+/// restrict restricts to nothing (the gate's `on_empty`). A reply whose typed fields do not parse
+/// (`null`, `[1]`, `{"order":"x"}`, `{"abstain":"yes"}`, a valid `reject` beside a wrong-typed
+/// sibling) is ABSTAIN, as 1.5.5's host read it (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56`,
+/// `Err(_) => RoutingDecision::Abstain`). Only the hook's own `Err` (it said it could not answer) is
+/// FAILED, the operator's `on_error` (v1.5.5 `crates/plugin-loader/src/hook.rs:173-175`).
 #[must_use]
 pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     let v = match reply {
         Ok(v) => v,
         Err(message) => return Verdict::Failed(message),
     };
-    let parsed: Reply155 = match serde_json::from_value(v) {
-        Ok(p) => p,
-        Err(e) => return Verdict::Failed(format!("hook decide reply failed to parse: {e}")),
+    let Ok(parsed) = serde_json::from_value::<Reply155>(v) else {
+        return Verdict::Abstain;
     };
     if let Some(r) = verb(&parsed.reject) {
         let (status, message) = reject_of(r);
@@ -688,25 +695,29 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     }
 }
 
-/// LOWER A 1.5.5 `transform` REPLY: reject > rewrite > abstain; a reply that does not parse is
-/// FAILED. The rewrite crosses as its JSON bytes; the host parses it fail-closed.
+/// LOWER A 1.5.5 `transform` REPLY exactly as 1.5.5's host normalized it (v1.5.5
+/// `crates/busbar/src/hooks/wire.rs:531-543`): reject > rewrite > abstain; a rewrite that is not
+/// 1.5.5's well-formed shape (v1.5.5 `wire.rs:499-510`: a non-empty `messages` array) is ABSTAIN,
+/// the original body. A reply whose typed fields do not parse is ABSTAIN, as 1.5.5's host read it
+/// (v1.5.5 `crates/busbar/src/hooks/plugin.rs:59-62`). Only the hook's own `Err` is FAILED. A
+/// well-formed rewrite crosses as its JSON bytes; the host parses them again, fail-closed.
 #[must_use]
 pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
     let v = match reply {
         Ok(v) => v,
         Err(message) => return RewriteVerdict::Failed(message),
     };
-    let parsed: Reply155 = match serde_json::from_value(v) {
-        Ok(p) => p,
-        Err(e) => {
-            return RewriteVerdict::Failed(format!("hook transform reply failed to parse: {e}"))
-        }
+    let Ok(parsed) = serde_json::from_value::<Reply155>(v) else {
+        return RewriteVerdict::Abstain;
     };
     if let Some(r) = verb(&parsed.reject) {
         let (status, message) = reject_of(r);
         return RewriteVerdict::Reject { status, message };
     }
-    match parsed.rewrite {
+    match parsed
+        .rewrite
+        .filter(|rw| crate::hook_wire::reply::parse_rewrite(rw).is_some())
+    {
         Some(rw) => RewriteVerdict::Rewrite(serde_json::to_vec(&rw).unwrap_or_default()),
         None => RewriteVerdict::Abstain,
     }
@@ -758,46 +769,6 @@ pub trait Hook: Send + Sync {
     }
 }
 
-/// A 1.5.5 JSON hook ([`HookHandler`]) as a [`Hook`]: each view rebuilt as the 1.5.5 JSON, each
-/// reply lowered as the 1.5.5 host normalized it.
-pub struct JsonHook(pub Box<dyn HookHandler>);
-
-impl Hook for JsonHook {
-    fn decide(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
-        Poll::Ready(lower_decide_reply(
-            self.0.decide_result(&view.projection_json(OP_DECIDE)),
-        ))
-    }
-    fn transform(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<RewriteVerdict> {
-        Poll::Ready(lower_transform_reply(
-            self.0.transform_result(&view.projection_json(OP_TRANSFORM)),
-        ))
-    }
-    fn notify(&self, tap: &DecodedTap<'_>, _: &Op<'_>) -> Poll<()> {
-        self.0.notify(&tap.projection_json());
-        Poll::Ready(())
-    }
-    fn configure(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-        version: u64,
-    ) -> bool {
-        self.0.configure(settings, version)
-    }
-    fn status(&self) -> serde_json::Value {
-        self.0.status()
-    }
-    fn describe(&self) -> serde_json::Value {
-        self.0.describe()
-    }
-}
-
-/// A 1.5.5 JSON handler as a boxed [`Hook`].
-#[must_use]
-pub fn json_hook(handler: Box<dyn HookHandler>) -> Box<dyn Hook> {
-    Box::new(JsonHook(handler))
-}
-
 /// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
 /// none, as 1.5.5 handed it), to a [`Hook`].
 pub trait HookOpen: 'static {
@@ -811,22 +782,8 @@ pub trait HookOpen: 'static {
 /// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
 /// word marks ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)), not tail facts.
 #[must_use]
-pub const fn tail(kind_class: u32, prompt_access: u32, user_access: u32) -> Tail {
-    Tail {
-        head: KindTailHead {
-            size: std::mem::size_of::<Tail>() as u32,
-            ..KindTailHead::ZERO
-        },
-        kind_class,
-        prompt_access,
-        user_access,
-        infallible: 0,
-        _reserved: [0; 3],
-        requested_signals: std::ptr::null(),
-        requested_signals_len: 0,
-        routes: std::ptr::null(),
-        routes_len: 0,
-    }
+pub const fn tail(kind_class: u32, content_access: u32, user_access: u32) -> Tail {
+    Tail::EMPTY.with_access(kind_class, content_access, user_access)
 }
 
 /// A Statement over `tail` (see [`crate::abi::sdk::door::statement`]).

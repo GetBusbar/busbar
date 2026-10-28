@@ -265,7 +265,22 @@ pub(crate) async fn inspect_plugin(
             )));
         }
     };
-    respond(StatusCode::OK, service(&handle).inspect_plugin(&tarball))
+    // OFF THE ASYNC WORKER: the inspect gunzips and untars a caller archive of up to the tarball
+    // cap, hashes the library and checks its signature — seconds of work a read-scope credential
+    // can ask for, on the worker the data plane shares if it ran here.
+    let service = service(&handle);
+    match tokio::task::spawn_blocking(move || service.inspect_plugin(&tarball)).await {
+        Ok(view) => respond(StatusCode::OK, view),
+        Err(join_err) => {
+            diag_error!(
+                busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "plugins.inspect",
+                error = %join_err,
+                "admin blocking task failed"
+            );
+            err_json(&AdminError::Internal)
+        }
+    }
 }
 
 /// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a dynamic-library plugin (Full scope): delete the
@@ -306,7 +321,7 @@ pub(crate) async fn remove_plugin(
 ///
 /// It re-runs the exact fail-closed plugin pipeline boot runs (re-read `config.yaml` + the persisted
 /// overlay → resolve → three-phase `scan_and_validate` → open the hook transports) to build a FRESH
-/// `App` snapshot carrying a NEW `PluginRegistry` and NEW hook-plugin instances, then `handle.swap`s
+/// `App` snapshot carrying a NEW plugin registry and NEW hook-plugin instances, then `handle.swap`s
 /// it. New requests immediately use the new plugin instances; in-flight requests finish on the OLD
 /// snapshot, and when that snapshot drops its instances drop, their `Arc`-held `Library` handles drop,
 /// and the old shared libraries unmap — no process restart. The core never goes down: any pipeline
@@ -1491,11 +1506,12 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let loaded_base = busbar_kernel::load_config_from_disk(
+            let loaded_base = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -2222,11 +2238,12 @@ pub(crate) fn rebuild_app_from_disk(
                 .into(),
         );
     };
-    let mut loaded = busbar_kernel::load_config_from_disk(
+    let mut loaded = busbar_kernel::load_config_from_disk_judged(
         &config_path,
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        &*current.root_rules,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
@@ -2454,6 +2471,11 @@ pub(crate) async fn apply_config(
             )))
         }
     };
+    // A first section of a plane this process did not load is refused whole, before the parse and
+    // before anything is built, in the running generation's root rules' words (Law 7).
+    if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
+        return err_json(&AdminError::Validation(refusal));
+    }
     // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
     let req_deploy: busbar_kernel::config::DeployCfg =
         match busbar_kernel::config::deploy_from_deserializer(req.config) {
@@ -2588,6 +2610,19 @@ pub(crate) async fn apply_config(
             err_json(&e)
         }
     }
+}
+
+/// THE RUNNING GENERATION'S REFUSAL of a request-body document (`config`) that writes the section
+/// of a plane this process did not load at start (`RootRules::unloaded_plane_refusal`, Law 7),
+/// judged on its root keys. `None` when it writes none.
+fn unloaded_plane_refusal(handle: &AppHandle, config: &serde_json::Value) -> Option<String> {
+    let keys: Vec<&str> = config
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.keys().map(String::as_str))
+        .collect();
+    let app = handle.load();
+    busbar_kernel::appbuild::RootRules::unloaded_plane_refusal(&*app.root_rules, &keys)
 }
 
 /// Merge a partial `RootSettings` request onto the current overlay root state: a field the request
@@ -3026,11 +3061,12 @@ pub(crate) async fn put_config_settings(
             // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
             // mechanism, with the root section coming from the just-merged desired state rather than
             // the on-disk overlay.
-            let next = busbar_kernel::load_config_from_disk(
+            let next = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -3380,16 +3416,15 @@ pub(crate) async fn plugin_schema(
         // conservative label (never assert trust the manifest catalog can't back up).
         let loadable = current.hook_env.registry.resolve(&hook.plugin);
         let trust = loadable
-            .map(|p| verdict_trust(&p.verdict))
+            .as_ref()
+            .map(|p| verdict_trust(&p.trust))
             .unwrap_or("unverified");
         // `kind`/`restart_required_default`: the kind-derived restart-scoping default, so
         // busbar-ui does not have to hardcode the kind->default table itself. `None` when the
         // plugin cannot even be resolved to a manifest — same posture `trust: "unverified"`
         // already takes for the identical case.
-        let kind = loadable.map(|p| p.manifest.kind.clone());
-        let restart_required_default = kind
-            .as_deref()
-            .map(busbar_kernel::plugin_admission::sign::kind_restart_default);
+        let kind = loadable.as_ref().map(|p| p.kind.clone());
+        let restart_required_default = kind.as_deref().map(|k| kind_restart_default(&current, k));
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
@@ -3400,7 +3435,8 @@ pub(crate) async fn plugin_schema(
         // baseline, same as a never-loaded plugin, rather than reporting "no schema available"
         // when the manifest actually has one.
         let (schema, schema_error) = loadable
-            .map(|p| manifest_schema(p.manifest.settings_schema.as_deref()))
+            .as_ref()
+            .map(|p| manifest_schema(p.settings_schema.as_deref()))
             .unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
@@ -3410,8 +3446,8 @@ pub(crate) async fn plugin_schema(
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.verdict);
-    let (schema, schema_error) = manifest_schema(loadable.manifest.settings_schema.as_deref());
+    let trust = verdict_trust(&loadable.trust);
+    let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
         &json!({
@@ -3420,8 +3456,8 @@ pub(crate) async fn plugin_schema(
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "kind": loadable.manifest.kind,
-            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&loadable.manifest.kind),
+            "kind": loadable.kind,
+            "restart_required_default": kind_restart_default(&current, &loadable.kind),
         }),
     )
 }
@@ -3447,16 +3483,25 @@ fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>,
 }
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
-/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// [`busbar_kernel::plugin_admission::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
-/// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
-/// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
-/// variant is a compile error here, not a silently-missing label.
-fn verdict_trust(v: &busbar_kernel::plugin_admission::sign::Verdict) -> &'static str {
+/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s trust mapping), applied to a row's
+/// [`busbar_contract::plugin_rows::Trust`]. An admitted row (what `PluginRows::resolve` returns) is
+/// never `"rejected"` — a rejected artifact is a skipped plugin, not a row — but the mapping stays
+/// total (not a partial match on `Trusted`/`Allowed` alone) so a future trust variant is a compile
+/// error here, not a silently-missing label.
+fn verdict_trust(v: &busbar_contract::plugin_rows::Trust) -> &'static str {
     match v {
-        busbar_kernel::plugin_admission::sign::Verdict::Trusted { .. } => "trusted",
-        busbar_kernel::plugin_admission::sign::Verdict::Allowed { .. } => "unverified",
+        busbar_contract::plugin_rows::Trust::Trusted { .. } => "trusted",
+        busbar_contract::plugin_rows::Trust::Allowed { .. } => "unverified",
     }
+}
+
+/// The binding lifecycle default for a `kind` plugin's settings change (whether it needs a process
+/// restart), as the root's admission answers it. With no admission installed this build cannot say
+/// what the kind's default is, so it answers `true` — a restart — the SAFE default: an operator told
+/// to restart when a hot apply would have done loses a restart, while one told a change applies hot
+/// when it does not is left running the old settings.
+fn kind_restart_default(app: &busbar_kernel::state::App, kind: &str) -> bool {
+    app.plugin_admission.is_none_or(|a| a.restart_default(kind))
 }
 
 /// `GET /api/v1/admin/hooks/{name}/schema` — proxy the hook's self-described settings JSON Schema
@@ -3913,7 +3958,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
     // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
     // pass, which looks each path up by the key inserted here.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
                 for (path, item) in obj {
@@ -4666,7 +4711,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
     // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
     // those calls had.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {
             schemas(&mut gen, &mut req_gen, &mut paths);
         }
@@ -5013,7 +5058,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // document still describes every operation this BUILD can serve — one static document, served
     // identically whatever the deployment configured — and the mark is how a reader tells "present
     // on every node" from "present on a node that configured `<section>:`".
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if decl.openapi.is_none() && decl.named_def_list.is_none() {
             continue;
         }
@@ -5142,10 +5187,9 @@ static OPENAPI_JSON_GZ: &[u8] = include_bytes!("openapi.json.gz");
 /// The served document, inflated PER CALL and byte-identical to the committed `openapi.json`.
 /// This used to memoize the inflation in a `OnceLock<String>` — which pinned the full 366 KB+
 /// document in RAM for the process lifetime after the FIRST `GET openapi.json`, to save ~5 ms on
-/// a cold admin/tooling path. Backwards: the handler now serves the embedded gz bytes directly to
-/// any client whose `Accept-Encoding` allows it (see [`openapi`]), so this inflate runs only for
-/// the rare identity-only client (and the drift tests), where a per-request decompress of a 43 KB
-/// gz is the honest cost and nothing is retained.
+/// a cold admin/tooling path. Backwards: the handler inflates per request, on a blocking thread
+/// (see [`openapi`]), where a per-request decompress of the embedded gz is the honest cost and
+/// nothing is retained.
 pub(crate) fn openapi_json() -> String {
     use std::io::Read;
     let mut out = String::new();
@@ -5186,9 +5230,10 @@ fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
 /// `GET /api/v1/admin/openapi.json` — the OpenAPI 3.1 schema of the v1 surface (the discovery contract).
 /// Serves the committed, typed document verbatim as `application/json` (no runtime generation —
 /// see [`openapi_json`]). A client whose `Accept-Encoding` allows gzip (virtually every one) gets
-/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` — no inflation, no retained
-/// 366 KB+ string, byte-identical after the client's transparent decode; only an identity-only
-/// client pays a per-request inflate. `Vary: Accept-Encoding` because the body now differs by
+/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` when nothing is filtered — no
+/// retained 366 KB+ string, byte-identical after the client's transparent decode. Deciding whether
+/// anything IS filtered inflates and parses the document per request, so that work runs on a
+/// blocking thread, never the async worker. `Vary: Accept-Encoding` because the body differs by
 /// that header. No axum compression layer exists on this router (checked), so nothing
 /// double-compresses.
 ///
@@ -5204,24 +5249,45 @@ pub(crate) async fn openapi(
     headers: axum::http::HeaderMap,
 ) -> Response {
     const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
+    /// What the blocking build settled on serving.
+    enum Served {
+        /// A JSON body: the document filtered to this node's planes, or the committed one inflated
+        /// for an identity-only client.
+        Json(String),
+        /// The embedded gzip bytes, unchanged.
+        Gzip,
+    }
     let app = handle.load();
-    let configured = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
-            .is_some_and(|decl| app.plane_configured(decl))
-    };
-    if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
-        return (
+    let gzip = accept_encoding_allows_gzip(&headers);
+    // OFF THE ASYNC WORKER: deciding what to serve inflates the embedded document, parses all of it
+    // and walks it for the operations of planes this node does not configure — on a node running a
+    // 1.5.5 config, on every request. That is a blocking thread's work, never the worker's the data
+    // plane shares. The document is inflated once and the inflated text reused for an identity-only
+    // client.
+    let served = tokio::task::spawn_blocking(move || {
+        let configured = |section: &str| {
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
+                .is_some_and(|decl| app.plane_configured(decl))
+        };
+        let committed = openapi_json();
+        match openapi_for_configured_planes(&committed, configured) {
+            Some(filtered) => Served::Json(filtered),
+            None if gzip => Served::Gzip,
+            None => Served::Json(committed),
+        }
+    })
+    .await;
+    match served {
+        Ok(Served::Json(body)) => (
             StatusCode::OK,
             [
                 (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
                 VARY,
             ],
-            filtered,
+            body,
         )
-            .into_response();
-    }
-    if accept_encoding_allows_gzip(&headers) {
-        (
+            .into_response(),
+        Ok(Served::Gzip) => (
             StatusCode::OK,
             [
                 (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
@@ -5230,17 +5296,16 @@ pub(crate) async fn openapi(
             ],
             OPENAPI_JSON_GZ,
         )
-            .into_response()
-    } else {
-        (
-            StatusCode::OK,
-            [
-                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
-                VARY,
-            ],
-            openapi_json(),
-        )
-            .into_response()
+            .into_response(),
+        Err(join_err) => {
+            diag_error!(
+                busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "openapi.json",
+                error = %join_err,
+                "admin blocking task failed"
+            );
+            err_json(&AdminError::Internal)
+        }
     }
 }
 
@@ -5365,6 +5430,10 @@ pub(crate) async fn validate_config(
             )))
         }
     };
+    // The dry run judges what an apply would: a first section of an unloaded plane is refused.
+    if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
+        return err_json(&AdminError::Validation(refusal));
+    }
     // Same lift the disk loader (boot/reload) runs before parsing `DeployCfg` — see the struct doc
     // above. `deploy_from_deserializer` is format-agnostic by design (its own doc: "the JSON-shaped
     // paths ... get it too"), so feeding it the already-parsed JSON `Value` reproduces the exact

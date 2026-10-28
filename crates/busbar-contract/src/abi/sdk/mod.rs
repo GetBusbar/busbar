@@ -31,9 +31,16 @@ pub use crate::{export_door, plugin_door};
 pub mod capture;
 // THE SAFE SURFACE (THE DESIGN, plugins and the plugin ABI): a slot body with no `unsafe` — host-lent memory read and
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
+// `#[macro_use]`: the lists `lent.rs` states its accessors from are the test support's too (its
+// pointer and length pairs, status row 194): one list, read in both places.
+#[macro_use]
 pub mod lent;
 pub mod safe;
 pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+// THE GENERATION BORROW: what an op's `out` may name at runtime, held by the borrow checker to
+// memory that lives until the instance's next refresh generation (status row 194).
+pub mod generation;
+pub use generation::Gen;
 // A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
 pub mod out;
 pub use out::{Out, Scalar};
@@ -49,12 +56,16 @@ pub use safe::{Instance, Safe, SafeSlot};
 pub mod services;
 pub use services::{
     CredentialSecret, Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed,
-    TrustItem, TrustItems, Wake,
+    StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
 // THE ONE WIPED HMAC-SHA256 an auth plugin keys over secret material.
 pub mod hmac;
+// A PLUGIN'S CREDENTIALS: sealed at settings parse, no getter, no Debug (the chip design, its section on plugin credentials).
+pub mod cred;
+// THE CHIP'S RECIPES: every auth step performed by the credential (the chip design, its section on recipe classes).
+pub mod chip;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
 // inbound verdict cache inside itself (THE DESIGN, section 11.11).
 pub mod auth_door;
@@ -85,108 +96,6 @@ pub mod test_support;
 /// catalog entries their hook wants computed + projected — see `crate::signal::Signal`'s doc comment
 /// for the full catalog and the append-only/non_exhaustive contract.
 pub use crate::signal::{Signal, SignalBag, SignalValue};
-
-// ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
-// A hook plugin is a routing policy on the hook kind's door. Its author implements the tiny
-// SYNC [`HookHandler`] trait (the six ops over JSON), NOT the engine's async `RoutingPolicy`; on the
-// hook door the SDK's `json_hook` bridges it onto the kind's typed ops: a hook author writes
-// `decide`/`transform`/etc. and the SDK routes each op to them.
-
-/// The sync contract a `kind: hook` plugin author implements. Each method receives the op's payload as
-/// the opaque projection [`serde_json::Value`] the engine built (`hooks::wire::build`) and returns the
-/// reply object the engine parses through its fail-closed normalizers. Every method has a DEFAULT so a
-/// trivial hook (e.g. a gate that only ranks) implements just the ops it cares about; the rest degrade
-/// to the safe "no opinion" / "unsupported" replies the engine already treats as fail-open.
-///
-/// A hook NEVER sees prompt/user content it was not granted: the engine only projects `prompt`/`user`
-/// into `payload` when BOTH the operator grant and the signed-manifest intent allow it. The handler
-/// just reads whatever keys are present.
-pub trait HookHandler: Send + Sync {
-    /// `decide` — rank candidates / return a verdict. Default: `{}` (abstain).
-    ///
-    /// Implement [`HookHandler::decide_result`] instead if your hook can FAIL as distinct from
-    /// having no opinion. Returning `{}` from here says "no opinion", and the engine acts on that
-    /// difference: an abstain lets the request proceed, a failure resolves the operator's
-    /// `on_error` chain, whose terminal can be `reject`.
-    fn decide(&self, _payload: &serde_json::Value) -> serde_json::Value {
-        serde_json::json!({})
-    }
-
-    /// `decide`, with the ability to say the hook could not answer.
-    ///
-    /// ADDITIVE, and defaulted to the infallible [`HookHandler::decide`] so every existing
-    /// implementation keeps compiling and behaving identically. Override this one when your hook
-    /// depends on something that can be down: a remote scoring service, a database, a model.
-    ///
-    /// `Err(message)` reaches the engine as a failure and resolves the operator's configured
-    /// `on_error` chain. `Ok(value)` is a successful reply, and `Ok(json!({}))` specifically means
-    /// abstain. Before this existed there was no way to express the difference, so a gate whose
-    /// dependency was down answered "no opinion" and an operator who had deliberately configured
-    /// `on_error: reject` never got it.
-    ///
-    /// The message goes to the operator's log. Do not put request content in it.
-    fn decide_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
-        Ok(self.decide(payload))
-    }
-    /// `transform` — a `prompt: rw` gate's rewrite/reject pass. Default: `{}` (abstain, original body).
-    ///
-    /// Implement [`HookHandler::transform_result`] instead if your rewrite can FAIL as distinct from
-    /// having nothing to change — the same difference `decide`/`decide_result` draw.
-    fn transform(&self, _payload: &serde_json::Value) -> serde_json::Value {
-        serde_json::json!({})
-    }
-
-    /// `transform`, with the ability to say the hook could not answer.
-    ///
-    /// ADDITIVE and defaulted to the infallible [`HookHandler::transform`], so every existing
-    /// implementation keeps compiling and behaving identically. Override this one when the rewrite
-    /// depends on something that can be down — a compressor's model endpoint, a PII screen's
-    /// classifier.
-    ///
-    /// `Err(message)` reaches the engine as a rewrite-path FAILURE and resolves the operator's
-    /// `on_error` chain. `Ok(json!({}))` remains a plain abstain: proceed with the original body.
-    /// Before this existed the two were the same value, so a screening gate whose classifier was
-    /// unreachable returned "no changes" and the request it was meant to stop went through with its
-    /// body untouched.
-    ///
-    /// The message goes to the operator's log. Do not put request content in it.
-    fn transform_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
-        Ok(self.transform(payload))
-    }
-    /// `notify` — a tap observation (fire-and-forget). Default: no-op.
-    fn notify(&self, _payload: &serde_json::Value) {}
-    /// `configure` — accept a desired-state settings push. Return `true` to ACK the version (the engine
-    /// requires the ack), `false`/anything-else to reject the push. Default: ACK (idempotent no-op).
-    fn configure(
-        &self,
-        _settings: &serde_json::Map<String, serde_json::Value>,
-        _settings_version: u64,
-    ) -> bool {
-        true
-    }
-    /// `describe` — the self-description envelope `{schema, dashboard?}`. Default: `{}` (none).
-    fn describe(&self) -> serde_json::Value {
-        serde_json::json!({})
-    }
-    /// `status` — observed settings + metrics (`{status: {...}}`). Default: `{}` (unsupported → the
-    /// engine fails open).
-    fn status(&self) -> serde_json::Value {
-        serde_json::json!({})
-    }
-    /// The HTTP [`Route`]s this hook serves (a routing hook's inbound `/feedback`), collected once at
-    /// load. Default: none. The engine confines a hook's routes to `/hooks/<name>/*`.
-    fn routes(&self) -> Vec<Route> {
-        Vec::new()
-    }
-    /// Serve one inbound HTTP request matched to a declared route. Default: `404`.
-    fn handle_http(&self, _req: &EndpointRequest) -> EndpointResponse {
-        EndpointResponse {
-            status: 404,
-            headers: Vec::new(),
-            body: Vec::new(),
-        }
-    }
-}
 
 // ── THE EXPORT KIND'S WIRE TYPES, re-exported for plugin authors ──────────────────────────────────
 

@@ -115,6 +115,12 @@ pub struct DiskFailure {
 /// A `disk.append`'s answer.
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
+/// `Host` as an instance holds it for its life (status row 194): the host's own tables, read at
+/// `open`. #1471 ties `Host` to the tables it was read from (`Host<'t>`) and states this alias as
+/// `Host<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
+/// the same spelling compiles before and after.
+pub type StaticHost = Host;
+
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
 #[derive(Debug, Clone, Copy)]
@@ -151,6 +157,20 @@ impl Host {
             services: tables.services,
             io,
         }
+    }
+
+    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
+    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
+    /// caller that names it here compiles there too.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub const unsafe fn from_raw(tables: &HostTables) -> Self {
+        Self::of(tables)
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
@@ -575,6 +595,51 @@ impl Connector<'_> {
         };
         self.call(service::CLOSE, |s| s.close, input)
             .map(|r| r.map(|_| ()))
+    }
+
+    /// What closes this connector's streams once no entry of its op runs ([`Closer`]).
+    pub(crate) fn closer(&self) -> Closer {
+        Closer {
+            ctx: self.host.ctx,
+            conns: self.host.conns,
+        }
+    }
+}
+
+/// WHAT CLOSES A STREAM WITH NO OP RUNNING: the instance's host context and connector table, the
+/// two a CLOSE crosses with, kept by a continuation the SDK parks so that one given up (its op
+/// cancelled, or a fresh op on its ticket) closes the stream it established (status row 159).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Closer {
+    ctx: HostCtx,
+    conns: *const ConnectorSlots,
+}
+
+// SAFETY: as `Host`'s: the context is an opaque handle and the table plain code addresses, both
+// valid for the instance's life; every call goes through the host's own synchronisation.
+unsafe impl Send for Closer {}
+// SAFETY: as `Send`.
+unsafe impl Sync for Closer {}
+
+impl Closer {
+    /// Close `stream` on no ticket: a close never pends, so it is made on none
+    /// ([`Connector::close`]). What the host answers is not read: the stream is given up either
+    /// way.
+    pub(crate) fn close(&self, stream: u64) {
+        let tables = HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: self.ctx,
+            wake: None,
+            conns: self.conns,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        };
+        // SAFETY: `ctx` and `conns` are the ones a host lent this instance's `open` (read off its
+        // `Host`, [`Connector::closer`]), valid for the instance's life, which outlives every
+        // continuation it parks; no wake, services or I/O table is named.
+        let host = unsafe { Host::from_raw(&tables) };
+        let _ = host.connector(Ticket::NONE).close(stream);
     }
 }
 

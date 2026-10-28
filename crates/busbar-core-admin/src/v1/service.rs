@@ -166,7 +166,7 @@ fn metered_row<'a>(
 /// signed LEDGER-SIMPLE entry pins that read byte for byte, and 1.5.5's usage rows had no such field.
 pub(crate) fn row_carries_classes(provider: &str) -> bool {
     matches!(
-        busbar_kernel::plane::registry::plane_decl_for(provider),
+        busbar_kernel::plane_driver::registry::plane_decl_for(provider),
         Some(decl) if !decl.fallback
     )
 }
@@ -179,7 +179,7 @@ pub(crate) fn row_carries_classes(provider: &str) -> bool {
 /// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
 /// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
 pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match busbar_kernel::plane::registry::plane_decl_for(provider) {
+    match busbar_kernel::plane_driver::registry::plane_decl_for(provider) {
         Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
             "{}{}{model}",
             decl.key,
@@ -273,8 +273,11 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
 /// the latest `priced_from_ms` among this key's rows on this lane that is not after the epoch
 /// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
 /// its `was` — so it is the unit's latest counts minus what it recorded.
+///
+/// `corrections` is the row's own share — the usage read indexes the node's list by (key, lane)
+/// once and hands each row only what can land on it; every condition is still checked here.
 pub fn row_count_corrections(
-    corrections: &[amend::Amendment],
+    corrections: &[&amend::Amendment],
     key_id: &str,
     lane: &str,
     window: (u64, u64),
@@ -704,7 +707,11 @@ const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 /// path can reach outside the plugins directory) and enforce the `.tar.gz`/`.tgz` extension. This
 /// is the one gate every plugin write/delete funnels through, so the plugins directory is the hard
 /// boundary. The filename is STORAGE ONLY — plugin identity always comes from the signed manifest.
-fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
+///
+/// What a tarball filename IS is the root's admission's answer (`App::plugin_admission`). With no
+/// admission installed nothing can be admitted, so no filename is a plugin tarball: the name is
+/// refused (fail-closed), never waved through to a write or delete the admission could not judge.
+fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {
     if file.is_empty() || file.len() > MAX_PLUGIN_FILENAME_LEN {
         return Err(AdminError::Validation(format!(
             "plugin filename must be 1..={MAX_PLUGIN_FILENAME_LEN} chars"
@@ -729,7 +736,7 @@ fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
             ));
         }
     }
-    if !busbar_kernel::plugin_admission::tarball::is_plugin_tarball(file) {
+    if !app.plugin_admission.is_some_and(|a| a.is_tarball(file)) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -747,12 +754,12 @@ async fn probe_transport(
     env: &busbar_kernel::hooks::HookEnv,
 ) -> (Option<bool>, Option<String>) {
     match env.registry.resolve(&cfg.plugin) {
-        Some(p) if p.manifest.kind == "hook" => (Some(true), None),
+        Some(p) if p.kind == "hook" => (Some(true), None),
         Some(p) => (
             Some(false),
             Some(format!(
                 "plugin '{}' resolves to kind '{}', not 'hook'",
-                cfg.plugin, p.manifest.kind
+                cfg.plugin, p.kind
             )),
         ),
         None => (
@@ -1322,7 +1329,7 @@ fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
 // this fold names no plane registry type. A plane with no per-registration gates declares `None` and
 // is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(reresolve) = decl.reresolve_gates {
             reresolve(next);
         }
@@ -1336,7 +1343,7 @@ fn plane_named_def_list(
     section: NamedMapSection,
     app: &busbar_kernel::state::App,
 ) -> Vec<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
             f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
@@ -1350,7 +1357,7 @@ fn plane_named_def_get(
     app: &busbar_kernel::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| {
             f(

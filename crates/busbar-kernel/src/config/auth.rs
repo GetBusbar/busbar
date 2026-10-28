@@ -34,11 +34,9 @@ use busbar_contract::secret_ref::SecretRef;
 /// The built-in `keys` (data-plane signed-key verifier) and the operator credential
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. the operator credential carrying its `token:` secret ref).
-// `Serialize` is required by the overlay's per-entry MERGE (`config::patch::merge_entry`): an
-// overlay entry is a PATCH, so the base entry has to be projected back to JSON in order to be
-// patched. The projection is config-internal and round-trips straight back into this same struct;
-// it reaches no reader and no HTTP response, which is the distinction the settings-leak lint's
-// category (c) turns on.
+// `Serialize` projects the entry back to a raw definition document. The projection is
+// config-internal and round-trips straight back into this same struct; it reaches no reader and no
+// HTTP response, which is the distinction the settings-leak lint's category (c) turns on.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
 pub struct IdentityProviderCfg {
@@ -495,7 +493,7 @@ pub use busbar_kernel_identity::operator::provider as operator_module;
 /// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
 /// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
 /// and the principal id it identifies the operator as. Frozen config text the composition root's
-/// legacy table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
+/// migration table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
 /// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never spells it. Which module answers it is
 /// the auth axis's business.
 pub use busbar_kernel_identity::operator::{
@@ -504,12 +502,12 @@ pub use busbar_kernel_identity::operator::{
 
 /// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
 /// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
-/// former name the root legacy table gives that key — every name the registry resolves to that row.
+/// former name the root migration table gives that key — every name the registry resolves to that row.
 pub fn names_operator(module: &str) -> bool {
     let op = operator_provider();
     busbar_kernel_identity::operator::names(op, module)
         || (!op.is_empty()
-            && crate::config::legacy::former_names(op)
+            && crate::config::migration_table::former_names(op)
                 .iter()
                 .any(|f| f == module))
 }

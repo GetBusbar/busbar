@@ -233,6 +233,9 @@ pub struct Connection {
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
     /// ([`crate::proxy`]); `None` once the proxy answered, and on every direct connection.
     tunnel: Option<Tunnel>,
+    /// THE NAME'S OTHER ADMITTED ADDRESSES, in the resolver's order: a connect the far end refuses
+    /// is dialled afresh at the next, as 1.5.5's client moved on through a name's addresses.
+    fallback: Option<Fallback>,
     /// The protocols connection security offered (a dial) or agrees to (an accept), in the
     /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
     /// (`check_agreed`) before the framer is handed it. Empty = none offered.
@@ -542,6 +545,29 @@ impl Planned {
         self.dial_via(addr, None)
     }
 
+    /// [`Self::dial_at`] `addr`, a connect the far end refuses moving on to each of `also` in
+    /// turn (each already judged as `addr` was) before the connection fails.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dial_at`].
+    pub fn dial_at_any(
+        self,
+        addr: std::net::SocketAddr,
+        also: Vec<std::net::SocketAddr>,
+    ) -> Result<Connection, Failure> {
+        let via = (Arc::clone(&self.via.door), Arc::clone(&self.via.io));
+        let mut conn = self.dial_via(addr, None)?;
+        if !also.is_empty() {
+            conn.fallback = Some(Fallback {
+                door: via.0,
+                io: via.1,
+                next: also.into(),
+            });
+        }
+        Ok(conn)
+    }
+
     /// Dial the PROXY at `proxy` and, once it connects, ask it for a tunnel to this plan's
     /// authority with `connect` (the CONNECT request, [`crate::proxy::connect_request`]); the
     /// secure layer (this plan's name and the target's certificate) and the framing run over the
@@ -644,6 +670,13 @@ impl Planned {
     }
 }
 
+/// A dial's remaining addresses ([`Connection::fallback`]) and the carrier that dials them.
+struct Fallback {
+    door: Arc<dyn FramerDoor>,
+    io: Arc<HostIo>,
+    next: VecDeque<std::net::SocketAddr>,
+}
+
 impl Connection {
     /// Dial the UNIX-DOMAIN socket at `path` (the target `unix:<path>`, [`socket::unix_path`]) as a
     /// raw stream through `door`: no name, no address to judge, no connection security at the dial
@@ -741,6 +774,7 @@ impl Connection {
             security_error: None,
             cause: None,
             tunnel: None,
+            fallback: None,
             alpn_offer: Vec::new(),
             full: std::collections::HashSet::new(),
         })
@@ -797,6 +831,7 @@ impl Connection {
             framer_error: None,
             cause: None,
             tunnel: None,
+            fallback: None,
             alpn_offer: Vec::new(),
             full: std::collections::HashSet::new(),
             security_error: None,
@@ -954,6 +989,7 @@ impl Connection {
             security_error: None,
             cause: None,
             tunnel: None,
+            fallback: None,
             alpn_offer,
             full: std::collections::HashSet::new(),
         };
@@ -1234,6 +1270,12 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
+    /// Whether connection security is set and its handshake has completed: what
+    /// [`Self::peer_cert_hash`] is read off.
+    pub(crate) fn secured(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
+    }
+
     /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
     /// (the channel-binding input; SHA-256 unless the certificate is signed with SHA-384 or
     /// SHA-512, [`crate::tls::client::end_point_digest`]), lower-case hex, once a handshake
@@ -1310,6 +1352,30 @@ impl Connection {
                 Ok(false) if self.read_end && self.inbox.is_empty() => {
                     return Poll::Ready(Ok(None))
                 }
+                Ok(false) => return Poll::Pending,
+                Err(f) => self.fail(f),
+            }
+        }
+    }
+
+    /// WHETHER THE DIAL HAS LANDED: the far end took the connect (through the proxy's tunnel,
+    /// where one is asked for). `Ready(Ok)` once it has, `Ready(Err)` once the connect failed
+    /// (every address the name admitted refused it, or its deadline passed), `Pending` with `cx`'s
+    /// waker while it connects. What the far end sends meanwhile is kept for the reader.
+    ///
+    /// # Errors
+    ///
+    /// Why the connection failed.
+    pub fn poll_landed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        loop {
+            match &self.phase {
+                Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
+                Phase::Connecting => {}
+                _ if self.tunnel.as_ref().is_some_and(|t| t.asked) => {}
+                _ => return Poll::Ready(Ok(())),
+            }
+            match self.drive(cx) {
+                Ok(true) => {}
                 Ok(false) => return Poll::Pending,
                 Err(f) => self.fail(f),
             }
@@ -1415,6 +1481,22 @@ impl Connection {
         Ok(take)
     }
 
+    /// The connect was refused: dial the name's next admitted address in its place, the
+    /// connection still connecting. `None` when no address is left to try.
+    fn redial_next(&mut self) -> Option<Result<(), Failure>> {
+        let f = self.fallback.as_mut()?;
+        let next = f.next.pop_front()?;
+        Some(
+            Carried::dial(
+                Arc::clone(&f.door),
+                Arc::clone(&f.io),
+                &Dest::Authority(next.to_string()),
+            )
+            .map(|carried| self.carried = carried)
+            .map_err(dial_failure),
+        )
+    }
+
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
     /// moved; `Ok(false)` = nothing can until a waker fires.
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
@@ -1441,7 +1523,11 @@ impl Connection {
                         self.connected()?;
                     }
                 }
-                Poll::Ready(Err(e)) => return Err(Failure::Refused(e)),
+                Poll::Ready(Err(e)) => match self.redial_next() {
+                    Some(Ok(())) => moved = true,
+                    Some(Err(f)) => return Err(f),
+                    None => return Err(Failure::Refused(e)),
+                },
                 Poll::Pending => {}
             }
         }

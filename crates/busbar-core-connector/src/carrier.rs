@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CARRIER A CONNECTION RIDES (TRANSPORT-STACK (2); `BUSBAR-1.6.0.md` THE DESIGN §5): one carrier
-//! entry's slots (`listen`, `accept`, `dial`, `read`, `write`, `flush`, `shut`, `arrival`), driven
-//! host-side. The connector builds every connection as `carrier -> [TLS] -> framer`, and the
-//! carrier is the bottom of it: it dials, accepts, reads and writes over the host's I/O
-//! ([`crate::hostio`]), and this crate reaches the wire through it and nothing else.
+//! entry's slots (`listen`, `accept`, `dial`, `read`, `write`, `flush`, `shut`), driven host-side.
+//! The connector builds every connection as `carrier -> [TLS] -> framer`, and the carrier is the
+//! bottom of it: it dials, accepts, reads and writes over the host's I/O ([`crate::hostio`]), and
+//! this crate reaches the wire through it and nothing else.
 //!
 //! A connection is full-duplex, so it holds TWO sides (`abi::transport`: "TWO TICKETS PER
 //! CONNECTION"), each an inline ticket ([`Side`]) with at most one op in flight: `read` on the read
@@ -14,13 +14,20 @@
 //! the task's waker on its side's ticket; the next call on that side RESUMES it (`FLAG_RESUME`, the
 //! same op on the same ticket) before anything else is asked of it.
 //!
+//! EACH SIDE HAS ONE OWNER, AND NO LOCK (`BUSBAR-1.6.0.md` §11, M1 DISPATCH RULINGS: "No plugin
+//! code runs under a host lock"). The two halves are separate values a [`Carried`] owns outright,
+//! and every op takes the connection `&mut`: the task that holds the connection is the one task
+//! that drives each half, so no crossing ever waits on, or is waited on through, a host mutex.
+//! A close ([`Carried::close`], and its `Drop`) is made by that owner too, on its own thread, with
+//! nothing held: the exchanges that share a connection hand its close to whichever of them has it
+//! out, and never wait on it.
+//!
 //! How a call reaches the entry is not this crate's business: the entry's [`FramerDoor`] carries it
 //! ([`FramerDoor::carry`]) — the one dispatcher's crossing for a loaded plugin, compiled in or
 //! dropped in.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
@@ -28,9 +35,9 @@ use busbar_contract::abi::mechanism::lifecycle::{CancelIn, CancelOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{
-    AcceptIn, AcceptOut, ArrivalIn, ArrivalOut, ConnIn, ConnOut, Destination, DialIn, IoOut,
-    ListenIn, ListenOut, ReadIn, ShutIn, WriteIn, CLOSE_NORMAL, DEST_AUTHORITY, DEST_PROGRAM,
-    MAX_ADDR, READ_END_OF_FRAME, WRITE_END_OF_FRAME,
+    AcceptIn, AcceptOut, ConnIn, ConnOut, Destination, DialIn, IoOut, ListenIn, ListenOut, ReadIn,
+    ShutIn, WriteIn, CLOSE_NORMAL, DEST_AUTHORITY, DEST_PROGRAM, READ_END_OF_FRAME,
+    WRITE_END_OF_FRAME,
 };
 
 use crate::framer::{Crossed, FramerDoor};
@@ -56,7 +63,6 @@ pub enum Carry<'a> {
     Write(&'a mut WriteIn, &'a mut IoOut),
     Flush(&'a mut ConnIn, &'a mut OutHead),
     Shut(&'a mut ShutIn, &'a mut OutHead),
-    Arrival(&'a mut ArrivalIn, &'a mut ArrivalOut),
     /// The lifecycle's `cancel` of the op pending on a side (`CancelIn::ticket`), made on no ticket.
     Cancel(&'a mut CancelIn, &'a mut CancelOut),
 }
@@ -74,7 +80,6 @@ fn op_of(c: &Carry<'_>) -> u8 {
         Carry::Write(..) => 5,
         Carry::Flush(..) => FLUSH,
         Carry::Shut(..) => 7,
-        Carry::Arrival(..) => 8,
         Carry::Cancel(..) => 9,
     }
 }
@@ -188,20 +193,17 @@ impl Dest {
 }
 
 /// THE CARRIER OF ONE CONNECTION: its entry, the host I/O it rides, the carrier's connection token,
-/// its two sides (each driven by the one task that reads, or writes, it), and the host handle the
-/// dial made (a program's: its pid and exit are the host's to read).
+/// its two halves (the read side and the write side, each a value of its own, driven only through
+/// the `&mut` its one owner holds: no lock), and the host handle the dial made (a program's: its
+/// pid and exit are the host's to read).
 pub struct Carried {
     door: Arc<dyn FramerDoor>,
     io: Arc<HostIo>,
     conn: u64,
-    rd: Mutex<Driven>,
-    wr: Mutex<Driven>,
+    rd: Driven,
+    wr: Driven,
     handle: Option<u64>,
-    shut: AtomicBool,
-}
-
-fn side(m: &Mutex<Driven>) -> MutexGuard<'_, Driven> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    shut: bool,
 }
 
 impl std::fmt::Debug for Carried {
@@ -287,10 +289,10 @@ impl Carried {
                 door,
                 io,
                 conn: o.conn,
-                rd: Mutex::new(rd),
-                wr: Mutex::new(wr),
+                rd,
+                wr,
                 handle,
-                shut: AtomicBool::new(false),
+                shut: false,
             }),
             // The host's own record of an open that failed is the connector's words for it.
             _ if failure.is_some() => Err(match failure {
@@ -321,10 +323,10 @@ impl Carried {
             door,
             io,
             conn,
-            rd: Mutex::new(rd),
-            wr: Mutex::new(wr),
+            rd,
+            wr,
             handle,
-            shut: AtomicBool::new(false),
+            shut: false,
         })
     }
 
@@ -362,7 +364,7 @@ impl Carried {
 
     /// The dial's connect settled (the carrier's `flush` on a fresh dial): `Ready(Err)` with the
     /// far end's refusal, in the system's words.
-    pub fn poll_connected(&self, cx: &mut Context<'_>) -> Poll<Result<(), String>> {
+    pub fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), String>> {
         self.poll_flush(cx).map_err(|e| e.to_string())
     }
 
@@ -371,11 +373,14 @@ impl Carried {
     /// # Errors
     ///
     /// The carrier failed the connection.
-    pub fn poll_flush(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut i: ConnIn = blank_in();
         i.conn = self.conn;
         let mut o: OutHead = blank_out();
-        match side(&self.wr).cross(self.door.as_ref(), Carry::Flush(&mut i, &mut o), Some(cx)) {
+        match self
+            .wr
+            .cross(self.door.as_ref(), Carry::Flush(&mut i, &mut o), Some(cx))
+        {
             None => Poll::Pending,
             Some(c) if c.outcome == Outcome::Ready => Poll::Ready(Ok(())),
             Some(c) => Poll::Ready(Err(Self::io_error(&c))),
@@ -385,7 +390,7 @@ impl Carried {
     /// Whether a `flush` is pending on the write side (it resumes before anything else is offered).
     #[must_use]
     pub fn flushing(&self) -> bool {
-        side(&self.wr).pending == FLUSH
+        self.wr.pending == FLUSH
     }
 
     /// Offer `bytes` (`end` = they complete a frame of the carrier's own wire): how many it took.
@@ -394,7 +399,7 @@ impl Carried {
     ///
     /// The carrier failed the connection.
     pub fn poll_write(
-        &self,
+        &mut self,
         cx: &mut Context<'_>,
         bytes: &[u8],
         end: bool,
@@ -405,7 +410,10 @@ impl Carried {
         i.len = bytes.len();
         i.flags = if end { WRITE_END_OF_FRAME } else { 0 };
         let mut o: IoOut = blank_out();
-        match side(&self.wr).cross(self.door.as_ref(), Carry::Write(&mut i, &mut o), Some(cx)) {
+        match self
+            .wr
+            .cross(self.door.as_ref(), Carry::Write(&mut i, &mut o), Some(cx))
+        {
             None => Poll::Pending,
             Some(c) if c.outcome == Outcome::Ready => {
                 Poll::Ready(Ok(usize::try_from(o.len).unwrap_or(0).min(bytes.len())))
@@ -421,7 +429,7 @@ impl Carried {
     ///
     /// The carrier failed the connection.
     pub fn poll_read(
-        &self,
+        &mut self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<(usize, bool)>> {
@@ -430,7 +438,10 @@ impl Carried {
         i.buf = buf.as_mut_ptr();
         i.cap = buf.len();
         let mut o: IoOut = blank_out();
-        match side(&self.rd).cross(self.door.as_ref(), Carry::Read(&mut i, &mut o), Some(cx)) {
+        match self
+            .rd
+            .cross(self.door.as_ref(), Carry::Read(&mut i, &mut o), Some(cx))
+        {
             None => Poll::Pending,
             Some(c) if c.outcome == Outcome::Ready => Poll::Ready(Ok((
                 usize::try_from(o.len).unwrap_or(0).min(buf.len()),
@@ -440,50 +451,28 @@ impl Carried {
         }
     }
 
-    /// What the carrier knows of the connection's far end: its address and the local port.
-    #[must_use]
-    pub fn arrival(&self) -> Option<(String, u16)> {
-        let mut peer = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
-        let mut i: ArrivalIn = blank_in();
-        i.conn = self.conn;
-        i.peer_buf = peer.as_mut_ptr();
-        i.peer_cap = peer.len();
-        let mut o: ArrivalOut = blank_out();
-        let c = side(&self.rd).cross(self.door.as_ref(), Carry::Arrival(&mut i, &mut o), None)?;
-        (c.outcome == Outcome::Ready).then(|| {
-            let n = usize::try_from(o.peer_written).unwrap_or(0).min(peer.len());
-            (
-                String::from_utf8_lossy(&peer[..n]).into_owned(),
-                u16::try_from(o.local_port).unwrap_or(0),
-            )
-        })
-    }
-
     /// CLOSE: whatever pends on either side is cancelled, then the carrier's `shut`. Idempotent.
-    pub fn close(&self) {
-        if self.shut.swap(true, Ordering::AcqRel) {
+    /// Made by the connection's owner (the `&mut`), so no other crossing on it can be in flight,
+    /// and no lock is held across any of the three.
+    pub fn close(&mut self) {
+        if std::mem::replace(&mut self.shut, true) {
             return;
         }
-        side(&self.rd).cancel(self.door.as_ref());
-        let mut wr = side(&self.wr);
-        wr.cancel(self.door.as_ref());
+        self.rd.cancel(self.door.as_ref());
+        self.wr.cancel(self.door.as_ref());
         let mut i: ShutIn = blank_in();
         i.conn = self.conn;
         i.reason = CLOSE_NORMAL;
         let mut o: OutHead = blank_out();
-        let _ = wr.cross(self.door.as_ref(), Carry::Shut(&mut i, &mut o), None);
-    }
-
-    /// Whether the connection was closed.
-    #[must_use]
-    pub fn is_shut(&self) -> bool {
-        self.shut.load(Ordering::Acquire)
+        let _ = self
+            .wr
+            .cross(self.door.as_ref(), Carry::Shut(&mut i, &mut o), None);
     }
 
     /// TAKE the dialled or accepted socket off the host's table as the byte stream moves on to the
     /// kernel's own serving loop, and forget the carrier's connection.
     #[must_use]
-    pub fn hand_up(self) -> Option<std::net::TcpStream> {
+    pub fn hand_up(mut self) -> Option<std::net::TcpStream> {
         let taken = self.handle.and_then(|h| self.io.take_stream(h));
         // The carrier closes a handle the host no longer holds: nothing more.
         self.close();

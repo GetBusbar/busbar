@@ -5,10 +5,10 @@
 //!
 //! One opaque host string was read three incompatible ways at once — a socket address whose IP
 //! doubled as the offered certificate name, an absolute program path with no argument vector, and
-//! an address a gRPC method had nowhere to sit beside. These assert that each SHAPE now asks for
-//! exactly what it dials with, and gets nothing that belongs to another shape. What a particular
-//! family needs beside its shape is a declared key, not a shape of its own, and `open_shapes.rs`
-//! next door is where that is proven.
+//! an address a call-per-path wire's method had nowhere to sit beside. These assert that each SHAPE
+//! now asks for exactly what it dials with, and gets nothing that belongs to another shape. What a
+//! particular family needs beside its shape is a declared key, not a shape of its own, and
+//! `open_shapes.rs` next door is where that is proven.
 
 use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::UpstreamAddress;
@@ -40,12 +40,12 @@ fn a_socket_target_carries_an_authority_and_an_optional_certificate_name() {
 fn a_program_target_carries_a_path_an_argv_and_an_environment() {
     let program = UpstreamAddress::Program {
         path: "/usr/local/bin/server",
-        args: &["--stdio", "--quiet"],
+        args: &["--pipe", "--quiet"],
         env: &[("TOKEN_FILE", "/run/secrets/token")],
         extras: &[],
     };
     assert_eq!(program.program(), Some("/usr/local/bin/server"));
-    assert_eq!(program.args(), &["--stdio", "--quiet"]);
+    assert_eq!(program.args(), &["--pipe", "--quiet"]);
     assert_eq!(program.env(), &[("TOKEN_FILE", "/run/secrets/token")]);
     assert_eq!(
         program.authority(),
@@ -60,16 +60,19 @@ fn a_program_target_carries_a_path_an_argv_and_an_environment() {
 fn a_call_per_path_family_carries_the_method_its_wire_names_every_call_by() {
     // A SOCKET — a peer you connect to — with the one fact its wire needs declared beside the
     // address, under the reserved key the arrival grammar already spells a method with.
-    let grpc = UpstreamAddress::Socket {
+    let per_path = UpstreamAddress::Socket {
         authority: "upstream.internal:8443",
         sni: Some("upstream.internal"),
         extras: &[(facts::METHOD, "/vendor.Inference/Chat")],
     };
-    assert_eq!(grpc.authority(), Some("upstream.internal:8443"));
-    assert_eq!(grpc.sni(), Some("upstream.internal"));
-    assert_eq!(grpc.extra(facts::METHOD), Some("/vendor.Inference/Chat"));
-    assert_eq!(grpc.args(), &[] as &[&str]);
-    assert_eq!(grpc.env(), &[] as &[(&str, &str)]);
+    assert_eq!(per_path.authority(), Some("upstream.internal:8443"));
+    assert_eq!(per_path.sni(), Some("upstream.internal"));
+    assert_eq!(
+        per_path.extra(facts::METHOD),
+        Some("/vendor.Inference/Chat")
+    );
+    assert_eq!(per_path.args(), &[] as &[&str]);
+    assert_eq!(per_path.env(), &[] as &[(&str, &str)]);
 }
 
 #[test]

@@ -169,7 +169,7 @@ async fn wrong_method(
 pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option<Response> {
     let decl = match section {
         NamedMapSection::Plane(key) => {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(key)
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(key)
         }
         _ => None,
     };
@@ -409,11 +409,12 @@ async fn apply(
         // Everything below reads config files + the overlay and re-runs the boot pipeline, so it is
         // queued onto `spawn_blocking` — under the mutation guard, off the reactor.
         Ok(txn.read_store(move || {
-            let mut loaded = busbar_kernel::load_config_from_disk(
+            let mut loaded = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
             )
             .map_err(AdminError::Validation)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
@@ -729,7 +730,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         // A plane section answers membership through the plane's `registry_contains` seam, so this
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
         NamedMapSection::Plane(_) => {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
                 .and_then(|d| d.registry_contains)
                 .is_some_and(|f| f(app, name))
         }

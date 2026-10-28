@@ -7,132 +7,10 @@ use busbar_contract::caps::{Outcome, ReasonCode, StepName, UnitKey};
 
 use crate::record::{FinishClass, QuantitySource, Subject};
 
-/// EVERY FROZEN TAG STILL SPELLS WHAT THE CHAIN FROZE.
-///
-/// The digested text for these enumerations used to be whatever the derived `Debug` printed, so a
-/// rename moved the sealed hash and every stored record would have reported itself tampered. The
-/// text is written out in the production file now; this checks each spelling against today's derive
-/// output, so a rename shows up here — as a difference somebody has to look at — instead of in the
-/// hash. If this test fails, the tag is the thing to keep and the rename is the thing to reconsider.
-#[test]
-fn the_frozen_tags_match_the_text_the_chain_was_sealed_with() {
-    use crate::record::{
-        abort_tag, direction_tag, finish_tag, outcome_tag, quantity_source_tag, reason_tag,
-        step_tag,
-    };
-    use busbar_contract::caps::{Abort, LocatorPtr};
-
-    for step in [
-        StepName::Arrival,
-        StepName::Decode,
-        StepName::Authenticate,
-        StepName::Verify,
-        StepName::Approve,
-        StepName::Admit,
-        StepName::Route,
-        StepName::Meter,
-        StepName::Audit,
-        StepName::Encode,
-    ] {
-        assert_eq!(step_tag(step), format!("{step:?}"), "step name");
-    }
-
-    // The reason list is open, so the tag is a RULE rather than a table: the wire name in upper
-    // camel case. Checked against every reason declared today, which is what makes the rule safe to
-    // apply to one declared tomorrow.
-    for reason in ReasonCode::ALL {
-        assert_eq!(
-            reason_tag(*reason),
-            format!("{reason:?}"),
-            "reason `{}`",
-            reason.as_str()
-        );
-    }
-
-    for finish in [
-        FinishClass::Complete,
-        FinishClass::TurnComplete,
-        FinishClass::Partial,
-        FinishClass::Error,
-    ] {
-        assert_eq!(finish_tag(finish), format!("{finish:?}"), "finish class");
-    }
-
-    for abort in [
-        Abort::Kernel {
-            reason: ReasonCode::ClientGone,
-        },
-        Abort::Kernel {
-            reason: ReasonCode::OverBudget,
-        },
-        Abort::Kernel {
-            reason: ReasonCode::Drain,
-        },
-        Abort::Superseded {
-            by: UnitKey::new(77),
-        },
-    ] {
-        assert_eq!(abort_tag(abort), format!("{abort:?}"), "abort");
-    }
-
-    for outcome in [
-        Outcome::Completed,
-        Outcome::Refused(StepName::Admit, ReasonCode::OverBudget),
-        Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable),
-        Outcome::Aborted(Abort::Kernel {
-            reason: ReasonCode::Drain,
-        }),
-        Outcome::Aborted(Abort::Superseded {
-            by: UnitKey::new(9),
-        }),
-        Outcome::TimedOut(StepName::Meter),
-    ] {
-        assert_eq!(outcome_tag(outcome), format!("{outcome:?}"), "outcome");
-    }
-
-    for direction in [
-        busbar_contract::ClassDirection::Input,
-        busbar_contract::ClassDirection::Response,
-        busbar_contract::ClassDirection::CacheRead,
-        busbar_contract::ClassDirection::CacheWrite,
-        busbar_contract::ClassDirection::Kernel,
-    ] {
-        assert_eq!(
-            direction_tag(direction),
-            format!("{direction:?}"),
-            "class direction"
-        );
-    }
-
-    for source in [
-        QuantitySource::Locator {
-            direction: busbar_contract::ClassDirection::Response,
-            // A pointer with a quote and a backslash in it, because the frozen text quotes and
-            // escapes the pointer and an unescaped one would digest differently.
-            ptr: LocatorPtr::new("/usage/\"odd\\name\""),
-        },
-        QuantitySource::KernelBytes { divisor: 4 },
-        QuantitySource::KernelFrames { factor: 2 },
-        QuantitySource::TransportUnits,
-        QuantitySource::KernelElapsedMono,
-        QuantitySource::Count,
-        QuantitySource::PlaneCount {
-            content_fact_key: "messages".into(),
-        },
-    ] {
-        assert_eq!(
-            quantity_source_tag(&source),
-            format!("{source:?}"),
-            "quantity source"
-        );
-    }
-}
-
 /// THE ON-DISK TAG VOCABULARY, AS LITERALS — the test the frozen table actually needed.
 ///
-/// The test above compares every tag against today's derived `Debug`. That is a useful relation to
-/// hold, but on its own it cannot do the job the table exists for, because BOTH SIDES MOVE
-/// TOGETHER. Rename `FinishClass::Partial` to `PartialDelivery`: the compiler forces the tag arm to
+/// Comparing every tag against today's derived `Debug` cannot do the job the table exists for,
+/// because BOTH SIDES MOVE TOGETHER. Rename `FinishClass::Partial` to `PartialDelivery`: the compiler forces the tag arm to
 /// be touched, the obvious edit returns `"PartialDelivery"`, `format!("{finish:?}")` now also says
 /// `"PartialDelivery"`, and the suite stays green — while every audit record already on disk whose
 /// finish class was `Partial` hashes differently at the next boot and reports itself as
@@ -313,9 +191,9 @@ fn the_on_disk_tag_vocabulary_is_the_literal_text_and_not_a_rendering_of_a_type(
     }
 }
 
-/// A SECRET DERIVED FROM THE DEPLOYMENT KEY (row 159 H2) is one value per key and label: the same
-/// key gives the same secret (every node of a deployment holds one keyset), another label or another
-/// key gives another, and none is the seed. A chain that signs with no key derives nothing.
+/// A SECRET DERIVED FROM THE DEPLOYMENT KEY is one value per key and label: the same key gives the
+/// same secret (every node of a deployment holds one keyset), another label or another key gives
+/// another, and none is the seed. A chain that signs with no key derives nothing.
 #[test]
 fn a_derived_secret_is_one_per_key_and_label_and_never_the_seed() {
     use crate::sign::AuditSigningKey;

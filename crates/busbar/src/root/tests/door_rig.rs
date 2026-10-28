@@ -70,7 +70,7 @@ pub(super) use super::secret_source_tests::{
 /// config-fixture cells install it.
 pub(crate) fn register_linked_protocols() {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
 }
 
@@ -150,7 +150,7 @@ pub(crate) fn bind_door(
 pub(crate) fn folded_door(
     door: DoorFn,
     instance: &str,
-) -> Result<&'static busbar_kernel::plane::registry::PlaneDecl, String> {
+) -> Result<&'static busbar_kernel::plane_driver::registry::PlaneDecl, String> {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     busbar_kernel::plane_driver::door::fold(registration(linked_probe(door, instance))?)
 }
@@ -161,7 +161,7 @@ pub(crate) fn folded_door(
 ///
 /// As [`folded_door`].
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
-    busbar_kernel::plane::registry::register_test_plane(folded_door(door, instance)?);
+    busbar_kernel::plane_driver::registry::register_test_plane(folded_door(door, instance)?);
     Ok(())
 }
 
@@ -190,7 +190,7 @@ pub(crate) fn install_root_auth() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
 }
 
 /// The kernel's host services judging every destination by `dest`, installed into a fresh
@@ -267,12 +267,13 @@ impl ProcessRig {
         } = self;
         let entries = || crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, &settings);
         if anchors.is_empty() {
-            return busbar_core_connector::process::build(
+            return busbar_core_connector::process::build_with_secrets(
                 entries,
                 dest,
                 &[],
                 wake,
                 crate::root::connector::pool_posture(&settings),
+                busbar_kernel::config::secret::resolve_linked_string_at_config,
             );
         }
         let tls = busbar_core_connector::tls::client::build_client_config(
@@ -555,12 +556,15 @@ pub(crate) fn door_routes(
 /// faces nothing).
 pub(crate) fn admissions(
     served: &Served,
-) -> Vec<(Vec<String>, busbar_kernel::plane::PlaneAdmission)> {
+) -> Vec<(
+    Vec<String>,
+    busbar_kernel::plane_driver::dispatch::PlaneAdmission,
+)> {
     served
         .planes
         .iter()
         .filter_map(|p| {
-            let admission = busbar_kernel::plane::PlaneAdmission {
+            let admission = busbar_kernel::plane_driver::dispatch::PlaneAdmission {
                 audience: p.snapshot.audience.clone()?,
                 resource_metadata: p.snapshot.resource_metadata.clone()?,
             };

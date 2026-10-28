@@ -21,7 +21,7 @@ pub fn stand_in_store() -> crate::config::StoreCfg {
 }
 
 /// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
-/// config that exercises `config_validate::secret_refs` (and thus `validate_secret_refs`).
+/// config that exercises `config_validate::secret_refs` (and thus `registry_refusal`).
 pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config::RootCfg {
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
@@ -30,7 +30,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
         // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
         // so this resolves to the same default dialect the literal named.
-        protocol: crate::proto::residual_default_dialect()
+        protocol: crate::ingress::protocols::residual_default_dialect()
             .expect("a residual-default protocol (the neutral test dialect) must be registered")
             .into(),
         base_url: "https://api.example.com".into(),
@@ -110,60 +110,61 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // production. Every hook is `None`/no-op: this stands for "a plane is installed", never for what a
 // plane does. Idempotent (`register_test_plane` dedupes by key) and NOT isolated — a test that also
 // asserts against the registered SET (or needs a plane-free registry) wraps its own body in
-// `crate::plane::registry::TestRegistryIsolation::empty()` around this call, the same as any other
+// `crate::plane_driver::registry::TestRegistryIsolation::empty()` around this call, the same as any other
 // `register_test_plane` caller.
-static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl = NEUTRAL_FALLBACK;
+static NEUTRAL_FALLBACK_PLANE: crate::plane_driver::registry::PlaneDecl = NEUTRAL_FALLBACK;
 
 /// The neutral fallback plane's row, as a value a test's own neutral plane can extend.
-pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "neutral-test-fallback",
-        fallback: true,
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "pool",
-        admin_noun: "pool",
-        audit_kind: "pool_request",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
-    // lane names one the boot accepts.
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "neutral-test-fallback",
+            fallback: true,
+            config_section: "pools",
+            scope_kinds: &["pool"],
+            subject_noun: "pool",
+            admin_noun: "pool",
+            audit_kind: "pool_request",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: || &[],
+        // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
+        // lane names one the boot accepts.
+        provider_dialects: crate::ingress::protocols::known_protocols,
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
 
 /// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config
 /// resolution has somewhere to put a `pools:`/fallback section rather than refusing with "no plane is
@@ -172,18 +173,33 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
 /// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
-    crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
+    crate::plane_driver::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
 
 /// The neutral fallback plane [`register_neutral_test_plane`] registers, for a test that seeds an
 /// ISOLATED registry (`TestRegistryIsolation::seeded`) instead of adding to the shared one.
-pub fn neutral_fallback_plane() -> &'static crate::plane::registry::PlaneDecl {
+pub fn neutral_fallback_plane() -> &'static crate::plane_driver::registry::PlaneDecl {
     &NEUTRAL_FALLBACK_PLANE
 }
 
 pub fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,
+) -> Result<crate::state::App, String> {
+    build_once_under(
+        cfg,
+        prior,
+        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+    )
+}
+
+/// [`build_once`] judged by `rules` (a composition root's, or a test's double), which the kept
+/// build's commit is raised to as a shipped build's is.
+pub fn build_once_under(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+    rules: &std::sync::Arc<dyn crate::appbuild::RootRules>,
 ) -> Result<crate::state::App, String> {
     // The build installs `cfg.limits` process-wide and KEEPS them (below), so it is a writer of the
     // slot `LIMITS_TEST_LOCK` serializes: without the lock, a build in a sibling test lands mid-way
@@ -207,8 +223,7 @@ pub fn build_once(
         std::collections::HashSet::new(),
         (None, None),
         prior,
-        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+        rules,
     )?;
     // Same reasoning for the limits: no persist step follows, so this build IS the live generation
     // and its limits stay installed — the behaviour every caller of this helper has always had.
@@ -234,45 +249,44 @@ pub fn closed_auth_chain(module: &str) -> crate::config::AuthCfg {
     auth
 }
 
-/// Drive a REAL oversized POST to `path` through the REAL layer stack and return the 413 body.
+/// Drive an oversized POST to `path` through the REAL layer stack and return the 413 body.
 /// Asserts only the status and JSON-ness; the SHAPE is each caller's assertion.
+///
+/// The request is handed to the router itself (`tower::ServiceExt::oneshot`), with the head a
+/// client writes (`host`, `content-type`, `content-length`): the body cap is the router's own
+/// layer, so no socket and no HTTP client is needed to reach it, and the kernel's manifest asks for
+/// neither (status row 130 E7, `tests/no_socket.rs`).
 pub async fn oversized_413_body(
     app: std::sync::Arc<crate::state::App>,
     path: &str,
 ) -> serde_json::Value {
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    // Cooperative shutdown rather than `JoinHandle::abort`: `axum::serve`'s own graceful-shutdown
-    // future is raced INSIDE its accept loop, so telling it to stop is a signal the server notices at
-    // its own next poll, never a forced mid-flight interruption.
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = stop_rx.await;
-            })
-            .await
-            .unwrap()
-    });
 
-    let oversized = "x".repeat(4096);
-    let r = reqwest::Client::new()
-        .post(format!("http://{addr}{path}"))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "pad": oversized }).to_string())
-        .send()
-        .await
-        .unwrap();
+    let oversized = serde_json::json!({ "pad": "x".repeat(4096) }).to_string();
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(path)
+        .header(axum::http::header::HOST, "127.0.0.1")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::CONTENT_LENGTH, oversized.len())
+        .body(axum::body::Body::from(oversized))
+        .expect("an oversized POST request");
+    let r = router.oneshot(request).await.expect("the router answers");
     assert_eq!(
         r.status().as_u16(),
         413,
         "the body cap must reject the oversized POST to {path}"
     );
-    let body = r.text().await.unwrap();
-    let _ = stop_tx.send(());
-    let _ = server.await;
+    let bytes = r
+        .into_body()
+        .collect()
+        .await
+        .expect("the 413 body is read")
+        .to_bytes();
+    let body = String::from_utf8_lossy(&bytes).into_owned();
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }
@@ -315,7 +329,11 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
         TestApp::mount_plane(self, key, path, wire);
     }
 
-    fn admit_plane(&mut self, key: &'static str, admission: busbar_kernel::plane::PlaneAdmission) {
+    fn admit_plane(
+        &mut self,
+        key: &'static str,
+        admission: busbar_kernel::plane_driver::dispatch::PlaneAdmission,
+    ) {
         TestApp::admit_plane(self, key, admission);
     }
 

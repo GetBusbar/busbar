@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING,
+    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
 };
 use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
@@ -216,6 +216,10 @@ pub struct Candidate {
     pub sugar: Vec<String>,
     /// Its declaring sections (a plane's verbs).
     pub verbs: Vec<String>,
+    /// The other sections whose presence uses it (Law 7), in Statement order: a section it owns
+    /// (neither declaring nor consumed), and a section it only consumes that its Statement marks
+    /// `SECTION_SELECTS`. Config carrying one selects a plane as its verb does.
+    pub selecting: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
     /// Its connection needs, in its Statement's order (a need's index is its place here).
@@ -268,6 +272,15 @@ impl Candidate {
                 .sections
                 .iter()
                 .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            selecting: r
+                .sections
+                .iter()
+                .filter(|(_, flags)| {
+                    flags & SECTION_DECLARING == 0
+                        && (flags & SECTION_CONSUMED == 0 || flags & SECTION_SELECTS != 0)
+                })
                 .map(|(name, _)| name.clone())
                 .collect(),
             schemes: r.claims,
@@ -357,17 +370,13 @@ impl Candidate {
             .any(|s| self.schemes.contains(s) || self.answers(s))
     }
 
-    /// LAW 7 FOR A PLANE: the configuration writes a section it owns (a root key) — its declaring
-    /// section, or another its Statement owns (neither declaring nor consumed), the rule the root
-    /// opens a bound plane by. A consumed section alone selects nothing.
+    /// LAW 7 FOR A PLANE: the configuration writes a section that uses it ([`plane_use`]) — its
+    /// declaring section, another its Statement owns (neither declaring nor consumed), the rule the
+    /// root opens a bound plane by, or one it consumes that its Statement marks `SECTION_SELECTS`. A
+    /// consumed section alone selects nothing.
     #[must_use]
     pub fn sectioned(&self, uses: &Uses) -> bool {
-        self.verbs.iter().any(|v| uses.roots.contains(v))
-            || read(&self.stated).is_ok_and(|r| {
-                r.sections.iter().any(|(name, flags)| {
-                    flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0 && uses.roots.contains(name)
-                })
-            })
+        plane_use(uses, self).is_some()
     }
 }
 
@@ -483,7 +492,7 @@ pub struct Selected {
 }
 
 /// STAGE 2, SELECT (BUSBAR-1.6.0.md §4 "Selection follows the classes"; pure): a plane is selected iff
-/// one of its verbs is a root key; a store, secret, auth, hook or export plugin once per entry whose
+/// a root key uses it ([`plane_use`]), under its verb; a store, secret, auth, hook or export plugin once per entry whose
 /// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
 /// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
 /// an entry takes it; two DIFFERENT plugins never both answer one word, which the one-owner rule
@@ -504,8 +513,10 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     for (i, c) in candidates.iter().enumerate() {
         match c.kind {
             KindCode::Plane => {
-                if let Some(verb) = c.verbs.iter().find(|v| uses.roots.contains(*v)) {
-                    take(&mut out, i, c.kind, verb.clone());
+                // Selected under its verb, whichever of its sections uses it.
+                if let Some(at) = plane_use(uses, c) {
+                    let verb = c.verbs.first().map_or(at, String::as_str);
+                    take(&mut out, i, c.kind, verb.to_string());
                 }
             }
             KindCode::Transport => {
@@ -526,6 +537,27 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
         }
     }
     out
+}
+
+/// WHETHER THE CONFIGURATION USES THE PLANE `plane` (Law 7, BUSBAR-1.6.0.md §4 "Selection
+/// follows the classes"; pure): the section of `uses` that uses it — the first of its verbs that is
+/// a root key, else the first of its other selecting sections ([`Candidate::selecting`]: one it
+/// owns, or one it consumes that its Statement marks `SECTION_SELECTS`) that is one — or `None`,
+/// and the plane is not loaded. A section it only consumes, or only requires, is no use of it. Read
+/// off the candidate's rendered facts only, so nothing is opened: what the boot selects planes by
+/// ([`used_planes`]), and what a config apply asks of a plane that is not loaded now. A candidate
+/// of another kind is used by no section here.
+#[must_use]
+pub fn plane_use<'c>(uses: &Uses, plane: &'c Candidate) -> Option<&'c str> {
+    if plane.kind != KindCode::Plane {
+        return None;
+    }
+    plane
+        .verbs
+        .iter()
+        .chain(&plane.selecting)
+        .find(|v| uses.roots.contains(*v))
+        .map(String::as_str)
 }
 
 // ── THE REGISTRY: the linked rows, then the plugins directory's, through one admission ─────────────
@@ -619,7 +651,7 @@ pub struct PlaneSet {
 }
 
 /// THE PLANES THE CONFIGURATION USES, of the discovered `doors` (Law 7; [`select`]'s plane rule): each
-/// door whose declaring section the document writes, in discovery order. A plane no section names is
+/// door a section the document writes uses ([`plane_use`]), in discovery order. A plane no section names is
 /// never bound, linked or dropped in alike.
 #[must_use]
 pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {

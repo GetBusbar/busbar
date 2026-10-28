@@ -3,7 +3,7 @@
 //!
 //! THE RULE: where the binary needs N internals to perform ONE boot action,
 //! expose one function here and leave the N internals crate-private. The alternative — widening
-//! `audit_ring::AUDIT`, its `set_sink`/`restore_from_store`, the `plane::taskstore::TASKS` static,
+//! the audit seam's `restore_from_store`, the `plane::taskstore::TASKS` static,
 //! `governance::signing::TokenSigner`, and the trust sweeper's
 //! machinery to `pub` — would put the one append-only hash chain's storage handle, the token
 //! master-key mint and the quarantine loop on the public surface of this crate, where a protocol
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-/// DURABLE-STATE HYDRATION, whole and in order: the audit ring FIRST (core, the append-only chain),
+/// DURABLE-STATE HYDRATION, whole and in order: the audit chain FIRST (core, the append-only chain),
 /// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — each
 /// plane's own task/call-log/demotion/spent-approval records, whatever shape a given plane keeps.
 /// Called ONCE from
@@ -60,15 +60,17 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
         .governance
         .as_ref()
         .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store()));
-    let ctx = crate::plane::registry::BootCtx::for_hydrate(plane_store, app);
+    let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }
 
 /// LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"): the
 /// linked planes this generation CONFIGURED, in plane-list order. An unconfigured plane's boot hooks
 /// never run — it restores nothing and starts nothing. One generic check, naming no plane.
-fn configured_decls(app: &crate::state::App) -> Vec<&'static crate::plane::registry::PlaneDecl> {
-    crate::plane::registry::plane_decls()
+fn configured_decls(
+    app: &crate::state::App,
+) -> Vec<&'static crate::plane_driver::registry::PlaneDecl> {
+    crate::plane_driver::registry::plane_decls()
         .iter()
         .copied()
         .filter(|d| app.plane_configured(d))
@@ -76,13 +78,13 @@ fn configured_decls(app: &crate::state::App) -> Vec<&'static crate::plane::regis
 }
 
 /// THE HYDRATE FOLD. Split from [`hydrate_all`] and taking its decl list by argument for the reason
-/// [`crate::plane::registry::build_dispatch`] is split from `appbuild`: the boot-refuses-on-`Err`
+/// [`crate::plane_driver::registry::build_dispatch`] is split from `appbuild`: the boot-refuses-on-`Err`
 /// ratchet (R2-boot) is then drivable over an INJECTED decl — a plane whose `hydrate` returns `Err` —
 /// without the process plane `OnceLock`, which can be initialised only once per test binary. A hook's
 /// `Err` aborts the fold with `?`; a plane that half-restored its durable state must not serve.
 pub fn run_hydrate_hooks(
-    decls: &[&'static crate::plane::registry::PlaneDecl],
-    ctx: &crate::plane::registry::BootCtx,
+    decls: &[&'static crate::plane_driver::registry::PlaneDecl],
+    ctx: &crate::plane_driver::registry::BootCtx,
 ) -> Result<(), String> {
     for decl in decls {
         if let Some(hydrate) = decl.hydrate {
@@ -120,7 +122,7 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
         .governance
         .as_ref()
         .and_then(|g| g.card_issuer());
-    let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
+    let ctx = crate::plane_driver::registry::BootCtx::for_start(app_handle, card_issuer);
     run_start_hooks(&configured_decls(&app_handle.load()), &ctx)
 }
 
@@ -130,8 +132,8 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
 /// listeners. A hook's `Err` aborts the fold with `?`, which is how a plane's outbound identity that
 /// does not resolve stops the boot rather than yielding a deployment that re-verifies nothing.
 pub fn run_start_hooks(
-    decls: &[&'static crate::plane::registry::PlaneDecl],
-    ctx: &crate::plane::registry::BootCtx,
+    decls: &[&'static crate::plane_driver::registry::PlaneDecl],
+    ctx: &crate::plane_driver::registry::BootCtx,
 ) -> Result<(), String> {
     for decl in decls {
         if let Some(start) = decl.start {

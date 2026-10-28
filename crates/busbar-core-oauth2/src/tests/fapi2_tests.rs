@@ -32,7 +32,9 @@ use serde_json::{json, Value};
 use crate::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
 use busbar_kernel::test_support::TestApp;
 
-use crate::flow_tests::{location, path_of, percent_decode, query_param, send, Jar};
+use crate::flow_tests::{
+    encode_component, location, path_of, percent_decode, query_param, send, Jar,
+};
 use crate::testkit::TestAppOauthExt;
 
 /// The client's redirect URI. Never fetched: every flow ends at the redirect that carries the code.
@@ -63,8 +65,6 @@ fn now() -> u64 {
         .expect("clock after the epoch")
         .as_secs()
 }
-
-// ── the client's keys ────────────────────────────────────────────────────────────────────────────
 
 /// One ES256 key: a client's `private_key_jwt` key, or a DPoP key. Signed with `ring`, which the
 /// server under test verifies with as well — but the JOSE framing is assembled here by hand from
@@ -288,8 +288,6 @@ impl RsaKey {
     }
 }
 
-// ── the subject ──────────────────────────────────────────────────────────────────────────────────
-
 /// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key,
 /// both PROVISIONED BY CONFIG (`oauth_as.clients:`), which is how a deployment gets one: RFC 7591
 /// registration cannot carry a key.
@@ -413,24 +411,11 @@ async fn push(s: &Subject, form: &[(&str, String)], dpop: &Key) -> String {
         .to_string()
 }
 
-/// Every byte outside RFC 3986 unreserved, percent-encoded.
-fn enc(s: &str) -> String {
-    s.bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-                (b as char).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
-}
-
 fn authorize_url(s: &Subject, client_id: &str, request_uri: &str) -> String {
     format!(
         "{}/authorize?client_id={client_id}&request_uri={}",
         s.origin,
-        enc(request_uri)
+        encode_component(request_uri)
     )
 }
 
@@ -531,8 +516,6 @@ async fn metadata(s: &Subject) -> Value {
     assert_eq!(resp.status(), 200);
     resp.json().await.expect("JSON metadata")
 }
-
-// ── the tests ────────────────────────────────────────────────────────────────────────────────────
 
 /// RFC 8414 s2 as the profile reads it: the document names the PAR endpoint and makes it mandatory
 /// (RFC 9126 s5), names the DPoP algorithms (RFC 9449 s5.1), offers `private_key_jwt` with the
@@ -695,6 +678,43 @@ async fn showing_the_consent_screen_does_not_spend_the_pushed_request() {
     );
 }
 
+/// RED: a pushed request that names no scope is granted the client's default (for a provisioned
+/// client, the operator's whole `default_grant`), and the consent screen names that scope. Before
+/// the fix the screen said `no scopes` while the approval minted a token for the default.
+#[tokio::test]
+async fn a_pushed_request_naming_no_scope_is_shown_the_default_it_is_granted() {
+    let s = serve(true).await;
+    let dpop = Key::new("dpop");
+    let form = with(&push_form(&s, CLIENT_ID, &s.key), "scope", Value::Null);
+    let request_uri = push(&s, &form, &dpop).await;
+    let authorize = authorize_url(&s, CLIENT_ID, &request_uri);
+    let mut jar = Jar::new(false);
+    let (status, headers, body) =
+        send(&s.client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(
+        status, 302,
+        "an undecided pushed request goes to consent: {body}"
+    );
+    let screen = location(&headers, &s.origin);
+    let (status, _, page) = send(&s.client, &mut jar, reqwest::Method::GET, &screen, None).await;
+    assert_eq!(status, 200, "the consent screen renders: {page}");
+    assert!(
+        page.contains(&format!("<p>Requesting: <code>{SCOPE}</code></p>")),
+        "the screen names the default the pushed request is granted, not `no scopes`: {page}"
+    );
+
+    let redirect = consent(&s, &mut jar, &authorize, "approve").await;
+    let code = query_param(&redirect, "code").expect("a code");
+    let proof = dpop.proof("POST", &format!("{}/token", s.origin));
+    let (status, token) = post(&s, "/token", &token_form(&s, &code), Some(proof)).await;
+    assert_eq!(status, 200, "{token}");
+    assert_eq!(
+        token["scope"],
+        json!(SCOPE),
+        "the token carries the scope the screen named: {token}"
+    );
+}
+
 /// RFC 6749 s4.1.2.1: the resource owner may refuse, and the client hears `access_denied` at its
 /// redirect URI, with its `state` and (RFC 9207) the issuer.
 #[tokio::test]
@@ -750,7 +770,7 @@ async fn an_authorization_request_not_pushed_is_refused() {
         "{}/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&scope={SCOPE}\
          &state=s1&code_challenge={CHALLENGE}&code_challenge_method=S256",
         s.origin,
-        enc(REDIRECT_URI)
+        encode_component(REDIRECT_URI)
     );
     assert_refused_with_a_page(&s, &url, "invalid_request").await;
 }
@@ -1006,8 +1026,6 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     .await;
 }
 
-// ── the protected resource (RFC 9449 s7) ─────────────────────────────────────────────────────────
-
 /// RFC 9449 s4.2 `ath`: base64url SHA-256 of the access token.
 fn ath(token: &str) -> String {
     B64.encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
@@ -1160,8 +1178,6 @@ async fn the_resource_refuses_what_rfc_9449_forbids() {
         "s11.1: a proof's jti is single use"
     );
 }
-
-// ── PS256: the profile's RSA algorithm (FAPI2 s5.4.1) ────────────────────────────────────────────
 
 /// A client provisioned with an RSA key runs the whole profile on PS256 — its `private_key_jwt`
 /// assertions at PAR and the token endpoint, and its DPoP proofs at the token endpoint and at
