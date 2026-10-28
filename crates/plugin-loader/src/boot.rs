@@ -1166,20 +1166,28 @@ pub struct SettingRenames {
     pub words: Vec<String>,
     /// `(from, to, since)`, in declaration order.
     pub renames: Vec<(String, String, String)>,
+    /// The settings its schema declares public (`x-busbar-public`); every other setting is
+    /// sensitive (`busbar_contract::settings_public`).
+    pub public: BTreeSet<String>,
 }
 
-/// What `stated` (a Statement rendering) declares about its settings renames, answering also to
-/// `words` (a linked row's key, a manifest's aliases); `None` when it renames nothing.
+/// What `stated` (a Statement rendering) declares about its settings, its renames and the settings
+/// its schema declares public, answering also to `words` (a linked row's key, a manifest's
+/// aliases); `None` when it renames nothing and declares nothing public.
 ///
 /// # Errors
-/// A rendering that does not read back, or a rename declared badly, naming the plugin.
+/// A rendering that does not read back, a rename declared badly, or a settings schema the pack
+/// rules refuse, naming the plugin.
 pub fn setting_renames(stated: &[u8], words: &[&str]) -> Result<Option<SettingRenames>, String> {
     use busbar_contract::abi::mechanism::door::{renamed_settings, REWRITE_ALIAS};
     let r: Read = read(stated)
         .map_err(|e| format!("a Statement rendering does not read back at byte {}", e.at))?;
     let renames = renamed_settings(&r.rewrites)
         .map_err(|e| format!("plugin '{}' declares a settings rename badly: {e}", r.name))?;
-    let Some(kind) = KindCode::from_raw(r.kind).filter(|_| !renames.is_empty()) else {
+    let public = crate::settings_schema::public_settings_of_schema(&r.settings_schema.bytes)
+        .map_err(|e| format!("plugin '{}': {e}", r.name))?;
+    let declares = !renames.is_empty() || !public.is_empty();
+    let Some(kind) = KindCode::from_raw(r.kind).filter(|_| declares) else {
         return Ok(None);
     };
     let mut answers: Vec<String> = std::iter::once(r.name.clone())
@@ -1198,6 +1206,7 @@ pub fn setting_renames(stated: &[u8], words: &[&str]) -> Result<Option<SettingRe
         kind,
         words: answers,
         renames,
+        public,
     }))
 }
 

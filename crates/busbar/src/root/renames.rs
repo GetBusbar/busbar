@@ -25,6 +25,8 @@ struct Row {
     kind: Kind,
     words: Vec<String>,
     renames: Vec<SettingRename>,
+    /// The settings its schema declares public.
+    public: std::collections::BTreeSet<String>,
 }
 
 /// The table the kernel reads.
@@ -56,6 +58,7 @@ fn row(stated: &[u8], words: &[&str]) -> Result<Option<Row>, String> {
             .into_iter()
             .map(|(from, to, since)| SettingRename { from, to, since })
             .collect(),
+        public: r.public,
     }))
 }
 
@@ -110,11 +113,25 @@ fn table(linked: &Linked, dropped: Option<&PluginRegistry>) -> Result<Table, Str
     Ok(Table(rows))
 }
 
+impl busbar_kernel::config::settings_public::PublicSettings for Table {
+    fn public(&self, module: &str) -> std::collections::BTreeSet<String> {
+        self.0
+            .iter()
+            .find(|r| r.words.iter().any(|w| w == module))
+            .map(|r| r.public.clone())
+            .unwrap_or_default()
+    }
+}
+
 /// Hand the kernel the renames of every plugin `linked` and `dropped` hold. A plugin that declares
 /// a rename badly refuses the boot (exit 2), naming it, as a plugin claiming another's sugar does.
 pub fn install(linked: &Linked, dropped: Option<&'static PluginRegistry>) {
     match table(linked, dropped) {
-        Ok(t) => busbar_kernel::config::plugin_renames::install(Box::leak(Box::new(t))),
+        Ok(t) => {
+            let t: &'static Table = Box::leak(Box::new(t));
+            busbar_kernel::config::plugin_renames::install(t);
+            busbar_kernel::config::settings_public::install(t);
+        }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);

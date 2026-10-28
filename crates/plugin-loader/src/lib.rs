@@ -76,6 +76,8 @@ pub mod secret_calls;
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/needs_restated.rs"]
 mod needs_restated;
+/// The settings-schema rules, shared by the packer and the host's reading of a Statement's schema.
+pub mod settings_schema;
 pub mod sign;
 #[allow(unsafe_code)] // REVIEWED: the staged image's `memfd` and its file descriptors
 mod stage;
