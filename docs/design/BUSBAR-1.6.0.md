@@ -250,6 +250,51 @@ Retired names (`redis` → valkey, `tokens`/`static-tokens`) and migrations for 
 in the build (1.4.x `governance.db_path` → sqlite) live in the root legacy table,
 `[package.metadata.busbar.legacy]`, generated from `plugins.yaml`.
 
+**Config migration: each plugin migrates itself (OWNER 2026-10-27).** `busbar --migrate-config`
+migrates core's own keys and nothing inside a plugin's settings section. Core holds no knowledge of
+any plugin key, old or new. Its role is limited to four things:
+1. Migrate core's keys.
+2. Resolve each configured plugin to its build for this core, and call that plugin's own `migrate`.
+3. Apply only the needs the plugin explicitly raises against core-owned keys.
+4. Print every report line, prefixed with the plugin's name.
+
+- *The entry.* `migrate` is an optional, kind-neutral lifecycle op: one lifecycle for every kind.
+  It rides the door's append-only tail after `ready` (`Door::migrate`; `abi::mechanism::lifecycle`,
+  MIGRATE). It is not a table slot: a lifecycle slot may not be NULL, and a new slot would move
+  every kind op's index. A door without it loads exactly as before, and its section passes through
+  unchanged.
+  - It is called with no instance and `Ticket::NONE` (it may not pend), on `ValidateIn`:
+    - `settings`: the section as written;
+    - `head.extensions`: the busbar version the configuration came from;
+    - `err_buf`: the host's answer buffer.
+  - On READY the plugin answers, in `err_buf` and named by `head.error`, one JSON object:
+    `{settings, report[], needs[]}`.
+  - The one need today is `{"allow_destination": "<host>"}`. Core adds exactly that host to
+    `advanced.allow_destinations` and never turns `block_private_addresses` off.
+  - The SDK's `Migrator<M>` states it over a plugin's own `Migrate`
+    (`plugin_door! { …, migrate: Migrator<M>, … }`).
+- *What a plugin's migrate owns.* Every change inside its section belongs to the plugin's
+  `migrate`: renames, removed keys, new required keys, and defaults that keep the old behaviour.
+  At normal boot core hands the section through untouched. A plugin that keeps reading an old key
+  for a while does so in its own `open`, and logs its own deprecation line. The declarative
+  renames (`REWRITE_RENAMED`, #1781) are withdrawn.
+- *Finding the build.* The root (`root::config_migrate`) looks, in order:
+  1. among the doors the build links;
+  2. in the configuration's plugins directory;
+  3. otherwise, at the release the **release index** names for this core. That release is
+     downloaded and verified like any dropped-in plugin.
+
+  The release index is `plugin-index.json`: this release's own asset, or `BUSBAR_PLUGIN_INDEX`.
+  It lists each plugin's repository, former repositories, kind, the words it answers to, and its
+  releases with the ABI version each was built for. The release for this core is the newest whose
+  ABI version is the one this core speaks for the kind. The same lookup rewrites a
+  `plugins.fetch` GitHub pin that names another release, dropping its `sha256`. It also pins a
+  configured plugin no build here serves. No plugin name is written in core.
+- *At boot.* An older build of a plugin beside a newer build of the same plugin (same kind, whose
+  manifest name or former names include the old name) is skipped with one warning, not refused.
+  A `plugins.fetch` GitHub pin downloads the release's per-target asset
+  (`<repo>-<version>-<target>.tar.gz`) when `<repo>.tar.gz` is not published.
+
 **No legacy loading (§11.8).** A published 1.5.5 JSON-contract plugin does not load: boot refuses it
 with a message naming the rebuild against the 1.6.0 SDK. The loader accepts only the current version
 of each kind and refuses newer-than-host. ~~**Published 1.5.5 plugins keep loading** through the

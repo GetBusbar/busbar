@@ -84,6 +84,9 @@ pub use publish::{Generations, Keyed};
 pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
+// THE PLUGIN'S OWN CONFIG MIGRATION, ONCE FOR EVERY KIND: the door's optional `migrate` over a
+// plugin's `Migrate`, and the answer core reads (`abi::mechanism::lifecycle`, MIGRATE).
+pub mod migrate;
 // THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read
 // as Rust values, so a plugin's own tests drive its door with no `unsafe` (BUSBAR-1.6.0.md
 // l.272-274). Compiled for this crate's tests and behind the dev-only `test-seal` feature, as the

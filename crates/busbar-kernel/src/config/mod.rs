@@ -19,6 +19,7 @@ pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;
+pub mod migrate_plugins;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub mod named_map;

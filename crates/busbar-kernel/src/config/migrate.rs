@@ -343,6 +343,20 @@ pub struct MigrateOutput {
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
+    migrate_config_with(raw, &super::migrate_plugins::NoPlugins)
+}
+
+/// [`migrate_config`], then every configured plugin's own migration of its settings section
+/// through `host` (the composition root's: it loads each plugin's current build and asks the
+/// release index which release matches this core), applying only the needs a plugin raises against
+/// core's keys and printing every report line under the plugin's name
+/// ([`super::migrate_plugins`]).
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+pub fn migrate_config_with(
+    raw: &str,
+    host: &dyn super::migrate_plugins::MigrateHost,
+) -> Result<MigrateOutput, String> {
     let doc: Value =
         serde_yaml::from_str(raw).map_err(|e| format!("input is not valid YAML: {e}"))?;
     let Value::Mapping(mut root) = doc else {
@@ -405,6 +419,16 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // cadence, default 6h) becomes `verify_ttl:` (max verification staleness on the `tools/call` path,
     // default 5s). A pure key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
     migrate_tools_verify_ttl(&mut root, &mut changes, &mut warnings);
+    // EACH PLUGIN MIGRATES ITS OWN SETTINGS: after every core step above has settled where a
+    // plugin's section sits, and before nothing else reads one.
+    super::migrate_plugins::migrate(
+        &mut root,
+        host,
+        &mut super::migrate_plugins::Ledger {
+            changes: &mut changes,
+            todos: &mut todos,
+        },
+    );
     // 1.6.0 Q-STORE = (B): `store:` is required. Runs LAST, after `migrate_governance` lifted a
     // 1.4.x `governance:` database into `store:`, so only a config that still names no store gains
     // the one 1.5.x ran it on.
