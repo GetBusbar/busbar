@@ -59,6 +59,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
 
+use crate::dispatch::lifecycle;
 use crate::dispatch::{
     in_head, lifecycle_name, out_head, stamp_drive, Answer, CancelFrame, Context, DriveFrame,
     Frame, InFrame, Kind, OutFrame,
@@ -959,56 +960,19 @@ pub fn open_door(
     owned: &[u8],
     public_url: Option<&str>,
 ) -> Result<OwnedSnapshot, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::OpenOut;
-    let blob = |bytes: &[u8]| {
-        if bytes.is_empty() {
-            Blob {
-                ptr: std::ptr::null(),
-                len: 0,
-                fmt: BLOB_ABSENT,
-                flags: 0,
-            }
-        } else {
-            Blob {
-                ptr: bytes.as_ptr(),
-                len: bytes.len(),
-                fmt: BLOB_JSON,
-                flags: 0,
-            }
-        }
-    };
+    use busbar_contract::abi::mechanism::call::BLOB_JSON;
+    let blob = |bytes: &[u8]| lifecycle::blob(bytes, BLOB_JSON, 0);
     let url = public_url.unwrap_or_default();
     let mut frame = Frame::new(
         PlaneOpenIn {
-            open: OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings),
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            public_url: AbiStr {
-                ptr: if url.is_empty() {
-                    std::ptr::null()
-                } else {
-                    url.as_ptr()
-                },
-                len: url.len(),
-            },
+            open: lifecycle::open_in(blob(settings)),
+            public_url: lifecycle::lend_or_null(url),
             owned: blob(owned),
             providers: std::ptr::null(),
             providers_len: 0,
         },
         PlaneOpenOut {
-            open: OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
+            open: lifecycle::open_out(),
             snapshot: std::ptr::null(),
         },
     );
@@ -1037,22 +1001,8 @@ pub fn refresh_door(
     owned: &[u8],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
-    };
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON, BLOB_OCTETS};
+    let blob = lifecycle::blob(settings, BLOB_JSON, 0);
     // ITS OTHER OWNED SECTIONS ride the extensions blob under `EXT_OWNED` (the same JSON object
     // `open` carries in `PlaneOpenIn::owned`; absent when the document writes none), so a need whose
     // trust anchor sits in one is re-declared over the applied value.
@@ -1131,62 +1081,18 @@ fn facing(
     public_url: Option<&str>,
     facts: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::{GenIn, OpenOut, RefreshIn};
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
-    };
+    use busbar_contract::abi::mechanism::call::BLOB_JSON;
+    use busbar_contract::abi::mechanism::lifecycle::{GenIn, RefreshIn};
+    let blob = lifecycle::blob(settings, BLOB_JSON, 0);
     let snapshot = if *current == 0 {
         let url = public_url.unwrap_or_default();
         // Each points into `facts`, which outlives the open.
         let providers = provider_facts(facts);
         let mut frame = Frame::new(
             PlaneOpenIn {
-                open: OpenIn {
-                    head: in_head(),
-                    host: std::ptr::null(),
-                    settings: blob,
-                    secrets: std::ptr::null(),
-                    secrets_len: 0,
-                    generation: 1,
-                    err_buf: std::ptr::null_mut(),
-                    err_cap: 0,
-                },
-                public_url: AbiStr {
-                    ptr: if url.is_empty() {
-                        std::ptr::null()
-                    } else {
-                        url.as_ptr()
-                    },
-                    len: url.len(),
-                },
-                owned: if owned.is_empty() {
-                    Blob {
-                        ptr: std::ptr::null(),
-                        len: 0,
-                        fmt: BLOB_ABSENT,
-                        flags: 0,
-                    }
-                } else {
-                    Blob {
-                        ptr: owned.as_ptr(),
-                        len: owned.len(),
-                        fmt: BLOB_JSON,
-                        flags: 0,
-                    }
-                },
+                open: lifecycle::open_in(blob),
+                public_url: lifecycle::lend_or_null(url),
+                owned: lifecycle::blob(owned, BLOB_JSON, 0),
                 // The same list the served instance's open is handed: the plane resolves each
                 // model's dialect from it, and its claims follow.
                 providers: if providers.is_empty() {
@@ -1197,11 +1103,7 @@ fn facing(
                 providers_len: providers.len(),
             },
             PlaneOpenOut {
-                open: OpenOut {
-                    head: out_head(),
-                    instance: std::ptr::null_mut(),
-                    err_len: 0,
-                },
+                open: lifecycle::open_out(),
                 snapshot: std::ptr::null(),
             },
         );
@@ -1271,40 +1173,17 @@ fn facing(
 /// `validate` `settings` on `plugin` (ticket-less; it never pends): `Ok` when READY, else the
 /// plugin's words.
 fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::ValidateIn;
-    let blob = if settings.is_empty() {
-        Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        }
-    } else {
-        Blob {
-            ptr: settings.as_ptr(),
-            len: settings.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        }
-    };
-    let mut f = Frame::new(
-        ValidateIn {
-            head: in_head(),
-            settings: blob,
-            err_buf: std::ptr::null_mut(),
-            err_cap: 0,
-        },
-        out_head(),
+    let c = lifecycle::validate_call(
+        plugin,
+        lifecycle::blob(
+            settings,
+            busbar_contract::abi::mechanism::call::BLOB_JSON,
+            0,
+        ),
     );
-    let c = plugin.call(life::VALIDATE, &mut f);
     match c.outcome {
         Outcome::Ready => Ok(()),
-        o => Err(c
-            .error
-            .map(|e| String::from_utf8_lossy(&e).into_owned())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| format!("{o:?}"))),
+        o => Err(lifecycle::text(c.error).unwrap_or_else(|| format!("{o:?}"))),
     }
 }
 

@@ -16,8 +16,8 @@
 //! workspace crate, not an example plugin, and not the shipped plugin taken under another name.
 //!
 //! What it copies is the shipped RAM store, at whatever rev the root pins: the same record
-//! verbs and their preconditions, the same retention sweep, the same v3 slots (dedupe, caps,
-//! slices, ledger chains, sessions), the same tail and `max_inflight`. Its Statement name and its
+//! verbs and their preconditions, the same retention sweep, the same v3 slots (dedupe, count
+//! batches, kernel-held records), the same tail and `max_inflight`. Its Statement name and its
 //! canonical name are its OWN ([`NAME`]), never the plugin's: the kernel spells no plugin name, not
 //! even in a double (C1). That the copy holds is proven where the real door is linked: the root's
 //! `the_kernel_store_double_states_what_the_linked_store_door_states` renders both Statements and
@@ -117,7 +117,7 @@ pub struct MemoryStore {
     /// made twice.
     ///
     /// What removes a row is the host, never this backend's clock: a `record_put` whose value is
-    /// EMPTY removes the `(schema, key)` row (slot 40's rule), so `record_get` answers `None` and
+    /// EMPTY removes the `(schema, key)` row (slot 26's rule), so `record_get` answers `None` and
     /// `record_scan` never returns it. The host writes every strike that way (a swept work handle,
     /// a dropped chain), so the map's bound is the kernel's admission and its own settled-handle
     /// sweep; and the backend is EPHEMERAL, so a restart empties it.
@@ -141,8 +141,7 @@ pub struct MemoryStore {
     /// store body, so a test proves the door boundary turns a backend panic into a FAULT answer.
     /// Only the door path reads it; a direct `RecordStore` call never does.
     pub(crate) panic_on_plane_append: std::sync::atomic::AtomicBool,
-    /// The store v3 slots' own state: the `op_id` dedupe log, the caps, the drawn totals, the
-    /// slices, the ledger chains and the session directory ([`v3`]).
+    /// The store v3 slots' own state: the `op_id` dedupe log ([`v3`]).
     v3: v3::State,
 }
 
@@ -164,7 +163,7 @@ impl MemoryStore {
     ///
     /// The value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body
     /// over it cannot be constructed, so this method cannot be handed one. An EMPTY value removes
-    /// the row (slot 40's rule; see the `records` field's doc).
+    /// the row (slot 26's rule; see the `records` field's doc).
     ///
     /// # Errors
     ///
@@ -432,22 +431,6 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn scrub_key(&self, id: &str) -> StoreResult<()> {
-        let mut keys = self.keys();
-        let Some(key) = keys.get_mut(id) else {
-            return Err(StoreError(format!("scrub_key: unknown key '{id}'")));
-        };
-        if key.deleted_at.is_none() {
-            return Err(StoreError(format!(
-                "scrub_key: '{id}' is not tombstoned — delete it first"
-            )));
-        }
-        key.name.clear();
-        key.labels.clear();
-        key.revision = self.next_revision();
-        Ok(())
-    }
-
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .keys_read()
@@ -671,18 +654,6 @@ impl Store for MemoryStore {
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
             .collect())
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> StoreResult<Option<CredentialSecret>> {
-        Ok(self
-            .creds_read()
-            .values()
-            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
-            .cloned())
     }
 
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
