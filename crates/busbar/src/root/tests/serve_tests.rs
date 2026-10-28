@@ -1191,6 +1191,9 @@ pub(super) mod session_door {
             gov: Arc::clone(&gov),
             journal: None,
         });
+        // THE ADMIN TABLE the door is published into, lent to the App built below as the root
+        // lends the boot generation its own.
+        let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
@@ -1203,7 +1206,7 @@ pub(super) mod session_door {
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
             }),
             stage.as_ref(),
-            &busbar_kernel::plane_driver::serve::ServeTables::default(),
+            &tables,
         ) {
             Ok(served) => served,
             Err(refusal) => return Some(Err(refusal)),
@@ -1214,7 +1217,9 @@ pub(super) mod session_door {
         );
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
-        let app = busbar_kernel::test_support::TestApp::new().keys_chain();
+        let app = busbar_kernel::test_support::TestApp::new()
+            .keys_chain()
+            .serve_tables(tables.clone());
         let app = groups
             .iter()
             .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
@@ -1251,7 +1256,6 @@ pub(super) mod session_door {
             false,
         );
         Some(Ok(SessionDoor {
-            _published: published,
             router,
             heard,
             gov,
@@ -5222,7 +5226,6 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
 async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-pools-audit-chain";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -6570,7 +6573,6 @@ mod pools_door_walk_and_breaker {
         band: std::ops::RangeInclusive<u64>,
     ) {
         let _one = ONE_PUBLISHER.lock().await;
-        let _published = Withdrawn(instance);
         let clock = HeldClock::at(HELD_AT);
         let (state, server) = mock(vec![reply, MockResponse::default()]).await;
         let rig = rig(
@@ -7883,7 +7885,6 @@ mod pools_door_refusals {
     async fn the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-gate-ghost-group-bytes";
-        let _published = Withdrawn(instance);
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
         let rig = rig(
