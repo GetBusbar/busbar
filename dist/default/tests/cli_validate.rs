@@ -2064,15 +2064,18 @@ fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
 /// declare secret is refused by `--validate` AND by boot, in the same sentence, naming the field and
 /// the plugin and saying to write the value itself. Boot refuses before it serves: a boot that did
 /// not refuse would still be running at the deadline, which fails the test.
+///
+/// The memory store declares every TOP-LEVEL setting (`secret_refs: *`, the surface 1.5.5 resolved),
+/// so the reference sits one level down, at `pool.path`, which no declared path names.
 #[test]
 fn validate_and_boot_refuse_a_reference_at_an_undeclared_plugin_field() {
     let dir = fixture_dir("undeclared-secret-ref");
     write_configs(
         &dir,
-        "store:\n  module: memory\n  settings:\n    path: { env: MOCK_KEY }\n",
+        "store:\n  module: memory\n  settings:\n    pool:\n      path: { env: MOCK_KEY }\n",
     );
     let refused = |all: &str| {
-        all.contains("store.settings.path")
+        all.contains("store.settings.pool.path")
             && all.contains("'memory'")
             && all.contains("did not declare it as a secret")
             && all.contains("write the value itself")
