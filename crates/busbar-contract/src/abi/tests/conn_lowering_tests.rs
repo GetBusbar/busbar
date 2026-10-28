@@ -26,7 +26,7 @@ impl Conns for Echo {
             self.0.check_need(caller, need)?;
             return Err(ConnError::Refused);
         }
-        let mut first = [desc.method, desc.head_target, desc.body].concat();
+        let mut first = [desc.method, desc.head_target, &desc.body[..]].concat();
         for (name, value) in desc.fields {
             first.extend_from_slice(name.as_bytes());
             first.extend_from_slice(value);
@@ -137,7 +137,7 @@ fn every_operation_crosses_the_lowering() {
             &OpenDesc {
                 target: "echo.test",
                 fields: &[("k", b"v")],
-                body: b"hello",
+                body: crate::conn::Bytes::from_static(b"hello"),
                 timeout_ms: 5,
                 ..OpenDesc::default()
             },

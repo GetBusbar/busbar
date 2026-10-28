@@ -900,6 +900,13 @@ impl Store for MemoryStore {
 /// The double's own Statement name and canonical name: not the plugin's (C1).
 pub const NAME: &str = "store-double";
 
+/// The settings paths the double's Statement declares may hold a secret reference (`secret_refs`):
+/// `*`, every top-level key, as the linked memory store declares (the surface 1.5.5 resolved). The
+/// stand-in registry states the same for the double's row (`test_support::rows::registry_stand_in`), so
+/// a test build's undeclared-reference refusal reads what the production registry reads off the
+/// linked door.
+pub const SECRET_REF_PATHS: &[&str] = &["*"];
+
 /// THE STAND-IN LINKED ENTRY: `(key, ephemeral, door, canonical)`, the shape of the root's linked
 /// store rows ([`crate::preflight::LinkedStore`]). Its key is the store a migrated 1.5.x config names
 /// ([`KEY`]), so a fixture config's `store:` block resolves to it; it claims no default (Q-STORE =

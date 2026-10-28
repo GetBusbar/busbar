@@ -9,7 +9,7 @@
 //!
 //! Driving idiom:
 //! ```ignore
-//! let cap = busbar_contract::testkit::WarnCapture::default();
+//! let cap = busbar_test_kit::warn_capture::WarnCapture::default();
 //! tracing::subscriber::with_default(cap.clone(), || { /* code under test */ });
 //! assert!(cap.contains("expected substring"));
 //! ```

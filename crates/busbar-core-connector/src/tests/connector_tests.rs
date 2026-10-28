@@ -191,7 +191,7 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -255,7 +255,7 @@ fn a_parked_reads_wake_names_the_caller_it_parked_for() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -792,7 +792,7 @@ fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"token",
+            body: busbar_contract::conn::Bytes::from_static(b"token"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -906,7 +906,7 @@ fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
                         ("authorization", b"Bearer abc.def".as_slice()),
                         ("content-length", b"5".as_slice()),
                     ],
-                    body: b"token",
+                    body: busbar_contract::conn::Bytes::from_static(b"token"),
                     ..OpenDesc::default()
                 },
             ),
@@ -923,7 +923,7 @@ fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
                 OpenDesc {
                     target: &far,
                     fields: &[("Transfer-Encoding", b"chunked".as_slice())],
-                    body: b"token",
+                    body: busbar_contract::conn::Bytes::from_static(b"token"),
                     ..OpenDesc::default()
                 },
             ),
@@ -954,7 +954,7 @@ fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
                     fields: clean,
                     method: b"POST",
                     head_target: b"/v1/traces",
-                    body: b"token",
+                    body: busbar_contract::conn::Bytes::from_static(b"token"),
                     ..OpenDesc::default()
                 },
             )
@@ -996,7 +996,7 @@ fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
                         fields,
                         method: b"POST",
                         head_target: b"/token",
-                        body: b"grant_type=authorization_code",
+                        body: busbar_contract::conn::Bytes::from_static(b"grant_type=authorization_code"),
                         ..OpenDesc::default()
                     },
                 ),
@@ -1015,7 +1015,7 @@ fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
                     fields: &[("content-type", b"application/x-www-form-urlencoded".as_slice())],
                     method: b"POST",
                     head_target: b"/token",
-                    body: b"grant_type=authorization_code",
+                    body: busbar_contract::conn::Bytes::from_static(b"grant_type=authorization_code"),
                     ..OpenDesc::default()
                 },
             )
@@ -1034,7 +1034,7 @@ fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
                     ],
                     method: b"POST",
                     head_target: b"/v1/op",
-                    body: b"{}",
+                    body: busbar_contract::conn::Bytes::from_static(b"{}"),
                     ..OpenDesc::default()
                 },
             )
@@ -1064,7 +1064,7 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -1130,7 +1130,7 @@ fn a_request_bound_times_out_a_far_end_that_never_answers() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             timeout_ms: 300,
             ..OpenDesc::default()
         };
@@ -1172,7 +1172,7 @@ fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             timeout_ms: 200,
             ..OpenDesc::default()
         };
@@ -1217,7 +1217,7 @@ fn a_request_bound_is_spent_once_the_answer_begins() {
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             timeout_ms: 200,
             ..OpenDesc::default()
         };
@@ -1659,7 +1659,7 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
 fn a_settings_derived_target_is_declared_without_its_userinfo() {
     const USER: &str = "the-user";
     const SECRET: &str = "s3cret-pw";
-    let cap = busbar_contract::testkit::WarnCapture::capturing_debug();
+    let cap = crate::warn_capture::WarnCapture::capturing_debug();
     let mut said: Vec<String> = Vec::new();
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
@@ -1920,7 +1920,7 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
             .expect("a served scheme declares");
         let desc = OpenDesc {
             target: &far,
-            body: b"ask",
+            body: busbar_contract::conn::Bytes::from_static(b"ask"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -2115,7 +2115,7 @@ mod transport_pin {
     async fn exchange(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target: far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -2236,7 +2236,7 @@ mod transport_pin {
     async fn exchange_as(c: &Connector, far: &str, member: &str) -> Result<Vec<u8>, ConnError> {
         let desc = OpenDesc {
             target: far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             member,
             ..OpenDesc::default()
         };
@@ -2837,7 +2837,7 @@ mod transport_pin {
                 NeedId(0),
                 &OpenDesc {
                     target: &far,
-                    body: b"first",
+                    body: busbar_contract::conn::Bytes::from_static(b"first"),
                     ..OpenDesc::default()
                 },
             );
@@ -3071,7 +3071,7 @@ mod transport_pin {
     async fn exchange_awaited(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target: far,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             ..OpenDesc::default()
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
@@ -3312,7 +3312,7 @@ mod transport_pin {
     ) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target,
-            body: b"first",
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
             within: judged,
             ..OpenDesc::default()
         };
@@ -3937,7 +3937,7 @@ async fn pooled_exchange(
             NeedId(need),
             &OpenDesc {
                 target: far,
-                body,
+                body: busbar_contract::conn::Bytes::copy_from_slice(body),
                 ..OpenDesc::default()
             },
         )
