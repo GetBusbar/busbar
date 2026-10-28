@@ -107,6 +107,10 @@ impl<I, O> Drop for Ticketed<I, O> {
 pub(crate) trait Answering<I, O> {
     type Out: Clone;
     fn answer(&mut self, done: Done<I, O>, call: &mut Ticketed<I, O>) -> Option<Self::Out>;
+
+    /// Submit the call's first op when it is first polled, for a door that hands its call out
+    /// unsubmitted: nothing crosses until the call is awaited.
+    fn start(&mut self, _call: &mut Ticketed<I, O>) {}
 }
 
 /// ONE FUTURE PER PLUGIN CALL: the op on its own ticket, then the door's answer, kept so a later
@@ -122,7 +126,7 @@ pub(crate) struct Pending<I, O, A: Answering<I, O>> {
 impl<I, O, A: Answering<I, O>> Unpin for Pending<I, O, A> {}
 
 impl<I: InFrame, O: OutFrame, A: Answering<I, O>> Pending<I, O, A> {
-    /// `call`, its op submitted, answered by `door`.
+    /// `call` (its op submitted, or submitted by `door` at the first poll), answered by `door`.
     pub(crate) fn new(call: Ticketed<I, O>, door: A) -> Self {
         Self {
             call,
@@ -149,6 +153,9 @@ impl<I: InFrame, O: OutFrame, A: Answering<I, O>> Pending<I, O, A> {
         loop {
             if let Some(a) = &self.answer {
                 return Poll::Ready(a.clone());
+            }
+            if self.call.reply.is_none() {
+                self.door.start(&mut self.call);
             }
             let done = std::task::ready!(Pin::new(&mut self.call).poll(cx));
             self.faulted |= done.outcome == Outcome::Fault;
