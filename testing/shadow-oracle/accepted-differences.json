@@ -554,7 +554,7 @@
       "classes": [
         "effects.egress"
       ],
-      "rationale": "CLASSES NARROWED 2026-09-24 (item 52, P3A-register) to ['effects.egress']: the only classes that move on the measured build (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66). OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).' The egress record shows the injected stream_options.include_usage on the fallback hop.",
+      "rationale": "CLASSES NARROWED 2026-09-24 (item 52, P3A-register) to ['effects.egress']: the only classes that move on the measured build (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66). OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).' The egress record shows the injected stream_options.include_usage on the fallback hop. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Forgiven: the fallback hop's `stream_options: {include_usage: true}` (the signed billing fix), the content-length it adds (85 -> 125), and the caller's own user-agent on that same-dialect hop (`curl/8.5.0`, the pass-through R4/581 signs); nothing else busbar sends upstream on this cell.",
       "changelog": "1.6.0 Improvements: fallback-lane streams are now billed",
       "premise": {
         "all": [
@@ -584,7 +584,26 @@
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
-      }
+      },
+      "values": [
+        {
+          "pointer": "/effects/egress/1/body/stream_options",
+          "golden_absent": true,
+          "candidate": {
+            "include_usage": true
+          }
+        },
+        {
+          "pointer": "/effects/egress/1/headers/content-length",
+          "golden": "85",
+          "candidate": "125"
+        },
+        {
+          "pointer": "/effects/egress/1/headers/user-agent",
+          "golden": "OpenAI/Python 1.54.0",
+          "candidate": "curl/8.5.0"
+        }
+      ]
     },
     {
       "id": "PR2-D9 degraded transport-error telemetry",
@@ -1746,7 +1765,44 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference. WIDENED 2026-10-24 (OWNER, in session): the anthropic, cohere and openai stream-cut/error cells and the gemini tool-use cell, whose metrics move by the same breaker reading and the signed #62 / SPEND-LEDGER / RULE21-576 billing (spend and token series)."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference. WIDENED 2026-10-24 (OWNER, in session): the anthropic, cohere and openai stream-cut/error cells and the gemini tool-use cell, whose metrics move by the same breaker reading and the signed #62 / SPEND-LEDGER / RULE21-576 billing (spend and token series). NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Q40 forgives only `busbar_lane_state` reading 2 where 1.5.5 read 1; the spend and token series of the stream-cut, stream-error and tool-use cells are their money entries' (#62, SPEND-LEDGER, RULE21-576), each pinned to its figure.",
+      "values": [
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"oracle-fo\",lane=\"m-openai-chat\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-anthropic\",lane=\"m-anthropic\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-cohere\",lane=\"m-cohere\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-gemini\",lane=\"m-gemini\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-openai-chat\",lane=\"m-openai-chat\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-cohere\",lane=\"m-cohere\"}",
+          "golden_absent": true,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-openai-chat\",lane=\"m-openai-chat\"}",
+          "golden_absent": true,
+          "candidate": 2
+        }
+      ]
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (served read)",
@@ -2183,10 +2239,9 @@
       "expected_cells": 1,
       "classes": [
         "effects.usage",
-        "effects.metrics",
-        "norm.rules"
+        "effects.metrics"
       ],
-      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 290, /effects/usage/tokens -> 22.",
       "premise": {
         "all": [
           {
@@ -2218,7 +2273,49 @@
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
-      }
+      },
+      "values": [
+        {
+          "pointer": "/effects/usage/spend_cents",
+          "golden": 250,
+          "candidate": 290
+        },
+        {
+          "pointer": "/effects/usage/tokens",
+          "golden": 18,
+          "candidate": 22
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_budget_remaining_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden": -250,
+          "candidate": -290
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_spend_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden": 250,
+          "candidate": 290
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"<KEY>\",model=\"m-gemini\",tier=\"input\"}",
+          "golden": 11,
+          "candidate": 15
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\",model=\"m-gemini\",tier=\"input\"}",
+          "golden": 11,
+          "candidate": 15
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_spend_cents{key=\"<KEY>\"}",
+          "golden": 250,
+          "candidate": 290
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_tokens_total{key=\"<KEY>\"}",
+          "golden": 18,
+          "candidate": 22
+        }
+      ]
     },
     {
       "id": "LEDGER-SIMPLE a streamed grounded Gemini turn ledgers its stated-total gap as unitemized_tokens",
@@ -2521,10 +2618,81 @@
       "expected_cells": 1,
       "classes": [
         "effects.usage",
-        "effects.metrics",
+        "effects.metrics"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge.\" NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 110, /effects/usage/tokens -> 11.",
+      "premise": {
+        "cell": "route.failover|fb|member-down-stream-openai",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:#62",
+        "when": "2026-09-20",
+        "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied by ARCHITECT ruling 2026-10-13 (status row 155, row-159 plane-llm L1#2, option (b))",
+        "widened_2026_10_24": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "values": [
+        {
+          "pointer": "/effects/usage/spend_cents",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/usage/tokens",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_budget_remaining_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": -110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_spend_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"<KEY>\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_spend_cents{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_tokens_total{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 11
+        }
+      ]
+    },
+    {
+      "id": "#62-NORM the key-id mask fires on the usage this cell now records (split out of #62)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "ruling:#62 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
         "norm.rules"
       ],
-      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge.\"",
+      "rationale": "SPLIT 2026-10-27 out of #62 (same cells, same signature, strictly less forgiven): now that the cell records a spend line, its key series carry the masked `<KEY>`, so the recorder's `key.id` normalization rule fires on the candidate where it did not on 1.5.5 (norm.rules only_candidate [key.id]). Only that class; every figure is the parent entry's values.",
       "premise": {
         "cell": "route.failover|fb|member-down-stream-openai",
         "status": 200
@@ -3851,10 +4019,93 @@
       "expected_cells": 1,
       "classes": [
         "effects.usage",
-        "effects.metrics",
+        "effects.metrics"
+      ],
+      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents. PREMISE 2026-10-24: the pointer into /effects/usage was read against the SSE body and could never hold; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's own SSE body is what the judge reads, so the premise is that body stating the 11 input tokens in message_start AND ending in an error event, i.e. the stream stated cost before its upstream failed; the bare status premise said nothing about the claim. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 110, /effects/usage/tokens -> 11.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "body_contains": "\"input_tokens\":11"
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "body_contains": "event: error"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-20",
+        "ruling": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged",
+        "widened_2026_10_24": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "values": [
+        {
+          "pointer": "/effects/usage/spend_cents",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/usage/tokens",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_budget_remaining_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": -110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_spend_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"<KEY>\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_spend_cents{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_tokens_total{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 11
+        }
+      ]
+    },
+    {
+      "id": "SPEND-LEDGER-NORM the key-id mask fires on the usage this cell now records (split out of SPEND-LEDGER)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), 2026-10-20 ruling on PR #1292",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_error@fixture$",
+      "expected_cells": 1,
+      "classes": [
         "norm.rules"
       ],
-      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents. PREMISE 2026-10-24: the pointer into /effects/usage was read against the SSE body and could never hold; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's own SSE body is what the judge reads, so the premise is that body stating the 11 input tokens in message_start AND ending in an error event, i.e. the stream stated cost before its upstream failed; the bare status premise said nothing about the claim.",
+      "rationale": "SPLIT 2026-10-27 out of SPEND-LEDGER (same cells, same signature, strictly less forgiven): now that the cell records a spend line, its key series carry the masked `<KEY>`, so the recorder's `key.id` normalization rule fires on the candidate where it did not on 1.5.5 (norm.rules only_candidate [key.id]). Only that class; every figure is the parent entry's values.",
       "premise": {
         "all": [
           {
@@ -4032,7 +4283,14 @@
         "cell": "llm|gemini|gemini|request|ok",
         "status": 200
       },
-      "rationale": "OWNER 2026-10-24 (in session): 581's pass-through covers the egress path query on a same-dialect gemini route. 1.6.0 forwards the client's `?alt=sse` (plane-llm exchange/arrive.rs); translated routes are unchanged. The judge's transforms do not reach the egress record, so the class is forgiven on these four cells only."
+      "rationale": "OWNER 2026-10-24 (in session): 581's pass-through covers the egress path query on a same-dialect gemini route. 1.6.0 forwards the client's `?alt=sse` (plane-llm exchange/arrive.rs); translated routes are unchanged. The judge's transforms do not reach the egress record, so the class is forgiven on these four cells only. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Only the upstream path gaining the caller's `?alt=sse`.",
+      "values": [
+        {
+          "pointer": "/effects/egress/0/path",
+          "golden": "/v1beta/models/m-gemini%3AstreamGenerateContent",
+          "candidate": "/v1beta/models/m-gemini%3AstreamGenerateContent?alt=sse"
+        }
+      ]
     },
     {
       "id": "LOG-OWN export plugin log lines go to the plugin's own log file",
