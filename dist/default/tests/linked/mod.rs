@@ -40,7 +40,7 @@ pub fn install() {
         }
     });
     for &row in door_rows() {
-        busbar_kernel::plane_driver::registry::register_test_plane(row);
+        busbar_kernel::test_support::planes::register_test_plane(row);
     }
     for seam in test_plane_seams() {
         (seam.install)();

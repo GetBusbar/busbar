@@ -38,7 +38,7 @@ use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
 };
 use busbar_contract::abi::transport::{CLOSE_NORMAL, FAULT_NONE, SIDE_ACCEPT, SIDE_DIAL};
-use busbar_contract::conn::ConnCause;
+use busbar_contract::conn::{Bytes, ConnCause};
 
 use crate::carrier::{Carried, Dest, DialFailure};
 use crate::endpoint;
@@ -100,8 +100,8 @@ impl std::fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
-/// A first message: its envelope fields and its body.
-pub type Opening = (Vec<(String, Vec<u8>)>, Vec<u8>);
+/// A first message: its envelope fields and its body (frozen by its opener, kept without a copy).
+pub type Opening = (Vec<(String, Vec<u8>)>, Bytes);
 
 /// What a dial asks for.
 #[derive(Clone)]
@@ -1116,7 +1116,7 @@ impl Connection {
                     "a carrier carried as itself carries no fields".into(),
                 ));
             }
-            return Ok(Some(body));
+            return Ok(Some(Vec::from(body)));
         };
         let fields: Vec<(&str, &[u8])> = fields
             .iter()
