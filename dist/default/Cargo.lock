@@ -300,7 +300,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327#df35ad3397ca7bf2e1a8a1ddc76b9c5fb155d327"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=aaf683a69f866c5f251a1aaa17e17bc69ad22a71#aaf683a69f866c5f251a1aaa17e17bc69ad22a71"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=db5630f9eb28797ddd6f75e17cc4fe9ff9dfaf14#db5630f9eb28797ddd6f75e17cc4fe9ff9dfaf14"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=254cddb5b7c9783f7697ac07a08cc72024761703#254cddb5b7c9783f7697ac07a08cc72024761703"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -715,7 +715,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=a9408e5220eb4efc0035ef43c229b7d91b967934#a9408e5220eb4efc0035ef43c229b7d91b967934"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=3159b512f6cca2b2ce909f2b1bc454b4311decb6#3159b512f6cca2b2ce909f2b1bc454b4311decb6"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -728,7 +728,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8#6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=efab87b0a8124551bd08675f729a1070470ec72d#efab87b0a8124551bd08675f729a1070470ec72d"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",

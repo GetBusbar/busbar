@@ -524,6 +524,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -652,6 +653,7 @@ fn charge_once_at(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
@@ -6836,9 +6838,16 @@ pub(crate) mod hook_parity {
             port,
             vec![(
                 "screen",
+                // Screens only: clean arguments are let through untouched (the double's default
+                // answer is a chat rewrite a tool call cannot take, which is refused, never
+                // relayed un-rewritten).
                 gate(
                     "rw",
-                    serde_json::json!({ "reject_if_contains": "/etc/shadow", "reject_status": 451 }),
+                    serde_json::json!({
+                        "reject_if_contains": "/etc/shadow",
+                        "reject_status": 451,
+                        "raw_transform_reply": {},
+                    }),
                 ),
             )],
         );
@@ -8543,6 +8552,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 records: None,
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };

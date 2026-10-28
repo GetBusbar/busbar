@@ -1333,7 +1333,7 @@
       "id": "#1467 metadata host-list entries are mapped to their ASCII host, and a host holding % outside a zone id is DEST_NO_HOST",
       "kind": "breaking",
       "status": "owner-approved 2026-10-21",
-      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.",
+      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.",
       "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
@@ -1376,48 +1376,6 @@
         ]
       },
       "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `１０.９９.９９.９９` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
-    },
-    {
-      "id": "#1467 an unjudgeable metadata host-list entry boots with one BUSBAR-3024 warning line",
-      "kind": "improvement",
-      "status": "owner-approved 2026-10-21",
-      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.",
-      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-21",
-        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): #1467 item 3 approved as proposed: an unjudgeable metadata host-list entry still boots, is dropped from matching, and is named in a new BUSBAR-3024 warning"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^boot\\.warning\\|BUSBAR-3024-(number-label|percent-escape|unmappable)\\|validate$",
-      "expected_cells": 0,
-      "classes": [
-        "effects.stderr"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "boot.refusal|BOOT-001|validate",
-            "status": 1
-          },
-          {
-            "cell": "boot.refusal|BOOT-002|validate",
-            "status": 1
-          },
-          {
-            "cell": "boot.refusal|BOOT-003|validate",
-            "status": 1
-          },
-          {
-            "cell": "cli|--print-metadata-blocklist",
-            "body_contains": "metadata.google.internal"
-          }
-        ]
-      },
-      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', item 3, approved as proposed. An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` that names no host the guard judges (a `%` outside an IPv6 zone id, a number-like last label that is no IPv4 address such as `db.1` or `1.2.3.4.5`, or non-ASCII UTS #46 cannot map) still boots as on 1.5.5, is dropped from matching, and is named in one BUSBAR-3024 warning line (CONFIG_METADATA_ENTRY_NAMES_NO_HOST). Such a config boots and validates exactly as on 1.5.5, so this entry forgives ONLY the added stderr line: its exit status and every other byte must stay 1.5.5's. No oracle cell is touched today: BOOT-001/002/003 hold CIDR entries (refused with 1.5.5's text, as before), cli|--print-metadata-blocklist runs the baseline config with no operator entry, and no shipped, example or oracle config holds a `%` or number-label entry. None of them is in `cells`; all must stay byte-identical. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed warning cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set. Proof: config_validate test_a_metadata_entry_naming_no_host_boots_with_one_warning_line."
     },
     {
       "id": "K-1 rotate refuses an overlong key id like its siblings",

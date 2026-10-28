@@ -7,9 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
-    CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
-    CONFIG_RATE_CARD_ALL_ZERO,
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
+    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
@@ -98,13 +97,18 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         &cfg.allow_metadata_hosts,
         &mut errors,
     );
-    // An entry that names no host the guard judges booted on 1.5.5 and matched nothing there. It
-    // still boots, is dropped from matching, and is named in one warning line each.
-    warn_unmappable_metadata_entries(
+    // An entry that names no host the guard judges could never match a destination: startup is
+    // refused, naming the key and the entry (OWNER 2026-10-27).
+    reject_unmappable_metadata_entries(
         "security.blocked_metadata_hosts",
         &cfg.blocked_metadata_hosts,
+        &mut errors,
     );
-    warn_unmappable_metadata_entries("security.allow_metadata_hosts", &cfg.allow_metadata_hosts);
+    reject_unmappable_metadata_entries(
+        "security.allow_metadata_hosts",
+        &cfg.allow_metadata_hosts,
+        &mut errors,
+    );
 
     // The reasoning effort table drives word<->number projection at the egress seam (the
     // cross-protocol thinking carry). A zero entry would project thinking budgets below the floor
@@ -126,6 +130,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             ));
         }
     }
+
+    // A provider URL the destination guard will refuse is named now, not on its first request.
+    warn_refused_provider_destinations(cfg);
 
     // Collect provider names for pool-name conflict check and member resolution
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
@@ -2110,42 +2117,42 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
     }
 }
 
-/// Warn once for every entry in a metadata host-list config key that names no host the destination
-/// guard can judge. An entry is read as a destination's host is read
-/// (`busbar_kernel_egress::trust::net::list_entry_host`: a non-ASCII entry mapped by UTS #46 to the
-/// ASCII name or address a URL client dials), so a full-width `１６９.２５４.１６９.２５４` names
-/// `169.254.169.254`; and it must then be a host the guard judges
+/// Refuse every entry in a metadata host-list config key that names no host the destination guard
+/// can judge, naming the key, the entry and the reason. An entry is read as a destination's host is
+/// read (`busbar_kernel_egress::trust::net::list_entry_host`: a non-ASCII entry mapped by UTS #46 to
+/// the ASCII name or address a URL client dials), so a full-width `１６９.２５４.１６９.２５４` names
+/// `169.254.169.254` and is kept; and it must then be a host the guard judges
 /// (`busbar_contract::net::judged_host`, the guard's one reading of every target and entry). An
 /// entry UTS #46 refuses, one holding a `%` outside an IPv6 zone id, or one ending in a number that
-/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) matches no destination.
+/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) could never match a
+/// destination: a rule that reads as working and protects nothing.
 ///
-/// 1.5.5 booted with such an entry and it matched nothing (it compared raw strings, and refused only
-/// a `/`, `reject_cidr_metadata_entries`), so the configuration still boots: the guard drops the
-/// entry from matching (`HostSet::parse`), the built-in denylist still blocks every real target, and
-/// this names the key, the entry and the reason in one warning line
-/// ([`CONFIG_METADATA_ENTRY_NAMES_NO_HOST`]). A `/` entry is left to its own 1.5.5 refusal.
-fn warn_unmappable_metadata_entries(key: &str, entries: &[String]) {
+/// 1.5.5 booted with such an entry and silently matched nothing; OWNER 2026-10-27: a block-list
+/// entry that names no usable host fails startup, with an error naming the entry. A `/` entry is
+/// left to its own 1.5.5 refusal ([`reject_cidr_metadata_entries`]).
+fn reject_unmappable_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
     for entry in entries {
-        if let Some(line) = unmappable_metadata_warning(key, entry) {
-            diag_warn!(CONFIG_METADATA_ENTRY_NAMES_NO_HOST, "{line}");
+        if let Some(line) = unmappable_metadata_refusal(key, entry) {
+            errors.push(line);
         }
     }
 }
 
-/// The warning line for one metadata host-list entry that names no host, or `None` when it names
-/// one or is a `/` entry, which 1.5.5 refuses on its own ([`warn_unmappable_metadata_entries`]).
-fn unmappable_metadata_warning(key: &str, entry: &str) -> Option<String> {
+/// The refusal for one metadata host-list entry that names no host, or `None` when it names one or
+/// is a `/` entry, which 1.5.5 refuses on its own ([`reject_unmappable_metadata_entries`]).
+fn unmappable_metadata_refusal(key: &str, entry: &str) -> Option<String> {
     if entry.contains('/') {
         return None;
     }
     let (why, fix) = unmappable_metadata_entry(entry)?;
     Some(format!(
-        "{key} entry '{entry}' maps to no host: {why}, so it matches nothing and is dropped. {fix}"
+        "{key} entry '{entry}' names no usable host: {why}, so it could never match a \
+         destination. {fix}"
     ))
 }
 
 /// Why a metadata host-list entry names no host the guard judges, and how to write it instead;
-/// `None` when it names one ([`warn_unmappable_metadata_entries`]).
+/// `None` when it names one ([`reject_unmappable_metadata_entries`]).
 fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)> {
     let trimmed = entry.trim();
     if busbar_kernel_egress::trust::net::list_entry_host(trimmed).is_err() {
@@ -2183,6 +2190,95 @@ pub(crate) fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> 
         return None;
     }
     unmappable_metadata_entry(entry).map(|(why, _)| why)
+}
+
+/// THE 1.5.5 UPGRADE'S PRIVATE PROVIDER (owner ruling 2026-10-27): a provider URL (`base_url`,
+/// `token_url`) naming a private or loopback host is refused by the destination guard on every
+/// request while `advanced.block_private_addresses` holds (the default) and
+/// `advanced.allow_destinations` does not name it. 1.5.5 had no such guard, so such a provider
+/// worked there. `--validate` and the boot name each such URL in one warning line
+/// ([`crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED`]) so it is never discovered only at request time. A
+/// name is judged as written; `--validate` resolves nothing. Cloud metadata keeps its own refusal.
+fn warn_refused_provider_destinations(cfg: &RootCfg) {
+    if !cfg.guard.block_private_addresses {
+        return;
+    }
+    let mut providers: Vec<(&String, &crate::config::ResolvedProvider)> =
+        cfg.providers.iter().collect();
+    providers.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, p) in providers {
+        let urls = [
+            ("base_url", Some(p.base_url.as_str())),
+            ("token_url", p.token_url.as_deref()),
+        ];
+        for (key, url) in urls {
+            let Some(host) = url.and_then(refused_private_host) else {
+                continue;
+            };
+            if destination_allowed(&cfg.guard.allow, &host) {
+                continue;
+            }
+            diag_warn!(
+                crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
+                "provider '{name}' {key} names the private or loopback host '{host}': with \
+                 advanced.block_private_addresses on (the default) the destination guard refuses \
+                 every request to it. Add '{host}' to advanced.allow_destinations (busbar \
+                 --migrate-config adds the hosts a provider's plane reports), or set \
+                 advanced.block_private_addresses: false to admit every private address"
+            );
+        }
+    }
+}
+
+/// The host of `url` when it is a private or loopback host the guard refuses for a provider (and
+/// not cloud metadata, which has its own refusal), as the guard reads it.
+fn refused_private_host(url: &str) -> Option<String> {
+    let host = busbar_contract::net::url_host(url)?;
+    let host = busbar_contract::net::judged_host(&host).ok()?;
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    (busbar_contract::net::host_is_private_or_loopback(&host)
+        && !busbar_contract::net::host_is_cloud_metadata(&host))
+    .then_some(host)
+}
+
+/// Whether an `advanced.allow_destinations` entry admits `host`, as the guard reads the list: an
+/// exact host, a `*.domain` wildcard (names under it, never the apex), an IP, or a CIDR.
+fn destination_allowed(allow: &[String], host: &str) -> bool {
+    let ip = busbar_contract::net::host_ip(host);
+    allow.iter().any(|entry| {
+        let entry = entry.trim();
+        if entry.eq_ignore_ascii_case(host) {
+            return true;
+        }
+        if let Some(domain) = entry.strip_prefix("*.") {
+            let lower = host.to_ascii_lowercase();
+            return lower.ends_with(&format!(".{}", domain.to_ascii_lowercase()));
+        }
+        let Some(ip) = ip else { return false };
+        match entry.split_once('/') {
+            None => busbar_contract::net::host_ip(entry) == Some(ip),
+            Some((net, bits)) => match (busbar_contract::net::host_ip(net), bits.parse::<u32>()) {
+                (Some(std::net::IpAddr::V4(n)), Ok(b)) if b <= 32 => match ip {
+                    std::net::IpAddr::V4(a) => {
+                        let mask = u32::MAX.checked_shl(32 - b).unwrap_or(0);
+                        u32::from(a) & mask == u32::from(n) & mask
+                    }
+                    std::net::IpAddr::V6(_) => false,
+                },
+                (Some(std::net::IpAddr::V6(n)), Ok(b)) if b <= 128 => match ip {
+                    std::net::IpAddr::V6(a) => {
+                        let mask = u128::MAX.checked_shl(128 - b).unwrap_or(0);
+                        u128::from(a) & mask == u128::from(n) & mask
+                    }
+                    std::net::IpAddr::V4(_) => false,
+                },
+                _ => false,
+            },
+        }
+    })
 }
 
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of
@@ -2346,9 +2442,10 @@ fn validate_providers_with(
             &provider_cfg.allow_metadata_hosts,
             errors,
         );
-        warn_unmappable_metadata_entries(
+        reject_unmappable_metadata_entries(
             &format!("provider '{provider_name}' allow_metadata_hosts"),
             &provider_cfg.allow_metadata_hosts,
+            errors,
         );
         let allow_overrides: Vec<String> = provider_cfg
             .allow_metadata_hosts
