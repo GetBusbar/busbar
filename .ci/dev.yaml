@@ -1,0 +1,399 @@
+# What dev must pass to move into qa: gates, the oracle against the 1.5.5 golden, conformance, the
+# 1.6.0 done-oracle, the Q128 architecture audit (`cargo xtask q128 audit`), the feature-gated
+# suites and every registered gate's red proof (selftest-1..4, row 191). ModernCI names a branch
+# file for the branch being moved, so the move dev -> qa reads this file. predev is retired (OWNER
+# 2026-10-16): lanes land on dev through .ci/default.yaml, and this move judges dev's head. Every
+# check green on dev's head is DEV-GREEN; the landing into qa is the
+# owner's approval (docs/design/BUSBAR-1.6.0.md Part 6).
+to: qa
+# Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
+# below still holds the landing into qa for the owner.
+promote: auto
+on_green: merge
+# The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
+# audit's record for the commit (no open BLOCK).
+approve: true
+# 8h: plane-delete --all (40-90 min), two LTO release builds and the workspace tests do not fit in 6h.
+deadline: 8h
+env:
+  RUSTFLAGS: "-D warnings"
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  BUSBAR_TOOL_SH: |
+    # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
+    # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
+    # a tool already on PATH at exactly the pin is used; otherwise the official release asset is
+    # fetched with curl, verified against the sha256 pinned here, and cached under
+    # ${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/<tool>-<version>/.
+    # `rust` is the exception: if cargo is already on PATH it is left alone, else rustup-init is
+    # fetched, verified and run with RUSTUP_HOME/CARGO_HOME under the same root, and
+    # $CARGO_HOME/bin goes on PATH and `rustup toolchain install` installs what rust-toolchain.toml names.
+    # Assumes only Linux (or darwin), sh, git, curl, tar and CA certificates.
+    # No sudo, no package manager. Unknown tool, unsupported platform or sha mismatch: message, return 1.
+
+    _bbt_nextest_ver=0.9.148
+    _bbt_deny_ver=0.20.2
+    _bbt_jq_ver=1.7.1
+    _bbt_rustup_ver=1.28.2
+    _bbt_root=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools
+
+    # _bbt_pin <tool> <os-arch>: prints "<asset-url> <sha256> <path of the binary inside the asset>"
+    _bbt_pin() {
+      case "$1" in
+        nextest)
+          _u=https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$_bbt_nextest_ver/cargo-nextest-$_bbt_nextest_ver
+          case "$2" in
+            linux-x86_64)  echo "$_u-x86_64-unknown-linux-gnu.tar.gz 223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc cargo-nextest" ;;
+            linux-aarch64) echo "$_u-aarch64-unknown-linux-gnu.tar.gz 81469eb963ef883fd590e60189e77d6aba3d91b418591d3391f50fe3e9480d2b cargo-nextest" ;;
+            darwin-arm64)  echo "$_u-universal-apple-darwin.tar.gz 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b cargo-nextest" ;;
+            *) return 1 ;;
+          esac ;;
+        deny)
+          _u=https://github.com/EmbarkStudios/cargo-deny/releases/download/$_bbt_deny_ver/cargo-deny-$_bbt_deny_ver
+          case "$2" in
+            linux-x86_64)  echo "$_u-x86_64-unknown-linux-musl.tar.gz 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f cargo-deny-$_bbt_deny_ver-x86_64-unknown-linux-musl/cargo-deny" ;;
+            linux-aarch64) echo "$_u-aarch64-unknown-linux-musl.tar.gz 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d cargo-deny-$_bbt_deny_ver-aarch64-unknown-linux-musl/cargo-deny" ;;
+            darwin-arm64)  echo "$_u-aarch64-apple-darwin.tar.gz fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3 cargo-deny-$_bbt_deny_ver-aarch64-apple-darwin/cargo-deny" ;;
+            *) return 1 ;;
+          esac ;;
+        jq)
+          _u=https://github.com/jqlang/jq/releases/download/jq-$_bbt_jq_ver
+          case "$2" in
+            linux-x86_64)  echo "$_u/jq-linux-amd64 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5 -" ;;
+            linux-aarch64) echo "$_u/jq-linux-arm64 4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5 -" ;;
+            darwin-arm64)  echo "$_u/jq-macos-arm64 0bbe619e663e0de2c550be2fe0d240d076799d6f8a652b70fa04aea8a8362e8a -" ;;
+            *) return 1 ;;
+          esac ;;
+        *) return 1 ;;
+      esac
+    }
+
+    _bbt_sha256() {
+      if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+      else shasum -a 256 "$1" | cut -d' ' -f1; fi
+    }
+
+    # _bbt_rust: cargo on PATH is left alone; else bootstrap rustup (no toolchain; rust-toolchain.toml picks it).
+    _bbt_rust() {
+      command -v cargo >/dev/null 2>&1 && return 0
+      RUSTUP_HOME=$_bbt_root/rustup-$_bbt_rustup_ver/rustup; CARGO_HOME=$_bbt_root/rustup-$_bbt_rustup_ver/cargo
+      export RUSTUP_HOME CARGO_HOME
+      if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+        _os=$(uname -s | tr '[:upper:]' '[:lower:]'); _arch=$(uname -m)
+        case "$_os-$_arch" in
+          linux-x86_64)  _t=x86_64-unknown-linux-gnu;  _sha=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
+          linux-aarch64) _t=aarch64-unknown-linux-gnu; _sha=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
+          darwin-arm64)  _t=aarch64-apple-darwin;      _sha=20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5 ;;
+          *) echo "tool.sh: no pinned rustup $_bbt_rustup_ver for $_os-$_arch (supported: linux-x86_64 linux-aarch64 darwin-arm64)" >&2; return 1 ;;
+        esac
+        _url=https://static.rust-lang.org/rustup/archive/$_bbt_rustup_ver/$_t/rustup-init
+        _tmp=$_bbt_root/rustup-init.tmp.$$
+        mkdir -p "$_tmp" || return 1
+        echo "tool.sh: fetching rustup-init $_bbt_rustup_ver ($_url)" >&2
+        if ! curl -fsSL --retry 3 -o "$_tmp/rustup-init" "$_url"; then
+          echo "tool.sh: download of $_url failed" >&2; rm -rf "$_tmp"; return 1
+        fi
+        _got=$(_bbt_sha256 "$_tmp/rustup-init")
+        if [ "$_got" != "$_sha" ]; then
+          echo "tool.sh: sha256 mismatch for $_url: expected $_sha, got $_got" >&2; rm -rf "$_tmp"; return 1
+        fi
+        chmod +x "$_tmp/rustup-init"
+        "$_tmp/rustup-init" -y --no-modify-path --default-toolchain none || { rm -rf "$_tmp"; return 1; }
+        rm -rf "$_tmp"
+      fi
+      PATH="$CARGO_HOME/bin:$PATH"; export PATH
+      # rustup 1.28.0 dropped the implicit install of the rust-toolchain.toml channel: install what it
+      # names (toolchain and components) from the repo root. A no-op once installed.
+      _root=$(git rev-parse --show-toplevel 2>/dev/null) || _root=.
+      (cd "$_root" && rustup toolchain install) || { echo "tool.sh: rustup toolchain install failed" >&2; return 1; }
+    }
+
+    # _bbt_ensure <tool>
+    _bbt_ensure() {
+      case "$1" in
+        rust) _bbt_rust; return $? ;;
+        nextest) _bin=cargo-nextest; _ver=$_bbt_nextest_ver; _want="cargo-nextest $_ver"; _vargs="nextest --version" ;;
+        deny)    _bin=cargo-deny;    _ver=$_bbt_deny_ver;    _want="cargo-deny $_ver"; _vargs=--version ;;
+        jq)      _bin=jq;            _ver=$_bbt_jq_ver;      _want="jq-$_ver"; _vargs=--version ;;
+        *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq)" >&2; return 1 ;;
+      esac
+      # Already on PATH at exactly the pinned version.
+      if command -v "$_bin" >/dev/null 2>&1; then
+        _have=$("$_bin" $_vargs 2>/dev/null | sed -n 1p)
+        case "$_have" in
+          "$_want" | "$_want "*) return 0 ;;
+        esac
+      fi
+      _dir=$_bbt_root/$1-$_ver
+      if [ ! -x "$_dir/$_bin" ]; then
+        _os=$(uname -s | tr '[:upper:]' '[:lower:]'); _arch=$(uname -m)
+        _pin=$(_bbt_pin "$1" "$_os-$_arch") || {
+          echo "tool.sh: no pinned $1 $_ver for $_os-$_arch (supported: linux-x86_64 linux-aarch64 darwin-arm64)" >&2
+          return 1
+        }
+        set -- "$1" $_pin
+        _url=$2; _sha=$3; _inner=$4
+        mkdir -p "$_dir.tmp.$$" || return 1
+        echo "tool.sh: fetching $_bin $_ver ($_url)" >&2
+        if ! curl -fsSL --retry 3 -o "$_dir.tmp.$$/asset" "$_url"; then
+          echo "tool.sh: download of $_url failed" >&2; rm -rf "$_dir.tmp.$$"; return 1
+        fi
+        _got=$(_bbt_sha256 "$_dir.tmp.$$/asset")
+        if [ "$_got" != "$_sha" ]; then
+          echo "tool.sh: sha256 mismatch for $_url: expected $_sha, got $_got" >&2
+          rm -rf "$_dir.tmp.$$"; return 1
+        fi
+        if [ "$_inner" = - ]; then
+          mv "$_dir.tmp.$$/asset" "$_dir.tmp.$$/$_bin"
+        else
+          tar -xzf "$_dir.tmp.$$/asset" -C "$_dir.tmp.$$" "$_inner" || { rm -rf "$_dir.tmp.$$"; return 1; }
+          mv "$_dir.tmp.$$/$_inner" "$_dir.tmp.$$/$_bin"
+        fi
+        chmod +x "$_dir.tmp.$$/$_bin"
+        rm -f "$_dir.tmp.$$/asset"
+        rm -rf "$_dir"
+        mv "$_dir.tmp.$$" "$_dir" || { rm -rf "$_dir.tmp.$$"; [ -x "$_dir/$_bin" ] || return 1; }
+      fi
+      PATH="$_dir:$PATH"; export PATH
+    }
+
+    for _bbt_t in "$@"; do
+      _bbt_ensure "$_bbt_t" || return 1
+    done
+on:
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+checks:
+  gates:
+    # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
+    # green, not "no worse than qa"). The base-relative rules (new edges, minted rows) take dev's
+    # own previous commit as their base: every lane move already judged its delta against dev.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask gate --all --format=tsv
+    # The base-relative rules read history: only a backend with the repo's history runs this check.
+    requires: [cc, git-history]
+  oracle:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check; the
+    # store-persist cells' live backends run in docker.
+    requires: [cc, docker]
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then the candidate's release binary is recorded over the corpus and replayed against the
+    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
+    # accepted difference.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      ./bin/oracle tool-dir >/dev/null
+      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      else
+        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+      fi
+      cargo build --locked --release -p busbar --bin busbar
+      ./bin/oracle fetch-golden
+      # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
+      # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
+      # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
+      # backends up for this run (testing/shadow-oracle/scripts/oracle-box-store-services.sh), under
+      # run-unique names on free ports, export the three URLs, and remove them when the check ends.
+      sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+      free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
+      export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
+      export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
+      trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
+      . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
+      bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
+      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
+      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [gates]
+    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
+    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
+    outputs: [target/oracle/reports/]
+  conformance:
+    # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
+    # recording), then every MUST a fresh pass for it. A not-run suite denies.
+    # The instruments the rigs call from PATH are provided here, each fetched once per pin (sha256
+    # checked) into a cache that outlives the run: Go (h2spec publishes no linux/arm64 binary, so it
+    # is built from its tagged source), h2spec v2.6.0, testssl.sh v3.2.0, slsa-verifier v2.7.1. The self-hosted OIDF suite (oidf-oauth2, fapi2) runs in the backend's docker. A suite
+    # whose instrument cannot be provided stays not-run and denies; nothing here marks one optional.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      set -euo pipefail
+      T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"
+      mkdir -p "$T/bin"
+      case "$(uname -m)" in
+        aarch64|arm64) GOARCH=arm64; NODEARCH=arm64; NODE_SHA=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061
+          BX_SHA=38e890e1a162bfdbf32fbe91404991dc4fc28e55b0de901b34374a061bab4d2c; UVARCH=aarch64; UV_SHA=9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14 ;;
+        x86_64) GOARCH=amd64; NODEARCH=x64; NODE_SHA=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339
+          BX_SHA=4fe4cc38adf48169132749b6ca22a990928db0118e3407584ee553723115d287; UVARCH=x86_64; UV_SHA=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220 ;;
+        *) echo "conformance tools: no pins for $(uname -m)"; exit 1 ;;
+      esac
+      fetch() { # url sha256 dest
+        if [ -f "$3" ] && echo "$2  $3" | sha256sum -c - >/dev/null 2>&1; then return 0; fi
+        curl -fsSL --retry 3 -o "$3.part" "$1" && echo "$2  $3.part" | sha256sum -c - >/dev/null && mv "$3.part" "$3"
+      }
+      if [ ! -x "$T/go/bin/go" ]; then
+        fetch "https://go.dev/dl/go1.26.9.linux-$GOARCH.tar.gz" "$GO_SHA" "$T/go.tgz"
+        rm -rf "$T/go"; tar -C "$T" -xzf "$T/go.tgz"
+      fi
+      if [ ! -x "$T/bin/h2spec" ]; then
+        rm -rf "$T/h2spec-src"; git clone -q --depth 1 --branch v2.6.0 https://github.com/summerwind/h2spec "$T/h2spec-src"
+        [ "$(git -C "$T/h2spec-src" rev-parse HEAD)" = 70ac2294010887f48b18e2d64f5cccd48421fad1 ] || { echo "h2spec v2.6.0 is not the pinned commit"; exit 1; }
+        (cd "$T/h2spec-src" && GOPATH="$T/gopath" GOFLAGS=-mod=mod "$T/go/bin/go" build -o "$T/bin/h2spec" ./cmd/h2spec)
+      fi
+      fetch "https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-$GOARCH" "$SLSA_SHA" "$T/bin/slsa-verifier"
+      chmod +x "$T/bin/slsa-verifier"
+      if [ ! -x "$T/bin/testssl.sh" ]; then
+        fetch "https://github.com/testssl/testssl.sh/archive/refs/tags/v3.2.0.tar.gz" f3969c152c0fe99a2a90e8c8675ab677d77608ac77c957a95497387c36363c32 "$T/testssl.tgz"
+        rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
+        ln -sf "$T/testssl/testssl.sh" "$T/bin/testssl.sh"
+      fi
+      # node + npm (pinned v22.23.3, sha256 checked) for the rigs that drive browsers and the official
+      # conformance suites (a2a, ws, webrtc-browser, mcp battery-control, voice self-tests).
+      if [ ! -x "$T/node/bin/node" ]; then
+        fetch "https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-$NODEARCH.tar.xz" "$NODE_SHA" "$T/node.txz"
+        rm -rf "$T/node"; mkdir "$T/node"; tar -C "$T/node" --strip-components=1 -xJf "$T/node.txz"
+      fi
+      # docker buildx v0.38.0 (sha256 checked): the OIDF suite's `docker compose up --build` needs
+      # buildx >= 0.17 and the backend's is older. The CLI plugin lives in a docker config dir of this
+      # check's own (DOCKER_CONFIG); no root, and the backend's docker is otherwise untouched.
+      D="${MODERNCI_CACHE_DIR:-$T}/docker"
+      mkdir -p "$D/cli-plugins"
+      fetch "https://github.com/docker/buildx/releases/download/v0.38.0/buildx-v0.38.0.linux-$GOARCH" "$BX_SHA" "$D/cli-plugins/docker-buildx"
+      chmod +x "$D/cli-plugins/docker-buildx"
+      export DOCKER_CONFIG="$D"
+      # Python >= 3.10 for the a2a and mcp control peers (the backend's python3 is 3.9): CPython
+      # 3.12.15 installed by uv 0.13.1 (uv sha256 checked here; uv checks the interpreter's own
+      # sha256), in a venv of the check's own whose python3 is first on PATH, holding the PyYAML the
+      # llm rig parses its specs with (pyyaml==6.0.2, its pin). The rigs' own venvs are made from it.
+      if [ ! -x "$T/uv/uv" ]; then
+        fetch "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-$UVARCH-unknown-linux-gnu.tar.gz" "$UV_SHA" "$T/uv.tgz"
+        rm -rf "$T/uv"; mkdir "$T/uv"; tar -C "$T/uv" --strip-components=1 -xzf "$T/uv.tgz"
+      fi
+      export UV_PYTHON_INSTALL_DIR="$T/python" UV_CACHE_DIR="$T/uv-cache"
+      # The webrtc-browser rig installs its own pinned Playwright (npm ci) and browsers
+      # (`npx playwright install chromium firefox`); ModernCI's playwright-deps capability provides only
+      # the system libraries they load. The browsers go in this check's cache, never $HOME/.cache, which
+      # every concurrent job on a backend shares.
+      export PLAYWRIGHT_BROWSERS_PATH="${MODERNCI_CACHE_DIR:-$T}/ms-playwright"
+      "$T/uv/uv" python install 3.12.15
+      if [ ! -x "$T/py/bin/python3" ] || [ "$("$T/py/bin/python3" -c 'import sys; print(sys.version.split()[0])')" != 3.12.15 ]; then
+        rm -rf "$T/py"; "$T/uv/uv" venv --managed-python --python 3.12.15 --seed "$T/py"
+      fi
+      "$T/uv/uv" pip install --python "$T/py/bin/python3" pyyaml==6.0.2
+      export PATH="$T/py/bin:$T/bin:$T/go/bin:$T/node/bin:$PATH"
+      python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
+      docker buildx version
+      cargo xtask conformance record --all --recording target/oracle/recordings/candidate
+      cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
+    needs: [oracle]
+    # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
+    # backend probed to have all of these, and says which one is missing otherwise.
+    # playwright-deps: the browser libraries webrtc-browser's chromium and firefox load (a backend
+    # capability; until a backend has it the check waits and says why, never runs without it).
+    requires: [cc, docker, docker-compose, docker-amd64, playwright-deps, python3-venv, curl, git]
+    # The rig logs, fetched with `modernci call artifact --check conformance` (a red suite's reason).
+    outputs: [target/conformance-record]
+  verify-done:
+    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
+    # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      bash scripts/verify-1.6.0-done.sh
+    needs: [gates]
+    # It reads merge-bases and tags (the config-schema baseline is tag v1.5.3): full history and tags.
+    requires: [git-history]
+  q128-audit:
+    # DEV-GREEN item 5 (docs/design/BUSBAR-1.6.0.md l.2910-2912; 1.6.0-QUESTIONS.md Q128, option
+    # A): one fresh, independent architecture audit on this commit with no open BLOCK, and a clean
+    # audit ledger. The auditor records the audit in qa/q128-audit.json; this judges that record and
+    # the ledger on the commit, writes target/q128-audit.json (every finding, severity
+    # BLOCK/HIGH/MEDIUM/LOW, scope, evidence) and exits 1 on any open BLOCK. An audit of another
+    # tree, or none, is a BLOCK.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      cargo xtask q128 audit
+    needs: [gates]
+    # The audit is judged against this commit's history: full history and tags.
+    requires: [cc, git-history]
+  test-gated:
+    # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
+    # only. A, the busbar/kernel/core-admin gates at once (test-harness,
+    # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
+    # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+      # door and the other door fixtures, which busbar's and the connector's tests load too) and
+      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+      # test whose fixture is absent fails rather than skips; no variable tells this step the
+      # affected set, so the build does not wait on one.
+      cargo build --locked -p busbar-plugin-loader --examples
+      cargo build --locked -p busbar --examples
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+      cargo build --workspace --locked
+      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+    # Absolute at this rung, as every check of this move (no `baseline`: qa holds no suites to be
+    # measured against).
+    requires: [cc, git-history]
+    needs: [gates]
+  # EVERY REGISTERED GATE'S RED PROOF on dev's head (row 191), ABSOLUTE like `gates`: a gate that
+  # cannot be shown to go RED proves nothing when it is green. `cargo xtask selftest --shard=K/4`
+  # is the K-th of 4 round-robin slices of the registry (every gate in exactly one), one `xtask
+  # selftest <gate>` process per gate. The base-relative plants read dev's previous commit, as the
+  # gates check does. The same shards run on demand in .ci/default.yaml.
+  selftest-1:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=1/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-2:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=2/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-3:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=3/4
+    requires: [cc, git-history]
+    needs: [gates]
+  selftest-4:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask selftest --shard=4/4
+    requires: [cc, git-history]
+    needs: [gates]
