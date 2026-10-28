@@ -637,7 +637,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    busbar_kernel::ingress::protocols::PROTO_ANTHROPIC,
+                    busbar_kernel::test_support::protocols::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .api_key("busbar-upstream-key"),
