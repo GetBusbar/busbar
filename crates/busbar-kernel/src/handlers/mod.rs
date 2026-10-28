@@ -104,7 +104,7 @@ pub fn usage_tap_fault(protocol: &str, reason: &'static str) {
 pub fn request_handler(
     protocol: &str,
 ) -> Option<&'static dyn busbar_contract::codec::RequestHandler> {
-    crate::proto::decl_for(protocol).and_then(|d| d.handler)
+    crate::ingress::protocols::decl_for(protocol).and_then(|d| d.handler)
 }
 
 // The handler test modules (`use super::*`) name the verb vocabulary; production code here spells
