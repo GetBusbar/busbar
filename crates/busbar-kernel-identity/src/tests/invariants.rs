@@ -26,9 +26,7 @@ fn answering(name: &'static str, outcome: AuthOutcome) -> Box<dyn AuthModule> {
     Box::new(Canned::new(name, outcome))
 }
 
-// ---------------------------------------------------------------------------------------------
 // A Reject is never a Pass.
-// ---------------------------------------------------------------------------------------------
 
 /// A `Reject` ANYWHERE in the chain denies, whatever is behind it.
 ///
@@ -138,6 +136,4 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
 // One authenticate path.
-// ---------------------------------------------------------------------------------------------
