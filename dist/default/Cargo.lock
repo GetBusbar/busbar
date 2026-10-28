@@ -249,7 +249,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=bf1abefdec57c35afcf15b9076addeb39fb2ca5a#bf1abefdec57c35afcf15b9076addeb39fb2ca5a"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=ecf860b2d68cd8b4a5232e9090b74925e38d277a#ecf860b2d68cd8b4a5232e9090b74925e38d277a"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=37d1c93ab7155569caa54a887f75c1a2da3e3768#37d1c93ab7155569caa54a887f75c1a2da3e3768"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=a1ab87c9f5e2ad8d07a581b14f55ea88669847e8#a1ab87c9f5e2ad8d07a581b14f55ea88669847e8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -685,7 +685,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=b7fdb27df677648bdf7ae8c08fd100adfe1dfabe#b7fdb27df677648bdf7ae8c08fd100adfe1dfabe"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=6eaeea040fecf103f3d5f962a19adfa76f2f65a6#6eaeea040fecf103f3d5f962a19adfa76f2f65a6"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -804,6 +804,7 @@ version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-core-connector",
  "busbar-plugin-loader",
  "hex",
  "ring",
@@ -3063,7 +3064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
