@@ -25,7 +25,7 @@
 //!   still applying; it meters nothing, and its audit row is written as an admin route's.
 //! - The table is a value ([`ServeTables`]) each generation carries, never a process static.
 
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Request};
@@ -104,12 +104,22 @@ pub struct Collision {
 /// route read it off the live generation, the data listener's public mount holds it. Two
 /// generations built apart hold two tables, each answering only for the instances published into
 /// it.
+///
+/// A request reads the published snapshot without a lock and holds the one instance it is served
+/// by (an `Arc`), never a copy of it; a publish or a withdraw replaces the snapshot, one at a time.
 #[derive(Clone, Default)]
-pub struct ServeTables(Arc<RwLock<Vec<ServeTable>>>);
+pub struct ServeTables(Arc<Published>);
+
+/// The snapshot requests read, and the turn its writers take.
+#[derive(Default)]
+struct Published {
+    now: arc_swap::ArcSwap<Vec<Arc<ServeTable>>>,
+    writing: Mutex<()>,
+}
 
 impl std::fmt::Debug for ServeTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tables = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        let tables = self.0.now.load();
         f.debug_list()
             .entries(tables.iter().map(|t| &t.instance))
             .finish()
@@ -149,7 +159,12 @@ impl ServeTables {
     /// with nothing changed, when one of its admin routes overlaps another of its own, another
     /// instance's, or a `reserved` kernel admin route `(verb, target)`.
     pub fn publish(&self, table: ServeTable, reserved: &[(&str, &str)]) -> Result<(), Collision> {
-        let mut tables = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let _turn = self
+            .0
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let tables = self.0.now.load();
         let mut seen: Vec<(&str, &str, &str)> =
             reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
         for t in tables.iter().filter(|t| t.instance != table.instance) {
@@ -167,20 +182,66 @@ impl ServeTables {
             }
             seen.push((&r.verb, &r.target, &table.instance));
         }
-        tables.retain(|t| t.instance != table.instance);
-        tables.push(table);
+        let mut next: Vec<Arc<ServeTable>> = tables
+            .iter()
+            .filter(|t| t.instance != table.instance)
+            .cloned()
+            .collect();
+        next.push(Arc::new(table));
+        self.0.now.store(Arc::new(next));
         Ok(())
     }
 
     /// The instance is retired or no longer configured: its routes leave the table.
     pub fn withdraw(&self, instance: &str) {
-        let mut tables = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        tables.retain(|t| t.instance != instance);
+        let _turn = self
+            .0
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let tables = self.0.now.load();
+        let next: Vec<Arc<ServeTable>> = tables
+            .iter()
+            .filter(|t| t.instance != instance)
+            .cloned()
+            .collect();
+        self.0.now.store(Arc::new(next));
     }
 }
 
 fn admin(routes: &[ServeRoute]) -> impl Iterator<Item = &ServeRoute> {
     routes.iter().filter(|r| r.flags & ROUTE_PUBLIC == 0)
+}
+
+/// The head an admin route's plane is lent: `headers` with the credentials the gate `consumed`
+/// stripped and the contract's never-kept fields struck. The map is copied only when it carries a
+/// consumed credential (stripping reorders it, as it always did); otherwise it is read as it is.
+fn lent_head(
+    headers: &axum::http::HeaderMap,
+    consumed: Option<&ConsumedCredentials>,
+) -> HeadFields {
+    let stripped;
+    let headers = if ConsumedCredentials::fields_of(consumed, headers).is_empty() {
+        headers
+    } else {
+        let mut copy = headers.clone();
+        ConsumedCredentials::strip_from(consumed, &mut copy);
+        stripped = copy;
+        &stripped
+    };
+    headers
+        .iter()
+        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
+        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect()
+}
+
+/// The target an admin route is served at: `path`, with `?query` where there is one.
+fn target_of<'p>(path: &'p str, query: Option<&str>) -> std::borrow::Cow<'p, str> {
+    match query {
+        Some(q) => format!("{path}?{q}").into(),
+        None => path.into(),
+    }
 }
 
 impl ServeTables {
@@ -194,7 +255,7 @@ impl ServeTables {
         let uri = req.uri().clone();
         let path = uri.path().strip_prefix(ADMIN_PREFIX).unwrap_or(uri.path());
         let (table, index, name) = {
-            let tables = self.0.read().unwrap_or_else(PoisonError::into_inner);
+            let tables = self.0.now.load();
             let mut named = false;
             let mut found = None;
             'tables: for t in tables.iter() {
@@ -205,7 +266,7 @@ impl ServeTables {
                     };
                     named = true;
                     if r.verb.eq_ignore_ascii_case(req.method().as_str()) {
-                        found = Some((t.clone(), i, name.to_string()));
+                        found = Some((Arc::clone(t), i, name));
                         break 'tables;
                     }
                 }
@@ -218,22 +279,13 @@ impl ServeTables {
                 None => return None,
             }
         };
-        let mut headers = req.headers().clone();
-        ConsumedCredentials::strip_from(req.extensions().get(), &mut headers);
+        let head = lent_head(req.headers(), req.extensions().get());
         let principal = req.extensions().get::<AuthPrincipal>().cloned();
         let body = match Bytes::from_request(req, &()).await {
             Ok(body) => body,
             Err(refused) => return Some(refused.into_response()),
         };
-        let head: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
-        let target = match uri.query() {
-            Some(q) => format!("{path}?{q}"),
-            None => path.to_string(),
-        };
+        let target = target_of(path, uri.query());
         let (routes, route) = (table.routes.len(), &table.routes[index]);
         let calls = &*table.calls;
         let at = index as u32;
@@ -268,12 +320,12 @@ impl ServeTables {
         body: Bytes,
     ) -> Response {
         let found = {
-            let tables = self.0.read().unwrap_or_else(PoisonError::into_inner);
+            let tables = self.0.now.load();
             tables.iter().find_map(|t| {
                 t.routes.iter().enumerate().find_map(|(i, r)| {
                     let name = fill(&r.target, path)?;
                     (r.flags & ROUTE_PUBLIC != 0 && r.verb.eq_ignore_ascii_case(method))
-                        .then(|| (t.clone(), i, name.to_string()))
+                        .then(|| (Arc::clone(t), i, name))
                 })
             })
         };
@@ -395,29 +447,20 @@ impl ServeTables {
         body: Bytes,
     ) -> Option<Result<Served, Unserved>> {
         let (table, index) = {
-            let tables = self.0.read().unwrap_or_else(PoisonError::into_inner);
+            let tables = self.0.now.load();
             tables.iter().find_map(|t| {
                 t.routes.iter().enumerate().find_map(|(i, r)| {
                     (r.flags & ROUTE_PUBLIC == 0
                         && r.verb.eq_ignore_ascii_case(req.method)
                         && fill(&r.target, req.path).is_some())
-                    .then(|| (t.clone(), i))
+                    .then(|| (Arc::clone(t), i))
                 })
             })
         }?;
         // The credentials the gate consumed go first, as the router's fallback strips them: the
         // operator's `x-admin-token` is busbar's vocabulary, not the contract's never-kept list.
-        let mut headers = req.headers.clone();
-        ConsumedCredentials::strip_from(req.consumed, &mut headers);
-        let head: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
-        let target = match req.query {
-            Some(q) => format!("{}?{q}", req.path),
-            None => req.path.to_string(),
-        };
+        let head = lent_head(req.headers, req.consumed);
+        let target = target_of(req.path, req.query);
         let calls = &*table.calls;
         let served = serve(
             calls,
