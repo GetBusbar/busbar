@@ -434,7 +434,7 @@ store_slots! {
         "`plane_token_live`. In [`TokenIn`], out [`VerdictOut`] (spends nothing). Fail-closed.";
     // ── kernel-held records (the journal, node identity, the card history) ──
     26 RECORD_PUT record_put RecordPutIn, OutHead, Request, Call, PerRecord(MAX_RECORD_BYTES),
-        "`record_put`. In [`RecordPutIn`], out [`OutHead`]. An upsert on (schema, key).";
+        "`record_put`. In [`RecordPutIn`], out [`OutHead`]. An upsert on (schema, key). An EMPTY value removes the row: `record_get` then answers absent and `record_scan` never returns it.";
     27 RECORD_GET record_get RecordGetIn, HostBytesOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
         "`record_get`. In [`RecordGetIn`], out [`HostBytesOut`].";
     28 RECORD_SCAN record_scan RecordScanIn, HostListOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
