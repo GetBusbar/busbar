@@ -474,35 +474,32 @@ impl Node {
         let Ok(posted) = end.into_posted() else {
             return;
         };
-        // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
-        // taken and released inside the seam, so this arm settling does not hold the one book across
-        // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
-        // posting onto the identical shared book — the bytes on the chain are unchanged.
-        let shared = crate::root::durability::SharedBook::over(Arc::clone(book));
-        let _settled = settle(
-            &shared,
-            principal,
-            arrived,
-            card,
-            &self.durability_token,
-            posted,
-        );
-        if let Some(seal) = seal.map(Into::<Sealing>::into) {
-            seal.seal(
-                book,
-                &self.durability_token,
+        // The unit's record is built before the lock; only naming the seq its settlement landed at
+        // and sealing it are left for the one hold of the book the settlement takes.
+        let record = seal.map(|seal| {
+            Into::<Sealing>::into(seal).record(
                 principal,
                 arrived,
                 card_in_force(card, arrived.ms()),
                 outcome,
                 lines,
                 0,
-                Line {
-                    settled_at: shared.landed(),
-                    served: None,
-                },
-            );
-        }
+                None,
+            )
+        });
+        // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
+        // taken and released inside the seam, once for the posting and the record behind it, so
+        // this arm settling does not hold the one book across its whole exit the way a
+        // `&mut Durability` did. The bytes on the chain, and their order, are unchanged.
+        let _settled = settle(
+            &crate::root::durability::SharedBook::over(Arc::clone(book)),
+            principal,
+            arrived,
+            card,
+            &self.durability_token,
+            posted,
+            record,
+        );
     }
 
     /// Open this unit's hold on the book and on the journal, if this node has a book (item 127).
@@ -989,19 +986,21 @@ impl Node {
         let (lines, fee_count) = report
             .as_ref()
             .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
-        seal.seal(
-            book,
-            &self.durability_token,
+        let record = seal.record(
             &principal,
             arrived,
             card_in_force(history.as_ref(), arrived.ms()),
             outcome,
             lines,
             fee_count,
-            Line {
-                settled_at: None,
-                served: report.as_ref().map(|r| r.lane.as_str()),
-            },
+            report.as_ref().map(|r| r.lane.as_str()),
+        );
+        record.seal(
+            &mut book
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &self.durability_token,
+            None,
         );
     }
 
@@ -1518,7 +1517,7 @@ impl LateAccrual {
     /// Read the tap and write the unit's one line. Runs at most once per unit — see [`LateBody`].
     fn post(self) {
         let LateAccrual {
-            book: held,
+            book,
             history,
             durability_token,
             ledger_token,
@@ -1530,8 +1529,17 @@ impl LateAccrual {
             outcome,
             seal,
         } = self;
-        let book = crate::root::durability::SharedBook::over(Arc::clone(&held));
+        let book = crate::root::durability::SharedBook::over(book);
         let card = card_in_force(Some(&history), arrived.ms());
+        // The unit's record, built before the lock and sealed behind its one line under the hold
+        // of the book that line takes.
+        let record =
+            |lines: Vec<RecordLine>, fee_count: u32, served: Option<&str>| match (seal, outcome) {
+                (Some(seal), Some(outcome)) => {
+                    Some(seal.record(&principal, arrived, card, outcome, lines, fee_count, served))
+                }
+                _ => None,
+            };
         // A unit that did not complete and whose reading counts nothing at all (no class, no
         // billable request: a unit a gate hook refused before its dial) leaves no line of counts on
         // the book: the exit's posting closes its hold, as when no reading arrived.
@@ -1544,7 +1552,6 @@ impl LateAccrual {
             // written where the exit would have written it.
             if let Some(exit) = exit {
                 // No counts arrived, and the posting is a figure, not counts: no line.
-                let lines = Vec::new();
                 let _settled = settle(
                     &book,
                     &principal,
@@ -1552,26 +1559,16 @@ impl LateAccrual {
                     Some(&history),
                     &durability_token,
                     exit,
+                    record(Vec::new(), 0, None),
                 );
-                if let (Some(seal), Some(outcome)) = (seal, outcome) {
-                    seal.seal(
-                        &held,
-                        &durability_token,
-                        &principal,
-                        arrived,
-                        card,
-                        outcome,
-                        lines,
-                        0,
-                        Line {
-                            settled_at: book.landed(),
-                            served: None,
-                        },
-                    );
-                }
             }
             return;
         };
+        let record = record(
+            report_lines(&report),
+            report.fee_count,
+            Some(report.lane.as_str()),
+        );
         post_late(
             &book,
             &LateTokens {
@@ -1584,23 +1581,8 @@ impl LateAccrual {
             arrived,
             &report,
             exit,
+            record,
         );
-        if let (Some(seal), Some(outcome)) = (seal, outcome) {
-            seal.seal(
-                &held,
-                &durability_token,
-                &principal,
-                arrived,
-                card,
-                outcome,
-                report_lines(&report),
-                report.fee_count,
-                Line {
-                    settled_at: book.landed(),
-                    served: Some(report.lane.as_str()),
-                },
-            );
-        }
     }
 }
 
@@ -1638,14 +1620,20 @@ fn counts_of(report: &Report) -> crate::root::durability::UnitCounts {
 /// - PRICED AT ZERO, or REFUSED: the line moves no balance beyond closing the reservation. A
 ///   refusal (#42) leaves the money unpriced — no zero, no partial — and every read of the balance
 ///   it sits on refuses.
+///
+/// The unit's `record`, where it has one, is sealed behind the line under the same hold of the
+/// book's lock ([`crate::root::durability::SharedBook::settling_then`]). The pricing is done before
+/// that lock is taken.
+#[allow(clippy::too_many_arguments)]
 fn post_late(
-    book: &dyn crate::root::durability::MoneyBook,
+    book: &crate::root::durability::SharedBook,
     tokens: &LateTokens<'_>,
     history: &crate::root::kernel::PinnedHistory,
     principal: &PrincipalId,
     arrived: Arrived,
     report: &Report,
     exit: Option<busbar_contract::caps::Posted>,
+    record: Option<Record>,
 ) {
     let counts = counts_of(report);
     // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
@@ -1674,13 +1662,30 @@ fn post_late(
     // The same pinned snapshot the amount below is PRICED against, so the figure and the entry
     // number the posting claims priced it cannot come from two different reads.
     let at = settling_at(&key, arrived, Some(history), tokens.durability);
-    let refuse = |refusal: String, exit: Option<busbar_contract::caps::Posted>| match exit {
+    let refuse = |refusal: String,
+                  exit: Option<busbar_contract::caps::Posted>,
+                  record: Option<Record>| match exit {
         Some(exit) => {
-            let _line =
-                book.settle_counted_refusing(&at, exit, &counts, arrived.ms(), Some(refusal));
+            let _line = book.settling_then(
+                |durability| {
+                    durability.settle_counted_refusing(
+                        &at,
+                        exit,
+                        &counts,
+                        arrived.ms(),
+                        Some(refusal),
+                    )
+                },
+                |durability, landed| seal_behind(durability, tokens.durability, record, landed),
+            );
         }
         None => {
-            let _row = book.post_counts(&at, principal, &counts, arrived.ms(), Some(refusal));
+            let _row = book.posting_then(
+                |durability| {
+                    durability.post_counts(&at, principal, &counts, arrived.ms(), Some(refusal))
+                },
+                |durability, landed| seal_behind(durability, tokens.durability, record, landed),
+            );
         }
     };
     // A CLASS NOBODY DECLARED (`BUSBAR-1.6.0.md` §7: a plane declares every class it reports). The
@@ -1703,6 +1708,7 @@ fn post_late(
         refuse(
             format!("{}({class:?})", crate::root::durability::UNDECLARED_CLASS),
             exit,
+            record,
         );
         return;
     }
@@ -1718,7 +1724,7 @@ fn post_late(
                 "late accrual refused at settlement: the card cannot price these counts; \
                  the counts row is posted with no figure"
             );
-            refuse(format!("{refusal:?}"), exit);
+            refuse(format!("{refusal:?}"), exit, record);
             return;
         }
     };
@@ -1727,10 +1733,18 @@ fn post_late(
             // The exit's hold closes with the counts row: a zero is not a settlement (#77(2)/(3),
             // ARCHITECT ruling 2026-10-15).
             Some(exit) => {
-                let _line = book.close_counted(&at, exit, &counts, arrived.ms());
+                let _line = book.settling_then(
+                    |durability| durability.close_counted(&at, exit, &counts, arrived.ms()),
+                    |durability, landed| seal_behind(durability, tokens.durability, record, landed),
+                );
             }
             None => {
-                let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
+                let _row = book.posting_then(
+                    |durability| {
+                        durability.post_counts(&at, principal, &counts, arrived.ms(), None)
+                    },
+                    |durability, landed| seal_behind(durability, tokens.durability, record, landed),
+                );
             }
         }
         return;
@@ -1746,7 +1760,10 @@ fn post_late(
     };
     // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
     // posting, the lock taken and released behind the seam — with the counts on the record.
-    let _settled = book.settle_counted(&at, posted, &counts, arrived.ms());
+    let _settled = book.settling_then(
+        |durability| durability.settle_counted(&at, posted, &counts, arrived.ms()),
+        |durability, landed| seal_behind(durability, tokens.durability, record, landed),
+    );
 }
 
 /// The answer's body, with the late arm riding on it.
@@ -2638,13 +2655,12 @@ fn lanes_of(destinations: &[VerifiedDestination]) -> Vec<LaneId> {
     destinations.iter().map(|d| *d.lane()).collect()
 }
 
-/// What the unit's one line said about where it went and what closed it, as the line's writer
-/// learned it: the seq the settlement landed at, and the lane the plane reported serving it.
-struct Line<'l> {
-    /// The seq of the settlement record that closed the unit's hold (`SharedBook::landed`).
-    settled_at: Option<u64>,
-    /// The serving lane the plane's report named, where the line was written from a report.
-    served: Option<&'l str>,
+/// A UNIT'S RECORD, BUILT: everything but the seq its settlement lands at, so all that is left to
+/// do under the book's lock is name that seq and seal ([`Record::seal`]).
+struct Record {
+    inputs: AuditInputs,
+    pass: Pass<Audit>,
+    key: UnitKey,
 }
 
 impl Ran {
@@ -2669,21 +2685,21 @@ impl Ran {
 }
 
 impl Sealing {
-    /// Seal the record beside the line just written: its outcome is how the unit ended, its amount
-    /// is the line's counts (none for a refused unit), and the book stamps this boot's incarnation.
+    /// Build the record that goes beside the unit's line: its outcome is how the unit ended, its
+    /// amount is the line's counts (none for a refused unit), its destination the lane `served`
+    /// names where the line was written from a plane's report. The seq the line's settlement lands
+    /// at is named when it is sealed ([`Record::seal`]).
     #[allow(clippy::too_many_arguments)]
-    fn seal(
+    fn record(
         self,
-        book: &Arc<Mutex<crate::root::durability::Durability>>,
-        token: &Grant<busbar_contract::caps::DurableWrite>,
         principal: &PrincipalId,
         arrived: Arrived,
         rate_card_version: u64,
         outcome: Outcome,
         lines: Vec<RecordLine>,
         fee_count: u32,
-        line: Line<'_>,
-    ) {
+        served: Option<&str>,
+    ) -> Record {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
         // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: "hold/settle seqs, slice, hooks
@@ -2691,10 +2707,9 @@ impl Sealing {
         // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
         // running, in order, with its head; a hook that failed is recorded failed, never dropped.
         let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
-        let destination = ran.destination(line.served);
+        let destination = ran.destination(served);
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
-            settle_ref: line.settled_at.map(|seq| seq.to_string()),
             hooks_applied: ran.hooks,
             ..Controls::default()
         };
@@ -2730,14 +2745,35 @@ impl Sealing {
             controls,
             correlation_label: None,
         };
-        let sealed = book
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal_unit(inputs, seal.pass, token);
-        if let Err(lost) = sealed {
+        Record {
+            inputs,
+            pass: seal.pass,
+            key: seal.key,
+        }
+    }
+}
+
+impl Record {
+    /// Seal it onto the book the caller holds, naming the seq of the settlement record that closed
+    /// the unit's hold (`SharedBook::landed`); the book stamps this boot's incarnation. Called inside
+    /// the lock the line's settlement took ([`crate::root::durability::SharedBook::settling_then`]),
+    /// so the unit's step is one acquisition.
+    fn seal(
+        self,
+        durability: &mut crate::root::durability::Durability,
+        token: &Grant<busbar_contract::caps::DurableWrite>,
+        settled_at: Option<u64>,
+    ) {
+        let Record {
+            mut inputs,
+            pass,
+            key,
+        } = self;
+        inputs.controls.settle_ref = settled_at.map(|seq| seq.to_string());
+        if let Err(lost) = durability.seal_unit(inputs, pass, token) {
             tracing::error!(
                 step = lost.step().as_str(),
-                unit = seal.key.get(),
+                unit = key.get(),
                 "the journal lost a unit's audit record: it is sealed on the chain and cached, and \
                  a restart will not read it back"
             );
@@ -2813,20 +2849,42 @@ fn balance(principal: &PrincipalId) -> TotalsKey {
 /// straddled a boundary posts in the window it was admitted in — the same epoch every charge and
 /// every refund this unit made was landed in.
 ///
+/// The unit's `record`, where it has one, is sealed right behind the posting under the same hold of
+/// the book's lock ([`crate::root::durability::SharedBook::settling_then`]): the posting first,
+/// then the record naming the seq it landed at — the two appends of the unit's last step, one
+/// acquisition.
+///
 /// # Errors
 ///
 /// The journal could not make the record durable. The books have already moved: value was delivered,
 /// and a settlement is not rolled back because a write failed.
-pub fn settle(
-    book: &dyn crate::root::durability::MoneyBook,
+fn settle(
+    book: &crate::root::durability::SharedBook,
     principal: &PrincipalId,
     arrived: Arrived,
     card: Option<&crate::root::kernel::PinnedHistory>,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     posted: busbar_contract::caps::Posted,
+    record: Option<Record>,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);
-    book.settle_posted(&settling_at(&key, arrived, card, token), posted)
+    let at = settling_at(&key, arrived, card, token);
+    book.settling_then(
+        |durability| durability.settle_posted(&at, posted),
+        |durability, settled_at| seal_behind(durability, token, record, settled_at),
+    )
+}
+
+/// Seal the unit's record, where it has one, onto the book the line's settlement holds.
+fn seal_behind(
+    durability: &mut crate::root::durability::Durability,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    record: Option<Record>,
+    settled_at: Option<u64>,
+) {
+    if let Some(record) = record {
+        record.seal(durability, token, settled_at);
+    }
 }
 
 /// Where a unit's posting lands: its balance, the window of its pinned arrival, stamped with the

@@ -122,6 +122,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             None,
             &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
             posted,
+            None,
         )
         .expect("the memory-buffered journal takes it");
     }
@@ -1218,6 +1219,7 @@ fn late_post(
         &PrincipalId::new(principal),
         at,
         report,
+        None,
         None,
     );
     node
@@ -2876,4 +2878,198 @@ async fn a_same_dialect_rerank_puts_identical_search_units_on_both_books() {
     );
     let unbilled = serve_rerank(history(), rerank_report_on(None)).await;
     assert_eq!(durable_units(&unbilled), None, "no units, none booked");
+}
+
+/// Where a run of a unit's last step is cut: after the settlement's append and before the
+/// record's, or after both.
+#[derive(Clone, Copy, Debug)]
+enum Cut {
+    BetweenAppends,
+    AfterRecord,
+}
+
+/// What a node booted again over a run's data directory recovers: the chain's unit records (the
+/// hold, the posting, the audit record) byte for byte, the postings the book reads back, the audit
+/// records it retains, and the balance's settled figure.
+type Recovered = (
+    Vec<Vec<u8>>,
+    Vec<crate::root::durability::Posting>,
+    Vec<busbar_kernel_audit::AuditRecord>,
+    String,
+);
+
+/// One unit's hold, its settlement and its audit record onto a fresh data directory, the process
+/// killed at `cut`, and a second boot over the same directory: what it recovers. `one` takes the
+/// step as the exit arm now takes it — the posting and the record under ONE acquisition, the kill
+/// a panic inside it between the two appends — and otherwise as it was taken before: the
+/// settlement under one acquisition and the record under a second, the kill between them.
+fn recovered_after(cut: Cut, one: bool) -> Recovered {
+    use busbar_contract::caps::{
+        Admittance, AuditFacts, DurableWrite, Hold, OpClassId, Posted, Usage, WriteMoney,
+    };
+    use busbar_kernel::test_support::tokens::{grant, origin, pass};
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-step-one-acquisition-{}-{:?}-{cut:?}-{one}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let boot = || {
+        crate::root::durability::build_priced(
+            &crate::root::durability::DurabilityConfig {
+                data_dir: Some(dir.clone()),
+            },
+            7,
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+        )
+        .expect("the journal opens")
+    };
+    let who = PrincipalId::new("acct:one-step");
+    let arrived = Arrived::at(EPOCH * 1_000, 5);
+    let token = grant::<DurableWrite>();
+    let key = balance(&who);
+    let window = busbar_kernel::governance::budget_window(
+        busbar_kernel::governance::WINDOW_DAY,
+        arrived.secs(),
+    );
+
+    let book = Arc::new(Mutex::new(boot()));
+    // The unit's hold, opened at admission as `Node::open_on_book` opens it.
+    let _opened = book
+        .lock()
+        .expect("unpoisoned")
+        .open_hold(
+            &crate::root::durability::Settling {
+                key: &key,
+                window,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Admit,
+                stamp: crate::root::durability::PostingStamp {
+                    rate_card_version: 0,
+                    wall: arrived.secs(),
+                    mono: arrived.mono(),
+                },
+            },
+            &who,
+            &crate::root::durability::UnitCounts::default(),
+            arrived.ms(),
+        )
+        .expect("the hold is journalled");
+    let usage = Usage::report(&grant::<busbar_contract::caps::Consumption>(), Vec::new())
+        .expect("an empty report fits the record");
+    let posted = Posted::settle(
+        Hold::open(&grant::<Admittance>(), who.clone(), 0),
+        0,
+        &usage,
+        &grant::<WriteMoney>(),
+    );
+    let record = Sealing::from(UnitSeal {
+        facts: AuditFacts {
+            op_class: OpClassId::new("call"),
+            finish: busbar_contract::FinishClass::Complete,
+        },
+        pass: pass(),
+        key: UnitKey::new(91),
+        origin: origin(OriginKind::Client),
+        parent: None,
+    })
+    .record(
+        &who,
+        arrived,
+        card_in_force(None, arrived.ms()),
+        Outcome::Completed,
+        Vec::new(),
+        0,
+        None,
+    );
+    let shared = crate::root::durability::SharedBook::over(Arc::clone(&book));
+    match (cut, one) {
+        (Cut::AfterRecord, true) => {
+            let _settled = settle(&shared, &who, arrived, None, &token, posted, Some(record));
+        }
+        (Cut::BetweenAppends, true) => {
+            let at = settling_at(&key, arrived, None, &token);
+            let killed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                shared.settling_then(
+                    |durability| durability.settle_posted(&at, posted),
+                    |_, _| panic!("killed between the settlement's append and the record's"),
+                )
+            }));
+            assert!(
+                killed.is_err(),
+                "the step was cut inside its one acquisition"
+            );
+            drop(record);
+        }
+        (cut, false) => {
+            let _settled = settle(&shared, &who, arrived, None, &token, posted, None);
+            if matches!(cut, Cut::AfterRecord) {
+                record.seal(
+                    &mut book
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    &token,
+                    shared.landed(),
+                );
+            }
+        }
+    }
+    // THE KILL: every handle on the first boot's book goes, poisoned or not, and nothing more is
+    // written.
+    drop(shared);
+    drop(book);
+
+    let again = boot();
+    let units: Vec<Vec<u8>> = again
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies")
+        .into_iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
+        .map(|r| r.body)
+        .collect();
+    let recovered = (
+        units,
+        again.read_back(),
+        again.audit_records.clone(),
+        again.ledger.book().get(&key, window).settled.to_string(),
+    );
+    drop(again);
+    let _ = std::fs::remove_dir_all(&dir);
+    recovered
+}
+
+/// **ONE ACQUISITION FOR THE UNIT'S LAST STEP, AND THE SAME RECOVERABLE STATE AT EVERY CUT.** The exit
+/// arm settles the unit's posting and seals its audit record behind it under one hold of the book's
+/// lock where it used to take the lock twice. A node killed between the two appends, or after both,
+/// boots back to the same journal, the same ledger and the same audit chain either way: the
+/// settlement without its record, or both — never a record without its settlement.
+#[test]
+fn the_settlement_and_its_record_under_one_acquisition_recover_as_two_did() {
+    for cut in [Cut::BetweenAppends, Cut::AfterRecord] {
+        let two = recovered_after(cut, false);
+        let one = recovered_after(cut, true);
+        assert_eq!(one, two, "cut {cut:?}: the same recovered state either way");
+        let records = match cut {
+            Cut::BetweenAppends => 0,
+            Cut::AfterRecord => 1,
+        };
+        assert_eq!(
+            one.2.len(),
+            records,
+            "cut {cut:?}: the audit record is on the chain only if its append ran: {:?}",
+            one.2
+        );
+        assert!(
+            one.1
+                .iter()
+                .any(|p| p.kind == crate::root::durability::PostingKind::Settlement),
+            "cut {cut:?}: the settlement is recovered at every cut: {:?}",
+            one.1
+        );
+    }
 }

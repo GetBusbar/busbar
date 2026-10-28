@@ -709,6 +709,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             None,
             &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
             posted,
+            None,
         )
         .expect("the memory-buffered journal takes it");
     }
@@ -1079,6 +1080,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         None,
         &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
         posted,
+        None,
     )
     .expect("the memory-buffered journal takes it");
     assert!(settled.overdraft.is_none(), "nothing to carry out");
@@ -3984,6 +3986,7 @@ fn late_post(
         &PrincipalId::new(principal),
         at,
         report,
+        None,
         None,
     );
     node

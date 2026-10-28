@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The money-book seam: the descriptor an exit arm settles with, what one settlement left on the
-//! book and the chain, the [`MoneyBook`] trait and its one pass-through impl onto the shared
-//! [`Durability`].
+//! book and the chain, and the [`SharedBook`] seam onto the shared [`Durability`].
 //!
 //! Split out of `durability/mod.rs` (structure-lint) — a private child module reached only through
 //! the parent, which re-exports every item here so no caller's path changes.
@@ -54,110 +53,15 @@ pub struct Settled {
     pub overdraft: Option<Posting>,
 }
 
-/// THE MONEY-BOOK SETTLING SEAM (DECISIONS #25 / #26 S2).
-///
-/// The single interface an exit arm calls to settle its cost onto the durability book. Its DTO is
-/// the neutral [`Settling`] descriptor already in this module: it carries the balance the hold
-/// reserved against (`key` + `window`), the authority the append is made under (`durability`), and
-/// the [`PostingStamp`] the record is dated and ordered by — the reserve/settle/stamp the exit arm
-/// performs, expressed with no plane in the name. What settles through it is "an exit arm"; what it
-/// settles onto is "the book".
-///
-/// The seam is `&self`, not `&mut`: the lock over the one book is taken and released BEHIND the
-/// seam, per settlement. So any number of exit arms hold the same seam and settle through it
-/// concurrently — the seam is the whole of their contention, not a single book each arm has to
-/// reach past the others to lock. That is what dissolves the "one-book serialization point": exit
-/// arms compose behind the seam rather than sharing one `&mut Durability`.
-///
-/// Today the only impl is [`SharedBook`], a verbatim pass-through onto the one shared [`Durability`]
-/// — byte-for-byte the settlement every exit arm makes now. The consolidated one-book is a later
-/// impl swapped in behind this same trait by a one-line composition flip; nothing above the seam
-/// changes when it is.
-pub trait MoneyBook: Send + Sync {
-    /// Settle a posting the exit path already built, and journal it.
-    ///
-    /// The exit path owns the hold and consumes it there, so what reaches the seam is a
-    /// [`busbar_contract::caps::Posted`] and never a hold. This is the settlement act every plane's exit arm
-    /// makes; see [`Durability::settle_posted`] for the book side of it.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the record durable. The books have already moved — value was
-    /// delivered and the settlement is the truth about it — so this is a durability loss to be
-    /// retained and re-appended, never a settlement that is rolled back.
-    fn settle_posted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-    ) -> Result<Settled, DurabilityLost>;
-
-    /// [`MoneyBook::settle_posted`] with the unit's raw counts on the record (#71). See
-    /// [`Durability::settle_counted`].
-    ///
-    /// # Errors
-    ///
-    /// As [`MoneyBook::settle_posted`].
-    fn settle_counted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost>;
-
-    /// [`MoneyBook::settle_counted`] carrying the card's pricing refusal, if any. See
-    /// [`Durability::settle_counted_refusing`].
-    ///
-    /// # Errors
-    ///
-    /// As [`MoneyBook::settle_posted`].
-    fn settle_counted_refusing(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Settled, DurabilityLost>;
-
-    /// Close the exit's hold with a COUNTS ROW: the unit's counts priced to nothing (billing off,
-    /// or a card that prices them at zero). See [`Durability::close_counted`].
-    ///
-    /// # Errors
-    ///
-    /// As [`MoneyBook::settle_posted`].
-    fn close_counted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost>;
-
-    /// The unit's raw counts with no figure behind them — priced to nothing, or REFUSED (#42/#43).
-    /// See [`Durability::post_counts`].
-    ///
-    /// # Errors
-    ///
-    /// As [`MoneyBook::settle_posted`].
-    fn post_counts(
-        &self,
-        at: &Settling<'_>,
-        principal: &busbar_contract::caps::PrincipalId,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Posting, DurabilityLost>;
-}
-
-/// The byte-identical pass-through: settle onto the ONE shared durability book (DECISION #25).
+/// THE MONEY-BOOK SETTLING SEAM (DECISIONS #25 / #26 S2): settle onto the ONE shared durability
+/// book.
 ///
 /// Holds a handle on the same `Arc<Mutex<Durability>>` every view reads and every arm settles onto,
-/// takes that lock exactly the way every other holder takes it, and delegates verbatim to
-/// [`Durability::settle_posted`]. It adds nothing and changes nothing: the `Settling` it is handed
-/// and the `Posted` it settles reach the ledger's one book-moving function unaltered, so the postings
-/// on the chain are the same bytes in the same order they are today. It exists so exit arms name a
-/// seam instead of a book, not so the book behaves differently.
+/// takes that lock exactly the way every other holder takes it, and hands the book's own settling
+/// function ([`Durability::settle_posted`] and its counted forms) the `Settling` and the `Posted`
+/// unaltered, so the postings on the chain are the same bytes in the same order. The lock is taken
+/// and released BEHIND the seam, once per step ([`SharedBook::settling_then`]): any number of exit
+/// arms hold the same seam and settle through it concurrently.
 ///
 /// What it does keep is WHERE the settlement landed ([`SharedBook::landed`]): the seq of the record
 /// the last settlement through it put on the chain, read under the same lock the settlement took,
@@ -182,7 +86,7 @@ impl SharedBook {
     ///
     /// `None` when nothing settled through it, when the journal did not take the record (the log
     /// retains and re-offers it, and a seq the chain never confirmed is not one to cite), and for a
-    /// counts row ([`MoneyBook::post_counts`]), which closes no hold.
+    /// counts row ([`Self::posting_then`]), which closes no hold.
     #[must_use]
     pub fn landed(&self) -> Option<u64> {
         *self
@@ -191,19 +95,27 @@ impl SharedBook {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// One settlement, under the book's one lock, noting where its record landed.
+    /// ONE STEP, ONE ACQUISITION: one settlement, noting where its record landed, and the append
+    /// that follows it in the same step (the unit's audit record), under one hold of the book's lock.
     ///
     /// A settlement's records are the first the append seals, in order from the journal's next
     /// seq; the one record that can precede them is the `ChainBreak` an append at the bound seals
     /// first, and that break names its own seq. So the settlement sits at the seq offered, or one
     /// past it when the break took that seq.
-    fn settling(
+    ///
+    /// `then` is handed the same book and the seq the settlement landed at ([`Self::landed`]), and
+    /// makes its own append. The records, their
+    /// order and each append's own durability point are the two acquisitions' exactly; what goes is
+    /// the second acquisition, and the window in which another unit's append could land between a
+    /// unit's settlement and its record. Nothing in `then` awaits or crosses a plugin.
+    pub fn settling_then(
         &self,
         line: impl FnOnce(&mut Durability) -> Result<Settled, DurabilityLost>,
+        then: impl FnOnce(&mut Durability, Option<u64>),
     ) -> Result<Settled, DurabilityLost> {
         // The same lock, taken the way every other holder of it takes it — read through a poisoning
         // an unrelated unit caused rather than refusing to settle a delivered unit. Held for exactly
-        // the settlement and released, which is what lets a second arm settle behind this one.
+        // the step's appends and released, which is what lets a second arm settle behind this one.
         let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
         let offered_at = durability.journal.next_seq();
         let settled = line(&mut durability);
@@ -219,67 +131,27 @@ impl SharedBook {
             .landed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = landed;
+        then(&mut durability, landed);
         settled
+    }
+
+    /// [`Self::settling_then`] for a counts row ([`Durability::post_counts`]): the row and the
+    /// append that follows it under one hold of the lock. A counts row closes no hold, so `then` is
+    /// handed where the last settlement through this seam landed, as [`Self::landed`] reads it.
+    pub fn posting_then(
+        &self,
+        line: impl FnOnce(&mut Durability) -> Result<Posting, DurabilityLost>,
+        then: impl FnOnce(&mut Durability, Option<u64>),
+    ) -> Result<Posting, DurabilityLost> {
+        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+        let posted = line(&mut durability);
+        then(&mut durability, self.landed());
+        posted
     }
 }
 
 impl std::fmt::Debug for SharedBook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedBook").finish_non_exhaustive()
-    }
-}
-
-impl MoneyBook for SharedBook {
-    fn settle_posted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-    ) -> Result<Settled, DurabilityLost> {
-        self.settling(|durability| durability.settle_posted(at, posted))
-    }
-
-    fn settle_counted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost> {
-        self.settling(|durability| durability.settle_counted(at, posted, counts, arrived_ms))
-    }
-
-    fn settle_counted_refusing(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Settled, DurabilityLost> {
-        self.settling(|durability| {
-            durability.settle_counted_refusing(at, posted, counts, arrived_ms, refusal)
-        })
-    }
-
-    fn close_counted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost> {
-        self.settling(|durability| durability.close_counted(at, posted, counts, arrived_ms))
-    }
-
-    fn post_counts(
-        &self,
-        at: &Settling<'_>,
-        principal: &busbar_contract::caps::PrincipalId,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Posting, DurabilityLost> {
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.post_counts(at, principal, counts, arrived_ms, refusal)
     }
 }

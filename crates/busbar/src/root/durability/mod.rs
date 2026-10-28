@@ -208,11 +208,11 @@ mod plugin_floor;
 pub use plugin_floor::hold as hold_plugin_floor;
 
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
-/// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
-/// impl ([`SharedBook`]). Split out for `structure-lint`; a private child module, as `replay` is, its
-/// items re-exported so no caller's path changes.
+/// left ([`Settled`]), and the seam an exit arm settles through ([`SharedBook`]). Split out for
+/// `structure-lint`; a private child module, as `replay` is, its items re-exported so no caller's
+/// path changes.
 mod book;
-pub use book::{MoneyBook, PostingStamp, Settled, Settling};
+pub use book::{PostingStamp, Settled, Settling};
 // The pass-through has one caller, the plane node, so it is built where the node is.
 pub use book::SharedBook;
 
