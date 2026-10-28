@@ -5199,43 +5199,12 @@ pub(crate) fn openapi_json() -> String {
     out
 }
 
-/// Does this request's `Accept-Encoding` permit a gzip response body? Conservative token scan
-/// over every `Accept-Encoding` value: an entry whose coding is `gzip` (case-insensitive) counts,
-/// unless its `q` parameter is an explicit zero. No header, an unparsable value, or `*` all
-/// answer NO — identity is always the safe fallback (a client that did not ask for gzip gets the
-/// same inflated JSON it always got).
-fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
-    headers
-        .get_all(axum::http::header::ACCEPT_ENCODING)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .any(|entry| {
-            let mut parts = entry.split(';');
-            let coding = parts.next().unwrap_or("").trim();
-            if !coding.eq_ignore_ascii_case("gzip") {
-                return false;
-            }
-            // `gzip;q=0` (any zero spelling: 0, 0.0, 0.00, 0.000) is an explicit refusal.
-            let q_zero = parts.any(|p| {
-                let p = p.trim();
-                p.strip_prefix("q=")
-                    .or_else(|| p.strip_prefix("Q="))
-                    .is_some_and(|q| q.parse::<f32>().is_ok_and(|q| q == 0.0))
-            });
-            !q_zero
-        })
-}
-
 /// `GET /api/v1/admin/openapi.json` — the OpenAPI 3.1 schema of the v1 surface (the discovery contract).
-/// Serves the committed, typed document verbatim as `application/json` (no runtime generation —
-/// see [`openapi_json`]). A client whose `Accept-Encoding` allows gzip (virtually every one) gets
-/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` when nothing is filtered — no
-/// retained 366 KB+ string, byte-identical after the client's transparent decode. Deciding whether
-/// anything IS filtered inflates and parses the document per request, so that work runs on a
-/// blocking thread, never the async worker. `Vary: Accept-Encoding` because the body differs by
-/// that header. No axum compression layer exists on this router (checked), so nothing
-/// double-compresses.
+/// Serves the committed, typed document as `application/json` (no runtime generation — see
+/// [`openapi_json`]), identity-encoded with no `Vary`, the answer 1.5.5 gave (the oracle's
+/// `crosscut.traps|openapi-info-version` and `neutrality|routes|admin-openapi-paths`). The document
+/// is inflated from the embedded gzip and filtered per request on a blocking thread, never the
+/// async worker.
 ///
 /// FILTERED TO THE CONFIGURED PLANES (Law 7). The committed document describes every operation the
 /// BUILD can serve — it is what SDK and provider generation read. What a NODE serves is that
@@ -5244,57 +5213,26 @@ fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
 /// running a 1.5.5 config describes no plane surface it does not mount. The check is the core's one
 /// generic `App::plane_configured`; this names no plane. When every marked plane is configured
 /// nothing is dropped and the committed bytes are served exactly as before.
-pub(crate) async fn openapi(
-    State(handle): State<Arc<AppHandle>>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
-    /// What the blocking build settled on serving.
-    enum Served {
-        /// A JSON body: the document filtered to this node's planes, or the committed one inflated
-        /// for an identity-only client.
-        Json(String),
-        /// The embedded gzip bytes, unchanged.
-        Gzip,
-    }
+pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
     let app = handle.load();
-    let gzip = accept_encoding_allows_gzip(&headers);
-    // OFF THE ASYNC WORKER: deciding what to serve inflates the embedded document, parses all of it
-    // and walks it for the operations of planes this node does not configure — on a node running a
-    // 1.5.5 config, on every request. That is a blocking thread's work, never the worker's the data
-    // plane shares. The document is inflated once and the inflated text reused for an identity-only
-    // client.
+    // OFF THE ASYNC WORKER: serving inflates the embedded document, parses all of it and walks it
+    // for the operations of planes this node does not configure — on a node running a 1.5.5
+    // config, on every request. That is a blocking thread's work, never the worker's the data
+    // plane shares.
     let served = tokio::task::spawn_blocking(move || {
         let configured = |section: &str| {
             busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
                 .is_some_and(|decl| app.plane_configured(decl))
         };
         let committed = openapi_json();
-        match openapi_for_configured_planes(&committed, configured) {
-            Some(filtered) => Served::Json(filtered),
-            None if gzip => Served::Gzip,
-            None => Served::Json(committed),
-        }
+        openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
     })
     .await;
     match served {
-        Ok(Served::Json(body)) => (
+        Ok(body) => (
             StatusCode::OK,
-            [
-                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
-                VARY,
-            ],
+            [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
             body,
-        )
-            .into_response(),
-        Ok(Served::Gzip) => (
-            StatusCode::OK,
-            [
-                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
-                (axum::http::header::CONTENT_ENCODING, "gzip"),
-                VARY,
-            ],
-            OPENAPI_JSON_GZ,
         )
             .into_response(),
         Err(join_err) => {
