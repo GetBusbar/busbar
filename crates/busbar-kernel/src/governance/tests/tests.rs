@@ -5891,6 +5891,44 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
     assert_eq!(rows.len(), 3, "nothing else was written");
 }
 
+/// SPEND IS ALWAYS ATTRIBUTED (ORACLE-116 review, LEDGER-SIMPLE): a served pools unit's open class
+/// (a provider-stated total's `unitemized_tokens`, LEDGER-100) lands on the SAME `(model,
+/// provider)` metering row its request meters on, so the usage report shows one row for the
+/// serving provider and never a second `(model, "")` row with no provider to bill it to.
+/// RED: before, the class mirrored onto `(m, "")` beside the request's `(m, p)` row.
+#[test]
+fn a_served_units_open_class_lands_on_its_providers_row() {
+    use busbar_contract::records::RecordStore as _;
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let units: std::collections::BTreeMap<String, u64> = [
+        ("input".to_string(), 18),
+        ("output".to_string(), 7),
+        ("unitemized_tokens".to_string(), 3),
+    ]
+    .into_iter()
+    .collect();
+    gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
+    gov.record_lane_metering(&k.id, "m", Some("p"), &units, AT);
+    gov.flush_metering();
+    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
+    assert_eq!(
+        mine.iter()
+            .map(|r| (r.model.as_str(), r.provider.as_str()))
+            .collect::<Vec<_>>(),
+        [("m", "p")],
+        "one row, attributed to the serving provider: {mine:?}"
+    );
+    let row = mine[0];
+    assert_eq!(row.requests, 1);
+    assert_eq!(
+        row.usage_units.get("unitemized_tokens"),
+        Some(&3),
+        "the open class rides its provider's row"
+    );
+}
+
 #[test]
 fn a_plane_without_fees_bills_no_fee() {
     let (_store, gov, k) = team_gov();

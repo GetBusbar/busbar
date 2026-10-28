@@ -72,13 +72,15 @@ use crate::trust::section::{DeclaredPin, TrustEntry};
 pub(crate) struct Mem(pub(crate) Arc<MemoryStore>);
 
 impl RecordRows for Mem {
-    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
+    fn claim(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, StoreError> {
         busbar_contract::records::RecordStore::redeem_plane_token(
-            &*self.0,
-            crate::host_records::CLAIM_KIND,
-            token,
-            expires_at,
-            now,
+            &*self.0, kind, token, expires_at, now,
         )
         .map_err(|e| StoreError::Rejected(e.0))
     }
@@ -153,7 +155,7 @@ fn rig() -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&store))))
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
         .with_demotions(demotions(&store), SECTION_KEY)
@@ -913,7 +915,13 @@ struct Gauge {
 
 impl RecordRows for Gauge {
     /// One writer in this test: every claim is the first.
-    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+    fn claim(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> Result<bool, StoreError> {
         Ok(true)
     }
     fn record_put(
@@ -955,7 +963,7 @@ fn noop() -> Acked {
 /// Kernel services over `reads`, on the blocking pool of `rt`, with "inst" admitted.
 fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(reads, Arc::new(MemoryStore::new()))
+        .with_records(reads)
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
         "inst",
@@ -1107,7 +1115,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))))
         .with_pool(Arc::new(Arc::clone(&held)));
     let declares = || InstanceFacts {
         record_kinds: vec![KIND],
@@ -1170,7 +1178,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
         .unwrap();
     let store = Arc::new(MemoryStore::new());
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&store))))
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
         "inst",
@@ -1240,7 +1248,13 @@ impl Gate {
 
 impl RecordRows for Gate {
     /// One writer in this test: every claim is the first.
-    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+    fn claim(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> Result<bool, StoreError> {
         Ok(true)
     }
     fn record_put(
@@ -1280,7 +1294,7 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         .unwrap();
     let gate = Arc::new(Gate::default());
     let s = KernelServices::new()
-        .with_records(gate.clone(), Arc::new(MemoryStore::new()))
+        .with_records(gate.clone())
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
     s.admit(
         "inst",
@@ -1318,7 +1332,13 @@ struct Refusing(Mem);
 
 impl RecordRows for Refusing {
     /// One writer in this test: every claim is the first.
-    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+    fn claim(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> Result<bool, StoreError> {
         Ok(true)
     }
     fn record_put(
@@ -1366,7 +1386,7 @@ fn a_write_is_answered_only_once_the_store_took_it() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))))
         .with_pool(Arc::new(Arc::clone(&held)));
     s.admit(
         "inst",
@@ -1393,7 +1413,7 @@ fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
     let store = Arc::new(MemoryStore::new());
     let held = Arc::new(Held::default());
     let s = KernelServices::new()
-        .with_records(Arc::new(Refusing(Mem(Arc::clone(&store)))), store.clone())
+        .with_records(Arc::new(Refusing(Mem(Arc::clone(&store)))))
         .with_pool(Arc::new(Arc::clone(&held)));
     s.admit(
         "inst",
@@ -1422,7 +1442,7 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
 /// Kernel services over `store`, on `pool`, with "inst" declaring the one kind.
 fn writer(store: &Arc<MemoryStore>, pool: Arc<dyn Offload>) -> KernelServices {
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(store))))
         .with_pool(pool);
     s.admit(
         "inst",
@@ -1631,7 +1651,7 @@ fn claims_left_pending_on_the_pool_never_both_win() {
     let held = Arc::new(Held::default());
     let c = Arc::clone(&r.clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))))
         .with_pool(Arc::new(Arc::clone(&held)))
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
     s.admit("inst", InstanceFacts::default()).unwrap();
@@ -1656,7 +1676,7 @@ fn a_won_answer_past_the_callers_deadline_is_taken() {
     let held = Arc::new(Held::default());
     let c = Arc::clone(&r.clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))))
         .with_pool(Arc::new(Arc::clone(&held)))
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
     s.admit("inst", InstanceFacts::default()).unwrap();
