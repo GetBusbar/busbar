@@ -515,6 +515,10 @@ impl<K, V> Keyed<K, V> {
     /// How many entries are held.
     #[must_use]
     pub fn len(&self) -> usize {
+        // One map is read under its lock, as it always was; shards by their count.
+        if let [one] = &*self.shards {
+            return keyed_lock(one).len();
+        }
         self.len.load(std::sync::atomic::Ordering::Acquire)
     }
 
