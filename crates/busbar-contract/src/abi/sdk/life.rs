@@ -145,6 +145,25 @@ pub fn settings_object(
     }
 }
 
+/// A settings blob's bytes as the JSON value they hold; empty is `{}`.
+///
+/// # Errors
+/// The bytes are not JSON: FAILED, `settings: <serde's words>`.
+pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
+    let bytes = if bytes.is_empty() { b"{}" } else { bytes };
+    serde_json::from_slice(bytes).map_err(|e| Refusal::failed(format!("settings: {e}")))
+}
+
+/// A settings blob's bytes as the plugin's settings type `T`, read from their JSON value (as the
+/// configuration grammar reads them, so serde's words name no line or column); empty is `{}`.
+///
+/// # Errors
+/// The bytes are not JSON, or not `T`: FAILED, `settings: <serde's words>`.
+pub fn settings_as<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Refusal> {
+    serde_json::from_value(settings_value(bytes)?)
+        .map_err(|e| Refusal::failed(format!("settings: {e}")))
+}
+
 // ── leases ─────────────────────────────────────────────────────────────────────────────────
 
 /// What one lease holds: bytes, zeroized on drop when secret.
@@ -467,6 +486,9 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
 
 // ── the nine slots ──────────────────────────────────────────────────────────────────────────
 
+/// What `release` answers for a lease this instance does not hold.
+pub const NO_SUCH_LEASE: &str = "release: no such lease";
+
 macro_rules! life_slot {
     ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         $(#[$doc])*
@@ -590,11 +612,13 @@ life_slot!(
 );
 
 life_slot!(
-    /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED.
-    Release(ReleaseIn => OutHead) |instance, input, _out| {
-        instance
-            .get()
-            .map_or(Outcome::Refused, |h| h.leases.release(input.lease))
+    /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED, in
+    /// [`NO_SUCH_LEASE`]'s words.
+    Release(ReleaseIn => OutHead) |instance, input, out| {
+        match instance.get().map(|h| h.leases.release(input.lease)) {
+            Some(Outcome::Ready) => Outcome::Ready,
+            _ => out.fail(Refusal::refused(NO_SUCH_LEASE)),
+        }
     }
 );
 

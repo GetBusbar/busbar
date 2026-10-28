@@ -12,7 +12,7 @@
 //!      PARAMETER, so the answer is a section name and nothing else — no config module, no
 //!      validator, no refusal type.
 //!   3. Are the two cross-plane refusals still TWO? [`crate::config::plane_sections`] refuses a SHAPE at
-//!      parse time; [`crate::plane::PlaneSections::resolve`] refuses a BINDING at resolve time.
+//!      parse time; [`crate::plane_driver::dispatch::PlaneSections::resolve`] refuses a BINDING at resolve time.
 //!      Merging them would delete a check rather than deduplicate one, so both are exercised on
 //!      inputs the other cannot see.
 
@@ -20,7 +20,7 @@ use crate::config::plane_sections::{
     config_sections, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
     HookRefError,
 };
-use crate::plane::{PlaneSections, RefError};
+use crate::plane_driver::dispatch::{PlaneSections, RefError};
 
 // ══ 1. THE SECTION LIST EXISTS ONCE, AND IS DERIVED ══════════════════════════════════════════════
 
@@ -36,8 +36,8 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     // `tools`/`agents`/`export`/`identity-providers`) actually present.
     crate::test_support::register_neutral_test_plane();
     let mut expected: Vec<&'static str> = Vec::new();
-    for s in crate::plane::plane_keys()
-        .map(|k| crate::plane::plane_decl(k).config_section)
+    for s in crate::plane_driver::dispatch::plane_keys()
+        .map(|k| crate::plane_driver::dispatch::plane_decl(k).config_section)
         .chain(busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS)
     {
         if !expected.contains(&s) {

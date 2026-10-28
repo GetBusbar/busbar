@@ -26,10 +26,12 @@ use busbar_contract::records::{
     RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
 };
 use busbar_kernel_ledger::migration::{
-    meter_pool_scope, migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
+    meter_pool_scope, migrate, MigrationFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
 };
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey};
-use busbar_plugin_loader::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
+use busbar_plugin_loader::store_adapter::{
+    MigrationReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS,
+};
 use std::sync::{Arc, Mutex};
 
 /// The ledger's own records for the migration marker, in test memory: where a node keeps its marker
@@ -308,13 +310,13 @@ impl AbiStore for EveryBucketHoldsTheSame {
 fn the_opening_read_folds_many_buckets_without_rescanning_the_balances() {
     const BUCKETS: usize = 60_000;
     let adapter = adapter_over(Arc::new(EveryBucketHoldsTheSame));
-    let plan = LegacyReadPlan {
+    let plan = MigrationReadPlan {
         windows: (0..BUCKETS).map(|i| (format!("vk_{i}"), WINDOW)).collect(),
         days: Vec::new(),
     };
 
     let started = std::time::Instant::now();
-    let cells = adapter.legacy_cells_read(&plan);
+    let cells = adapter.migration_cells_read(&plan);
     let elapsed = started.elapsed();
 
     assert_eq!(
@@ -422,7 +424,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
         .expect("the key rows list");
     assert_eq!(plan.windows.len(), 2, "one bucket per key row");
 
-    let rows = adapter.legacy_ledger_rows(plan);
+    let rows = adapter.migration_ledger_rows(plan);
     let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) =
         migrate(&rows, &mut records, 1, 1_700_000_000, 3, None).expect("the migration seals")
@@ -539,12 +541,12 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     assert_eq!(
         opening.balances,
         vec![
-            busbar_kernel_ledger::legacy::OpeningBalance {
+            busbar_kernel_ledger::migration::OpeningBalance {
                 bucket: "vk_a".to_string(),
                 amount: 9_000,
                 rate_card_version: 3,
             },
-            busbar_kernel_ledger::legacy::OpeningBalance {
+            busbar_kernel_ledger::migration::OpeningBalance {
                 bucket: "vk_b".to_string(),
                 amount: 40,
                 rate_card_version: 3,
@@ -563,7 +565,7 @@ fn the_migration_never_writes_to_the_rows_it_read() {
     let plan = adapter
         .key_bucket_plan(WINDOW, &[], &[WINDOW])
         .expect("the key rows list");
-    let rows = adapter.legacy_ledger_rows(plan);
+    let rows = adapter.migration_ledger_rows(plan);
     let mut records = MarkerRecords::default();
     migrate(&rows, &mut records, 1, 1, 1, None).expect("the migration seals");
 
@@ -606,7 +608,7 @@ fn a_second_boot_issues_no_request_to_the_store() {
     let plan = adapter
         .key_bucket_plan(WINDOW, &[], &[WINDOW])
         .expect("the key rows list");
-    let first = adapter.legacy_ledger_rows(plan.clone());
+    let first = adapter.migration_ledger_rows(plan.clone());
     let mut records = MarkerRecords::default();
     let sealed = migrate(&first, &mut records, 1, 1_700_000_000, 3, None).expect("seals");
     assert!(sealed.sealed_now());
@@ -614,7 +616,7 @@ fn a_second_boot_issues_no_request_to_the_store() {
     assert!(after_first > 0);
 
     // The same node, booting again: a fresh source over the same plan, the same records.
-    let second_rows = adapter.legacy_ledger_rows(plan);
+    let second_rows = adapter.migration_ledger_rows(plan);
     let second = migrate(&second_rows, &mut records, 1, 1_700_000_100, 3, None).expect("no-op");
     assert!(!second.sealed_now(), "the second boot must not seal again");
     assert_eq!(
@@ -640,11 +642,11 @@ fn a_store_with_no_legacy_rows_opens_at_zero_and_still_seals() {
     // The key listing is where the plan comes from, and this store will not answer it either.
     assert!(adapter.key_bucket_plan(WINDOW, &[], &[WINDOW]).is_err());
     // So the migration reads the plan it was left with, which names one bucket and one day.
-    let plan = LegacyReadPlan {
+    let plan = MigrationReadPlan {
         windows: vec![("vk_a".to_string(), WINDOW)],
         days: vec![WINDOW],
     };
-    let rows = adapter.legacy_ledger_rows(plan);
+    let rows = adapter.migration_ledger_rows(plan);
     let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1_700_000_000, 1, None)
         .expect("an empty store still seals")
@@ -675,7 +677,7 @@ fn a_store_with_no_legacy_rows_opens_at_zero_and_still_seals() {
 fn a_plan_naming_nothing_seals_an_empty_opening() {
     let store = a_serving_store();
     let adapter = adapter_over(store.clone());
-    let rows = adapter.legacy_ledger_rows(LegacyReadPlan::nothing());
+    let rows = adapter.migration_ledger_rows(MigrationReadPlan::nothing());
     let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, 1, None).expect("seals")
     else {
@@ -720,7 +722,7 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
         },
     );
     let adapter = adapter_over(store.clone());
-    let rows = adapter.legacy_ledger_rows(
+    let rows = adapter.migration_ledger_rows(
         adapter
             .key_bucket_plan(WINDOW, &[], &[WINDOW])
             .expect("the key rows list"),
@@ -740,7 +742,7 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
         assert_eq!(figures.drawn, 100);
     }
     let read: Vec<_> = adapter
-        .legacy_ledger_rows(LegacyReadPlan {
+        .migration_ledger_rows(MigrationReadPlan {
             windows: vec![("vk_a".to_string(), WINDOW)],
             days: vec![WINDOW],
         })
@@ -749,5 +751,5 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
         .iter()
         .map(|f| f.family)
         .collect();
-    assert!(read.contains(&LegacyFamily::Window) && read.contains(&LegacyFamily::Meter));
+    assert!(read.contains(&MigrationFamily::Window) && read.contains(&MigrationFamily::Meter));
 }
