@@ -8,6 +8,11 @@
 //! ([`Node::drive_borrowed`]).
 
 use super::*;
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, Authenticate, Consumption, Decode, Dial, Encode, Meter,
+    Refusal, SeatVerdict, Verify,
+};
+use busbar_kernel::slice::GroupLeaseSlip;
 
 use busbar_contract::caps::{
     Admission, ArrivalRecord, Authenticated, Frame, ReasonCode, RoutePlan, ScopeFacts, Usage,
@@ -25,7 +30,7 @@ impl ToDestination {
     }
 }
 
-impl Units for ToDestination {
+impl busbar_kernel::teller::DoorSeats for ToDestination {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         SeatVerdict::proceed(
             token,
@@ -90,7 +95,9 @@ impl Units for ToDestination {
         // The arrival hold is the hold the exit settles: the unit runs under it.
         SeatVerdict::proceed(token, Admission::ZeroHold)
     }
+}
 
+impl busbar_kernel::teller::UnitEnds for ToDestination {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -179,7 +186,8 @@ impl RouteAwait for ToDestination {
 fn handed() -> Handed {
     let build: crate::root::linked::node::Build = Box::new(
         |_lent: crate::root::linked::node::Lent| -> crate::root::linked::node::Built {
-            let units: Arc<dyn Units + Send + Sync> = Arc::new(ToDestination);
+            let units: Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync> =
+                Arc::new(ToDestination);
             let route: Arc<dyn RouteAwait + Send + Sync> = Arc::new(ToDestination);
             let finish: crate::root::linked::node::Finish =
                 Box::new(|| -> (Option<PlaneAnswer>, Option<Late>) { (None, None) });
@@ -270,7 +278,7 @@ async fn a_borrowed_unit_seals_its_verified_destination_and_its_hold_and_settle_
 /// [`ToDestination`], refused at its approve step: a session whose door says no.
 struct RefusedAtApprove;
 
-impl Units for RefusedAtApprove {
+impl busbar_kernel::teller::DoorSeats for RefusedAtApprove {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         ToDestination.arrival(token, ctx)
     }
@@ -314,7 +322,9 @@ impl Units for RefusedAtApprove {
     ) -> SeatVerdict<Admit> {
         ToDestination.admit(token, admit, ctx, principal, destinations, leases)
     }
+}
 
+impl busbar_kernel::teller::UnitEnds for RefusedAtApprove {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -363,7 +373,11 @@ impl Units for RefusedAtApprove {
 }
 
 /// Open one session on `node` through `units`, end it on its own path, and hand back its key.
-fn open_and_finish<U: Units>(node: &Arc<Node>, post: &NodeEndPost, units: &U) -> (UnitKey, bool) {
+async fn open_and_finish<U: Units>(
+    node: &Arc<Node>,
+    post: &NodeEndPost,
+    units: &U,
+) -> (UnitKey, bool) {
     let key = node.mint();
     let (opened, _ctx, slot) = node
         .open_borrowed(
@@ -375,6 +389,7 @@ fn open_and_finish<U: Units>(node: &Arc<Node>, post: &NodeEndPost, units: &U) ->
             None,
             OpClassId::new("seal"),
         )
+        .await
         .expect("the table took the session");
     let admitted = matches!(opened, busbar_kernel::teller::SessionOpen::Admitted { .. });
     slot.finish(post);
@@ -391,7 +406,7 @@ async fn an_admitted_session_seals_one_record_when_it_ends() {
     let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
-    let (key, admitted) = open_and_finish(&node, &post, &ToDestination);
+    let (key, admitted) = open_and_finish(&node, &post, &ToDestination).await;
     assert!(admitted, "the door passed the session");
     assert_eq!(post.open_units(), 0, "its facts closed at its end");
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
@@ -420,7 +435,7 @@ async fn a_session_refused_at_its_open_seals_a_refused_record() {
     let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
-    let (key, admitted) = open_and_finish(&node, &post, &RefusedAtApprove);
+    let (key, admitted) = open_and_finish(&node, &post, &RefusedAtApprove).await;
     assert!(!admitted, "the door refused the session");
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let records = durability.audit_records.clone();
@@ -454,7 +469,7 @@ struct Hooked<'p> {
     hooks: Option<Vec<busbar_kernel_audit::HookApplied>>,
 }
 
-impl Units for Hooked<'_> {
+impl busbar_kernel::teller::DoorSeats for Hooked<'_> {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         ToDestination.arrival(token, ctx)
     }
@@ -498,7 +513,9 @@ impl Units for Hooked<'_> {
     ) -> SeatVerdict<Admit> {
         ToDestination.admit(token, admit, ctx, principal, destinations, leases)
     }
+}
 
+impl busbar_kernel::teller::UnitEnds for Hooked<'_> {
     fn route(
         &self,
         token: &Pass<Route>,
