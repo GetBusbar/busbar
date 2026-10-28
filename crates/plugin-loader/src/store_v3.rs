@@ -1636,6 +1636,35 @@ impl StoreCalls for LoadedStore {
             Ok(ran.out.verdict == VERDICT_YES)
         })
     }
+
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        boxed(async move {
+            let r = fixed::<_, LeasedStrListOut>(
+                slot::LIST_PLANE_RECORD_PARENTS,
+                owned_in(|o, head| IdIn {
+                    head,
+                    id: o.text(kind),
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            self.read_strs(ran)
+        })
+    }
+
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        boxed(async move {
+            let r = fixed::<_, CountOut>(
+                slot::PURGE_PLANE_RECORDS_BEFORE,
+                owned_in(|o, head| KindBeforeIn {
+                    head,
+                    kind: o.text(kind),
+                    before,
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            ran.ok().map(|()| ran.out.count)
+        })
+    }
 }
 
 // ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────

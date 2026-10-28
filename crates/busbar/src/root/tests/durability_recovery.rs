@@ -307,3 +307,51 @@ fn the_boot_reads_the_floor_back_and_a_node_below_it_does_not_boot() {
         "the refusal names the floor: {refused}"
     );
 }
+
+/// C6: THE STORE'S V3 CALLS ANSWER THE PLANE PARENTS AND THE RETENTION PURGE AS THE 1.5.5 OP SET
+/// DID, over one door-opened store: the same parents, then the same records purged, so a caller
+/// moved off the synchronous bridge reads and purges what it read and purged before.
+#[test]
+fn the_v3_plane_parents_and_purge_answer_as_the_op_set_did() {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord};
+    const KIND: &str = "c6-probe";
+    let store = ephemeral_store();
+    let row = |id: &str, parent: &str, ts: u64| PlaneRecord {
+        kind: KIND.to_string(),
+        id: id.to_string(),
+        parent: Some(parent.to_string()),
+        seq: 0,
+        ts,
+        disposition: PlaneDisposition::Terminal,
+        body: b"{}".to_vec(),
+    };
+    for r in [row("a", "p1", 10), row("b", "p2", 20), row("c", "p2", 30)] {
+        wait_for(store.calls.upsert_plane_record(r.view())).expect("the store takes the row");
+    }
+    let mut v3 = wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents");
+    let mut op_set = store
+        .records
+        .list_plane_record_parents(KIND)
+        .expect("op-set parents");
+    v3.sort();
+    op_set.sort();
+    assert_eq!(v3, vec!["p1".to_string(), "p2".to_string()]);
+    assert_eq!(v3, op_set);
+    assert_eq!(
+        wait_for(store.calls.purge_plane_records_before(KIND, 25)).expect("v3 purge"),
+        2,
+        "the two terminal rows older than 25 go"
+    );
+    assert_eq!(
+        store
+            .records
+            .purge_plane_records_before(KIND, 25)
+            .expect("op-set purge"),
+        0,
+        "nothing older is left for the op set to purge"
+    );
+    assert_eq!(
+        wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents"),
+        vec!["p2".to_string()]
+    );
+}

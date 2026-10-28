@@ -169,6 +169,11 @@ pub trait StoreCalls: Send + Sync {
         expires_at: u64,
         now: u64,
     ) -> StoreCall<'a, bool>;
+    /// `list_plane_record_parents`: every distinct parent `kind`'s records name.
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>>;
+    /// `purge_plane_records_before`: `kind`'s records older than `before` removed, as the store's
+    /// retention rule for the kind reads it; how many went.
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64>;
 }
 
 // THE STORE AXIS (WIRE-STORE Q8/Q9: the kernel receives the store kind's axis from the
