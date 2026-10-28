@@ -38,10 +38,16 @@ pub async fn tail(
     // THE SPEND RECORDER (MONEY-DESIGN §3c): one final take of every shard's pending deltas, then
     // the sender delivers what is queued, retrying until the bounded deadline (1.5.5 made one
     // attempt). What is left is logged; with a data directory it is spooled and replays at boot.
+    // The two lines are 1.5.5's, word for word (v1.5.5 `main.rs:1064-1069`): the final write's
+    // budget counters and metering rows, counted after the last take and before the delivery.
     if let Some(recorder) = governance.as_ref().and_then(|g| g.recorder()) {
-        let delivered = recorder.drain(true, RECORD_DRAIN).await;
+        recorder.take_last().await;
+        let (counters, rows) = recorder.unsent();
+        // An undelivered remainder is logged by the drain itself (an error, with what is left).
+        let _delivered = recorder.deliver(RECORD_DRAIN).await;
         recorder.stop().await;
-        tracing::info!(delivered, "spend recorder drained on shutdown");
+        tracing::info!(flushed = counters, "budget counters flushed on shutdown");
+        tracing::info!(flushed = rows, "metering rows flushed on shutdown");
     }
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes.
     if !drain_records(late).await {

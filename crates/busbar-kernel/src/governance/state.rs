@@ -932,8 +932,21 @@ impl GovState {
     /// Every metering row for `bucket` (a [`metering_bucket`] day start) — the raw material of the
     /// usage read's by-model / by-key aggregations. Synchronous store read; admin-plane callers run
     /// it via `spawn_blocking`.
+    ///
+    /// THE PROVIDER IS THE SERVING PROVIDER. The stored column carries the pricing entry's id as a
+    /// prefix (`"<id>\u{1f}<provider>"`, MONEY-DESIGN §3b/§3d) only so rows of two entries never
+    /// merge in the store; each row is still its own row here (its `priced_from_ms` dates it), and
+    /// its `provider` is the upstream that served it, as 1.5.5 and every reader of a row expect.
     pub fn metering_for(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.store.list_metering(bucket)
+        let mut rows = self.store.list_metering(bucket)?;
+        for row in &mut rows {
+            let (entry, provider) = crate::posting::record::split_provider(&row.provider);
+            if !entry.is_empty() {
+                let provider = provider.to_string();
+                row.provider = provider;
+            }
+        }
+        Ok(rows)
     }
 
     /// READ-ONLY limit headroom for a key: the fraction `[0.0, 1.0]` of the most-constrained

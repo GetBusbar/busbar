@@ -882,6 +882,31 @@ impl Recorder {
         self.lock().entries.len()
     }
 
+    /// What is unrecorded now, by kind: `(usage cells, metering rows)` accumulated or carved and
+    /// not yet READY in the store. At shutdown, after [`Recorder::take_last`], these are the budget
+    /// counters and metering rows the drain is to write — 1.5.5's final flush counts (`flushed=`).
+    #[must_use]
+    pub fn unsent(&self) -> (usize, usize) {
+        let core = self.lock();
+        let carved = |k: Kind| {
+            core.entries
+                .iter()
+                .filter(|e| {
+                    let state = match k {
+                        Kind::Usage => &e.usage,
+                        Kind::Metering => &e.metering,
+                    };
+                    *state != KindState::Done
+                })
+                .map(|e| e.len(k))
+                .sum::<usize>()
+        };
+        (
+            core.acc.len() + carved(Kind::Usage),
+            core.acc_meter.len() + carved(Kind::Metering),
+        )
+    }
+
     /// The dead letters standing now.
     #[must_use]
     pub fn dead_letters(&self) -> Vec<DeadLetter> {
@@ -1518,14 +1543,25 @@ impl Recorder {
     /// `deadline` passes; each refusal met extends it by [`REPLAY_PER_REFUSAL`]. Answers whether
     /// everything was delivered.
     pub async fn drain(&self, take_pending: bool, deadline: Duration) -> bool {
+        if take_pending {
+            self.take_last().await;
+        }
+        self.deliver(deadline).await
+    }
+
+    /// THE LAST TAKE: every shard's pending deltas folded into the accumulator now (not at the
+    /// next window), and that fold made durable as any window's is. Returns once it has.
+    pub async fn take_last(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.post_msg(WriterMsg::Take(Ack::Async(tx))) {
+            let _ = rx.await;
+        }
+    }
+
+    /// DELIVER what is unrecorded, without a take first: [`Recorder::drain`]'s sending half.
+    pub async fn deliver(&self, deadline: Duration) -> bool {
         let mut until = tokio::time::Instant::now() + deadline;
         let mut refusals = self.stats.refusals.load(Ordering::Relaxed);
-        if take_pending {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            if self.post_msg(WriterMsg::Take(Ack::Async(tx))) {
-                let _ = rx.await;
-            }
-        }
         loop {
             if !self.working() {
                 return true;

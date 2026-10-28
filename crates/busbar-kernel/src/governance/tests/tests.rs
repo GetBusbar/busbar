@@ -5534,6 +5534,54 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     );
 }
 
+/// **A USAGE ROW NAMES THE PROVIDER THAT SERVED IT, NOT THE PRICING ENTRY.** The recorder stores
+/// each metering row's provider as `"<entry id>\u{1f}<provider>"` so two card entries' rows never
+/// merge; the read hands the usage report the serving provider, as 1.5.5 does, and two entries'
+/// rows of one (key, model, provider) stay two rows (each dated by its own `priced_from_ms`).
+///
+/// RED before the fix: `metering_for` returned the stored column, so `GET /admin/usage` showed
+/// `by_model[].provider` as the prefixed string and split one model into one row per entry.
+#[test]
+fn a_metering_rows_provider_reads_back_without_its_entry_prefix() {
+    use busbar_contract::records::RecordStore as _;
+    let (store, gov, k) = team_gov();
+    let day = metering_bucket(AT);
+    let row = |entry: u8, priced_from_ms: u64| MeteringDelta {
+        usage_units: Default::default(),
+        key_id: k.id.clone(),
+        bucket: day,
+        model: "m".into(),
+        provider: crate::posting::record::prefixed_provider(&hex::encode([entry; 12]), "openai"),
+        tokens_input: 10,
+        tokens_output: 2,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms,
+    };
+    store.add_metering(&row(1, 1_000)).unwrap();
+    store.add_metering(&row(2, 2_000)).unwrap();
+    let mut rows: Vec<_> = gov
+        .metering_for(day)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.key_id == k.id)
+        .map(|r| (r.model, r.provider, r.priced_from_ms, r.requests))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("m".to_string(), "openai".to_string(), 1_000, 1),
+            ("m".to_string(), "openai".to_string(), 2_000, 1),
+        ],
+        "each entry's row, attributed to its serving provider"
+    );
+}
+
 #[test]
 fn a_plane_without_fees_bills_no_fee() {
     let (_store, gov, k) = team_gov();

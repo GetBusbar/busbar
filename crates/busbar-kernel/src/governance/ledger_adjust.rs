@@ -357,9 +357,10 @@ impl GovState {
         delta: &BTreeMap<&str, i64>,
         day: u64,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
+        // Read through `metering_for`, so each row's provider is the serving provider (the
+        // entry-id prefix off) and a plane's row keys its plane's lane.
         let lane_rows: Vec<MeteringRow> = self
-            .store
-            .list_metering(day)?
+            .metering_for(day)?
             .into_iter()
             .filter(|r| r.key_id == adj.key_id && metering_lane(&r.model, &r.provider) == adj.model)
             .collect();
