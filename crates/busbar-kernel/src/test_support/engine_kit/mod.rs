@@ -32,7 +32,7 @@ use crate::config::groups::GroupCfg;
 use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
 use crate::governance::{DerivedUsage, NewKeySpec};
-use crate::plane::PlaneAdmission;
+use crate::plane_driver::dispatch::PlaneAdmission;
 use crate::plane_driver::slots::PlaneSlots;
 use crate::plane_driver::{EngineHost, LiveHostFactory};
 use crate::store::BreakerState;

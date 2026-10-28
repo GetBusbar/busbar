@@ -72,7 +72,6 @@
 use std::collections::BTreeMap;
 
 use crate::checkpoint::{ChainHead, Checkpoint, CheckpointSecret};
-use crate::legacy::{opening_balances, LegacyHead, OpeningBalance};
 use crate::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 
 /// The sequence number of the opening checkpoint.
@@ -85,15 +84,15 @@ pub const OPENING_CHECKPOINT_SEQ: u64 = 0;
 /// The figures the migration reads, the seams it reads them through and the marker it seals: the
 /// contract's, because the store adapter implements the seams on the other side of it.
 pub use busbar_contract::migration::{
-    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
-    MigrationError, MigrationMarker, MigrationRecords,
+    MigrationCapDimension, MigrationError, MigrationFamily, MigrationFigure, MigrationFigures,
+    MigrationHead, MigrationLedgerRows, MigrationMarker, MigrationRecords, MigrationSource,
 };
 
-impl From<LegacyCapDimension> for CapDimension {
-    fn from(dimension: LegacyCapDimension) -> Self {
+impl From<MigrationCapDimension> for CapDimension {
+    fn from(dimension: MigrationCapDimension) -> Self {
         match dimension {
-            LegacyCapDimension::Requests => CapDimension::Requests,
-            LegacyCapDimension::Class(class) => CapDimension::Class(class),
+            MigrationCapDimension::Requests => CapDimension::Requests,
+            MigrationCapDimension::Class(class) => CapDimension::Class(class),
         }
     }
 }
@@ -150,11 +149,11 @@ pub fn meter_pool_scope(lane: &str, provider: &str) -> BucketScope {
 /// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
 /// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no
 /// arrangement of delimiters inside a component's own text can imitate.
-pub fn figure_key(figure: &LegacyFigure) -> TotalsKey {
+pub fn figure_key(figure: &MigrationFigure) -> TotalsKey {
     let scope = match (figure.family, figure.lane.as_str()) {
-        (LegacyFamily::Window, "") => BucketScope::All,
-        (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
-        (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &figure.provider),
+        (MigrationFamily::Window, "") => BucketScope::All,
+        (MigrationFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
+        (MigrationFamily::Meter, lane) => meter_pool_scope(lane, &figure.provider),
     };
     TotalsKey::new(
         BucketId::new(figure.bucket.clone()),
@@ -226,7 +225,7 @@ impl Outcome {
 ///
 /// Two figures for one balance sum past what a ledger figure can hold.
 pub fn opening_totals(
-    figures: &[LegacyFigure],
+    figures: &[MigrationFigure],
 ) -> Result<BTreeMap<(TotalsKey, WindowStart), Totals>, MigrationError> {
     let mut totals: BTreeMap<(TotalsKey, WindowStart), Totals> = BTreeMap::new();
     for figure in figures {
@@ -255,7 +254,7 @@ pub fn opening_totals(
 /// fail on a deployment whose previous release wrote something else. A head with neither a sequence
 /// number nor a hash cross-links nothing, which is the honest answer for a store that had nothing to
 /// say.
-fn opening_heads(head: &LegacyHead, node: u64) -> Vec<ChainHead> {
+fn opening_heads(head: &MigrationHead, node: u64) -> Vec<ChainHead> {
     if head.seq.is_none() && head.hash.is_none() {
         return Vec::new();
     }
@@ -291,7 +290,7 @@ fn opening_heads(head: &LegacyHead, node: u64) -> Vec<ChainHead> {
 /// figures do not fit. A store that could not answer for some rows is NOT an error — those rows come
 /// back named in [`Opening::unreadable`] and the node boots.
 pub fn migrate(
-    source: &dyn LegacyLedgerRows,
+    source: &dyn MigrationLedgerRows,
     records: &mut dyn MigrationRecords,
     node: u64,
     wall: u64,
@@ -349,4 +348,30 @@ pub fn migrate(
         balances,
         unreadable: read.unreadable,
     })))
+}
+
+/// The opening entries a migration seals: one per bucket, at the named card version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpeningBalance {
+    /// Which bucket.
+    pub bucket: String,
+    /// What it opens at.
+    pub amount: i128,
+    /// Which card version the opening was priced under.
+    pub rate_card_version: u64,
+}
+
+/// Turn what the previous release held into the opening balances a migration seals.
+///
+/// An empty head produces an empty list, which seals a migration at zero. That is the whole of the
+/// special case, and it is not special: nothing was there, so nothing opens.
+pub fn opening_balances(head: &MigrationHead, rate_card_version: u64) -> Vec<OpeningBalance> {
+    head.balances
+        .iter()
+        .map(|(bucket, amount)| OpeningBalance {
+            bucket: bucket.clone(),
+            amount: *amount,
+            rate_card_version,
+        })
+        .collect()
 }

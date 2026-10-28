@@ -221,6 +221,9 @@ fn boot_lines_match_1_5_5_shape() {
         .spawn()
         .expect("spawn busbar");
 
+    // Both "busbar listening" lines must be in the log before the signal: the data one is written
+    // by data worker 0 alone, and `/healthz` below can be answered by worker 1 while worker 0 has
+    // not yet written it. Signalled then, worker 0's line lands after the shutdown line.
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -228,11 +231,11 @@ fn boot_lines_match_1_5_5_shape() {
                 read_to_string(&log_path)
             );
         }
-        read_to_string(&log_path).contains("busbar listening")
+        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
     });
     assert!(
         booted,
-        "busbar did not reach 'listening' within 30s; log:\n{}",
+        "busbar did not reach 'listening' (data and admin) within 30s; log:\n{}",
         read_to_string(&log_path)
     );
 

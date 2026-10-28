@@ -1011,7 +1011,7 @@ pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) 
     }
     // Every installed plane's DECLARED billable classes and fee units (`PlaneDeclaration`): the
     // classes a plane may report are the ones it declares, linked or dropped in.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         for class in decl.billable_classes {
             let _ = registration.key(class.class);
         }
