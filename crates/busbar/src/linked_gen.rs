@@ -405,12 +405,12 @@ pub(crate) fn linked_source(
     let planes = on_axis("plane");
     out.push_str(&format!(
         "/// The plane axis: each entry's contract declaration joined kernel-side to its hooks.\n\
-         static LINKED_PLANES: [busbar_kernel::plane::registry::PlaneDecl; {}] = [\n",
+         static LINKED_PLANES: [busbar_kernel::plane_driver::registry::PlaneDecl; {}] = [\n",
         planes.len()
     ));
     for e in &planes {
         out.push_str(&format!(
-            "    busbar_kernel::plane::registry::PlaneDecl::assemble({e}::PLANE_DECLARATION, \
+            "    busbar_kernel::plane_driver::registry::PlaneDecl::assemble({e}::PLANE_DECLARATION, \
              {e}::PLANE_HOOKS),\n"
         ));
     }
