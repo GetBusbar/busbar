@@ -317,7 +317,7 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' did not answer its resolve"),
             ));
         };
-        match (done.outcome, done.frame.as_deref()) {
+        match (done.outcome, done.frame.as_ref()) {
             (Outcome::Ready, Some(f)) => {
                 let b = f.out.secret;
                 // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's

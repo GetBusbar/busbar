@@ -3,8 +3,8 @@
 //!
 //! ## What this module is
 //!
-//! The closed table of 66 operations the 1.5.5 admin API tag defines (mechanically extracted into
-//! `generated::verb_table_1_5_5`, 49 paths, 34 read-only and 32 full) plus the 9 additional 1.6.0
+//! The closed table of 66 operations the 1.5.5 admin API tag defines (49 paths, 34 read-only and 32 full,
+//! rows of [`crate::verb::TABLE`]) plus the 9 additional 1.6.0
 //! money-governance verbs the design names by name (`verify`, `plane_facts`, `plane_record_write`,
 //! `chain_break`, `store_restore`, `reseal_epoch_floor`, `commit_upgrade`, `adjust`,
 //! `amend_rate_history`), the 5 1.6.0
@@ -68,7 +68,6 @@
 #![deny(missing_docs)]
 
 pub mod claims;
-pub mod generated;
 pub mod refusal;
 #[cfg(test)]
 mod tests;
