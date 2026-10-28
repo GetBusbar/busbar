@@ -425,6 +425,14 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
     ) -> StoreCall<'a, bool> {
         ready(self.record(|s, cx| S::plane_token_live(s, cx, kind, token, expires_at, now)))
     }
+
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        ready(self.record(|s, cx| S::list_plane_record_parents(s, cx, kind)))
+    }
+
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        ready(self.record(|s, cx| S::purge_plane_records_before(s, cx, kind, before)))
+    }
 }
 
 /// The 1.5.5 op set's error for a store call: a FAILED op's own text unchanged, every other failure
