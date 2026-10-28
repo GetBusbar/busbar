@@ -197,9 +197,6 @@ pub use kinds::{
     Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, RecordBytes,
     SecretRef, StoreError,
 };
-pub use plane::{
-    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
-};
 // `KernelSeal` is deliberately absent: it is reachable as `plugin::KernelSeal` and nowhere else, so
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
@@ -210,9 +207,8 @@ pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{
-    AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
-    Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AbortBy, AdmitFacts, AuditFacts, FailureReason, FinishClass, LegResult, Origin, Refusal,
+    RefusalReason, ResourceLocator, ScopeFacts, Step, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,

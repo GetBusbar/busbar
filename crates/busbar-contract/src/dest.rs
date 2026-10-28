@@ -29,10 +29,8 @@ pub enum ClientMode {
         ///
         /// The KEY, not the value, because a destination is sealed and held past the frame it was
         /// built in while an identifier lives in the unit's arena. The value is not missing: the
-        /// unit's own draft already carries it, under this key, as
-        /// [`crate::plane::UnitDraft::correlation_out`] — that is the definition of that field, and
-        /// it is a `CorrelationRef<'u>` borrowed from the arena, so it is the identifier itself and
-        /// never a fold of it. The kernel copies it into its own waiting table while the leg is
+        /// unit's own draft already carries it, under this key, as a `CorrelationRef<'u>` borrowed
+        /// from the arena, so it is the identifier itself and never a fold of it. The kernel copies it into its own waiting table while the leg is
         /// being planned, which is inside the frame that built it, and matches an inbound reply's
         /// `correlates` against it by whole value. Nothing sealed ever holds arena bytes, and
         /// nothing on the path compares two identifiers by a digest of them.

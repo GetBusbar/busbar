@@ -9,9 +9,8 @@
 //! - the media-type and user-agent literals a protocol declaration defaults to;
 //! - the event-stream frame-boundary scan every event-stream-reading plane shares (the
 //!   `text/event-stream` wire encoding itself);
-//! - the neutral codec traits a dialect implements — [`StreamTranslator`], [`ArrayStreamFramer`],
-//!   [`DialectCodec`] — the detection-predicate shapes a declaration carries, and the per-request
-//!   [`SigningContext`].
+//! - the neutral codec traits a dialect implements — [`ArrayStreamFramer`], [`DialectCodec`] — the
+//!   detection-predicate shapes a declaration carries, and the per-request [`SigningContext`].
 //!
 //! Relocated, module-path-only and byte-identical in every value, from `busbar-substrate-values`
 //! (`proto` and `proxy`), which re-exports each item under its historical path so every caller
@@ -190,65 +189,6 @@ pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
         spans.push((start, bytes.len()));
     }
     spans
-}
-
-/// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete stream translator (in the
-/// plane that owns it) sits behind this trait so emission ORDER is preserved verbatim — the
-/// streaming forward path holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
-/// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
-/// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR.
-/// A shape: the plane implements it and the kernel drives it, naming only this crate.
-pub trait StreamTranslator: Send {
-    /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
-    /// are now available (empty if only a partial frame is buffered). `host` is the caller's
-    /// [`CodecHost`]: an ingress writer that mints an id or stamps a time reads it there.
-    fn feed(&mut self, host: &dyn CodecHost, chunk: &[u8]) -> Vec<u8>;
-    /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
-    fn finish(&mut self, host: &dyn CodecHost) -> Vec<u8>;
-    /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
-    /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
-    /// for the per-request token fee.
-    fn usage(&self) -> Option<crate::billing::TokenUsage>;
-    /// The NON-TOKEN billing the body reported beside [`Self::usage`] — a rerank's counted search
-    /// units (item 134) — or `None`. Default `None`: a translator that reads tokens only reports none.
-    fn open_billing(&self) -> Option<crate::billing::Billing> {
-        None
-    }
-    /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
-    fn terminal_error(&self) -> Option<&str>;
-    /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).
-    fn aborted(&self) -> bool;
-    /// Record whether the ORIGINAL client request opted into streaming usage.
-    fn set_client_include_usage(&mut self, include: bool);
-    /// Capture the ORIGINAL ingress request body so an ingress writer whose spec requires certain
-    /// response members to MIRROR client-set request values (e.g. `temperature`, `top_p`,
-    /// `instructions`, `metadata`, `tool_choice`, `parallel_tool_calls`, `tools`) can answer
-    /// with the caller's actual values instead of the spec's bare defaults. Called once, before the
-    /// first `feed`, on a CROSS-PROTOCOL stream — same-protocol never reaches this (the ingress
-    /// writer never runs; the original bytes are relayed verbatim). Default no-op: every ingress
-    /// writer without such a requirement ignores it.
-    fn set_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
-    /// Frame a TERMINAL mid-stream error through the ingress writer THIS translator has been driving
-    /// all stream, rather than through a freshly-resolved dialect writer. A writer that carries
-    /// per-stream identity (a writer that latches the response id, `created_at`, `model` and a
-    /// monotonic `sequence_number`) produces a frame that CORRELATES with the frames the client
-    /// already received; a fresh writer restarts every one of those from its default, so the failure
-    /// event arrives with `sequence_number: 0` and an unrelated response id — a stream a strict SDK
-    /// cannot reconcile with the `response.created` it opened on. `None` when this translator has no
-    /// in-band error frame to offer, in which case the caller falls back to the dialect seam.
-    fn terminal_error_frame(
-        &mut self,
-        _host: &dyn CodecHost,
-        _err: &IrError,
-    ) -> Option<(String, serde_json::Value)> {
-        None
-    }
-    /// The far-end wire paths this stream dropped on its way to the caller (a TRANSLATE attempt's
-    /// one drop path), each already warned once; the host records one audit row per path at the
-    /// stream's end. Default: none.
-    fn dropped(&self) -> Vec<String> {
-        Vec::new()
-    }
 }
 
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
