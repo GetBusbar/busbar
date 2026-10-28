@@ -63,6 +63,8 @@ impl FakeGovernance {
 }
 
 impl Governance for FakeGovernance {
+    type Answer = Vec<u8>;
+
     fn execute_legacy(
         &self,
         _verb: KernelVerb,
@@ -413,6 +415,8 @@ type SeamLog = std::sync::Arc<Mutex<Vec<(KernelVerb, &'static str)>>>;
 struct RoutingGovernance(SeamLog);
 
 impl Governance for RoutingGovernance {
+    type Answer = Vec<u8>;
+
     fn execute_legacy(
         &self,
         verb: KernelVerb,
@@ -535,6 +539,8 @@ fn a_ledger_view_never_spends_a_mutation_slot() {
 fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     struct NoLedger;
     impl Governance for NoLedger {
+        type Answer = Vec<u8>;
+
         fn execute_legacy(
             &self,
             _verb: KernelVerb,
@@ -654,6 +660,8 @@ fn an_audit_chain_read_never_spends_a_mutation_slot() {
 fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
     struct NoChain;
     impl Governance for NoChain {
+        type Answer = Vec<u8>;
+
         fn execute_legacy(
             &self,
             _verb: KernelVerb,

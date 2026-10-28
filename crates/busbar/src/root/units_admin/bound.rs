@@ -535,8 +535,8 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
 }
 
 /// THE REPLAY CACHE the two Q71(2) writes share (contract D-3): per `(actor, "<verb>:<key>")`, the
-/// SHA-256 of the body the first call carried and the packed answer it produced.
-pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], Vec<u8>)>;
+/// SHA-256 of the body the first call carried and the answer it produced.
+pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], AdminAnswer)>;
 
 /// The configured store a key is claimed in, read when the claim is taken.
 pub type ReplayStore =
@@ -548,11 +548,64 @@ pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplaySto
     Arc::new(move || app.load().governance.as_ref().map(|gov| gov.store()))
 }
 
-/// A first answer as the store keeps it: the body's digest, then the packed answer.
-fn stored_answer(digest: &[u8; 32], packed: &[u8]) -> Vec<u8> {
-    let mut bytes = digest.to_vec();
-    bytes.extend_from_slice(packed);
-    bytes
+/// A first answer as the store keeps it: the body's digest, then the whole answer — status, every
+/// header in emission order, body — length-prefixed, so a header value or a body may hold any byte
+/// and come back identical. The store boundary is the only place an answer is bytes.
+fn stored_answer(digest: &[u8; 32], answer: &AdminAnswer) -> Vec<u8> {
+    fn push(out: &mut Vec<u8>, bytes: &[u8]) {
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&bytes[..len as usize]);
+    }
+    let mut out = Vec::with_capacity(32 + 6 + answer.body.len() + 64);
+    out.extend_from_slice(digest);
+    out.extend_from_slice(&answer.status.to_be_bytes());
+    let count = u32::try_from(answer.headers.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&count.to_be_bytes());
+    for (name, value) in answer.headers.iter().take(count as usize) {
+        push(&mut out, name.as_bytes());
+        push(&mut out, value.as_bytes());
+    }
+    push(&mut out, &answer.body);
+    out
+}
+
+/// What [`stored_answer`] wrote, read back: the first body's digest and the first answer. `None`
+/// on anything that is not exactly that framing. The header count is a claim the bytes make about
+/// themselves, so nothing is reserved on it: each header is read off the bytes actually held.
+fn kept_answer(kept: &[u8]) -> Option<([u8; 32], AdminAnswer)> {
+    fn take<'b>(bytes: &'b [u8], cursor: &mut usize, n: usize) -> Option<&'b [u8]> {
+        let end = cursor.checked_add(n)?;
+        let slice = bytes.get(*cursor..end)?;
+        *cursor = end;
+        Some(slice)
+    }
+    fn pull<'b>(bytes: &'b [u8], cursor: &mut usize) -> Option<&'b [u8]> {
+        let len = u32::from_be_bytes(take(bytes, cursor, 4)?.try_into().ok()?);
+        take(bytes, cursor, usize::try_from(len).ok()?)
+    }
+    let mut cursor = 0usize;
+    let digest: [u8; 32] = take(kept, &mut cursor, 32)?.try_into().ok()?;
+    let status = u16::from_be_bytes(take(kept, &mut cursor, 2)?.try_into().ok()?);
+    let count = u32::from_be_bytes(take(kept, &mut cursor, 4)?.try_into().ok()?);
+    let mut headers = Vec::new();
+    for _ in 0..count {
+        let name = String::from_utf8(pull(kept, &mut cursor)?.to_vec()).ok()?;
+        let value = String::from_utf8(pull(kept, &mut cursor)?.to_vec()).ok()?;
+        headers.push((name, value));
+    }
+    let body = pull(kept, &mut cursor)?.to_vec();
+    if cursor != kept.len() {
+        return None;
+    }
+    Some((
+        digest,
+        AdminAnswer {
+            status,
+            headers,
+            body,
+        },
+    ))
 }
 
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
@@ -574,7 +627,7 @@ pub(crate) fn replayable(
     unit: &super::AdminRequest,
     body: &[u8],
     effect: impl FnOnce() -> Result<AdminAnswer, GovernanceError>,
-) -> Result<Vec<u8>, GovernanceError> {
+) -> Result<AdminAnswer, GovernanceError> {
     use busbar_core_admin::idempotency::Probe;
 
     let Some(header) = unit
@@ -584,7 +637,7 @@ pub(crate) fn replayable(
         .map(|(_, value)| value.as_str())
         .filter(|value| !value.is_empty())
     else {
-        return effect().map(|a| a.pack());
+        return effect();
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
     let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
@@ -597,22 +650,20 @@ pub(crate) fn replayable(
             409,
             "conflict",
             "this Idempotency-Key was already used with a different request body",
-        )
-        .pack())
+        ))
     };
     let in_flight = || {
         Ok(refused(
             409,
             "conflict",
             "a request with this Idempotency-Key is already in flight",
-        )
-        .pack())
+        ))
     };
     match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
         Probe::Replay((first, answer)) if first == digest => Ok(answer),
         Probe::Replay(_) => other_body(),
         Probe::InFlight => in_flight(),
-        Probe::NoKey => effect().map(|a| a.pack()),
+        Probe::NoKey => effect(),
         Probe::Reserved(reservation) => {
             // Claimed in the store before the effect runs, so a retry after a restart or on another
             // node replays the first answer or is refused: it never runs the effect again.
@@ -620,21 +671,27 @@ pub(crate) fn replayable(
             let claim = match &store {
                 Some(store) => match durable::claim(&**store, reservation.key(), unit.at) {
                     Ok(claim) => Some(claim),
-                    Err(Refused::Answer(kept)) if kept.len() >= 32 => {
-                        return if kept[..32] == digest {
-                            Ok(kept[32..].to_vec())
-                        } else {
-                            other_body()
+                    Err(Refused::Answer(kept)) => {
+                        // The first answer, whole and byte for byte — status, headers and body: a
+                        // re-render would mint a second one-time secret over one identity.
+                        return match kept_answer(&kept) {
+                            Some((first, answer)) if first == digest => Ok(answer),
+                            Some(_) => other_body(),
+                            None => {
+                                tracing::error!("the store keeps an Idempotency-Key's first answer in a form this node cannot read");
+                                Ok(journal_unavailable(
+                                    "the first answer to this Idempotency-Key cannot be read back; nothing was done",
+                                ))
+                            }
                         };
                     }
                     Err(Refused::Unavailable(why)) => {
                         tracing::error!(reason = %why, "an Idempotency-Key could not be claimed in the store");
                         return Ok(journal_unavailable(
                             "the store could not record this Idempotency-Key; nothing was done",
-                        )
-                        .pack());
+                        ));
                     }
-                    Err(Refused::InFlight | Refused::Applied(_) | Refused::Answer(_)) => {
+                    Err(Refused::InFlight | Refused::Applied(_)) => {
                         return in_flight();
                     }
                 },
@@ -642,14 +699,13 @@ pub(crate) fn replayable(
             };
             let (answer, settled) = match effect() {
                 Ok(answer) if (200..300).contains(&answer.status) => {
-                    let packed = answer.pack();
-                    let settled = Settled::Answer(stored_answer(&digest, &packed));
-                    reservation.commit((digest, packed.clone()), unit.at);
-                    (Ok(packed), settled)
+                    let settled = Settled::Answer(stored_answer(&digest, &answer));
+                    reservation.commit((digest, answer.clone()), unit.at);
+                    (Ok(answer), settled)
                 }
                 other => {
                     reservation.clear();
-                    (other.map(|a| a.pack()), Settled::Released)
+                    (other, Settled::Released)
                 }
             };
             if let (Some(store), Some(claim)) = (&store, &claim) {
