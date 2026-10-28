@@ -43,20 +43,15 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn, LIFECYCLE_SLOTS,
 };
-use busbar_contract::abi::sdk::store::{Cap, Cell, Dimension, Grant, ReserveRefused};
 use busbar_contract::abi::store::{
-    self as st, slot, AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn, BlobIn,
-    CellGrant, CountOut, GetPlaneRecordIn, HeadOut, HeadsOut, HostBlobs, HostBuf, HostBytesOut,
-    HostListOut, HostRecords, HostSessions, IdIn, IdReasonIn, KeyWithCredentialIn, KindBeforeIn,
-    KindIdIn, LeasedBlobOut, LeasedListOut, LeasedStrListOut, ListPlaneRecordsIn, OpBlobIn,
-    OpBlobsIn, OpId, PlaneRecordRow, PutUsageIn, RecordEntry, RecordGetIn, RecordPutIn,
-    RecordScanIn, ReleaseItem, ReserveIn, ReserveOut, SessionPutIn, SessionRow, SessionsForIn,
-    SliceReleaseIn, SliceReleaseOut, TokenIn, U64In, UnitCell, UpsertPlaneRecordIn, UsageCell,
-    VerdictOut, WindowCap, WindowCapsIn, WindowIn, DIAG_CAP_CONFLICT, DIAG_OPID_CONFLICT, FOUND,
-    OPS, RESERVE_EXHAUSTED, RESERVE_NO_CAP, RESERVE_STALE_EPOCH, RESERVE_UNAVAILABLE, SELECT_ALL,
-    SELECT_PARENT, VERDICT_YES,
+    self as st, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
+    HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords, IdIn, IdReasonIn,
+    KeyWithCredentialIn, KindBeforeIn, KindIdIn, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
+    ListPlaneRecordsIn, OpBlobsIn, OpId, PlaneRecordRow, PutUsageIn, RecordEntry, RecordGetIn,
+    RecordPutIn, RecordScanIn, TokenIn, U64In, UpsertPlaneRecordIn, UsageCell, VerdictOut,
+    WindowIn, DIAG_OPID_CONFLICT, FOUND, OPS, SELECT_ALL, SELECT_PARENT, VERDICT_YES,
 };
-use busbar_contract::kinds::{Head, RecordBytes};
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
@@ -601,13 +596,6 @@ impl<O> Ran<O> {
         match self.outcome {
             Outcome::Refused if self.error.is_none() => StoreFailure::Overloaded,
             Outcome::Refused if text.starts_with(DIAG_OPID_CONFLICT) => StoreFailure::Conflict,
-            Outcome::Refused if text.contains(DIAG_CAP_CONFLICT) => {
-                let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
-                digits.parse().map_or(
-                    StoreFailure::Refused(text.clone()),
-                    StoreFailure::CapConflict,
-                )
-            }
             Outcome::Refused => StoreFailure::Refused(text),
             Outcome::Failed => StoreFailure::Failed(text),
             o => StoreFailure::Fault(format!("{o:?} {text}")),
@@ -894,13 +882,6 @@ fn place_blobs(i: &mut ListPlaneRecordsIn, p: *mut Blob, n: usize, bytes: HostBu
         bytes,
     };
 }
-fn place_sessions(i: &mut SessionsForIn, p: *mut SessionRow, n: usize, bytes: HostBuf) {
-    i.out = HostSessions {
-        items: p,
-        items_cap: n,
-        bytes,
-    };
-}
 fn place_records(i: &mut RecordScanIn, p: *mut RecordEntry, n: usize, bytes: HostBuf) {
     i.out = HostRecords {
         items: p,
@@ -909,115 +890,9 @@ fn place_records(i: &mut RecordScanIn, p: *mut RecordEntry, n: usize, bytes: Hos
     };
 }
 
-/// `reserve`: the grants array sized to the cells.
-struct ReserveReq {
-    input: ReserveIn,
-    /// The cells' bucket, pool and class words.
-    _owned: Owned,
-    cells: Vec<UnitCell>,
-    grants: Vec<CellGrant>,
-}
 // SAFETY: as `Fixed`.
-unsafe impl Send for ReserveReq {}
 
-impl Req for ReserveReq {
-    type I = ReserveIn;
-    type O = ReserveOut;
-    fn slot(&self) -> u32 {
-        slot::RESERVE
-    }
-    fn input(&mut self) -> ReserveIn {
-        let mut i = self.input;
-        i.cells = self.cells.as_ptr();
-        i.cells_len = self.cells.len();
-        i.grants = self.grants.as_mut_ptr();
-        i.grants_cap = self.grants.len();
-        i
-    }
-    fn out(&self) -> ReserveOut {
-        blank()
-    }
-    fn grow(&mut self, out: &ReserveOut) {
-        self.grants = vec![zero_grant(); out.needed_grants as usize];
-    }
-}
-
-fn zero_grant() -> CellGrant {
-    CellGrant {
-        slice_id: 0,
-        granted: 0,
-        valid_until_ms: 0,
-    }
-}
-
-fn unit_cell(o: &mut Owned, c: &Cell<'_>) -> UnitCell {
-    let (dimension, class_key) = match c.key.dimension {
-        Dimension::NanoUnits => (st::DIM_NANO_UNITS, None),
-        Dimension::Requests => (st::DIM_REQUESTS, None),
-        Dimension::Concurrency => (st::DIM_CONCURRENCY, None),
-        Dimension::Class(k) => (st::DIM_CLASS, Some(k)),
-    };
-    UnitCell {
-        bucket: o.text(c.key.bucket),
-        pool: o.opt_text(c.key.pool),
-        dimension,
-        _r: 0,
-        class_key: o.opt_text(class_key),
-        amount: c.amount,
-        window_start: c.key.window_start,
-    }
-}
-
-fn window_cap(o: &mut Owned, c: &Cap<'_>) -> WindowCap {
-    let u = unit_cell(
-        o,
-        &Cell {
-            key: c.key,
-            amount: 0,
-        },
-    );
-    WindowCap {
-        bucket: u.bucket,
-        pool: u.pool,
-        dimension: u.dimension,
-        _r: 0,
-        class_key: u.class_key,
-        window_start: c.key.window_start,
-        cap: c.cap,
-        config_gen: c.config_gen,
-    }
-}
-
-/// `slice_release`: the released array sized to the items.
-struct ReleaseReq {
-    input: SliceReleaseIn,
-    items: Vec<ReleaseItem>,
-    released: Vec<u64>,
-}
 // SAFETY: as `Fixed`.
-unsafe impl Send for ReleaseReq {}
-
-impl Req for ReleaseReq {
-    type I = SliceReleaseIn;
-    type O = SliceReleaseOut;
-    fn slot(&self) -> u32 {
-        slot::SLICE_RELEASE
-    }
-    fn input(&mut self) -> SliceReleaseIn {
-        let mut i = self.input;
-        i.items = self.items.as_ptr();
-        i.items_len = self.items.len();
-        i.released = self.released.as_mut_ptr();
-        i.released_cap = self.released.len();
-        i
-    }
-    fn out(&self) -> SliceReleaseOut {
-        blank()
-    }
-    fn grow(&mut self, out: &SliceReleaseOut) {
-        self.released = vec![0; out.needed_released as usize];
-    }
-}
 
 fn plane_row(o: &mut Owned, r: PlaneRecordRef<'_>) -> PlaneRecordRow {
     PlaneRecordRow {
@@ -1054,71 +929,6 @@ macro_rules! run {
 /// The typed ops over a runner: the bridge's `now` (submitted on a ticket and waited for) and
 /// [`StoreCalls`]' `submit` (submitted on a ticket and awaited).
 impl LoadedStore {
-    fn reserve_req(op: OpId, epoch: u64, cells: &[Cell<'_>]) -> ReserveReq {
-        let mut owned = Owned::default();
-        let cells: Vec<UnitCell> = cells.iter().map(|c| unit_cell(&mut owned, c)).collect();
-        let n = cells.len();
-        ReserveReq {
-            input: in_of(|head| ReserveIn {
-                head,
-                op_id: op,
-                epoch,
-                cells: std::ptr::null(),
-                cells_len: 0,
-                grants: std::ptr::null_mut(),
-                grants_cap: 0,
-            }),
-            _owned: owned,
-            cells,
-            grants: vec![zero_grant(); n],
-        }
-    }
-
-    fn reserve_read(r: &ReserveReq, ran: &Ran<ReserveOut>) -> Result<Vec<Grant>, StoreFailure> {
-        match ran.outcome {
-            Outcome::Ready => Ok(r.grants[..ran.out.grants_len]
-                .iter()
-                .map(|g| Grant {
-                    slice_id: g.slice_id,
-                    granted: g.granted,
-                    valid_until_ms: g.valid_until_ms,
-                })
-                .collect()),
-            Outcome::Failed if ran.out.reason != 0 => {
-                let cell = ran.out.failed_cell;
-                Err(StoreFailure::Reserve(match ran.out.reason {
-                    RESERVE_EXHAUSTED => ReserveRefused::Exhausted { cell },
-                    RESERVE_STALE_EPOCH => ReserveRefused::StaleEpoch,
-                    RESERVE_UNAVAILABLE => ReserveRefused::Unavailable,
-                    RESERVE_NO_CAP => ReserveRefused::NoCap { cell },
-                    _ => ReserveRefused::Unavailable,
-                }))
-            }
-            _ => Err(ran.failure()),
-        }
-    }
-
-    fn release_req(op: OpId, epoch: u64, items: &[(u64, u64)]) -> ReleaseReq {
-        let items: Vec<ReleaseItem> = items
-            .iter()
-            .map(|&(slice_id, unspent)| ReleaseItem { slice_id, unspent })
-            .collect();
-        let n = items.len();
-        ReleaseReq {
-            input: in_of(|head| SliceReleaseIn {
-                head,
-                op_id: op,
-                epoch,
-                items: std::ptr::null(),
-                items_len: 0,
-                released: std::ptr::null_mut(),
-                released_cap: 0,
-            }),
-            items,
-            released: vec![0; n],
-        }
-    }
-
     fn get_plane_req(kind: &str, id: &str) -> BytesReq<GetPlaneRecordIn> {
         let (input, owned) = owned_in(|o, head| GetPlaneRecordIn {
             head,
@@ -1183,25 +993,6 @@ impl LoadedStore {
         )
     }
 
-    fn sessions_req(principal: &str) -> ListReq<SessionsForIn, SessionRow> {
-        ListReq::new(
-            slot::SESSIONS_FOR,
-            owned_in(|o, head| SessionsForIn {
-                head,
-                principal: o.text(principal),
-                out: HostSessions {
-                    items: std::ptr::null_mut(),
-                    items_cap: 0,
-                    bytes: HostBuf {
-                        ptr: std::ptr::null_mut(),
-                        cap: 0,
-                    },
-                },
-            }),
-            place_sessions,
-        )
-    }
-
     fn scan_req(schema: &str, prefix: &[u8], limit: u32) -> ListReq<RecordScanIn, RecordEntry> {
         let mut r = ListReq::new(
             slot::RECORD_SCAN,
@@ -1259,31 +1050,6 @@ fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) ->
 }
 
 impl StoreCalls for LoadedStore {
-    fn reserve<'a>(
-        &'a self,
-        op: OpId,
-        epoch: u64,
-        cells: &'a [Cell<'a>],
-    ) -> StoreCall<'a, Vec<Grant>> {
-        boxed(async move {
-            let (ran, r) = run!(self, submit, Self::reserve_req(op, epoch, cells));
-            Self::reserve_read(r.get(), &ran)
-        })
-    }
-
-    fn slice_release<'a>(
-        &'a self,
-        op: OpId,
-        epoch: u64,
-        items: &'a [(u64, u64)],
-    ) -> StoreCall<'a, Vec<u64>> {
-        boxed(async move {
-            let (ran, r) = run!(self, submit, Self::release_req(op, epoch, items));
-            ran.ok()?;
-            Ok(r.get().released[..ran.out.released_len].to_vec())
-        })
-    }
-
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,
@@ -1334,147 +1100,6 @@ impl StoreCalls for LoadedStore {
                 }),
             );
             run!(self, submit, r).0.ok()
-        })
-    }
-
-    fn append_audit_batch<'a>(&'a self, op: OpId, entries: &'a [AuditRecord]) -> StoreCall<'a, ()> {
-        boxed(async move {
-            let r = fixed::<_, OutHead>(
-                slot::APPEND_AUDIT_BATCH,
-                owned_in(|o, head| {
-                    let blobs: Vec<Blob> = entries.iter().map(|e| o.json(to_json(e))).collect();
-                    let (records, records_len) = o.rows(blobs);
-                    OpBlobsIn {
-                        head,
-                        op_id: op,
-                        records,
-                        records_len,
-                    }
-                }),
-            );
-            run!(self, submit, r).0.ok()
-        })
-    }
-
-    fn window_caps<'a>(&'a self, op: OpId, caps: &'a [Cap<'a>]) -> StoreCall<'a, ()> {
-        boxed(async move {
-            let r = fixed::<_, OutHead>(
-                slot::WINDOW_CAPS,
-                owned_in(|o, head| {
-                    let rows: Vec<WindowCap> = caps.iter().map(|c| window_cap(o, c)).collect();
-                    let (caps, caps_len) = o.rows(rows);
-                    WindowCapsIn {
-                        head,
-                        op_id: op,
-                        caps,
-                        caps_len,
-                    }
-                }),
-            );
-            run!(self, submit, r).0.ok()
-        })
-    }
-
-    fn append_batch<'a>(
-        &'a self,
-        op: OpId,
-        stream: &'a str,
-        records: &'a [RecordBytes],
-    ) -> StoreCall<'a, Head> {
-        boxed(async move {
-            let r = fixed::<_, HeadOut>(
-                slot::APPEND_BATCH,
-                owned_in(|o, head| {
-                    let blobs: Vec<Blob> = records.iter().map(|r| o.octets(r.as_slice())).collect();
-                    let stream = o.text(stream);
-                    let (records, records_len) = o.rows(blobs);
-                    AppendBatchIn {
-                        head,
-                        op_id: op,
-                        stream,
-                        records,
-                        records_len,
-                    }
-                }),
-            );
-            let (ran, _) = run!(self, submit, r);
-            ran.ok()?;
-            Ok(Head {
-                seq: ran.out.seq,
-                epoch: ran.out.epoch,
-            })
-        })
-    }
-
-    fn heads(&self) -> StoreCall<'_, Vec<(String, Head)>> {
-        boxed(async move {
-            let r = fixed::<_, HeadsOut>(slot::HEADS, bare(in_head()));
-            let (ran, _) = run!(self, submit, r);
-            let out = ran.ok().map(|()| {
-                items(ran.out.items, ran.out.items_len)
-                    .iter()
-                    .map(|h| {
-                        (
-                            String::from_utf8_lossy(&copy(h.stream.ptr, h.stream.len)).into_owned(),
-                            Head {
-                                seq: h.seq,
-                                epoch: h.epoch,
-                            },
-                        )
-                    })
-                    .collect()
-            });
-            self.release(ran.lease);
-            out
-        })
-    }
-
-    fn session_put<'a>(
-        &'a self,
-        session: u64,
-        node: &'a str,
-        principal: &'a str,
-    ) -> StoreCall<'a, ()> {
-        boxed(async move {
-            let r = fixed::<_, OutHead>(
-                slot::SESSION_PUT,
-                owned_in(|o, head| SessionPutIn {
-                    head,
-                    session,
-                    node: o.text(node),
-                    principal: o.text(principal),
-                }),
-            );
-            run!(self, submit, r).0.ok()
-        })
-    }
-
-    fn session_remove(&self, session: u64) -> StoreCall<'_, ()> {
-        boxed(async move {
-            let r = fixed::<_, OutHead>(
-                slot::SESSION_REMOVE,
-                bare(in_of(|head| U64In {
-                    head,
-                    value: session,
-                })),
-            );
-            run!(self, submit, r).0.ok()
-        })
-    }
-
-    fn sessions_for<'a>(&'a self, principal: &'a str) -> StoreCall<'a, Vec<(u64, String)>> {
-        boxed(async move {
-            let (ran, r) = run!(self, submit, Self::sessions_req(principal));
-            Ok(r.get()
-                .rows(&ran)?
-                .iter()
-                .map(|s| {
-                    (
-                        s.session,
-                        String::from_utf8_lossy(&copy(s.node.ptr, s.node.len)).into_owned(),
-                    )
-                })
-                .collect())
         })
     }
 
@@ -1708,10 +1333,6 @@ impl RecordStore for LoadedStore {
         self.plain(slot::DELETE_KEY, Self::id(id))
     }
 
-    fn scrub_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.plain(slot::SCRUB_KEY, Self::id(id))
-    }
-
     fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
         self.many(slot::LIST_KEYS_SINCE, Self::value(since))
     }
@@ -1751,41 +1372,45 @@ impl RecordStore for LoadedStore {
         window_start: u64,
         delta: &UsageDelta,
     ) -> RecordStoreResult<()> {
+        // One cell through the batch slot: one op_id, atomic.
         self.plain(
-            slot::ADD_USAGE,
-            owned_in(|o, head| AddUsageIn {
-                head,
-                op_id: self.mint(),
-                cell: UsageCell {
+            slot::ADD_USAGE_BATCH,
+            owned_in(|o, head| {
+                let cell = UsageCell {
                     bucket: o.text(bucket_id),
                     window_start,
                     delta: o.json(to_json(delta)),
-                },
+                };
+                let (cells, cells_len) = o.rows(vec![cell]);
+                AddUsageBatchIn {
+                    head,
+                    op_id: self.mint(),
+                    cells,
+                    cells_len,
+                }
             }),
         )
     }
 
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+        // One row through the batch slot: one op_id, atomic.
         self.plain(
-            slot::ADD_METERING,
-            owned_in(|o, head| OpBlobIn {
-                head,
-                op_id: self.mint(),
-                record: o.json(to_json(delta)),
+            slot::ADD_METERING_BATCH,
+            owned_in(|o, head| {
+                let record = o.json(to_json(delta));
+                let (records, records_len) = o.rows(vec![record]);
+                OpBlobsIn {
+                    head,
+                    op_id: self.mint(),
+                    records,
+                    records_len,
+                }
             }),
         )
     }
 
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.many(slot::LIST_METERING, Self::value(bucket))
-    }
-
-    fn purge_windows_before(&self, before: u64) -> RecordStoreResult<u64> {
-        self.count(slot::PURGE_WINDOWS_BEFORE, Self::value(before))
-    }
-
-    fn purge_metering_before(&self, bucket: &str) -> RecordStoreResult<u64> {
-        self.count(slot::PURGE_METERING_BEFORE, Self::id(bucket))
     }
 
     fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
@@ -1817,21 +1442,6 @@ impl RecordStore for LoadedStore {
         self.many(slot::LIST_CREDENTIALS, Self::id(key_id))
     }
 
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> RecordStoreResult<Option<CredentialSecret>> {
-        self.one(
-            slot::LOOKUP_CREDENTIAL_SECRET,
-            owned_in(|o, head| KindIdIn {
-                head,
-                kind: o.text(kind),
-                id: o.text(public_id),
-            }),
-        )
-    }
-
     fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
         self.plain(
             slot::REVOKE_CREDENTIAL,
@@ -1847,15 +1457,11 @@ impl RecordStore for LoadedStore {
         self.many(slot::LIST_CREDENTIALS_SINCE, Self::value(since))
     }
 
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.plain(
-            slot::APPEND_AUDIT,
-            owned_in(|o, head| OpBlobIn {
-                head,
-                op_id: self.mint(),
-                record: o.json(to_json(entry)),
-            }),
-        )
+    /// No store slot carries a 1.5.5 audit append: refused loudly, never dropped.
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "append_audit is not a store op: 1.6.0 writes its audit as plane records".to_string(),
+        ))
     }
 
     fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
@@ -2050,10 +1656,6 @@ mod shortcut_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
-
-#[cfg(test)]
-#[path = "tests/store_v3_miscount_tests.rs"]
-mod miscount_tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_opid_tests.rs"]

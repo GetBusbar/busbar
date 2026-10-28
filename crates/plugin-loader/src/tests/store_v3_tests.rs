@@ -7,11 +7,10 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension, ReserveRefused};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
-    AuditRecord, CredentialMeta, CredentialSecret, ModelTokensDelta, PlaneDisposition, PlaneRecord,
+    CredentialMeta, CredentialSecret, ModelTokensDelta, PlaneDisposition, PlaneRecord,
     PlaneSelector, RecordStore, SecretForm, UsageDelta, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
@@ -93,15 +92,6 @@ fn record(kind: &str, id: &str, parent: Option<&str>, seq: u64, body: Vec<u8>) -
         ts: 1,
         disposition: PlaneDisposition::Active,
         body,
-    }
-}
-
-fn requests_key(window_start: u64) -> CellKey<'static> {
-    CellKey {
-        bucket: "b",
-        pool: None,
-        dimension: Dimension::Requests,
-        window_start,
     }
 }
 
@@ -187,40 +177,10 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
         secret: "s3cret".into(),
     };
     s.put_credential(&secret).expect("put");
-    let got = s
-        .lookup_credential_secret("generic", "pub")
-        .expect("lookup")
-        .expect("found");
-    assert_eq!(got.meta.id, "c1");
-    assert_eq!(
-        s.lookup_credential_secret("generic", "pub-absent")
-            .expect("lookup"),
-        None
-    );
+    let since = s.list_credentials_since(0).expect("since");
+    assert_eq!(since.len(), 1);
+    assert_eq!(since[0].meta.id, "c1");
     assert_eq!(s.list_credentials("k1").expect("list").len(), 1);
-}
-
-#[test]
-fn audit_appends_and_a_fork_fails() {
-    let s = open();
-    let a = AuditRecord {
-        seq: 1,
-        ts: 1,
-        action: "a".into(),
-        resource: "r".into(),
-        outcome: "ok".into(),
-        principal: "p".into(),
-        prev_hash: String::new(),
-        hash: "h".into(),
-    };
-    s.append_audit(&a).expect("append");
-    s.append_audit(&a).expect("a byte-identical retry is Ok");
-    let fork = AuditRecord {
-        action: "b".into(),
-        ..a.clone()
-    };
-    assert!(s.append_audit(&fork).is_err());
-    assert_eq!(s.list_audit().expect("list"), vec![a]);
 }
 
 #[test]
@@ -340,69 +300,7 @@ fn a_usage_batch_replays_once_and_a_reused_op_id_is_a_conflict() {
 }
 
 #[test]
-fn reserve_needs_a_cap_draws_whole_and_releases_clamped() {
-    let s = open();
-    run(async {
-        let cells = [Cell {
-            key: requests_key(1_000),
-            amount: 3,
-        }];
-        assert_eq!(
-            s.reserve(op(1), 0, &cells).await,
-            Err(StoreFailure::Reserve(ReserveRefused::NoCap { cell: 0 }))
-        );
-        s.window_caps(
-            op(2),
-            &[Cap {
-                key: requests_key(1_000),
-                cap: 4,
-                config_gen: 1,
-            }],
-        )
-        .await
-        .expect("caps");
-        let g = s.reserve(op(3), 0, &cells).await.expect("grant");
-        assert_eq!(g.len(), 1);
-        assert_eq!(g[0].granted, 3);
-        assert_eq!(
-            s.reserve(op(3), 0, &cells).await.expect("replay"),
-            g,
-            "a replay answers the original grants"
-        );
-        assert_eq!(
-            s.reserve(op(4), 0, &cells).await,
-            Err(StoreFailure::Reserve(ReserveRefused::Exhausted { cell: 0 }))
-        );
-        assert_eq!(
-            s.slice_release(op(5), 0, &[(g[0].slice_id, u64::MAX)])
-                .await
-                .expect("release"),
-            vec![3],
-            "clamped to the grant"
-        );
-        s.reserve(op(6), 0, &cells).await.expect("headroom back");
-    });
-}
-
-#[test]
-fn a_cap_conflict_names_its_index() {
-    let s = open();
-    run(async {
-        let cap = |c, g| Cap {
-            key: requests_key(1_000),
-            cap: c,
-            config_gen: g,
-        };
-        s.window_caps(op(1), &[cap(4, 1)]).await.expect("caps");
-        assert_eq!(
-            s.window_caps(op(2), &[cap(9, 2), cap(5, 2)]).await,
-            Err(StoreFailure::CapConflict(1))
-        );
-    });
-}
-
-#[test]
-fn metering_and_audit_batches_apply_through_the_typed_surface() {
+fn a_metering_batch_applies_through_the_typed_surface() {
     let s = open();
     let m = busbar_contract::records::MeteringDelta {
         key_id: "k".into(),
@@ -420,50 +318,12 @@ fn metering_and_audit_batches_apply_through_the_typed_surface() {
         priced_from_ms: 0,
         usage_units: Default::default(),
     };
-    let a = AuditRecord {
-        seq: 1,
-        ts: 1,
-        action: "a".into(),
-        resource: "r".into(),
-        outcome: "ok".into(),
-        principal: "p".into(),
-        prev_hash: String::new(),
-        hash: "h".into(),
-    };
     run(async {
         s.add_metering_batch(op(1), std::slice::from_ref(&m))
             .await
             .expect("metering");
-        s.append_audit_batch(op(2), std::slice::from_ref(&a))
-            .await
-            .expect("audit");
     });
     assert_eq!(s.list_metering(86_400).expect("list").len(), 1);
-    assert_eq!(s.list_audit().expect("list"), vec![a]);
-}
-
-#[test]
-fn the_ledger_ops_and_sessions_cross_the_typed_surface() {
-    let s = open();
-    let r = |b: u8| RecordBytes::new(vec![b]).expect("record");
-    run(async {
-        let h = s
-            .append_batch(op(1), "journal", &[r(1), r(2)])
-            .await
-            .expect("append");
-        assert_eq!(h.seq, 2);
-        let heads = StoreCalls::heads(&s).await.expect("heads");
-        assert_eq!(heads.len(), 1);
-        assert_eq!(heads[0].0, "journal");
-        s.session_put(1, "n1", "alice").await.expect("put");
-        s.session_put(2, "n2", "alice").await.expect("put");
-        assert_eq!(
-            s.sessions_for("alice").await.expect("list"),
-            vec![(1, "n1".to_string()), (2, "n2".to_string())]
-        );
-        s.session_remove(1).await.expect("remove");
-        assert_eq!(s.sessions_for("alice").await.expect("list").len(), 1);
-    });
 }
 
 /// One Statement: the memory store's `ephemeral` is the Statement mark `MARK_EPHEMERAL`, carried
