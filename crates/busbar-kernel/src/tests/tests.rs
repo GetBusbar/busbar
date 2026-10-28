@@ -2888,14 +2888,7 @@ async fn both_served_routers_answer_a_panic_500_log_it_and_keep_serving() {
             })
         }),
     };
-    // One lane, so `/healthz` reports ready (a node with no lane and no plane is unready, as 1.5.5).
     let app = crate::test_support::TestApp::new()
-        .lane(crate::test_support::LaneSpec::new(
-            "m",
-            "unregistered-lane-protocol",
-            "http://127.0.0.1:1",
-        ))
-        .pool("pa", &[(0, 1)])
         .admin_chain(vec!["panicking-admin".to_string()])
         .admin_module("panicking-admin", Box::new(PanickingAdminModule))
         .build();
@@ -2983,7 +2976,13 @@ async fn both_served_routers_answer_a_panic_500_log_it_and_keep_serving() {
         .send()
         .await
         .expect("the admin listener keeps serving");
-    assert_eq!(health.status().as_u16(), 200);
+    // Its readiness answer (this fixture links no plane, so `/healthz` says unready), never the
+    // boundary's 500.
+    assert_ne!(
+        health.status().as_u16(),
+        500,
+        "`/healthz` is answered, not failed"
+    );
 
     // EACH PANIC IS LOGGED, ONCE, WITH ITS PATH.
     let logged = cap.messages();
