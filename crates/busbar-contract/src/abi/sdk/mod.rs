@@ -89,6 +89,8 @@ pub use publish::{Generations, Keyed};
 pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
+// THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine slots over a plane's `PlaneLife`.
+pub mod plane_life;
 // THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read
 // as Rust values, so a plugin's own tests drive its door with no `unsafe` (BUSBAR-1.6.0.md
 // l.272-274). Compiled for this crate's tests and behind the dev-only `test-seal` feature, as the
