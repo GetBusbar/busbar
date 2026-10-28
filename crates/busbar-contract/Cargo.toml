@@ -51,6 +51,11 @@ syn = { workspace = true }
 # Test-only; named only in [dev-dependencies], absent from release builds.
 test-seal = []
 
+# The test kit's half that must live in this crate (`abi::sdk::test_support`: the all-zero value of
+# a reviewed ABI struct and `Default` on it, and the lending pairs). Enabled by busbar-test-kit, a
+# dev-dependency only. It forges nothing (the sealed-credential piece stays behind `test-seal`).
+test-support = []
+
 # Test-only; named only in [dev-dependencies], absent from release builds.
 services-double = []
 

@@ -233,6 +233,10 @@ pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
 /// counter a plugin's gates use: one allocator, so the contract's own alloc gates
 /// (`abi::sdk::tests`) and the plugins' read the same impl. `#[cfg(test)]` only: a `#[global_allocator]`
 /// in a library would be inherited by every binary that links it.
+// This crate's own tests mount test-kit source written against `busbar_contract::` paths.
+#[cfg(test)]
+extern crate self as busbar_contract;
+
 #[cfg(test)]
 #[global_allocator]
 static ALLOC: alloc_counter::Counting = alloc_counter::Counting::new();

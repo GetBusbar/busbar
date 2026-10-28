@@ -12,7 +12,7 @@
 //!
 //! ```
 //! use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-//! use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+//! use busbar_test_kit::test_support::test_in::TestIn;
 //! let settings = String::from(r#"{"timeout_ms": 5}"#);
 //! let input = TestIn::<OpenIn>::new().settings(settings.as_bytes());
 //! # drop(input);
@@ -22,7 +22,7 @@
 //!
 //! ```compile_fail,E0597
 //! use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-//! use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+//! use busbar_test_kit::test_support::test_in::TestIn;
 //! let input;
 //! {
 //!     let settings = String::from("{}");
@@ -35,7 +35,7 @@
 //!
 //! ```
 //! use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-//! use busbar_contract::abi::sdk::test_support::test_in::TestIn;
+//! use busbar_test_kit::test_support::test_in::TestIn;
 //! let input;
 //! let settings = String::from("{}");
 //! {
@@ -51,9 +51,9 @@ use core::mem::size_of;
 use core::ptr;
 use std::any::Any;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, Field, BLOB_JSON};
-use crate::abi::sdk::door::AbiIn;
-use crate::abi::sdk::out::Scalar;
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, BLOB_JSON};
+use busbar_contract::abi::sdk::door::AbiIn;
+use busbar_contract::abi::sdk::out::Scalar;
 
 use super::{zeroed, AllZero};
 
@@ -80,13 +80,13 @@ lendable!(
     u64,
     usize,
     i64,
-    crate::abi::mechanism::call::Span,
+    busbar_contract::abi::mechanism::call::Span,
     AbiStr,
     Blob,
     Field,
-    crate::abi::auth::NamedValue,
-    crate::abi::store::UsageCell,
-    crate::abi::export::CheckInstance,
+    busbar_contract::abi::auth::NamedValue,
+    busbar_contract::abi::store::UsageCell,
+    busbar_contract::abi::export::CheckInstance,
 );
 
 /// An `in` with a settings payload: its builder states it as JSON. Sealed.
@@ -106,11 +106,11 @@ macro_rules! settled {
     )+};
 }
 settled!(
-    crate::abi::mechanism::lifecycle::ValidateIn => settings,
-    crate::abi::mechanism::lifecycle::OpenIn => settings,
-    crate::abi::mechanism::lifecycle::RefreshIn => settings,
-    crate::abi::plane::PlaneOpenIn => open.settings,
-    crate::abi::secret::CheckIn => settings,
+    busbar_contract::abi::mechanism::lifecycle::ValidateIn => settings,
+    busbar_contract::abi::mechanism::lifecycle::OpenIn => settings,
+    busbar_contract::abi::mechanism::lifecycle::RefreshIn => settings,
+    busbar_contract::abi::plane::PlaneOpenIn => open.settings,
+    busbar_contract::abi::secret::CheckIn => settings,
 );
 
 /// A slot's `in` built for a test: every pointer in it borrows memory that lives for `'a`, or is
@@ -139,7 +139,7 @@ impl<I: 'static> TestIn<'_, I> {
     /// Every pointer and length pair an `I` carries, its embedded structs' included:
     /// `(pointer's offset, length's offset, length's width)`.
     fn pairs() -> Vec<(usize, usize, usize)> {
-        super::pairs::lent_pairs(std::any::TypeId::of::<I>())
+        busbar_contract::abi::sdk::test_support::lent_pairs(std::any::TypeId::of::<I>())
     }
 
     /// The `width`-byte unsigned value at byte `at` of the `in`.

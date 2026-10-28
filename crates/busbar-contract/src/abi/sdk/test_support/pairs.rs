@@ -115,7 +115,7 @@ lent_field_list!(lent_embeds);
 
 /// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
 /// payloads' included, at their offsets in it: `(pointer, length, length's width)`.
-pub(crate) fn lent_pairs(t: TypeId) -> Vec<(usize, usize, usize)> {
+pub fn lent_pairs(t: TypeId) -> Vec<(usize, usize, usize)> {
     let word = std::mem::size_of::<usize>();
     let mut out = if t == TypeId::of::<AbiStr>() {
         vec![(offset_of!(AbiStr, ptr), offset_of!(AbiStr, len), word)]

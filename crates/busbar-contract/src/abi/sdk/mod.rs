@@ -94,11 +94,10 @@ pub mod trust;
 pub mod life;
 // THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine slots over a plane's `PlaneLife`.
 pub mod plane_life;
-// THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read
-// as Rust values, so a plugin's own tests drive its door with no `unsafe` (BUSBAR-1.6.0.md
-// l.272-274). Compiled for this crate's tests and behind the dev-only `test-seal` feature, as the
-// test kit is (`tests/feature_invariance.rs`); no shipped image carries it.
-#[cfg(any(test, feature = "test-seal"))]
+// THE TEST KIT'S HALF THAT MUST LIVE IN THE CONTRACT (all-zero values, lending pairs; `chip` behind
+// `test-seal`); the rest is the test kit's (`busbar_test_kit::test_support`). Behind the
+// `test-support` feature busbar-test-kit enables; no shipped image carries it.
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 /// The "decision observability" signal catalog: a plugin author references

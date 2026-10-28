@@ -11,7 +11,7 @@
 //! ```ignore
 //! use busbar_contract::abi::host::service::ClockNowIn;
 //! use busbar_contract::abi::mechanism::call::Outcome;
-//! use busbar_contract::abi::sdk::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
+//! use busbar_test_kit::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
 //!
 //! struct Clock;
 //! impl FakeService for Clock {
@@ -39,16 +39,16 @@ use core::mem::{offset_of, size_of};
 use core::ptr;
 
 use super::zeroed;
-use crate::abi::host::conn::connector::{self, ConnectorSlots};
-use crate::abi::host::io::{self as hio, IoSlots};
-use crate::abi::host::service::{
+use busbar_contract::abi::host::conn::connector::{self, ConnectorSlots};
+use busbar_contract::abi::host::io::{self as hio, IoSlots};
+use busbar_contract::abi::host::service::{
     self as svc, check_head, HostSlots, ItemSpan, ServiceBufs, ServiceHead, ServiceOut,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, RawOutcome};
-use crate::abi::mechanism::ticket::{HostCtx, HostTables, WakeFn};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, WakeFn};
 
 mod sealed {
-    use crate::abi::host::service::ServiceFn;
+    use busbar_contract::abi::host::service::ServiceFn;
 
     /// Only this module implements it: the three host tables.
     pub trait Table: Sized {
@@ -90,7 +90,7 @@ mod sealed {
         fn host_field(
             &mut self,
             token: HostToken,
-        ) -> &mut *const crate::abi::mechanism::ticket::HostTables;
+        ) -> &mut *const busbar_contract::abi::mechanism::ticket::HostTables;
     }
 
     /// Only this module implements it: `*const T` and `*mut T`.
@@ -128,18 +128,18 @@ impl<T> RawPtr<T> for *mut T {}
 /// An `open` `in` that carries the host's tables (`host`), for [`FakeHost::lend_to`]. Sealed:
 /// the lifecycle `OpenIn` and the plane's `PlaneOpenIn`.
 pub trait TakesHost: sealed::Host {}
-impl sealed::Host for crate::abi::mechanism::lifecycle::OpenIn {
+impl sealed::Host for busbar_contract::abi::mechanism::lifecycle::OpenIn {
     fn host_field(&mut self, _: sealed::HostToken) -> &mut *const HostTables {
         &mut self.host
     }
 }
-impl TakesHost for crate::abi::mechanism::lifecycle::OpenIn {}
-impl sealed::Host for crate::abi::plane::PlaneOpenIn {
+impl TakesHost for busbar_contract::abi::mechanism::lifecycle::OpenIn {}
+impl sealed::Host for busbar_contract::abi::plane::PlaneOpenIn {
     fn host_field(&mut self, _: sealed::HostToken) -> &mut *const HostTables {
         &mut self.open.host
     }
 }
-impl TakesHost for crate::abi::plane::PlaneOpenIn {}
+impl TakesHost for busbar_contract::abi::plane::PlaneOpenIn {}
 
 /// An `open` `in` whose `host` names a [`FakeHost`]'s tables, borrowed from that host: it cannot
 /// outlive it, and safe code reads no copy of it (only [`super::reply::call_hosted`] does).
@@ -184,7 +184,7 @@ macro_rules! slots {
         )+
 
         impl super::sealed::Table for $table {
-            fn install(&mut self, op: u32, f: crate::abi::host::service::ServiceFn) {
+            fn install(&mut self, op: u32, f: busbar_contract::abi::host::service::ServiceFn) {
                 match op {
                     $(ops::$name => self.$field = Some(f),)+
                     _ => panic!("{}: no slot {op}", stringify!($table)),
@@ -200,8 +200,8 @@ macro_rules! slots {
 
 /// The host services table's slots (`HostSlots`).
 pub mod host {
-    use crate::abi::host::service::op as ops;
-    use crate::abi::host::service::{self as svc, HostSlots};
+    use busbar_contract::abi::host::service::op as ops;
+    use busbar_contract::abi::host::service::{self as svc, HostSlots};
 
     slots!(HostSlots in services;
         CLOCK_NOW => clock_now: svc::ClockNowIn,
@@ -238,8 +238,8 @@ pub mod host {
 
 /// The host's I/O table's slots (`IoSlots`).
 pub mod io {
-    use crate::abi::host::io::op as ops;
-    use crate::abi::host::io::{self as hio, IoSlots};
+    use busbar_contract::abi::host::io::op as ops;
+    use busbar_contract::abi::host::io::{self as hio, IoSlots};
 
     slots!(IoSlots in io;
         OPEN => open: hio::OpenIn,
@@ -257,8 +257,8 @@ pub mod io {
 
 /// The connector table's slots (`ConnectorSlots`; the retired `random` slot is never served).
 pub mod conn {
-    use crate::abi::host::conn::connector::service as ops;
-    use crate::abi::host::conn::connector::{self as c, ConnectorSlots};
+    use busbar_contract::abi::host::conn::connector::service as ops;
+    use busbar_contract::abi::host::conn::connector::{self as c, ConnectorSlots};
 
     slots!(ConnectorSlots in conns;
         ESTABLISH => establish: c::EstablishIn,
@@ -340,7 +340,7 @@ service_in!(
     svc::ContentScanIn => [];
     svc::HookCallIn => [one(
         offset_of!(svc::HookCallIn, prompt),
-        size_of::<crate::abi::hook::PromptView>(),
+        size_of::<busbar_contract::abi::hook::PromptView>(),
         R,
     )];
     svc::RandomFillIn => [];
@@ -721,7 +721,7 @@ extern "C" fn trampoline<S: FakeService, const OP: u32>(
     input: *const c_void,
     out: *mut ServiceOut,
 ) -> RawOutcome {
-    let ran = crate::abi::sdk::boundary::caught(|| {
+    let ran = busbar_contract::abi::sdk::boundary::caught(|| {
         assert!(!input.is_null(), "service {OP}: the in is NULL");
         // SAFETY: a non-NULL `in` a plugin passed a host service leads with its `ServiceHead`.
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
@@ -883,7 +883,7 @@ impl FakeHost {
     /// ```
     /// use busbar_contract::abi::mechanism::ticket::Ticket;
     /// use busbar_contract::abi::sdk::conn::Host;
-    /// use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+    /// use busbar_test_kit::test_support::fake::FakeHost;
     /// let fake = FakeHost::new();
     /// let tables = fake.lent();
     /// let host = Host::of(&tables);
@@ -891,24 +891,26 @@ impl FakeHost {
     /// drop(fake);
     /// ```
     #[must_use]
-    pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {
+    pub fn lent(&self) -> busbar_contract::abi::sdk::Lent<'_, HostTables> {
         // SAFETY: the tables are this host's own, every pointer in them one of its own boxed
         // tables, all alive and unmoved while `self` is borrowed (`link` points them only when
         // `self` is owned mutably).
-        unsafe { crate::abi::sdk::Lent::new(&*self.tables) }
+        unsafe { busbar_contract::abi::sdk::test_support::lend(&*self.tables) }
     }
 
     /// The tables, for this crate's own tests of the trampoline (a malformed `in` no SDK path
     /// sends, and the SDK's `Services` over the fake).
     #[cfg(test)]
-    pub(crate) fn tables_for_tests(&self) -> &HostTables {
+    #[doc(hidden)]
+    pub fn tables_for_tests(&self) -> &HostTables {
         &self.tables
     }
 
     /// The three tables as served, for this crate's own tests that hand the trampoline a malformed
     /// `in` (no SDK path sends one).
     #[cfg(test)]
-    pub(crate) fn slots_for_tests(&self) -> (&HostSlots, &IoSlots, &ConnectorSlots) {
+    #[doc(hidden)]
+    pub fn slots_for_tests(&self) -> (&HostSlots, &IoSlots, &ConnectorSlots) {
         (&self.services, &self.io, &self.conns)
     }
 

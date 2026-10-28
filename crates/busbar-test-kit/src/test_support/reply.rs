@@ -8,7 +8,7 @@
 //! `retire` or the next generation can run straight after with nothing left to dangle.
 //!
 //! ```ignore
-//! use busbar_contract::abi::sdk::test_support::reply::call;
+//! use busbar_test_kit::test_support::reply::call;
 //!
 //! let resolved = call(table.resolve.unwrap(), instance, &input, out);
 //! assert_eq!(resolved.owned.material(), b"s3cret");
@@ -33,15 +33,15 @@ use core::ptr;
 
 use zeroize::Zeroizing;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
-use crate::abi::mechanism::check::{Fault, HARD_MAX_BYTES, STATEMENT_LIST_MAX};
-use crate::abi::mechanism::lifecycle::slot;
-use crate::abi::sdk::door::{AbiIn, AbiOut};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
+use busbar_contract::abi::mechanism::check::{Fault, HARD_MAX_BYTES, STATEMENT_LIST_MAX};
+use busbar_contract::abi::mechanism::lifecycle::slot;
+use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 
 use super::test_in::TestIn;
 
 mod sealed {
-    use crate::abi::mechanism::call::{OutHead, Outcome};
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 
     /// Only [`super::call`] makes one: the reads below run from nowhere else.
     #[derive(Debug, Clone, Copy)]
@@ -112,7 +112,7 @@ impl<O: Reply> Called<O> {
 #[derive(Debug)]
 pub struct Instance<'h> {
     ptr: *mut c_void,
-    door: &'static crate::abi::mechanism::door::Door,
+    door: &'static busbar_contract::abi::mechanism::door::Door,
     lent: PhantomData<&'h ()>,
 }
 
@@ -260,7 +260,7 @@ fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: I, out: O) -> C
 /// for an `open` (`opens` its door) that answered READY, its instance kept as an [`Instance`].
 fn run_op<I: AbiIn, O: Reply>(
     op: Op,
-    opens: Option<&'static crate::abi::mechanism::door::Door>,
+    opens: Option<&'static busbar_contract::abi::mechanism::door::Door>,
     instance: *mut c_void,
     mut input: I,
     mut out: O,
@@ -437,7 +437,7 @@ impl Reply for OutHead {
     type Owned = ();
 }
 
-impl sealed::Take for crate::abi::mechanism::lifecycle::OpenOut {
+impl sealed::Take for busbar_contract::abi::mechanism::lifecycle::OpenOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -449,11 +449,11 @@ impl sealed::Take for crate::abi::mechanism::lifecycle::OpenOut {
         self.instance
     }
 }
-impl Reply for crate::abi::mechanism::lifecycle::OpenOut {
+impl Reply for busbar_contract::abi::mechanism::lifecycle::OpenOut {
     type Owned = ();
 }
 
-impl sealed::Take for crate::abi::secret::ResolveOut {
+impl sealed::Take for busbar_contract::abi::secret::ResolveOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -466,17 +466,17 @@ impl sealed::Take for crate::abi::secret::ResolveOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> SecretCopy {
-        judged(crate::abi::secret::validate::check_resolve(self));
+        judged(busbar_contract::abi::secret::validate::check_resolve(self));
         let mut copy = Zeroizing::new(Vec::new());
         copy.extend_from_slice(lent(self.secret.ptr, self.secret.len, "resolve.secret"));
         SecretCopy(copy)
     }
 }
-impl Reply for crate::abi::secret::ResolveOut {
+impl Reply for busbar_contract::abi::secret::ResolveOut {
     type Owned = SecretCopy;
 }
 
-impl sealed::Take for crate::abi::export::ServeOut {
+impl sealed::Take for busbar_contract::abi::export::ServeOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -491,7 +491,7 @@ impl sealed::Take for crate::abi::export::ServeOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> Served {
-        judged(crate::abi::export::validate::check_serve(self));
+        judged(busbar_contract::abi::export::validate::check_serve(self));
         Served {
             headers: list(self.headers_out, self.headers_out_len, "serve.headers_out")
                 .iter()
@@ -501,11 +501,11 @@ impl sealed::Take for crate::abi::export::ServeOut {
         }
     }
 }
-impl Reply for crate::abi::export::ServeOut {
+impl Reply for busbar_contract::abi::export::ServeOut {
     type Owned = Served;
 }
 
-impl sealed::Take for crate::abi::export::CheckOut {
+impl sealed::Take for busbar_contract::abi::export::CheckOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -518,15 +518,15 @@ impl sealed::Take for crate::abi::export::CheckOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> Vec<u8> {
-        judged(crate::abi::export::validate::check_check(self));
+        judged(busbar_contract::abi::export::validate::check_check(self));
         lent(self.findings.ptr, self.findings.len, "check.findings").to_vec()
     }
 }
-impl Reply for crate::abi::export::CheckOut {
+impl Reply for busbar_contract::abi::export::CheckOut {
     type Owned = Vec<u8>;
 }
 
-impl sealed::Take for crate::abi::export::StatusOut {
+impl sealed::Take for busbar_contract::abi::export::StatusOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -539,15 +539,15 @@ impl sealed::Take for crate::abi::export::StatusOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> Vec<u8> {
-        judged(crate::abi::export::validate::check_status(self));
+        judged(busbar_contract::abi::export::validate::check_status(self));
         lent(self.status.ptr, self.status.len, "status.status").to_vec()
     }
 }
-impl Reply for crate::abi::export::StatusOut {
+impl Reply for busbar_contract::abi::export::StatusOut {
     type Owned = Vec<u8>;
 }
 
-impl sealed::Take for crate::abi::export::ScrapeOut {
+impl sealed::Take for busbar_contract::abi::export::ScrapeOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -558,17 +558,17 @@ impl sealed::Take for crate::abi::export::ScrapeOut {
     /// stay on the `out`. The kit does not know the buffer's capacity here, so the capacity judged
     /// is what was written.
     fn take(&self, _: Outcome, _: Token) {
-        judged(crate::abi::export::validate::check_scrape(
+        judged(busbar_contract::abi::export::validate::check_scrape(
             self,
             self.written,
         ));
     }
 }
-impl Reply for crate::abi::export::ScrapeOut {
+impl Reply for busbar_contract::abi::export::ScrapeOut {
     type Owned = ();
 }
 
-impl sealed::Take for crate::abi::auth::IdentifyOut {
+impl sealed::Take for busbar_contract::abi::auth::IdentifyOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -580,11 +580,11 @@ impl sealed::Take for crate::abi::auth::IdentifyOut {
     /// caller's to run.
     fn take(&self, _: Outcome, _: Token) {}
 }
-impl Reply for crate::abi::auth::IdentifyOut {
+impl Reply for busbar_contract::abi::auth::IdentifyOut {
     type Owned = ();
 }
 
-impl sealed::Take for crate::abi::auth::BeginLoginOut {
+impl sealed::Take for busbar_contract::abi::auth::BeginLoginOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -598,7 +598,7 @@ impl sealed::Take for crate::abi::auth::BeginLoginOut {
         self.form_len = 0;
     }
     fn take(&self, outcome: Outcome, _: Token) -> BeganLogin {
-        judged(crate::abi::auth::check_begin_login(outcome, self));
+        judged(busbar_contract::abi::auth::check_begin_login(outcome, self));
         BeganLogin {
             authorize_url: text(self.authorize_url, "begin_login.authorize_url"),
             form: list(self.form, self.form_len, "begin_login.form")
@@ -613,11 +613,11 @@ impl sealed::Take for crate::abi::auth::BeginLoginOut {
         }
     }
 }
-impl Reply for crate::abi::auth::BeginLoginOut {
+impl Reply for busbar_contract::abi::auth::BeginLoginOut {
     type Owned = BeganLogin;
 }
 
-impl sealed::Take for crate::abi::plane::PlaneOpenOut {
+impl sealed::Take for busbar_contract::abi::plane::PlaneOpenOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.open.head
     }
@@ -629,11 +629,11 @@ impl sealed::Take for crate::abi::plane::PlaneOpenOut {
         snapshot(self.snapshot)
     }
 }
-impl Reply for crate::abi::plane::PlaneOpenOut {
+impl Reply for busbar_contract::abi::plane::PlaneOpenOut {
     type Owned = Option<SnapshotCopy>;
 }
 
-impl sealed::Take for crate::abi::plane::PlaneRefreshOut {
+impl sealed::Take for busbar_contract::abi::plane::PlaneRefreshOut {
     fn head(&mut self) -> &mut OutHead {
         &mut self.head
     }
@@ -645,13 +645,13 @@ impl sealed::Take for crate::abi::plane::PlaneRefreshOut {
         snapshot(self.snapshot)
     }
 }
-impl Reply for crate::abi::plane::PlaneRefreshOut {
+impl Reply for busbar_contract::abi::plane::PlaneRefreshOut {
     type Owned = Option<SnapshotCopy>;
 }
 
 /// The snapshot a plane published at `p` (NULL = none), judged by the kind's own check and copied.
-fn snapshot(p: *const crate::abi::plane::PlaneSnapshot) -> Option<SnapshotCopy> {
-    use crate::abi::plane::PlaneSnapshot;
+fn snapshot(p: *const busbar_contract::abi::plane::PlaneSnapshot) -> Option<SnapshotCopy> {
+    use busbar_contract::abi::plane::PlaneSnapshot;
     if p.is_null() {
         return None;
     }
@@ -666,7 +666,10 @@ fn snapshot(p: *const crate::abi::plane::PlaneSnapshot) -> Option<SnapshotCopy> 
     );
     // SAFETY: as above, and the snapshot states this contract's whole size.
     let s = unsafe { p.read() };
-    judged(crate::abi::plane::check::check_snapshot(&s, s.generation));
+    judged(busbar_contract::abi::plane::check::check_snapshot(
+        &s,
+        s.generation,
+    ));
     Some(SnapshotCopy {
         generation: s.generation,
         claims: list(s.claims, s.claims_len, "snapshot.claims")

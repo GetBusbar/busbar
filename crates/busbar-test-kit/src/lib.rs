@@ -28,3 +28,8 @@ pub mod stand_in;
 pub mod tcp_conns;
 /// A local token issuer (an ES256 key, its JWKS, signed tokens).
 pub mod test_issuer;
+/// The plugin test support: a door's Statement and ops as Rust values, the all-zero value of a
+/// reviewed ABI struct, a fake host, and door calls whose replies are copied out. No `unsafe` in the
+/// plugin's own tests.
+#[allow(unsafe_code)] // REVIEWED: the one read of each kind a plugin test needs, once
+pub mod test_support;

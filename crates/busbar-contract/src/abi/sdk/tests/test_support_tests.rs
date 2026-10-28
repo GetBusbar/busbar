@@ -14,8 +14,9 @@ use core::ptr;
 
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use crate::abi::mechanism::door::KindTailHead;
+use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
+use crate::abi::mechanism::KindCode;
 use crate::abi::sdk::door::{abi_str, statement};
 use crate::abi::sdk::life::{Life, Refreshed, Refusal};
 use crate::abi::transport::{
@@ -1095,7 +1096,8 @@ fn table_leaks(src: &str) -> Vec<String> {
         // seals it (no `Deref`, no `get`); only `Services::of`, `Wake::of` and `Host::of` read
         // it. Nothing else is exempt: another `Lent`, a `Lent` named another way, or a
         // `&HostTables` beside it is still a leak.
-        let unsealed = signature.replace("-> crate::abi::sdk::Lent<'_, HostTables>", "->");
+        let unsealed =
+            signature.replace("-> busbar_contract::abi::sdk::Lent<'_, HostTables>", "->");
         if TABLE_TYPES.iter().any(|t| unsealed.contains(t)) {
             out.push(format!("line {}: {signature}", n + 1));
         }
@@ -1105,7 +1107,9 @@ fn table_leaks(src: &str) -> Vec<String> {
 
 #[test]
 fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
-    let found = table_leaks(include_str!("../test_support/fake.rs"));
+    let found = table_leaks(include_str!(
+        "../../../../../busbar-test-kit/src/test_support/fake.rs"
+    ));
     assert!(found.is_empty(), "{found:?}");
     // RED: the accessors this module once had are each found.
     for planted in [
@@ -1120,7 +1124,8 @@ fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
     assert!(table_leaks("#[cfg(test)]\npub fn slots(&self) -> &HostSlots {").is_empty());
     // GREEN: the lend of the tables, at its exact path, is no leak.
     assert!(
-        table_leaks("pub fn lent(&self) -> crate::abi::sdk::Lent<'_, HostTables> {").is_empty()
+        table_leaks("pub fn lent(&self) -> busbar_contract::abi::sdk::Lent<'_, HostTables> {")
+            .is_empty()
     );
     // RED: a bare reference beside it, a `Lent` named another way, and a `&HostTables` read out
     // of a `Lent` in any accessor shape are each still found.
@@ -1347,7 +1352,7 @@ fn every_slot_maps<T: crate::abi::sdk::door::KindOps>() {
     assert!(count > slot::CLOSE, "{}", core::any::type_name::<T>());
     for index in 0..count {
         assert!(
-            super::slot_in_type::<T>(index).is_some(),
+            super::kit::slot_in_type::<T>(index).is_some(),
             "{}: slot {index} maps to no `in`",
             core::any::type_name::<T>()
         );
@@ -1370,39 +1375,39 @@ fn the_slot_table_maps_every_slot_of_every_kind_to_its_own_in() {
     }
     use crate::abi::{auth, export, hook, plane, secret, store, transport};
     assert_eq!(
-        super::slot_in_type::<transport::Ops>(slot::OPEN),
+        super::kit::slot_in_type::<transport::Ops>(slot::OPEN),
         in_of::<crate::abi::sdk::door::Lifecycle, { slot::OPEN }>()
     );
     assert_eq!(
-        super::slot_in_type::<plane::Ops>(slot::OPEN),
+        super::kit::slot_in_type::<plane::Ops>(slot::OPEN),
         in_of::<plane::PlaneLifecycle, { slot::OPEN }>()
     );
     assert_eq!(
-        super::slot_in_type::<transport::Ops>(transport::slot::LISTEN),
+        super::kit::slot_in_type::<transport::Ops>(transport::slot::LISTEN),
         in_of::<transport::Ops, { transport::slot::LISTEN }>()
     );
     assert_eq!(
-        super::slot_in_type::<plane::Ops>(plane::slot::ARRIVE),
+        super::kit::slot_in_type::<plane::Ops>(plane::slot::ARRIVE),
         in_of::<plane::Ops, { plane::slot::ARRIVE }>()
     );
     assert_eq!(
-        super::slot_in_type::<auth::Ops>(auth::slot::VERIFY),
+        super::kit::slot_in_type::<auth::Ops>(auth::slot::VERIFY),
         in_of::<auth::Ops, { auth::slot::VERIFY }>()
     );
     assert_eq!(
-        super::slot_in_type::<secret::Ops>(secret::slot::RESOLVE),
+        super::kit::slot_in_type::<secret::Ops>(secret::slot::RESOLVE),
         in_of::<secret::Ops, { secret::slot::RESOLVE }>()
     );
     assert_eq!(
-        super::slot_in_type::<hook::Ops>(hook::slot::NOTIFY),
+        super::kit::slot_in_type::<hook::Ops>(hook::slot::NOTIFY),
         in_of::<hook::Ops, { hook::slot::NOTIFY }>()
     );
     assert_eq!(
-        super::slot_in_type::<export::Ops>(export::slot::SCRAPE),
+        super::kit::slot_in_type::<export::Ops>(export::slot::SCRAPE),
         in_of::<export::Ops, { export::slot::SCRAPE }>()
     );
     assert_eq!(
-        super::slot_in_type::<store::Ops>(store::slot::GET_KEY),
+        super::kit::slot_in_type::<store::Ops>(store::slot::GET_KEY),
         in_of::<store::Ops, { store::slot::GET_KEY }>()
     );
 }
