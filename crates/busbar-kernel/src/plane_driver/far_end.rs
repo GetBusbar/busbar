@@ -1259,6 +1259,7 @@ impl EgressFarEnd<'_> {
                 true
             }
         });
+        busbar_kernel_egress::upstream::apply_upstream_encoding(&mut request.fields);
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
         // EVERY ATTEMPT THAT LEAVES NOTHING ON THE WIRE says why (`State::unsent`): the walk's
         // exhausted refused piece names it, so the plane can tell a hop that never left from one

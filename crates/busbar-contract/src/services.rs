@@ -389,6 +389,13 @@ pub const DISK_KEEP: u32 = 9;
 /// request-log file sink's). Unset: the destination is never rotated.
 pub const DISK_ROTATE_KEY: &str = "rotate_mb";
 
+/// The settings key beside a destination that states how many archives the OPERATOR keeps when it
+/// rotates: the host's own grammar beside [`DISK_ROTATE_KEY`]. Set, it is the destination's
+/// rotation ([`DiskRotate::declared`]: `0` truncates in place, as 1.5.5 did; `n` renames keeping
+/// `n`) whatever the manifest declares; unset, the manifest's `declares.keep` stands (owner
+/// signed 2026-10-27, "Keep N, default 9").
+pub const DISK_KEEP_KEY: &str = "keep";
+
 /// What one `disk.append` did, as the disk lane reports it and the mechanism stores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskReport {

@@ -105,7 +105,7 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
             RouteAuth::Admin,
             consent_submit,
         )
-        // RFC 7591 registration, mounted UNCONDITIONALLY: the 1.6.0 ruling is that all three
+        // RFC 7591 registration, mounted UNCONDITIONALLY: all three
         // registration mechanisms are on whenever the plane is, with no toggles. The advertised
         // `registration_endpoint` in `policy::registration_config` is likewise unconditional, so
         // the metadata document and the route table cannot disagree about this path.
