@@ -542,6 +542,33 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .get_plane_record("task", "t1")
             .map(|v| v.map(|v| text_of(&v))))
     });
+    // An upsert is keyed on (kind, id), parent or not: two ids under one parent are two records,
+    // each read and deleted by its own id, and both listed under the parent.
+    r.line("upsert c1 under p", 1, || {
+        ans(b.upsert_plane_record(plane("ctask", "c1", Some("p"), 0, b"c1").view()))
+    });
+    r.line("upsert c2 under p", 1, || {
+        ans(b.upsert_plane_record(plane("ctask", "c2", Some("p"), 0, b"c2").view()))
+    });
+    r.line("get c1", 1, || {
+        ans(b
+            .get_plane_record("ctask", "c1")
+            .map(|v| v.map(|v| text_of(&v))))
+    });
+    r.line("list ctask p", 1, || {
+        bodies(b.list_plane_records("ctask", &PlaneSelector::Parent("p".into())))
+    });
+    r.line("delete c1", 1, || ans(b.delete_plane_record("ctask", "c1")));
+    r.line("get c1 after", 1, || {
+        ans(b
+            .get_plane_record("ctask", "c1")
+            .map(|v| v.map(|v| text_of(&v))))
+    });
+    r.line("get c2", 1, || {
+        ans(b
+            .get_plane_record("ctask", "c2")
+            .map(|v| v.map(|v| text_of(&v))))
+    });
     r.line("token live", 1, || {
         ans(b.plane_token_live("tok", "x", 100, 1))
     });
@@ -758,6 +785,21 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     );
     assert_eq!(at("usage batch replay"), at("usage batch"));
     assert_eq!(at("usage batch conflict"), "! STORE_OPID_CONFLICT");
+    for label in ["upsert c1 under p", "upsert c2 under p", "delete c1"] {
+        assert!(at(label).starts_with("= "), "{label}: {}", at(label));
+    }
+    assert_eq!(
+        at("get c1"),
+        "= Some(\"c1\")",
+        "a parented upsert reads back by its own id"
+    );
+    assert_eq!(
+        at("list ctask p"),
+        "= [\"c1\", \"c2\"]",
+        "two ids under one parent are two records, both listed under it"
+    );
+    assert_eq!(at("get c1 after"), "= None", "deleted by its own id");
+    assert_eq!(at("get c2"), "= Some(\"c2\")", "deleting c1 leaves c2");
     assert_eq!(at("redeem"), "= true");
     assert_eq!(at("redeem again"), "= false", "a token is redeemed once");
     assert_eq!(at("record get"), "= Some(\"one\")");
