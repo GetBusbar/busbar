@@ -279,3 +279,54 @@ fn an_installed_tarball_whose_seal_has_since_expired_is_kept() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An UNPINNED fetch re-downloads at every boot. When it returns the SAME bytes as the installed
+/// copy, nothing new is installed: they are judged by boot rules (the scan's chain, revocation and
+/// rollback), not for expiry, so a boot after the keys document expired still succeeds.
+#[test]
+fn an_unpinned_refetch_of_the_installed_bytes_is_not_judged_for_expiry() {
+    let dir = tmpdir();
+    let body = sealed_tarball(1_600_000_000);
+    std::fs::write(dir.join("p.tar.gz"), &body).unwrap();
+    let dl = |_: &str| Ok(body.clone());
+    let out = fetch_plugins(
+        &dir,
+        &[spec("https://x/p.tar.gz", None, "p.tar.gz")],
+        true,
+        &dl,
+    )
+    .expect("the same bytes as the installed copy: the boot succeeds");
+    assert_eq!(
+        out,
+        vec![FetchOutcome::Fetched {
+            filename: "p.tar.gz".into()
+        }]
+    );
+    assert_eq!(std::fs::read(dir.join("p.tar.gz")).unwrap(), body);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same unpinned fetch returning CHANGED bytes is an install: an expired seal is refused,
+/// explained (the audit code, and that the installed copy is kept), and nothing is written.
+#[test]
+fn an_unpinned_fetch_of_changed_bytes_with_an_expired_seal_is_refused() {
+    let dir = tmpdir();
+    let installed = sealed_tarball(1_600_000_000);
+    std::fs::write(dir.join("p.tar.gz"), &installed).unwrap();
+    let changed = sealed_tarball(1_600_000_001);
+    assert_ne!(installed, changed);
+    let dl = |_: &str| Ok(changed.clone());
+    let err = fetch_plugins(
+        &dir,
+        &[spec("https://x/p.tar.gz", None, "p.tar.gz")],
+        true,
+        &dl,
+    )
+    .unwrap_err();
+    assert!(
+        err[0].contains("(keys-expired)") && err[0].contains("installed copy is kept"),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::read(dir.join("p.tar.gz")).unwrap(), installed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

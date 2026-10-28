@@ -477,6 +477,84 @@ async fn install_strict_posture_rejects_unsigned() {
     handle.abort();
 }
 
+/// A first-party tarball SEALED (`docs/design/release-trust.md`) under a keys document and a
+/// release manifest that both expired at `expires` (Unix seconds), signed by throwaway ed25519 keys.
+fn sealed_tarball_expiring(expires: u64) -> Vec<u8> {
+    use crate::root::loader::release_trust::{
+        wire, KeysDoc, ReleaseKey, Role, Target, TargetsDoc, PLUGINS_ROLE, PLUGIN_TARGET,
+    };
+    use crate::root::loader::sign::{canonical_manifest_bytes, sha256_hex, FIRST_PARTY_PUBLISHER};
+    let (root, signer) = (
+        SigningKey::from_bytes(&[0x31; 32]),
+        SigningKey::from_bytes(&[0x32; 32]),
+    );
+    let envelope = |signed: serde_json::Value, by: &SigningKey| {
+        use crate::root::loader::sign::Signer as _;
+        let bytes = wire::canonical(&signed).unwrap();
+        let id = wire::key_id(&ReleaseKey::Ed25519(by.verifying_key()));
+        wire::write_envelope(&signed, &[(id, by.sign(&bytes).to_bytes().to_vec())]).unwrap()
+    };
+    let lib = b"\x7fELF sealed, never dlopened";
+    let mut m = test_manifest(
+        "busbar-store-sealed",
+        "sealed",
+        FIRST_PARTY_PUBLISHER,
+        "1.6.0",
+    );
+    m.sha256 = sha256_hex(lib);
+    let canonical = canonical_manifest_bytes(&m);
+    let signer_key = ReleaseKey::Ed25519(signer.verifying_key());
+    let signer_id = wire::key_id(&signer_key);
+    let keys = wire::keys_signed(&KeysDoc {
+        version: 1,
+        expires,
+        keys: [(signer_id.clone(), signer_key)].into(),
+        roles: [(
+            PLUGINS_ROLE.to_string(),
+            Role {
+                keyids: vec![signer_id],
+                threshold: 1,
+            },
+        )]
+        .into(),
+        ..KeysDoc::default()
+    });
+    let targets = wire::targets_signed(&TargetsDoc {
+        role: PLUGINS_ROLE.into(),
+        version: 1,
+        expires,
+        targets: vec![Target {
+            name: m.name.clone(),
+            version: m.version.clone(),
+            target: PLUGIN_TARGET.into(),
+            sha256: sha256_hex(&canonical),
+            length: canonical.len() as u64,
+        }],
+    });
+    m.signature = wire::write_seal(&envelope(keys, &root), &envelope(targets, &signer)).unwrap();
+    crate::root::loader::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// INSTALL judges expiry (TUF's semantics, `docs/design/release-trust.md`): an upload of a
+/// first-party plugin whose release seal has expired is refused, explained with its audit code, and
+/// nothing is written.
+#[tokio::test]
+async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
+    busbar_kernel::snapshot::init();
+    let dir = tmp_plugins_dir("expired-seal");
+    let tarball = sealed_tarball_expiring(1_600_000_000); // 2020
+    let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
+    let (status, b) = install(addr, "sealed.tar.gz", &tarball).await;
+    assert!(
+        status == 409
+            && message(&b).contains("(keys-expired)")
+            && message(&b).contains("expired at"),
+        "an expired seal is refused, explained: {status} {b}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    handle.abort();
+}
+
 /// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
 /// a copy of it dropped in must carry to be the same plugin at the same version.
 fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {

@@ -53,8 +53,8 @@
 // `SigningKey`/`VerifyingKey` are re-exported so external signing tooling can name them via this crate.
 // No `Verifier` import: verification goes through the inherent `VerifyingKey::verify_strict`, not
 // the permissive trait method — see `signature_ok`.
-use ed25519_dalek::{Signature, Signer};
-pub use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::Signature;
+pub use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
