@@ -209,6 +209,69 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
     assert_eq!(row.models[0].usage_units.get("input"), Some(&1_200_000));
 }
 
+/// Append `card` to the installed history, in force from now.
+fn edit_card(holder: &Holder, card: RateCard) {
+    let at = busbar_kernel::store::now_ms();
+    let mut history = holder.0.lock().unwrap();
+    let mut next = History::clone(&history);
+    next.append(CardEntryDraft {
+        effective_from: at,
+        effective_until: None,
+        card,
+        appended_at: at,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    *history = Arc::new(next);
+    drop(history);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+}
+
+/// **THE WORKED EXAMPLE ACROSS A CLEAN RESTART** (owner 2026-10-27, #79, Q14): 300,000 tokens at
+/// 20, the card edited to 10, 900,000 more; the node flushes and stops. A fresh node over the same
+/// store answers the same 1,500 on every read and the same cap headroom, from the store before it
+/// hydrates and from its cells after. From the era-less durable row alone it read 2,400: every
+/// count at the card in force when the window opened.
+#[test]
+fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
+    let (holder, _serial) = holder_opening(history_card(20.0));
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let key = team_key(store.as_ref(), "vk_restart");
+    let now = busbar_kernel::store::now();
+    let reads = |gov: &GovState, cost: &CostModel| {
+        let team = &cost.group_named("team").expect("configured").buckets[0];
+        let group = (gov.derived_bucket_usage(cost, &team.bucket_id, team.window, true, now))
+            .expect("priced")
+            .spend_cents;
+        let own = (gov.usage_for(cost, &key.id, now))
+            .expect("priced")
+            .expect("exists")
+            .spend_cents;
+        let headroom: Vec<_> = (gov.budget_state(cost, &key, now).into_iter())
+            .map(|b| (b.bucket_id, b.remaining_micros))
+            .collect();
+        (group, own, headroom)
+    };
+
+    let before = cost(20.0, 1_000_000);
+    let gov = GovState::new(store.clone(), None).unwrap();
+    gov.try_admit(&before, &key, "", now).expect("admits");
+    gov.record_usage(&before, &key, "", "m", &input(300_000), now);
+    edit_card(holder, history_card(10.0));
+    let after = cost(10.0, 1_000_000);
+    gov.try_admit(&after, &key, "", now).expect("admits");
+    gov.record_usage(&after, &key, "", "m", &input(900_000), now);
+    let seen = reads(&gov, &after);
+    assert_eq!((seen.0, seen.1), (1_500, 1_500), "the dated figure");
+    gov.flush_budgets();
+    drop(gov);
+
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let cold = reads(&gov, &after);
+    assert_eq!((cold.0, cold.1), (seen.0, seen.1), "read from the store");
+    gov.hydrate_budgets(&after, now).expect("hydrate");
+    assert_eq!(reads(&gov, &after), seen, "read from the hydrated cells");
+}
+
 /// A stored window row: one request and `tokens` input tokens on `m`.
 fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
     busbar_contract::records::UsageLedger {
@@ -376,6 +439,14 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
 
     gov.refund_charge(a.charge()); // A failed upstream
     assert_eq!(spend(&gov), 10, "A's fee came back; B's 10 is owed");
+
+    // A clean restart keeps each fee at its own era: never 5 (B's fee at the opening card).
+    gov.flush_budgets();
+    drop(gov);
+    let gov = GovState::new(store.clone(), None).unwrap();
+    assert_eq!(spend(&gov), 10, "read from the store after restart");
+    gov.hydrate_budgets(&after, now).expect("hydrate");
+    assert_eq!(spend(&gov), 10, "read from the hydrated cell");
 }
 
 /// THE PLANE FEE'S CARD EPOCH (#47, #79; /status row 122, the rigs' `h2-card-epoch`): a plane's own
