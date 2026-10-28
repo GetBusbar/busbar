@@ -192,7 +192,7 @@ fn direct_route_answer(tag: &str, upstream: u16, pools: &str) -> (u16, String) {
                 read()
             );
         }
-        common::boot::log_shows_data_and_admin_listening(&read())
+        common::boot::healthz_answers(data)
     });
     assert!(
         booted,

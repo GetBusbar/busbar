@@ -173,7 +173,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
                 read_to_string(&log_path)
             );
         }
-        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
+        common::boot::healthz_answers(data_port)
     });
     assert!(
         booted,

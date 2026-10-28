@@ -223,7 +223,7 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
                 read_to_string(&log_path)
             );
         }
-        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
+        common::boot::healthz_answers(data_port)
     });
     assert!(
         booted,
