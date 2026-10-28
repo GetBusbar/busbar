@@ -1403,7 +1403,7 @@ pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
     class: DeadlineClass,
     deadline_ns: u64,
     lent: Lent,
-) -> (Called, Option<Box<Frame<I, O>>>) {
+) -> (Called, Option<Frame<I, O>>) {
     let Some(ticket) = d.mint(0) else {
         let refused = Called {
             outcome: Outcome::Refused,
