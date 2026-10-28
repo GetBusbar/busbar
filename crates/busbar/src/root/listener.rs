@@ -796,11 +796,112 @@ impl Served {
         let service = BodyTimeoutService::new(self.router, body_read_timeout());
         let conn = self
             .builder
-            .serve_connection_with_upgrades(TokioIo::new(io), service);
+            .serve_connection_with_upgrades(TokioIo::new(Lingering(Some(io))), service);
         if let Err(e) = watcher.watch(conn).await {
             // Per-connection serving error (client reset, malformed request framing). Contained.
             tracing::debug!(error = %e, %peer, "{}: connection error", self.scheme);
         }
+    }
+}
+
+/// How long a closed connection may go on draining what its client still sends, in all (nginx's
+/// `lingering_time`), and between two reads (its `lingering_timeout`).
+const LINGER_TOTAL: Duration = Duration::from_secs(30);
+const LINGER_IDLE: Duration = Duration::from_secs(5);
+
+/// A served connection's bytes, CLOSED LINGERING: when hyper lets the connection go, its write
+/// half is shut (the client reads EOF after the last answer) and what the client is still sending
+/// is read and discarded until it closes, for at most [`LINGER_TOTAL`]. A plain close with the
+/// client's unread bytes still arriving makes the kernel answer them with a reset, which can
+/// destroy an answer sent before the request was read to its end (an oversize body's 413) before
+/// the client reads it.
+struct Lingering<I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
+    Option<I>,
+);
+
+impl<I> Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn io(&mut self) -> Pin<&mut I> {
+        Pin::new(
+            self.0
+                .as_mut()
+                .expect("the connection's bytes are held until drop"),
+        )
+    }
+}
+
+impl<I> tokio::io::AsyncRead for Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.get_mut().io().poll_read(cx, buf)
+    }
+}
+
+impl<I> tokio::io::AsyncWrite for Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.get_mut().io().poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.get_mut().io().poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.get_mut().io().poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.get_mut().io().poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(tokio::io::AsyncWrite::is_write_vectored)
+    }
+}
+
+impl<I> Drop for Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn drop(&mut self) {
+        let (Some(mut io), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        runtime.spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let _ = io.shutdown().await;
+            let mut sink = [0_u8; 16 * 1024];
+            let _ = tokio::time::timeout(LINGER_TOTAL, async {
+                while let Ok(Ok(n)) = tokio::time::timeout(LINGER_IDLE, io.read(&mut sink)).await {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            })
+            .await;
+        });
     }
 }
 
