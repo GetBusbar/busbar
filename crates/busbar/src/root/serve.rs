@@ -3796,7 +3796,7 @@ impl DataRoutes {
                 }
             };
             let (arrival, inner, reply) = deframed_arrival(arrival, &messages);
-            let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
+            let stream = serve_framed::shared(stream);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
             let unit = async move {
