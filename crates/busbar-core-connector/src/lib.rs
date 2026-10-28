@@ -477,12 +477,48 @@ struct Redial {
     mark: u64,
 }
 
+/// A HELD CONNECTION'S DIAL, CROSSING WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
+/// runs under a host lock): its judgement is spent under the judgement's lock, which is let go
+/// before the carrier's `dial`, the ride and the early writes cross. Meanwhile the connection is
+/// neither judging nor dialled: a caller finds it still settling (`Pending`), woken once the dial
+/// came to its end, however it ends.
+struct Crossing<'h> {
+    held: &'h Held,
+}
+
+impl<'h> Crossing<'h> {
+    /// The dial of `held` begins crossing; `judging` (its spent judgement's lock) is let go.
+    fn begin(held: &'h Held, judging: std::sync::MutexGuard<'_, Option<Judging>>) -> Self {
+        *held.crossing.lock().expect("crossing") = Some(Vec::new());
+        drop(judging);
+        Self { held }
+    }
+}
+
+impl Drop for Crossing<'_> {
+    fn drop(&mut self) {
+        let waiting = self
+            .held
+            .crossing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default();
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
 /// there (a dialled exchange's own; an accepted connection's every stream).
 struct Held {
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// The judgement the dial waits on; `None` once dialled.
     judging: Mutex<Option<Judging>>,
+    /// THE DIAL IS CROSSING (`Some`, with the callers waiting on it): its judgement is spent and
+    /// its carrier's `dial` (and the early writes' framing) cross with no lock held ([`Crossing`]).
+    crossing: Mutex<Option<Vec<Waker>>>,
     /// The piece a short caller buffer left, and whether the end was answered.
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
     /// The far end's reason phrase, held until its head's last piece is read.
@@ -525,6 +561,7 @@ impl Held {
         Held {
             line: Mutex::new(line),
             judging: Mutex::new(judging),
+            crossing: Mutex::new(None),
             rest: Mutex::new((None, Vec::new(), false)),
             reason: Mutex::new(None),
             pooled,
@@ -1360,7 +1397,18 @@ impl Connector {
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let mut judging = held.judging.lock().expect("judging");
         let Some(j) = judging.as_mut() else {
-            return Ok(true);
+            drop(judging);
+            // Judged: dialled, unless its dial is still crossing.
+            let mut crossing = held.crossing.lock().expect("crossing");
+            return Ok(match crossing.as_mut() {
+                Some(waiting) => {
+                    if let Some(w) = waker.filter(|w| !waiting.iter().any(|x| x.will_wake(w))) {
+                        waiting.push(w.clone());
+                    }
+                    false
+                }
+                None => true,
+            });
         };
         let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
@@ -1412,6 +1460,7 @@ impl Connector {
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
             let early = std::mem::take(&mut j.early);
             *judging = None;
+            let _crossing = Crossing::begin(held, judging);
             let connect = proxy::connect_request(planned.authority(), &spec);
             let conn = planned
                 .dial_through(proxy_addr, connect)
@@ -1438,6 +1487,7 @@ impl Connector {
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
+        let _crossing = Crossing::begin(held, judging);
         let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
         let line = self.ride(held, conn);
         for (bytes, end, text) in early {
@@ -2660,6 +2710,8 @@ impl Conns for Connector {
                     .push((bytes[..take].to_vec(), end && take == bytes.len(), text));
                 return Ok(take);
             }
+            // Its dial is crossing: re-offered after the caller's next read or wait.
+            return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         match line.emit(stream, bytes, end, text) {
