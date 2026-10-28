@@ -49,14 +49,59 @@ pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
 /// configuration time, as a built-in's is — and the sink's own VALIDATION of the instance's
 /// `settings` (K9a S2), rendered under the instance, so a plugin sink's settings errors surface at
 /// the same moment and in the same words a built-in's do.
+///
+/// The sink validates its settings with each declared secret reference resolved
+/// ([`sink_settings`]); one that does not resolve is the instance's problem, in place of the
+/// sink's verdict on a value it was never handed.
 pub(crate) fn probe(
     name: &str,
     module: &str,
-    cfg: &Value,
+    settings: &serde_json::Map<String, Value>,
 ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
-    let (streams, problems) = axis()?.probe(module, name, cfg)?;
+    let axis = axis()?;
+    let (streams, problems) = match sink_settings(axis, module, settings) {
+        Ok(cfg) => axis.probe(module, name, &cfg)?,
+        Err(e) => {
+            let raw = Value::Object(settings.clone());
+            let (streams, _) = axis.probe(module, name, &raw)?;
+            (streams, vec![format!("export.{name}.settings: {e}")])
+        }
+    };
     let streams = streams.map(|b| streams_of(&b));
     Some((streams, problems))
+}
+
+/// `settings` as the sink is handed them: each secret reference (`{env:}`, `{file:}`, `{module:}`)
+/// written at a path `module`'s Statement declares secret (`secret_refs`) RESOLVED IN PLACE to its
+/// string, as 1.5.5 resolved the exporters' `url` and `auth_header.value` (THE DESIGN: references
+/// resolve in place; the export host lends nothing, so a sink reads the value itself at probe,
+/// check and open alike). Resolved through the linked secret modules (`env` / `file`) at config
+/// time, fail-closed: an unresolvable reference is the `Err`, naming the field, never a dangling
+/// reference handed to the sink. A reference at a path the module did NOT declare is left as
+/// written: that is the undeclared-reference refusal's to word (`config_validate`), not this.
+///
+/// The configuration keeps the reference; only the returned value carries the secret, and only for
+/// the one call it is handed to.
+pub(crate) fn sink_settings(
+    axis: &dyn ExportAxis,
+    module: &str,
+    settings: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let declared = axis.secret_refs(module);
+    let tree = Value::Object(settings.clone());
+    if declared.is_empty()
+        || busbar_contract::secret_fields::undeclared_reference(&tree, &declared).is_some()
+    {
+        return Ok(tree);
+    }
+    crate::config::secret::resolve_settings(
+        settings,
+        &declared,
+        module,
+        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .map(Value::Object)
 }
 
 /// Stream bytes as the vocabulary's streams (a byte outside it was refused at load).
@@ -86,13 +131,24 @@ pub(crate) fn one_instance(module: &str) -> bool {
 /// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
 /// the configuration is resolved, for a `one_instance` module configured more than once: the
 /// plugin words its own refusal.
+/// Each instance is handed as its sink reads it ([`sink_settings`]); one whose declared reference
+/// does not resolve is already refused by [`probe`] and is left out.
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
     axis()
         .and_then(|axis| {
+            let instances: Vec<(String, Value)> = instances
+                .iter()
+                .filter_map(|(name, settings)| match settings {
+                    Value::Object(map) => sink_settings(axis, module, map)
+                        .ok()
+                        .map(|v| (name.clone(), v)),
+                    other => Some((name.clone(), other.clone())),
+                })
+                .collect();
             axis.check(
                 module,
                 busbar_contract::abi::export::CHECK_PHASE_LIMITS,
-                instances,
+                &instances,
             )
         })
         .unwrap_or_default()
@@ -116,11 +172,17 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
             continue;
         }
         modules.push(module);
+        // Each instance as its sink is handed it ([`sink_settings`]); one whose declared reference
+        // does not resolve was already refused when the configuration was resolved ([`probe`]).
         let instances: Vec<(String, Value)> = cfg
             .plugins
             .iter()
             .filter(|q| q.def.module.trim() == module)
-            .map(|q| (q.name.clone(), Value::Object(q.def.settings.clone())))
+            .filter_map(|q| {
+                sink_settings(axis, module, &q.def.settings)
+                    .ok()
+                    .map(|v| (q.name.clone(), v))
+            })
             .collect();
         errors.extend(axis.check(module, phase, &instances).unwrap_or_default());
     }
@@ -188,7 +250,14 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     let (mut errors, mut opened) = (Vec::new(), Vec::new());
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
-        let settings = serde_json::Value::Object(def.settings.clone());
+        // Each declared secret reference resolved in place, fail-closed ([`sink_settings`]).
+        let settings = match sink_settings(axis, module, &def.settings) {
+            Ok(settings) => settings,
+            Err(e) => {
+                errors.push(format!("export.{name}.settings: {e}"));
+                continue;
+            }
+        };
         let opened_sink = axis.open(module, &format!("export.{name}"), &settings);
         let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
             continue;

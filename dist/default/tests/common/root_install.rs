@@ -311,6 +311,15 @@ impl busbar_contract::export_calls::ExportAxis for LoaderExports {
             None => kit().routes(module),
         }
     }
+
+    fn secret_refs(&self, module: &str) -> Vec<String> {
+        match (sink(module), EXPORT_REGISTRY.get()) {
+            (Some(_), Some(registry)) => {
+                busbar_contract::plugin_rows::PluginRows::secret_slots(registry, module)
+            }
+            _ => kit().secret_refs(module),
+        }
+    }
 }
 
 /// The axis [`install`] installs.

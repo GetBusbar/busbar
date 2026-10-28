@@ -374,6 +374,15 @@ pub trait ExportAxis: Send + Sync {
     fn linked_modules(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// The settings paths `module`'s Statement declares secret (its `secret_refs`, `.`-separated,
+    /// `*` = any key or index; [`crate::secret_fields`]). The export host lends nothing: the kernel
+    /// resolves a reference written at one of these paths IN PLACE before the settings reach the
+    /// sink's probe, check or open, so the sink reads the value as 1.5.5's did. None by default.
+    fn secret_refs(&self, module: &str) -> Vec<String> {
+        let _ = module;
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
