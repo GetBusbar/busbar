@@ -22,10 +22,10 @@ use crate::open_once::OpenOnce;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
     slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
@@ -38,6 +38,7 @@ use busbar_contract::secret_ref::SecretRef;
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
+use crate::dispatch::lifecycle::{self, blob, open_frame};
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
     EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
@@ -92,19 +93,6 @@ impl std::fmt::Debug for LoadedSecret {
     }
 }
 
-/// `bytes` as a blob the host owns for the call (`NO_BLOB` when empty).
-fn blob(bytes: &[u8], fmt: u32, flags: u32) -> Blob {
-    if bytes.is_empty() {
-        return NO_BLOB;
-    }
-    Blob {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-        fmt,
-        flags,
-    }
-}
-
 fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
 }
@@ -145,23 +133,9 @@ impl LoadedSecret {
                 ))
             }
         };
-        let mut f = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings, BLOB_JSON, 0),
-                secrets: lent.as_ptr(),
-                secrets_len: lent.len(),
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let mut f = open_frame(blob(settings, BLOB_JSON, 0));
+        f.input.secrets = lent.as_ptr();
+        f.input.secrets_len = lent.len();
         let c = plugin.call(life::OPEN, &mut f);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
@@ -285,8 +259,7 @@ impl Opened {
 
 impl Drop for Opened {
     fn drop(&mut self) {
-        let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
-        let _ = self.plugin.call(life::CLOSE, &mut f);
+        lifecycle::close(&self.plugin);
     }
 }
 
@@ -716,24 +689,40 @@ impl SecretAxis for SecretRows {
         let c = self
             .find(module)
             .ok_or_else(|| format!("no secret module answers to '{module}'"))?;
-        let mut secrets = Vec::new();
-        for key in Self::secret_refs(&c)? {
-            let material = match settings.get(&key) {
-                None => Vec::new(),
-                Some(v) => {
-                    // The decoder's own text is withheld: the value may be the secret itself.
-                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(
-                        crate::boot::not_a_reference(format!("secrets.{module}.settings.{key}")),
-                    )?;
-                    resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
-                }
-            };
-            secrets.push(SecretValue::new(material));
+        let keys = Self::secret_refs(&c)?;
+        if let Some(at) = busbar_contract::secret_fields::undeclared_reference(settings, &keys) {
+            return Err(busbar_contract::secret_fields::undeclared_refusal(
+                &format!("secrets.{module}.settings.{at}"),
+                &c.name,
+            ));
         }
-        let bytes = if settings.is_null() {
+        // An exact key stays in the settings, as this host has always left it; a wildcard match
+        // is lent behind its `{"$secret": <index>}` marker.
+        let reference = |at: &str, v: serde_json::Value| -> Result<Vec<u8>, String> {
+            // The decoder's own text is withheld: the value may be the secret itself.
+            let r = serde_json::from_value::<SecretRef>(v).map_err(
+                crate::boot::not_a_reference(format!("secrets.{module}.settings.{at}")),
+            )?;
+            resolve(&r).map_err(|e| format!("secrets.{module}.settings.{at}: {e}"))
+        };
+        let mut lent_settings = settings.clone();
+        let secrets: Vec<_> = busbar_contract::secret_fields::lend(
+            &mut lent_settings,
+            &keys,
+            true,
+            |at, found| found.map_or(Ok(Vec::new()), |v| reference(at, v)),
+            |at, found| match found {
+                serde_json::Value::String(s) => Ok(s.into_bytes()),
+                v => reference(at, v),
+            },
+        )?
+        .into_iter()
+        .map(SecretValue::new)
+        .collect();
+        let bytes = if lent_settings.is_null() {
             Vec::new()
         } else {
-            settings.to_string().into_bytes()
+            lent_settings.to_string().into_bytes()
         };
         let opened = LoadedSecret::open(
             self.load(&c, &Self::label(module))?,

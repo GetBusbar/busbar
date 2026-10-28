@@ -11,7 +11,8 @@
 //!   entry per path in the Statement's order (an unset one lends empty bytes), as hosts always
 //!   have. Then each wildcard path's matches, in document order, are lent after them: every string
 //!   or secret reference it matches is lent and replaced in the settings by the marker
-//!   `{"$secret": <index into the lent secrets>}`, which the SDK's `settings_lent` reads back.
+//!   `{"$secret": <index into the lent secrets>}`, which the SDK's
+//!   [`crate::abi::sdk::cred::settings_lent`] reads back.
 //! * **Policing** ([`undeclared_reference`]). A secret reference (`{env:}`, `{file:}`,
 //!   `{module:, settings:}`) at a position no declared path names is refused: the plugin did not
 //!   declare the field secret, so the kernel will not resolve a secret into it (OWNER RULING,
@@ -20,10 +21,7 @@
 use serde_json::Value;
 use zeroize::Zeroize;
 
-/// The key of the marker a lending host writes where it took a value at a declared wildcard path
-/// out of the settings: `{"$secret": <index into the lent secrets>}` (the SDK's `settings_lent`
-/// reads it back).
-pub const SECRET_MARKER: &str = "$secret";
+pub use crate::abi::sdk::cred::SECRET_MARKER;
 
 /// The segment that matches any object key or any array index.
 pub const WILDCARD: &str = "*";

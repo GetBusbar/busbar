@@ -79,7 +79,7 @@
 //! step can require that the suite FAILS when a count moves.
 //!
 //! THE SEAM: the suite lives in busbar-test-kit, a dev-dependency only, and reaches the one loader
-//! through the dispatcher internals busbar-plugin-loader opens under its `test-support` feature.
+//! through the dispatcher internals busbar-plugin-loader exports as its test seams.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
 //! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes

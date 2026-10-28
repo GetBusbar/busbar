@@ -524,6 +524,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -652,6 +653,7 @@ fn charge_once_at(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
@@ -1369,7 +1371,7 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             need.0,
             desc.target.to_owned(),
             desc.head_target.to_vec(),
-            String::from_utf8_lossy(desc.body).into_owned(),
+            String::from_utf8_lossy(&desc.body).into_owned(),
         ));
         let n = opened.len();
         let body = match self.answer {
@@ -4519,7 +4521,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane_driver::registry::register_test_plane(row);
+        busbar_kernel::test_support::planes::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -8543,6 +8545,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 records: None,
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -8799,9 +8802,8 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane_driver::registry::{
-        PlaneDecl, PlaneDeclaration, TestRegistryIsolation,
-    };
+    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+    use busbar_kernel::test_support::planes::TestRegistryIsolation;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
@@ -9164,4 +9166,37 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert_eq!(bound, Vec::<String>::new(), "a style read binds no row");
+}
+
+/// RED (arch-audit u29 F1; Q128 ruling (a)): a credential is read for its own token endpoint by its
+/// style's DECLARED bit (`STYLE_ENDPOINT_FROM_CREDENTIAL`, `from_credential` here), never by the
+/// style's name. A style that does not state the bit, even one named `jwt-bearer`, is handed its
+/// credential unread; any word stating it has the service account's `token_uri` read, judged under
+/// the provider's metadata posture in 1.5.5's words over its own word, and set.
+#[test]
+fn a_credential_endpoint_is_read_by_the_styles_bit_never_its_name() {
+    let account = |uri: &str| {
+        format!(r#"{{"client_email":"sa@example.com","private_key":"k","token_uri":"{uri}"}}"#)
+    };
+    let route = provider("p", Some("jwt-bearer"));
+    let good = account("https://oauth2.example.com/token");
+    let unread = super::sealed_params("p", "jwt-bearer", false, &route, good.as_bytes())
+        .expect("a style stating no bit is never read");
+    assert_eq!(unread.token_uri, None, "named jwt-bearer, stating no bit");
+    let read = super::sealed_params("p", "x-any-assertion", true, &route, good.as_bytes())
+        .expect("a judged endpoint");
+    assert_eq!(
+        read.token_uri.as_deref(),
+        Some("https://oauth2.example.com/token"),
+        "any word stating the bit has its credential's endpoint read"
+    );
+    let plaintext = account("http://oauth2.example.com/token");
+    let refused = super::sealed_params("p", "jwt-bearer", true, &route, plaintext.as_bytes())
+        .expect_err("a public plaintext token_uri is refused");
+    assert!(
+        refused.starts_with(
+            "provider 'p' (jwt-bearer auth): service-account token_uri must use https for a public host"
+        ),
+        "1.5.5's words over the style's own word: {refused}"
+    );
 }

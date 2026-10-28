@@ -627,8 +627,8 @@ fn claimed_has(filter: axum::routing::MethodFilter, method: &axum::http::Method)
 /// invariant this seam preserves. The handler it wires is a CORE-owned axum closure that extracts
 /// exactly the request pieces the old typed plane handlers took: the swappable `AppHandle` state, the
 /// middleware-resolved governance/principal extensions (absent — hence `Option` — on a
-/// `RouteAuth::None` route, which the auth middleware bypasses before attaching them), the path
-/// captures, the headers and the buffered body. It assembles a neutral
+/// `RouteAuth::None` route, which the auth middleware bypasses before attaching them), the headers
+/// and the buffered body. It assembles a neutral
 /// [`busbar_kernel::plane_routes::PlaneReqCtx`] and awaits the plane's own handler. The plane
 /// names none of these core/axum types; this adapter names them all.
 fn mount_plane_route(
@@ -653,11 +653,16 @@ fn mount_plane_route(
         move |axum::extract::State(handle): axum::extract::State<
             std::sync::Arc<state::AppHandle>,
         >,
-              raw_params: axum::extract::RawPathParams,
+              // Kept for its rejection alone (a capture that is not UTF-8 is refused before the
+              // handler, as it always was); no handler reads the captures.
+              _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
@@ -671,25 +676,11 @@ fn mount_plane_route(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
-            let path_params: Vec<(String, String)> = raw_params
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
             async move {
-                let gov = gov.map(|axum::extract::Extension(g)| g);
-                // The one identity fact a `Key`-auth handler binds request-scoped state to — the
-                // resolved key id — lifted from the middleware-attached `gov` so the handler never
-                // re-runs the identity chain (which would double-run it and change behaviour).
-                let caller_principal = gov
-                    .as_ref()
-                    .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
-                // D1: mint the NEUTRAL host seam over the request's live engine snapshot BEFORE
-                // erasing the handle, so the plane reaches host capabilities by calling typed methods
-                // on `ctx.host` rather than naming `busbar_kernel::plane_host::*_over`.
-                let host = crate::plane_driver::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -697,15 +688,17 @@ fn mount_plane_route(
                     method,
                     headers,
                     body,
-                    path_params,
-                    caller_principal,
-                    gov,
+                    gov: gov.map(|axum::extract::Extension(g)| g),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
+                    ticket,
                     consumed_fields,
                     engine,
-                    host,
                     slot,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                 };
                 handler(ctx).await
             }
@@ -741,11 +734,14 @@ fn mount_plane_session(
               axum::extract::State(handle): axum::extract::State<
             std::sync::Arc<state::AppHandle>,
         >,
-              raw_params: axum::extract::RawPathParams,
+              _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
@@ -758,19 +754,11 @@ fn mount_plane_session(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
-            let path_params: Vec<(String, String)> = raw_params
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
             async move {
-                let gov = gov.map(|axum::extract::Extension(g)| g);
-                let caller_principal = gov
-                    .as_ref()
-                    .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
-                let host = crate::plane_driver::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -778,14 +766,16 @@ fn mount_plane_session(
                     method: RouteMethod::Get,
                     headers,
                     body: axum::body::Bytes::new(),
-                    path_params,
-                    caller_principal,
-                    gov,
+                    gov: gov.map(|axum::extract::Extension(g)| g),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
-                    host,
                     slot,
                     caller_credential,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
+                    ticket,
                     consumed_fields,
                 };
                 match handler(ctx).await {

@@ -1006,6 +1006,56 @@ async fn mtls_rejects_bad_client_then_serves_valid() {
     assert_eq!(resp.status(), 200);
 }
 
+/// A listener states its scheme on every request it serves: SECURE through the connection-security
+/// wrap, PLAIN on the plain loop. A request no listener served states none.
+#[tokio::test]
+async fn a_listener_states_its_scheme_on_every_request() {
+    use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
+    use busbar_kernel::plane_routes::ListenerScheme;
+    fn scheme_router() -> Router {
+        Router::new().route(
+            "/healthz",
+            get(
+                |l: Option<axum::extract::Extension<ListenerScheme>>| async move {
+                    format!("scheme={}", l.map_or(0, |axum::extract::Extension(l)| l.0))
+                },
+            ),
+        )
+    }
+    let body = |got: &[u8]| String::from_utf8_lossy(got).into_owned();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let secured = listener.local_addr().unwrap();
+    let (stop_secured, rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let shutdown = async {
+            let _ = rx.await;
+        };
+        let wrap: std::sync::Arc<dyn busbar_contract::transport::wire::ConnectionSecurity> =
+            std::sync::Arc::new(HelloWrap);
+        super::serve(listener, scheme_router(), wrap, shutdown, None)
+            .await
+            .unwrap();
+    });
+    let got = body(&healthz_after(secured, b"LET-ME-IN\n").await);
+    assert!(got.ends_with(&format!("scheme={SCHEME_SECURE}")), "{got}");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let plain = listener.local_addr().unwrap();
+    let (stop_plain, rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let shutdown = async {
+            let _ = rx.await;
+        };
+        super::serve_plain(listener, scheme_router(), shutdown, None)
+            .await
+            .unwrap();
+    });
+    let got = body(&healthz_after(plain, b"").await);
+    assert!(got.ends_with(&format!("scheme={SCHEME_PLAIN}")), "{got}");
+    let _ = (stop_secured.send(()), stop_plain.send(()));
+}
+
 /// AN OVERSIZE BODY STILL GETS ITS 413, however slowly it is uploaded (the oracle's
 /// `http.crosscut|413|*` cells, 1.5.5's golden): busbar answers the body limit's 413 before the
 /// client has finished sending, and closes. A close with the client's unread bytes still arriving

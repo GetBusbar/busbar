@@ -108,13 +108,20 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
     }
 }
 
+impl LiftableSection for crate::config::CredentialsCfg {
+    fn bank(self, into: &mut Lifted) {
+        into.credentials = Some(self);
+    }
+}
+
 /// The KERNEL-OWNED top-level keys that exist only in 1.6.0 and must never reach the frozen
-/// top-level struct: busbar AS an OAuth 2.1 authorization server. Every entry is a key the
-/// published 1.5.5 binary refuses as unknown, and none may appear in the frozen struct's field set.
+/// top-level struct: busbar AS an OAuth 2.1 authorization server, and the at-rest keys of a
+/// recoverable credential (`credentials:`). Every entry is a key the published 1.5.5 binary refuses
+/// as unknown, and none may appear in the frozen struct's field set.
 ///
 /// A PLANE's top-level sections are not here: they are read off the registered planes'
 /// declarations ([`lift_table`]), so a build without a plane never lifts its section.
-pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["oauth_as"];
+pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["oauth_as", "credentials"];
 
 /// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
 /// five keys around it are 1.5.5's and stay in the frozen struct.
@@ -133,6 +140,7 @@ enum Dest {
     /// A declaring section no carrier holds: carried RAW, for its plane to read over the ABI.
     Raw,
     AuthPolicy,
+    Credentials,
 }
 
 impl Dest {
@@ -157,7 +165,10 @@ impl Dest {
 /// REGISTERED plane declares (its declaring section and the sections it owns beside it), minus the
 /// sections core still owns concretely (a frozen field, never lifted). First declaration wins.
 fn lift_table() -> Vec<(&'static str, Dest)> {
-    let mut table: Vec<(&'static str, Dest)> = vec![(LIFTED_TOP_LEVEL_KEYS[0], Dest::OauthAs)];
+    let mut table: Vec<(&'static str, Dest)> = vec![
+        (LIFTED_TOP_LEVEL_KEYS[0], Dest::OauthAs),
+        (LIFTED_TOP_LEVEL_KEYS[1], Dest::Credentials),
+    ];
     for decl in crate::plane_driver::registry::plane_decls() {
         let decl: &PlaneDeclaration = &decl.declaration;
         for &key in std::iter::once(&decl.config_section).chain(decl.owned_config_sections) {
@@ -183,6 +194,7 @@ pub(crate) struct Lifted {
     oauth_as: Option<Option<serde_yaml::Value>>,
     declared: DeclaredSections,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
+    credentials: Option<crate::config::CredentialsCfg>,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
     plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
@@ -207,6 +219,9 @@ impl Lifted {
         }
         if let Some(v) = self.oauth_as {
             deploy.oauth_as = v;
+        }
+        if let Some(v) = self.credentials {
+            deploy.credentials = v;
         }
         if let Some(v) = self.auth_policy {
             // A policy block without an `auth:` block cannot happen: `policy:` is lifted from
@@ -260,6 +275,10 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                 lifted.plane_raw.insert(key, section);
             }
             Dest::AuthPolicy => crate::config::AuthPolicyCfg::deserialize(de)?.bank(lifted),
+            // `credentials:` with no value (`credentials:` alone) is the all-default block.
+            Dest::Credentials => Option::<crate::config::CredentialsCfg>::deserialize(de)?
+                .unwrap_or_default()
+                .bank(lifted),
         }
         Ok(())
     }
