@@ -40,13 +40,10 @@ pub mod authz;
 // nowhere else (the unsafe policy above).
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
-// THE COUNTING ALLOCATOR A PLUGIN'S ALLOCATION GATES READ (ARCHITECT ruling 2026-10-21: plugin
-// crate roots keep the literal `#![forbid(unsafe_code)]`, so the `GlobalAlloc` impl lives here). Not
-// in a release build: compiled for this crate's own tests and, through the dev-only, EMPTY
-// `alloc-counter` feature, for a plugin's `[dev-dependencies]` edge; `tests/test_seal_is_dev_only.rs`
-// refuses any non-dev edge or `default` that enables it. Its one `#[allow(unsafe_code)]` sits on the
-// `unsafe impl GlobalAlloc` block alone; the rest of the module stays under the crate's `deny`.
-#[cfg(any(test, feature = "alloc-counter"))]
+// THE COUNTING ALLOCATOR this crate's own allocation gates read: busbar-test-kit's, mounted into
+// this crate's test build (a plugin's gates name `busbar_test_kit::alloc_counter`).
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/alloc_counter.rs"]
 pub mod alloc_counter;
 // THE SANS-IO `hyper` DRIVE framers expand (`hyper_io!(<buffer>)`): a macro only, so the contract
 // depends on neither `hyper` nor a buffer crate (ARCHITECT ruling 2026-09-30 (c)).

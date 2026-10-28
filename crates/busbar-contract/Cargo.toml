@@ -171,11 +171,3 @@ test-seal = []
 # from every release build; it switches on no dependency and no other feature.
 services-double = []
 
-# The TEST-ONLY counting allocator (`alloc_counter`, ARCHITECT ruling 2026-10-21): the one
-# `GlobalAlloc` impl a plugin's allocation gates install as their test binary's
-# `#[global_allocator]`, so a plugin crate root keeps the literal `#![forbid(unsafe_code)]`
-# (BUSBAR-1.6.0.md l.273). OFF by default, never in `default`, and named only in
-# `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs` refuses any other edge and any `default`
-# that names it), so it is absent from every release build; it switches on no dependency and no
-# other feature.
-alloc-counter = []

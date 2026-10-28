@@ -15,6 +15,8 @@ pub use busbar_plugin_loader::{
     auth_door, dispatch, plugin_library_filename, sign, store_v3, LinkedPlugin, PluginRegistry,
 };
 
+/// The counting allocator a plugin's allocation gates install as their `#[global_allocator]`.
+pub mod alloc_counter;
 /// THE PUBLISHED CONFORMANCE SUITE: every real plugin repo runs it over its linked door and its
 /// built cdylib, through the one loader.
 #[allow(unsafe_code)] // REVIEWED: the published suite drives raw doors and plants faults
