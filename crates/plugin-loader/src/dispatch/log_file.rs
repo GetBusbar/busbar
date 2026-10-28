@@ -516,9 +516,6 @@ impl PluginLogSink {
     /// Hand one line at `level` to the writer, if the instance's level admits it. Never waits: a
     /// full queue counts the line instead, and the count is written once the writer catches up.
     fn line(&self, level: LogLevel, text: Vec<u8>) {
-        // Busbar's own log gets its copy HERE, in the order the plugin logged it among the host's
-        // own lines, as 1.5.5 printed them; only WARN and ERROR, whatever the file's level.
-        mirror(level, &text);
         if level == LogLevel::Off
             || level > LogLevel::of_u8(self.admit.level.load(Ordering::Acquire))
         {
@@ -887,6 +884,11 @@ impl EnvelopeSink for PluginLogSink {
     fn diag(&self, d: Diagnostic<'_>) {
         let level = LogLevel::of_severity(d.severity);
         if d.id == DIAG_LOG {
+            // Busbar's own log gets its copy HERE, in the order the plugin logged it among the
+            // host's own lines, as 1.5.5 printed them; only WARN and ERROR, whatever the file's
+            // level. A declared diagnostic is not copied: the host's observer already writes it
+            // to busbar's log under its code.
+            mirror(level, d.text);
             return self.line(level, d.text.to_vec());
         }
         let mut text = Vec::with_capacity(d.name.len() + 2 + d.text.len());
