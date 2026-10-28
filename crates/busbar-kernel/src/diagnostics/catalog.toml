@@ -232,14 +232,15 @@ action = "If the model is intentionally free, ignore this. Otherwise fill in the
 
 [[diagnostic]]
 name = "CONFIG_METADATA_ENTRY_NAMES_NO_HOST"
-doc = "A metadata host-list entry names no host the guard judges; it boots, matches nothing and is dropped."
+doc = "RETIRED: a metadata host-list entry that names no host is refused at startup, not warned about."
 code = 3024
 class = "Config"
 slug = "config-metadata-entry-names-no-host"
-title = "A metadata host-list entry names no host (it matches nothing and is dropped)"
+title = "A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED"
 severity = "Actionable"
-summary = "An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` names no host a URL client would dial: UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or its last label reads as a number but it is no IPv4 address (`1.2.3.4.5`, `999.1.1.1`). It could never match a destination, so it is dropped from matching and the configuration boots, as it did on 1.5.5. The built-in cloud-metadata denylist still blocks every real target. Emitted once per entry at config load, naming the key and the entry."
-action = "Fix the named entry as the line says (write the host in ASCII or punycode, decoded, or as a dotted-quad address), or remove it. Nothing else changes until you do."
+summary = "RETIRED. Nothing emits this code: a metadata host-list entry that names no host is refused at startup by config validation, naming the key and the entry."
+action = "Nothing emits this code. Fix the entry config validation names."
+retired = true
 
 [[diagnostic]]
 name = "CONFIG_AUTH_CHAIN_FULL_SCOPE"
