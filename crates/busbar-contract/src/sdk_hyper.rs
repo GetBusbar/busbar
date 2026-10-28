@@ -41,7 +41,7 @@ macro_rules! hyper_io {
             pub type Buf = $buf;
             use ::hyper::rt::{Executor, ReadBufCursor, Sleep, Timer};
 
-            use $crate::abi::sdk::{Lent, Out};
+            use $crate::abi::sdk::{HostBuf, Lent, Out};
             use $crate::abi::transport::{FramerOut, FramerSink};
 
             /// The most bytes `hyper` may leave in the pipe's write half before its writes pend.
@@ -350,6 +350,14 @@ macro_rules! hyper_io {
                     p.tx.drain(..n).collect()
                 }
 
+                /// Write as many wire bytes owed to the far side as `into` has room for, straight
+                /// into the host's buffer (no copy of them in between), and owe only the rest.
+                pub fn wire_into(&self, into: &mut HostBuf<'_, u8>) {
+                    let mut p = self.pipe.lock().expect("pipe");
+                    let n = into.stream(&p.tx);
+                    p.tx.drain(..n);
+                }
+
                 /// Whether wire bytes are still owed.
                 #[must_use]
                 pub fn wire_pending(&self) -> bool {
@@ -408,6 +416,14 @@ macro_rules! hyper_io {
             pub trait Owed {
                 /// Take up to `cap` wire bytes owed to the far side.
                 fn take_wire(&mut self, cap: usize) -> Vec<u8>;
+                /// Write as many wire bytes owed to the far side as `into` has room for. A framing
+                /// whose wire is a [`HostIo`]'s writes them straight in
+                /// (`self.io.wire_into(into)`); by default they are taken ([`Owed::take_wire`])
+                /// and copied in.
+                fn wire_into(&mut self, into: &mut HostBuf<'_, u8>) {
+                    let room = into.cap().saturating_sub(into.asked());
+                    into.extend(&self.take_wire(room));
+                }
                 /// Whether wire bytes are still owed after a take.
                 fn wire_pending(&self) -> bool;
                 /// The pieces waiting for the host.
@@ -423,8 +439,8 @@ macro_rules! hyper_io {
             struct Owing<'a, F>(&'a mut F);
 
             impl<F: Owed> $crate::abi::sdk::transport::sink::Owed<Buf> for Owing<'_, F> {
-                fn take_wire(&mut self, cap: usize) -> Vec<u8> {
-                    self.0.take_wire(cap)
+                fn wire_into(&mut self, into: &mut HostBuf<'_, u8>) {
+                    self.0.wire_into(into);
                 }
                 fn wire_pending(&self) -> bool {
                     self.0.wire_pending()

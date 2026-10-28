@@ -18,9 +18,9 @@ struct Framing {
 }
 
 impl Owed<Vec<u8>> for Framing {
-    fn take_wire(&mut self, cap: usize) -> Vec<u8> {
-        let n = self.wire.len().min(cap);
-        self.wire.drain(..n).collect()
+    fn wire_into(&mut self, into: &mut HostBuf<'_, u8>) {
+        let n = into.stream(&self.wire);
+        self.wire.drain(..n);
     }
     fn wire_pending(&self) -> bool {
         !self.wire.is_empty()

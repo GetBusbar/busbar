@@ -159,8 +159,9 @@ pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
 
 /// What a framing owes the host, as [`fill`] reads it; `B` is its pieces' frame buffer.
 pub trait Owed<B> {
-    /// Take up to `cap` wire bytes owed to the far side.
-    fn take_wire(&mut self, cap: usize) -> Vec<u8>;
+    /// Write as many wire bytes owed to the far side as `into` has room for, straight into it
+    /// ([`HostBuf::stream`]), and owe only the rest.
+    fn wire_into(&mut self, into: &mut HostBuf<'_, u8>);
     /// Whether wire bytes are still owed after a take.
     fn wire_pending(&self) -> bool;
     /// The pieces waiting for the host.
@@ -187,8 +188,7 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     fault_of: impl Fn(u16) -> u8,
 ) {
     let mut wire_buf = sink.wire();
-    let wire = f.take_wire(wire_buf.cap());
-    wire_buf.extend(&wire);
+    f.wire_into(&mut wire_buf);
     let mut y = o.get().yielded;
     y.wire_len = wire_buf.written() as u64;
     let (mut frame, mut pieces): (HostBuf<'_, u8>, HostBuf<'_, FramePiece>) =
