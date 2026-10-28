@@ -75,6 +75,9 @@ use busbar_contract::conn::{
 };
 use std::future::Future as _;
 
+use super::services::{write_out, Answered};
+use super::ticket::InstanceWake;
+
 /// The table an instance with a declared need is handed.
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     size: size_of::<ConnectorSlots>() as u32,
@@ -112,75 +115,51 @@ pub const fn ticket_of(n: u64) -> Ticket {
     }
 }
 
-/// One slot's answer, before it is written into the caller's `out`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Answer {
-    outcome: Outcome,
-    value: u64,
-    len: u64,
-    error: &'static str,
+/// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
+/// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can tell
+/// it from the target's, the egress rules' or the far end's.
+const fn refusal(e: ConnError) -> Answered {
+    let outcome = match e {
+        ConnError::Pending => Outcome::Pending,
+        ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
+        ConnError::NotOwner
+        | ConnError::UndeclaredNeed
+        | ConnError::Refused
+        | ConnError::Unarmed
+        | ConnError::CredentialUnavailable => Outcome::Refused,
+    };
+    let value = match e {
+        ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+        _ => CAUSE_NONE,
+    };
+    Answered {
+        value,
+        ..Answered::bare(outcome, e.text())
+    }
 }
 
-impl Answer {
-    const fn ready(value: u64, len: u64) -> Self {
-        Self {
-            outcome: Outcome::Ready,
-            value,
-            len,
-            error: "",
-        }
+/// A connection table's refusal of `conn`, naming why the connection failed where the table names
+/// a cause: its `CAUSE_*` stage in `value`, the underlying error's own text in `error`.
+fn refusal_of(
+    e: ConnError,
+    id: InstanceId,
+    table: &Arc<dyn DeclaredConns>,
+    conn: ConnId,
+) -> Answered {
+    let plain = refusal(e);
+    if matches!(e, ConnError::Pending) {
+        return plain;
     }
-
-    const fn with(outcome: Outcome, error: &'static str) -> Self {
-        Self {
-            outcome,
-            value: 0,
-            len: 0,
-            error,
-        }
-    }
-
-    /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
-    /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can
-    /// tell it from the target's, the egress rules' or the far end's.
-    const fn of(e: ConnError) -> Self {
-        let outcome = match e {
-            ConnError::Pending => Outcome::Pending,
-            ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
-            ConnError::NotOwner
-            | ConnError::UndeclaredNeed
-            | ConnError::Refused
-            | ConnError::Unarmed
-            | ConnError::CredentialUnavailable => Outcome::Refused,
-        };
-        let value = match e {
-            ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
-            _ => CAUSE_NONE,
-        };
-        Self {
-            value,
-            ..Self::with(outcome, e.text())
-        }
-    }
-
-    /// A connection table's refusal of `conn`, naming why the connection failed where the table
-    /// names a cause: its `CAUSE_*` stage in `value`, the underlying error's own text in `error`.
-    fn of_conn(e: ConnError, id: InstanceId, table: &Arc<dyn DeclaredConns>, conn: ConnId) -> Self {
-        let plain = Self::of(e);
-        if matches!(e, ConnError::Pending) {
-            return plain;
-        }
-        match table.cause(id, conn) {
-            Some(c) => Self {
-                value: c.stage,
-                error: match interned(&c.text) {
-                    "" => plain.error,
-                    text => text,
-                },
-                ..plain
+    match table.cause(id, conn) {
+        Some(c) => Answered {
+            value: c.stage,
+            error: match interned(&c.text) {
+                "" => plain.error,
+                text => text,
             },
-            None => plain,
-        }
+            ..plain
+        },
+        None => plain,
     }
 }
 
@@ -225,13 +204,14 @@ fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal
 /// that reuses a handle another exchange issued in a kept cycle is answered FAULT and nothing runs
 /// (a replay would hand it that exchange's kept answer); else `run`'s answer, PENDING or not,
 /// noted against `h`.
-fn held(ctx: HostCtx, h: CompletionHandle, run: impl FnOnce() -> Answer) -> Answer {
-    let store = super::handle::resolve(ctx)
-        .and_then(|w| w.route.get())
+fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered) -> Answered {
+    let store = wake
+        .route
+        .get()
         .and_then(std::sync::Weak::upgrade)
         .and_then(|r| r.store());
     if store.as_ref().is_some_and(|s| !s.held.call(h)) {
-        return Answer::with(Outcome::Fault, "");
+        return Answered::fault();
     }
     let a = run();
     if let Some(s) = store {
@@ -241,63 +221,44 @@ fn held(ctx: HostCtx, h: CompletionHandle, run: impl FnOnce() -> Answer) -> Answ
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
-/// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the whole `out`
-/// is written.
-fn slot(
+/// `in`, then `body` with the caller's identity, table and connector state. A panic answers FAULT;
+/// the whole `out` is written.
+fn slot<R: Into<Kept>>(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, ServiceHead) -> Answer,
+    body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, &ConnState, ServiceHead) -> R,
 ) -> RawOutcome {
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
-            return Answer::with(Outcome::Fault, "");
+            return Answered::fault();
         }
         // SAFETY: a non-NULL `in` leads with its head (the call shape).
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
         if head.op != service || (head.size as usize) < in_size {
-            return Answer::with(Outcome::Fault, "");
+            return Answered::fault();
         }
-        match armed(ctx) {
-            // A never-pend service that writes the caller's memory is run afresh on a replay: a
-            // kept answer would say the bytes were written into memory this call never touched.
-            Some((id, table)) if service == service::IDENTITY => body(*id, table, head),
-            Some((id, table)) if service == service::READ_REPLY => held(ctx, head.handle, || {
-                replay_read(*id, head.handle, input);
-                kept(*id, head.handle, || body(*id, table, head))
-            }),
-            Some((id, table)) => held(ctx, head.handle, || {
-                kept(*id, head.handle, || body(*id, table, head))
-            }),
-            None => Answer::of(ConnError::Unarmed),
-        }
-    }))
-    .unwrap_or_else(|_| Answer::with(Outcome::Fault, ""));
-    if !out.is_null() {
-        let o = ServiceOut {
-            size: size_of::<ServiceOut>() as u32,
-            outcome: RawOutcome::of(a.outcome),
-            _reserved: [0; 3],
-            value: a.value,
-            len: a.len,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
-            error: AbiStr {
-                ptr: if a.error.is_empty() {
-                    std::ptr::null()
-                } else {
-                    a.error.as_ptr()
-                },
-                len: a.error.len(),
-            },
+        let Some((wake, (id, table))) =
+            super::handle::resolve(ctx).and_then(|w| w.conn.get().map(|c| (w, c)))
+        else {
+            return refusal(ConnError::Unarmed);
         };
-        // SAFETY: the caller's `out`, checked non-NULL.
-        unsafe { out.write_unaligned(o) };
-    }
-    RawOutcome::of(a.outcome)
+        let st = &wake.conn_state;
+        let run = || -> Kept { body(*id, table, st, head).into() };
+        // A never-pend service that writes the caller's memory is run afresh on a replay: a kept
+        // answer would say the bytes were written into memory this call never touched.
+        if service == service::IDENTITY {
+            return run().answer;
+        }
+        // A replayed `READ_REPLY` writes what it read again into the memory the replay lends.
+        let replay = (service == service::READ_REPLY).then_some(input);
+        held(wake, head.handle, || st.kept(head.handle, replay, run))
+    }))
+    .unwrap_or_else(|_| Answered::fault());
+    // SAFETY: the caller's `out`, as the call shape lends it.
+    unsafe { write_out(out, &a) }
 }
 
 /// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL or over the hard
@@ -345,36 +306,36 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
         out,
         service::ESTABLISH,
         ESTABLISH_IN_MEMBERLESS,
-        |id, table, head| {
+        |id, table, st, head| {
             // SAFETY: the head covered an `EstablishIn` up to its appended `member`; one whose
             // `size` stops there names no registration.
             let i = unsafe { read_establish(input) };
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(target) = (unsafe { bytes(i.target.ptr.cast_mut(), i.target.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let target = String::from_utf8_lossy(target);
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(within) = (unsafe { bytes(i.within.ptr.cast_mut(), i.within.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let Some(within) = addresses(within) else {
-                return Answer::with(
+                return Answered::bare(
                     Outcome::Refused,
                     "an address the dial must land on is not an IP literal",
                 );
             };
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(member) = (unsafe { bytes(i.member.ptr.cast_mut(), i.member.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let member = String::from_utf8_lossy(member).into_owned();
             if table.framed(id, NeedId(i.need)) {
                 // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
                 // request is the connection's opening message.
                 let stream = held_id();
-                held_conns().insert(
-                    (id, stream),
+                st.streams().insert(
+                    stream,
                     Stream {
                         conn: Conn::Held {
                             need: NeedId(i.need),
@@ -388,7 +349,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                         ended: false,
                     },
                 );
-                return Answer::ready(stream, 0);
+                return Answered::ready(stream, 0);
             }
             // A RAW STREAM IS ANSWERED ONCE ITS DIAL HAS LANDED ("dial the need's endpoints ...
             // and answer the stream"): a far end that refuses the connect is the establish's own
@@ -398,7 +359,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             // handle, the same ticket) answers the same dial: nothing is dialled twice.
             let ticket = head.handle.ticket;
             let wanted = (NeedId(i.need), target.into_owned(), within, member);
-            let conn = match dialling(id, ticket, &wanted) {
+            let conn = match st.dialling(id, table, ticket, &wanted) {
                 Some(conn) => conn,
                 None => {
                     let desc = OpenDesc {
@@ -410,23 +371,23 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                     };
                     match table.open(id, wanted.0, &desc) {
                         Ok(conn) => conn,
-                        Err(e) => return Answer::of(e),
+                        Err(e) => return refusal(e),
                     }
                 }
             };
             // A call on no ticket may not pend: its stream is answered with the dial in flight.
             if ticket.is_none() {
-                return Answer::ready(conn.0, 0);
+                return Answered::ready(conn.0, 0);
             }
             match table.landed(id, conn, conn_ticket(ticket)) {
-                Ok(()) => Answer::ready(conn.0, 0),
+                Ok(()) => Answered::ready(conn.0, 0),
                 Err(ConnError::Pending) => {
-                    dialling_conns().insert((id, ticket), (wanted, conn, Arc::clone(table)));
-                    Answer::of(ConnError::Pending)
+                    lock(&st.dialling).insert(ticket, (wanted, conn));
+                    refusal(ConnError::Pending)
                 }
                 Err(e) => {
                     // The connect failed: its cause is read before the stream goes.
-                    let a = Answer::of_conn(e, id, table, conn);
+                    let a = refusal_of(e, id, table, conn);
                     let _ = table.close(id, conn);
                     a
                 }
@@ -439,45 +400,43 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
 /// registration.
 type Wanted = (NeedId, String, Vec<IpAddr>, String);
 
-/// THE DIALS IN FLIGHT: an `ESTABLISH` on a ticket that answered PENDING while its dial connects,
-/// by instance and ticket, with the table to close it on when the ticket moves on without it.
-type Dialling = HashMap<(InstanceId, Ticket), (Wanted, ConnId, Arc<dyn DeclaredConns>)>;
-
-fn dialling_conns() -> MutexGuard<'static, Dialling> {
-    static DIALLING: OnceLock<Mutex<Dialling>> = OnceLock::new();
-    DIALLING
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// The dial a pending `ESTABLISH` on `ticket` left in flight, taken, when the re-call asks for the
-/// same; one it no longer asks for is closed.
-fn dialling(id: InstanceId, ticket: Ticket, wanted: &Wanted) -> Option<ConnId> {
-    if ticket.is_none() {
-        return None;
-    }
-    let (asked, conn, table) = dialling_conns().remove(&(id, ticket))?;
-    if &asked == wanted {
-        return Some(conn);
-    }
-    let _ = table.close(id, conn);
-    None
-}
-
-/// Close every dial a pending `ESTABLISH` left in flight for `id` (on `ticket`, or on any ticket
-/// `gone` names): the op that asked for it ended without its re-call. The map is let go before
-/// anything is closed.
-fn drop_dialling(gone: impl Fn(&(InstanceId, Ticket)) -> bool) {
-    let left: Vec<(InstanceId, ConnId, Arc<dyn DeclaredConns>)> = {
-        let mut all = dialling_conns();
-        let keys: Vec<(InstanceId, Ticket)> = all.keys().filter(|k| gone(k)).copied().collect();
-        keys.iter()
-            .filter_map(|k| all.remove(k).map(|(_, conn, table)| (k.0, conn, table)))
-            .collect()
-    };
-    for (id, conn, table) in left {
+impl ConnState {
+    /// The dial a pending `ESTABLISH` on `ticket` left in flight, taken, when the re-call asks for
+    /// the same; one it no longer asks for is closed on `table`.
+    fn dialling(
+        &self,
+        id: InstanceId,
+        table: &Arc<dyn DeclaredConns>,
+        ticket: Ticket,
+        wanted: &Wanted,
+    ) -> Option<ConnId> {
+        if ticket.is_none() {
+            return None;
+        }
+        let (asked, conn) = lock(&self.dialling).remove(&ticket)?;
+        if &asked == wanted {
+            return Some(conn);
+        }
         let _ = table.close(id, conn);
+        None
+    }
+
+    /// Close on `table` every dial a pending `ESTABLISH` left in flight on a ticket `gone` names:
+    /// the op that asked for it ended without its re-call. The map is let go before anything is
+    /// closed.
+    fn drop_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) {
+        let left: Vec<ConnId> = {
+            let mut all = lock(&self.dialling);
+            let keys: Vec<Ticket> = all.keys().filter(|k| gone(k)).copied().collect();
+            keys.iter()
+                .filter_map(|k| all.remove(k).map(|(_, conn)| conn))
+                .collect()
+        };
+        if let Some((id, table)) = table {
+            for conn in left {
+                let _ = table.close(*id, conn);
+            }
+        }
     }
 }
 
@@ -500,27 +459,27 @@ extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
         out,
         service::READ,
         size_of::<IoIn>(),
-        |id, table, head| {
+        |id, table, st, head| {
             // SAFETY: the head covered an `IoIn`.
             let i = unsafe { input.cast::<IoIn>().read_unaligned() };
             // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
             // past the call, a PENDING answer included.
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let ticket = conn_ticket(head.handle.ticket);
-            let conn = match resolve(id, table, i.stream) {
+            let conn = match resolve(st, id, table, i.stream) {
                 Ok(c) => c,
-                Err(e) => return Answer::of(e),
+                Err(e) => return refusal(e),
             };
             match table.read(id, conn, ticket, buf) {
-                Ok(piece) => Answer::ready(0, piece.len as u64),
-                Err(ConnError::Closed) => Answer::ready(0, 0),
-                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answer::with(
+                Ok(piece) => Answered::ready(0, piece.len as u64),
+                Err(ConnError::Closed) => Answered::ready(0, 0),
+                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
                     Outcome::Refused,
                     "a read that would pend is callable only inside a ticketed op",
                 ),
-                Err(e) => Answer::of_conn(e, id, table, conn),
+                Err(e) => refusal_of(e, id, table, conn),
             }
         },
     )
@@ -533,21 +492,21 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         out,
         service::WRITE,
         size_of::<IoIn>(),
-        |id, table, _| {
+        |id, table, st, _| {
             // SAFETY: the head covered an `IoIn`.
             let i = unsafe { input.cast::<IoIn>().read_unaligned() };
             // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
             // past the call, a PENDING answer included.
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
-            let conn = match resolve(id, table, i.stream) {
+            let conn = match resolve(st, id, table, i.stream) {
                 Ok(c) => c,
-                Err(e) => return Answer::of(e),
+                Err(e) => return refusal(e),
             };
             match table.write(id, conn, buf, false, false) {
-                Ok(n) => Answer::ready(0, n as u64),
-                Err(e) => Answer::of_conn(e, id, table, conn),
+                Ok(n) => Answered::ready(0, n as u64),
+                Err(e) => refusal_of(e, id, table, conn),
             }
         },
     )
@@ -560,25 +519,25 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         out,
         service::CLOSE,
         size_of::<StreamIn>(),
-        |id, table, _| {
+        |id, table, st, _| {
             // SAFETY: the head covered a `StreamIn`.
             let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
-            held_facts().remove(&(id, i.stream));
-            let held = held_conns().remove(&(id, i.stream));
+            lock(&st.facts).remove(&i.stream);
+            let held = st.streams().remove(&i.stream);
             let conn = match held.map(|s| s.conn) {
                 // Never opened, or refused: nothing on the table to close.
                 // (A request waiting on its auth call drops the call: a client drop.)
                 // (A stream being opened outside the lock is closed by the call that opens it.)
                 Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
-                    return Answer::ready(0, 0)
+                    return Answered::ready(0, 0)
                 }
                 Some(Conn::Open(c)) => c,
-                None if i.stream & HELD != 0 => return Answer::of(ConnError::Closed),
+                None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
                 None => ConnId(i.stream),
             };
             match table.close(id, conn) {
-                Ok(()) => Answer::ready(0, 0),
-                Err(e) => Answer::of(e),
+                Ok(()) => Answered::ready(0, 0),
+                Err(e) => refusal(e),
             }
         },
     )
@@ -608,7 +567,7 @@ extern "C" fn upgrade_secure(
         out,
         service::UPGRADE_SECURE,
         UPGRADE_IN_V1_SIZE,
-        |id, table, head| {
+        |id, table, _, head| {
             // An `in` from before `flags` reads them as 0: only the bytes the head states are read.
             // SAFETY: an all-zero `UpgradeIn` is a valid value (NULL strings, no flags).
             let mut i: UpgradeIn = unsafe { std::mem::zeroed() };
@@ -626,10 +585,10 @@ extern "C" fn upgrade_secure(
             let (Ok(name), Ok(trust)) = (unsafe { optional_text(i.offered_name) }, unsafe {
                 optional_text(i.trust)
             }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             if i.stream & HELD != 0 {
-                return Answer::with(
+                return Answered::bare(
                     Outcome::Refused,
                     "a framed stream is secured by its need, never upgraded",
                 );
@@ -640,13 +599,13 @@ extern "C" fn upgrade_secure(
                     if verify_off {
                         warn_unverified(ctx);
                     }
-                    Answer::ready(0, 0)
+                    Answered::ready(0, 0)
                 }
-                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answer::with(
+                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
                     Outcome::Refused,
                     "an upgrade that would pend is callable only inside a ticketed op",
                 ),
-                Err(e) => Answer::of(e),
+                Err(e) => refusal(e),
             }
         },
     )
@@ -677,21 +636,13 @@ fn warn_unverified(ctx: HostCtx) {
     );
 }
 
-/// The facts strings each stream was answered, held until it closes (`FactsIn::facts`: "the
-/// strings stay valid until the stream closes"): a later answer that differs is added, never put
-/// in an earlier one's place.
-type HeldFacts = HashMap<(InstanceId, u64), Vec<Box<str>>>;
-
-fn held_facts() -> MutexGuard<'static, HeldFacts> {
-    static HELD_FACTS: OnceLock<Mutex<HeldFacts>> = OnceLock::new();
-    HELD_FACTS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+/// The facts strings each of an instance's streams was answered, held until it closes
+/// (`FactsIn::facts`: "the strings stay valid until the stream closes"): a later answer that
+/// differs is added, never put in an earlier one's place.
+type HeldFacts = HashMap<u64, Vec<Box<str>>>;
 
 /// `text`, held for `stream` until it closes, as the caller reads it.
-fn held_text(all: &mut HeldFacts, key: (InstanceId, u64), text: Option<&str>) -> AbiStr {
+fn held_text(all: &mut HeldFacts, key: u64, text: Option<&str>) -> AbiStr {
     let Some(text) = text else {
         return AbiStr {
             ptr: std::ptr::null(),
@@ -716,23 +667,23 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         out,
         service::FACTS,
         size_of::<FactsIn>(),
-        |id, table, _| {
+        |id, table, st, _| {
             // SAFETY: the head covered a `FactsIn`.
             let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
             if i.facts.is_null() {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             }
-            let conn = match resolve(id, table, i.stream) {
+            let conn = match resolve(st, id, table, i.stream) {
                 Ok(c) => c,
-                Err(e) => return Answer::of(e),
+                Err(e) => return refusal(e),
             };
             let f = match table.facts(id, conn) {
                 Ok(f) => f,
-                Err(e) => return Answer::of(e),
+                Err(e) => return refusal(e),
             };
             let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
-            let mut all = held_facts();
-            let key = (id, i.stream);
+            let mut all = lock(&st.facts);
+            let key = i.stream;
             let written = StreamFacts {
                 size: size_of::<StreamFacts>() as u32,
                 secure: u32::from(hash.is_some()),
@@ -745,76 +696,109 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             };
             // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
             unsafe { i.facts.write_unaligned(written) };
-            Answer::ready(0, 0)
+            Answered::ready(0, 0)
         },
     )
 }
 
 // ── THE REPLAY RULE ─────────────────────────────────────────────────────────────────────────────
 
-/// Every ticketed service's answer, by instance and ticket, then by the handle's issue order.
-type Kept = HashMap<(InstanceId, Ticket), HashMap<u32, Answer>>;
+/// What an instance's [`InstanceWake::conn`] holds: its identity on the connection table, and the
+/// table.
+type ArmedConns = (InstanceId, Arc<dyn DeclaredConns>);
 
-fn kept_answers() -> MutexGuard<'static, Kept> {
-    static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
-    KEPT.get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// WHAT THE CONNECTOR HOLDS FOR ONE INSTANCE, on the instance's own [`InstanceWake`] (where every
+/// slot call already resolves its context), so no instance's connector calls wait on another's
+/// lock. Each lock is held only to read or swap an entry, never across a call that can run plugin
+/// code: an auth plugin's `fields`, or a table open or close that may cross into a transport door
+/// (THE DESIGN §11.13 M1). A wedged plugin would otherwise hold the instance's connector I/O behind
+/// it, and a plugin that called back into the connector from inside that call would relock it on
+/// its own thread.
+#[derive(Default)]
+pub(crate) struct ConnState {
+    /// The instance's streams the host holds ([`Stream`]), by stream id.
+    streams: Mutex<HashMap<u64, Stream>>,
+    /// The facts strings its streams were answered ([`HeldFacts`]).
+    facts: Mutex<HeldFacts>,
+    /// THE DIALS IN FLIGHT: an `ESTABLISH` on a ticket that answered PENDING while its dial
+    /// connects, by ticket, closed on the instance's table when the ticket moves on without it.
+    dialling: Mutex<HashMap<Ticket, (Wanted, ConnId)>>,
+    /// Every ticketed service's answer ([`Kept`]), by ticket, then by the handle's issue order.
+    kept: Mutex<HashMap<Ticket, HashMap<u32, Kept>>>,
 }
 
-/// `run` once per completion handle: a handle that already answered (anything but PENDING)
-/// answers the same again, and `run` is not made a second time. A call on no ticket is never
-/// kept: it may not pend, and every call is its own.
-fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> Answer {
-    if h.ticket.is_none() {
-        return run();
-    }
-    if let Some(a) = kept_answers()
-        .get(&(id, h.ticket))
-        .and_then(|issued| issued.get(&h.seq))
-    {
-        return *a;
-    }
-    let a = run();
-    if a.outcome != Outcome::Pending {
-        kept_answers()
-            .entry((id, h.ticket))
-            .or_default()
-            .insert(h.seq, a);
-    }
-    a
+/// `m`, locked; a poisoned lock is still the state it guards.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Every ticketed `READ_REPLY`'s piece and the bytes it wrote, by instance and ticket, then by the
-/// handle's issue order, kept beside its answer: the read wrote the caller's memory, so its replay
-/// writes them again ([`replay_read`]), as a replayed `IDENTITY` does. A short answer's re-call
-/// starts the op over with fresh buffers, and its kept reads are the far end's whole reply.
-type KeptReads = HashMap<(InstanceId, Ticket), HashMap<u32, (ReplyPiece, Box<[u8]>)>>;
-
-fn kept_reads() -> MutexGuard<'static, KeptReads> {
-    static KEPT: OnceLock<Mutex<KeptReads>> = OnceLock::new();
-    KEPT.get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// One ticketed service's answer, stored once under its handle. A `READ_REPLY` keeps beside it its
+/// piece and the bytes it wrote: the read wrote the caller's memory, so its replay writes them
+/// again ([`replay_read`]), as a replayed `IDENTITY` does. A short answer's re-call starts the op
+/// over with fresh buffers, and its kept reads are the far end's whole reply.
+struct Kept {
+    answer: Answered,
+    read: Option<(ReplyPiece, Box<[u8]>)>,
 }
 
-/// Keep what a ticketed read wrote: its piece and its bytes.
-fn keep_read(id: InstanceId, h: CompletionHandle, piece: ReplyPiece, bytes: &[u8]) {
-    if !h.ticket.is_none() {
-        kept_reads()
-            .entry((id, h.ticket))
-            .or_default()
-            .insert(h.seq, (piece, bytes.into()));
+impl From<Answered> for Kept {
+    fn from(answer: Answered) -> Self {
+        Self { answer, read: None }
+    }
+}
+
+impl ConnState {
+    /// The instance's held streams, locked.
+    fn streams(&self) -> MutexGuard<'_, HashMap<u64, Stream>> {
+        lock(&self.streams)
+    }
+
+    /// `run` once per completion handle: a handle that already answered (anything but PENDING)
+    /// answers the same again, and `run` is not made a second time; a kept read is written again
+    /// into what `replay` (a `READ_REPLY`'s `in`) lends. A call on no ticket is never kept: it may
+    /// not pend, and every call is its own.
+    fn kept(
+        &self,
+        h: CompletionHandle,
+        replay: Option<*const c_void>,
+        run: impl FnOnce() -> Kept,
+    ) -> Answered {
+        if h.ticket.is_none() {
+            return run().answer;
+        }
+        if let Some(k) = lock(&self.kept)
+            .get(&h.ticket)
+            .and_then(|issued| issued.get(&h.seq))
+        {
+            if let (Some(input), Some(read)) = (replay, &k.read) {
+                replay_read(input, read);
+            }
+            return k.answer;
+        }
+        let k = run();
+        let a = k.answer;
+        if a.outcome != Outcome::Pending {
+            lock(&self.kept)
+                .entry(h.ticket)
+                .or_default()
+                .insert(h.seq, k);
+        }
+        a
+    }
+
+    /// Forget every answer kept, and close on `table` every dial left in flight, on `ticket`; how
+    /// many answers there were.
+    fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> usize {
+        self.drop_dialling(table, |t| *t == ticket);
+        lock(&self.kept)
+            .remove(&ticket)
+            .map_or(0, |issued| issued.len())
     }
 }
 
 /// A replayed read: what it wrote, written again into the piece slot and the buffer the replay's
 /// `in` lends (as much of the bytes as the buffer holds).
-fn replay_read(id: InstanceId, h: CompletionHandle, input: *const c_void) {
-    let all = kept_reads();
-    let Some((piece, kept)) = all.get(&(id, h.ticket)).and_then(|r| r.get(&h.seq)) else {
-        return;
-    };
+fn replay_read(input: *const c_void, (piece, kept): &(ReplyPiece, Box<[u8]>)) {
     // SAFETY: `slot` checked the head covers a `ReplyIn`.
     let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
     // SAFETY: the caller's buffer, lent for this call only.
@@ -828,50 +812,44 @@ fn replay_read(id: InstanceId, h: CompletionHandle, input: *const c_void) {
 }
 
 /// Forget every answer instance `id` kept under `ticket` (its worker recycled it, a driver
-/// ticket's tick started, or a new op started on it); how many there were. Keyed by the instance as well as the ticket:
-/// tickets are minted per dispatcher, so another dispatcher's instance may hold an identical
-/// ticket, and its kept answers are never its neighbour's to drop (dropping them would make it run
-/// a stored establish or write a second time).
+/// ticket's tick started, or a new op started on it); how many there were. Held per instance as
+/// well as by ticket: tickets are minted per dispatcher, so another dispatcher's instance may hold
+/// an identical ticket, and its kept answers are never its neighbour's to drop (dropping them would
+/// make it run a stored establish or write a second time).
 pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
-    drop_dialling(|k| *k == (id, ticket));
-    kept_reads().remove(&(id, ticket));
-    kept_answers()
-        .remove(&(id, ticket))
-        .map_or(0, |issued| issued.len())
+    super::handle::supplier_of(id).map_or(0, |w| w.conn_state.forget(w.conn.get(), ticket))
 }
 
 /// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
 /// Another dispatcher's worker of the same index is not touched.
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
-    let gone = |(id, t): &(InstanceId, Ticket)| {
-        ids.contains(id) && super::ticket::decode(t.slot).0 == worker
-    };
-    drop_dialling(gone);
-    kept_reads().retain(|k, _| !gone(k));
-    kept_answers().retain(|k, _| !gone(k));
+    let gone = |t: &Ticket| super::ticket::decode(t.slot).0 == worker;
+    for w in ids.iter().filter_map(|id| super::handle::supplier_of(*id)) {
+        w.conn_state.drop_dialling(w.conn.get(), gone);
+        lock(&w.conn_state.kept).retain(|t, _| !gone(t));
+    }
 }
 
-/// FORGET EVERYTHING instance `id` holds on the connector's process-wide maps — its held streams
-/// and their facts, its kept answers — and close on `table` every connection a held stream had open.
-/// Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
+/// FORGET EVERYTHING instance `id` holds on the connector — its held streams and their facts, its
+/// kept answers, its dials in flight — and close on `table` every connection a held stream had
+/// open. Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
 /// close, a reload). The maps are let go before anything is closed or dropped: a held stream's
 /// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
 /// §11.13 M1). Last, the table forgets the instance ([`DeclaredConns::forget`]): its needs, every
 /// connection still open on them, and its member programs, which a replaced instance would
 /// otherwise leave running.
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
-    drop_dialling(|(i, _)| *i == id);
-    held_facts().retain(|(i, _), _| *i != id);
-    kept_answers().retain(|(i, _), _| *i != id);
-    kept_reads().retain(|(i, _), _| *i != id);
-    let gone: Vec<Stream> = {
-        let mut all = held_conns();
-        let keys: Vec<(InstanceId, u64)> = all.keys().filter(|(i, _)| *i == id).copied().collect();
-        keys.iter().filter_map(|k| all.remove(k)).collect()
-    };
-    for s in gone {
-        if let Conn::Open(c) = s.conn {
-            let _ = table.close(id, c);
+    if let Some(w) = super::handle::supplier_of(id) {
+        let st = &w.conn_state;
+        st.drop_dialling(w.conn.get(), |_| true);
+        // Replaced whole, so the instance's entry (leaked for the process) keeps no capacity.
+        *lock(&st.facts) = HashMap::new();
+        *lock(&st.kept) = HashMap::new();
+        let gone = std::mem::take(&mut *st.streams());
+        for s in gone.into_values() {
+            if let Conn::Open(c) = s.conn {
+                let _ = table.close(id, c);
+            }
         }
     }
     table.forget(id);
@@ -953,32 +931,21 @@ struct Stream {
     ended: bool,
 }
 
-type HeldConns = HashMap<(InstanceId, u64), Stream>;
-
-/// THE ONE LOCK over every instance's streams. Held only to read or swap a stream's state, never
-/// across a call that can run plugin code: an auth plugin's `fields`, or a table open that may
-/// cross into a transport door (THE DESIGN §11.13 M1). A wedged plugin would otherwise hold every
-/// worker's connector I/O behind it, and a plugin that called back into the connector from inside
-/// that call would relock it on its own thread.
-fn held_conns_lock() -> &'static Mutex<HeldConns> {
-    static HELD_CONNS: OnceLock<Mutex<HeldConns>> = OnceLock::new();
-    HELD_CONNS.get_or_init(Mutex::default)
-}
-
-fn held_conns() -> MutexGuard<'static, HeldConns> {
-    held_conns_lock()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Install `conn` on the stream a call took out to open ([`Conn::Opening`]), the lock re-taken
-/// for the swap alone. A stream closed meanwhile is gone: what was opened for it is closed on the
-/// table, and anything else it held (a pending auth call) is dropped, both after the lock is let
-/// go.
-fn install(id: InstanceId, stream: u64, table: &Arc<dyn DeclaredConns>, conn: Conn) {
+/// Install `conn` on the stream a call took out to open ([`Conn::Opening`]), the instance's
+/// streams lock ([`ConnState::streams`]: held only to read or swap a stream's state, never across
+/// a call that can run plugin code, THE DESIGN §11.13 M1) re-taken for the swap alone. A stream
+/// closed meanwhile is gone: what was opened for it is closed on the table, and anything else it
+/// held (a pending auth call) is dropped, both after the lock is let go.
+fn install(
+    st: &ConnState,
+    id: InstanceId,
+    stream: u64,
+    table: &Arc<dyn DeclaredConns>,
+    conn: Conn,
+) {
     let orphan = {
-        let mut all = held_conns();
-        match all.get_mut(&(id, stream)) {
+        let mut all = st.streams();
+        match all.get_mut(&stream) {
             Some(s) if matches!(s.conn, Conn::Opening) => {
                 s.conn = conn;
                 None
@@ -1001,6 +968,7 @@ fn held_id() -> u64 {
 /// whose request was never written is opened as it was named, raw (a WRITE or READ on a framed
 /// stream).
 fn resolve(
+    st: &ConnState,
     id: InstanceId,
     table: &Arc<dyn DeclaredConns>,
     stream: u64,
@@ -1009,8 +977,8 @@ fn resolve(
         return Ok(ConnId(stream));
     }
     let (need, target, within, member) = {
-        let mut all = held_conns();
-        let s = all.get_mut(&(id, stream)).ok_or(ConnError::Closed)?;
+        let mut all = st.streams();
+        let s = all.get_mut(&stream).ok_or(ConnError::Closed)?;
         match &mut s.conn {
             Conn::Open(c) => return Ok(*c),
             Conn::Failed(e) => return Err(*e),
@@ -1044,6 +1012,7 @@ fn resolve(
     };
     let opened = table.open(id, need, &desc);
     install(
+        st,
         id,
         stream,
         table,
@@ -1053,16 +1022,16 @@ fn resolve(
 }
 
 /// A field block's fields, owned; a name that is not text, or a pseudo-field, refuses the block.
-fn field_lines(block: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Answer> {
+fn field_lines(block: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Answered> {
     fields::lines(block)
         .map(|(name, value)| {
             if name.first() == Some(&b':') {
-                return Err(Answer::with(
+                return Err(Answered::bare(
                     Outcome::Refused,
                     "a request field is a pseudo-field; the framer names its own head",
                 ));
             }
-            let name = std::str::from_utf8(name).map_err(|_| Answer::with(Outcome::Fault, ""))?;
+            let name = std::str::from_utf8(name).map_err(|_| Answered::fault())?;
             Ok((name.to_owned(), value.to_vec()))
         })
         .collect()
@@ -1086,11 +1055,11 @@ extern "C" fn write_request(
         out,
         service::WRITE_REQUEST,
         size_of::<RequestIn>(),
-        |id, table, _| {
+        |id, table, st, _| {
             // SAFETY: the head covered a `RequestIn`.
             let i = unsafe { input.cast::<RequestIn>().read_unaligned() };
             if i.piece.is_null() {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             }
             // SAFETY: the caller's descriptor, checked non-NULL, lent for this call only: the host
             // keeps no hold on it past the call, a PENDING answer included.
@@ -1098,11 +1067,11 @@ extern "C" fn write_request(
             // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
             // past the call, a PENDING answer included.
             let Some(bytes) = (unsafe { bytes(i.buf.cast_mut(), i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
-            let mut all = held_conns();
-            let Some(s) = all.get_mut(&(id, i.stream)) else {
-                return Answer::with(
+            let mut all = st.streams();
+            let Some(s) = all.get_mut(&i.stream) else {
+                return Answered::bare(
                     Outcome::Refused,
                     "the stream is not a framed request being written; write its bytes",
                 );
@@ -1116,7 +1085,7 @@ extern "C" fn write_request(
                 body,
             } = &mut s.conn
             else {
-                return Answer::with(
+                return Answered::bare(
                     Outcome::Refused,
                     "the stream is not a framed request being written; write its bytes",
                 );
@@ -1128,7 +1097,7 @@ extern "C" fn write_request(
                         spanned(bytes, piece.target),
                         spanned(bytes, piece.fields),
                     ) else {
-                        return Answer::with(Outcome::Fault, "");
+                        return Answered::fault();
                     };
                     let lines = match field_lines(block) {
                         Ok(l) => l,
@@ -1140,21 +1109,21 @@ extern "C" fn write_request(
                         fields: lines,
                         timeout_ms: piece.timeout_ms,
                     });
-                    Answer::ready(0, bytes.len() as u64)
+                    Answered::ready(0, bytes.len() as u64)
                 }
                 (REQUEST_BODY, true) => {
                     if body.len() + bytes.len() > REQUEST_HELD_MAX {
-                        return Answer::with(
+                        return Answered::bare(
                             Outcome::Refused,
                             "the request body passed the host's bound",
                         );
                     }
                     body.extend_from_slice(bytes);
-                    Answer::ready(0, bytes.len() as u64)
+                    Answered::ready(0, bytes.len() as u64)
                 }
                 (REQUEST_END, true) => {
                     let Some(mut h) = head.take() else {
-                        return Answer::with(Outcome::Fault, "");
+                        return Answered::fault();
                     };
                     // The request is whole: taken out of the map, so the member's auth call and
                     // the open run with the connector's lock let go (THE DESIGN §11.13 M1).
@@ -1248,17 +1217,17 @@ extern "C" fn write_request(
                             }
                         },
                     };
-                    install(id, i.stream, table, conn);
-                    Answer::ready(0, 0)
+                    install(st, id, i.stream, table, conn);
+                    Answered::ready(0, 0)
                 }
                 (REQUEST_HEAD, true) => {
-                    Answer::with(Outcome::Refused, "the request's head was already written")
+                    Answered::bare(Outcome::Refused, "the request's head was already written")
                 }
-                (REQUEST_BODY | REQUEST_END, false) => Answer::with(
+                (REQUEST_BODY | REQUEST_END, false) => Answered::bare(
                     Outcome::Refused,
                     "a request's head is written before its body and its end",
                 ),
-                _ => Answer::with(Outcome::Fault, ""),
+                _ => Answered::fault(),
             }
         },
     )
@@ -1420,27 +1389,29 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
         out,
         service::READ_REPLY,
         size_of::<ReplyIn>(),
-        |id, table, head| {
+        |id, table, st, head| {
             // SAFETY: the head covered a `ReplyIn`.
             let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
             if i.piece.is_null() {
-                return Answer::with(Outcome::Fault, "");
+                return Kept::from(Answered::fault());
             }
             // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
             // past the call, a PENDING answer included.
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Kept::from(Answered::fault());
             };
-            let (piece, answer) = reply(ctx, id, table, head, i.stream, buf);
+            let (piece, answer) = reply(ctx, st, id, table, head, i.stream, buf);
+            let mut read = None;
             if let Some(p) = piece {
                 // SAFETY: the caller's descriptor slot, checked non-NULL.
                 unsafe { i.piece.write_unaligned(p) };
-                if answer.outcome != Outcome::Pending {
+                // A ticketed read keeps what it wrote, stored with its answer.
+                if answer.outcome != Outcome::Pending && !head.handle.ticket.is_none() {
                     let n = usize::try_from(answer.len).map_or(buf.len(), |n| n.min(buf.len()));
-                    keep_read(id, head.handle, p, &buf[..n]);
+                    read = Some((p, buf[..n].into()));
                 }
             }
-            answer
+            Kept { answer, read }
         },
     )
 }
@@ -1449,25 +1420,26 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 /// without one) and the answer.
 fn reply(
     ctx: HostCtx,
+    st: &ConnState,
     id: InstanceId,
     table: &Arc<dyn DeclaredConns>,
     head: ServiceHead,
     stream: u64,
     buf: &mut [u8],
-) -> (Option<ReplyPiece>, Answer) {
+) -> (Option<ReplyPiece>, Answered) {
     // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the head),
     // fails its ack when the call refuses or fails, and reads as nothing ready (on the caller's
     // ticket, woken when the call answers) until then. The call is taken out of the map to be
     // polled and opened with the connector's lock let go (THE DESIGN §11.13 M1).
     let waker = ticket_waker(ctx, head.handle.ticket);
     let authing = {
-        let mut all = held_conns();
-        match all.get_mut(&(id, stream)) {
+        let mut all = st.streams();
+        match all.get_mut(&stream) {
             Some(s) if matches!(s.conn, Conn::Authing(_)) => {
                 if waker.is_none() {
                     return (
                         None,
-                        Answer::with(
+                        Answered::bare(
                             Outcome::Refused,
                             "a read that would pend is callable only inside a ticketed op",
                         ),
@@ -1485,8 +1457,8 @@ fn reply(
         let mut cx = std::task::Context::from_waker(&waker);
         let answered = match std::pin::Pin::new(&mut a.fielding).poll(&mut cx) {
             std::task::Poll::Pending => {
-                install(id, stream, table, Conn::Authing(a));
-                return (None, Answer::of(ConnError::Pending));
+                install(st, id, stream, table, Conn::Authing(a));
+                return (None, refusal(ConnError::Pending));
             }
             std::task::Poll::Ready(f) => f,
         };
@@ -1503,37 +1475,37 @@ fn reply(
             ),
             Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
         };
-        install(id, stream, table, opened);
+        install(st, id, stream, table, opened);
     }
     {
-        let mut all = held_conns();
-        let s = all.entry((id, stream)).or_insert(Stream {
+        let mut all = st.streams();
+        let s = all.entry(stream).or_insert(Stream {
             conn: Conn::Open(ConnId(stream)),
             headed: false,
             ended: false,
         });
         if s.ended {
-            return (None, Answer::of(ConnError::Closed));
+            return (None, refusal(ConnError::Closed));
         }
         match &s.conn {
             Conn::Held { .. } => {
                 return (
                     None,
-                    Answer::with(Outcome::Refused, "the request is not whole: write its end"),
+                    Answered::bare(Outcome::Refused, "the request is not whole: write its end"),
                 )
             }
             Conn::Failed(e) => {
                 // THE FAILED ACK: the stream's refusal, with its text, and the reply has ended.
                 let e = *e;
                 s.ended = true;
-                return (None, Answer::of(e));
+                return (None, refusal(e));
             }
             Conn::Open(_) => {}
-            Conn::Authing(_) => return (None, Answer::of(ConnError::Pending)),
+            Conn::Authing(_) => return (None, refusal(ConnError::Pending)),
             Conn::Opening => {
                 return (
                     None,
-                    Answer::with(
+                    Answered::bare(
                         Outcome::Refused,
                         "another call on the stream is opening it; read when it answers",
                     ),
@@ -1541,16 +1513,16 @@ fn reply(
             }
         }
     }
-    let conn = match resolve(id, table, stream) {
+    let conn = match resolve(st, id, table, stream) {
         Ok(c) => c,
-        Err(e) => return (None, Answer::of(e)),
+        Err(e) => return (None, refusal(e)),
     };
     let ticket = conn_ticket(head.handle.ticket);
     loop {
         let got = table.read(id, conn, ticket, buf);
-        let mut all = held_conns();
-        let Some(s) = all.get_mut(&(id, stream)) else {
-            return (None, Answer::of(ConnError::Closed));
+        let mut all = st.streams();
+        let Some(s) = all.get_mut(&stream) else {
+            return (None, refusal(ConnError::Closed));
         };
         let terminal = |s: &mut Stream| {
             s.ended = true;
@@ -1560,7 +1532,7 @@ fn reply(
                     kind,
                     ..ReplyPiece::default()
                 }),
-                Answer::ready(0, 0),
+                Answered::ready(0, 0),
             )
         };
         return match got {
@@ -1586,7 +1558,7 @@ fn reply(
                                 len: p.len as u64,
                             },
                         }),
-                        Answer::ready(0, reason.end.max(p.len) as u64),
+                        Answered::ready(0, reason.end.max(p.len) as u64),
                     )
                 }
                 PieceKind::Body | PieceKind::HookReply => (
@@ -1594,24 +1566,24 @@ fn reply(
                         kind: REPLY_BODY,
                         ..ReplyPiece::default()
                     }),
-                    Answer::ready(0, p.len as u64),
+                    Answered::ready(0, p.len as u64),
                 ),
                 PieceKind::Completion => terminal(s),
             },
             Err(ConnError::Closed) => terminal(s),
             Err(ConnError::Pending) if head.handle.ticket.is_none() => (
                 None,
-                Answer::with(
+                Answered::bare(
                     Outcome::Refused,
                     "a read that would pend is callable only inside a ticketed op",
                 ),
             ),
-            Err(ConnError::Pending) => (None, Answer::of(ConnError::Pending)),
+            Err(ConnError::Pending) => (None, refusal(ConnError::Pending)),
             Err(e) => {
                 // A refusal or failure mid-reply is its failed ack, naming why where it can.
                 s.ended = true;
                 drop(all);
-                (None, Answer::of_conn(e, id, table, conn))
+                (None, refusal_of(e, id, table, conn))
             }
         };
     }
@@ -1650,11 +1622,11 @@ extern "C" fn identity(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut)
         out,
         service::IDENTITY,
         size_of::<IdentityIn>(),
-        |_, _, _| {
+        |_, _, _, _| {
             // SAFETY: the head covered an `IdentityIn`.
             let i = unsafe { input.cast::<IdentityIn>().read_unaligned() };
             if i.identity.is_null() {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             }
             let (user, program) = process();
             // SAFETY: the caller's identity slot, checked non-NULL.
@@ -1667,7 +1639,7 @@ extern "C" fn identity(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut)
                     program: abi(program),
                 });
             }
-            Answer::ready(0, 0)
+            Answered::ready(0, 0)
         },
     )
 }
