@@ -166,22 +166,74 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
+/// RED (arch-audit u29 F1; BUSBAR-1.6.0.md #50: "the auth style resolves ... as opaque
+/// strings"): a provider's `auth:` is an OPAQUE word some loaded auth plugin declares, never a
+/// closed kernel set. Every declared word parses, a dropped-in one (`x-double-mint`, a style no
+/// release named) as well as 1.5.5's four; a word no plugin declares is refused at deserialize time
+/// in serde's own unknown-variant words over the declared list, ranked first, so 1.5.5's refusal of
+/// an unknown word is the prefix of this one. The words here are the test double's declarations
+/// (`test_support::outbound_auth::double_outbound_styles`).
 #[test]
-fn test_provider_auth_style_is_a_closed_enum() {
-    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
-    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
-    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
-        config::ProviderAuth::Bearer
-    );
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
-        config::ProviderAuth::ApiKey
-    );
+fn test_provider_auth_style_is_a_declared_word() {
+    for word in [
+        "bearer",
+        "api-key",
+        "jwt-bearer",
+        "oauth-client-credentials",
+        "x-double-mint",
+    ] {
+        let style = serde_yaml::from_str::<config::ProviderAuth>(word)
+            .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
+        assert_eq!(style.as_str(), word);
+    }
+    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
+        .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")
+        .to_string();
     assert!(
-        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
-        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+        refused.starts_with(
+            "unknown variant `oauth2`, expected one of `bearer`, `api-key`, `jwt-bearer`, \
+             `oauth-client-credentials`, `x-double-mint`"
+        ),
+        "an undeclared style is refused in serde's words over the declared list: {refused}"
+    );
+}
+
+/// RED (arch-audit u29 F1): a style's token endpoint is judged by the bit its plugin DECLARES
+/// (`STYLE_ENDPOINT_TOKEN_URL`), never by its name: a style no release named that states the bit
+/// gets 1.5.5's `token_url` and `scope` findings, in 1.5.5's sentences over its own word, and a
+/// style that does not state it (`bearer`) is left unjudged, as 1.5.5 left it.
+#[test]
+fn a_token_url_is_judged_for_any_style_declaring_it() {
+    crate::test_support::register_neutral_test_plane();
+    let build = |word: &str| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut mint = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        mint.auth = Some(config::ProviderAuth::named(word));
+        providers.insert("mint".to_string(), mint);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("mint", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+            .err()
+            .unwrap_or_default()
+    };
+    let errs = build("x-double-mint");
+    for want in [
+        "provider 'mint' uses auth: x-double-mint but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
+        "provider 'mint' uses auth: x-double-mint but has no `scope`",
+    ] {
+        assert!(
+            errs.iter().any(|e| e == want),
+            "a style declaring STYLE_ENDPOINT_TOKEN_URL is judged by the bit: want {want:?} in {errs:?}"
+        );
+    }
+    let errs = build("bearer");
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("token_url") || e.contains("scope")),
+        "a style stating no endpoint is not judged for one: {errs:?}"
     );
 }
 
@@ -467,7 +519,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
-        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        entra.auth = Some(config::ProviderAuth::named("oauth-client-credentials"));
         providers.insert("entra".to_string(), entra);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("entra", 10));
