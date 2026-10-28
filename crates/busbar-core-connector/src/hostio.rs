@@ -323,13 +323,13 @@ impl HostIo {
         stream.set_nonblocking(true).map_err(|e| failed(&e))?;
         let _ = stream.set_nodelay(true);
         let sock = reactor::register(Sock::Tcp(stream)).map_err(|e| failed(&e))?;
-        let id = self.hold(
+        let id = self.handles.make(
             owner,
             Kind::Stream {
                 sock,
                 connecting: AtomicBool::new(false),
             },
-        );
+        )?;
         self.record(ticket, Some(id), None);
         Ok((id, peer))
     }
@@ -537,7 +537,7 @@ impl IoHost for HostIo {
                 .admits(ticket, |a| matches!(a, Admission::Adopt))
                 .is_ok()
         {
-            let id = self.hold(owner, Kind::Adopting);
+            let id = self.handles.make(owner, Kind::Adopting)?;
             self.record(ticket, Some(id), None);
             return Ok((id, "0.0.0.0:0".into()));
         }
