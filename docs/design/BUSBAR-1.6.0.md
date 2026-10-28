@@ -1344,7 +1344,7 @@ dispatcher that is the thread's default only while the body runs, fed `log` reco
 `tracing-log`'s `LogTracer` (the plugin image installs it, and so does the host). The capture lives
 in one slot per thread per plugin image. The host bounds each reply at 128 records and 64 KiB; the
 rest, plus whatever the plugin's own capture could not carry, is one counted line. It filters by
-the instance's level and writes `<dir>/<instance>.log`, one record per line (`time LEVEL instance
+the instance's level and writes `<dir>/<section>.<instance>.log`, the instance named after its kind's config section (`export.metrics.log`, `store.memory.log`, `identity-providers.memory.log`; instance names are unique only within a kind, a plane's instance is its own section), one record per line (`time LEVEL instance
 kind target: message`), rotating by its rename rule. The keys are `plugins.logs`: `dir`, `level`,
 `levels`, `rotate_mb` and `keep`, set live through `POST /config/apply`. A plugin never writes to
 stdout, stderr, a file or a global logger itself. What it writes outside a call (from another
