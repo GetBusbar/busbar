@@ -64,7 +64,7 @@ fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::st
     );
     busbar_kernel::test_support::register_neutral_test_plane();
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let app = busbar_kernel::test_support::build_once(
