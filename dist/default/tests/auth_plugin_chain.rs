@@ -62,12 +62,12 @@ const AUDIENCE: &str = "api://plugin-chain";
 /// `ca_cert_pem`), and genuinely signed tokens. Starting it also binds the test build's auth axis to
 /// a connection table serving that JWKS (`https_conns`): the host fetches it for the module over its
 /// declared need, and the module does the whole verification.
-fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain");
-        let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
+        let issuer = busbar_test_kit::test_issuer::Issuer::start(ISSUER, "plugin-chain");
+        let conns = busbar_test_kit::https_conns::HttpsConns::new();
         conns.serve_issuer(&issuer);
         busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
         issuer
@@ -186,29 +186,26 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
     }
 }
 
-/// A SECRET-REFERENCE SETTING, END TO END (the ADR-0010 delivery path, on a real module): a setting
-/// spelled as a SecretRef (`{ env: VAR }`) is RESOLVED by the engine and DELIVERED to the plugin,
-/// which uses it ITSELF — here the module's `ca_cert_pem`, the trust root its need declares for the
-/// host to reach the issuer with (`trust_from`), so a token only verifies if the resolved PEM
-/// arrived. Conversely, an
-/// UNRESOLVABLE ref fails the load FAIL-CLOSED — the plugin is never handed a dangling reference.
+/// A PLUGIN SETTING THE PLUGIN DID NOT DECLARE SECRET, END TO END (OWNER RULING, CHIP-REVIEW-v4
+/// change 2, overturning the earlier resolve-any-reference behaviour): the module's `ca_cert_pem`
+/// (the trust root its need declares for the host to reach the issuer with, `trust_from`) is not
+/// among its Statement's `secret_refs`.
+///
+/// * Written as the value itself, it is DELIVERED and the module uses it: a token only verifies if
+///   the PEM arrived.
+/// * Written as a reference (`{ env: VAR }`), the chain build REFUSES it, naming the field and the
+///   plugin and saying to write the value itself; busbar never resolves a secret into a field the
+///   plugin did not declare. The config still holds the reference, never the PEM.
 #[test]
-fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
+fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_is_refused() {
     common::root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-secret-ref");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "ref-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
-    // The trust root delivered via an env SecretRef: the engine resolves `{ env: VAR }` to the PEM
-    // BEFORE open, the module builds its fetcher on it, and a signed token verifies against its keys.
-    let var = format!("BUSBAR_PLUGIN_CA_PEM_{}", std::process::id());
-    std::env::set_var(&var, issuer().cert_pem());
-    let mut settings = settings();
-    settings.insert(
-        "ca_cert_pem".into(),
-        serde_json::json!({ SECRET_MODULE_ENV: var }),
-    );
-    let cfg = chain_with("ref-auth", settings);
+    let mut written = settings();
+    written.insert("ca_cert_pem".into(), serde_json::json!(issuer().cert_pem()));
+    let cfg = chain_with("ref-auth", written);
     let registry = busbar_kernel::plugins_preflight(
         None,
         Some(&cfg),
@@ -223,28 +220,36 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
     )
-    .expect("a resolvable setting ref is delivered and the plugin loads");
+    .expect("a setting written as its value is delivered and the plugin loads");
     assert_eq!(mw.chain_names(), vec![module_name()], "plugin loaded");
     match mw.run_chain(Some(&alice_token())) {
         ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
         other => panic!("the delivered trust root must let the module verify: {other:?}"),
     }
-    std::env::remove_var(&var);
 
-    // FAIL-CLOSED: the SAME ref, now UNRESOLVABLE (env unset), refuses the chain build — the plugin
-    // is never handed the unresolved ref. The error names the field, never a secret value.
+    let var = format!("BUSBAR_PLUGIN_CA_PEM_{}", std::process::id());
+    std::env::set_var(&var, issuer().cert_pem());
+    let mut settings = settings();
+    settings.insert(
+        "ca_cert_pem".into(),
+        serde_json::json!({ SECRET_MODULE_ENV: var }),
+    );
+    let cfg = chain_with("ref-auth", settings);
     let err = AuthMiddleware::new(
         &cfg,
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
     )
-    .expect_err("an unresolvable setting ref fails the load fail-closed");
+    .expect_err("a reference at a field the plugin did not declare secret is refused");
     assert!(
-        err.contains("ca_cert_pem") && err.contains("did not resolve"),
-        "fail-closed, names the setting: {err}"
+        err.contains("ca_cert_pem")
+            && err.contains("did not declare it as a secret")
+            && err.contains("write the value itself")
+            && !err.contains("BEGIN CERTIFICATE"),
+        "refused, names the setting, never the value: {err}"
     );
-    // The overlay/config still holds the REFERENCE, never the resolved secret: SecretRef serializes
-    // the ref, so the setting serialized back out is the env ref, not the PEM.
+    std::env::remove_var(&var);
+    // The overlay/config still holds the REFERENCE, never the resolved secret.
     let serialized = serde_json::to_string(&cfg.chain[0].settings).expect("serialize settings");
     assert!(
         serialized.contains(&var) && !serialized.contains("BEGIN CERTIFICATE"),
@@ -254,38 +259,24 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE CONTRACT TEST for the `x-busbar-secret` guarantee, via the PLUGIN-SETTINGS path
-/// specifically: a manifest that declares an
-/// ARBITRARY root-level field (`audience` — not the trust-root setting the OTHER contract test above
-/// already covers) as `x-busbar-secret: true`, set to `{ env: VAR }`, boots for
-/// REAL through the full engine pipeline (`plugins_preflight` → `AuthMiddleware::new`, the exact
-/// path boot itself takes — no shortcut through `resolve_settings()` directly), and the plugin's
-/// `open()` receives a PLAIN STRING it verifies callers against — never the raw `{env: VAR}`
-/// reference object (which would fail the module's `audience: String` deserialization, so this test
-/// would fail closed rather than silently pass on a lucky coincidence).
-///
-/// This pins the guarantee generically (any field shape resolve_settings recognizes, not merely the
-/// license-key convention some future refactor might special-case) — a future change that broke
-/// resolution for a non-license field would go red here even if it happened to leave the
-/// trust-root path intact.
+/// THE `x-busbar-secret` SCHEMA MARK IS NOT A DECLARATION (OWNER RULING, CHIP-REVIEW-v4 change 2):
+/// a manifest whose settings schema marks the root-level `audience` as `x-busbar-secret: true`,
+/// while the plugin's Statement names no `audience` in `secret_refs`, boots for REAL through the
+/// full engine pipeline (`plugins_preflight` → `AuthMiddleware::new`, the path boot itself takes)
+/// with `audience` written as its value, and the plugin's `open()` receives that string and
+/// verifies callers against it. Written as `{ env: VAR }`, the same field is REFUSED: what declares
+/// a field secret is the Statement, and the schema mark alone does not.
 #[test]
-fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
+fn auth_plugin_schema_marked_setting_is_not_declared_so_a_reference_there_is_refused() {
     common::root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-root-secret-contract");
     write_auth_plugin_with_root_secret_schema(&dir, "idp.tar.gz", "acme-idp", "sec-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
-    let var = format!("BUSBAR_PLUGIN_ROOT_SECRET_CONTRACT_{}", std::process::id());
     let raw_audience = "api://the-actual-plaintext-audience";
-    std::env::set_var(&var, raw_audience);
-
-    let mut settings = settings();
-    settings.insert(
-        "audience".to_string(),
-        serde_json::json!({ SECRET_MODULE_ENV: var }),
-    );
-    let cfg = chain_with("sec-auth", settings);
-
+    let mut written = settings();
+    written.insert("audience".to_string(), serde_json::json!(raw_audience));
+    let cfg = chain_with("sec-auth", written);
     let registry = busbar_kernel::plugins_preflight(
         None,
         Some(&cfg),
@@ -294,49 +285,43 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         &plugins,
         &Default::default(),
     )
-    .expect(
-        "preflight resolves the kind:auth plugin, whose manifest declares `audience` as a \
-                 root-level x-busbar-secret field",
-    );
+    .expect("preflight resolves the kind:auth plugin");
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
     )
-    .expect(
-        "the {env: VAR} reference resolves BEFORE open() — the module's `audience: String` field \
-         would fail to deserialize an unresolved reference object, so a load success here is \
-         itself proof open() received a plain string",
-    );
-
-    // The PLAIN, resolved value (never the reference) is what open() actually stored as the
-    // audience — a token bound to the RAW env value verifies; a token bound to any other audience
-    // does not, and the literal reference text never authenticates anything.
+    .expect("the audience written as its value is delivered");
     match mw.run_chain(Some(&issuer().mint("alice", &["platform"], raw_audience))) {
         ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
-        other => panic!(
-            "a token for the resolved plaintext audience must authenticate — open() did not \
-             receive the plain string: {other:?}"
-        ),
+        other => panic!("a token for the delivered audience must authenticate: {other:?}"),
     }
     assert_eq!(
         mw.run_chain(Some(&alice_token())),
         ChainVerdict::Denied,
         "a token for any other audience is refused"
     );
-    assert_eq!(
-        mw.run_chain(Some("{\"env\":\"irrelevant\"}")),
-        ChainVerdict::Denied,
-        "the raw reference text itself was never delivered to the plugin as a credential"
-    );
 
-    // The overlay/config still holds the REFERENCE, never the resolved secret.
-    let serialized = serde_json::to_string(&cfg.chain[0].settings).expect("serialize settings");
+    let var = format!("BUSBAR_PLUGIN_ROOT_SECRET_CONTRACT_{}", std::process::id());
+    std::env::set_var(&var, raw_audience);
+    let mut settings = settings();
+    settings.insert(
+        "audience".to_string(),
+        serde_json::json!({ SECRET_MODULE_ENV: var }),
+    );
+    let cfg = chain_with("sec-auth", settings);
+    let err = AuthMiddleware::new(
+        &cfg,
+        &registry,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect_err("a reference at a schema-marked but undeclared field is refused");
     assert!(
-        serialized.contains(&var) && !serialized.contains(raw_audience),
-        "config keeps the ref, never the resolved secret: {serialized}"
+        err.contains("audience")
+            && err.contains("did not declare it as a secret")
+            && !err.contains(raw_audience),
+        "refused, names the setting, never the value: {err}"
     );
-
     std::env::remove_var(&var);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -375,7 +375,7 @@ fn model_deltas<'r>(
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -392,7 +392,7 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, u64>,
 ) -> Vec<(String, u64)> {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {
@@ -760,6 +760,11 @@ pub struct GovState {
     /// secret and reloading silently kept minting and accepting tokens under the old key. Read as an
     /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
     signing: RwLock<Option<Arc<SigningMaterial>>>,
+    /// The AT-REST KEYS a recoverable credential is sealed under (`credentials.at_rest`, see
+    /// [`at_rest`]): `None` until boot resolves them, and on a node that configures none (which
+    /// then refuses to mint one). RE-SETTABLE (`set_at_rest_keys`) for the same reason as
+    /// `signing`: a reload that rotates them must take effect.
+    at_rest: RwLock<Option<Arc<at_rest::AtRestKeys>>>,
     /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
     /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL (see
     /// [`REVOCATION_SYNC_TTL_SECS`]). A verified token whose `sub` is present is rejected - the ONLY
@@ -840,6 +845,8 @@ pub struct RotatedCredential {
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
 
 pub mod revocation;
+// A recoverable credential at rest: sealed before the store sees it (CHIP-DESIGN v4.1 change 1).
+pub mod at_rest;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
 // core governance/config infrastructure read on the hot mint path, not admin-API surface.
 pub mod mint_policy;
@@ -1052,11 +1059,22 @@ pub(crate) fn granting_bindings<'a>(
     principal: &crate::auth::Principal,
     table: &'a std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
 ) -> Vec<&'a crate::config::RoleBindingCfg> {
-    principal
+    let ungoverned = crate::config::auth::UNGOVERNED_ROLE;
+    let named = |role: &&String| role.as_str() != ungoverned;
+    let granting: Vec<_> = principal
         .roles
         .iter()
+        .filter(named)
         .filter_map(|role| table.get(role))
-        .collect()
+        .collect();
+    // The ungoverned role binds a principal that asserts no roles, and every principal of a
+    // provider whose table names no other role: exactly the principals 1.5.5 admitted with no grant.
+    let roleless = !principal.roles.iter().any(|r| named(&r));
+    let only_ungoverned = table.keys().all(|r| r == ungoverned);
+    match table.get(ungoverned) {
+        Some(binding) if granting.is_empty() && (roleless || only_ungoverned) => vec![binding],
+        _ => granting,
+    }
 }
 
 /// The pool union across granting bindings. OMITTED `allowed_pools` on any granting binding widens

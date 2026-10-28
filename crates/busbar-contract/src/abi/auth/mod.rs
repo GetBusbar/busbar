@@ -23,7 +23,9 @@
 //! [`RefreshIn`](super::mechanism::lifecycle::RefreshIn). The auth tail carries nothing for them.
 //!
 //! VERDICTS ARE ALWAYS `READY`. `FAILED` on `verify` is a module failure: the chain's error path,
-//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
+//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is a module failure too, and the host
+//! declines the login fail-closed, as 1.5.5 refused a login plugin that failed: an identity
+//! provider that could not answer is a READY [`LOGIN_OUTAGE`], never a `FAILED`. Both exclude the
 //! short-buffer answer ([`IdentifyOut`]).
 //!
 //! `verify` ON THE SPOT. The host may call `verify` TICKET-LESS (`Ticket::NONE`, on its own
@@ -293,6 +295,45 @@ pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
 /// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
+/// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
+///
+/// The binding's settings carry it as `token_url`, which the HOST judges as a destination before
+/// any binding is opened (its scheme and the cloud-metadata denylist, in the previous release's
+/// words; ARCHITECT ruling 2026-09-28 Q2 (a): a need's target is the kernel's to judge), with the
+/// entry's `scope` it is exchanged under. The credential is the `client_id:client_secret` pair the
+/// exchange mints FROM, so an entry declaring none is refused. A style that does not state it has
+/// any `token_url` left unjudged and unread, as the previous release ignored one on such a style.
+pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
+/// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
+///
+/// The credential is a document that names the endpoint (`token_uri`), inline or in the key file
+/// the credential names, and the HOST reads it out and judges it as a destination before the
+/// binding is opened (ARCHITECT ruling 2026-09-28 Q2 (a)), handing the plugin its judged copy as
+/// the `token_uri` setting. The style signs its assertion WITH the credential, so an entry
+/// declaring none is refused. A style takes its endpoint from one place: it never states this
+/// beside [`STYLE_ENDPOINT_TOKEN_URL`].
+pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
+/// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
+pub const STYLE_RANK_SHIFT: u32 = 16;
+/// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
+///
+/// Where the style stands when the host lists the outbound styles a provider's `auth:` may name
+/// (the refusal of an unknown one renders the list): ranked styles first, by rank, then the
+/// unranked ones in plugin registration order. A rank orders a list and grants nothing; two
+/// styles of one rank keep registration order. [`ranked`] spells one; [`style_rank`] reads it.
+pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
+
+/// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn ranked(rank: u8) -> u32 {
+    (rank as u32) << STYLE_RANK_SHIFT
+}
+
+/// The list rank a [`StyleDecl::flags`] states (`0` = unranked; [`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn style_rank(flags: u32) -> u32 {
+    (flags & STYLE_RANK_MASK) >> STYLE_RANK_SHIFT
+}
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
@@ -300,7 +341,8 @@ pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
+    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] |
+    /// [`STYLE_ENDPOINT_FROM_CREDENTIAL`], and a list rank ([`STYLE_RANK_MASK`]).
     pub flags: u32,
     /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
     /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over
@@ -511,13 +553,15 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 /// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its
 /// credential headers indexable, so the 1.5.5 styles do NOT set it (ARCHITECT ruling 2026-09-28:
 /// the 1.5.5 bytes win); marking them is a behaviour change taken only with the owner. Set or not,
-/// the whole field buffer is never logged and is zeroised after encode.
+/// the field is treated as sensitive everywhere else: the whole field buffer is never logged, no
+/// value is printed, and it is zeroised after encode (an undeclared sensitivity is sensitive, owner
+/// ruling 2026-10-27).
 pub const FIELD_SENSITIVE: u32 = 1;
 /// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
 /// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
 /// after any query the target already has, in the order written) and never sends it as a header.
 /// The plane never sees it, and every target the host logs, reports in an error or labels a metric
-/// with has its value redacted (the egress seam's `query_auth`). Optional: a style that presents
+/// with has its value redacted. Optional: a style that presents
 /// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
 pub const FIELD_QUERY: u32 = 2;
 

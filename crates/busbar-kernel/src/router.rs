@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, state, store, telemetry,
-    tls, transport, trust,
+    observability, operation, plugin_routes, profile, state, store, telemetry, tls, transport,
+    trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -34,7 +34,7 @@ pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 /// version of this function that tried shipped one dialect's envelope onto a different plane's own
 /// mounted path.
 pub fn fallback_error_response(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     status: axum::http::StatusCode,
     kind: &str,
@@ -74,7 +74,7 @@ pub fn fallback_error_response(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     reason: busbar_contract::caps::ReasonCode,
     path: &str,
     target: &str,
@@ -193,7 +193,7 @@ pub(crate) async fn reshape_body_limit_413(
             &path,
             &target,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -237,12 +237,8 @@ pub(crate) async fn request_activity_tick(
 }
 
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
-/// reporting the latency Busbar itself added — total request wall-clock MINUS the upstream
-/// round-trip — so operators (and browser DevTools / APM tools) can see the gateway's own cost
-/// in-band on every response, without scraping `/metrics` or wiring traces. The upstream RTT is
-/// recorded by the forward path into the [`proxy::UPSTREAM_RTT_US`] task-local for the duration
-/// of this scope; a request that never dispatched upstream (admin / health / early error) reports
-/// its full processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at µs precision.
+/// reporting the request's processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at
+/// µs precision.
 ///
 /// Gated by `advanced.response_headers.server_timing` (default `false`) — but NOT with an internal
 /// `if` check like the pre-task-#139 version. `apply_common_layers` installs this middleware LAYER
@@ -255,14 +251,10 @@ pub(crate) async fn server_timing(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use std::sync::atomic::Ordering;
-    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
     let start = std::time::Instant::now();
-    let mut resp = proxy::UPSTREAM_RTT_US
-        .scope(slot.clone(), next.run(req))
-        .await;
+    let mut resp = next.run(req).await;
     let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-    let dur_ms = server_timing_dur_ms(total_us, slot.load(Ordering::Relaxed));
+    let dur_ms = server_timing_dur_ms(total_us, NO_UPSTREAM_RTT);
     if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
         resp.headers_mut()
             .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
@@ -280,7 +272,7 @@ pub(crate) async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -290,7 +282,7 @@ pub(crate) async fn reshape_oversized_413(
             path,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
             // CANONICAL kind for an oversized payload across the protocol writers.
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -313,7 +305,7 @@ async fn reshape_oversized_413_with(
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|ct| ct.starts_with(crate::proxy::APPLICATION_JSON));
+        .is_some_and(|ct| ct.starts_with(busbar_contract::protocol::APPLICATION_JSON));
     if is_json {
         return resp;
     }
@@ -352,7 +344,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_split_routers_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -499,7 +491,7 @@ pub(crate) fn base_data_router(
     // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
     // so the route order is stable.
     let mut router = router;
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::registry::plane_decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
@@ -635,8 +627,8 @@ fn claimed_has(filter: axum::routing::MethodFilter, method: &axum::http::Method)
 /// invariant this seam preserves. The handler it wires is a CORE-owned axum closure that extracts
 /// exactly the request pieces the old typed plane handlers took: the swappable `AppHandle` state, the
 /// middleware-resolved governance/principal extensions (absent — hence `Option` — on a
-/// `RouteAuth::None` route, which the auth middleware bypasses before attaching them), the path
-/// captures, the headers and the buffered body. It assembles a neutral
+/// `RouteAuth::None` route, which the auth middleware bypasses before attaching them), the headers
+/// and the buffered body. It assembles a neutral
 /// [`busbar_kernel::plane_routes::PlaneReqCtx`] and awaits the plane's own handler. The plane
 /// names none of these core/axum types; this adapter names them all.
 fn mount_plane_route(
@@ -661,7 +653,9 @@ fn mount_plane_route(
         move |axum::extract::State(handle): axum::extract::State<
             std::sync::Arc<state::AppHandle>,
         >,
-              raw_params: axum::extract::RawPathParams,
+              // Kept for its rejection alone (a capture that is not UTF-8 is refused before the
+              // handler, as it always was); no handler reads the captures.
+              _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
@@ -682,22 +676,7 @@ fn mount_plane_route(
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
-            let path_params: Vec<(String, String)> = raw_params
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
             async move {
-                let gov = gov.map(|axum::extract::Extension(g)| g);
-                // The one identity fact a `Key`-auth handler binds request-scoped state to — the
-                // resolved key id — lifted from the middleware-attached `gov` so the handler never
-                // re-runs the identity chain (which would double-run it and change behaviour).
-                let caller_principal = gov
-                    .as_ref()
-                    .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
-                // D1: mint the NEUTRAL host seam over the request's live engine snapshot BEFORE
-                // erasing the handle, so the plane reaches host capabilities by calling typed methods
-                // on `ctx.host` rather than naming `busbar_kernel::plane_host::*_over`.
-                let host = crate::plane_driver::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -705,14 +684,11 @@ fn mount_plane_route(
                     method,
                     headers,
                     body,
-                    path_params,
-                    caller_principal,
-                    gov,
+                    gov: gov.map(|axum::extract::Extension(g)| g),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     consumed_fields,
                     engine,
-                    host,
                     slot,
                 };
                 handler(ctx).await
@@ -749,7 +725,7 @@ fn mount_plane_session(
               axum::extract::State(handle): axum::extract::State<
             std::sync::Arc<state::AppHandle>,
         >,
-              raw_params: axum::extract::RawPathParams,
+              _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
@@ -769,16 +745,7 @@ fn mount_plane_session(
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
-            let path_params: Vec<(String, String)> = raw_params
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
             async move {
-                let gov = gov.map(|axum::extract::Extension(g)| g);
-                let caller_principal = gov
-                    .as_ref()
-                    .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
-                let host = crate::plane_driver::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -786,12 +753,9 @@ fn mount_plane_session(
                     method: RouteMethod::Get,
                     headers,
                     body: axum::body::Bytes::new(),
-                    path_params,
-                    caller_principal,
-                    gov,
+                    gov: gov.map(|axum::extract::Extension(g)| g),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
-                    host,
                     slot,
                     caller_credential,
                     consumed_fields,
@@ -1062,7 +1026,7 @@ fn request_panicked(
         uri.path(),
         target_of(uri),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        busbar_contract::protocol::KIND_API_ERROR,
         "internal error",
     )
 }

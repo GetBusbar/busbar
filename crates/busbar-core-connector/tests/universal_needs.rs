@@ -17,7 +17,7 @@
 //! `.busbar-ref`) LINKED and DROPPED IN with busbar's own `Connector` as the host
 //! (`tests/support/conformance_host.rs`, rendered by the fleet template): its `http` need is
 //! dialled through the connector to a real TLS far end, every `dialing_steps` step of its
-//! `conformance.json` must resume on its ticket (`busbar_plugin_loader::conformance::resumed`),
+//! `conformance.json` must resume on its ticket (`busbar_test_kit::conformance::resumed`),
 //! and the suite's RED arms are kept. plugin-ci runs it on every change to that repo.
 
 use std::sync::OnceLock;
@@ -224,7 +224,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                         ("method".to_owned(), b"GET".to_vec()),
                         ("path".to_owned(), b"/v1/probe".to_vec()),
                     ],
-                    Vec::new(),
+                    Default::default(),
                 )),
                 head_words: Default::default(),
                 anchors: None,
@@ -294,7 +294,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 tls: None,
                 alpn: Vec::new(),
                 open_timeout: std::time::Duration::from_secs(5),
-                opening: Some((Vec::new(), b"opening;".to_vec())),
+                opening: Some((Vec::new(), b"opening;".to_vec().into())),
                 head_words: Default::default(),
                 anchors: None,
             },

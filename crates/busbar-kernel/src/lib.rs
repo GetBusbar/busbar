@@ -229,7 +229,6 @@ pub mod governance;
 pub mod handlers;
 pub mod hooks;
 pub mod host_chains;
-pub mod host_claims;
 pub mod host_disk;
 pub mod host_records;
 pub mod host_units;
@@ -269,7 +268,6 @@ mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
 pub mod plugin_routes;
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
@@ -278,8 +276,6 @@ pub mod plugin_routes;
 // Relocated byte-identically out of `busbar-substrate-values`, whose module is DELETED rather than
 // kept as a re-export: one type, one home.
 pub mod profile;
-pub mod proto;
-pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
@@ -346,9 +342,6 @@ pub use vocabulary::{Registration, MAX_VOCABULARY};
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
-#[cfg(test)]
-#[path = "tests/license_tests.rs"]
-mod license_header_tests;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;
@@ -368,9 +361,7 @@ pub use appbuild::{
     GovCredentialRotation, InstalledLimits, LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG,
     ENV_PROVIDERS,
 };
-pub use preflight::{
-    plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
-};
+pub use preflight::plugins_preflight;
 pub use router::{
     build_router, build_split_routers_serving, build_split_routers_serving_doors,
     build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,

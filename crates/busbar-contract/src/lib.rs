@@ -110,7 +110,6 @@ pub mod plugin_rows;
 pub mod protocol;
 // The provider-key descriptor a plane states in its Statement's extensions (row 155 B1c).
 pub mod provider_keys;
-pub mod proxy_route;
 pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
@@ -128,6 +127,8 @@ pub mod secret;
 // The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
 // crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
 pub mod secret_ref;
+/// Settings sensitivity: every plugin setting is sensitive unless its schema declares it public.
+pub mod settings_public;
 // DECLARED SECRET FIELDS: the paths a Statement names in `secret_refs`, matched, lent and policed.
 pub mod secret_fields;
 pub mod section;
@@ -207,10 +208,7 @@ pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use redacted::{constant_time_eq, sha256_hex, Secret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
-pub use transport::{
-    check_composition, CompositionError, FrameStream, Fut, Registered, TransportMeta, TRANSPORT_ABI,
-};
-pub use transport::{Carrier, Framer};
+pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
     Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,

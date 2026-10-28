@@ -865,8 +865,9 @@ pub const REFUSAL_ANY_DIALECT: u32 = u32::MAX;
 /// THE WIRE REFUSAL CODES: a refusal reason as it crosses the plane ABI ([`RefusalStatus::reason`],
 /// [`RefusalIn::reason`]). Every number is written out and the table is APPEND-ONLY: a code never
 /// changes meaning, and a reason the kernel's vocabulary gains takes the next number here. The
-/// kernel's vocabulary maps to and from it ([`reason_code`], [`reason_of`]; both matches are
-/// exhaustive, so a new reason cannot be left off). This crate's tests pin every code to its word.
+/// kernel's vocabulary maps to and from it ([`reason_code`], [`reason_of`]) by name, derived from
+/// its one table (`caps::ReasonCode`), so a new reason cannot be left off. This crate's tests pin
+/// every code to its word.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefusalCode {
@@ -1071,17 +1072,22 @@ impl RefusalCode {
     /// The code `code` names; `None` for a number the table does not hold.
     #[must_use]
     pub const fn of(code: u32) -> Option<RefusalCode> {
-        let all = Self::ALL;
-        let mut i = 0;
-        while i < all.len() {
-            if all[i] as u32 == code {
-                return Some(all[i]);
-            }
-            i += 1;
+        if (code as usize) < Self::ALL.len() {
+            Some(Self::ALL[code as usize])
+        } else {
+            None
         }
-        None
     }
 }
+
+// `ALL[n]` is the code numbered `n`, which `RefusalCode::of` indexes by.
+const _: () = {
+    let mut i = 0;
+    while i < RefusalCode::ALL.len() {
+        assert!(RefusalCode::ALL[i] as usize == i);
+        i += 1;
+    }
+};
 
 /// A kernel refusal reason's wire code.
 #[must_use]
@@ -1092,122 +1098,22 @@ pub const fn reason_code(reason: ReasonCode) -> u32 {
 /// A kernel refusal reason's wire code, as the code.
 #[must_use]
 pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
-    match reason {
-        ReasonCode::InFlightCap => RefusalCode::InFlightCap,
-        ReasonCode::CursorBudget => RefusalCode::CursorBudget,
-        ReasonCode::CredentialBudget => RefusalCode::CredentialBudget,
-        ReasonCode::SessionBudget => RefusalCode::SessionBudget,
-        ReasonCode::SpillBudget => RefusalCode::SpillBudget,
-        ReasonCode::ScratchExhausted => RefusalCode::ScratchExhausted,
-        ReasonCode::RateLimited => RefusalCode::RateLimited,
-        ReasonCode::BodyTooLarge => RefusalCode::BodyTooLarge,
-        ReasonCode::OpenSlotBusy => RefusalCode::OpenSlotBusy,
-        ReasonCode::DecodeFailed => RefusalCode::DecodeFailed,
-        ReasonCode::SchemeNotDeclared => RefusalCode::SchemeNotDeclared,
-        ReasonCode::SessionUnbound => RefusalCode::SessionUnbound,
-        ReasonCode::Unauthenticated => RefusalCode::Unauthenticated,
-        ReasonCode::ChallengeExhausted => RefusalCode::ChallengeExhausted,
-        ReasonCode::Revoked => RefusalCode::Revoked,
-        ReasonCode::ScopeDenied => RefusalCode::ScopeDenied,
-        ReasonCode::PoolNotPermitted => RefusalCode::PoolNotPermitted,
-        ReasonCode::NoRate => RefusalCode::NoRate,
-        ReasonCode::HookVeto => RefusalCode::HookVeto,
-        ReasonCode::NoDestination => RefusalCode::NoDestination,
-        ReasonCode::OverBudget => RefusalCode::OverBudget,
-        ReasonCode::GroupFrozen => RefusalCode::GroupFrozen,
-        ReasonCode::Unpriced => RefusalCode::Unpriced,
-        ReasonCode::OverdraftCeiling => RefusalCode::OverdraftCeiling,
-        ReasonCode::StaleSlice => RefusalCode::StaleSlice,
-        ReasonCode::DurabilityUnavailable => RefusalCode::DurabilityUnavailable,
-        ReasonCode::TierMismatch => RefusalCode::TierMismatch,
-        ReasonCode::Replayed => RefusalCode::Replayed,
-        ReasonCode::InFlight => RefusalCode::InFlight,
-        ReasonCode::DestinationBudgetExhausted => RefusalCode::DestinationBudgetExhausted,
-        ReasonCode::BreakerOpen => RefusalCode::BreakerOpen,
-        ReasonCode::DestinationUnreachable => RefusalCode::DestinationUnreachable,
-        ReasonCode::MeterDisputed => RefusalCode::MeterDisputed,
-        ReasonCode::HandoffMismatch => RefusalCode::HandoffMismatch,
-        ReasonCode::PlanePanic => RefusalCode::PlanePanic,
-        ReasonCode::TaskLost => RefusalCode::TaskLost,
-        ReasonCode::Stalled => RefusalCode::Stalled,
-        ReasonCode::SecretPlaceholder => RefusalCode::SecretPlaceholder,
-        ReasonCode::Drain => RefusalCode::Drain,
-        ReasonCode::Superseded => RefusalCode::Superseded,
-        ReasonCode::ClientGone => RefusalCode::ClientGone,
-        ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
-        ReasonCode::Untrusted => RefusalCode::Untrusted,
-        ReasonCode::CredentialUnavailable => RefusalCode::CredentialUnavailable,
-        ReasonCode::MethodNotAllowed => RefusalCode::MethodNotAllowed,
-        ReasonCode::Internal => RefusalCode::Internal,
-    }
+    reason.wire()
 }
 
-/// The kernel refusal reason a wire code names; `None` for a number the table does not hold.
+/// The kernel reason a wire code names, for a reason a plane can state: `None` for a number the
+/// table does not hold, for the walk's `Unsent*` codes, and for the kernel's own two money
+/// verdicts ([`RefusalCode::OverdraftCeiling`], [`RefusalCode::StaleSlice`]; ARCHITECT ruling
+/// 2026-10-01), which never reach a plane. Every caller judges `None` a malformed plane answer.
 #[must_use]
 pub const fn reason_of(code: u32) -> Option<ReasonCode> {
     let Some(c) = RefusalCode::of(code) else {
         return None;
     };
-    Some(match c {
-        RefusalCode::InFlightCap => ReasonCode::InFlightCap,
-        RefusalCode::CursorBudget => ReasonCode::CursorBudget,
-        RefusalCode::CredentialBudget => ReasonCode::CredentialBudget,
-        RefusalCode::SessionBudget => ReasonCode::SessionBudget,
-        RefusalCode::SpillBudget => ReasonCode::SpillBudget,
-        RefusalCode::ScratchExhausted => ReasonCode::ScratchExhausted,
-        RefusalCode::RateLimited => ReasonCode::RateLimited,
-        RefusalCode::BodyTooLarge => ReasonCode::BodyTooLarge,
-        RefusalCode::OpenSlotBusy => ReasonCode::OpenSlotBusy,
-        RefusalCode::DecodeFailed => ReasonCode::DecodeFailed,
-        RefusalCode::SchemeNotDeclared => ReasonCode::SchemeNotDeclared,
-        RefusalCode::SessionUnbound => ReasonCode::SessionUnbound,
-        RefusalCode::Unauthenticated => ReasonCode::Unauthenticated,
-        RefusalCode::ChallengeExhausted => ReasonCode::ChallengeExhausted,
-        RefusalCode::Revoked => ReasonCode::Revoked,
-        RefusalCode::ScopeDenied => ReasonCode::ScopeDenied,
-        RefusalCode::PoolNotPermitted => ReasonCode::PoolNotPermitted,
-        RefusalCode::NoRate => ReasonCode::NoRate,
-        RefusalCode::HookVeto => ReasonCode::HookVeto,
-        RefusalCode::NoDestination => ReasonCode::NoDestination,
-        RefusalCode::OverBudget => ReasonCode::OverBudget,
-        RefusalCode::GroupFrozen => ReasonCode::GroupFrozen,
-        RefusalCode::Unpriced => ReasonCode::Unpriced,
-        // KERNEL-ONLY MONEY VERDICTS (ARCHITECT ruling 2026-10-01): a plane never carries the
-        // overdraft ceiling or a stale slice, so their codes decode to nothing, which every caller
-        // judges a malformed plane answer. The kernel's own encode ([`reason_code`]) keeps them.
-        RefusalCode::OverdraftCeiling | RefusalCode::StaleSlice => return None,
-        RefusalCode::DurabilityUnavailable => ReasonCode::DurabilityUnavailable,
-        RefusalCode::TierMismatch => ReasonCode::TierMismatch,
-        RefusalCode::Replayed => ReasonCode::Replayed,
-        RefusalCode::InFlight => ReasonCode::InFlight,
-        RefusalCode::DestinationBudgetExhausted => ReasonCode::DestinationBudgetExhausted,
-        RefusalCode::BreakerOpen => ReasonCode::BreakerOpen,
-        RefusalCode::DestinationUnreachable => ReasonCode::DestinationUnreachable,
-        RefusalCode::MeterDisputed => ReasonCode::MeterDisputed,
-        RefusalCode::HandoffMismatch => ReasonCode::HandoffMismatch,
-        RefusalCode::PlanePanic => ReasonCode::PlanePanic,
-        RefusalCode::TaskLost => ReasonCode::TaskLost,
-        RefusalCode::Stalled => ReasonCode::Stalled,
-        RefusalCode::SecretPlaceholder => ReasonCode::SecretPlaceholder,
-        RefusalCode::Drain => ReasonCode::Drain,
-        RefusalCode::Superseded => ReasonCode::Superseded,
-        RefusalCode::ClientGone => ReasonCode::ClientGone,
-        RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
-        RefusalCode::Untrusted => ReasonCode::Untrusted,
-        RefusalCode::CredentialUnavailable => ReasonCode::CredentialUnavailable,
-        RefusalCode::MethodNotAllowed => ReasonCode::MethodNotAllowed,
-        RefusalCode::Internal => ReasonCode::Internal,
-        // THE WALK'S EXHAUSTION WITH NOTHING SENT: a kernel-to-plane piece reason, never a
-        // reason a plane states, so it decodes to nothing (a malformed plane answer).
-        RefusalCode::UnsentNoAttempt
-        | RefusalCode::UnsentNoRoute
-        | RefusalCode::UnsentNeedUnbound
-        | RefusalCode::UnsentTargetNotPath
-        | RefusalCode::UnsentFieldName
-        | RefusalCode::UnsentUnrecorded
-        | RefusalCode::UnsentAuthFailed
-        | RefusalCode::UnsentOpenRefused => return None,
-    })
+    match ReasonCode::of_wire(c) {
+        Some(ReasonCode::OverdraftCeiling | ReasonCode::StaleSlice) => None,
+        r => r,
+    }
 }
 
 /// WHETHER THE REFUSED PIECE'S REASON (`OnPieceIn::reason`) SAYS NOTHING LEFT for the unit: the
@@ -1238,14 +1144,14 @@ pub const fn nothing_sent(reason: u32) -> bool {
 /// 237-305`: rate 429 `rate_limit_error`, budget 429 `insufficient_quota`, frozen group 403
 /// `permission_error`), and none becomes a 500.
 ///
-/// So the reason-to-class grouping lives ONCE, here, and a plane holds only a class-to-wire table:
-/// its own codes and words. The grouping follows the one plane 1.5.5 shipped (owner correction
+/// So the reason-to-class grouping lives ONCE, in the reason table, and a plane holds only a
+/// class-to-wire table: its own codes and words. The grouping follows the one plane 1.5.5 shipped (owner correction
 /// 2026-09-28): each class has one kernel default status, and that default plus that plane's stated
 /// per-reason rows reproduce every status it answered, byte for byte, against the 1.5.5 golden
 /// cells.
 ///
-/// The match in [`RefusalCode::class`] has no `_` arm, so a code added without a class does not
-/// compile.
+/// The grouping is a column of the one reason table (`caps::ReasonCode`'s `reasons!` rows), so a
+/// reason added without a class does not compile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefusalClass {
     /// The plane could not read the request.
@@ -1308,74 +1214,25 @@ impl RefusalClass {
 }
 
 impl RefusalCode {
-    /// THE class of this code: the one reason-to-class match in the tree.
+    /// THE class of this code: its reason's row of the one reason table (`caps::ReasonCode`); the
+    /// walk's `Unsent*` codes, which are no reason, are [`RefusalClass::Unreachable`].
     #[must_use]
     pub const fn class(self) -> RefusalClass {
-        use RefusalClass as C;
-        match self {
-            RefusalCode::DecodeFailed => C::Unreadable,
-            RefusalCode::NoRate
-            | RefusalCode::Unpriced
-            | RefusalCode::Replayed
-            | RefusalCode::Superseded
-            | RefusalCode::MethodNotAllowed => C::Rejected,
-            RefusalCode::Unauthenticated
-            | RefusalCode::Revoked
-            | RefusalCode::SessionUnbound
-            | RefusalCode::SchemeNotDeclared
-            | RefusalCode::ChallengeExhausted => C::Unauthenticated,
-            RefusalCode::ScopeDenied
-            | RefusalCode::PoolNotPermitted
-            | RefusalCode::HookVeto
-            | RefusalCode::GroupFrozen
-            | RefusalCode::Untrusted => C::Forbidden,
-            RefusalCode::BodyTooLarge
-            | RefusalCode::CursorBudget
-            | RefusalCode::CredentialBudget => C::TooLarge,
-            RefusalCode::RateLimited => C::Throttled,
-            RefusalCode::InFlightCap | RefusalCode::InFlight => C::Busy,
-            RefusalCode::OverBudget => C::QuotaExhausted,
-            RefusalCode::NoDestination => C::NotFound,
-            RefusalCode::DestinationUnreachable
-            | RefusalCode::BreakerOpen
-            | RefusalCode::DestinationBudgetExhausted
-            | RefusalCode::CredentialUnavailable
-            | RefusalCode::UnsentNoAttempt
-            | RefusalCode::UnsentNoRoute
-            | RefusalCode::UnsentNeedUnbound
-            | RefusalCode::UnsentTargetNotPath
-            | RefusalCode::UnsentFieldName
-            | RefusalCode::UnsentUnrecorded
-            | RefusalCode::UnsentAuthFailed
-            | RefusalCode::UnsentOpenRefused => C::Unreachable,
-            RefusalCode::SessionBudget
-            | RefusalCode::SpillBudget
-            | RefusalCode::ScratchExhausted
-            | RefusalCode::OpenSlotBusy
-            | RefusalCode::OverdraftCeiling
-            | RefusalCode::StaleSlice
-            | RefusalCode::DurabilityUnavailable
-            | RefusalCode::TierMismatch
-            | RefusalCode::Drain
-            | RefusalCode::ClientGone => C::Unavailable,
-            RefusalCode::Stalled | RefusalCode::DeadlineExceeded => C::Timeout,
-            RefusalCode::PlanePanic => C::PlaneFault,
-            RefusalCode::MeterDisputed
-            | RefusalCode::HandoffMismatch
-            | RefusalCode::TaskLost
-            | RefusalCode::SecretPlaceholder
-            | RefusalCode::Internal => C::NodeFault,
+        match ReasonCode::of_wire(self) {
+            Some(reason) => reason.class(),
+            None => RefusalClass::Unreachable,
         }
     }
 }
 
-/// The class of a kernel refusal reason ([`RefusalCode::class`] of its wire code).
+/// The class of a kernel refusal reason: its row of the reason table, which [`RefusalCode::class`]
+/// reads too.
 #[must_use]
 pub const fn class_of(reason: ReasonCode) -> RefusalClass {
-    wire_code(reason).class()
+    reason.class()
 }
 
-/// The class of a refusal as a plane is handed it ([`RefusalCode::class`] of its wire code).
+/// The class of a refusal as a plane is handed it: [`class_of`] of the kernel reason it spells.
 #[must_use]
 pub fn class_of_refusal(reason: crate::unit::RefusalReason) -> RefusalClass {
     class_of(ReasonCode::from(reason))

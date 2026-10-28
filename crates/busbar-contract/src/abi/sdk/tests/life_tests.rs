@@ -33,6 +33,8 @@ use super::*;
 const DISPOSITION: u32 = 3;
 /// Generations retired, summed.
 static RETIRED: AtomicU64 = AtomicU64::new(0);
+/// The state of every instance closed, and whether it was handed host tables.
+static CLOSED: std::sync::Mutex<Vec<(Vec<u8>, bool)>> = std::sync::Mutex::new(Vec::new());
 
 /// The test kind's state: the bytes `resolve` answers.
 struct Echo(Vec<u8>);
@@ -84,6 +86,13 @@ impl Life for Echo {
 
     fn tick(&self, now_ns: u64) -> u64 {
         now_ns + self.0.len() as u64
+    }
+
+    fn close(&self, host: Option<&Host>) {
+        CLOSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((self.0.clone(), host.is_some()));
     }
 }
 
@@ -307,6 +316,27 @@ fn open_holds_the_kinds_state_and_a_refused_open_answers_its_text() {
     assert_eq!(why, "the echo refuses");
 }
 
+/// THE DRAIN: `close` runs the kind's [`Life::close`] on the instance it closes, with the host
+/// tables `open` handed it (none here), before the SDK drops the state. RED: a `close` that only
+/// drops the state never lets the instance close the host handles it holds.
+#[test]
+fn close_runs_the_kinds_close_on_its_instance() {
+    let (_, inst, _) = open(b"closing-probe", &[]);
+    assert_eq!(close(inst), Outcome::Ready);
+    let closed = CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        closed.contains(&(b"closing-probe".to_vec(), false)),
+        "the kind's close ran once on the closed instance: {closed:?}"
+    );
+    assert_eq!(
+        closed.iter().filter(|(s, _)| s == b"closing-probe").count(),
+        1
+    );
+}
+
 #[test]
 fn every_lifecycle_slot_answers_the_kinds_value() {
     let (_, inst, _) = open(b"abcd", &[]);
@@ -347,6 +377,25 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
         Outcome::Ready
     );
     assert_eq!(co.disposition, DISPOSITION);
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// RED (secret ABI defect 13, transport 9): a release of a lease the instance does not hold, or
+/// with no instance, is REFUSED naming why. Before, it was a bare REFUSED with no text.
+#[test]
+fn an_unknown_lease_is_refused_in_words() {
+    let said = |inst: *mut c_void| {
+        let mut input: ReleaseIn = zeroed();
+        input.head = in_head::<ReleaseIn>(slot::RELEASE);
+        input.lease = 999;
+        let mut out = out_head::<OutHead>();
+        let o = call(table().head.release, inst, &input, &mut out);
+        (o, text(out.error))
+    };
+    let (_, inst, _) = open(b"{}", &[blob(b"s3cret")]);
+    let words = (Outcome::Refused, NO_SUCH_LEASE.to_string());
+    assert_eq!(said(inst), words);
+    assert_eq!(said(ptr::null_mut()), words, "no instance");
     assert_eq!(close(inst), Outcome::Ready);
 }
 

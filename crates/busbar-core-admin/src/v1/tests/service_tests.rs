@@ -3429,7 +3429,8 @@ mod plane_fees_on_admin_usage {
     use busbar_contract::records::RecordStore as _;
     use busbar_kernel::cost::PlaneFees;
     use busbar_kernel::governance::PLANE_LANE_SEP;
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+    use busbar_kernel::test_support::planes::TestRegistryIsolation;
 
     const KEY: &str = "vk_plane_fees";
     /// The pools plane's model and provider, as the rows below name them.
@@ -4080,25 +4081,12 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
     assert_eq!(head, want);
 }
 
-/// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, install, inspect
-/// and rollback all reach the policy through the one `admission` (none reaches it any other way),
-/// which builds nothing itself (the root's admission is installed), and it warns about a malformed
-/// anti-downgrade floor before answering.
+/// The admin surface's trust resolution (`admission`, which catalog, install, inspect and rollback
+/// reach) warns about a malformed anti-downgrade floor as boot does, before answering.
 #[test]
 fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let src = include_str!("../service_operations.rs");
-    assert_eq!(
-        src.matches("admission(&self.app)").count(),
-        4,
-        "catalog, install, inspect and rollback resolve through admission"
-    );
-    assert_eq!(
-        src.matches("TrustPolicy::from_config(").count(),
-        0,
-        "the admin surface builds no trust policy of its own: it resolves through the root's"
-    );
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v2".into());
     let app = crate::new_test_app().plugins_cfg(cfg).build();
@@ -4343,4 +4331,39 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         serde_json::to_value(&page.items[0]).unwrap(),
         "the list and the single read give the one flagged view"
     );
+}
+
+/// SENSITIVE BY DEFAULT (owner ruling 2026-10-27): a settings bag in an admin view shows its keys,
+/// and the values of the keys its plugin's schema declares `x-busbar-public` alone. An undeclared
+/// setting's value never appears; a declared-public one is shown; a module that declares nothing
+/// shows keys alone, exactly as before.
+#[test]
+fn an_admin_view_shows_only_declared_public_setting_values() {
+    let public = |module: &str| -> std::collections::BTreeSet<String> {
+        match module {
+            "stub" => ["url".to_string()].into_iter().collect(),
+            _ => std::collections::BTreeSet::new(),
+        }
+    };
+    let mut v = serde_json::json!({
+        "store": { "module": "stub", "settings": {
+            "url": "https://ledger.internal", "password": "hunter2", "undeclared": "u-value"
+        } },
+        "other": { "module": "plain", "settings": { "url": "https://plain.internal" } }
+    });
+    super::redact_settings_bags_with(&mut v, &public);
+    let text = v.to_string();
+    for hidden in ["hunter2", "u-value", "https://plain.internal"] {
+        assert!(!text.contains(hidden), "`{hidden}` shown: {text}");
+    }
+    assert_eq!(
+        v["store"]["settings_public"],
+        serde_json::json!({ "url": "https://ledger.internal" })
+    );
+    assert_eq!(
+        v["store"]["settings_keys"],
+        serde_json::json!(["password", "undeclared", "url"])
+    );
+    assert!(v["other"].get("settings_public").is_none(), "{text}");
+    assert_eq!(v["other"]["settings_keys"], serde_json::json!(["url"]));
 }

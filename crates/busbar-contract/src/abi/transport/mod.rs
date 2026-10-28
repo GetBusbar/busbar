@@ -176,7 +176,7 @@ pub const ABI_VERSION: u32 = 1;
 /// the transport table. A door states it as built
 /// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
 /// `tests/layout_fingerprint.rs` holds it to its fold.
-pub const LAYOUT_FINGERPRINT: u64 = 0xc4a724d2a71db907;
+pub const LAYOUT_FINGERPRINT: u64 = 0xc67a9c018f70d255;
 
 /// The transport kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 /// crossing its table, each with every field. A struct `abi/transport/` gains is listed here (gate
@@ -248,7 +248,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(DatagramRoute => offset, len, path, lane),
     crate::layout_shape!(DatagramLane =>
         size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
-        routes_cap
+        routes_cap, paths, paths_len
     ),
     crate::layout_shape!(RendezvousTerms =>
         role, _reserved, local_user, local_secret, remote_user, remote_secret, peer_fingerprint,

@@ -14,11 +14,13 @@ pub mod filled;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
-/// The root legacy table the composition root hands in, and the one rewrite over it.
-pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
+pub mod migrate_catalog;
 pub mod migrate_export;
+pub mod migrate_plugins;
+/// The root migration table the composition root hands in, and the one rewrite over it.
+pub mod migration_table;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub mod named_map;
@@ -38,6 +40,8 @@ pub mod patch;
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
 pub mod secret;
+/// The settings each plugin declares public; every other plugin setting is sensitive.
+pub mod settings_public;
 /// The ONE config-mutation choke point (`config_transaction`), relocated out of
 /// `admin::v1::json::txn` (1.6.0 de-alias, stage 2a): core config-apply infrastructure that
 /// `auth::self_keys` (core) now calls directly instead of reaching into `admin::`. See the module
@@ -46,6 +50,7 @@ pub mod transaction;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
+pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
@@ -448,6 +453,9 @@ pub struct RootCfg {
     /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
     /// secret references the owner listed in it.
     pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
+    /// The `credentials:` block, carried through `resolve` verbatim: the at-rest key references,
+    /// resolved at boot and at reload ([`CredentialsCfg`]).
+    pub credentials: CredentialsCfg,
     /// EVERY REGISTERED PLANE'S DECLARED SECTION this document writes, by config section, carried
     /// through `resolve` VERBATIM.
     ///
@@ -784,17 +792,17 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 ///
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
 /// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
-/// block's home and the trace URL keys that folded into one) are the root legacy table's frozen
-/// 1.5.5 text ([`legacy`]): the kernel names no export instance.
+/// block's home and the trace URL keys that folded into one) are the root migration table's frozen
+/// 1.5.5 text ([`migration_table`]): the kernel names no export instance.
 pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
     let trace_home = format!(
         "an `export:` instance with `module: {}` and `settings.url`",
-        legacy::text("export_trace_module")
+        migration_table::text("export_trace_module")
     );
     [
         // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
         // retired leaves reports the block-level move (the leaves have nowhere left to live).
-        ("observability", legacy::text("observability_home").to_string()),
+        ("observability", migration_table::text("observability_home").to_string()),
         // Inverted so the SAFE posture is the default.
         ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
         // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
@@ -802,8 +810,8 @@ pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
         // The IdP is DEFINED once and REFERENCED by name.
         ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
         // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
-        (legacy::text("observability_trace_key"), trace_home.clone()),
-        (legacy::text("observability_trace_key_1_4"), trace_home),
+        (migration_table::text("observability_trace_key"), trace_home.clone()),
+        (migration_table::text("observability_trace_key_1_4"), trace_home),
     ]
     .into_iter()
     .filter(|(old, _)| !old.is_empty())
@@ -823,10 +831,10 @@ pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
 /// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
 /// The leaves, the request-log type key they fold under and the metrics type key are the root
-/// legacy table's frozen 1.5.5 rows ([`legacy`]); the top-level `metrics:` block is listed last.
+/// migration table's frozen 1.5.5 rows ([`migration_table`]); the top-level `metrics:` block is listed last.
 pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
-    let log = legacy::text("observability_log_type_key");
-    let mut out: Vec<(&'static str, String)> = legacy::pairs("observability_log_keys")
+    let log = migration_table::text("observability_log_type_key");
+    let mut out: Vec<(&'static str, String)> = migration_table::pairs("observability_log_keys")
         .into_iter()
         .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
         .collect();
@@ -834,7 +842,7 @@ pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
         "metrics",
         format!(
             "export.{}.settings (buffer_seconds / key_gauge_limit)",
-            legacy::text("metrics_type_key")
+            migration_table::text("metrics_type_key")
         ),
     ));
     out
@@ -1031,7 +1039,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // config, where they can see the cross-section references a single entry cannot.
         let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
             deserializer,
-            crate::plane::fallback_key(),
+            crate::plane_driver::dispatch::fallback_key(),
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -1196,6 +1204,11 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub oauth_as: Option<serde_yaml::Value>,
+    /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
+    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens. A lifted
+    /// CARRIER, exactly as `oauth_as:` above is: 1.5.5 refuses the key as unknown.
+    #[serde(skip)]
+    pub credentials: CredentialsCfg,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
     /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
@@ -1224,7 +1237,9 @@ pub struct DeployCfg {
     /// `providers:` and `models:` are REQUIRED only when a registered plane declares it requires
     /// them (`PlaneDeclaration::required_config_sections`); the pre-pass refuses such a document
     /// with serde's own missing-field message. No such plane: an omitted section reads empty.
-    #[serde(default)]
+    /// Each entry's keys beyond busbar's own are its options, read aside
+    /// ([`providers::deployments`]) for the plane that speaks its dialect to judge.
+    #[serde(default, deserialize_with = "providers::deployments")]
     pub providers: HashMap<String, ProviderDeploy>,
     #[serde(default)]
     pub models: HashMap<String, ModelCfg>,
@@ -1974,7 +1989,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
 /// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
 /// providers exactly as every prior release has rather than silently dropping configured providers
-/// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
+/// out of `RootCfg::providers`. See `crate::plane_driver::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
 /// why this section never evicts.
 pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
     ResolvedProvider::merge(def, deploy_cfg)
@@ -2004,9 +2019,20 @@ pub fn resolve(
     // so a build compiled without the LLM plane must keep merging providers exactly as every prior
     // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
     // kept for exactly that build.
-    let resolve_provider_hook =
-        crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.resolve_provider);
+    let resolve_provider_hook = crate::plane_driver::registry::plane_decl_for(
+        crate::plane_driver::dispatch::fallback_key(),
+    )
+    .and_then(|d| d.resolve_provider);
+
+    // Every catalog entry, deployed or not, is judged: its keys beyond busbar's are options of its
+    // dialect (owner ruling 2026-10-27, the `config.yaml` rule), refused in the plane's words.
+    let mut catalog_names: Vec<&String> = defs.keys().collect();
+    catalog_names.sort();
+    for name in catalog_names {
+        if let Err(refusal) = providers::judge_catalog_entry(name, &defs[name]) {
+            errors.push(format!("providers.yaml: {refusal}"));
+        }
+    }
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
@@ -2186,7 +2212,7 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane::registry::plane_decls()
+            let parse = crate::plane_driver::registry::plane_decls()
                 .iter()
                 .find(|d| d.config_section == section)
                 .and_then(|d| d.parse_section)?;
@@ -2362,7 +2388,7 @@ pub fn resolve(
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
     // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
+    let lower = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
@@ -2423,6 +2449,7 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,
+            credentials: deploy.credentials.clone(),
             plane_defs: deploy
                 .declared
                 .0
@@ -2513,9 +2540,16 @@ mod provider_refusal_pins;
 #[path = "tests/resolved_provider_tests.rs"]
 mod resolved_provider_tests;
 
+// A provider's base URL (and token endpoint) as a `Debug` print shows it: no userinfo, while the
+// value the outbound request is built from keeps it (row 74, F25).
+#[cfg(test)]
+#[path = "tests/provider_debug_redaction_tests.rs"]
+mod provider_debug_redaction_tests;
+
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 pub mod auth;
+pub mod credentials;
 pub mod hooks;
 pub mod limits;
 pub mod plane_sections;

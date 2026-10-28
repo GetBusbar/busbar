@@ -113,22 +113,6 @@ pub enum BreakerState {
     HalfOpen,
 }
 
-/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `tool:` so a
-/// registration keyed this way can never collide with a bare-name key another caller uses directly,
-/// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
-/// the caller's own registration id, which is what every refusal names.
-pub fn tool_key(server: &str) -> String {
-    format!("tool:{server}")
-}
-
-/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `agent:` so a
-/// registration keyed this way can never collide with a bare-name key another caller uses directly,
-/// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
-/// the caller's own registration id, which is what every refusal names.
-pub fn agent_key(agent: &str) -> String {
-    format!("agent:{agent}")
-}
-
 /// Get current time in seconds since epoch — THE host wall clock (the kernel hands it to every codec
 /// it drives as `proto::CodecHostServices`; a plane reads time through the host it is handed, never
 /// here).
@@ -700,7 +684,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// which drives the trip decision (error-rate vs consecutive thresholds) and cooldown backoff.
     /// Returns `true` iff this failure drove a Closed→Open trip on the (pool, lane) cell, so the
     /// caller emits `BREAKER_TRIPS_TOTAL` once per logical trip.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn record_transient(
         &self,
         lane: usize,
@@ -730,7 +714,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
     ) -> bool;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn record_rate_limit(
         &self,
         lane: usize,
@@ -818,7 +802,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// `candidates` are indices into the store's lane array.
     /// `weights` is the per-member weight for each candidate (must match candidates length).
     /// Returns None if no healthy members or all candidates are unusable.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize> {
         self.select_weighted_in("", candidates, weights, now)
     }

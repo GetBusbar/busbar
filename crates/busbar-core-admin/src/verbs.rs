@@ -43,54 +43,18 @@
 use crate::governance::{Governance, GovernanceError};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
-use crate::verb::{
-    KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
-};
+use crate::verb::{KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, NEW_VERBS};
 use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::verb_store::Store;
 use std::sync::Arc;
 
-/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; fifteen of the
-/// new money-governance verbs are `Full` (they mutate state or read privileged material) and the two
-/// the document binds as `GET` ([`READ_ONLY_NEW_VERBS`]) are `ReadOnly`, by exactly 1.5.5's own
-/// method rule; the five ledger views and the three audit-chain reads
-/// ([`crate::verb::AUDIT_VERBS`]) are `ReadOnly` (the 1.6.0 additions that only look); the named
-/// surfaces split by their own nature (`Get*` reads, the two
-/// `/auth/token` methods are their own thing and never checked against this two-rung scope model at
-/// all — see the module doc on why `Verbs::execute` is not the caller for them).
+/// Resolve the scope a [`KernelVerb`] requires: the scope its row in [`crate::verb::TABLE`]
+/// carries (1.5.5's method rule: reads and the two dry-run POSTs are `ReadOnly`, every mutation is
+/// `Full`; the ledger views and audit-chain reads are `GET`s, so `ReadOnly`; a named surface is
+/// `ReadOnly` only so this stays total and is never routed through `Verbs::execute`). A verb with
+/// no row asks for `Full`.
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
-    if let Some(row) = LEGACY_VERBS.iter().find(|r| r.verb == verb) {
-        return row.scope;
-    }
-    // Checked before the group as a whole, because these two are members of it: `verify` and
-    // `plane_facts` are bound `GET`, and 1.5.5's rule is that a `GET` asks for `read-only`. Asking
-    // `full` of them refuses the operator whose credential was only ever meant to look.
-    if READ_ONLY_NEW_VERBS.contains(&verb) {
-        return VerbScope::ReadOnly;
-    }
-    if NEW_VERBS.contains(&verb) {
-        return VerbScope::Full;
-    }
-    // The five ledger views are reads, and are answered here rather than by the fallthrough below
-    // so that the scope is a decision this function MAKES about them. The fallthrough happens to
-    // land on the same rung, and that coincidence is exactly why it must not be relied on: a
-    // read-only view and an unrecognised verb would then be indistinguishable, and the day the
-    // fallthrough is tightened to `Full` — the safe direction for an unknown — every ledger view
-    // would silently start demanding a full-scope credential.
-    if LEDGER_VERBS.contains(&verb) {
-        return VerbScope::ReadOnly;
-    }
-    // The three audit-chain reads, answered here for the same reason as the ledger views: the rung
-    // must be a decision this function MAKES, not a coincidence of where the fallthrough lands. A
-    // chain read is the one surface whose whole point is that somebody who does not trust the node
-    // can check it, so it asks for the same rung as `GET /audit` has since 1.5.5 and no more.
-    if crate::verb::AUDIT_VERBS.contains(&verb) {
-        return VerbScope::ReadOnly;
-    }
-    // Named surfaces: every `Get*` is a read; `PostAuthToken`/`GetAuthToken` are exempt from this
-    // model entirely (see module doc) and are given `ReadOnly` here only so `required_scope` stays
-    // total — a caller must not route either through `Verbs::execute`.
-    VerbScope::ReadOnly
+    crate::verb::row_of(verb).map_or(VerbScope::Full, |row| row.scope)
 }
 
 /// `Verbs` — the closed kernel-verb executor. Generic over the seams the integrator binds: the
@@ -174,7 +138,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         granted: VerbScope,
         now: u64,
         request: &[u8],
-    ) -> Result<Vec<u8>, Refusal> {
+    ) -> Result<G::Answer, Refusal> {
         // The two minting verbs are REFUSED here, in every build, rather than asserted against in
         // one of them. This path has no replay cache: routed through it, a mint reaches the legacy
         // catch-all and a retry inside the idempotency window mints a second admin credential the

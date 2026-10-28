@@ -1,0 +1,34 @@
+# busbar-test-kit: what a plugin repo tests itself against, at the busbar commit it pins. The
+# published conformance suite (`conformance_suite!`), the test connection tables (`TcpConns`,
+# `HttpsConns`) and a local token issuer (`test_issuer`). A dev-dependency only: no busbar build
+# links it, so none of it reaches a shipped binary.
+[package]
+name = "busbar-test-kit"
+version = "1.6.0"
+publish = false            # internal workspace crate; consumed by git rev
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar test kit: the published plugin conformance suite and the test connection tables a plugin repo runs against the one loader."
+license = "Apache-2.0"
+
+[lib]
+# The suite's own unit tests (`src/tests/`) run inside busbar-plugin-loader's test build, which
+# compiles this source over the loader's door fixtures (`cfg(loader_self_tests)`, set by the
+# loader's build script); this crate runs none of its own.
+test = false
+
+[dependencies]
+busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
+busbar-contract = { path = "../busbar-contract" }
+# The suite's host connector (`conformance_host`): busbar's connector and its TLS test kit.
+busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
+base64 = { workspace = true }
+hex = { workspace = true }
+ring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loader_self_tests)"] }

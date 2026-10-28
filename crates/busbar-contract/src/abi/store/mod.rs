@@ -24,7 +24,7 @@
 //! assert_eq!(OPS.len() as u32, KIND_SLOTS);
 //! assert_eq!(TABLE_SLOTS, LIFECYCLE_SLOTS + KIND_SLOTS);
 //! assert_eq!(slot::PUT_KEY, LIFECYCLE_SLOTS);
-//! assert_eq!(slot::WINDOW_CAPS, TABLE_SLOTS - 1);
+//! assert_eq!(slot::ADD_METERING_BATCH, TABLE_SLOTS - 1);
 //! // The table is the head plus one pointer-sized slot per kind op.
 //! assert_eq!(
 //!     std::mem::size_of::<Ops>(),
@@ -39,11 +39,10 @@
 //! driver tickets; the memory store is always READY (B.1 "Behaviour"), so every slot is `may_pend`.
 //!
 //! * REQUEST-PATH results go into HOST buffers the `in` names, pointer + capacity ([`HostBuf`],
-//!   [`HostBlobs`], [`HostSessions`], [`HostRecords`], `reserve`'s grants, `slice_release`'s
-//!   released amounts), never in the `out`, which the host zeroes before every call (mechanism
+//!   [`HostBlobs`], [`HostRecords`]), never in the `out`, which the host zeroes before every call (mechanism
 //!   memory class (i); ARCHITECT 2026-09-28). A result that does not fit is the short-buffer answer, M-SB, stated once on
 //!   [`OutHead`] and not restated here; the answer validators in [`check`] enforce it.
-//! * OFF-PATH results (the 1.5.5 lists and single records, `heads`) are plugin-owned under the
+//! * OFF-PATH results (the 1.5.5 lists and single records) are plugin-owned under the
 //!   `out`'s lease until `release(lease)` (mechanism memory class (iv)); secret material is a
 //!   [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob, zeroised on release.
 //!
@@ -57,18 +56,12 @@
 //!
 //! # Dedupe (every slot that carries an [`OpId`])
 //!
-//! Every additive or appending write carries an [`OpId`] and uses [`DeadlineClass::WriteBehind`]
-//! (B.1 "Writes"); `reserve` and `slice_release` carry one on the request path with
-//! [`DeadlineClass::Call`] (m3-inputs "store v3 money slots", `reserve`/`slice_release`). The
-//! rule, the same on every such slot (m3-inputs "store v3 money slots", DEDUPE, and "STORE v3 MONEY
-//! RULINGS" S1-S4):
+//! Every additive or appending write carries an [`OpId`] and uses [`DeadlineClass::WriteBehind`].
+//! The rule, the same on every such slot (S1-S5):
 //! * S1 REPLAY: the same `op_id` replayed with the same body applies nothing and returns the
-//!   ORIGINAL `out`; where the result lives in a host buffer the `in` names (`reserve`'s grants,
-//!   `slice_release`'s released amounts) the replay RE-WRITES the ORIGINAL results into the NEW
-//!   call's host buffers. The capacity check (M-SB) PRECEDES the replay lookup: a replay into a
-//!   short buffer answers the short FAILED and writes nothing (S1 addendum).
-//! * S2 SAME BODY means the op's VALUE fields only: the epoch, the cells or items, the amounts, the
-//!   caps and the window fields. Host-buffer pointers and capacities are EXCLUDED. The same `op_id`
+//!   ORIGINAL `out`.
+//! * S2 SAME BODY means the op's VALUE fields only: the cells or records and the window fields.
+//!   Host-buffer pointers and capacities are EXCLUDED. The same `op_id`
 //!   with different value fields is never applied: the store answers REFUSED with the diagnostic
 //!   [`DIAG_OPID_CONFLICT`].
 //! * S3 WHAT IS RECORDED under an `op_id`: only an outcome that APPLIED a change (READY). A FAILED
@@ -77,6 +70,11 @@
 //! * S4 RETENTION: dedupe is DURABLE (it survives a store restart) and an `op_id` is remembered at
 //!   least [`OP_ID_RETENTION_SECS`] (24 h). The kernel never re-issues an `op_id` older than that,
 //!   and a store treats an `op_id` it does not know as new.
+//! * S5 WHAT AN ANSWER PROVES: REFUSED is decided before commit and PROVES nothing applied (a value
+//!   the store cannot hold, a constraint, a script error before any write). FAILED proves nothing:
+//!   a store answers FAILED whenever it cannot know whether its commit landed (a lost commit or EXEC
+//!   reply, a dropped session), so the host replays the same `op_id` with the same body until READY
+//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`.
 
 pub mod check;
 pub mod ledger;
@@ -102,7 +100,7 @@ pub const ABI_VERSION: u32 = 3;
 /// the store table. A door states it as built
 /// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
 /// `tests/layout_fingerprint.rs` holds it to its fold.
-pub const LAYOUT_FINGERPRINT: u64 = 0x2e7a6070c6c60d9c;
+pub const LAYOUT_FINGERPRINT: u64 = 0x5d3e3b766528fa66;
 
 /// The store kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 /// crossing its table, each with every field. A struct `abi/store/` gains is listed here (gate
@@ -121,29 +119,14 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(VerdictOut => head, verdict, _reserved),
     crate::layout_shape!(StoreTail => head, durable_plane, fork_refusal, _reserved),
     crate::layout_shape!(OpId =>),
-    crate::layout_shape!(UnitCell => bucket, pool, dimension, _r, class_key, amount, window_start),
-    crate::layout_shape!(CellGrant => slice_id, granted, valid_until_ms),
-    crate::layout_shape!(ReserveIn => head, op_id, epoch, cells, cells_len, grants, grants_cap),
-    crate::layout_shape!(ReserveOut => head, grants_len, reason, failed_cell, needed_grants),
-    crate::layout_shape!(ReleaseItem => slice_id, unspent),
-    crate::layout_shape!(SliceReleaseIn =>
-        head, op_id, epoch, items, items_len, released, released_cap
-    ),
-    crate::layout_shape!(SliceReleaseOut => head, released_len, needed_released),
     crate::layout_shape!(UsageCell => bucket, window_start, delta),
     crate::layout_shape!(AddUsageBatchIn => head, op_id, cells, cells_len),
     crate::layout_shape!(OpBlobsIn => head, op_id, records, records_len),
-    crate::layout_shape!(WindowCap =>
-        bucket, pool, dimension, _r, class_key, window_start, cap, config_gen
-    ),
-    crate::layout_shape!(WindowCapsIn => head, op_id, caps, caps_len),
     crate::layout_shape!(IdIn => head, id),
     crate::layout_shape!(U64In => head, value),
     crate::layout_shape!(WindowIn => head, bucket, window_start),
     crate::layout_shape!(PutUsageIn => head, bucket, window_start, ledger),
-    crate::layout_shape!(AddUsageIn => head, op_id, cell),
     crate::layout_shape!(BlobIn => head, record),
-    crate::layout_shape!(OpBlobIn => head, op_id, record),
     crate::layout_shape!(KeyWithCredentialIn => head, key, credential),
     crate::layout_shape!(KindIdIn => head, kind, id),
     crate::layout_shape!(IdReasonIn => head, id, reason),
@@ -154,30 +137,19 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(ListPlaneRecordsIn => head, kind, selector, _reserved, parent, out),
     crate::layout_shape!(KindBeforeIn => head, kind, before),
     crate::layout_shape!(TokenIn => head, kind, token, expires_at, now),
-    crate::layout_shape!(AppendBatchIn => head, op_id, stream, records, records_len),
-    crate::layout_shape!(HeadOut => head, seq, epoch),
-    crate::layout_shape!(StreamHead => stream, seq, epoch),
-    crate::layout_shape!(HeadsOut => head, items, items_len),
-    crate::layout_shape!(SessionPutIn => head, session, node, principal),
-    crate::layout_shape!(SessionRow => session, node),
-    crate::layout_shape!(HostSessions => items, items_cap, bytes),
-    crate::layout_shape!(SessionsForIn => head, principal, out),
     crate::layout_shape!(RecordPutIn => head, schema, key, value),
     crate::layout_shape!(RecordGetIn => head, schema, key, value),
     crate::layout_shape!(RecordEntry => key, value),
     crate::layout_shape!(HostRecords => items, items_cap, bytes),
     crate::layout_shape!(RecordScanIn => head, schema, prefix, limit, _reserved, out),
     crate::layout_shape!(Ops =>
-        head, put_key, get_key, list_keys, delete_key, scrub_key, list_keys_since, get_usage,
-        put_usage, add_usage, add_metering, list_metering, purge_windows_before,
-        purge_metering_before, put_credential, put_key_with_credential, list_credentials,
-        lookup_credential_secret, revoke_credential, list_credentials_since, append_audit,
-        list_audit, add_denylist, list_denylist, list_audit_tail, upsert_plane_record,
-        get_plane_record, append_plane_record, list_plane_records, list_plane_record_parents,
-        purge_plane_records_before, delete_plane_record, redeem_plane_token, plane_token_live,
-        append_batch, reserve, slice_release, heads, session_put, session_remove, sessions_for,
-        record_put, record_get, record_scan, add_usage_batch, add_metering_batch,
-        append_audit_batch, window_caps
+        head, put_key, get_key, list_keys, delete_key, list_keys_since, get_usage, put_usage,
+        list_metering, put_credential, put_key_with_credential, list_credentials,
+        revoke_credential, list_credentials_since, list_audit, add_denylist, list_denylist,
+        list_audit_tail, upsert_plane_record, get_plane_record, append_plane_record,
+        list_plane_records, list_plane_record_parents, purge_plane_records_before,
+        delete_plane_record, redeem_plane_token, plane_token_live, record_put, record_get,
+        record_scan, add_usage_batch, add_metering_batch
     ),
 ];
 
@@ -366,9 +338,6 @@ pub const CANCEL_APPLIED: u32 = 2;
 /// The diagnostic id a store answers with REFUSED for an `op_id` replayed with a different body
 /// (m3-inputs "store v3 money slots", DEDUPE). A store declares it in its Statement's `diag_ids`.
 pub const DIAG_OPID_CONFLICT: &str = "STORE_OPID_CONFLICT";
-/// The diagnostic id a store answers with REFUSED for a `window_caps` cap at an EQUAL
-/// `config_gen` with a different cap (m3-inputs ARCHITECT ruling "window caps").
-pub const DIAG_CAP_CONFLICT: &str = "STORE_CAP_CONFLICT";
 /// How long a store remembers an `op_id`, at least (m3-inputs "store v3 money slots", DEDUPE:
 /// "Retention ≥ 24h").
 pub const OP_ID_RETENTION_SECS: u64 = 24 * 60 * 60;
@@ -407,13 +376,10 @@ macro_rules! store_slots {
         /// Every op whose `out` states anything beyond [`OutHead`] has its answer validator in
         /// [`check`]. These ops are ANSWERED BY THE HEAD ONLY; CHECKED BY THE MECHANISM: their `out`
         /// is exactly [`OutHead`], which the dispatcher's mechanism checks validate on every
-        /// crossing: `put_key`, `delete_key`, `scrub_key`, `put_usage`, `add_usage`,
-        /// `add_metering`, `put_credential`, `put_key_with_credential`, `revoke_credential`,
-        /// `append_audit`, `add_denylist`, `upsert_plane_record`, `append_plane_record`,
-        /// `delete_plane_record`, `session_put`, `session_remove`, `record_put`,
-        /// `add_usage_batch`, `add_metering_batch`, `append_audit_batch`. (`window_caps` also
-        /// answers with a bare [`OutHead`], but its REFUSED error text is checked by
-        /// [`check::check_window_caps`].)
+        /// crossing: `put_key`, `delete_key`, `put_usage`, `put_credential`,
+        /// `put_key_with_credential`, `revoke_credential`, `add_denylist`, `upsert_plane_record`,
+        /// `append_plane_record`, `delete_plane_record`, `record_put`, `add_usage_batch`,
+        /// `add_metering_batch`.
         ///
         /// Every store op may answer PENDING: network stores use driver tickets.
         pub const OPS: [OpContract; KIND_SLOTS as usize] = [
@@ -438,7 +404,7 @@ macro_rules! store_slots {
 }
 
 /// How many kind slots the store table holds after the lifecycle.
-pub const KIND_SLOTS: u32 = 47;
+pub const KIND_SLOTS: u32 = 31;
 /// How many slots the whole store table holds, lifecycle included ([`OpsHead::slots`]).
 pub const TABLE_SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
@@ -467,106 +433,75 @@ use crate::bounded::MAX_RECORD_BYTES;
 use MaxPayload::{Fixed, HostCap, PerRecord};
 
 store_slots! {
-    // ── the full 1.5.5 op set (B.1 "Slots": "the full 1.5.5 op set"; v1.5.5
-    //    crates/api/src/store.rs:604-927, predev records.rs:1152-1479) ──
+    // ── keys (the 1.5.5 op set; v1.5.5 crates/api/src/store.rs:604-927) ──
     0 PUT_KEY put_key BlobIn, OutHead, Off, Call, HostCap,
-        "`put_key` (records.rs:1153-1175). In [`BlobIn`] (`VirtualKey`), out [`OutHead`]. B.1; TOMBSTONE PRECONDITION: a key with no `deleted_at` never overwrites a tombstoned row, FAILED instead.";
+        "`put_key`. In [`BlobIn`] (`VirtualKey`), out [`OutHead`]. TOMBSTONE PRECONDITION: a key with no `deleted_at` never overwrites a tombstoned row, FAILED instead.";
     1 GET_KEY get_key IdIn, LeasedBlobOut, Off, Call, HostCap,
-        "`get_key` (records.rs:1176). In [`IdIn`] (key id), out [`LeasedBlobOut`] (`VirtualKey`). B.1.";
+        "`get_key`. In [`IdIn`] (key id), out [`LeasedBlobOut`] (`VirtualKey`).";
     2 LIST_KEYS list_keys InHead, LeasedListOut, Off, Call, HostCap,
-        "`list_keys` (records.rs:1177-1183). In [`InHead`], out [`LeasedListOut`] (`VirtualKey`s). B.1; UNFILTERED: tombstones included.";
+        "`list_keys`. In [`InHead`], out [`LeasedListOut`] (`VirtualKey`s). UNFILTERED: tombstones included.";
     3 DELETE_KEY delete_key IdIn, OutHead, Off, Call, Fixed,
-        "`delete_key` (records.rs:1184-1207). In [`IdIn`], out [`OutHead`]. B.1; tombstones atomically; already-tombstoned is READY; an unknown id is FAILED.";
-    4 SCRUB_KEY scrub_key IdIn, OutHead, Off, Call, Fixed,
-        "`scrub_key` (records.rs:1208-1221). In [`IdIn`], out [`OutHead`]. B.1; FAILED for an unknown or live key.";
-    5 LIST_KEYS_SINCE list_keys_since U64In, LeasedListOut, Off, Call, HostCap,
-        "`list_keys_since` (records.rs:1222-1245). In [`U64In`] (`since`), out [`LeasedListOut`]. B.1; tombstones included; `revision == 0` always listed.";
-    6 GET_USAGE get_usage WindowIn, LeasedBlobOut, Off, Call, HostCap,
-        "`get_usage` (records.rs:1246-1250). In [`WindowIn`], out [`LeasedBlobOut`] (`UsageLedger`; an untouched cell is the empty ledger, FOUND). B.1.";
-    7 PUT_USAGE put_usage PutUsageIn, OutHead, Off, Call, HostCap,
-        "`put_usage` (records.rs:1252-1261). In [`PutUsageIn`], out [`OutHead`]. B.1; an absolute set, single-writer only.";
-    8 ADD_USAGE add_usage AddUsageIn, OutHead, Off, WriteBehind, HostCap,
-        "`add_usage` (records.rs:1263-1281). In [`AddUsageIn`] (`op_id` + one [`UsageCell`]), out [`OutHead`]. B.1 \"Writes\": additive, op_id-deduped, write_behind.";
-    9 ADD_METERING add_metering OpBlobIn, OutHead, Off, WriteBehind, HostCap,
-        "`add_metering` (records.rs:1283-1286). In [`OpBlobIn`] (`MeteringDelta`), out [`OutHead`]. B.1 \"Writes\": additive, op_id-deduped, write_behind.";
-    10 LIST_METERING list_metering U64In, LeasedListOut, Off, Call, HostCap,
-        "`list_metering` (records.rs:1288-1290). In [`U64In`] (metering bucket day start), out [`LeasedListOut`] (`MeteringRow`s). B.1.";
-    11 PURGE_WINDOWS_BEFORE purge_windows_before U64In, CountOut, Off, Call, Fixed,
-        "`purge_windows_before` (records.rs:1292-1304). In [`U64In`] (`before`), out [`CountOut`]. B.1; background sweeper only.";
-    12 PURGE_METERING_BEFORE purge_metering_before IdIn, CountOut, Off, Call, Fixed,
-        "`purge_metering_before` (records.rs:1306-1315). In [`IdIn`] (bucket), out [`CountOut`]. B.1; operator action only, never a sweeper.";
-    13 PUT_CREDENTIAL put_credential BlobIn, OutHead, Off, Call, HostCap,
-        "`put_credential` (records.rs:1317-1332). In [`BlobIn`] (`CredentialSecret`, a secret blob), out [`OutHead`]. B.1; FAILED minting into a live slot.";
-    14 PUT_KEY_WITH_CREDENTIAL put_key_with_credential KeyWithCredentialIn, OutHead, Off, Call, HostCap,
-        "`put_key_with_credential` (records.rs:1334-1345). In [`KeyWithCredentialIn`], out [`OutHead`]. B.1; both rows or neither.";
-    15 LIST_CREDENTIALS list_credentials IdIn, LeasedListOut, Off, Call, HostCap,
-        "`list_credentials` (records.rs:1347-1354). In [`IdIn`] (key id), out [`LeasedListOut`] (`CredentialMeta`s, never a secret). B.1.";
-    16 LOOKUP_CREDENTIAL_SECRET lookup_credential_secret KindIdIn, LeasedBlobOut, Off, Call, HostCap,
-        "`lookup_credential_secret` (records.rs:1356-1368). In [`KindIdIn`] (kind, public id), out [`LeasedBlobOut`] (`CredentialSecret`, a secret blob; unknown is ABSENT, never FAILED). B.1.";
-    17 REVOKE_CREDENTIAL revoke_credential IdReasonIn, OutHead, Off, Call, Fixed,
-        "`revoke_credential` (records.rs:1370-1384). In [`IdReasonIn`], out [`OutHead`]. B.1; already-revoked is READY; an unknown id is FAILED.";
-    18 LIST_CREDENTIALS_SINCE list_credentials_since U64In, LeasedListOut, Off, Call, HostCap,
-        "`list_credentials_since` (records.rs:1386-1405). In [`U64In`] (`since`), out [`LeasedListOut`] (`CredentialSecret`s, secret blobs). B.1.";
-    19 APPEND_AUDIT append_audit OpBlobIn, OutHead, Off, WriteBehind, HostCap,
-        "`append_audit` (records.rs:1407-1432). In [`OpBlobIn`] (`AuditRecord`), out [`OutHead`]. B.1 \"Writes\": appending, op_id-deduped, write_behind; a DIFFERENT record at a used `seq` is FAILED (a fork).";
-    20 LIST_AUDIT list_audit InHead, LeasedListOut, Off, Call, HostCap,
-        "`list_audit` (records.rs:1434-1440). In [`InHead`], out [`LeasedListOut`] (`AuditRecord`s, oldest first). B.1.";
-    21 ADD_DENYLIST add_denylist IdReasonIn, OutHead, Off, Call, Fixed,
-        "`add_denylist` (records.rs:1442-1455). In [`IdReasonIn`] (sub, reason), out [`OutHead`]. B.1; an idempotent set insert.";
-    22 LIST_DENYLIST list_denylist InHead, LeasedStrListOut, Off, Call, HostCap,
-        "`list_denylist` (records.rs:1457-1461). In [`InHead`], out [`LeasedStrListOut`]. B.1.";
-    23 LIST_AUDIT_TAIL list_audit_tail U64In, LeasedListOut, Off, Call, HostCap,
-        "`list_audit_tail` (records.rs:1463-1479). In [`U64In`] (`limit`), out [`LeasedListOut`] (the last `limit`, oldest first). B.1.";
-    // ── plane records (B.1 "Slots": "plane records"; records.rs:1481-1597) ──
-    24 UPSERT_PLANE_RECORD upsert_plane_record UpsertPlaneRecordIn, OutHead, Request, Call, HostCap,
-        "`upsert_plane_record` (records.rs:1489-1497). In [`UpsertPlaneRecordIn`], out [`OutHead`]. B.1 plane records; keyed on (kind, id).";
-    25 GET_PLANE_RECORD get_plane_record GetPlaneRecordIn, HostBytesOut, Request, Call, HostCap,
-        "`get_plane_record` (records.rs:1499-1503). In [`GetPlaneRecordIn`], out [`HostBytesOut`] (the body, into the host buffer). B.1 plane records.";
-    26 APPEND_PLANE_RECORD append_plane_record AppendPlaneRecordIn, OutHead, Request, WriteBehind, HostCap,
-        "`append_plane_record` (records.rs:1505-1511). In [`AppendPlaneRecordIn`], out [`OutHead`]. B.1 plane records + \"Writes\": appending, op_id-deduped, write_behind; a fork at a used seq is FAILED when the tail states `fork_refusal`. A request waits on this long, never-cancelled class: B.1 makes every appending write write_behind.";
-    27 LIST_PLANE_RECORDS list_plane_records ListPlaneRecordsIn, HostListOut, Request, Call, HostCap,
-        "`list_plane_records` (records.rs:1513-1522). In [`ListPlaneRecordsIn`], out [`HostListOut`] (bodies into [`HostBlobs`]). B.1 plane records.";
-    28 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
-        "`list_plane_record_parents` (records.rs:1524-1528). In [`IdIn`] (kind), out [`LeasedStrListOut`]. B.1 plane records; the boot enumeration.";
-    29 PURGE_PLANE_RECORDS_BEFORE purge_plane_records_before KindBeforeIn, CountOut, Off, Call, Fixed,
-        "`purge_plane_records_before` (records.rs:1530-1538). In [`KindBeforeIn`], out [`CountOut`]. B.1 plane records; honours `disposition`.";
-    30 DELETE_PLANE_RECORD delete_plane_record KindIdIn, OutHead, Request, Call, Fixed,
-        "`delete_plane_record` (records.rs:1540-1543). In [`KindIdIn`], out [`OutHead`]. B.1 plane records; absent is READY.";
-    31 REDEEM_PLANE_TOKEN redeem_plane_token TokenIn, VerdictOut, Request, Call, Fixed,
-        "`redeem_plane_token` (records.rs:1545-1563). In [`TokenIn`], out [`VerdictOut`] (YES = this call was the first redemption). B.1 plane records; fail-closed.";
-    32 PLANE_TOKEN_LIVE plane_token_live TokenIn, VerdictOut, Request, Call, Fixed,
-        "`plane_token_live` (records.rs:1565-1596). In [`TokenIn`], out [`VerdictOut`] (spends nothing). B.1 plane records; fail-closed.";
-    // ── the ten 1.6.0 ledger ops (B.1 "Slots"; semantics store_adapter.rs, signatures kinds.rs:300-392) ──
-    33 APPEND_BATCH append_batch AppendBatchIn, HeadOut, Off, WriteBehind, PerRecord(MAX_RECORD_BYTES),
-        "`append_batch` (kinds.rs:302). In [`AppendBatchIn`], out [`HeadOut`]. B.1 ledger op + \"Writes\"; the shipping ack.";
-    34 RESERVE reserve ReserveIn, ReserveOut, Request, Call, HostCap,
-        "`reserve` (m3-inputs \"store v3 money slots\" `reserve`; each cell names its window and a failure names its cell per the \"window caps\" correction). In [`ReserveIn`], out [`ReserveOut`]. ATOMIC.";
-    35 SLICE_RELEASE slice_release SliceReleaseIn, SliceReleaseOut, Request, Call, HostCap,
-        "`slice_release` (m3-inputs \"store v3 money slots\" `slice_release`; B.1 renames the slice op `release`). In [`SliceReleaseIn`], out [`SliceReleaseOut`]. Clamped.";
-    36 HEADS heads InHead, HeadsOut, Off, Call, HostCap,
-        "`heads` (kinds.rs:319). In [`InHead`], out [`HeadsOut`]. B.1 ledger op.";
-    37 SESSION_PUT session_put SessionPutIn, OutHead, Off, Call, Fixed,
-        "`session_put` (kinds.rs:340). In [`SessionPutIn`], out [`OutHead`]. B.1 ledger op; an upsert on the session id.";
-    38 SESSION_REMOVE session_remove U64In, OutHead, Off, Call, Fixed,
-        "`session_remove` (kinds.rs:348). In [`U64In`] (session id), out [`OutHead`]. B.1 ledger op; absent is READY.";
-    39 SESSIONS_FOR sessions_for SessionsForIn, HostListOut, Request, Call, HostCap,
-        "`sessions_for` (kinds.rs:351). In [`SessionsForIn`], out [`HostListOut`] (rows into [`HostSessions`]). B.1 ledger op.";
-    40 RECORD_PUT record_put RecordPutIn, OutHead, Request, Call, PerRecord(MAX_RECORD_BYTES),
-        "`record_put` (kinds.rs:355). In [`RecordPutIn`], out [`OutHead`]. B.1 ledger op; an upsert on (schema, key).";
-    41 RECORD_GET record_get RecordGetIn, HostBytesOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
-        "`record_get` (kinds.rs:363). In [`RecordGetIn`], out [`HostBytesOut`]. B.1 ledger op.";
-    42 RECORD_SCAN record_scan RecordScanIn, HostListOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
-        "`record_scan` (kinds.rs:370). In [`RecordScanIn`], out [`HostListOut`] (entries into [`HostRecords`]). B.1 ledger op; `limit` 0 is nothing.";
-    // ── batch slots (B.1 "Slots"; m3-inputs "store v3 money slots" batch ops) ──
-    43 ADD_USAGE_BATCH add_usage_batch AddUsageBatchIn, OutHead, Off, WriteBehind, HostCap,
-        "`add_usage_batch` (m3-inputs \"store v3 money slots\"). In [`AddUsageBatchIn`], out [`OutHead`]. One op_id per coalesced batch; in order, atomic per batch.";
-    44 ADD_METERING_BATCH add_metering_batch OpBlobsIn, OutHead, Off, WriteBehind, HostCap,
-        "`add_metering_batch` (m3-inputs \"store v3 money slots\"). In [`OpBlobsIn`] (`MeteringDelta`s), out [`OutHead`]. One op_id per coalesced batch; in order, atomic per batch.";
-    45 APPEND_AUDIT_BATCH append_audit_batch OpBlobsIn, OutHead, Off, WriteBehind, HostCap,
-        "`append_audit_batch` (m3-inputs \"store v3 money slots\"). In [`OpBlobsIn`] (`AuditRecord`s), out [`OutHead`]. One op_id per coalesced batch; in order, atomic per batch.";
-    // ── the cap input (m3-inputs "store v3 money slots" line on Exhausted; ARCHITECT ruling "window caps") ──
-    46 WINDOW_CAPS window_caps WindowCapsIn, OutHead, Off, Call, HostCap,
-        "`window_caps` (m3-inputs ARCHITECT ruling \"window caps\"). In [`WindowCapsIn`], out [`OutHead`]. An upsert by (cell, window_start), newest `config_gen` wins; atomic per push (\"window caps\" correction (1)).";
+        "`delete_key`. In [`IdIn`], out [`OutHead`]. Tombstones atomically; already-tombstoned is READY; an unknown id is FAILED.";
+    4 LIST_KEYS_SINCE list_keys_since U64In, LeasedListOut, Off, Call, HostCap,
+        "`list_keys_since`. In [`U64In`] (`since`), out [`LeasedListOut`]. Tombstones included; `revision == 0` always listed.";
+    // ── the ledger: counts only, never money ──
+    5 GET_USAGE get_usage WindowIn, LeasedBlobOut, Off, Call, HostCap,
+        "`get_usage`. In [`WindowIn`], out [`LeasedBlobOut`] (`UsageLedger`; an untouched cell is the empty ledger, FOUND).";
+    6 PUT_USAGE put_usage PutUsageIn, OutHead, Off, Call, HostCap,
+        "`put_usage`. In [`PutUsageIn`], out [`OutHead`]. An absolute set, single-writer only.";
+    7 LIST_METERING list_metering U64In, LeasedListOut, Off, Call, HostCap,
+        "`list_metering`. In [`U64In`] (metering bucket day start), out [`LeasedListOut`] (`MeteringRow`s).";
+    // ── credentials ──
+    8 PUT_CREDENTIAL put_credential BlobIn, OutHead, Off, Call, HostCap,
+        "`put_credential`. In [`BlobIn`] (`CredentialSecret`, a secret blob), out [`OutHead`]. FAILED minting into a live slot.";
+    9 PUT_KEY_WITH_CREDENTIAL put_key_with_credential KeyWithCredentialIn, OutHead, Off, Call, HostCap,
+        "`put_key_with_credential`. In [`KeyWithCredentialIn`], out [`OutHead`]. Both rows or neither.";
+    10 LIST_CREDENTIALS list_credentials IdIn, LeasedListOut, Off, Call, HostCap,
+        "`list_credentials`. In [`IdIn`] (key id), out [`LeasedListOut`] (`CredentialMeta`s, never a secret).";
+    11 REVOKE_CREDENTIAL revoke_credential IdReasonIn, OutHead, Off, Call, Fixed,
+        "`revoke_credential`. In [`IdReasonIn`], out [`OutHead`]. Already-revoked is READY; an unknown id is FAILED.";
+    12 LIST_CREDENTIALS_SINCE list_credentials_since U64In, LeasedListOut, Off, Call, HostCap,
+        "`list_credentials_since`. In [`U64In`] (`since`), out [`LeasedListOut`] (`CredentialSecret`s, secret blobs).";
+    // ── the 1.5.5 audit rows (read) and the denylist ──
+    13 LIST_AUDIT list_audit InHead, LeasedListOut, Off, Call, HostCap,
+        "`list_audit`. In [`InHead`], out [`LeasedListOut`] (`AuditRecord`s, oldest first).";
+    14 ADD_DENYLIST add_denylist IdReasonIn, OutHead, Off, Call, Fixed,
+        "`add_denylist`. In [`IdReasonIn`] (sub, reason), out [`OutHead`]. An idempotent set insert.";
+    15 LIST_DENYLIST list_denylist InHead, LeasedStrListOut, Off, Call, HostCap,
+        "`list_denylist`. In [`InHead`], out [`LeasedStrListOut`].";
+    16 LIST_AUDIT_TAIL list_audit_tail U64In, LeasedListOut, Off, Call, HostCap,
+        "`list_audit_tail`. In [`U64In`] (`limit`), out [`LeasedListOut`] (the last `limit`, oldest first).";
+    // ── plane records ──
+    17 UPSERT_PLANE_RECORD upsert_plane_record UpsertPlaneRecordIn, OutHead, Request, Call, HostCap,
+        "`upsert_plane_record`. In [`UpsertPlaneRecordIn`], out [`OutHead`]. Keyed on (kind, id).";
+    18 GET_PLANE_RECORD get_plane_record GetPlaneRecordIn, HostBytesOut, Request, Call, HostCap,
+        "`get_plane_record`. In [`GetPlaneRecordIn`], out [`HostBytesOut`] (the body, into the host buffer).";
+    19 APPEND_PLANE_RECORD append_plane_record AppendPlaneRecordIn, OutHead, Request, WriteBehind, HostCap,
+        "`append_plane_record`. In [`AppendPlaneRecordIn`], out [`OutHead`]. Appending, op_id-deduped; a fork at a used seq is FAILED when the tail states `fork_refusal`.";
+    20 LIST_PLANE_RECORDS list_plane_records ListPlaneRecordsIn, HostListOut, Request, Call, HostCap,
+        "`list_plane_records`. In [`ListPlaneRecordsIn`], out [`HostListOut`] (bodies into [`HostBlobs`]).";
+    21 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
+        "`list_plane_record_parents`. In [`IdIn`] (kind), out [`LeasedStrListOut`]. The boot enumeration.";
+    22 PURGE_PLANE_RECORDS_BEFORE purge_plane_records_before KindBeforeIn, CountOut, Off, Call, Fixed,
+        "`purge_plane_records_before`. In [`KindBeforeIn`], out [`CountOut`]. Honours `disposition`.";
+    23 DELETE_PLANE_RECORD delete_plane_record KindIdIn, OutHead, Request, Call, Fixed,
+        "`delete_plane_record`. In [`KindIdIn`], out [`OutHead`]. Absent is READY.";
+    24 REDEEM_PLANE_TOKEN redeem_plane_token TokenIn, VerdictOut, Request, Call, Fixed,
+        "`redeem_plane_token`. In [`TokenIn`], out [`VerdictOut`] (YES = this call was the first redemption). Fail-closed.";
+    25 PLANE_TOKEN_LIVE plane_token_live TokenIn, VerdictOut, Request, Call, Fixed,
+        "`plane_token_live`. In [`TokenIn`], out [`VerdictOut`] (spends nothing). Fail-closed.";
+    // ── kernel-held records (the journal, node identity, the card history) ──
+    26 RECORD_PUT record_put RecordPutIn, OutHead, Request, Call, PerRecord(MAX_RECORD_BYTES),
+        "`record_put`. In [`RecordPutIn`], out [`OutHead`]. An upsert on (schema, key). An EMPTY value removes the row: `record_get` then answers absent and `record_scan` never returns it.";
+    27 RECORD_GET record_get RecordGetIn, HostBytesOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
+        "`record_get`. In [`RecordGetIn`], out [`HostBytesOut`].";
+    28 RECORD_SCAN record_scan RecordScanIn, HostListOut, Request, Call, PerRecord(MAX_RECORD_BYTES),
+        "`record_scan`. In [`RecordScanIn`], out [`HostListOut`] (entries into [`HostRecords`]). `limit` 0 is nothing.";
+    // ── the ledger's two writes: counts, op_id-deduped, atomic per batch ──
+    29 ADD_USAGE_BATCH add_usage_batch AddUsageBatchIn, OutHead, Off, WriteBehind, HostCap,
+        "`add_usage_batch`. In [`AddUsageBatchIn`], out [`OutHead`]. Additive counts; one op_id per batch; in order, atomic per batch.";
+    30 ADD_METERING_BATCH add_metering_batch OpBlobsIn, OutHead, Off, WriteBehind, HostCap,
+        "`add_metering_batch`. In [`OpBlobsIn`] (`MeteringDelta`s), out [`OutHead`]. Additive counts; one op_id per batch; in order, atomic per batch.";
 }
 
 // THE SDK's VIEW OF THE STORE TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated
@@ -581,8 +516,6 @@ unsafe impl super::sdk::door::AbiIn for IdIn {}
 unsafe impl super::sdk::door::AbiIn for U64In {}
 unsafe impl super::sdk::door::AbiIn for WindowIn {}
 unsafe impl super::sdk::door::AbiIn for PutUsageIn {}
-unsafe impl super::sdk::door::AbiIn for AddUsageIn {}
-unsafe impl super::sdk::door::AbiIn for OpBlobIn {}
 unsafe impl super::sdk::door::AbiIn for KeyWithCredentialIn {}
 unsafe impl super::sdk::door::AbiIn for KindIdIn {}
 unsafe impl super::sdk::door::AbiIn for IdReasonIn {}
@@ -592,17 +525,11 @@ unsafe impl super::sdk::door::AbiIn for AppendPlaneRecordIn {}
 unsafe impl super::sdk::door::AbiIn for ListPlaneRecordsIn {}
 unsafe impl super::sdk::door::AbiIn for KindBeforeIn {}
 unsafe impl super::sdk::door::AbiIn for TokenIn {}
-unsafe impl super::sdk::door::AbiIn for AppendBatchIn {}
-unsafe impl super::sdk::door::AbiIn for ReserveIn {}
-unsafe impl super::sdk::door::AbiIn for SliceReleaseIn {}
-unsafe impl super::sdk::door::AbiIn for SessionPutIn {}
-unsafe impl super::sdk::door::AbiIn for SessionsForIn {}
 unsafe impl super::sdk::door::AbiIn for RecordPutIn {}
 unsafe impl super::sdk::door::AbiIn for RecordGetIn {}
 unsafe impl super::sdk::door::AbiIn for RecordScanIn {}
 unsafe impl super::sdk::door::AbiIn for AddUsageBatchIn {}
 unsafe impl super::sdk::door::AbiIn for OpBlobsIn {}
-unsafe impl super::sdk::door::AbiIn for WindowCapsIn {}
 unsafe impl super::sdk::door::AbiOut for LeasedBlobOut {}
 unsafe impl super::sdk::door::AbiOut for LeasedListOut {}
 unsafe impl super::sdk::door::AbiOut for CountOut {}
@@ -610,26 +537,20 @@ unsafe impl super::sdk::door::AbiOut for LeasedStrListOut {}
 unsafe impl super::sdk::door::AbiOut for HostBytesOut {}
 unsafe impl super::sdk::door::AbiOut for HostListOut {}
 unsafe impl super::sdk::door::AbiOut for VerdictOut {}
-unsafe impl super::sdk::door::AbiOut for HeadOut {}
-unsafe impl super::sdk::door::AbiOut for ReserveOut {}
-unsafe impl super::sdk::door::AbiOut for SliceReleaseOut {}
-unsafe impl super::sdk::door::AbiOut for HeadsOut {}
 
 super::sdk::door::slot_structs!(
     /// Each store kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`OPS`]' table.
     /// A plugin wiring a slot to another op's structs does not compile:
     ///
     /// ```compile_fail,E0271
-    /// use busbar_contract::abi::store::{AddUsageBatchIn, AddUsageIn, AppendBatchIn};
-    /// use busbar_contract::abi::store::{AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn};
-    /// use busbar_contract::abi::store::{HeadOut, HeadsOut, HostBytesOut, HostListOut, IdIn};
+    /// use busbar_contract::abi::store::{AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut};
+    /// use busbar_contract::abi::store::{GetPlaneRecordIn, HostBytesOut, HostListOut, IdIn};
     /// use busbar_contract::abi::store::{IdReasonIn, InHead, KeyWithCredentialIn, KindBeforeIn};
     /// use busbar_contract::abi::store::{KindIdIn, LeasedBlobOut, LeasedListOut, LeasedStrListOut};
-    /// use busbar_contract::abi::store::{ListPlaneRecordsIn, OpBlobIn, OpBlobsIn, OutHead, PutUsageIn};
-    /// use busbar_contract::abi::store::{RecordGetIn, RecordPutIn, RecordScanIn, ReserveIn};
-    /// use busbar_contract::abi::store::{ReserveOut, SessionPutIn, SessionsForIn, SliceReleaseIn};
-    /// use busbar_contract::abi::store::{SliceReleaseOut, TokenIn, U64In, UpsertPlaneRecordIn};
-    /// use busbar_contract::abi::store::{VerdictOut, WindowCapsIn, WindowIn};
+    /// use busbar_contract::abi::store::{ListPlaneRecordsIn, OpBlobsIn, OutHead, PutUsageIn};
+    /// use busbar_contract::abi::store::RecordGetIn;
+    /// use busbar_contract::abi::store::{RecordPutIn, RecordScanIn, TokenIn, U64In};
+    /// use busbar_contract::abi::store::{UpsertPlaneRecordIn, VerdictOut, WindowIn};
     /// use busbar_contract::abi::mechanism::call::Outcome;
     /// use busbar_contract::abi::mechanism::lifecycle::*;
     /// use busbar_contract::abi::sdk::door::Slot;
@@ -643,17 +564,13 @@ super::sdk::door::slot_structs!(
     /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
     /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
     /// # ready!(GetKey, IdIn, LeasedBlobOut); ready!(ListKeys, InHead, LeasedListOut);
-    /// # ready!(DeleteKey, IdIn, OutHead); ready!(ScrubKey, IdIn, OutHead);
-    /// # ready!(ListKeysSince, U64In, LeasedListOut); ready!(GetUsage, WindowIn, LeasedBlobOut);
-    /// # ready!(PutUsage, PutUsageIn, OutHead); ready!(AddUsage, AddUsageIn, OutHead);
-    /// # ready!(AddMetering, OpBlobIn, OutHead); ready!(ListMetering, U64In, LeasedListOut);
-    /// # ready!(PurgeWindowsBefore, U64In, CountOut); ready!(PurgeMeteringBefore, IdIn, CountOut);
-    /// # ready!(PutCredential, BlobIn, OutHead);
+    /// # ready!(DeleteKey, IdIn, OutHead); ready!(ListKeysSince, U64In, LeasedListOut);
+    /// # ready!(GetUsage, WindowIn, LeasedBlobOut); ready!(PutUsage, PutUsageIn, OutHead);
+    /// # ready!(ListMetering, U64In, LeasedListOut); ready!(PutCredential, BlobIn, OutHead);
     /// # ready!(PutKeyWithCredential, KeyWithCredentialIn, OutHead);
     /// # ready!(ListCredentials, IdIn, LeasedListOut);
-    /// # ready!(LookupCredentialSecret, KindIdIn, LeasedBlobOut);
     /// # ready!(RevokeCredential, IdReasonIn, OutHead);
-    /// # ready!(ListCredentialsSince, U64In, LeasedListOut); ready!(AppendAudit, OpBlobIn, OutHead);
+    /// # ready!(ListCredentialsSince, U64In, LeasedListOut);
     /// # ready!(ListAudit, InHead, LeasedListOut); ready!(AddDenylist, IdReasonIn, OutHead);
     /// # ready!(ListDenylist, InHead, LeasedStrListOut);
     /// # ready!(ListAuditTail, U64In, LeasedListOut);
@@ -665,15 +582,10 @@ super::sdk::door::slot_structs!(
     /// # ready!(PurgePlaneRecordsBefore, KindBeforeIn, CountOut);
     /// # ready!(DeletePlaneRecord, KindIdIn, OutHead);
     /// # ready!(RedeemPlaneToken, TokenIn, VerdictOut); ready!(PlaneTokenLive, TokenIn, VerdictOut);
-    /// # ready!(AppendBatch, AppendBatchIn, HeadOut); ready!(Reserve, ReserveIn, ReserveOut);
-    /// # ready!(SliceRelease, SliceReleaseIn, SliceReleaseOut); ready!(Heads, InHead, HeadsOut);
-    /// # ready!(SessionPut, SessionPutIn, OutHead); ready!(SessionRemove, U64In, OutHead);
-    /// # ready!(SessionsFor, SessionsForIn, HostListOut); ready!(RecordPut, RecordPutIn, OutHead);
-    /// # ready!(RecordGet, RecordGetIn, HostBytesOut);
+    /// # ready!(RecordPut, RecordPutIn, OutHead); ready!(RecordGet, RecordGetIn, HostBytesOut);
     /// # ready!(RecordScan, RecordScanIn, HostListOut);
     /// # ready!(AddUsageBatch, AddUsageBatchIn, OutHead);
-    /// # ready!(AddMeteringBatch, OpBlobsIn, OutHead); ready!(AppendAuditBatch, OpBlobsIn, OutHead);
-    /// # ready!(WindowCaps, WindowCapsIn, OutHead);
+    /// # ready!(AddMeteringBatch, OpBlobsIn, OutHead);
     /// ready!(PutKey, IdIn, LeasedBlobOut); // `get_key`'s structs on `put_key`: refused
     /// busbar_contract::plugin_door! {
     ///     ops: busbar_contract::abi::store::Ops,
@@ -682,26 +594,21 @@ super::sdk::door::slot_structs!(
     ///                  cancel: Cn, release: Rl, close: Cl },
     ///     kind_ops: {
     ///         put_key: PutKey, get_key: GetKey, list_keys: ListKeys, delete_key: DeleteKey,
-    ///         scrub_key: ScrubKey, list_keys_since: ListKeysSince, get_usage: GetUsage,
-    ///         put_usage: PutUsage, add_usage: AddUsage, add_metering: AddMetering,
-    ///         list_metering: ListMetering, purge_windows_before: PurgeWindowsBefore,
-    ///         purge_metering_before: PurgeMeteringBefore, put_credential: PutCredential,
+    ///         list_keys_since: ListKeysSince, get_usage: GetUsage, put_usage: PutUsage,
+    ///         list_metering: ListMetering,
+    ///         put_credential: PutCredential,
     ///         put_key_with_credential: PutKeyWithCredential, list_credentials: ListCredentials,
-    ///         lookup_credential_secret: LookupCredentialSecret,
     ///         revoke_credential: RevokeCredential, list_credentials_since: ListCredentialsSince,
-    ///         append_audit: AppendAudit, list_audit: ListAudit, add_denylist: AddDenylist,
-    ///         list_denylist: ListDenylist, list_audit_tail: ListAuditTail,
-    ///         upsert_plane_record: UpsertPlaneRecord, get_plane_record: GetPlaneRecord,
-    ///         append_plane_record: AppendPlaneRecord, list_plane_records: ListPlaneRecords,
+    ///         list_audit: ListAudit, add_denylist: AddDenylist, list_denylist: ListDenylist,
+    ///         list_audit_tail: ListAuditTail, upsert_plane_record: UpsertPlaneRecord,
+    ///         get_plane_record: GetPlaneRecord, append_plane_record: AppendPlaneRecord,
+    ///         list_plane_records: ListPlaneRecords,
     ///         list_plane_record_parents: ListPlaneRecordParents,
     ///         purge_plane_records_before: PurgePlaneRecordsBefore,
     ///         delete_plane_record: DeletePlaneRecord, redeem_plane_token: RedeemPlaneToken,
-    ///         plane_token_live: PlaneTokenLive, append_batch: AppendBatch, reserve: Reserve,
-    ///         slice_release: SliceRelease, heads: Heads, session_put: SessionPut,
-    ///         session_remove: SessionRemove, sessions_for: SessionsFor, record_put: RecordPut,
-    ///         record_get: RecordGet, record_scan: RecordScan, add_usage_batch: AddUsageBatch,
-    ///         add_metering_batch: AddMeteringBatch, append_audit_batch: AppendAuditBatch,
-    ///         window_caps: WindowCaps
+    ///         plane_token_live: PlaneTokenLive, record_put: RecordPut, record_get: RecordGet,
+    ///         record_scan: RecordScan, add_usage_batch: AddUsageBatch,
+    ///         add_metering_batch: AddMeteringBatch
     ///     },
     /// }
     /// # fn main() { let _ = door(); }
@@ -714,22 +621,15 @@ super::sdk::door::slot_structs!(
         slot::GET_KEY => IdIn, LeasedBlobOut;
         slot::LIST_KEYS => InHead, LeasedListOut;
         slot::DELETE_KEY => IdIn, OutHead;
-        slot::SCRUB_KEY => IdIn, OutHead;
         slot::LIST_KEYS_SINCE => U64In, LeasedListOut;
         slot::GET_USAGE => WindowIn, LeasedBlobOut;
         slot::PUT_USAGE => PutUsageIn, OutHead;
-        slot::ADD_USAGE => AddUsageIn, OutHead;
-        slot::ADD_METERING => OpBlobIn, OutHead;
         slot::LIST_METERING => U64In, LeasedListOut;
-        slot::PURGE_WINDOWS_BEFORE => U64In, CountOut;
-        slot::PURGE_METERING_BEFORE => IdIn, CountOut;
         slot::PUT_CREDENTIAL => BlobIn, OutHead;
         slot::PUT_KEY_WITH_CREDENTIAL => KeyWithCredentialIn, OutHead;
         slot::LIST_CREDENTIALS => IdIn, LeasedListOut;
-        slot::LOOKUP_CREDENTIAL_SECRET => KindIdIn, LeasedBlobOut;
         slot::REVOKE_CREDENTIAL => IdReasonIn, OutHead;
         slot::LIST_CREDENTIALS_SINCE => U64In, LeasedListOut;
-        slot::APPEND_AUDIT => OpBlobIn, OutHead;
         slot::LIST_AUDIT => InHead, LeasedListOut;
         slot::ADD_DENYLIST => IdReasonIn, OutHead;
         slot::LIST_DENYLIST => InHead, LeasedStrListOut;
@@ -743,19 +643,10 @@ super::sdk::door::slot_structs!(
         slot::DELETE_PLANE_RECORD => KindIdIn, OutHead;
         slot::REDEEM_PLANE_TOKEN => TokenIn, VerdictOut;
         slot::PLANE_TOKEN_LIVE => TokenIn, VerdictOut;
-        slot::APPEND_BATCH => AppendBatchIn, HeadOut;
-        slot::RESERVE => ReserveIn, ReserveOut;
-        slot::SLICE_RELEASE => SliceReleaseIn, SliceReleaseOut;
-        slot::HEADS => InHead, HeadsOut;
-        slot::SESSION_PUT => SessionPutIn, OutHead;
-        slot::SESSION_REMOVE => U64In, OutHead;
-        slot::SESSIONS_FOR => SessionsForIn, HostListOut;
         slot::RECORD_PUT => RecordPutIn, OutHead;
         slot::RECORD_GET => RecordGetIn, HostBytesOut;
         slot::RECORD_SCAN => RecordScanIn, HostListOut;
         slot::ADD_USAGE_BATCH => AddUsageBatchIn, OutHead;
         slot::ADD_METERING_BATCH => OpBlobsIn, OutHead;
-        slot::APPEND_AUDIT_BATCH => OpBlobsIn, OutHead;
-        slot::WINDOW_CAPS => WindowCapsIn, OutHead;
     }
 );

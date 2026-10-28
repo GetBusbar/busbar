@@ -15,6 +15,7 @@ fn make_root_cfg(
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
+        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
@@ -73,8 +74,6 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         error_map,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -84,6 +83,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         anthropic_adaptive_thinking: None,
         native_structured_output: None,
         model_capabilities: Vec::new(),
+        options: Default::default(),
     }
 }
 
@@ -92,7 +92,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
 /// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
 /// registered name, not a particular dialect — and the neutral kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
-    crate::proto::registry::builtin_decls()
+    crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
         .iter()
         .filter(|d| d.codec.is_some())
         .nth(nth)
@@ -166,22 +166,74 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
+/// RED (arch-audit u29 F1; BUSBAR-1.6.0.md #50: "the auth style resolves ... as opaque
+/// strings"): a provider's `auth:` is an OPAQUE word some loaded auth plugin declares, never a
+/// closed kernel set. Every declared word parses, a dropped-in one (`x-double-mint`, a style no
+/// release named) as well as 1.5.5's four; a word no plugin declares is refused at deserialize time
+/// in serde's own unknown-variant words over the declared list, ranked first, so 1.5.5's refusal of
+/// an unknown word is the prefix of this one. The words here are the test double's declarations
+/// (`test_support::outbound_auth::double_outbound_styles`).
 #[test]
-fn test_provider_auth_style_is_a_closed_enum() {
-    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
-    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
-    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
-        config::ProviderAuth::Bearer
-    );
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
-        config::ProviderAuth::ApiKey
-    );
+fn test_provider_auth_style_is_a_declared_word() {
+    for word in [
+        "bearer",
+        "api-key",
+        "jwt-bearer",
+        "oauth-client-credentials",
+        "x-double-mint",
+    ] {
+        let style = serde_yaml::from_str::<config::ProviderAuth>(word)
+            .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
+        assert_eq!(style.as_str(), word);
+    }
+    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
+        .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")
+        .to_string();
     assert!(
-        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
-        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+        refused.starts_with(
+            "unknown variant `oauth2`, expected one of `bearer`, `api-key`, `jwt-bearer`, \
+             `oauth-client-credentials`, `x-double-mint`"
+        ),
+        "an undeclared style is refused in serde's words over the declared list: {refused}"
+    );
+}
+
+/// RED (arch-audit u29 F1): a style's token endpoint is judged by the bit its plugin DECLARES
+/// (`STYLE_ENDPOINT_TOKEN_URL`), never by its name: a style no release named that states the bit
+/// gets 1.5.5's `token_url` and `scope` findings, in 1.5.5's sentences over its own word, and a
+/// style that does not state it (`bearer`) is left unjudged, as 1.5.5 left it.
+#[test]
+fn a_token_url_is_judged_for_any_style_declaring_it() {
+    crate::test_support::register_neutral_test_plane();
+    let build = |word: &str| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut mint = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        mint.auth = Some(config::ProviderAuth::named(word));
+        providers.insert("mint".to_string(), mint);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("mint", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+            .err()
+            .unwrap_or_default()
+    };
+    let errs = build("x-double-mint");
+    for want in [
+        "provider 'mint' uses auth: x-double-mint but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
+        "provider 'mint' uses auth: x-double-mint but has no `scope`",
+    ] {
+        assert!(
+            errs.iter().any(|e| e == want),
+            "a style declaring STYLE_ENDPOINT_TOKEN_URL is judged by the bit: want {want:?} in {errs:?}"
+        );
+    }
+    let errs = build("bearer");
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("token_url") || e.contains("scope")),
+        "a style stating no endpoint is not judged for one: {errs:?}"
     );
 }
 
@@ -215,7 +267,7 @@ fn test_validate_rejects_bad_protocol() {
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
         .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
-    for proto in crate::proto::known_protocols() {
+    for proto in crate::ingress::protocols::known_protocols() {
         assert!(
             msg.contains(proto),
             "allowed-set list must include '{proto}'; got: {msg}"
@@ -467,7 +519,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
-        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        entra.auth = Some(config::ProviderAuth::named("oauth-client-credentials"));
         providers.insert("entra".to_string(), entra);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("entra", 10));
@@ -1938,7 +1990,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
-    // `preflight_plugins_and_secrets` doc comment), so it genuinely cannot tell a real `kind: auth`
+    // `config_validate::check` doc comment), so it genuinely cannot tell a real `kind: auth`
     // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
     // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
     // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
@@ -2199,7 +2251,8 @@ models:
     );
 
     // The removed `api_key_env:` provider key is likewise a parse error (renamed to
-    // `api_key: { env: ... }`).
+    // `api_key: { env: ... }`): it is not the credential, so the entry names none. (A key beyond
+    // busbar's is a provider option, judged at validation by the plane, owner ruling 2026-10-27.)
     let yaml2 = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -2212,8 +2265,8 @@ models:
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
     assert!(
-        err2.to_string().contains("unknown field"),
-        "expected an unknown-field error for api_key_env; got: {err2}"
+        err2.to_string().contains("missing field `api_key`"),
+        "expected the entry with no credential refused; got: {err2}"
     );
 }
 
@@ -5456,7 +5509,7 @@ fn test_validate_secret_module_resolvability() {
     // A NON-built-in module (a `kind: secret` PLUGIN reference such
     // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
     // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
-    // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
+    // module-EXISTENCE check is DEFERRED to `registry_refusal` at plugin pre-flight (see the
     // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
     // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
     let (mut providers, models, pools) = valid_maps();
@@ -5657,7 +5710,7 @@ store:
 /// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
 /// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
 /// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
-/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes a
+/// deferred `registry_refusal` pre-flight (proven in the main tests module). This closes a
 /// regression where `validate` hard-rejected every plugin-backed secret module.
 #[test]
 fn test_validate_accepts_plugin_backed_secret_module_config() {
@@ -6247,8 +6300,9 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
 /// with the last dialect extraction; this is the strongest proof available before it.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let empty_registry =
-        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
+    let empty_registry = crate::ingress::protocols::Registry::new(
+        crate::ingress::protocols::merged_boot_decls(&[], &[]),
+    );
     let known: &'static [&'static str] = empty_registry.codec_protocols();
     assert!(
         known.is_empty(),
@@ -6641,79 +6695,84 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
 
 /// A neutral plane declaring billable classes. Every hook is a no-op: the only thing under test is
 /// the declaration the kernel reads. Registered under isolation, so no sibling test sees it.
-static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "class-plane",
-        fallback: false,
-        config_section: "tools",
-        scope_kinds: &[],
-        subject_noun: "class thing",
-        admin_noun: "class-thing",
-        audit_kind: "class-thing",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "class-plane",
+            fallback: false,
+            config_section: "tools",
+            scope_kinds: &[],
+            subject_noun: "class thing",
+            admin_noun: "class-thing",
+            audit_kind: "class-thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: || &[],
+        // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
+        provider_dialects: crate::ingress::protocols::known_protocols,
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
 
 /// One declared billable class in `family`.
-const fn bc(class: &'static str, family: &'static str) -> crate::plane::registry::BillableClass {
-    crate::plane::registry::BillableClass { class, family }
+const fn bc(
+    class: &'static str,
+    family: &'static str,
+) -> crate::plane_driver::registry::BillableClass {
+    crate::plane_driver::registry::BillableClass { class, family }
 }
 
 /// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
 /// four reserved tiers plus two open classes.
-static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "flat-plane",
-        fallback: true,
-        config_section: "pools",
-        billable_classes: &[
-            bc("input", "token"),
-            bc("output", "token"),
-            bc("cache_read", "token"),
-            bc("cache_write", "token"),
-            bc("search_units", "count"),
-            bc("images", "count"),
-        ],
-        ..CLASS_PLANE.declaration
-    },
-    ..CLASS_PLANE
-};
+static FLAT_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "flat-plane",
+            fallback: true,
+            config_section: "pools",
+            billable_classes: &[
+                bc("input", "token"),
+                bc("output", "token"),
+                bc("cache_read", "token"),
+                bc("cache_write", "token"),
+                bc("search_units", "count"),
+                bc("images", "count"),
+            ],
+            ..CLASS_PLANE.declaration
+        },
+        ..CLASS_PLANE
+    };
 
 fn card_yaml(y: &str) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
     serde_yaml::from_str(y).expect("a card parses")
@@ -6738,7 +6797,7 @@ fn plane_card(
 /// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
     let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
@@ -6760,7 +6819,7 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
 /// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m", "n"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
@@ -6772,7 +6831,7 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
 /// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "class-plane",
@@ -6803,19 +6862,20 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 
 /// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
 /// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
-static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "door-fee-plane",
-        billable_classes: &[
-            bc("calls", "count"),
-            bc("bytes", "byte"),
-            bc(busbar_contract::plane::PER_REQUEST, "count"),
-        ],
-        fee_units: &[busbar_contract::plane::PER_REQUEST],
-        ..CLASS_PLANE.declaration
-    },
-    ..CLASS_PLANE
-};
+static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "door-fee-plane",
+            billable_classes: &[
+                bc("calls", "count"),
+                bc("bytes", "byte"),
+                bc(busbar_contract::plane::PER_REQUEST, "count"),
+            ],
+            fee_units: &[busbar_contract::plane::PER_REQUEST],
+            ..CLASS_PLANE.declaration
+        },
+        ..CLASS_PLANE
+    };
 
 /// SEAM-L(m), FEE-UNIT VALIDATION PARITY: a door plane's fee unit is no priced class. The card
 /// that priced the plane's lane before it was served through its door (its declared classes, no
@@ -6824,7 +6884,8 @@ static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registr
 /// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+    let _iso =
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
@@ -6860,13 +6921,13 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
 #[test]
 fn a_dropped_in_planes_declared_classes_are_honoured() {
     let names = ["frames".to_string(), "widgets".to_string()];
-    let classes: Vec<crate::plane::registry::BillableClass> = names
+    let classes: Vec<crate::plane_driver::registry::BillableClass> = names
         .into_iter()
         .map(|s| bc(Box::leak(s.into_boxed_str()), "count"))
         .collect();
-    let dropped: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let dropped: &'static crate::plane_driver::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
                 key: "dropped-plane",
                 config_section: "agents",
                 billable_classes: Box::leak(classes.into_boxed_slice()),
@@ -6874,7 +6935,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[dropped]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[dropped]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
     let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
@@ -6893,8 +6954,10 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
 /// plus `units: { search_units: 0 }`) passes.
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
-    let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE, &CLASS_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
+        &FLAT_PLANE,
+        &CLASS_PLANE,
+    ]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0, typo_class: 1 } }\n",
@@ -6927,9 +6990,9 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
-    let session: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let session: &'static crate::plane_driver::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
                 key: "session-plane",
                 config_section: "streams",
                 fee_units: &[PER_SESSION],
@@ -6937,8 +7000,10 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
             },
             ..CLASS_PLANE
         }));
-    let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session, &CLASS_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
+        session,
+        &CLASS_PLANE,
+    ]);
     let fees = |plane: &str, per_request, per_session| {
         let f = PlaneFees {
             per_request,
@@ -6969,11 +7034,11 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
 #[test]
 fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     use busbar_kernel_ledger::cost::PER_SESSION;
-    const CLASSES: &[crate::plane::registry::BillableClass] =
+    const CLASSES: &[crate::plane_driver::registry::BillableClass] =
         &[bc("calls", "count"), bc(PER_SESSION, "count")];
-    let session: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let session: &'static crate::plane_driver::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
                 key: "session-plane",
                 config_section: "live",
                 billable_classes: CLASSES,
@@ -6982,7 +7047,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[session]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));

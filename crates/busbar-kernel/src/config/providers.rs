@@ -39,7 +39,7 @@ use busbar_contract::secret_ref::SecretRef;
 
 use crate::ir::lane_caps::{MaxOutputKeyCfg, ModelCapabilities};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub struct ProviderCfg {
     /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
@@ -65,14 +65,6 @@ pub struct ProviderCfg {
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
     pub path_base: Option<String>,
-    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
-    /// and `project`), set on every upstream request from this config and never from the caller.
-    /// Absent: none is sent.
-    #[serde(default)]
-    pub organization: Option<String>,
-    /// See `organization`.
-    #[serde(default)]
-    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
@@ -116,6 +108,14 @@ pub struct ProviderCfg {
     /// (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
+    /// THE PROVIDER'S OPTIONS (owner ruling 2026-10-27): every key of the entry that is not one of
+    /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
+    /// ...), carried unread into the plane's table. The plane that speaks the provider's dialect
+    /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
+    /// Read by [`deployments`] beside the typed keys, so a typed key's refusal keeps its path and
+    /// position.
+    #[serde(skip)]
+    pub options: ProviderTable,
 }
 
 /// Active health-probe mode for a provider's lanes.
@@ -149,8 +149,10 @@ pub struct HealthCfg {
     pub timeout_secs: Option<u64>,
 }
 
-/// Provider definition - vetted knowledge shipped in providers.yaml (no keys).
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// Provider definition - vetted knowledge shipped in providers.yaml (no keys). Read by [`catalog`]:
+/// its typed keys ([`CATALOG_KEYS`]) here, every other key into [`Self::options`].
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderDef {
     pub protocol: String,
     pub base_url: String,
@@ -171,14 +173,6 @@ pub struct ProviderDef {
     /// /v1/projects/{project}/locations/{location}/publishers/google/models`.
     #[serde(default)]
     pub path_base: Option<String>,
-    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
-    /// and `project`), set on every upstream request from this config and never from the caller.
-    /// Absent: none is sent.
-    #[serde(default)]
-    pub organization: Option<String>,
-    /// See `organization`.
-    #[serde(default)]
-    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` — the URL busbar POSTs the client
     /// credentials to for a bearer. Required for that auth style; ignored otherwise. E.g. Azure Entra:
     /// `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`.
@@ -199,11 +193,8 @@ pub struct ProviderDef {
     /// jwt-bearer profile requires `sub`. Ignored for every other auth style.
     #[serde(default)]
     pub subject: Option<String>,
-    /// Optional auth-style override. Defaults to the protocol's native auth (bearer for
-    /// openai/anthropic/responses, `x-goog-api-key` for gemini, SigV4 for bedrock). Set to
-    /// `api-key` for backends that authenticate with an `api-key: <key>` header instead of a
-    /// bearer token — e.g. Azure OpenAI (which also carries `?api-version=` and the deployment in
-    /// its `path`). Recognized values: `bearer` (default) | `api-key`.
+    /// Optional auth-style override: a style a loaded auth plugin declares ([`ProviderAuth`]).
+    /// Omitted, the protocol's native auth.
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
     /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
@@ -228,10 +219,15 @@ pub struct ProviderDef {
     /// this; `None` falls back to the catalog list. Default empty (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
+    /// The entry's OPTIONS: every key that is not one of the keys above, under its far end's own
+    /// wire name, judged at resolve by the plane that speaks its dialect (owner ruling 2026-10-27:
+    /// the catalog follows the `config.yaml` rule; see [`ProviderDeploy::options`]).
+    #[serde(skip)]
+    pub options: ProviderTable,
 }
 
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDeploy {
     /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
@@ -250,14 +246,6 @@ pub struct ProviderDeploy {
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
     pub path_base: Option<String>,
-    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
-    /// and `project`), set on every upstream request from this config and never from the caller.
-    /// Absent: none is sent.
-    #[serde(default)]
-    pub organization: Option<String>,
-    /// See `organization`.
-    #[serde(default)]
-    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
@@ -296,32 +284,68 @@ pub struct ProviderDeploy {
     /// `health` when set; this is the block the shipped `config.yaml` documents under a provider.
     #[serde(default)]
     pub health: Option<HealthCfg>,
+    /// THE PROVIDER'S OPTIONS (owner ruling 2026-10-27): every key of the entry that is not one of
+    /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
+    /// ...), carried unread into the plane's table. The plane that speaks the provider's dialect
+    /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
+    /// Read by [`deployments`] beside the typed keys, so a typed key's refusal keeps its path and
+    /// position.
+    #[serde(skip)]
+    pub options: ProviderTable,
 }
 
-/// Per-provider auth-style override. Closed set: the request is signed with the protocol's native
-/// auth (`bearer`) unless `api-key` selects an `api-key: <key>` header (Azure OpenAI). The wire
-/// strings are unchanged from the pre-enum `Option<String>` field (`bearer` / `api-key`), so an
-/// unknown spelling is now a deserialize error instead of a hand-checked validation error.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderAuth {
-    #[serde(rename = "bearer")]
-    Bearer,
-    #[serde(rename = "api-key")]
-    ApiKey,
-    /// OAuth 2.0 JWT-bearer grant (RFC 7523): the provider's credential is a signing key (delivered as
-    /// a Google service-account JSON in `api_key_env`), which busbar uses to mint + auto-refresh a
-    /// short-lived bearer token per lane. Generic — Vertex AI is the first provider to select it. The
-    /// token minting/refresh lives in the auth plugin serving the `jwt-bearer` style; this is only
-    /// the selector.
-    #[serde(rename = "jwt-bearer")]
-    JwtBearer,
-    /// OAuth 2.0 client-credentials grant (RFC 6749 §4.4): `api_key_env` carries
-    /// `client_id:client_secret`, and the provider's `token_url` + `scope` complete the exchange for
-    /// an auto-refreshed bearer. Generic — Azure OpenAI via Microsoft Entra ID is the first consumer.
-    /// The token minting/refresh lives in the auth plugin serving the `oauth-client-credentials`
-    /// style.
-    #[serde(rename = "oauth-client-credentials")]
-    OAuthClientCredentials,
+/// Per-provider auth-style override: an OPAQUE style word (BUSBAR-1.6.0.md #50: "the auth style
+/// resolves ... as opaque strings"; arch-audit u29 F1). The words a provider may name are the
+/// outbound styles the loaded auth plugins DECLARE ([`crate::preflight::declared_styles`]: linked
+/// and dropped in), read at parse; the kernel names none. A word no loaded plugin declares is a
+/// deserialize error in serde's own unknown-variant words over the declared styles in the host's one
+/// listing order (ranked first: the previous release's four, in its order, as their plugins rank
+/// them), so a configuration the previous release refused for an unknown word is refused with its
+/// text as the prefix. What a style needs (a `token_url`, an endpoint its credential names) is the
+/// flag its plugin declares beside it, never its name.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct ProviderAuth(String);
+
+impl ProviderAuth {
+    /// The style word, as the configuration writes it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The style `word`, unchecked: a fixture or a rewrite that already holds a declared word.
+    #[must_use]
+    pub fn named(word: impl Into<String>) -> Self {
+        Self(word.into())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderAuth {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(d)?;
+        let declared = crate::preflight::declared_styles();
+        if declared.iter().any(|s| s.name == word) {
+            return Ok(Self(word));
+        }
+        Err(serde::de::Error::custom(unknown_style(&word, &declared)))
+    }
+}
+
+/// serde's unknown-variant refusal, word for word (`serde::de::Error::unknown_variant` and its
+/// `OneOf` list), over the declared styles in listing order: the text the previous release's closed
+/// enum refused an unknown `auth:` with, its list the declared one.
+fn unknown_style(word: &str, declared: &[busbar_contract::auth_calls::DeclaredStyle]) -> String {
+    let quoted: Vec<String> = declared.iter().map(|s| format!("`{}`", s.name)).collect();
+    match quoted.as_slice() {
+        [] => format!("unknown variant `{word}`, there are no variants"),
+        [one] => format!("unknown variant `{word}`, expected {one}"),
+        [a, b] => format!("unknown variant `{word}`, expected {a} or {b}"),
+        all => format!(
+            "unknown variant `{word}`, expected one of {}",
+            all.join(", ")
+        ),
+    }
 }
 
 // ── the resolved provider ─────────────────────────────────────────────────────────────────────────
@@ -355,7 +379,7 @@ pub const CORE_PROVIDER_KEYS: &[&str] = &[
 /// ONE RESOLVED PROVIDER: its catalog definition merged with its deployment. The kernel-owned keys
 /// typed, the rest an opaque [`ProviderTable`]. Not config grammar (it is never parsed), so it is not
 /// in the config-schema fingerprint; the grammar is [`ProviderDef`] / [`ProviderDeploy`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedProvider {
     /// The upstream base URL (the destination core dials and guards).
     pub base_url: String,
@@ -393,6 +417,236 @@ pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
     }
     drop_unset(&mut table);
     table
+}
+
+/// [`plane_table`] of `entry` with its [`ProviderDeploy::options`] laid in, each under the name the
+/// operator wrote.
+fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTable {
+    let mut table = plane_table(entry);
+    for (name, value) in options {
+        table.insert(name.clone(), value.clone());
+    }
+    table
+}
+
+/// THE KEYS A DEPLOYMENT'S TYPED GRAMMAR READS ([`ProviderDeploy`]), in its order; every other key
+/// of the entry is one of its [`ProviderDeploy::options`]. A test holds this list to the struct's.
+pub const DEPLOY_KEYS: &[&str] = &[
+    "api_key",
+    "protocol",
+    "base_url",
+    "error_map",
+    "path",
+    "path_base",
+    "token_url",
+    "scope",
+    "subject",
+    "auth",
+    "max_output_key",
+    "anthropic_adaptive_thinking",
+    "native_structured_output",
+    "model_capabilities",
+    "allow_metadata_hosts",
+    "health",
+];
+
+/// THE `providers:` SECTION OF `config.yaml`, read: each entry's typed keys ([`DEPLOY_KEYS`]) by its
+/// derived grammar, straight off the document so a refusal keeps its path and position, and every
+/// other key into its [`ProviderDeploy::options`], for the plane to judge.
+///
+/// # Errors
+///
+/// The typed grammar's, or a key written twice.
+pub fn deployments<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, ProviderDeploy>, D::Error> {
+    let entries: HashMap<String, Deployment> = HashMap::deserialize(de)?;
+    Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
+}
+
+/// One deployment entry read by [`deployments`].
+struct Deployment(ProviderDeploy);
+
+impl<'de> Deserialize<'de> for Deployment {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_map(DeploymentVisitor)
+    }
+}
+
+struct DeploymentVisitor;
+
+impl<'de> serde::de::Visitor<'de> for DeploymentVisitor {
+    type Value = Deployment;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("struct ProviderDeploy")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Deployment, A::Error> {
+        let mut options = ProviderTable::new();
+        let mut deploy = ProviderDeploy::deserialize(
+            serde::de::value::MapAccessDeserializer::new(OptionsAside {
+                inner: map,
+                keys: DEPLOY_KEYS,
+                options: &mut options,
+            }),
+        )?;
+        deploy.options = options;
+        Ok(Deployment(deploy))
+    }
+}
+
+/// THE KEYS A CATALOG ENTRY'S TYPED GRAMMAR READS ([`ProviderDef`]), in its order; every other key
+/// of the entry is one of its [`ProviderDef::options`]. A test holds this list to the struct's.
+pub const CATALOG_KEYS: &[&str] = &[
+    "protocol",
+    "base_url",
+    "error_map",
+    "health",
+    "path",
+    "path_base",
+    "token_url",
+    "scope",
+    "subject",
+    "auth",
+    "max_output_key",
+    "anthropic_adaptive_thinking",
+    "native_structured_output",
+    "model_capabilities",
+    "allow_metadata_hosts",
+];
+
+/// THE `providers.yaml` CATALOG, read as [`deployments`] reads `config.yaml`'s section: each entry's
+/// typed keys ([`CATALOG_KEYS`]) by its derived grammar, every other key into its
+/// [`ProviderDef::options`], judged at resolve.
+///
+/// # Errors
+///
+/// The typed grammar's, or a key written twice.
+pub fn catalog<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, ProviderDef>, D::Error> {
+    let entries: HashMap<String, CatalogEntry> = HashMap::deserialize(de)?;
+    Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
+}
+
+/// [`catalog`] over a `providers.yaml` text.
+///
+/// # Errors
+///
+/// The YAML library's, with the path and position of the node it names.
+pub fn catalog_from_str(text: &str) -> Result<HashMap<String, ProviderDef>, serde_yaml::Error> {
+    catalog(serde_yaml::Deserializer::from_str(text))
+}
+
+/// One catalog entry read by [`catalog`].
+struct CatalogEntry(ProviderDef);
+
+impl<'de> Deserialize<'de> for CatalogEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_map(CatalogEntryVisitor)
+    }
+}
+
+struct CatalogEntryVisitor;
+
+impl<'de> serde::de::Visitor<'de> for CatalogEntryVisitor {
+    type Value = CatalogEntry;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("struct ProviderDef")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<CatalogEntry, A::Error> {
+        let mut options = ProviderTable::new();
+        let mut def =
+            ProviderDef::deserialize(serde::de::value::MapAccessDeserializer::new(OptionsAside {
+                inner: map,
+                keys: CATALOG_KEYS,
+                options: &mut options,
+            }))?;
+        def.options = options;
+        Ok(CatalogEntry(def))
+    }
+}
+
+/// A map read that hands the typed grammar only the keys it reads ([`DEPLOY_KEYS`]) and sets every
+/// other key, with its value, aside.
+struct OptionsAside<'a, A> {
+    inner: A,
+    keys: &'static [&'static str],
+    options: &'a mut ProviderTable,
+}
+
+impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAside<'_, A> {
+    type Error = A::Error;
+
+    fn next_key_seed<K: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, A::Error> {
+        use serde::de::{Error, IntoDeserializer};
+        loop {
+            let Some(key) = self.inner.next_key::<String>()? else {
+                return Ok(None);
+            };
+            if self.keys.contains(&key.as_str()) {
+                return seed
+                    .deserialize(IntoDeserializer::<A::Error>::into_deserializer(key))
+                    .map(Some);
+            }
+            let value: Value = self.inner.next_value()?;
+            if self.options.insert(key.clone(), value).is_some() {
+                return Err(<A::Error as Error>::custom(format!(
+                    "duplicate field `{key}`"
+                )));
+            }
+        }
+    }
+
+    fn next_value_seed<V: serde::de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, A::Error> {
+        self.inner.next_value_seed(seed)
+    }
+}
+
+/// THE OPTIONS OF ONE RESOLVED PROVIDER, judged by the plane that speaks its dialect: the folded
+/// door that states the provider keys (`plane_driver::door::provider_keys`) validates
+/// `{"providers": {<name>: <table>}}` and answers in its own words, which name the key and list
+/// the names the dialect accepts. `Ok` when the entry sets no option.
+///
+/// # Errors
+///
+/// The plane's refusal, or, when no loaded plane judges provider entries, the first option named.
+pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), String> {
+    judge_table(name, &provider.table)
+}
+
+/// [`judge_options`] of one CATALOG entry, alone: its typed keys and its options, as the plane would
+/// receive them were config.yaml to deploy it.
+///
+/// # Errors
+///
+/// As [`judge_options`].
+pub fn judge_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
+    judge_table(name, &with_options(def, &def.options))
+}
+
+fn judge_table(name: &str, table: &ProviderTable) -> Result<(), String> {
+    let core = |k: &String| CORE_PROVIDER_KEYS.contains(&k.as_str());
+    let typed = |k: &String| DEPLOY_KEYS.contains(&k.as_str()) || core(k);
+    let Some(first) = table.keys().find(|k| !typed(k)) else {
+        return Ok(());
+    };
+    match crate::plane_driver::door::judge_provider(name, table) {
+        Some(judged) => judged,
+        None => Err(format!(
+            "providers.{name}: unknown field `{first}`: no loaded plane speaks this provider's \
+             dialect, so it takes no option"
+        )),
+    }
 }
 
 /// Remove every `null` member, at every depth: an unset optional key is an absent one.
@@ -470,13 +724,16 @@ impl ResolvedProvider {
             token_url: deploy.token_url.clone().or_else(|| def.token_url.clone()),
             scope: deploy.scope.clone().or_else(|| def.scope.clone()),
             subject: deploy.subject.clone().or_else(|| def.subject.clone()),
-            auth: deploy.auth.or(def.auth),
+            auth: deploy.auth.clone().or_else(|| def.auth.clone()),
             // A deployment list (`Some`) replaces the catalog default.
             allow_metadata_hosts: deploy
                 .allow_metadata_hosts
                 .clone()
                 .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-            table: merge_tables(plane_table(def), plane_table(deploy)),
+            table: merge_tables(
+                with_options(def, &def.options),
+                with_options(deploy, &deploy.options),
+            ),
         }
     }
 
@@ -507,7 +764,7 @@ impl ResolvedProvider {
 /// rest the table.
 impl From<ProviderCfg> for ResolvedProvider {
     fn from(p: ProviderCfg) -> Self {
-        let table = plane_table(&p);
+        let table = with_options(&p, &p.options);
         Self {
             base_url: p.base_url,
             api_key: p.api_key,
@@ -521,5 +778,191 @@ impl From<ProviderCfg> for ResolvedProvider {
             allow_metadata_hosts: p.allow_metadata_hosts,
             table,
         }
+    }
+}
+
+/// A URL as a `Debug` print shows it: the authority's userinfo replaced by a fixed marker
+/// (`busbar_kernel_egress::trust::net::redact_userinfo`, the form `--validate` repeats a base URL
+/// in), quoted as a string prints. Only the PRINT: the field keeps the URL as written, because its
+/// userinfo is the Basic credential the outbound request presents (row 74, F25).
+struct PrintedUrl<'a>(&'a str);
+
+impl std::fmt::Debug for PrintedUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(
+            &busbar_kernel_egress::trust::net::redact_userinfo(self.0),
+            f,
+        )
+    }
+}
+
+/// An optional URL as a `Debug` print shows it (see [`PrintedUrl`]).
+fn printed_url(url: Option<&String>) -> Option<PrintedUrl<'_>> {
+    url.map(|u| PrintedUrl(u))
+}
+
+// THE PROVIDER STRUCTS' `Debug`, written out so `base_url` and `token_url` print through
+// [`PrintedUrl`]: a `user:pass@` the operator wrote never reaches a `{:?}` (CREDENTIAL-LOCKDOWN
+// A.3). Each destructures every field, so a field added later fails to compile here until it is
+// printed (or deliberately not).
+
+impl std::fmt::Debug for ProviderCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            protocol,
+            base_url,
+            api_key,
+            health,
+            error_map,
+            path,
+            path_base,
+            token_url,
+            scope,
+            subject,
+            auth,
+            max_output_key,
+            anthropic_adaptive_thinking,
+            native_structured_output,
+            model_capabilities,
+            allow_metadata_hosts,
+            options,
+        } = self;
+        f.debug_struct("ProviderCfg")
+            .field("protocol", protocol)
+            .field("base_url", &PrintedUrl(base_url))
+            .field("api_key", api_key)
+            .field("health", health)
+            .field("error_map", error_map)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("max_output_key", max_output_key)
+            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
+            .field("native_structured_output", native_structured_output)
+            .field("model_capabilities", model_capabilities)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            // The names alone: a value is the plane's to judge, and is never printed.
+            .field("options", &options.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ProviderDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            protocol,
+            base_url,
+            error_map,
+            health,
+            path,
+            path_base,
+            token_url,
+            scope,
+            subject,
+            auth,
+            max_output_key,
+            anthropic_adaptive_thinking,
+            native_structured_output,
+            model_capabilities,
+            allow_metadata_hosts,
+            options,
+        } = self;
+        f.debug_struct("ProviderDef")
+            .field("protocol", protocol)
+            .field("base_url", &PrintedUrl(base_url))
+            .field("error_map", error_map)
+            .field("health", health)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("max_output_key", max_output_key)
+            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
+            .field("native_structured_output", native_structured_output)
+            .field("model_capabilities", model_capabilities)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            // The names alone: a value is the plane's to judge, and is never printed.
+            .field("options", &options.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ProviderDeploy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            api_key,
+            protocol,
+            base_url,
+            error_map,
+            path,
+            path_base,
+            token_url,
+            scope,
+            subject,
+            auth,
+            max_output_key,
+            anthropic_adaptive_thinking,
+            native_structured_output,
+            model_capabilities,
+            allow_metadata_hosts,
+            health,
+            options,
+        } = self;
+        f.debug_struct("ProviderDeploy")
+            .field("api_key", api_key)
+            .field("protocol", protocol)
+            .field("base_url", &printed_url(base_url.as_ref()))
+            .field("error_map", error_map)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("max_output_key", max_output_key)
+            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
+            .field("native_structured_output", native_structured_output)
+            .field("model_capabilities", model_capabilities)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            .field("health", health)
+            // The names alone: a value is the plane's to judge, and is never printed.
+            .field("options", &options.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ResolvedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            base_url,
+            api_key,
+            health,
+            path,
+            path_base,
+            token_url,
+            scope,
+            subject,
+            auth,
+            allow_metadata_hosts,
+            table,
+        } = self;
+        f.debug_struct("ResolvedProvider")
+            .field("base_url", &PrintedUrl(base_url))
+            .field("api_key", api_key)
+            .field("health", health)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            .field("table", table)
+            .finish()
     }
 }

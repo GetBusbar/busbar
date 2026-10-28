@@ -11,7 +11,7 @@ use crate::diagnostics::{
     CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
     CONFIG_RATE_CARD_ALL_ZERO,
 };
-use crate::plane::registry::plane_decl_for;
+use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
@@ -337,8 +337,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
-    for decl in crate::plane::registry::plane_decls()
+    let mut known_protocols: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
+    for decl in crate::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
@@ -830,7 +830,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             .chain
             .iter()
             .chain(auth.admin_auth.iter())
-            .map(|e| e.module.as_str())
+            // A binding is looked up by the PROVIDER NAME the verdict carries
+            // (`AuthChainEntry::name`); the module word is accepted as 1.5.5 accepted it.
+            .flat_map(|e| [e.module.as_str(), e.name.as_str()])
             .chain(auth.methods.keys().map(String::as_str))
             .collect();
 
@@ -1081,7 +1083,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1101,7 +1103,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     if let Some(auth) = &cfg.auth {
         // Every module named in the data-plane chain must resolve to EITHER the built-in `keys`
         // module OR a loadable `kind: auth` plugin. This function runs before the plugin registry
-        // exists (see this module's own doc + `preflight_plugins_and_secrets`'s doc comment: "the
+        // exists (see this module's own doc + `config_validate::check`'s doc comment: "the
         // plugin pre-flight... cannot run until the registry exists"), so it CANNOT tell a genuine
         // plugin name from a typo at this point — only `main.rs`'s post-resolve
         // `auth_plugin_refs`/registry check (run right after this) can. Only the names this function
@@ -1565,7 +1567,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
 /// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
 fn priced_classes(
-    d: &crate::plane::registry::PlaneDecl,
+    d: &crate::plane_driver::registry::PlaneDecl,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
@@ -1586,8 +1588,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         for (key, r) in card {
             // `lane` is the whole key on the flat card; empty on a plane card's presence key.
             let (plane, lane) = split_plane_lane(key);
-            let at =
-                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let at = crate::plane_driver::registry::plane_decl_for(plane)
+                .map_or(plane, |d| d.config_section);
             let path = format!(
                 "{at}{}rate_card['{lane}']",
                 if at.is_empty() { "" } else { "." }
@@ -1708,7 +1710,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // units: exactly the classes the plane's lane was priced by before it was served through
         // its door, so a configuration that booted then boots now and an unpriced class still
         // refuses (#42).
-        for d in crate::plane::registry::plane_decls() {
+        for d in crate::plane_driver::registry::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
                 .iter()
@@ -1856,7 +1858,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // is trusted is resolved against the plugin REGISTRY — but this function runs at boot AND
     // `--validate` BEFORE the plugin pre-flight builds that registry, and captures none, so it
     // CANNOT tell an installed plugin from a typo. Therefore the module-EXISTENCE check is DEFERRED
-    // to the shared plugin pre-flight (`validate_secret_refs`, called from `plugins_preflight`'s two
+    // to the shared plugin pre-flight (`registry_refusal`, called from `plugins_preflight`'s two
     // call-sites) — the SAME deferral the `store.module` plugin reference already uses. Here we
     // validate ONLY the STRUCTURE that is checkable without the registry: the settings key each
     // loaded secret plugin's declared shorthand names (its Statement's `REWRITE_SUGAR`; audit
@@ -1887,12 +1889,12 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             errors.push(refusal);
         }
         // A module no loaded plugin declares a shorthand for is NOT rejected here: its existence is
-        // proven against the registry in `validate_secret_refs` at plugin pre-flight, which refuses
+        // proven against the registry in `registry_refusal` at plugin pre-flight, which refuses
         // an unknown module in 1.5.5's words.
     };
     // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
     // structural check here and the registry-backed module-existence check at plugin pre-flight
-    // (`validate_secret_refs`) can never drift over WHICH refs they cover.
+    // (`registry_refusal`) can never drift over WHICH refs they cover.
     for (what, r) in secret_refs(cfg) {
         check_secret(what, r);
     }
@@ -2173,6 +2175,16 @@ fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)
     })
 }
 
+/// Why a metadata host-list entry names no host the destination guard judges, or `None` when it
+/// names one or is a `/` entry (refused on its own, as 1.5.5 refused it): the one predicate
+/// startup judges these lists by, which `busbar --migrate-config` drops such an entry by.
+pub(crate) fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
+    if entry.contains('/') {
+        return None;
+    }
+    unmappable_metadata_entry(entry).map(|(why, _)| why)
+}
+
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of
 /// truth `ssrf_blocked_host` enforces, surfaced for the `--print-metadata-blocklist` CLI flag and the
 /// startup count so `main.rs` does NOT duplicate the list. The CIDR / individual literals are spelled
@@ -2205,7 +2217,14 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
-pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
+mod undeclared_secret_refs;
+#[cfg(test)]
+pub(crate) use secret_refs::registry_refusal;
+pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
+pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
+/// The one validator every caller runs.
+mod check;
+pub use check::{check, no_root_rules, Check, Refusal};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way
@@ -2251,6 +2270,11 @@ fn validate_providers_with(
         // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
         // the fail-OPEN answer), but it refuses ONCE and says why.
         validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
+        // The provider's options (every key that is not busbar's), judged by the plane that speaks
+        // its dialect against that dialect's list, in the plane's words.
+        if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
+            errors.push(refusal);
+        }
 
         // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
         // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/
@@ -2291,8 +2315,16 @@ fn validate_providers_with(
             }
         }
 
-        // The optional auth-style override (`bearer` / `api-key`) is now a `ProviderAuth` enum, so an
-        // invalid spelling is rejected at deserialize time — no hand-check needed here.
+        // The optional auth-style override is an opaque word a loaded auth plugin declares
+        // (`ProviderAuth`), so an undeclared spelling is rejected at deserialize time — no
+        // hand-check needed here. What the style needs is the flag its plugin declares beside it
+        // (`abi::auth::STYLE_ENDPOINT_*`), read once here; the kernel names no style.
+        let style = provider_cfg
+            .auth
+            .as_ref()
+            .map(crate::config::ProviderAuth::as_str);
+        let style_flags = style.map_or(0, crate::preflight::style_flags);
+        let style = style.unwrap_or_default();
 
         // The resolved base_url is the actual upstream target for signed (API-key-bearing) calls.
         // It is operator config (a client never chooses a provider URL — it picks a model NAME that
@@ -2430,19 +2462,17 @@ fn validate_providers_with(
                 }
             }
         }
-        // `oauth-client-credentials` needs a token endpoint + scope to run the exchange; without them
-        // a lane would boot but never mint a token (every request 401s). Fail at validate time. The
-        // token_url carries the client_secret, so it must be https for a public host (loopback/private
-        // may use http, mirroring base_url).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::OAuthClientCredentials)
-        ) {
+        // A style that sends its credential to the entry's token endpoint
+        // (`STYLE_ENDPOINT_TOKEN_URL`, the client-credentials exchange) needs a token endpoint +
+        // scope to run the exchange; without them a lane would boot but never mint a token (every
+        // request 401s). Fail at validate time. The token_url carries the client_secret, so it must
+        // be https for a public host (loopback/private may use http, mirroring base_url).
+        if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
             // A keyless declaration contradicts the grant: this flow MINTS its token FROM the
             // credential (`client_id:client_secret`), so `none` leaves it nothing to exchange.
             if provider_cfg.api_key.is_none() {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but declares \
+                    "provider '{provider_name}' uses auth: {style} but declares \
                      `api_key: none`; that grant mints its token FROM the credential \
                      (`client_id:client_secret`), so there is nothing to declare keyless"
                 ));
@@ -2455,7 +2485,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
+                    "provider '{provider_name}' uses auth: {style} but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
                 ));
             } else if let Some(tu) = &provider_cfg.token_url {
                 // token_url carries the client secret in the POST body, so it gets the SAME two guards
@@ -2505,7 +2535,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `scope`"
+                    "provider '{provider_name}' uses auth: {style} but has no `scope`"
                 ));
             }
             // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
@@ -2526,28 +2556,26 @@ fn validate_providers_with(
                     "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
-                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
+                for e in outbound_credential_refusals(style, &cred, &params) {
                     errors.push(format!(
-                        "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
                     ));
                 }
             }
         }
 
-        // jwt-bearer: dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check + token_uri
-        // SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise surfaces only
-        // at boot/apply. Validate it here IF the credential env var is actually set (an unset var can't
-        // be validated — it is checked at boot, where unset is a hard error).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::JwtBearer)
-        ) {
+        // A style that takes its token endpoint from its credential (`STYLE_ENDPOINT_FROM_CREDENTIAL`,
+        // the jwt-bearer grant): dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check
+        // + token_uri SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise
+        // surfaces only at boot/apply. Validate it here IF the credential env var is actually set (an
+        // unset var can't be validated — it is checked at boot, where unset is a hard error).
+        if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0 {
             // Same contradiction as the oauth arm above: this grant SIGNS its assertion with the
             // credential (the service-account JSON or key file), so `none` disarms it entirely.
             if provider_cfg.api_key.is_none() {
                 errors.push(format!(
-                    "provider '{provider_name}' uses auth: jwt-bearer but declares \
+                    "provider '{provider_name}' uses auth: {style} but declares \
                      `api_key: none`; that grant signs its assertion WITH the credential (the \
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
@@ -2566,7 +2594,7 @@ fn validate_providers_with(
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
                 Err(e) => {
                     errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
                     ));
                     String::new()
@@ -2596,7 +2624,7 @@ fn validate_providers_with(
                             params.insert("scope".into(), serde_json::Value::String(scope.clone()));
                         }
                         outbound_credential_refusals(
-                            "jwt-bearer",
+                            style,
                             &cred,
                             &serde_json::Value::Object(params),
                         )
@@ -2604,7 +2632,7 @@ fn validate_providers_with(
                 };
                 for e in refusals {
                     errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
                     ));
                 }
@@ -2667,8 +2695,79 @@ fn outbound_credential_refusals(
     let Some(axis) = crate::preflight::linked_auth_axis() else {
         return Vec::new();
     };
-    axis.check_outbound(style, credential.as_bytes(), params)
-        .unwrap_or_default()
+    credential_refusals_from(axis.as_ref(), style, credential, params)
+}
+
+/// [`outbound_credential_refusals`] asked of `axis`, each refusal with the credential redacted
+/// ([`redact_credential`]): the text is a plugin's, and `--validate` prints it (H9).
+fn credential_refusals_from(
+    axis: &dyn busbar_contract::auth_calls::AuthAxis,
+    style: &str,
+    credential: &str,
+    params: &serde_json::Value,
+) -> Vec<String> {
+    let refusals = axis
+        .check_outbound(style, credential.as_bytes(), params)
+        .unwrap_or_default();
+    let needles = credential_needles(credential);
+    refusals
+        .into_iter()
+        .map(|text| redact_credential(text, &needles))
+        .collect()
+}
+
+/// What stands in a printed refusal where the credential was.
+const REDACTED_CREDENTIAL: &str = "[redacted]";
+
+/// A needle shorter than this is not searched for: a 1-3 byte credential (or half of one) would
+/// match ordinary words, and no real credential is that short.
+const MIN_NEEDLE: usize = 4;
+
+/// The spellings of `credential` a plugin's refusal could carry, longest first: the credential as
+/// resolved and trimmed, the secret half of a `client_id:client_secret` pair, a service account's
+/// `private_key`, and the base64 (standard and URL-safe, padded or not) of the credential, which is
+/// how a Basic header carries a `user:pass` pair.
+fn credential_needles(credential: &str) -> Vec<String> {
+    use base64::Engine as _;
+    let mut needles = vec![credential.to_string(), credential.trim().to_string()];
+    if let Some((_, secret)) = credential.trim().split_once(':') {
+        needles.push(secret.to_string());
+    }
+    if let Ok(serde_json::Value::Object(account)) = serde_json::from_str(credential) {
+        if let Some(serde_json::Value::String(key)) = account.get("private_key") {
+            // As parsed, and as JSON spells it (`\n` escaped), which is how a plugin quoting the
+            // account back would.
+            needles.push(key.clone());
+            if let Ok(quoted) = serde_json::to_string(key) {
+                needles.push(quoted.trim_matches('"').to_string());
+            }
+        }
+    }
+    for raw in [credential, credential.trim()] {
+        for engine in [
+            &base64::engine::general_purpose::STANDARD,
+            &base64::engine::general_purpose::STANDARD_NO_PAD,
+            &base64::engine::general_purpose::URL_SAFE,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ] {
+            needles.push(engine.encode(raw.as_bytes()));
+        }
+    }
+    needles.retain(|n| n.len() >= MIN_NEEDLE);
+    needles.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    needles.dedup();
+    needles
+}
+
+/// `text` with every occurrence of each needle replaced by [`REDACTED_CREDENTIAL`]. Text that
+/// carries none comes back as it was, byte for byte.
+fn redact_credential(mut text: String, needles: &[String]) -> String {
+    for needle in needles {
+        if text.contains(needle.as_str()) {
+            text = text.replace(needle.as_str(), REDACTED_CREDENTIAL);
+        }
+    }
+    text
 }
 
 /// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit
@@ -2810,3 +2909,7 @@ mod store_required_tests;
 #[cfg(test)]
 #[path = "tests/secret_shorthand_declared_tests.rs"]
 mod secret_shorthand_declared_tests;
+
+#[cfg(test)]
+#[path = "tests/credential_echo_tests.rs"]
+mod credential_echo_tests;

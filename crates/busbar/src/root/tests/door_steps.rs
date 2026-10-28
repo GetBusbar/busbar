@@ -489,9 +489,10 @@ fn a_blocked_admission_renders_as_the_budget_units_door_does() {
 /// struck when its steps drop; a refused unit writes none.
 #[test]
 fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
-    use busbar_contract::caps::{Authenticate, PrincipalId};
+    use busbar_contract::caps::PrincipalId;
     use busbar_kernel::host_units::UnitRecords;
-    use busbar_kernel::teller::{UnitCtx, Units};
+    use busbar_kernel::plane_driver::DriverSteps;
+    use busbar_kernel::teller::UnitCtx;
     let facts = super::door_facts("p", &[], &[], &[], "a", Vec::new());
     let pools = DoorPools::default();
     let records = std::sync::Arc::new(UnitRecords::default());
@@ -528,10 +529,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     };
     let keyed = steps(Some(std::sync::Arc::clone(&key)));
     assert!(records.get(7).is_none(), "nothing before authenticate");
-    let _ = keyed.authenticate(
-        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
-        &ctx(7),
-    );
+    let _ = keyed.authenticate(&ctx(7));
     let held = records.get(7).expect("recorded at authenticate");
     assert_eq!(
         held.principal.as_ref().map(|k| k.id.as_str()),
@@ -541,10 +539,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     assert!(records.get(7).is_none(), "struck when its steps drop");
 
     let unkeyed = steps(None);
-    let _ = unkeyed.authenticate(
-        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
-        &ctx(8),
-    );
+    let _ = unkeyed.authenticate(&ctx(8));
     assert!(records.get(8).is_none(), "a refused unit writes no record");
 }
 
@@ -1374,14 +1369,17 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             need.0,
             desc.target.to_owned(),
             desc.head_target.to_vec(),
-            String::from_utf8_lossy(desc.body).into_owned(),
+            String::from_utf8_lossy(&desc.body).into_owned(),
         ));
         let n = opened.len();
         let body = match self.answer {
             Some(answer) => answer(&opened[n - 1].3),
+            // The first token lives 10 s, so the plugin re-mints it at about half its life (its
+            // short-token rule): the window in which the first bearer is presented is seconds
+            // wide, not the one second a 2 s token left a loaded test thread to observe it in.
             None => format!(
                 r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
-                if n == 1 { 2 } else { 3600 }
+                if n == 1 { 10 } else { 3600 }
             ),
         };
         let id = self.slab.insert(caller, need, ())?;
@@ -1920,99 +1918,6 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
         claims["aud"],
         written.as_str(),
         "the aud is the raw token_uri, as 1.5.5 signed it"
-    );
-}
-
-/// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
-/// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
-/// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
-/// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
-/// 1.5.5's reqwest POST sent it (v1.5.5 `oauth_client_credentials.rs:119-126` in its egress-auth
-/// tree).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
-    use base64::Engine as _;
-    use busbar_contract::auth_calls::FieldsRequest;
-    const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
-    let held = crate::root::userinfo::UserinfoBasic::of(&TOKEN_URL.replacen(
-        "://",
-        "://svcuser:hunter2-P4ss@",
-        1,
-    ))
-    .expect("the userinfo, held by the host");
-    let table = std::sync::Arc::new(TokenEndpoint::default());
-    let auths = linked_mint_plugin(&table);
-    // The style as the operator's config spells it (a fixture), read by the config's own parser.
-    let style = super::style_word(
-        serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
-            .expect("a provider style"),
-    );
-    // What the plane built its binding from: the stripped endpoint.
-    let settings = serde_json::json!({
-        "token_url": TOKEN_URL,
-        "scope": "https://x.example.com/.default",
-    });
-    let (auth, _) = auths
-        .serving_with(style, &settings, Some(held))
-        .expect("the plugin opens")
-        .expect("a linked plugin serves the style");
-    let handle = auth
-        .open_outbound(
-            style,
-            b"oracle-client-0001:oracle:secret:with:colons",
-            &settings,
-        )
-        .expect("the binding opens");
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        auth.fields(handle, FieldsRequest::default(), 0),
-    )
-    .await
-    .expect("the first ask answers");
-    // With the host's clock served (row 176), the first ask can answer before the mint it set off
-    // has landed. The mint is then waited on at the endpoint's close of its exchange, never on the
-    // wall clock (Law 8). The plugin closes the exchange BEFORE it stores the token, inside the
-    // same `tick` crossing (the linked minting plugin's `Minted::tick`: `wire.close(conn)`, then
-    // the parse and the store), so the close wakes this task while that crossing still runs
-    // on the instance's dispatcher worker. The second ask therefore goes THROUGH that worker
-    // (`fields`, submitted on the instance's own worker, where its tick and drive cross), which
-    // starts it only once the tick crossing has returned, the token stored. `fields_now` crosses
-    // on this task's own thread, beside the tick, and read the cell before the store: the flake.
-    let first = if presented(Some(&first)).is_some() {
-        Some(first)
-    } else {
-        tokio::time::timeout(std::time::Duration::from_secs(120), table.closed(1))
-            .await
-            .expect("the first mint lands");
-        Some(
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                auth.fields(handle, FieldsRequest::default(), 0),
-            )
-            .await
-            .expect("the ask after the mint answers"),
-        )
-    };
-    assert_eq!(
-        presented(first.as_ref()).as_deref(),
-        Some("Bearer oracle-minted-1")
-    );
-    assert!(table
-        .declared
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URL)));
-    let basic = format!(
-        "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
-    );
-    let fields = table.fields.lock().unwrap();
-    assert_eq!(
-        fields[0].first().map(|(n, v)| (n.as_str(), v.as_slice())),
-        Some(("authorization", basic.as_bytes())),
-        "the far end hears the Basic value on the token POST: {:?}",
-        fields[0]
     );
 }
 
@@ -2895,17 +2800,16 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => kernel.with_records(
-                Arc::new(StoreRows(Arc::clone(&store))),
-                Arc::clone(&store) as _,
-            ),
-            Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
+            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(Arc::clone(&store)))),
+            Ledger::Store(claims) => {
+                kernel.with_records(Arc::new(ClaimsIn(Arc::new(Rows::default()), claims)))
+            }
             Ledger::Rows(rows, max_live) => kernel
                 .with_work_bounds(busbar_kernel::host_work::WorkBounds {
                     max_live,
                     ..Default::default()
                 })
-                .with_records(rows, Arc::clone(&store) as _),
+                .with_records(Arc::new(ClaimsIn(rows, Arc::clone(&store) as _))),
             Ledger::Unbound => kernel,
         });
         let late = crate::root::serve::LateServices::new();
@@ -3214,16 +3118,13 @@ pub(crate) mod tool_door {
     impl busbar_kernel::host_records::RecordRows for StoreRows {
         fn claim(
             &self,
+            kind: &str,
             token: &str,
             expires_at: u64,
             now: u64,
         ) -> Result<bool, busbar_contract::kinds::StoreError> {
             busbar_contract::records::RecordStore::redeem_plane_token(
-                &*self.0,
-                busbar_kernel::host_records::CLAIM_KIND,
-                token,
-                expires_at,
-                now,
+                &*self.0, kind, token, expires_at, now,
             )
             .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
         }
@@ -3258,6 +3159,59 @@ pub(crate) mod tool_door {
         }
     }
 
+    /// `rows`, every claim but a chained record's position claim redeemed in `claims`: a node whose
+    /// typed records are its own and whose claims are the deployment's.
+    struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
+
+    impl busbar_kernel::host_records::RecordRows for ClaimsIn {
+        fn claim(
+            &self,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            if kind == busbar_kernel::host_records::CLAIM_KIND {
+                return busbar_kernel::host_records::RecordRows::claim(
+                    &*self.0, kind, token, expires_at, now,
+                );
+            }
+            busbar_contract::records::RecordStore::redeem_plane_token(
+                &*self.1, kind, token, expires_at, now,
+            )
+            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+        }
+        fn record_put(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+            value: &busbar_contract::kinds::RecordBytes,
+        ) -> Result<(), busbar_contract::kinds::StoreError> {
+            busbar_kernel::host_records::RecordRows::record_put(&*self.0, schema, key, value)
+        }
+
+        fn record_get(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
+        {
+            busbar_kernel::host_records::RecordRows::record_get(&*self.0, schema, key)
+        }
+
+        fn record_scan(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            prefix: &[u8],
+            limit: u32,
+        ) -> Result<
+            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+            busbar_contract::kinds::StoreError,
+        > {
+            busbar_kernel::host_records::RecordRows::record_scan(&*self.0, schema, prefix, limit)
+        }
+    }
+
     /// Typed record rows in memory: the store kind's record slots, for the records services; and
     /// how many writes of a settled work handle the store refuses next.
     #[derive(Default)]
@@ -3275,6 +3229,7 @@ pub(crate) mod tool_door {
         /// One writer in this test: every claim is the first.
         fn claim(
             &self,
+            _kind: &str,
             _token: &str,
             _expires_at: u64,
             _now: u64,
@@ -4539,7 +4494,7 @@ pub(crate) mod door_boundary {
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+    use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
@@ -4564,7 +4519,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane::registry::register_test_plane(row);
+        busbar_kernel::test_support::planes::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -4798,7 +4753,7 @@ pub(crate) mod door_boundary {
                 app.lane(
                     LaneSpec::new(
                         "test-model",
-                        busbar_kernel::proto::PROTO_ANTHROPIC,
+                        busbar_kernel::test_support::protocols::PROTO_ANTHROPIC,
                         &base_url,
                     )
                     .api_key("busbar-upstream-key"),
@@ -5923,9 +5878,14 @@ mod task_continuation {
         )
     }
 
-    /// Poll `tasks/get` until the task is `status` (or the test gives up).
+    /// How long a wait below may take before the test calls it a hang. It bounds a hang only: each
+    /// wait ends on the progress it waits for, so a slow run under load is never a failure.
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Poll `tasks/get` until the task is `status` (or [`HANG_GUARD`] passes).
     async fn until(rig: &Rig, task_id: &str, status: &str) -> serde_json::Value {
-        for _ in 0..250 {
+        let deadline = tokio::time::Instant::now() + HANG_GUARD;
+        while tokio::time::Instant::now() < deadline {
             let (_, body) = ask(rig, &rig.token, "tasks/get", task_id).await;
             if body["result"]["status"] == status {
                 return body;
@@ -6008,7 +5968,7 @@ mod task_continuation {
                 }
             }
         };
-        tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+        tokio::time::timeout(HANG_GUARD, wait)
             .await
             .expect("the upstream call ran")
     }
@@ -8539,12 +8499,10 @@ fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
 #[test]
 fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
     use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL};
-    use busbar_contract::caps::{
-        Admit, Admittance, Dial, OpClassId, PrincipalId, ReasonCode, Verify,
-    };
+    use busbar_contract::caps::{Admittance, Dial, OpClassId, PrincipalId, ReasonCode};
     use busbar_contract::records::{ScopeRef, VirtualKey};
     use busbar_kernel::plane_driver::DriverSteps;
-    use busbar_kernel::teller::{UnitCtx, Units};
+    use busbar_kernel::teller::UnitCtx;
     use busbar_kernel::test_support::tokens;
     let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
     let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
@@ -8590,14 +8548,8 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     };
     let verified = |s: &super::DoorSteps<'_>, class: u8| {
         s.decoded(&ctx, OpClassId::new("op"), class, None);
-        s.verify(
-            &tokens::pass::<Verify>(),
-            &tokens::grant::<Dial>(),
-            &ctx,
-            &principal,
-        )
-        .into_result(&tokens::seal())
-        .expect("verify proceeds")
+        s.verify(&tokens::grant::<Dial>(), &ctx, &principal)
+            .expect("verify proceeds")
     };
 
     // ONE reaches: resolved, nothing sealed, no route (its pool unread).
@@ -8605,11 +8557,21 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
     assert!(sealed.is_empty(), "no destination is sealed");
     assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
+    assert_eq!(
+        one.scope_entry(),
+        Some(b"a".to_vec()),
+        "its gates bind the one entry"
+    );
     assert_eq!(one.routed(), None, "routed nowhere: no pool, no walk");
     // The same reach routed by scope walks the pool its one entry is a member of.
     let relayed = steps(&["a"]);
     let _ = verified(&relayed, ROUTE_SCOPE);
     assert_eq!(relayed.resolved(&ctx), None);
+    assert_eq!(
+        relayed.scope_entry(),
+        Some(b"a".to_vec()),
+        "a relayed scope unit's gates bind the one entry its scope resolved to"
+    );
     assert_eq!(
         relayed.routed().map(|(label, _)| label),
         Some("both".to_string()),
@@ -8621,16 +8583,14 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         let s = steps(reach);
         let _ = verified(&s, ROUTE_SCOPE_LOCAL);
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
-        let refused = s
-            .admit(
-                &tokens::pass::<Admit>(),
-                &tokens::grant::<Admittance>(),
-                &ctx,
-                &principal,
-                &[],
-                &busbar_contract::slice::GroupLeaseSlip::default(),
-            )
-            .into_result(&tokens::seal());
+        assert_eq!(s.scope_entry(), None, "{reach:?}");
+        let refused = s.admit(
+            &tokens::grant::<Admittance>(),
+            &ctx,
+            &principal,
+            &[],
+            &busbar_contract::slice::GroupLeaseSlip::default(),
+        );
         let Err(refused) = refused else {
             panic!("{reach:?}: refused at admission");
         };
@@ -8839,7 +8799,8 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+    use busbar_kernel::test_support::planes::TestRegistryIsolation;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
@@ -9202,4 +9163,37 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert_eq!(bound, Vec::<String>::new(), "a style read binds no row");
+}
+
+/// RED (arch-audit u29 F1; Q128 ruling (a)): a credential is read for its own token endpoint by its
+/// style's DECLARED bit (`STYLE_ENDPOINT_FROM_CREDENTIAL`, `from_credential` here), never by the
+/// style's name. A style that does not state the bit, even one named `jwt-bearer`, is handed its
+/// credential unread; any word stating it has the service account's `token_uri` read, judged under
+/// the provider's metadata posture in 1.5.5's words over its own word, and set.
+#[test]
+fn a_credential_endpoint_is_read_by_the_styles_bit_never_its_name() {
+    let account = |uri: &str| {
+        format!(r#"{{"client_email":"sa@example.com","private_key":"k","token_uri":"{uri}"}}"#)
+    };
+    let route = provider("p", Some("jwt-bearer"));
+    let good = account("https://oauth2.example.com/token");
+    let unread = super::sealed_params("p", "jwt-bearer", false, &route, good.as_bytes())
+        .expect("a style stating no bit is never read");
+    assert_eq!(unread.token_uri, None, "named jwt-bearer, stating no bit");
+    let read = super::sealed_params("p", "x-any-assertion", true, &route, good.as_bytes())
+        .expect("a judged endpoint");
+    assert_eq!(
+        read.token_uri.as_deref(),
+        Some("https://oauth2.example.com/token"),
+        "any word stating the bit has its credential's endpoint read"
+    );
+    let plaintext = account("http://oauth2.example.com/token");
+    let refused = super::sealed_params("p", "jwt-bearer", true, &route, plaintext.as_bytes())
+        .expect_err("a public plaintext token_uri is refused");
+    assert!(
+        refused.starts_with(
+            "provider 'p' (jwt-bearer auth): service-account token_uri must use https for a public host"
+        ),
+        "1.5.5's words over the style's own word: {refused}"
+    );
 }

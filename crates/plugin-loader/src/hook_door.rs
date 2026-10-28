@@ -37,13 +37,9 @@ use busbar_contract::abi::hook::{
     VERB_PREFER,
 };
 use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
-use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON,
-};
+use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::DeclaredConns;
@@ -51,9 +47,12 @@ use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pend
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::hook::Hook;
+use crate::dispatch::lifecycle::{
+    blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_call,
+};
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
+    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig,
 };
 use crate::PluginRegistry;
 
@@ -74,60 +73,9 @@ const SLOT_WAIT_FIRST: Duration = Duration::from_millis(1);
 /// The longest wait between two tries for a `max_inflight` unit: each try doubles it up to this.
 const SLOT_WAIT_MAX: Duration = Duration::from_millis(16);
 
-/// A string the host lends for a call; empty is absent (NULL).
-fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: if s.is_empty() {
-            std::ptr::null()
-        } else {
-            s.as_ptr()
-        },
-        len: s.len(),
-    }
-}
-
 /// JSON bytes the host lends for a call.
 fn json(b: &[u8]) -> Blob {
-    if b.is_empty() {
-        return NO_BLOB;
-    }
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    }
-}
-
-/// A plugin-owned blob's bytes, copied (the dispatcher's checks bounded them).
-fn copy_blob(b: Blob) -> Vec<u8> {
-    if b.len == 0 || b.ptr.is_null() || b.fmt == BLOB_ABSENT {
-        return Vec::new();
-    }
-    // SAFETY: a checked plugin-owned blob, live under its lease until `release`.
-    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
-}
-
-/// A plugin's error text, lossily UTF-8.
-fn text(error: Option<Vec<u8>>) -> Option<String> {
-    error
-        .map(|e| String::from_utf8_lossy(&e).into_owned())
-        .filter(|t| !t.is_empty())
-}
-
-/// Hand a lease back (ticket-less; a release never pends). `0` is none.
-fn release(plugin: &Plugin<Hook>, lease: u64) {
-    if lease == 0 {
-        return;
-    }
-    let mut f = Frame::new(
-        ReleaseIn {
-            head: in_head(),
-            lease,
-        },
-        out_head(),
-    );
-    let _ = plugin.call(life::RELEASE, &mut f);
+    blob(b, BLOB_JSON, 0)
 }
 
 /// `validate` `settings` (ticket-less; it never pends): `Ok` when READY, else the plugin's words.
@@ -135,16 +83,7 @@ fn release(plugin: &Plugin<Hook>, lease: u64) {
 /// # Errors
 /// The plugin's refusal, verbatim.
 pub fn validate(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
-    let mut f = Frame::new(
-        ValidateIn {
-            head: in_head(),
-            settings: json(settings),
-            err_buf: std::ptr::null_mut(),
-            err_cap: 0,
-        },
-        out_head(),
-    );
-    let c = plugin.call(life::VALIDATE, &mut f);
+    let c = validate_call(plugin, json(settings));
     match c.outcome {
         Outcome::Ready => Ok(()),
         o => Err(text(c.error).unwrap_or_else(|| format!("{o:?}"))),
@@ -156,35 +95,13 @@ pub fn validate(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
 /// # Errors
 /// The plugin's refusal, in 1.5.5's words (`plugin '<name>' open failed: <reason>`).
 fn open(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
-    let mut f = Frame::new(
-        OpenIn {
-            head: in_head(),
-            host: std::ptr::null(),
-            settings: json(settings),
-            secrets: std::ptr::null(),
-            secrets_len: 0,
-            generation: 1,
-            err_buf: std::ptr::null_mut(),
-            err_cap: 0,
-        },
-        OpenOut {
-            head: out_head(),
-            instance: std::ptr::null_mut(),
-            err_len: 0,
-        },
-    );
+    let mut f = open_frame(json(settings));
     let c = plugin.call(life::OPEN, &mut f);
     if c.outcome == Outcome::Ready {
         Ok(())
     } else {
         Err(c.open_failure(plugin.name()))
     }
-}
-
-/// `close` `plugin` (ticket-less).
-fn close(plugin: &Plugin<Hook>) {
-    let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
-    let _ = plugin.call(life::CLOSE, &mut f);
 }
 
 /// Binds a FRESH instance of the same plugin through its door (the quarantine's trial).
@@ -203,6 +120,34 @@ enum State {
     Trialing,
 }
 
+/// One acknowledged `configure`: the instance name, the settings and the version.
+type Configured = Arc<(String, Vec<u8>, u64)>;
+
+/// `configure` `plugin` with `pushed` (ticket-less; the SDK's `configure` never pends): `Ok` when
+/// it acknowledged the version.
+fn reconfigure(plugin: &Plugin<Hook>, pushed: &(String, Vec<u8>, u64)) -> Result<(), String> {
+    let (name, settings, version) = pushed;
+    let mut f = Frame::new(
+        ConfigureIn {
+            head: in_head(),
+            version: *version,
+            settings: json(settings),
+            name: lend_or_null(name),
+        },
+        blank_out::<ConfigureOut>(),
+    );
+    let c = plugin.call(slot::CONFIGURE, &mut f);
+    release(plugin, c.lease);
+    if c.outcome == Outcome::Ready && f.out.acked_version == *version {
+        Ok(())
+    } else {
+        Err(c.error.map_or_else(
+            || format!("it did not acknowledge settings version {version} again"),
+            |e| String::from_utf8_lossy(&e).into_owned(),
+        ))
+    }
+}
+
 struct Inner {
     name: String,
     dispatcher: Arc<Dispatcher>,
@@ -211,6 +156,10 @@ struct Inner {
     // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
     // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
     settings: Vec<u8>,
+    /// The last `configure` the hook acknowledged (its name, settings and version): a quarantine's
+    /// trial opens its fresh instance over [`Inner::settings`], then pushes this again, so a commit
+    /// the hook acknowledged outlives the instance that acknowledged it.
+    configured: Mutex<Option<Configured>>,
     state: Mutex<State>,
     next_worker: AtomicU32,
     /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
@@ -286,8 +235,19 @@ impl Inner {
     /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
     /// doubles the window.
     fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
+        let configured = self
+            .configured
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let opened = (self.rebind)().and_then(|p| {
             open(&p, &self.settings)?;
+            if let Some(pushed) = configured {
+                if let Err(e) = reconfigure(&p, &pushed) {
+                    close(&p);
+                    return Err(e);
+                }
+            }
             Ok(p)
         });
         let mut state = self.lock();
@@ -589,6 +549,7 @@ impl HookInstance {
                 dispatcher,
                 rebind: Box::new(rebind),
                 settings: settings.to_vec(),
+                configured: Mutex::new(None),
                 state: Mutex::new(State::Live(Arc::new(plugin))),
                 next_worker: AtomicU32::new(0),
                 orders,
@@ -766,16 +727,17 @@ impl HookCalls for HookInstance {
         budget: Duration,
     ) -> Pending<Result<(), String>> {
         let inner = Arc::clone(&self.inner);
-        let owned = Arc::new((name.to_string(), settings.as_bytes().to_vec()));
+        let owned: Configured = Arc::new((name.to_string(), settings.as_bytes().to_vec(), version));
         Box::pin(async move {
             let lent = Arc::clone(&owned);
+            let acked = Arc::clone(&owned);
             let make = move || {
                 Frame::new(
                     ConfigureIn {
                         head: in_head(),
                         version,
                         settings: json(&lent.1),
-                        name: lend(&lent.0),
+                        name: lend_or_null(&lent.0),
                     },
                     blank_out::<ConfigureOut>(),
                 )
@@ -793,6 +755,11 @@ impl HookCalls for HookInstance {
             {
                 Ok(done) if done.outcome == Outcome::Ready && done.out.acked_version == version => {
                     release(&done.plugin, done.lease);
+                    // Acknowledgements may finish out of order: the newest version is kept.
+                    let mut kept = inner.configured.lock().unwrap_or_else(|p| p.into_inner());
+                    if kept.as_ref().is_none_or(|k| k.2 <= version) {
+                        *kept = Some(acked);
+                    }
                     Ok(())
                 }
                 Ok(done) => {
