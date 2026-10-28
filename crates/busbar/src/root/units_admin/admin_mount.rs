@@ -182,6 +182,9 @@ pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAns
     if is_rate_refusal(ended) {
         return rate_limited_answer();
     }
+    if let Some(explained) = explained_answer(request, ended) {
+        return explained;
+    }
     answer_for(ended)
 }
 
@@ -253,7 +256,7 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 /// rather than from a recording, and the oracle cannot confirm them.
 #[cfg(feature = "root-admin")]
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
     error_answer_with_message(
         403,
         "forbidden",
@@ -359,6 +362,31 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: busbar_core_admin::admin_codec::refusal::envelope_of(code, message).into_bytes(),
     }
+}
+
+/// The path of the one verb whose unreadable body is answered with what the body must carry.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_PATH: &str = "/api/v1/admin/ledger/amend-rate-history";
+
+/// What `amend-rate-history` says when it cannot read the correction it was sent (OWNER
+/// 2026-10-27: every refusal explains itself). A bare `invalid_request` told an operator holding
+/// a pre-1.6.0 body nothing about why it was refused.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_SHAPE: &str = "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape";
+
+/// The refusal that names what was wrong, where the answer can say more than its code: an
+/// `amend-rate-history` body the verb could not read. `None` for every other ending.
+#[cfg(feature = "root-admin")]
+pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Option<AdminAnswer> {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    let unreadable = matches!(
+        outcome,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
+            if class_of(reason) == RefusalClass::Unreadable
+    );
+    let path = request.path.split('?').next().unwrap_or("");
+    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+        .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
 }
 
 /// What a node that cannot take the unit at all answers with.

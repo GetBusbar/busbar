@@ -48,11 +48,9 @@ pub const PATH_PLUGINS_INSPECT: &str = "/plugins/inspect";
 // so they name it across the honest crate boundary. A pure `(method, path) → Scope` function with no
 // state to leak.
 //
-// ONE MATRIX: this is `busbar_kernel_scope::admin_required_scope`, the only copy, which the root's
-// approve step calls too (Q128 kernel-scope: one home per fact). Two enforced copies agreed only
-// until the next change to one of them.
+// ONE MATRIX: `super::scope::admin_required_scope`, which the root's approve step calls too.
 pub fn required_scope(method: &axum::http::Method, path: &str) -> busbar_contract::authz::Scope {
-    busbar_kernel_scope::admin_required_scope(method.as_str(), path)
+    super::scope::admin_required_scope(method.as_str(), path)
 }
 
 /// THE ANSWERS THE KERNEL GIVES ON THE NATIVE-API ROOT ITSELF, in the frozen v1 error envelope.
