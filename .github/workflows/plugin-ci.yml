@@ -136,7 +136,9 @@ jobs:
           repository: GetBusbar/busbar
           ref: ${{ steps.pin.outputs.sha }}
           path: busbar
-          sparse-checkout: scripts/fleet
+          sparse-checkout: |
+            scripts/fleet
+            dist/default
       - name: pin-check selftest (every refusal fires before the verdict is trusted)
         run: bash busbar/scripts/fleet/pin-check.sh --selftest
       - name: pin-check
@@ -395,7 +397,7 @@ jobs:
           for t in $suite; do
             grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
           done
-          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee >(cat >&2))"
           for t in $suite; do
             printf '%s\n' "$out" | grep -qx "test $t ... ok" || { echo "::error::the published suite's test '$t' did not RUN green"; exit 1; }
           done
@@ -426,7 +428,7 @@ jobs:
         working-directory: busbar
         run: |
           set -euo pipefail
-          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee >(cat >&2))"
           passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
           [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests (the script and the RED arm)"; exit 1; }
           echo "C conformance: $passed test(s) passed"
@@ -566,7 +568,7 @@ jobs:
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
           cd busbar
           out="$(BUSBAR_DROPPED_LIB="$lib" BUSBAR_DROPPED_SOURCES="$src" BUSBAR_DROPPED_SCRIPT="$src/conformance.json" \
-            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
+            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee >(cat >&2))"
           passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
           [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
 
