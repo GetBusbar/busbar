@@ -105,5 +105,5 @@ rcgen = { workspace = true, features = ["pem"] }
 # is not an edge here: its closure reaches a socket stack (hyper-util, socket2, tokio net) that
 # qa/dep-wall.ledger does not pin for it, and a new offender is never pinned in the change that
 # brings it in.
-busbar-transport-tcp-plugin = { workspace = true }
+busbar-stub-transport-plugin = { path = "../plugin-loader/stubs/transport/plugin" }
 
