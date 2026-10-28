@@ -850,7 +850,7 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "4f3d29650e46838d8849bb0687678cb30720e080" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "ecf860b2d68cd8b4a5232e9090b74925e38d277a" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -860,7 +860,7 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # Its grants state their token endpoint and rank (arch-audit u29 F1, busbar-auth-oauth #43):
 # `jwt-bearer` STYLE_ENDPOINT_FROM_CREDENTIAL rank 3, `oauth-client-credentials`
 # STYLE_ENDPOINT_TOKEN_URL rank 4.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "863ca73c2685d4ad9fdc8b90c0e859894242d0fa" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "a1ab87c9f5e2ad8d07a581b14f55ea88669847e8" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
