@@ -368,9 +368,7 @@ pub use appbuild::{
     GovCredentialRotation, InstalledLimits, LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG,
     ENV_PROVIDERS,
 };
-pub use preflight::{
-    plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
-};
+pub use preflight::plugins_preflight;
 pub use router::{
     build_router, build_split_routers_serving, build_split_routers_serving_doors,
     build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,
