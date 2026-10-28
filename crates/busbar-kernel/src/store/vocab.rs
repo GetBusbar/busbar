@@ -485,10 +485,8 @@ pub trait LaneRuntime: Send + Sync + 'static {
     fn is_ready_any_cell(&self, lane: usize, now: u64) -> bool;
     /// Side-effect-FREE, POOL-AWARE readiness: would this lane admit a request right now in THIS
     /// pool's breaker cell, WITHOUT the Open→HalfOpen transition or single-flight probe CAS that
-    /// `usable_in` performs. This is the EXACT predicate `select_weighted_in` uses to filter its
-    /// healthy candidate set (lane-admissible + `cell_ready_breaker`), exposed for the routing-policy
-    /// ordered walk so it filters the policy's ranked order by health identically to SWRR — the walk
-    /// only ORDERS; the unchanged `acquire_for_dispatch_in` (called once on the chosen lane) still
+    /// `usable_in` performs (lane-admissible + `cell_ready_breaker`), exposed for the routing-policy
+    /// ordered walk so it filters the policy's ranked order by health — the walk only ORDERS; the unchanged `acquire_for_dispatch_in` (called once on the chosen lane) still
     /// owns the HalfOpen probe race. Using `usable_in` here instead would steal recovery probes for
     /// every ranked lane the walk merely peeks at.
     // ROUTING-POLICY SIGNAL ACCESSORS: read per-request by `proxy::decide_policy_order` (and
@@ -687,12 +685,6 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// per-cell `cell_record_success` touches no `ok`/`err` counter at all, so the single lane-global
     /// `ok` bump is applied explicitly, once.
     ///
-    /// If a per-cell success push wins a HalfOpen→Closed CAS (possible when this push races a peer that
-    /// re-armed the cell after the caller's `recover_lane`), the implementation MUST reset that cell's
-    /// SWRR accumulator — the matching `reset_swrr_for` bumps the cell's stripe generation so every
-    /// worker's stripe rejoins from 0, holding the per-stripe `Σ == 0` invariant. Gating the reset
-    /// on the recovered-bool mirrors `record_success_for`/`recover_lane`.
-    ///
     /// At the caller's `now`, as every write below: the prober and the walk record on one clock.
     fn record_probe_success_all_cells(&self, lane: usize, now: u64);
     fn record_client_fault(&self, lane: usize);
@@ -812,23 +804,6 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// budget and stealthily removes capacity. A no-op for an unlimited lane. Never raises the budget
     /// above the configured `max_requests` ceiling (a refund is only ever the inverse of a spend).
     fn refund_budget(&self, lane: usize);
-
-    // weighted member selection (SWRR algorithm)
-    /// Select a candidate from the given list using smooth weighted round-robin over healthy members.
-    /// `candidates` are indices into the store's lane array.
-    /// `weights` is the per-member weight for each candidate (must match candidates length).
-    /// Returns None if no healthy members or all candidates are unusable.
-    #[cfg(test)]
-    fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize> {
-        self.select_weighted_in("", candidates, weights, now)
-    }
-    fn select_weighted_in(
-        &self,
-        pool: &str,
-        candidates: &[usize],
-        weights: &[u32],
-        now: u64,
-    ) -> Option<usize>;
 
     // stats snapshot for /stats
     fn snapshot(&self, lane: usize, now: u64) -> LaneSnapshot;
