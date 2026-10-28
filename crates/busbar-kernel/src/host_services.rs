@@ -1592,13 +1592,9 @@ pub fn demotion_key(instance: &str, counterparty: &str) -> String {
 /// instance, the kind and the key, each separated by a zero byte.
 #[must_use]
 pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
-    let digest = busbar_kernel_ledger::digest::sha256_of(&[
-        instance.as_bytes(),
-        &[0],
-        kind.as_bytes(),
-        &[0],
-        key,
-    ]);
+    let digest = busbar_contract::abi::sdk::digest::sha256(
+        &[instance.as_bytes(), &[0], kind.as_bytes(), &[0], key].concat(),
+    );
     let minted = IdempotencyKey::mint(&crate::seal::acquire(), digest);
     hex::encode(minted.bytes())
 }

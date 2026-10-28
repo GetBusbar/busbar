@@ -116,7 +116,6 @@ pub fn run<U: Units>(
     let cell = HoldCell::new(Hold::open(
         &kernel.admit_token(),
         PrincipalId::new(principal),
-        0,
     ));
     let gauge = ConcurrencyGauge::new();
     let canary = Canary::new();
@@ -141,7 +140,7 @@ pub fn run<U: Units>(
         ledger.post(RecordingRow {
             principal: principal.to_string(),
             // What the posting settled, not a second count beside it.
-            amount: end.posted().map_or(0, |posted| posted.settled()),
+            amount: end.posted().map_or(0, |posted| posted.quantity()),
             requests: *requests,
             fee: *fee,
         });

@@ -1145,9 +1145,9 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     assert_eq!(refused.step, cap_refusal_step(OriginKind::Client));
     let handed_back = refused.hold;
     assert_eq!(
-        handed_back.reserved(),
-        0,
-        "a unit refused at the gate has spent nothing"
+        handed_back.principal(),
+        &PrincipalId::new("caller"),
+        "the refused unit's hold comes back to its caller, untouched"
     );
 
     // ANSWERED: an ordinary administrative request, at the same moment.
@@ -1760,130 +1760,36 @@ fn the_refused_door_seals_the_refusal_that_happened() {
 
 // ── the five ledger views ───────────────────────────────────────────────────────────────────
 
-/// The day the fixture's postings fall in.
+/// The window the fixture's rows are in.
 const A_DAY: u64 = 1_767_225_600;
 
-/// A ledger with something in it.
-///
-/// Deliberately not balanced: one row reconciles and one does not, so a test that asserted the
-/// residual is zero would be asserting something about a table of zeros rather than about the
-/// identity. The unbalanced row is short by a known amount, which is the figure the
-/// reconciliation view has to report.
+/// A ledger with something in it: two priced rows and one the card refused, so the views have a
+/// figure to serve and a refusal to name.
 struct SeededLedger;
 
-impl SeededLedger {
-    /// The row whose two sides disagree, and by how much in micro-units.
-    const SHORT_ROW: (&'static str, &'static str, &'static str) = ("key-1", "lane-b", "prov-y");
-    const SHORT_BY_MICROS: i64 = 250;
-}
-
 impl LedgerView for SeededLedger {
-    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
-        use crate::root::ledger_identity::{LedgerRow, RowKey};
-        [
-            (
-                RowKey::new("key-1", A_DAY, "lane-a", "prov-x"),
+    fn priced(&self) -> Result<crate::root::units_admin::PricedLedger, String> {
+        use crate::root::units_admin::{LedgerRow, PricedLedger, RefusedRow};
+        Ok(PricedLedger {
+            rows: vec![
                 LedgerRow {
+                    bucket: "key-1".to_string(),
+                    day: A_DAY,
                     priced_nanos: 7_000_000,
                     fee_count: 2,
                 },
-            ),
-            (
-                RowKey::new(
-                    SeededLedger::SHORT_ROW.0,
-                    A_DAY,
-                    SeededLedger::SHORT_ROW.1,
-                    SeededLedger::SHORT_ROW.2,
-                ),
                 LedgerRow {
+                    bucket: "key-2".to_string(),
+                    day: A_DAY,
                     priced_nanos: 1_000_000,
                     fee_count: 1,
                 },
-            ),
-        ]
-        .into_iter()
-        .collect()
-    }
-
-    fn legacy_rows(
-        &self,
-    ) -> Result<crate::root::ledger_identity::LegacySnapshot, busbar_kernel_ledger::cost::MoneyError>
-    {
-        use crate::root::ledger_identity::{LegacyRow, RowKey};
-        Ok([
-            (
-                RowKey::new("key-1", A_DAY, "lane-a", "prov-x"),
-                LegacyRow {
-                    spend_micros: 7_000,
-                    billable_requests: 2,
-                },
-            ),
-            (
-                RowKey::new(
-                    SeededLedger::SHORT_ROW.0,
-                    A_DAY,
-                    SeededLedger::SHORT_ROW.1,
-                    SeededLedger::SHORT_ROW.2,
-                ),
-                LegacyRow {
-                    // The ledger accounted for 1_000 micro-units against 1_250 drawn, so the
-                    // books are short by 250 on this row and by nothing on the other.
-                    spend_micros: 1_000 + SeededLedger::SHORT_BY_MICROS,
-                    billable_requests: 1,
-                },
-            ),
-        ]
-        .into_iter()
-        .collect())
-    }
-
-    fn each_checkpoint(
-        &self,
-        each: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
-    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
-        use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-
-        let mut totals = std::collections::BTreeMap::new();
-        totals.insert(
-            (
-                TotalsKey::new(
-                    BucketId::new("key-1"),
-                    CapDimension::NanoUnits,
-                    BucketScope::All,
-                ),
-                A_DAY,
-            ),
-            busbar_kernel_ledger::totals::Totals {
-                settled: 8_000,
-                drawn: 8_250,
-                ..busbar_kernel_ledger::totals::Totals::zero()
-            },
-        );
-        each(
-            &busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-                4,
-                1,
-                1_700_000_000,
-                Vec::new(),
-                totals,
-                0,
-                0,
-                None,
-            )
-            .expect("an unsigned seal cannot fail"),
-        );
-        Ok(())
-    }
-
-    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        Some(busbar_kernel_ledger::migration::MigrationMarker {
-            checkpoint_seq: 0,
-            node: 1,
-            sealed_at: 1_699_999_000,
-            body_hash: [7u8; 32],
-            balances: 3,
-            cells_read: 11,
-            rate_card_version: 5,
+            ],
+            refused: vec![RefusedRow {
+                bucket: "key-3".to_string(),
+                day: A_DAY,
+                refusal: "ClassUnpriced(cache_read)".to_string(),
+            }],
         })
     }
 }
@@ -1917,6 +1823,111 @@ fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
     units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
         .with_ledger_view(Arc::new(SeededLedger));
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+}
+
+/// A cost model whose one lane `m` prices input at 2.5 micro-units a token, no fee.
+#[cfg(feature = "root-admin")]
+fn one_lane_card() -> busbar_kernel::cost::CostModel {
+    let rates = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 2.5,
+            ..Default::default()
+        },
+    )]);
+    busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&rates),
+        0,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+/// One ledger request walked through the loop against a node whose ledger views read `gov`'s
+/// live usage counts ([`crate::root::units_admin::CountsLedger`]), as `mount_node` binds them.
+#[cfg(feature = "root-admin")]
+fn answer_over_counts(
+    gov: Arc<busbar_kernel::governance::GovState>,
+    path: &str,
+) -> serde_json::Value {
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance(gov)
+        .cost(one_lane_card())
+        .build();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door()).with_ledger_view(
+        Arc::new(crate::root::units_admin::CountsLedger::new(handle)),
+    );
+    let answer =
+        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_ledger_request(path));
+    assert_eq!(answer.status, 200, "{path} did not answer");
+    serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// **THE KEPT LEDGER PATHS ANSWER FROM THE ONE LEDGER** (MONEY-DESIGN §4, PR-C): money is the
+/// store's usage counts x the rate card. A key spends 1,000 input tokens at 2.5 micro-units:
+/// `GET /api/v1/admin/ledger/totals` serves 2,500 micro-units on that key's row — the counts the
+/// store holds after the flush, priced by the card — `reconciliation` holds, and a restart (a new
+/// governance state over the same store, hydrated as the boot hydrates it) serves the same bytes.
+/// The second book is gone, so there is nothing else for the paths to answer from.
+///
+/// RED on the base: the paths answered from the node's second book, which a spend recorded only
+/// in the usage counts never reached — `totals` served no row for the key.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
+    use busbar_contract::records::RecordStore as _;
+    use busbar_kernel::governance::{GovState, MemoryStore, VirtualKey};
+    let store = Arc::new(MemoryStore::new());
+    let key = VirtualKey {
+        id: "vk_one_ledger".to_string(),
+        generation_hash: "h:vk_one_ledger".to_string(),
+        name: "one-ledger".to_string(),
+        enabled: true,
+        revision: 1,
+        ..Default::default()
+    };
+    store.put_key(&key).expect("the key persists");
+    let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
+    let now = busbar_kernel::store::now();
+    let input = std::collections::BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.to_string(),
+        1_000u64,
+    )]);
+    gov.record_usage(&one_lane_card(), &key, "", "m", &input, now);
+    gov.deliver_usage();
+
+    // The store's own counts, after the spend.
+    let stored = store.get_usage(&key.id, 0).expect("the row reads");
+    assert_eq!(
+        stored.tokens_for("m"),
+        Some(1_000),
+        "the store holds the spend"
+    );
+
+    let totals = answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/totals");
+    let rows = totals["rows"].as_array().expect("rows");
+    let row = rows
+        .iter()
+        .find(|r| r["bucket"] == "vk_one_ledger")
+        .unwrap_or_else(|| panic!("the key's row is served: {totals}"));
+    assert_eq!(row["priced_micros"], "2500", "1,000 tokens x 2.5: {totals}");
+    assert_eq!(row["priced_nanos"], "2500000");
+    assert_eq!(
+        answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/reconciliation")["holds"],
+        true
+    );
+
+    let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
+    restarted
+        .hydrate_budgets(&one_lane_card(), now)
+        .expect("the boot hydrates");
+    assert_eq!(
+        answer_over_counts(restarted, "/api/v1/admin/ledger/totals"),
+        totals,
+        "a restart serves the same money from the same counts"
+    );
 }
 
 /// Every view answers, through the whole loop, with a JSON document of its own.
@@ -1971,160 +1982,29 @@ fn each_view_serves_the_figures_the_ledger_holds() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["bucket"], "key-1");
     assert_eq!(rows[0]["day"], A_DAY);
-    assert_eq!(rows[0]["lane"], "lane-a");
-    assert_eq!(rows[0]["provider"], "prov-x");
+    assert_eq!(rows[0]["lane"], "");
+    assert_eq!(rows[0]["provider"], "");
     // Money is text and a count is a number — the rule the served document states.
     assert_eq!(rows[0]["priced_nanos"], "7000000");
     assert_eq!(rows[0]["priced_micros"], "7000");
     assert_eq!(rows[0]["fee_count"], 2);
+    let refused = totals["refused"].as_array().expect("refused");
+    assert_eq!(refused.len(), 1, "the refused row is named, never served");
+    assert_eq!(refused[0]["bucket"], "key-3");
+    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
 
-    let checkpoints = body("/api/v1/admin/ledger/checkpoints");
-    let sealed = checkpoints["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 1);
-    assert_eq!(sealed[0]["checkpoint_seq"], 4);
-    assert_eq!(sealed[0]["node"], 1);
-    assert_eq!(sealed[0]["body_hash_verifies"], true);
+    // No checkpoint is sealed and nothing is migrated: the ledger is the store's counts.
     assert_eq!(
-        sealed[0]["signed"], false,
-        "an unsigned seal reports as unsigned"
+        body("/api/v1/admin/ledger/checkpoints"),
+        serde_json::json!({"checkpoints": []})
     );
-    let cells = sealed[0]["totals"].as_array().expect("totals");
-    assert_eq!(cells.len(), 1);
-    assert_eq!(cells[0]["bucket"], "key-1");
-    assert_eq!(cells[0]["settled"], "8000");
-    assert_eq!(cells[0]["drawn"], "8250");
     assert_eq!(
-        sealed[0]["body_hash"]
-            .as_str()
-            .expect("a hash is text")
-            .len(),
-        64,
-        "a digest is served as 64 hex characters"
-    );
-
-    let migration = body("/api/v1/admin/ledger/migration");
-    assert_eq!(migration["migrated"], true);
-    assert_eq!(migration["marker"]["checkpoint_seq"], 0);
-    assert_eq!(migration["marker"]["balances"], 3);
-    assert_eq!(migration["marker"]["cells_read"], 11);
-    assert_eq!(migration["marker"]["rate_card_version"], 5);
-    assert_eq!(
-        migration["marker"]["body_hash"],
-        "0707070707070707070707070707070707070707070707070707070707070707"
+        body("/api/v1/admin/ledger/migration"),
+        serde_json::json!({"migrated": false, "marker": null})
     );
 
     let document = body("/api/v1/admin/ledger/openapi.json");
     assert_eq!(document["info"]["version"], "1.6.0");
-}
-
-/// The previous release's rows, as a binding that counts what the views ask of it.
-///
-/// Both readings are recorded: how many times the whole history was asked for as a copy, and
-/// how many postings a fold was shown. The pair is what tells a copy apart from a walk.
-#[cfg(feature = "root-admin")]
-#[derive(Default)]
-struct CountingRows {
-    written: Arc<Mutex<Vec<busbar_kernel_ledger::legacy::LegacyPosting>>>,
-    copies: Arc<std::sync::atomic::AtomicUsize>,
-    folded: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_ledger::legacy::LegacyRows for CountingRows {
-    fn write(
-        &mut self,
-        posting: &busbar_kernel_ledger::legacy::LegacyPosting,
-    ) -> Result<(), busbar_kernel_ledger::legacy::LegacyWriteError> {
-        self.written
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(posting.clone());
-        Ok(())
-    }
-
-    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
-        self.written
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|posting| !windows.contains(&posting.window_start));
-    }
-}
-
-#[cfg(feature = "root-admin")]
-impl LegacyRowsRead for CountingRows {
-    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
-        self.copies
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.written
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
-    }
-
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
-        for posting in self
-            .written
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-        {
-            self.folded
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            take(posting);
-        }
-    }
-}
-
-/// THE VIEW WALKS THE HISTORY; IT DOES NOT COPY IT.
-///
-/// The reconciliation views read the previous release's rows under the SAME lock every
-/// settlement takes, and what they render is one line per row — a handful, whatever the node has
-/// settled since boot. Asking for a copy of the whole posting history to produce it makes the
-/// cost of an operator's read grow with the traffic that came before it, and makes every
-/// settlement wait for the copy. Counted rather than timed: the copy is a call that either
-/// happened or did not.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_ledger_view_reads_the_history_without_copying_it() {
-    let rows = CountingRows::default();
-    let written = Arc::clone(&rows.written);
-    let copies = Arc::clone(&rows.copies);
-    let folded = Arc::clone(&rows.folded);
-    let read: Arc<dyn LegacyRowsRead> = Arc::new(CountingRows {
-        written: Arc::clone(&written),
-        copies: Arc::clone(&copies),
-        folded: Arc::clone(&folded),
-    });
-
-    let units = crate::root::kernel::ProductionUnits::admin_only_over(
-        Arc::new(AnsweringDispatch),
-        open_door(),
-        Box::new(rows),
-        read,
-    );
-    for _ in 0..8 {
-        settle_on(&units, "vk_view", 1_000);
-    }
-    assert_eq!(
-        written.lock().unwrap_or_else(|p| p.into_inner()).len(),
-        8,
-        "the fixture recorded every settlement"
-    );
-
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let answer = node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
-    assert_eq!(answer.status, 200);
-
-    assert_eq!(
-        copies.load(std::sync::atomic::Ordering::Relaxed),
-        0,
-        "the view took a copy of the whole history to render a handful of rows"
-    );
-    assert_eq!(
-        folded.load(std::sync::atomic::Ordering::Relaxed),
-        8,
-        "and it saw each posting exactly once"
-    );
 }
 
 /// A dispatch that panics where an operation's body would run.
@@ -2201,437 +2081,42 @@ fn an_unopened_ledger_answers_empty_rather_than_absent() {
     assert_eq!(body("/api/v1/admin/ledger/reconciliation")["holds"], true);
 }
 
-/// THE ONE THAT MATTERS: the residual an operator reads is the residual the identity computes.
-///
-/// Not "a residual of the same magnitude" — the same function's answer. The endpoint calls
-/// `ledger_identity::reconcile`, so a second derivation cannot creep into the rendering and make
-/// the surface capable of disagreeing with the check that gates the release. This test computes
-/// the identity itself, from the same two snapshots, and requires the served figures to be it.
+/// THE RECONCILIATION over one ledger: there is no second set of rows to disagree with it, so it
+/// holds exactly when every count is priced, and a row the card refused is named.
 #[cfg(feature = "root-admin")]
 #[test]
-fn the_reconciliation_served_is_the_identitys_own_answer() {
-    let view = SeededLedger;
-    let expected =
-        crate::root::ledger_identity::reconcile(&view.ledger_rows(), &view.legacy_rows().unwrap())
-            .expect("every row projects");
-    assert_eq!(
-        expected.len(),
-        1,
-        "the fixture must have exactly one row out, or the comparison is vacuous"
-    );
-
+fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
     let served: serde_json::Value = serde_json::from_slice(
         &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation")).body,
     )
     .expect("valid JSON");
-
-    assert_eq!(served["holds"], false);
-    let rows = served["discrepancies"].as_array().expect("discrepancies");
-    assert_eq!(rows.len(), expected.len());
-    for (row, d) in rows.iter().zip(expected.iter()) {
-        assert_eq!(row["bucket"], d.row.bucket);
-        assert_eq!(row["day"], d.row.day);
-        assert_eq!(row["lane"], d.row.lane);
-        assert_eq!(row["provider"], d.row.provider);
-        assert_eq!(row["residual"]["accounted"], d.spend.accounted.to_string());
-        assert_eq!(row["residual"]["drawn"], d.spend.drawn.to_string());
-        assert_eq!(row["residual"]["amount"], d.spend.amount().to_string());
-        assert_eq!(row["ledger_fee_count"], d.ledger_fee_count);
-        assert_eq!(row["legacy_billable_requests"], d.legacy_billable_requests);
-    }
-
-    // And the number is the one the fixture was built to be out by, so a rendering that served
-    // the right field of the wrong row would still fail.
-    assert_eq!(
-        rows[0]["residual"]["amount"],
-        (-i128::from(SeededLedger::SHORT_BY_MICROS)).to_string()
-    );
-    assert_eq!(rows[0]["lane"], SeededLedger::SHORT_ROW.1);
-}
-
-// ── the views over the node's OWN ledger ─────────────────────────────────────────────────────
-
-/// The two buckets the settling fixture posts against, and what each settles in nano-units.
-#[cfg(feature = "root-admin")]
-const KEPT: (&str, u64) = ("vk_kept", 7_000_000);
-#[cfg(feature = "root-admin")]
-const LOST: (&str, u64) = ("vk_lost", 1_000_000);
-
-/// A dual-write binding that drops the postings for one named bucket on the floor.
-///
-/// The failure it stands in for is real and is the one the identity exists to catch: the books
-/// moved, value was delivered, and the previous release's rows never heard about it. The ledger
-/// is unaffected — this is a binding the ledger writes THROUGH, so a node built over it settles
-/// exactly as any other node does and only the parity obligation is broken.
-#[cfg(feature = "root-admin")]
-#[derive(Clone)]
-struct RowsThatLose {
-    drop_bucket: &'static str,
-    kept: Arc<Mutex<Vec<busbar_kernel_ledger::legacy::LegacyPosting>>>,
-}
-
-#[cfg(feature = "root-admin")]
-impl RowsThatLose {
-    fn new(drop_bucket: &'static str) -> Self {
-        RowsThatLose {
-            drop_bucket,
-            kept: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-}
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_ledger::legacy::LegacyRows for RowsThatLose {
-    fn write(
-        &mut self,
-        posting: &busbar_kernel_ledger::legacy::LegacyPosting,
-    ) -> Result<(), busbar_kernel_ledger::legacy::LegacyWriteError> {
-        if posting.bucket != self.drop_bucket {
-            self.kept
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(posting.clone());
-        }
-        Ok(())
-    }
-
-    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
-        self.kept
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|posting| !windows.contains(&posting.window_start));
-    }
-}
-
-#[cfg(feature = "root-admin")]
-impl LegacyRowsRead for RowsThatLose {
-    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
-        self.kept.lock().unwrap_or_else(|p| p.into_inner()).clone()
-    }
-}
-
-/// Settle one unit against the node's own durability, through the same function the loop's exit
-/// path settles through — so what the views read is what a served request would have left.
-#[cfg(feature = "root-admin")]
-fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: u64) {
-    use busbar_contract::caps::{
-        Admittance, Consumption, Hold, MeterClassId, PrincipalId, QuantitySource, Usage, UsageLine,
-        WriteMoney,
-    };
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-
-    let key = TotalsKey::new(
-        BucketId::new(bucket),
-        CapDimension::NanoUnits,
-        BucketScope::All,
-    );
-    let usage = Usage::report(
-        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
-        vec![UsageLine {
-            class: MeterClassId::new("nano_units"),
-            quantity: nanos,
-            source: QuantitySource::Count,
-            estimated: false,
-        }],
-    )
-    .expect("one line");
-
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
-    durability.ledger.record_hold_opened(&key, A_DAY, nanos);
-    durability
-        .settle(
-            &crate::root::durability::Settling {
-                key: &key,
-                window: A_DAY,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: crate::root::durability::PostingStamp {
-                    rate_card_version: 3,
-                    wall: 1_700_000_000,
-                    mono: 42,
-                },
-            },
-            Hold::open(
-                &busbar_kernel::test_support::tokens::grant::<Admittance>(),
-                PrincipalId::new(bucket),
-                nanos,
-            ),
-            u128::from(nanos),
-            &usage,
-            &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
-        )
-        .expect("the memory-buffered journal takes it");
-}
-
-/// A node that has settled both fixture units, over a dual write that may have lost one of them.
-#[cfg(feature = "root-admin")]
-fn a_node_that_settled(lose: Option<&'static str>) -> crate::root::kernel::ProductionUnits {
-    let units = match lose {
-        None => {
-            let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-            crate::root::kernel::ProductionUnits::admin_only_over(
-                Arc::new(AnsweringDispatch),
-                open_door(),
-                Box::new(rows.clone()),
-                Arc::new(rows),
-            )
-        }
-        Some(bucket) => {
-            let rows = RowsThatLose::new(bucket);
-            crate::root::kernel::ProductionUnits::admin_only_over(
-                Arc::new(AnsweringDispatch),
-                open_door(),
-                Box::new(rows.clone()),
-                Arc::new(rows),
-            )
-        }
-    };
-    settle_on(&units, KEPT.0, KEPT.1);
-    settle_on(&units, LOST.0, LOST.1);
-    units
-}
-
-/// THE ONE THAT MATTERS FOR A LIVE NODE: a settlement this node made is in the figures it
-/// serves.
-///
-/// Not a fixture bound behind the seam — the node's own durability, settled through the same
-/// function the loop settles through, read back through the served endpoint. A view bound to
-/// anything other than this node's ledger answers an empty table here, which is exactly what the
-/// unbound default answers and exactly what this test refuses.
-///
-/// Both halves are asserted because they fail separately. `totals` says the posting reached the
-/// books; `reconciliation` says the identity was computed over the rows the node actually holds,
-/// and it is asserted against a node whose dual write LOST one of the two settlements — so a
-/// reconciliation rendered over two empty snapshots, which balances trivially, cannot pass it.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_settled_posting_is_in_the_figures_this_node_serves() {
-    let units = a_node_that_settled(None);
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let body = |path: &str| -> serde_json::Value {
-        let answer = node.answer(a_ledger_request(path));
-        assert_eq!(answer.status, 200, "{path}");
-        serde_json::from_slice(&answer.body).expect("valid JSON")
-    };
-
-    let rows = body("/api/v1/admin/ledger/totals");
-    let rows = rows["rows"].as_array().expect("rows");
-    assert_eq!(
-        rows.len(),
-        2,
-        "the two settlements this node made are not in the totals it serves"
-    );
-    let row = rows
-        .iter()
-        .find(|r| r["bucket"] == KEPT.0)
-        .expect("the settled bucket is named");
-    assert_eq!(row["day"], A_DAY);
-    assert_eq!(row["priced_nanos"], KEPT.1.to_string());
-    assert_eq!(row["priced_micros"], (KEPT.1 / 1_000).to_string());
-
-    // The dual write kept both, so the identity holds — over two rows rather than over nothing,
-    // which the totals beside it just established.
-    assert_eq!(body("/api/v1/admin/ledger/reconciliation")["holds"], true);
-}
-
-/// And the reconciliation names the row the dual write lost, by the amount it lost.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
-    let units = a_node_that_settled(Some(LOST.0));
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let served: serde_json::Value = serde_json::from_slice(
-        &node
-            .answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
-            .body,
-    )
-    .expect("valid JSON");
-
     assert_eq!(
         served["holds"], false,
-        "a settlement the previous release's rows never saw reconciled anyway"
+        "a refused row is a row not measured"
     );
-    let out = served["discrepancies"].as_array().expect("discrepancies");
-    assert_eq!(out.len(), 1, "exactly the lost row must be named: {served}");
-    assert_eq!(out[0]["bucket"], LOST.0);
-    assert_eq!(out[0]["day"], A_DAY);
-    // The ledger accounted for the whole posting against nothing drawn, so the residual is the
-    // posting, in micro-units, positive.
-    assert_eq!(
-        out[0]["residual"]["amount"],
-        (LOST.1 / 1_000).to_string(),
-        "the residual is not the settlement that went missing"
-    );
+    assert_eq!(served["discrepancies"], serde_json::json!([]));
+    let refused = served["refused"].as_array().expect("refused");
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0]["bucket"], "key-3");
 }
 
-/// Post one unpriced-class unit's raw counts (#71) as a REFUSAL (#42: a present card silent about
-/// the class) — exactly what `LateAccrual::post_late` posts for such a unit, spelled directly
-/// against the node's own durability so this test does not need a rate card or a plane wired up to
-/// reach it. The book does not move: `settled`/`reserved`/`overdraft` are all zero, and the row
-/// lives only in [`crate::root::durability::Durability::refused_rows`].
-#[cfg(feature = "root-admin")]
-fn post_a_refused_counts_row_on(
-    durability: &std::sync::Mutex<crate::root::durability::Durability>,
-    bucket: &str,
-) {
-    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::PrincipalId;
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-
-    let key = TotalsKey::new(
-        BucketId::new(bucket),
-        CapDimension::NanoUnits,
-        BucketScope::All,
-    );
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    let mut classes = std::collections::BTreeMap::new();
-    classes.insert("cache_read".to_string(), 10_000_000u64);
-    let counts = UnitCounts {
-        lane: "gpt".to_string(),
-        fee_count: 1,
-        classes,
-    };
-
-    let mut durability = durability.lock().unwrap_or_else(|p| p.into_inner());
-    let posted = durability
-        .post_counts(
-            &Settling {
-                key: &key,
-                window: A_DAY,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: PostingStamp {
-                    rate_card_version: 3,
-                    wall: 1_700_000_000,
-                    mono: 42,
-                },
-            },
-            &PrincipalId::new(bucket),
-            &counts,
-            1_700_000_000_000,
-            Some("ClassUnpriced(cache_read)".to_string()),
-        )
-        .expect("the memory-buffered journal takes it");
-    assert!(
-        posted.refusal.is_some(),
-        "this helper's whole point is a REFUSED counts row"
-    );
-}
-
-/// **A REFUSED COUNTS ROW REFUSES ITS OWN ROW, NEVER THE TOTALS READ** (#42; audit root-R1 #10).
-///
-/// `15d23bb90` made the Durability ("second") book carry a refused unit's raw counts (#42/#71) and
-/// gave it a refusing read, [`crate::root::durability::Durability::settled_read`] — but
-/// `NodeLedger::rows_of` walked the book's settled balances directly, and a refused row moves no
-/// balance, so `/admin/ledger/totals` served a figure that silently omitted the row the unit
-/// actually posted. The first fix refused the WHOLE read (`Store`, 503) for any refused row, which
-/// hid every other row for the life of the journal: a refused row is rebuilt from the chain at every
-/// boot. [`LedgerView::refused_balances`] refuses per balance and window instead: the row a
-/// refused balance folds into is withheld from `rows` and named under `refused` (balance, window,
-/// lane, refusal), and every other row is answered, figure intact.
-///
-/// Balance A here (`KEPT`) holds BOTH a priced settlement and a refused counts row, so serving its
-/// row would be the priced remainder — the silent zero — and the row must be withheld. Balance B
-/// (`LOST`) holds only its priced settlement and must be served as it was. A clean book serves the
-/// same rows under an empty `refused`.
+/// **`GET /admin/verify` NAMES A REFUSED ROW AND EVERY OTHER FINDING** (#42; audit root-R1 #10): a
+/// row the card refused is a finding naming it, and an independent finding beside it (here, what
+/// the boot could not read back of the journal) is still reported.
 #[cfg(feature = "root-admin")]
 #[test]
-fn a_refused_counts_row_withholds_its_row_and_totals_answers_every_other_row() {
-    let clean = AdminNode::new(crate::root::kernel::new_kernel(), a_node_that_settled(None));
-    let clean = clean.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    assert_eq!(clean.status, 200, "a clean book must still serve totals");
-    let clean: serde_json::Value = serde_json::from_slice(&clean.body).expect("valid JSON");
-    assert_eq!(clean["rows"].as_array().map(Vec::len), Some(2));
-    assert_eq!(clean["refused"], serde_json::json!([]));
-
-    let units = a_node_that_settled(None);
-    post_a_refused_counts_row_on(&units.durability, KEPT.0);
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let totals = node.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    assert_eq!(
-        totals.status, 200,
-        "one refused counts row must not take the whole totals read down"
-    );
-    let totals: serde_json::Value = serde_json::from_slice(&totals.body).expect("valid JSON");
-
-    let rows = totals["rows"].as_array().expect("rows");
-    assert_eq!(rows.len(), 1, "only the unrefused row is priced: {totals}");
-    assert_eq!(rows[0]["bucket"], LOST.0);
-    assert_eq!(rows[0]["day"], A_DAY);
-    assert_eq!(rows[0]["priced_nanos"], LOST.1.to_string());
-    assert!(
-        rows.iter().all(|r| r["bucket"] != KEPT.0),
-        "the refused balance's row was served as its priced remainder: {totals}"
-    );
-
-    let refused = totals["refused"].as_array().expect("refused");
-    assert_eq!(
-        refused.len(),
-        1,
-        "the refused balance is named once: {totals}"
-    );
-    assert_eq!(refused[0]["bucket"], KEPT.0);
-    assert_eq!(refused[0]["day"], A_DAY);
-    assert_eq!(refused[0]["lane"], "gpt");
-    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
-}
-
-/// **AND THE RECONCILIATION MEASURES EVERY OTHER ROW** (#42; audit root-R1 #10): the refused
-/// balance's row is withheld from both sides of the identity and named under `refused`, `holds` is
-/// false (the identity was not measured over that row), and a real discrepancy on another row —
-/// the dual write that lost `LOST` — is still reported, by the amount it is out by.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_refused_counts_row_withholds_its_row_and_reconciliation_measures_every_other_row() {
-    let units = a_node_that_settled(Some(LOST.0));
-    post_a_refused_counts_row_on(&units.durability, KEPT.0);
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let recon = node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
-    assert_eq!(
-        recon.status, 200,
-        "one refused counts row must not take the whole reconciliation read down"
-    );
-    let recon: serde_json::Value = serde_json::from_slice(&recon.body).expect("valid JSON");
-
-    assert_eq!(recon["holds"], false, "{recon}");
-    let out = recon["discrepancies"].as_array().expect("discrepancies");
-    assert_eq!(out.len(), 1, "exactly the lost row must be named: {recon}");
-    assert_eq!(out[0]["bucket"], LOST.0);
-    assert_eq!(out[0]["residual"]["amount"], (LOST.1 / 1_000).to_string());
-
-    let refused = recon["refused"].as_array().expect("refused");
-    assert_eq!(refused.len(), 1, "{recon}");
-    assert_eq!(refused[0]["bucket"], KEPT.0);
-    assert_eq!(refused[0]["day"], A_DAY);
-    assert_eq!(refused[0]["lane"], "gpt");
-    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
-}
-
-/// **`GET /admin/verify` NAMES A REFUSED BALANCE AND EVERY OTHER FINDING** (BUSBAR-1.6.0.md §7:
-/// the integrity verifiers are wired into the verify surface; #42; audit root-R1 #10). A refused
-/// counts row is a finding — its balance, window, lane and refusal — and an independent finding
-/// beside it (here, what the boot reconciliation found) is still reported. It used to refuse the
-/// whole verb (`Store`), hiding every finding for the life of the journal.
-#[cfg(feature = "root-admin")]
-#[test]
-fn verify_names_a_refused_balance_and_every_other_finding() {
-    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+fn verify_names_a_refused_row_and_every_other_finding() {
     let node_book = crate::root::durability::node_book();
-    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
-    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
     node_book
         .durability
         .lock()
         .expect("unpoisoned")
         .restart_findings
-        .push(crate::root::durability::JournalDisagreement::Unreadable(
-            "the journal does not verify: a forged record".to_string(),
-        ));
-    post_a_refused_counts_row_on(&node_book.durability, "vk_refused");
-
-    let answer = crate::root::units_admin::bound::verify_effect(&view)
-        .expect("a refused counts row must not take /admin/verify down");
+        .push("the journal does not verify: a forged record".to_string());
+    let audit =
+        crate::root::units_admin::NodeAudit::new(std::sync::Arc::clone(&node_book.durability));
+    let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit))
+        .expect("a refused row must not take /admin/verify down");
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]
         .as_array()
@@ -2647,188 +2132,13 @@ fn verify_names_a_refused_balance_and_every_other_finding() {
     );
     assert!(
         findings.iter().any(|f| f.starts_with("refused counts: ")
-            && f.contains("vk_refused")
+            && f.contains("key-3")
             && f.contains(&A_DAY.to_string())
-            && f.contains("\"gpt\"")
             && f.contains("ClassUnpriced(cache_read)")),
-        "the refused balance must be a named finding: {body}"
+        "the refused row must be a named finding: {body}"
     );
+    assert_eq!(body["identity_holds"], false, "{body}");
     assert_eq!(body["ok"], false, "{body}");
-}
-
-/// The other two views are this node's too: the seal it made and the marker it sealed.
-///
-/// Both are on the same composition that answered empty above, so the change is the node's own
-/// act rather than a fixture swapped in behind the seam. The checkpoint is the one the node's own
-/// sealer made, served as its chain re-derives it (ARCHITECT A1): the node keeps the seal's head,
-/// and the figures the read serves are the ones the body digest was taken over.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
-    use busbar_kernel_ledger::migration::MigrationRecords as _;
-
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    let marker = busbar_kernel_ledger::migration::MigrationMarker {
-        checkpoint_seq: 0,
-        node: 0,
-        sealed_at: 1_699_999_000,
-        body_hash: [9u8; 32],
-        balances: 2,
-        cells_read: 5,
-        rate_card_version: 4,
-    };
-
-    let sealed = {
-        let mut durability = units.durability.lock().expect("durability lock");
-        durability
-            .migration_records(&token, busbar_contract::caps::StepName::Meter)
-            .write_marker(&marker)
-            .expect("the marker goes on the chain");
-        durability
-            .seal_checkpoint(
-                &token,
-                busbar_contract::caps::StepName::Meter,
-                1_700_000_100,
-            )
-            .expect("the node seals")
-    };
-
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let body = |path: &str| -> serde_json::Value {
-        serde_json::from_slice(&node.answer(a_ledger_request(path)).body).expect("valid JSON")
-    };
-
-    let served = body("/api/v1/admin/ledger/checkpoints");
-    let served = served["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(served.len(), 1, "the seal this node made is not served");
-    assert_eq!(served[0]["checkpoint_seq"], sealed.checkpoint_seq);
-    assert_eq!(served[0]["wall"], 1_700_000_100);
-    assert_eq!(served[0]["body_hash_verifies"], true);
-    assert_eq!(
-        served[0]["totals"].as_array().map(Vec::len),
-        Some(sealed.totals.len()),
-        "the sealed balances, re-derived"
-    );
-
-    let served = body("/api/v1/admin/ledger/migration");
-    assert_eq!(served["migrated"], true);
-    assert_eq!(served["marker"]["sealed_at"], marker.sealed_at);
-    assert_eq!(served["marker"]["balances"], marker.balances);
-    assert_eq!(served["marker"]["cells_read"], marker.cells_read);
-    assert_eq!(
-        served["marker"]["rate_card_version"],
-        marker.rate_card_version
-    );
-}
-
-/// THE CHECKPOINTS READ RENDERS THE SEAL'S VERIFICATION (OWNER Q71(3): one keyset, #82): a
-/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and one a
-/// node with no signing key sealed is served with its refusal in its own words, UNSIGNED.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
-    let served = |signing: bool| -> serde_json::Value {
-        let units = crate::root::kernel::ProductionUnits::admin_only(
-            Arc::new(AnsweringDispatch),
-            open_door(),
-        );
-        let token =
-            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-        {
-            let mut durability = units.durability.lock().expect("durability lock");
-            if signing {
-                durability.record = busbar_kernel_audit::AuditChain::new()
-                    .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
-            }
-            durability
-                .seal_checkpoint(
-                    &token,
-                    busbar_contract::caps::StepName::Meter,
-                    1_700_000_100,
-                )
-                .expect("the node seals");
-        }
-        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-        let served: serde_json::Value = serde_json::from_slice(
-            &node
-                .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
-                .body,
-        )
-        .expect("valid JSON");
-        served["checkpoints"][0].clone()
-    };
-
-    let signed = served(true);
-    assert_eq!(signed["signed"], true);
-    assert_eq!(signed["seal_verifies"], true);
-    assert_eq!(signed["seal_refusal"], serde_json::Value::Null);
-
-    let unsigned = served(false);
-    assert_eq!(unsigned["signed"], false);
-    assert_eq!(unsigned["seal_verifies"], false);
-    assert_eq!(
-        unsigned["seal_refusal"],
-        format!(
-            "checkpoint {} carries no signature — no key in the keyset can vouch for it",
-            unsigned["checkpoint_seq"]
-        )
-    );
-}
-
-/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE REFUSES THE CHECKPOINTS
-/// READ, and `GET /admin/verify` names it by its sequence number as a finding. Before the ruling
-/// the read served the held copy's figures, edited or not, as `body_hash_verifies: false`; now no
-/// figure is served for a checkpoint the chain cannot vouch for.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_and_named_by_verify() {
-    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
-    let node_book = crate::root::durability::node_book();
-    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
-    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    let stray = {
-        let mut durability = node_book.durability.lock().expect("unpoisoned");
-        let sealed = durability
-            .seal_checkpoint(
-                &token,
-                busbar_contract::caps::StepName::Meter,
-                1_700_000_100,
-            )
-            .expect("the node seals");
-        // The held head is edited after the seal: no record on the chain carries it.
-        let mut stray = sealed.head();
-        stray.checkpoint_seq = sealed.checkpoint_seq + 40;
-        durability.checkpoints = vec![stray.clone()];
-        stray
-    };
-
-    assert!(
-        matches!(
-            render_ledger_view(KernelVerb::GetLedgerCheckpoints, &view),
-            Err(busbar_core_admin::GovernanceError::Store)
-        ),
-        "no figure is served for a checkpoint the chain cannot vouch for"
-    );
-
-    let answer = crate::root::units_admin::bound::verify_effect(&view).expect("verify answers");
-    let verified: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
-    let named = format!(
-        "checkpoint {}: no record on the chain carries it",
-        stray.checkpoint_seq
-    );
-    assert!(
-        verified["findings"]
-            .as_array()
-            .expect("findings")
-            .iter()
-            .any(|f| f.as_str() == Some(named.as_str())),
-        "the refusal is a finding naming the sequence number: {verified}"
-    );
-    assert_eq!(verified["book_verified"], false, "{verified}");
-    assert_eq!(verified["ok"], false, "{verified}");
 }
 
 /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
@@ -3460,23 +2770,28 @@ fn snake_of(operation_id: &str) -> String {
 /// end the document early and hand a reader a different one from the one this rendered.
 #[test]
 fn a_configured_name_cannot_break_out_of_the_document() {
-    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
+    use crate::root::units_admin::{LedgerRow, PricedLedger, RefusedRow};
 
     let hostile = "a\"b\\c\nd\te\u{1}";
-    let mut rows = LedgerSnapshot::new();
-    rows.insert(
-        RowKey::new(hostile, A_DAY, hostile, hostile),
-        LedgerRow {
-            priced_nanos: 1,
+    let ledger = PricedLedger {
+        rows: vec![LedgerRow {
+            bucket: hostile.to_string(),
+            day: A_DAY,
+            priced_nanos: 1_000,
             fee_count: 0,
-        },
-    );
+        }],
+        refused: vec![RefusedRow {
+            bucket: hostile.to_string(),
+            day: A_DAY,
+            refusal: hostile.to_string(),
+        }],
+    };
     let parsed: serde_json::Value =
-        serde_json::from_str(&render_totals(&rows, &[]).expect("projects"))
+        serde_json::from_str(&render_totals(&ledger).expect("projects"))
             .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
-    assert_eq!(parsed["rows"][0]["lane"], hostile);
-    assert_eq!(parsed["rows"][0]["provider"], hostile);
+    assert_eq!(parsed["refused"][0]["bucket"], hostile);
+    assert_eq!(parsed["refused"][0]["refusal"], hostile);
 }
 
 // ── D38 `amend_rate_history` — the money-path verb's effect half ──────────────────────────────────
@@ -3513,7 +2828,6 @@ fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
         )
         .expect("a memory-buffered journal cannot fail to open"),
     ))
@@ -3939,6 +3253,20 @@ fn a_fee_or_plane_correction_moves_only_what_it_names() {
     );
 }
 
+/// One card pricing `gpt` input at `micro_per_unit`, with the flat fee `fee_minor`.
+fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost::RateCard {
+    busbar_kernel_ledger::cost::RateCard::from_micro_rates(
+        [(
+            busbar_kernel_ledger::cost::LaneClass::new(
+                "gpt",
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
+            micro_per_unit,
+        )],
+        fee_minor,
+    )
+}
+
 /// **A CORRECTION NO SINGLE CARD PRICES IS REFUSED, AND APPENDS NOTHING** (D-1). A config apply at
 /// 6,000 resolves part of `[0, 86,400,000)`; correcting the card in force at 0 for the whole
 /// window would silently revert that apply for the rest of it. A cell on a plane whose billing is
@@ -4212,7 +3540,6 @@ impl AmendScratch {
                     data_dir: Some(self.0.clone()),
                 },
                 Box::new(busbar_kernel_wal::NullShipper::new()),
-                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
             )
             .expect("the directory is writable"),
         ))
@@ -4499,55 +3826,6 @@ fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     assert_eq!(empty.len(), 0);
 }
 
-/// THE AMENDMENT MOVES NO LEDGER CELL — and that is a claim about the BOOK, not about the served
-/// figure.
-///
-/// This test used to make the claim by rendering the totals view before and after a correction and
-/// asserting the two documents were byte-identical. That assertion was the defect written down: it
-/// said a rate row appended afterwards must NOT change what `/api/v1/admin/ledger/totals` reports,
-/// which is only true of an endpoint echoing a stored price, and is exactly what #77(3) ("price is
-/// NEVER stored — money is a read-time conversion") and #79 (a posting prices against the card in
-/// force at its own `arrived_ms`; a back-dated correction reprices exactly the window it names)
-/// forbid. It passed for a second reason too, which is why nobody noticed: the snapshot it rendered
-/// twice was a fixture and the history it amended was a local one the view never consulted, so the
-/// comparison could not have failed whatever the endpoint did.
-///
-/// What is asserted now is the true half of the old claim, at the layer it belongs to: the
-/// amendment appends to the rate-card history and writes NO ledger cell — the book carries exactly
-/// the figures it carried, line for line. That an appended rate row DOES move the served total is
-/// the separate, opposite claim proved by
-/// `a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports`.
-#[test]
-fn amend_rate_history_moves_no_ledger_cell() {
-    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
-
-    let mut book = LedgerSnapshot::new();
-    book.insert(
-        RowKey::new("team-a", A_DAY, "gpt", "provider-a"),
-        LedgerRow {
-            priced_nanos: 42,
-            fee_count: 1,
-        },
-    );
-    let before = book.clone();
-
-    // Amend the rate-card history — an operation that never touches the ledger book.
-    let history = a_seeded_history();
-    amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
-        .expect("the correction applies");
-    assert_eq!(
-        history.len(),
-        2,
-        "the correction is an APPEND, never an edit"
-    );
-
-    assert_eq!(
-        before, book,
-        "amending the rate-card history moved a ledger cell; a correction is an append to the \
-         history and a repricing at read time, never a write to a booked record"
-    );
-}
-
 // ── #77(9): a plain scoped verb, no operator signature ─────────────────────────────────────────────
 
 /// A CORRECTION WITH NO SIGNATURE APPLIES (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md`
@@ -4592,947 +3870,7 @@ fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
     );
 }
 
-// ── THE TOTALS VIEW DERIVES ITS MONEY AT READ TIME (#77(3) / #79) ───────────────────────────────
-//
-// PRICE IS NEVER STORED. `/api/v1/admin/ledger/totals` used to echo the book's `settled` balance —
-// the figure the node computed at settlement — which is the one shape the money model cannot have:
-// an endpoint reporting a stored amount cannot reflect a rate row added afterwards, so the dated
-// history is inert for it and a mispriced lane has no read-time remedy at all. It now resolves each
-// booked line through the deployment's dated history AT THAT LINE'S OWN ARRIVAL INSTANT.
-//
-// The proofs below are the three the model owes, and each fails on the echo it replaced: a card
-// added AFTER a line moves that line's row; a FORWARD-dated card moves nothing before its
-// `effective_from`; and the figure this view derives is the figure `GET /api/v1/admin/usage`
-// derives from the same lines and the same card.
-
-/// The instant the fixture's lines arrive at, in MILLISECONDS.
-///
-/// `A_DAY` is a UTC-day opening as a unix SECOND and this is a wall clock in milliseconds, and the
-/// two scales are kept apart deliberately. A history entry's `effective_from` is milliseconds —
-/// `root/kernel.rs` appends it from `busbar_kernel::store::now_ms` — so a card resolved at a
-/// seconds-valued instant would match only the from-zero opening entry and report it forever, which
-/// is the stored price again with a lookup in front of it. Every resolution below is at this
-/// millisecond instant, and `window_start` (seconds) is used for the row's `day` and nothing else.
-const A_LINE_MS: u64 = A_DAY * 1_000;
-
-/// The lane the fixture's card prices and the fixture's lines were served on.
-const A_LANE: &str = "gpt";
-
-/// A card naming one lane and one class, at `micro_per_unit`, with a flat fee in minor units.
-fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost::RateCard {
-    busbar_kernel_ledger::cost::RateCard::from_micro_rates(
-        [(
-            busbar_kernel_ledger::cost::LaneClass::new(
-                A_LANE,
-                busbar_kernel_ledger::cost::CLASS_INPUT,
-            ),
-            micro_per_unit,
-        )],
-        fee_minor,
-    )
-}
-
-/// One booked line: the quantities, the lane the card is keyed by, and THE INSTANT IT ARRIVED. It
-/// carries no price: what it is worth is the dated history's answer at read time.
-fn a_booked_line(
-    bucket: &str,
-    arrived_ms: u64,
-    quantity: u64,
-    fee_count: u64,
-) -> busbar_kernel_ledger::Posting {
-    busbar_kernel_ledger::Posting {
-        node: 1,
-        node_seq: arrived_ms,
-        key: busbar_kernel_ledger::totals::TotalsKey::new(
-            busbar_kernel_ledger::totals::BucketId::new(bucket),
-            busbar_kernel_ledger::totals::CapDimension::NanoUnits,
-            busbar_kernel_ledger::totals::BucketScope::All,
-        ),
-        window_start: A_DAY,
-        lane: A_LANE.to_string(),
-        lines: vec![busbar_kernel_ledger::PricedLine {
-            class: busbar_contract::caps::MeterClassId::new(
-                busbar_kernel_ledger::cost::CLASS_INPUT,
-            ),
-            quantity,
-        }],
-        fee_count,
-        tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
-        arrived_ms,
-    }
-}
-
-/// The absurd figure the fixture's BOOK carries, so a fallback to the stored balance is unmistakable.
-///
-/// Every assertion below names a derived figure, and none of them is this. A read that fell back to
-/// the book — or that went on echoing it — answers this number, which no rate row could produce.
-const A_STORED_BALANCE_NOBODY_DERIVED: u128 = 999_999_999;
-
-/// A ledger view with LINES to price and a history to price them against.
-///
-/// It is not a stub for the node's view: it is what a view that HAS the quantities looks like, which
-/// is the shape `NodeLedger` takes the day the sealed facts line lands in the book. The book it also
-/// carries is deliberately absurd, so that every figure asserted here is provably the derivation's
-/// and not the balance's.
-#[cfg(feature = "root-admin")]
-struct PricedLedger {
-    history: crate::root::kernel::RootHistory,
-    lines: Vec<busbar_kernel_ledger::Posting>,
-    book: crate::root::ledger_identity::LedgerSnapshot,
-}
-
-#[cfg(feature = "root-admin")]
-impl PricedLedger {
-    /// A view over these lines, with a book that could only ever be the wrong answer.
-    fn over(lines: Vec<busbar_kernel_ledger::Posting>) -> Self {
-        use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
-        let mut book = LedgerSnapshot::new();
-        for line in &lines {
-            book.insert(
-                RowKey::new(line.key.bucket.as_str(), line.window_start, "", ""),
-                LedgerRow {
-                    priced_nanos: A_STORED_BALANCE_NOBODY_DERIVED,
-                    fee_count: 0,
-                },
-            );
-        }
-        PricedLedger {
-            history: crate::root::kernel::RootHistory::default(),
-            lines,
-            book,
-        }
-    }
-}
-
-#[cfg(feature = "root-admin")]
-impl LedgerView for PricedLedger {
-    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
-        self.book.clone()
-    }
-
-    fn legacy_rows(
-        &self,
-    ) -> Result<crate::root::ledger_identity::LegacySnapshot, busbar_kernel_ledger::cost::MoneyError>
-    {
-        Ok(crate::root::ledger_identity::LegacySnapshot::new())
-    }
-
-    fn each_checkpoint(
-        &self,
-        _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
-    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
-        Ok(())
-    }
-
-    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        None
-    }
-
-    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
-        self.lines.clone()
-    }
-
-    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
-        self.history.pin()
-    }
-}
-
-/// The totals document this view serves, as BYTES, through the whole loop.
-///
-/// Bytes rather than a parsed value, because one of the claims below is a byte-identity and a
-/// comparison of two parsed documents would absorb exactly the difference it is meant to catch.
-#[cfg(feature = "root-admin")]
-fn totals_bytes_over(view: &Arc<PricedLedger>) -> Vec<u8> {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
-        .with_ledger_view(Arc::clone(view) as Arc<dyn LedgerView>);
-    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
-        .answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    assert_eq!(answer.status, 200, "the totals view did not answer");
-    answer.body
-}
-
-/// The rows of that document, parsed.
-#[cfg(feature = "root-admin")]
-fn totals_rows_over(view: &Arc<PricedLedger>) -> Vec<serde_json::Value> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(&totals_bytes_over(view)).expect("the totals response is JSON");
-    doc["rows"].as_array().expect("a rows array").clone()
-}
-
-/// **PROOF ONE — A RATE CARD ADDED AFTER A POSTING MOVES WHAT THE TOTALS VIEW REPORTS FOR IT.**
-///
-/// The whole point of an append-only dated history, and the assertion the echo this replaced could
-/// not pass: the same line, the same quantities, nothing edited, reversed or adjusted between the
-/// two reads — and two figures, because a signed back-dated correction now out-ranks the entry the
-/// line was booked under for exactly the interval it names (#79).
-///
-/// The correction is APPENDED, never an edit. The opening entry stays exactly as written; the
-/// resolution rule's highest-covering-seq is what makes the second read answer differently.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
-    let view = Arc::new(PricedLedger::over(vec![a_booked_line(
-        "team-a", A_LINE_MS, 1_000_000, 0,
-    )]));
-    // The card in force when the line arrived: 2 micro-units per unit of input, no flat fee.
-    view.history.apply(a_card_at(2.0, 0), 1_000);
-
-    let before = totals_rows_over(&view);
-    assert_eq!(before.len(), 1, "one line, one row: {before:?}");
-    assert_eq!(before[0]["bucket"], "team-a");
-    assert_eq!(before[0]["day"], A_DAY);
-    assert_eq!(
-        before[0]["priced_nanos"], "2000000000",
-        "1,000,000 units at 2 micro-units each is 2,000,000,000 nano-units"
-    );
-    assert_eq!(before[0]["priced_micros"], "2000000");
-    assert_ne!(
-        before[0]["priced_nanos"],
-        A_STORED_BALANCE_NOBODY_DERIVED.to_string(),
-        "the view served the book's balance, not a figure any rate row produced"
-    );
-
-    // THE CARD ADDED AFTERWARDS: a signed, back-dated correction covering the instant this line
-    // arrived at, appended long after the line was booked.
-    view.history
-        .amend(
-            &crate::root::kernel::Correction {
-                effective_from: A_LINE_MS,
-                effective_until: Some(A_LINE_MS + 86_400_000),
-                appended_at: A_LINE_MS + 60_000,
-                author: busbar_kernel_ledger::cost::Author::Amend {
-                    reason_hash: [9u8; 32],
-                },
-                cells: vec![(
-                    busbar_kernel_ledger::cost::LaneClass::new(
-                        A_LANE,
-                        busbar_kernel_ledger::cost::CLASS_INPUT,
-                    ),
-                    4_000,
-                )],
-                fee: Some(0),
-            },
-            |_, _| Ok::<(), ()>(()),
-        )
-        .expect("the fixture has an opening entry to correct");
-
-    let after = totals_rows_over(&view);
-    assert_eq!(after.len(), 1);
-    assert_eq!(
-        after[0]["priced_nanos"], "4000000000",
-        "a rate row added AFTER the posting must move the figure this endpoint reports for it — \
-         an endpoint echoing a stored price answers the same number twice and fails here"
-    );
-    assert_eq!(after[0]["priced_micros"], "4000000");
-
-    // AND NOTHING WAS REWRITTEN. The book is exactly what it was, which is what makes the move a
-    // repricing rather than an edit: the money changed and no posted line did.
-    assert_eq!(
-        view.ledger_rows()
-            .values()
-            .map(|r| r.priced_nanos)
-            .collect::<Vec<_>>(),
-        vec![A_STORED_BALANCE_NOBODY_DERIVED],
-        "the correction moved a ledger cell"
-    );
-}
-
-/// **A LINE ON A LANE THE CARD DOES NOT NAME NEVER SERVES AS A FEE-ONLY FIGURE (#42).**
-///
-/// The statement used to price such a line at its flat fee and say nothing, and this view trusts
-/// the statement's unpriceable list — so it served the fee as the row's money. The line is listed
-/// unpriceable now, and the view does what it does for every refusal: it serves the book's balance
-/// rather than a derivation with a hole in it. RED before the fix: the row read the one flat fee
-/// alone, a figure no rate row for the lane produced.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_line_on_a_lane_the_card_does_not_name_is_never_served_as_its_fee() {
-    let mut line = a_booked_line("team-a", A_LINE_MS, 1_000_000, 1);
-    line.lane = "lane-the-card-does-not-name".to_string();
-    let view = Arc::new(PricedLedger::over(vec![line]));
-    view.history.apply(a_card_at(2.0, 5), 1_000);
-
-    let rows = totals_rows_over(&view);
-    assert_eq!(rows.len(), 1, "one bucket-day: {rows:?}");
-    assert_eq!(
-        rows[0]["priced_nanos"],
-        A_STORED_BALANCE_NOBODY_DERIVED.to_string(),
-        "an unpriceable line refuses the derivation; the view serves the balance, never a fee-only figure"
-    );
-}
-
-/// **PROOF TWO — A FORWARD-DATED CARD LEAVES EVERY EARLIER POSTING'S TOTAL BYTE-IDENTICAL (#79).**
-///
-/// "Price against the latest rate card" means the latest card whose `effective_from` had ARRIVED at
-/// the posting's instant, never the latest card ever authored. Publishing a card prices what happens
-/// after it and leaves the window before it exactly as it was.
-///
-/// The second half is what stops the first from being vacuous: the SAME forward-dated card, over a
-/// line that arrived AFTER its `effective_from`, does move the figure. An append that changed
-/// nothing anywhere would pass the byte-identity and prove nothing.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_forward_dated_card_leaves_an_earlier_postings_total_byte_identical() {
-    let earlier = Arc::new(PricedLedger::over(vec![a_booked_line(
-        "team-a", A_LINE_MS, 1_000_000, 0,
-    )]));
-    earlier.history.apply(a_card_at(2.0, 0), 1_000);
-    let before = totals_bytes_over(&earlier);
-
-    // A card published LATER, effective from an instant after this line arrived.
-    earlier.history.apply(a_card_at(4.0, 0), A_LINE_MS + 1_000);
-    let after = totals_bytes_over(&earlier);
-    assert_eq!(
-        before,
-        after,
-        "publishing a card repriced a window before its effective_from:\n  before {}\n  after  {}",
-        String::from_utf8_lossy(&before),
-        String::from_utf8_lossy(&after)
-    );
-
-    // The same two applies, over a line that arrived AFTER the second card took effect.
-    let later = Arc::new(PricedLedger::over(vec![a_booked_line(
-        "team-b",
-        A_LINE_MS + 2_000,
-        1_000_000,
-        0,
-    )]));
-    later.history.apply(a_card_at(2.0, 0), 1_000);
-    later.history.apply(a_card_at(4.0, 0), A_LINE_MS + 1_000);
-    let rows = totals_rows_over(&later);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0]["priced_nanos"], "4000000000",
-        "a line arriving after a card's effective_from must price at that card — otherwise the \
-         byte-identity above is a card nobody ever resolved to"
-    );
-}
-
-/// **PROOF THREE — THE TOTALS VIEW AND `GET /api/v1/admin/usage` AGREE ON THE SAME DATA.**
-///
-/// Two endpoints, one ruling (#79), and they must not become two implementations of it. The usage
-/// read resolves a posting's card at `card_at(arrived_ms)` and prices the lines through the one spend
-/// fold (`Tally`), projects ONCE, and adds the flat fee in micro-units after the divide
-/// (`busbar-core-admin/src/v1/service.rs`, `resolve_row_spend_micros`). That arithmetic is spelled
-/// out here against the same card and the same quantities, and the totals view's own figure is
-/// asserted to equal it.
-///
-/// The flat fee is the half worth proving. The two paths carry it differently — the lookup makes it
-/// a usage line summed in BEFORE the single tier divide, the usage read multiplies it into
-/// micro-units and adds it AFTER — and they agree only because a fee's unit price is an exact
-/// multiple of one minor unit. A fee expressed in anything finer would make the two disagree, and
-/// under the bank-auditor standard that is not a rounding choice: it would mean one of them is wrong.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_totals_view_and_the_usage_read_derive_the_same_figure() {
-    const QUANTITY: u64 = 1_234_567;
-    const FEE_MINOR: i64 = 3;
-    const FEES: u64 = 2;
-
-    let view = Arc::new(PricedLedger::over(vec![a_booked_line(
-        "team-a", A_LINE_MS, QUANTITY, FEES,
-    )]));
-    let card = a_card_at(2.5, FEE_MINOR);
-    view.history.apply(card.clone(), 1_000);
-
-    // THE USAGE READ'S ARITHMETIC, on the same card and the same quantities: the one spend fold
-    // at that card (`CostModel::derive_spend_micros` is `Tally` at the current card), the tokens
-    // projected once and the flat fee added in micro-units after the divide.
-    let mut tokens = busbar_kernel_ledger::cost::Tally::at_card(&card);
-    tokens
-        .row(
-            A_LANE,
-            A_LINE_MS,
-            busbar_kernel_ledger::cost::STANDARD_TIER_BP,
-            [(
-                busbar_kernel_ledger::cost::CLASS_INPUT,
-                busbar_kernel_ledger::cost::whole(QUANTITY),
-            )],
-            busbar_kernel_ledger::cost::whole(0),
-        )
-        .expect("the fixture's card prices the lane and the class");
-    // The CHECKED projection (item 28) — the fixture is in range, and a pinned figure is not one.
-    let usage_micros = tokens
-        .money()
-        .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
-        .expect("the fixture's figure is in range")
-        .saturating_add(
-            card.fee()
-                .saturating_mul(busbar_kernel_ledger::cost::MICROS_PER_CENT)
-                .saturating_mul(i64::try_from(FEES).expect("small")),
-        );
-
-    let rows = totals_rows_over(&view);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0]["priced_micros"],
-        usage_micros.to_string(),
-        "the ledger totals view and the usage read derive different money from one card and one \
-         set of quantities; under the bank-auditor standard one of them is wrong"
-    );
-    // Stated as an absolute too, so a change that moved BOTH derivations identically still fails.
-    assert_eq!(rows[0]["priced_micros"], "3146417");
-    assert_eq!(
-        rows[0]["fee_count"], FEES,
-        "the fee count travels with the row the fee was charged on"
-    );
-}
-
-/// **THE DERIVED FIGURE AND THE BOOK'S BALANCE ARE ONE NUMBER WHILE THE HISTORY HAS NOT MOVED.**
-///
-/// The bank-auditor check on the swap, and the reason it moves no byte on a deployment nobody has
-/// repriced. `settled` is what the node computed AT SETTLEMENT — the same `price_line` lookup, at
-/// the same instant, against the history pinned at that unit's door — so a read that derives the
-/// figure again from the line's own quantities gets the same integer back, exactly.
-///
-/// A difference here would not be a rounding convention to choose between. It would mean one of the
-/// two paths is wrong, and under #10/#59 that is parked for the owner rather than reconciled by
-/// picking a side.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved() {
-    let line = a_booked_line("team-a", A_LINE_MS, 1_234_567, 2);
-    let view = Arc::new(PricedLedger::over(vec![line.clone()]));
-    view.history.apply(a_card_at(2.5, 3), 1_000);
-
-    // What the node WOULD HAVE SETTLED for this line — `plane_node::priced_posting`'s own lookup,
-    // spelled here against the same history and the same arrival instant.
-    let pinned = view.history.pin().expect("the fixture has a history");
-    let settled_nanos = busbar_kernel_ledger::price_line(&line, &pinned.view(), line.tier_bp)
-        .expect("the fixture's card prices the fixture's line")
-        .priced_nanos;
-
-    let rows = totals_rows_over(&view);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0]["priced_nanos"],
-        settled_nanos.to_string(),
-        "the read-time derivation and the figure the node settled disagree on an unmoved history; \
-         that is not a rounding choice — one of the two is wrong"
-    );
-}
-
-/// The replacing behaviour, at the served surface: a ledger row whose micro-unit
-/// figure is past the `i64` it is served in FAILS the totals and reconciliation reads (`Store`, the
-/// 500 the other money reads answer with) — it was served as `"priced_micros":"9223372036854775807"`
-/// by the pinning projection. A legacy side that cannot project refuses the reconciliation the same
-/// way, and the views whose figures project still answer.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinned() {
-    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, LegacySnapshot, RowKey};
-    use busbar_kernel_ledger::cost::MoneyError;
-
-    struct Past {
-        legacy_refuses: bool,
-    }
-    impl LedgerView for Past {
-        fn ledger_rows(&self) -> LedgerSnapshot {
-            let past = u128::try_from(i64::MAX).expect("fits") * 1_000 + 1_000;
-            [(
-                RowKey::new("key-1", A_DAY, "", ""),
-                LedgerRow {
-                    priced_nanos: if self.legacy_refuses { 1_000 } else { past },
-                    fee_count: 0,
-                },
-            )]
-            .into_iter()
-            .collect()
-        }
-        fn legacy_rows(&self) -> Result<LegacySnapshot, MoneyError> {
-            if self.legacy_refuses {
-                Err(MoneyError::Overflow)
-            } else {
-                Ok(LegacySnapshot::new())
-            }
-        }
-        fn each_checkpoint(
-            &self,
-            _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
-        ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
-            Ok(())
-        }
-        fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-            None
-        }
-    }
-
-    let refused = |verb, view: &Past| {
-        matches!(
-            render_ledger_view(verb, view),
-            Err(busbar_core_admin::GovernanceError::Store)
-        )
-    };
-    let past = Past {
-        legacy_refuses: false,
-    };
-    assert!(refused(KernelVerb::GetLedgerTotals, &past));
-    assert!(refused(KernelVerb::GetLedgerReconciliation, &past));
-    let legacy_past = Past {
-        legacy_refuses: true,
-    };
-    assert!(refused(KernelVerb::GetLedgerReconciliation, &legacy_past));
-    // The row that projects is still served, figure intact: the refusal is the overflow's alone.
-    let totals = render_ledger_view(KernelVerb::GetLedgerTotals, &legacy_past).expect("projects");
-    let doc: serde_json::Value = serde_json::from_slice(&totals).expect("valid JSON");
-    assert_eq!(doc["rows"][0]["priced_micros"], "1");
-}
-
-/// The day the fee-count proof settles in.
-#[cfg(feature = "root-admin")]
-const FEE_DAY: u64 = 1_767_225_600;
-
-/// Settle one late unit onto `durability` the way the node's late arm does: `amount` nano-units, with
-/// its counts — `fee_count` billable requests among them.
-#[cfg(feature = "root-admin")]
-fn settle_late_unit_with_fees(
-    durability: &mut crate::root::durability::Durability,
-    bucket: &str,
-    amount: u64,
-    fee_count: u64,
-) {
-    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
-    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    let posted = Posted::settle_late(
-        HoldAccrual::after_terminal(PrincipalId::new(bucket), amount, &ledger),
-        &ledger,
-    );
-    let counts = UnitCounts {
-        lane: "lane-a".to_string(),
-        fee_count,
-        classes: std::collections::BTreeMap::from([
-            ("input".to_string(), 11),
-            ("output".to_string(), 7),
-        ]),
-    };
-    durability
-        .settle_counted(
-            &Settling {
-                key: &busbar_kernel_ledger::totals::TotalsKey::new(
-                    busbar_kernel_ledger::totals::BucketId::new(bucket),
-                    busbar_kernel_ledger::totals::CapDimension::NanoUnits,
-                    busbar_kernel_ledger::totals::BucketScope::All,
-                ),
-                window: FEE_DAY,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: PostingStamp {
-                    rate_card_version: 0,
-                    wall: FEE_DAY,
-                    mono: 1,
-                },
-            },
-            posted,
-            &counts,
-            FEE_DAY * 1_000,
-        )
-        .expect("the memory-buffered journal takes it");
-}
-
-/// **THE COUNT HALF OF THE NODE'S OWN RECONCILIATION COMPARES TWO REAL COUNTS.**
-///
-/// A unit that is a billable request settles its fee count onto the balance beside its figure,
-/// and the dual write carries the same count onto the previous release's row as that row's
-/// billable requests. Both sides of the served identity therefore read the count the postings
-/// made — three billable requests over two units here, on each side — and a previous-release side
-/// that lost one is a row that is OUT on the count half, where two sides fixed at zero compared
-/// `0 == 0` on every row of every node and could never say so.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_node_books_carry_the_fee_count_on_both_sides_and_a_lost_count_is_out() {
-    use crate::root::ledger_identity::{reconcile, RowKey};
-    use crate::root::units_admin::{LedgerView, LegacyRowsRead, NodeLedger};
-
-    let book = crate::root::durability::node_book();
-    {
-        let mut durability = book.durability.lock().expect("unpoisoned");
-        settle_late_unit_with_fees(&mut durability, "key-1", 1_250_000, 1);
-        settle_late_unit_with_fees(&mut durability, "key-1", 3_500_000, 2);
-    }
-    let legacy: std::sync::Arc<dyn LegacyRowsRead> = book.rows.clone();
-    let view = NodeLedger::new(std::sync::Arc::clone(&book.durability), legacy);
-    let (ledger, legacy) = view.identity_snapshot().expect("every row projects");
-
-    let key = RowKey::new("key-1", FEE_DAY, "", "");
-    assert_eq!(
-        ledger.get(&key).map(|row| row.fee_count),
-        Some(3),
-        "the books carry the fee count the postings settled"
-    );
-    assert_eq!(
-        legacy.get(&key).map(|row| row.billable_requests),
-        Some(3),
-        "the previous release's row carries the same count as its billable requests"
-    );
-    assert_eq!(reconcile(&ledger, &legacy), Ok(Vec::new()));
-
-    // A previous-release side that lost one billable request is out, on the count half alone.
-    let mut short = legacy.clone();
-    if let Some(row) = short.get_mut(&key) {
-        row.billable_requests = 2;
-    }
-    let out = reconcile(&ledger, &short).expect("every row projects");
-    assert_eq!(out.len(), 1, "the lost count is named: {out:?}");
-    assert!(out[0].fees_disagree());
-}
-
-// ── `adjust` (item 404, OWNER RULING Q9) and the claim journal (item 271) ──────────────────────────
-
-/// A node book holding ONE counts posting for `principal`: 1,000 `input` units on `lane`, arrived
-/// at `ADJUST_ARRIVED_MS`. Answers the book and the digest of the posting's journal record — the
-/// entry an `adjust` names.
-#[cfg(feature = "root-admin")]
-fn a_book_with_one_recorded_unit(
-    principal: &str,
-    lane: &str,
-) -> (crate::root::durability::NodeBook, String) {
-    let book = crate::root::durability::node_book();
-    let digest = post_one_recorded_unit(&book.durability, principal, lane);
-    (book, digest)
-}
-
-/// Post ONE counts posting for `principal` on `book`: 1,000 `input` units on `lane`, arrived at
-/// `ADJUST_ARRIVED_MS`. Answers the digest of the posting's journal record — the entry an `adjust`
-/// names.
-#[cfg(feature = "root-admin")]
-fn post_one_recorded_unit(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-    principal: &str,
-    lane: &str,
-) -> String {
-    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::{DurableWrite, PrincipalId};
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    let key = busbar_kernel_ledger::totals::TotalsKey::new(
-        busbar_kernel_ledger::totals::BucketId::new(principal),
-        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
-        busbar_kernel_ledger::totals::BucketScope::All,
-    );
-    let counts = UnitCounts {
-        lane: lane.to_string(),
-        fee_count: 0,
-        classes: std::collections::BTreeMap::from([(
-            busbar_kernel_ledger::cost::CLASS_INPUT.to_string(),
-            1_000,
-        )]),
-    };
-    let mut durability = book.lock().expect("unpoisoned");
-    durability
-        .post_counts(
-            &Settling {
-                key: &key,
-                window: A_DAY,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: PostingStamp {
-                    rate_card_version: 0,
-                    wall: ADJUST_ARRIVED_MS / 1_000,
-                    mono: 7,
-                },
-            },
-            &PrincipalId::new(principal),
-            &counts,
-            ADJUST_ARRIVED_MS,
-            None,
-        )
-        .expect("the memory-buffered journal takes it");
-    let records = durability
-        .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("the journal verifies");
-    hex::encode(records.last().expect("the posting is on the chain").hash)
-}
-
-/// The instant the adjusted unit arrived: its card epoch.
-#[cfg(feature = "root-admin")]
-const ADJUST_ARRIVED_MS: u64 = 1_700_000_000_000;
-
-/// Walk one `POST /api/v1/admin/adjust` through decode and route over `binding`, admitted at
-/// `granted`. Answers the unit's answer, or the reason it was refused.
-#[cfg(feature = "root-admin")]
-fn adjust_through_route(
-    binding: &AdminBinding,
-    granted: VerbScope,
-    body: serde_json::Value,
-) -> Result<AdminAnswer, ReasonCode> {
-    let admin = crate::root::kernel::new_kernel().admin_token();
-    let mut request = a_request();
-    request.method = "POST".to_string();
-    request.path = "/api/v1/admin/adjust".to_string();
-    request.body = serde_json::to_vec(&body).expect("the body serialises");
-    let mut walk = AdminWalk::new(request);
-    decode(&mut walk).expect("the plane's table declares adjust");
-    walk.granted = Some(granted);
-    route(binding, None, &admin, &mut walk)
-        .map(|()| walk.answer.expect("an admitted unit leaves an answer"))
-}
-
-/// A binding over `book`'s node ledger.
-#[cfg(feature = "root-admin")]
-fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBinding {
-    let legacy: Arc<dyn LegacyRowsRead> = book.rows.clone();
-    AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
-        .with_ledger_view(Arc::new(NodeLedger::new(
-            Arc::clone(&book.durability),
-            legacy,
-        )))
-        .with_pools(Arc::new(|pool| pool == "pool-a"))
-}
-
-/// What the recorded unit costs at its card epoch over the counts the node journal stands it at
-/// NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
-#[cfg(feature = "root-admin")]
-fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &RecordedCounts) -> u128 {
-    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
-        [(
-            busbar_kernel_ledger::cost::LaneClass::new(
-                lane,
-                busbar_kernel_ledger::cost::CLASS_INPUT,
-            ),
-            2.5,
-        )],
-        0,
-    );
-    let mut history = busbar_kernel_ledger::cost::History::new();
-    let seq = history.append(busbar_kernel_ledger::cost::CardEntryDraft {
-        effective_from: 0,
-        effective_until: None,
-        card,
-        appended_at: 0,
-        author: busbar_kernel_ledger::cost::Author::Opening,
-    });
-    let pinned = crate::root::kernel::PinnedHistory::for_test(Arc::new(history), seq);
-    let entry = busbar_kernel::audit::amend::counts_now(digest, &recorded.classes)
-        .into_iter()
-        .fold(
-            busbar_kernel_ledger::cost::LedgerEntry::new(lane, recorded.card_epoch_ms),
-            |entry, (class, count)| entry.with_count(class, count),
-        )
-        .with_fee_count(recorded.fee_count);
-    let exact = busbar_kernel_ledger::cost::price_exact(&[entry], &pinned.view())
-        .expect("the card prices the lane's input");
-    busbar_kernel_ledger::cost::nanos_of_exact(exact).expect("in range")
-}
-
-/// **THE EXIT TEST FOR ITEM 404's ADMIN HALF.** An `adjust` of a recorded unit's 1,000 `input`
-/// units to 800, walked through the admin route, is sealed on
-/// the node amendment journal with what the BOOK recorded (principal, lane, card epoch, 1,000) as
-/// its `was` — never the body's word — and the unit's money, the one function over `counts_now` at
-/// 2.5 micro-units, moves 2,500,000 → 2,000,000 nano-units. The book's own record is untouched.
-#[cfg(feature = "root-admin")]
-#[test]
-fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
-    let lane = "adjust-404-money";
-    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_money", lane);
-    let binding = an_adjusting_binding(&book);
-    let recorded = binding
-        .ledger
-        .recorded_counts(&digest)
-        .expect("the book holds the posting the digest names");
-    assert_eq!(recorded.principal, "vk_adjust_money");
-    assert_eq!(recorded.lane, lane);
-    assert_eq!(recorded.card_epoch_ms, ADJUST_ARRIVED_MS);
-    assert_eq!(
-        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
-        2_500_000,
-        "before: 1,000 input units at 2.5 micro-units"
-    );
-
-    let answer = adjust_through_route(
-        &binding,
-        VerbScope::Full,
-        serde_json::json!({
-            "amends": digest,
-            "now": { "input": "800" },
-            "reason": "a retried request was metered twice",
-            "pool": "pool-a",
-        }),
-    )
-    .expect("a root correction with a reason and a non-negative count is admitted");
-    assert_eq!(answer.status, 200);
-    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
-    assert_eq!(body["amends"], serde_json::json!(digest));
-    assert_eq!(body["now"]["input"], serde_json::json!("800"));
-    assert_eq!(body["card_epoch_ms"], serde_json::json!(ADJUST_ARRIVED_MS));
-    assert_eq!(body["pool"], serde_json::json!("pool-a"));
-    assert!(
-        body.get("amount_nanos").is_none(),
-        "the answer carries counts, never money"
-    );
-
-    let sealed: Vec<_> = busbar_kernel::audit::amend::node_corrections()
-        .into_iter()
-        .filter_map(|a| match a.body {
-            busbar_kernel::audit::amend::AmendBody::Adjust(adj) if adj.amends_hash == digest => {
-                Some(adj)
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(sealed.len(), 1, "exactly one correction sealed");
-    assert_eq!(
-        sealed[0].was.get("input").map(|c| c.to_decimal_string()),
-        Some("1000".to_string()),
-        "`was` is what the book recorded"
-    );
-    assert_eq!(sealed[0].authorised_by, "admin");
-    assert_eq!(
-        sealed[0].pool.as_deref(),
-        Some("pool-a"),
-        "the pool is sealed (Q64/Q67)"
-    );
-    assert_eq!(
-        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
-        2_000_000,
-        "after: 800 input units at 2.5 micro-units"
-    );
-    assert_eq!(
-        binding.ledger.recorded_counts(&digest),
-        Some(recorded),
-        "the book's record is never rewritten"
-    );
-}
-
-/// A NEGATIVE, A REASONLESS AND A NON-ROOT `adjust` ARE REFUSED END TO END, and none seals
-/// anything. The count below zero and the blank reason are refused by the kernel half (a 400 on the
-/// wire); a read-only credential is refused by the verbs unit before the effect is reached, and the
-/// kernel half refuses the same scope again if it ever is. A digest the book does not hold is a
-/// `NotFound`.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
-    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_refusals", "adjust-404-refusals");
-    let binding = an_adjusting_binding(&book);
-    let adjust = |granted, now: &str, reason: serde_json::Value| {
-        let mut body =
-            serde_json::json!({ "amends": digest, "now": { "input": now }, "pool": "pool-a" });
-        if !reason.is_null() {
-            body["reason"] = reason;
-        }
-        adjust_through_route(&binding, granted, body).map(|a| a.status)
-    };
-    let why = serde_json::json!("duplicate metering");
-
-    assert_eq!(
-        adjust(VerbScope::Full, "-1", why.clone()),
-        Err(ReasonCode::DecodeFailed),
-        "a count below zero"
-    );
-    assert_eq!(
-        adjust(VerbScope::Full, "800", serde_json::Value::Null),
-        Err(ReasonCode::DecodeFailed),
-        "no reason"
-    );
-    assert_eq!(
-        adjust(VerbScope::Full, "800", serde_json::json!("   ")),
-        Err(ReasonCode::DecodeFailed),
-        "a blank reason"
-    );
-    assert_eq!(
-        adjust(VerbScope::ReadOnly, "800", why.clone()),
-        Err(ReasonCode::ScopeDenied),
-        "a read-only credential"
-    );
-    assert_eq!(
-        adjust_through_route(
-            &binding,
-            VerbScope::Full,
-            serde_json::json!({
-                "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x", "pool": "pool-a"
-            }),
-        )
-        .map(|a| a.status),
-        Err(ReasonCode::NoDestination),
-        "an entry the book does not hold"
-    );
-    // The kernel half's own scope check, reached directly: below `full` corrects nothing.
-    assert!(matches!(
-        adjust::adjust_effect(
-            br#"{"amends":"x","now":{"input":"1"},"reason":"y","pool":"pool-a"}"#,
-            busbar_contract::authz::Scope::ReadOnly,
-            "admin",
-            &|_| true,
-            None,
-            |_| binding.ledger.recorded_counts(&digest),
-        ),
-        Err(busbar_core_admin::GovernanceError::Validation)
-    ));
-    assert!(
-        busbar_kernel::audit::amend::node_corrections()
-            .iter()
-            .all(|a| !matches!(
-                &a.body,
-                busbar_kernel::audit::amend::AmendBody::Adjust(adj)
-                    if adj.amends_hash == digest || adj.amends_hash == "x"
-            )),
-        "no refused correction was sealed"
-    );
-}
-
-/// Q64/Q67 (OWNER RULING): AN `adjust` MUST NAME A CONFIGURED POOL. A body with no `pool`, a blank
-/// one, or one naming a pool this node has not configured is refused `400 invalid_request` with a
-/// message that says which, end to end through the admin route, and seals nothing; the same body
-/// naming a configured pool is admitted.
-#[cfg(feature = "root-admin")]
-#[test]
-fn an_adjust_naming_no_pool_or_an_unknown_pool_is_refused_and_seals_nothing() {
-    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_pool", "adjust-q64-pool");
-    let binding = an_adjusting_binding(&book);
-    let adjust = |pool: Option<&str>| {
-        let mut body = serde_json::json!({
-            "amends": digest, "now": { "input": "800" }, "reason": "metered twice"
-        });
-        if let Some(pool) = pool {
-            body["pool"] = serde_json::json!(pool);
-        }
-        let answer = adjust_through_route(&binding, VerbScope::Full, body).expect("an answer");
-        let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
-        (
-            answer.status,
-            body["error"]["code"].clone(),
-            body["error"]["message"].clone(),
-        )
-    };
-    let sealed = || {
-        busbar_kernel::audit::amend::node_corrections()
-            .iter()
-            .filter(|a| {
-                matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
-                    if adj.amends_hash == digest)
-            })
-            .count()
-    };
-    let required = serde_json::json!(
-        "`pool` is required: name the pool the corrected unit was dispatched through"
-    );
-    for missing in [None, Some(""), Some("  ")] {
-        assert_eq!(
-            adjust(missing),
-            (400, serde_json::json!("invalid_request"), required.clone()),
-            "{missing:?}"
-        );
-    }
-    assert_eq!(
-        adjust(Some("pool-z")),
-        (
-            400,
-            serde_json::json!("invalid_request"),
-            serde_json::json!("`pool` names `pool-z`, which is not a configured pool")
-        ),
-    );
-    assert_eq!(sealed(), 0, "no refused correction was sealed");
-    assert_eq!(
-        adjust(Some("pool-a")).0,
-        200,
-        "a configured pool is admitted"
-    );
-    assert_eq!(sealed(), 1);
-}
+// ── the claim journal (item 271) ─────────────────────────────────────────────────────────────
 
 /// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to
 /// [`RootClaimJournal`] over a node with a data directory journals EXACTLY ONE claim for a key it
@@ -5553,12 +3891,11 @@ fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
         data_dir: Some(dir.clone()),
     };
     let boot = || {
-        crate::root::durability::build_priced(
+        crate::root::durability::build_with_cards(
             &cfg,
             3,
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
+            None,
         )
         .expect("the directory is writable")
     };
@@ -5602,18 +3939,15 @@ fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
 #[test]
 fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
     let compose = |data_dir: Option<std::path::PathBuf>| {
-        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir },
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(rows.clone()),
         )
         .expect("the journal opens");
         crate::root::kernel::ProductionUnits::admin_only_sharing(
             Arc::new(AnsweringDispatch),
             open_door(),
             Arc::new(Mutex::new(durability)),
-            Arc::new(rows),
             None,
         )
     };
@@ -5637,17 +3971,17 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
 }
 
 /// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); BUSBAR-1.6.0.md THE DESIGN, §2,
-/// PB-13; architect ruling 2026-09-26): a node bound to its keyset seals a SIGNED record and a
-/// SIGNED checkpoint, and both verify against the key the served read publishes — parsed off the
-/// wire, not handed over in-process. RED arm: the same node before the keyset is bound publishes
-/// no key and seals both unsigned.
+/// PB-13; architect ruling 2026-09-26): a node bound to its keyset seals a SIGNED record, and it
+/// verifies against the key the served read publishes — parsed off the wire, not handed over
+/// in-process. RED arm: the same node before the keyset is bound publishes no key and seals the
+/// record unsigned.
 #[cfg(feature = "root-admin")]
 #[test]
-fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys() {
+fn a_signed_record_verifies_against_the_served_audit_keys() {
     use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
     use busbar_kernel_audit::{
-        Audit as _, AuditChain, AuditInputs, AuditKeySet, AuditVerifyingKey, Controls, FinishClass,
-        OpClassId, OutcomeFacts, Subject, Usage, What,
+        Audit as _, AuditChain, AuditInputs, AuditVerifyingKey, Controls, FinishClass, OpClassId,
+        OutcomeFacts, Subject, Usage, What,
     };
 
     let inputs = || AuditInputs {
@@ -5683,7 +4017,6 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
         correlation_label: None,
     };
     let audit_token = an_audit_pass();
-    let durable = crate::root::kernel::new_kernel().durability_token();
     let served_keys = |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
         let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
         let served: serde_json::Value = serde_json::from_slice(
@@ -5700,42 +4033,26 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
             .collect()
     };
 
-    // RED ARM: no keyset bound — nothing published, both seals unsigned.
+    // RED ARM: no keyset bound — nothing published, the record unsigned.
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    let (record, checkpoint) = {
+    let record = {
         let mut durability = units.durability.lock().expect("durability lock");
-        let record = durability.record.seal(inputs(), &audit_token);
-        let checkpoint = durability
-            .seal_checkpoint(
-                &durable,
-                busbar_contract::caps::StepName::Meter,
-                1_700_000_100,
-            )
-            .expect("an unsigned seal goes down");
-        (record, checkpoint)
+        durability.record.seal(inputs(), &audit_token)
     };
     assert!(
         served_keys(units).is_empty(),
         "a keyless node publishes no key"
     );
-    assert!(record.signature.is_none() && checkpoint.signature.is_none());
+    assert!(record.signature.is_none());
 
     // THE KEYSET BOUND, as the boot binds it.
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    let (record, checkpoint) = {
+    let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         crate::root::keyset::bind_ephemeral(&mut durability).expect("the keyset binds");
-        let record = durability.record.seal(inputs(), &audit_token);
-        let checkpoint = durability
-            .seal_checkpoint(
-                &durable,
-                busbar_contract::caps::StepName::Meter,
-                1_700_000_100,
-            )
-            .expect("the node seals and signs");
-        (record, checkpoint)
+        durability.record.seal(inputs(), &audit_token)
     };
     let published = served_keys(units);
     assert_eq!(published.len(), 1, "the one deployment key is published");
@@ -5743,11 +4060,6 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
     assert_eq!(record.key_id.as_deref(), Some(key.key_id()));
     AuditChain::verify_signature(&record, &key)
         .expect("the signed record verifies against the served key");
-    let mut keys = AuditKeySet::new();
-    keys.insert(key);
-    checkpoint
-        .verify_seal(&crate::root::durability::KeySetVerifier::new(keys))
-        .expect("the signed checkpoint verifies against the served key");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -5767,8 +4079,6 @@ fn a_book_over_the_store(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             0,
             lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
             None,
         )
         .expect("the store reads back"),
@@ -5926,7 +4236,6 @@ fn a_book_whose_store_switches(
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(SwitchShipper(Arc::clone(refusing))),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
         )
         .expect("a memory-buffered journal cannot fail to open"),
     ))
@@ -6040,526 +4349,6 @@ fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
         .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
         .count();
     assert_eq!(commits, 1, "the retained commit landed on the chain");
-}
-
-/// A binding over `book`'s node ledger, as [`an_adjusting_binding`] builds one, whose amendments are
-/// recorded on `book`'s journal as production binds them (`kernel.rs`, `units.admin.amendments`).
-#[cfg(feature = "root-admin")]
-fn an_adjusting_binding_over(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-) -> AdminBinding {
-    let legacy: Arc<dyn LegacyRowsRead> =
-        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
-    AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
-        .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)))
-        .with_pools(Arc::new(|pool| pool == "pool-a"))
-        .with_amendment_journal(Arc::new(a_journal_over(book)))
-}
-
-/// A store-kept book holding one recorded unit the store has taken. Answers the book and the
-/// unit's digest.
-#[cfg(feature = "root-admin")]
-fn a_store_kept_book_with_one_recorded_unit(
-    slots: &crate::root::store_double::RecordSlots,
-    principal: &str,
-    lane: &str,
-) -> (Arc<Mutex<crate::root::durability::Durability>>, String) {
-    let book = a_book_over_the_store(slots);
-    let digest = post_one_recorded_unit(&book, principal, lane);
-    assert!(
-        book.lock()
-            .unwrap()
-            .lane()
-            .expect("a book over the store")
-            .drain(std::time::Duration::from_secs(120)),
-        "the store takes the posting"
-    );
-    (book, digest)
-}
-
-/// The corrections the node journal holds for `digest`.
-#[cfg(feature = "root-admin")]
-fn corrections_of(digest: &str) -> usize {
-    busbar_kernel::audit::amend::node_corrections()
-        .iter()
-        .filter(|a| {
-            matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
-                if adj.amends_hash == digest)
-        })
-        .count()
-}
-
-/// **`adjust` WHILE THE STORE REFUSES THE JOURNAL'S RECORDS IS REFUSED `503` AND SEALS NOTHING**
-/// (audit root r4 B-8; ARCHITECT 2026-10-07 H3 ruling (d), `durability/mod.rs` and
-/// `AmendmentJournal`: a durable admin verb records nothing while the store is refusing the
-/// journal's records). A count correction moves money (#71, `docs/design/BUSBAR-1.6.0.md`
-/// l.2268: the money is read-time over the counts), so it is held to the rule `amend_rate_history`
-/// and `commit_upgrade` already keep.
-///
-/// RED before the fix: `adjust` never asked the journal — it sealed the correction and answered 200.
-#[cfg(feature = "root-admin")]
-#[test]
-fn an_adjust_while_the_store_refuses_the_journal_is_refused_503_and_seals_nothing() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let (book, digest) = a_store_kept_book_with_one_recorded_unit(
-        &slots,
-        "vk_adjust_h3_refused",
-        "adjust-h3-refused",
-    );
-    slots.refuse(true);
-    // A durable verb that waited on the store saw it refuse.
-    let commit = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
-        .expect("json");
-    let seen = bound::commit_upgrade_effect(
-        &commit,
-        1_700_000_000,
-        "admin",
-        Some(&a_journal_over(&book)),
-    )
-    .expect("an answer");
-    assert_eq!(seen.status, 503, "{}", String::from_utf8_lossy(&seen.body));
-
-    let answer = adjust_through_route(
-        &an_adjusting_binding_over(&book),
-        VerbScope::Full,
-        serde_json::json!({
-            "amends": digest,
-            "now": { "input": "800" },
-            "reason": "a retried request was metered twice",
-            "pool": "pool-a",
-        }),
-    )
-    .expect("an answer");
-    let body = String::from_utf8_lossy(&answer.body).into_owned();
-    assert_eq!(answer.status, 503, "{body}");
-    assert!(body.contains("the test store refuses writes"), "{body}");
-    assert_eq!(
-        corrections_of(&digest),
-        0,
-        "nothing is sealed while the store refuses"
-    );
-}
-
-/// Marks the child process of [`an_adjust_answers_only_once_the_store_kept_its_correction`].
-#[cfg(feature = "root-admin")]
-const ADJUST_ACK_PHASE: &str = "BUSBAR_TEST_ADJUST_ACK_PHASE";
-
-/// THE CHILD HALF of [`an_adjust_answers_only_once_the_store_kept_its_correction`], run only in a
-/// process of its own: it binds the node amendment journal's sink — one per process — to its book,
-/// as the production boot does (`root::boot`, `bind_amendments`). Ignored so the default run never
-/// counts it as a pass.
-#[cfg(feature = "root-admin")]
-#[test]
-#[ignore = "child process of an_adjust_answers_only_once_the_store_kept_its_correction"]
-fn adjust_ack_phase() {
-    assert!(
-        std::env::var(ADJUST_ACK_PHASE).is_ok(),
-        "adjust_ack_phase is the child half of an_adjust_answers_only_once_the_store_kept_its_\
-         correction: run that, not this"
-    );
-    let slots = crate::root::store_double::RecordSlots::new();
-    let (book, digest) =
-        a_store_kept_book_with_one_recorded_unit(&slots, "vk_adjust_h3_ack", "adjust-h3-ack");
-    book.lock()
-        .unwrap()
-        .restore_amendments()
-        .expect("the chain reads back");
-    crate::root::durability::bind_amendments(&book);
-    slots.refuse(true);
-
-    let answer = adjust_through_route(
-        &an_adjusting_binding_over(&book),
-        VerbScope::Full,
-        serde_json::json!({
-            "amends": digest,
-            "now": { "input": "800" },
-            "reason": "a retried request was metered twice",
-            "pool": "pool-a",
-        }),
-    )
-    .expect("an answer");
-    let body = String::from_utf8_lossy(&answer.body).into_owned();
-    assert_eq!(answer.status, 503, "{body}");
-    assert!(
-        body.contains("the test store refuses writes") && body.contains("do not re-submit"),
-        "{body}"
-    );
-    assert_eq!(
-        corrections_of(&digest),
-        1,
-        "the correction is sealed and on the chain, offered again: in force, not yet kept"
-    );
-}
-
-/// **`adjust` ANSWERS 200 ONLY ONCE THE STORE KEPT ITS CORRECTION** (audit root r4 B-8; ARCHITECT
-/// 2026-10-07 H3 ruling (d): a durable admin verb answers only once the store acknowledged its
-/// record). A correction sealed and journalled whose record the store then refuses is answered
-/// `503` "sealed, not yet kept; do not re-submit" — never 200 over a record a crash would lose, and
-/// with it the money derived from the corrected counts (#71, `docs/design/BUSBAR-1.6.0.md` l.2268).
-/// See [`adjust_ack_phase`].
-///
-/// RED before the fix: `adjust` answered 200 without waiting for the store.
-#[cfg(feature = "root-admin")]
-#[test]
-fn an_adjust_answers_only_once_the_store_kept_its_correction() {
-    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::units_admin::tests::adjust_ack_phase"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
-        .env(ADJUST_ACK_PHASE, "1")
-        .output()
-        .expect("the test binary runs");
-    let text =
-        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "the child phase failed:\n{text}");
-    assert!(
-        text.contains("1 passed"),
-        "the child phase ran nothing:\n{text}"
-    );
-}
-
-// ---------------------------------------------------------------------------------------------
-// H6 (audit root-R1 #6; ARCHITECT 2026-10-07 H6 retention ruling): THE NODE'S TOTALS READ PRICES
-// THE BOOK'S COUNTED LINES AT READ TIME (BUSBAR-1.6.0.md §7)
-// ---------------------------------------------------------------------------------------------
-
-/// How long a test waits for the write-behind lane to hand the store what it holds.
-#[cfg(feature = "root-admin")]
-const H6_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// A dated history of the test's own, opened by a card pricing `A_LANE` input at 2 micro-units a
-/// unit and no flat fee. Its own rather than the root's, so no other test's applies reach it.
-#[cfg(feature = "root-admin")]
-fn h6_history() -> Arc<crate::root::kernel::RootHistory> {
-    let history = Arc::new(crate::root::kernel::RootHistory::default());
-    history.apply(a_card_at(2.0, 0), 1_000);
-    history
-}
-
-/// A node book with no data directory whose chain `slots` keeps, as the production boot builds one
-/// over the configured store, pricing against `history`.
-#[cfg(feature = "root-admin")]
-fn h6_book(
-    slots: &crate::root::store_double::RecordSlots,
-    history: &Arc<crate::root::kernel::RootHistory>,
-) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
-        .expect("the lane starts");
-    let source = Arc::clone(history);
-    Arc::new(Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            0,
-            lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(move || source.pin()),
-            None,
-        )
-        .expect("the store reads back"),
-    ))
-}
-
-/// The balance a bucket's units settle onto.
-#[cfg(feature = "root-admin")]
-fn h6_key(bucket: &str) -> busbar_kernel_ledger::totals::TotalsKey {
-    busbar_kernel_ledger::totals::TotalsKey::new(
-        busbar_kernel_ledger::totals::BucketId::new(bucket),
-        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
-        busbar_kernel_ledger::totals::BucketScope::All,
-    )
-}
-
-/// Settle one unit the way the late arm does: `input` units on `lane`, arrived at `A_LINE_MS` in
-/// the window `A_DAY`, posted at `settled` nano-units — the figure the card in force priced it at —
-/// and journalled WITH its counts. `mono` names the unit.
-#[cfg(feature = "root-admin")]
-fn h6_settle_counted(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-    bucket: &str,
-    lane: &str,
-    input: u64,
-    settled: u64,
-    mono: u64,
-) {
-    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
-    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    let posted = Posted::settle_late(
-        HoldAccrual::after_terminal(PrincipalId::new(bucket), settled, &ledger),
-        &ledger,
-    );
-    let counts = UnitCounts {
-        lane: lane.to_string(),
-        fee_count: 0,
-        classes: std::collections::BTreeMap::from([(
-            busbar_kernel_ledger::cost::CLASS_INPUT.to_string(),
-            input,
-        )]),
-    };
-    let key = h6_key(bucket);
-    book.lock()
-        .expect("unpoisoned")
-        .settle_counted(
-            &Settling {
-                key: &key,
-                window: A_DAY,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: PostingStamp {
-                    rate_card_version: 0,
-                    wall: A_DAY,
-                    mono,
-                },
-            },
-            posted,
-            &counts,
-            A_LINE_MS,
-        )
-        .expect("the journal takes it");
-}
-
-/// Settle one unit with a FIGURE and no counts: a settlement whose writer knew no counts.
-#[cfg(feature = "root-admin")]
-fn h6_settle_uncounted(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-    bucket: &str,
-    settled: u64,
-    mono: u64,
-) {
-    use crate::root::durability::{PostingStamp, Settling};
-    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
-    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    let posted = Posted::settle_late(
-        HoldAccrual::after_terminal(PrincipalId::new(bucket), settled, &ledger),
-        &ledger,
-    );
-    let key = h6_key(bucket);
-    book.lock()
-        .expect("unpoisoned")
-        .settle_posted(
-            &Settling {
-                key: &key,
-                window: A_DAY,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: PostingStamp {
-                    rate_card_version: 0,
-                    wall: A_DAY,
-                    mono,
-                },
-            },
-            posted,
-        )
-        .expect("the journal takes it");
-}
-
-/// A signed, back-dated correction covering the instant every fixture unit arrived at, pricing
-/// `A_LANE` input at `nanos_per_unit`, appended long after the units settled.
-#[cfg(feature = "root-admin")]
-fn h6_correct(history: &crate::root::kernel::RootHistory, nanos_per_unit: u64) {
-    history
-        .amend(
-            &crate::root::kernel::Correction {
-                effective_from: A_LINE_MS,
-                effective_until: Some(A_LINE_MS + 86_400_000),
-                appended_at: A_LINE_MS + 60_000,
-                author: busbar_kernel_ledger::cost::Author::Amend {
-                    reason_hash: [9u8; 32],
-                },
-                cells: vec![(
-                    busbar_kernel_ledger::cost::LaneClass::new(
-                        A_LANE,
-                        busbar_kernel_ledger::cost::CLASS_INPUT,
-                    ),
-                    nanos_per_unit,
-                )],
-                fee: Some(0),
-            },
-            |_, _| Ok::<(), ()>(()),
-        )
-        .expect("the history has an opening entry to correct");
-}
-
-/// The totals document the node's OWN ledger view serves over `book`, as bytes, through the whole
-/// loop.
-#[cfg(feature = "root-admin")]
-fn h6_totals_bytes(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<u8> {
-    let legacy: Arc<dyn LegacyRowsRead> =
-        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
-        .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)));
-    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
-        .answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    assert_eq!(
-        answer.status,
-        200,
-        "the totals view did not answer: {}",
-        String::from_utf8_lossy(&answer.body)
-    );
-    answer.body
-}
-
-/// The rows of that document, keyed by bucket.
-#[cfg(feature = "root-admin")]
-fn h6_rows(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-) -> std::collections::BTreeMap<String, serde_json::Value> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(&h6_totals_bytes(book)).expect("the totals response is JSON");
-    doc["rows"]
-        .as_array()
-        .expect("a rows array")
-        .iter()
-        .map(|row| {
-            (
-                row["bucket"].as_str().expect("a bucket").to_string(),
-                row.clone(),
-            )
-        })
-        .collect()
-}
-
-/// **A SIGNED BACK-DATED CORRECTION MOVES THE NODE'S OWN TOTALS ON THE NEXT READ, WITH NO
-/// RESTART** (BUSBAR-1.6.0.md §7; audit root-R1 #6).
-///
-/// One unit settles 1,000,000 input units with its counts at 2 micro-units a unit. A correction
-/// appended afterwards prices the interval it arrived in at 4: the next read answers 4,000,000,000
-/// nano-units, and the book's settled balance is untouched — the money moved and no posted figure
-/// did.
-///
-/// RED before the fix: `NodeLedger::booked_lines` answered nothing, so the read fell back to the
-/// book's balance and went on answering the 2,000,000,000 the unit settled at.
-#[cfg(feature = "root-admin")]
-#[test]
-fn h6_a_back_dated_correction_moves_the_node_totals_on_the_next_read_without_a_restart() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let history = h6_history();
-    let book = h6_book(&slots, &history);
-    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
-
-    let before = h6_rows(&book);
-    assert_eq!(before.len(), 1, "one unit, one row: {before:?}");
-    assert_eq!(before["team-a"]["day"], A_DAY);
-    assert_eq!(before["team-a"]["priced_nanos"], "2000000000");
-
-    h6_correct(&history, 4_000);
-
-    let after = h6_rows(&book);
-    assert_eq!(
-        after["team-a"]["priced_nanos"], "4000000000",
-        "a back-dated correction must move the next read of the node's totals: {after:?}"
-    );
-    assert_eq!(after["team-a"]["priced_micros"], "4000000");
-    assert_eq!(
-        book.lock()
-            .expect("unpoisoned")
-            .settled_read(&h6_key("team-a"), A_DAY)
-            .expect("no refused row"),
-        2_000_000_000,
-        "the correction moved the book's settled balance; it must move only the read"
-    );
-}
-
-/// **THE SAME READ ANSWERS THE SAME BYTES BEFORE AND AFTER A RESTART OVER THE SAME CHAIN.**
-///
-/// The counted lines are appended as they are journalled and rebuilt from the chain at boot, so
-/// the read is one derivation either side of the restart. Here the chain is kept by the configured
-/// store (no data directory, H3), and the restart is a fresh book over the same store.
-///
-/// RED before the fix: before the restart the read answered the settled balance (2,000,000,000),
-/// after it the balance a replay re-derived at the corrected card (4,000,000,000) — the same
-/// endpoint, the same chain, two amounts.
-#[cfg(feature = "root-admin")]
-#[test]
-fn h6_the_node_totals_answer_the_same_bytes_before_and_after_a_restart() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let history = h6_history();
-    let book = h6_book(&slots, &history);
-    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
-    h6_settle_counted(&book, "team-b", A_LANE, 250_000, 500_000_000, 2);
-    h6_correct(&history, 4_000);
-
-    let before = h6_totals_bytes(&book);
-    assert!(
-        book.lock()
-            .expect("unpoisoned")
-            .lane()
-            .expect("a book over the store has a lane")
-            .drain(H6_WAIT),
-        "the store took the chain"
-    );
-    drop(book);
-
-    let restarted = h6_book(&slots, &history);
-    let after = h6_totals_bytes(&restarted);
-    assert_eq!(
-        String::from_utf8_lossy(&before),
-        String::from_utf8_lossy(&after),
-        "the same chain must answer the same totals either side of a restart"
-    );
-    let rows = h6_rows(&restarted);
-    assert_eq!(rows["team-a"]["priced_nanos"], "4000000000");
-    assert_eq!(rows["team-b"]["priced_nanos"], "1000000000");
-}
-
-/// **A LINE ITS CARD CANNOT PRICE, OR A FIGURE NO COUNTS STAND BEHIND, SERVES THE BOOK'S BALANCE —
-/// NEVER A ZERO AND NEVER A TABLE WITH A ROW MISSING** (#42; `derived_totals_rows`).
-///
-/// A guard on the two ways the counted lines are not the whole of the money: a line on a lane the
-/// card names nothing for (a hole is a refusal, so the derivation refuses for the whole read), and
-/// a settlement whose writer posted a figure with no counts (nothing to price, so the lines do not
-/// cover the book). Either way the read answers the balance, every row in it. This passes before
-/// the fix as well, where every read was the balance; after it, it pins the fallback.
-#[cfg(feature = "root-admin")]
-#[test]
-fn h6_an_unpriceable_line_or_an_uncounted_figure_serves_the_balance_never_zero() {
-    // A line the card cannot price.
-    let slots = crate::root::store_double::RecordSlots::new();
-    let history = h6_history();
-    let book = h6_book(&slots, &history);
-    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
-    h6_settle_counted(
-        &book,
-        "team-b",
-        "lane-the-card-does-not-name",
-        1_000_000,
-        3_000_000_000,
-        2,
-    );
-    h6_correct(&history, 4_000);
-    let rows = h6_rows(&book);
-    assert_eq!(rows.len(), 2, "every row is served: {rows:?}");
-    assert_eq!(
-        rows["team-b"]["priced_nanos"], "3000000000",
-        "an unpriceable line serves the balance, never zero"
-    );
-    assert_eq!(
-        rows["team-a"]["priced_nanos"], "2000000000",
-        "one hole refuses the derivation for the whole read: one vintage per response"
-    );
-
-    // A figure with no counts behind it.
-    let slots = crate::root::store_double::RecordSlots::new();
-    let history = h6_history();
-    let book = h6_book(&slots, &history);
-    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
-    h6_settle_uncounted(&book, "team-c", 700_000_000, 2);
-    h6_correct(&history, 4_000);
-    let rows = h6_rows(&book);
-    assert_eq!(
-        rows.len(),
-        2,
-        "the uncounted figure's row is served: {rows:?}"
-    );
-    assert_eq!(rows["team-c"]["priced_nanos"], "700000000");
-    assert_eq!(
-        rows["team-a"]["priced_nanos"], "2000000000",
-        "a figure with no counts behind it means the lines are not the whole of the money: the \
-         whole read is the balance"
-    );
 }
 
 /// ROUTE IS FAIL-CLOSED ON AN ABSENT GRANT (audit root-R1 M7).

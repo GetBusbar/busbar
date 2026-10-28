@@ -561,8 +561,6 @@ pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durabilit
             &crate::root::durability::DurabilityConfig { data_dir: None },
             0,
             lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
             None,
         )
         .expect("the store reads back"),
@@ -1033,7 +1031,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let pin = opts.pin.unwrap_or(card_pin);
-    let book = crate::root::durability::node_book_over(Box::new(pin));
+    let book = crate::root::durability::node_book();
     let durability = if opts.full_journal {
         full_journal_book()
     } else {

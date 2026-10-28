@@ -688,7 +688,6 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     // Both settlements through the ONE money-book seam over the shared book — the pass-through the
@@ -1065,7 +1064,6 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     // Settle THROUGH the money-book seam, over the shared book — the pass-through the live exit arm
@@ -1107,7 +1105,6 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
@@ -1191,7 +1188,6 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
@@ -3644,7 +3640,6 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
         )
         .expect("a memory-buffered journal cannot fail to open"),
     ));
@@ -3762,7 +3757,6 @@ fn swept_node() -> (
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
         )
         .expect("a memory-buffered journal cannot fail to open"),
     ));
@@ -4696,8 +4690,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
             },
             7,
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(move || holder.pin()),
             Some(holder),
         )
         .expect("the journal opens"),
@@ -4990,7 +4982,6 @@ fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
@@ -5090,8 +5081,6 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
             &crate::root::durability::DurabilityConfig { data_dir: None },
             0,
             lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
             None,
         )
         .expect("the store reads back"),
@@ -5154,7 +5143,6 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));

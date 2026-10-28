@@ -474,23 +474,20 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-// THE BOOT BOOK: IT REACHES THE CONFIGURED STORE, AND ITS OPENING IS SEALED BEFORE ANYTHING SETTLES
+// THE BOOT JOURNAL: IT REACHES THE CONFIGURED STORE
 //
-// Two facts, and the previous shape failed both. `node_book()` hard-coded `data_dir: None` and a
-// `NullShipper`, so a deployment that configured a data directory wrote its book nowhere; and
-// `root::migration::run` had no caller outside its own tests, so no opening was ever sealed. Every
-// settlement therefore measured its residual from a checkpoint that was never written.
+// `node_book()` hard-coded `data_dir: None` and a `NullShipper`, so a deployment that configured a
+// data directory wrote its journal nowhere. The journal carries no money (MONEY-DESIGN §2c): no
+// opening balance is sealed, because the ledger is the store's usage counts, read as they are.
 //
-// The three tests below are one proof in three parts, and they are deliberately split by WHAT EACH
-// CAN SEE rather than by what each asserts:
+// The three tests below are one proof in three parts, split by WHAT EACH CAN SEE:
 //
-//   * `the_boot_path_opens_the_configured_directory_and_seals_before_it_settles` drives the REAL
-//     path — a real `App` out of the real `build_app_from_config`, then `root::boot::book`, the exact
-//     function `run()` calls. It can see the directory and the chain, so it proves the data
-//     directory is honoured and the ORDER holds.
-//   * `the_boot_book_ships_its_opening_to_the_configured_store` drives `root::boot::compose_book`, the seam
-//     `root::boot::book` calls, over a store whose record slots the TEST holds, so what the store
-//     KEPT is observable: the opening's records, under this node's keys.
+//   * `the_boot_path_opens_the_configured_directory` drives the REAL path — a real `App` out of the
+//     real `build_app_from_config`, then `root::boot::book`, the exact function `run()` calls. It can
+//     see the directory and the chain, so it proves the data directory is honoured.
+//   * `the_boot_book_ships_its_records_to_the_configured_store` drives `root::boot::compose_book`, the
+//     seam `root::boot::book` calls, over a store whose record slots the TEST holds, so what the
+//     store KEPT is observable: the boot's records, under this node's keys.
 //   * `no_configured_directory_still_opens_nothing_and_writes_nothing` holds the other half of the
 //     discipline: the fix gives a node WITH a directory somewhere to write, and must not make
 //     writing unconditional.
@@ -563,37 +560,14 @@ impl Drop for BookDir {
     }
 }
 
-/// The migration config a seam test opens over: a plan naming nothing, so an empty deployment seals
-/// a ZERO opening rather than refusing, and the two facts under test are proved without seeding rows
-/// the seal would then have to read back.
-fn empty_opening_plan() -> root::migration::MigrationConfig {
-    root::migration::MigrationConfig {
-        node: 0,
-        window: 0,
-        group_buckets: Vec::new(),
-        metering_days: Vec::new(),
-        rate_card_version: 7,
-    }
-}
-
 /// THE REAL PATH, END TO END: a real `App`, then `root::boot::book` — the function `run()` calls at
 /// the line that used to read `node_book()` — against a CONFIGURED data directory.
 ///
-/// Three assertions, in the order the defect broke them:
-///
-/// (a) THE BOOK REACHES THE CONFIGURED STORE. With `BUSBAR_DATA_DIR` set, the node's own journal is
-///     ON DISK and files appear IN THAT DIRECTORY. Under the old `node_book()` the directory was
-///     never read — `data_dir: None` was a literal — so the journal was memory-buffered and this
-///     listing was empty no matter what the operator configured.
-///
-/// (b) THE OPENING IS SEALED. A migration marker is readable off the book's own chain. The old boot
-///     never called the migration at all, so there was no marker anywhere and nothing had opened the
-///     deployment's balances.
-///
-/// (c) THE SEAL COMES FIRST — which is the whole point, and the reason (b) alone would not be a
-///     proof. The marker is the FIRST record on the chain; a settlement made afterwards lands
-///     STRICTLY AFTER it. An opening sealed after traffic has begun is worse than useless, because
-///     it looks authoritative while measuring from the wrong point.
+/// THE JOURNAL REACHES THE CONFIGURED STORE. With `BUSBAR_DATA_DIR` set, the node's own journal is
+/// ON DISK and files appear IN THAT DIRECTORY. Under the old `node_book()` the directory was never
+/// read — `data_dir: None` was a literal — so the journal was memory-buffered and this listing was
+/// empty no matter what the operator configured. The one record on the chain when the boot hands
+/// the journal over is the deployment keyset's `Bootstrap` (spec #82(a)): no money record.
 // A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
 // registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
 // plane with no body-ingress codec) has none to name: the fixture refuses, and which test happened to
@@ -601,10 +575,9 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 // the root's other provider-configuring cells are.
 #[cfg(linked_axis_body_ingress)]
 #[test]
-fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
+fn the_boot_path_opens_the_configured_directory() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel::test_support::register_neutral_test_plane();
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
     use busbar_kernel_wal::RecordClass;
 
     // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
@@ -642,7 +615,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // THE FUNCTION `run()` CALLS. Not a re-implementation of it, not a recording double of it.
     let book = root::boot::book(&app, "test-store").expect("the boot book opens");
 
-    let (on_disk, marker, first_record) = {
+    let (on_disk, first_record) = {
         let durability = book
             .durability
             .lock()
@@ -652,119 +625,24 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
             .replay()
             .expect("the journal on the configured directory reads back")
             .expect("and verifies");
-        (
-            durability.on_disk(),
-            durability.migration_marker(),
-            replayed,
-        )
+        (durability.on_disk(), replayed)
     };
 
-    // (a) THE CONFIGURED DIRECTORY IS WHERE THE BOOK WENT.
     assert!(
         on_disk,
-        "with a data directory configured the node's book must be on this node's own disk; it was \
-         memory-buffered, which is the `data_dir: None` literal the boot used to hard-code"
+        "with a data directory configured the node's journal must be on this node's own disk; it \
+         was memory-buffered, which is the `data_dir: None` literal the boot used to hard-code"
     );
     assert!(
         !dir.entries().is_empty(),
-        "the configured data directory holds no file: the book never reached it. The listing is \
-         the assertion, not the mode flag above"
+        "the configured data directory holds no file: the journal never reached it. The listing \
+         is the assertion, not the mode flag above"
     );
-
-    // (b) THE OPENING IS SEALED.
-    assert!(
-        marker.is_some(),
-        "the boot must SEAL the opening balances; no migration marker is on the book's chain, which \
-         is what a boot that never called the migration leaves behind"
-    );
-
-    // (c) AND IT WAS SEALED FIRST. Nothing else is on the chain yet — the book has not been handed
-    //     to a listener, and this is the instant before the first connection could settle. The one
-    //     record ahead of the marker is the deployment keyset's `Bootstrap` (spec #82(a)), which
-    //     moves no figure and is sealed before the opening so the opening is signed.
     assert_eq!(
         first_record.iter().map(|r| r.class).collect::<Vec<_>>(),
-        vec![RecordClass::Bootstrap, RecordClass::Migration],
-        "exactly the keyset's Bootstrap and the opening's marker are on the chain at the moment \
-         the boot hands the book over"
-    );
-    let opening_seq = first_record[1].node_seq;
-
-    // Now settle, the way an exit arm does, and prove the ORDER rather than merely the presence: the
-    // settlement's record is strictly after the opening's. This is the sentence the defect made
-    // false — a settlement measured from a checkpoint that was not there when it happened.
-    let kernel = root::kernel::new_kernel();
-    let durability_token = kernel.durability_token();
-    let key = TotalsKey::new(
-        BucketId::new("vk_boot_order"),
-        CapDimension::NanoUnits,
-        BucketScope::All,
-    );
-    let settled = {
-        let mut durability = book
-            .durability
-            .lock()
-            .expect("the book's lock is unpoisoned");
-        durability.ledger.record_hold_opened(&key, 86_400, 5_000);
-        let hold = busbar_contract::caps::Hold::open(
-            &kernel.admit_token(),
-            busbar_contract::caps::PrincipalId::new("vk_boot_order"),
-            5_000,
-        );
-        let usage = busbar_contract::caps::Usage::report(
-            &kernel.usage_token(),
-            vec![busbar_contract::caps::UsageLine {
-                class: busbar_contract::caps::MeterClassId::new("nano_units"),
-                quantity: 4_200,
-                source: busbar_contract::caps::QuantitySource::Count,
-                estimated: false,
-            }],
-        )
-        .expect("one usage line");
-        durability
-            .settle(
-                &root::durability::Settling {
-                    key: &key,
-                    window: 86_400,
-                    durability: &durability_token,
-                    step: busbar_contract::caps::StepName::Meter,
-                    stamp: root::durability::PostingStamp {
-                        rate_card_version: 3,
-                        wall: 1_700_000_000,
-                        mono: 42,
-                    },
-                },
-                hold,
-                4_200,
-                &usage,
-                &kernel.ledger_token(),
-            )
-            .expect("the configured store takes the settlement's batch")
-    };
-    assert_eq!(settled.settlement.posted.settled(), 4_200);
-
-    let after = {
-        let durability = book
-            .durability
-            .lock()
-            .expect("the book's lock is unpoisoned");
-        durability
-            .journal
-            .replay()
-            .expect("the journal reads back")
-            .expect("and verifies")
-    };
-    let posting = after
-        .iter()
-        .find(|r| r.class == RecordClass::Transaction)
-        .expect("the settlement is on the same chain the opening is on");
-    assert!(
-        posting.node_seq > opening_seq,
-        "the settlement (seq {}) must come AFTER the sealed opening (seq {}) on the one chain — an \
-         opening sealed after traffic has begun looks authoritative and measures from the wrong \
-         point",
-        posting.node_seq,
-        opening_seq
+        vec![RecordClass::Bootstrap],
+        "the keyset's Bootstrap, and no money record, is on the chain when the boot hands the \
+         journal over"
     );
 }
 
@@ -811,48 +689,38 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
 /// THE STORE HALF, at the only vantage point it is visible from: `root::boot::compose_book`, the seam
 /// `root::boot::book` calls, handed a store whose record slots the TEST holds.
 ///
-/// What the store KEPT is read off the store: the opening's records under the journal schema, put
+/// What the store KEPT is read off the store: the boot's records under the journal schema, put
 /// through its `record_put` slot by the journal's lane, keyed by this node's identity and the
-/// marker's sequence. The adapter's old shipper acknowledged a batch and kept a count, so this
+/// record's sequence. The adapter's old shipper acknowledged a batch and kept a count, so this
 /// reading was nothing whatever it said (ARCHITECT 2026-10-07 H3 ruling).
 #[test]
-fn the_boot_book_ships_its_opening_to_the_configured_store() {
-    use crate::root::loader::store_adapter::StoreAdapter;
+fn the_boot_book_ships_its_records_to_the_configured_store() {
     use busbar_kernel_wal::RecordClass;
 
     let dir = BookDir::new("ships");
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
-    let adapter = StoreAdapter::native(store);
     let slots = crate::root::store_double::RecordSlots::new();
-    let mig = empty_opening_plan();
     let token = root::kernel::new_kernel().durability_token();
 
-    let (durability, _rows, migration) = root::boot::compose_book(
-        &adapter,
+    let durability = root::boot::compose_book(
         journal_lane(&slots),
         Some(dir.0.clone()),
-        &mig,
+        0,
         1_700_000_000,
         &token,
     )
-    .expect("the boot book composes over the configured directory and an empty store");
+    .expect("the boot journal composes over the configured directory and an empty store");
 
-    assert!(
-        migration.sealed_now(),
-        "the composition must SEAL the opening at start-of-book, not hand back an unopened book"
-    );
     let replayed = durability
         .journal
         .replay()
         .expect("the journal reads back")
         .expect("and verifies");
-    // The first boot with a data directory seals the deployment keyset's `Bootstrap` first (spec
-    // #82(a); BUSBAR-1.6.0.md THE DESIGN, §2), then the opening's marker — signed with that keyset.
+    // The first boot with a data directory seals the deployment keyset's `Bootstrap` (spec #82(a);
+    // BUSBAR-1.6.0.md THE DESIGN, §2), and no money record.
     assert_eq!(
         replayed.iter().map(|r| r.class).collect::<Vec<_>>(),
-        vec![RecordClass::Bootstrap, RecordClass::Migration],
-        "exactly the keyset's Bootstrap and then the one opening marker are on the chain"
+        vec![RecordClass::Bootstrap],
+        "exactly the keyset's Bootstrap is on the chain"
     );
 
     // THE ASSERTION THIS TEST EXISTS FOR. The records reached the CONFIGURED store's record slots.
@@ -862,17 +730,17 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
         .clone();
     assert!(
         lane.drain(std::time::Duration::from_secs(5)),
-        "the store takes the opening"
+        "the store takes the Bootstrap"
     );
-    let marker = replayed[1].node_seq;
+    let seq = replayed[0].node_seq;
     let kept = futures::executor::block_on(slots.calls().record_get(
         root::durability::JOURNAL_SCHEMA,
-        &root::durability::part_key(mig.node, marker, 0),
+        &root::durability::part_key(0, seq, 0),
     ))
     .expect("the store answers");
     assert!(
         kept.is_some(),
-        "the store keeps the opening's marker under THIS node's identity and the marker's sequence"
+        "the store keeps the Bootstrap under THIS node's identity and the record's sequence"
     );
 }
 
@@ -886,29 +754,17 @@ fn journal_lane(slots: &crate::root::store_double::RecordSlots) -> root::durabil
 /// still open nothing and leave nothing behind. The fix gives a node WITH a directory somewhere to
 /// write; it must not make writing unconditional.
 ///
-/// The seal and the shipping still happen — those are the store's business, not the disk's — so
-/// this also pins that the two decisions are independent: no directory does not mean no opening.
+/// The shipping still happens — that is the store's business, not the disk's — so this also pins
+/// that the two decisions are independent.
 #[test]
 fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
-    use crate::root::loader::store_adapter::StoreAdapter;
-
     // A directory the node was never told about. Nothing may appear in it.
     let unnamed = BookDir::new("unnamed");
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
-    let adapter = StoreAdapter::native(store);
     let slots = crate::root::store_double::RecordSlots::new();
     let token = root::kernel::new_kernel().durability_token();
 
-    let (durability, _rows, migration) = root::boot::compose_book(
-        &adapter,
-        journal_lane(&slots),
-        None,
-        &empty_opening_plan(),
-        1_700_000_000,
-        &token,
-    )
-    .expect("a memory-buffered book composes");
+    let durability = root::boot::compose_book(journal_lane(&slots), None, 0, 1_700_000_000, &token)
+        .expect("a memory-buffered journal composes");
 
     assert!(
         !durability.on_disk(),
@@ -920,15 +776,11 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
         "a file appeared beside a configuration that asked for none"
     );
     assert!(
-        migration.sealed_now(),
-        "no data directory is not no opening: the balances are still sealed, into the store"
-    );
-    assert!(
         durability
             .lane()
             .expect("a book over the store holds its lane")
             .drain(std::time::Duration::from_secs(5)),
-        "the store takes the opening"
+        "the store takes the boot's records"
     );
     assert!(
         slots.rows_under(root::durability::JOURNAL_SCHEMA) >= 1,
@@ -938,48 +790,40 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
 }
 
 /// THE DEPLOYMENT KEYSET AT THE BOOT SEAM (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect
-/// ruling 2026-09-26): the opening `root::boot::compose_book` seals is SIGNED with the keyset it bound —
-/// ephemeral without a directory, cached under it with one — and a restart over a directory whose
-/// keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.
+/// ruling 2026-09-26): the audit chain `root::boot::compose_book` hands over SIGNS with the keyset it
+/// bound — ephemeral without a directory, cached under it with one — and a restart over a directory
+/// whose keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.
 #[test]
-fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache() {
-    use crate::root::loader::store_adapter::StoreAdapter;
-
-    let adapter = || {
-        let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
-        StoreAdapter::native(store)
-    };
+fn the_boot_book_binds_its_keyset_and_refuses_keyset_missing_without_the_cache() {
     let token = root::kernel::new_kernel().durability_token();
 
-    // No directory: ephemeral, and the opening is signed and verifies against the node's keyset.
-    let (memory, _rows, migration) = root::boot::compose_book(
-        &adapter(),
+    // No directory: ephemeral, and the chain signs with a key its own keyset holds.
+    let memory = root::boot::compose_book(
         journal_lane(&crate::root::store_double::RecordSlots::new()),
         None,
-        &empty_opening_plan(),
+        0,
         1_700_000_000,
         &token,
     )
-    .expect("a memory-buffered book composes");
-    let busbar_kernel_ledger::migration::Outcome::Sealed(opening) = &migration.outcome else {
-        panic!("a first boot seals its opening");
-    };
-    let opening = &opening.checkpoint;
-    assert!(opening.signature.is_some(), "the opening is signed");
-    opening
-        .verify_seal(&root::durability::KeySetVerifier::new(
-            root::durability::keyset_of(&memory.record),
-        ))
-        .expect("the node's own keyset verifies its opening");
+    .expect("a memory-buffered journal composes");
+    let key_id = memory
+        .record
+        .signing_key_id()
+        .expect("the chain signs")
+        .to_string();
+    assert!(
+        root::durability::keyset_of(&memory.record)
+            .get(&key_id)
+            .is_some(),
+        "the node's own keyset holds the key its chain signs with"
+    );
 
     // A directory: minted and cached; then the cache is lost and the restart refuses.
     let dir = BookDir::new("keyset");
-    let (first, _rows, _) = root::boot::compose_book(
-        &adapter(),
+    let first = root::boot::compose_book(
         journal_lane(&crate::root::store_double::RecordSlots::new()),
         Some(dir.0.clone()),
-        &empty_opening_plan(),
+        0,
         1_700_000_000,
         &token,
     )
@@ -988,10 +832,9 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
     drop(first);
     std::fs::remove_file(dir.0.join(root::keyset::KEYSET_FILE)).expect("the cache is removed");
     let refused = root::boot::compose_book(
-        &adapter(),
         journal_lane(&crate::root::store_double::RecordSlots::new()),
         Some(dir.0.clone()),
-        &empty_opening_plan(),
+        0,
         1_700_000_000,
         &token,
     )

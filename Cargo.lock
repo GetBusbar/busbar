@@ -502,7 +502,6 @@ dependencies = [
  "busbar-contract",
  "ring",
  "serde",
- "sha2",
 ]
 
 [[package]]

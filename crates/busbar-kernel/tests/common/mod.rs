@@ -70,10 +70,10 @@ impl Drop for GroupCount {
 
 /// What the fake door answers.
 pub enum Door {
-    /// Open a hold of this size.
-    Own(u64),
-    /// Spend this much against a parent's hold in this cell.
-    Accrual(Arc<HoldCell>, u64),
+    /// Open a hold of the unit's own.
+    Own,
+    /// Run under a parent's hold in this cell.
+    Accrual(Arc<HoldCell>),
     /// Hold nothing.
     Zero,
 }
@@ -133,7 +133,7 @@ impl Default for TestUnits {
             calls: Mutex::new(Vec::new()),
             refuse_at: None,
             refuse_wait: None,
-            door: Door::Own(1_000),
+            door: Door::Own,
             evidence: Evidence::default(),
             spend: 0,
             meter: Arc::new(AccrualMeter::new()),
@@ -314,7 +314,7 @@ impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
         principal: PrincipalId,
         token: &busbar_contract::caps::Grant<busbar_contract::caps::Admittance>,
     ) -> Hold {
-        Hold::open(token, principal, 0)
+        Hold::open(token, principal)
     }
 }
 
@@ -337,7 +337,7 @@ pub fn ctx(key: u64) -> UnitCtx {
 
 /// A cell holding an arrival hold, ready for the door.
 pub fn cell(kernel: &Kernel) -> HoldCell {
-    HoldCell::new(Hold::open(&kernel.admit_token(), principal(), 0))
+    HoldCell::new(Hold::open(&kernel.admit_token(), principal()))
 }
 
 /// A usage report of one line, for tests that need one directly.
@@ -494,14 +494,14 @@ impl Units for TestUnits {
                     leases.counted(group);
                 }
                 let admission = match &self.door {
-                    Door::Own(size) => Admission::Own(Hold::open(admit, principal.clone(), *size)),
+                    Door::Own => Admission::Own(Hold::open(admit, principal.clone())),
                     Door::Zero => Admission::ZeroHold,
-                    Door::Accrual(parent, amount) => {
-                        match parent.accrue_child(principal, *amount, admit) {
+                    Door::Accrual(parent) => {
+                        match parent.accrue_child(principal, admit) {
                             Ok(accrual) => Admission::Accrual(accrual),
                             // A refused accrual falls back to the child's own hold, which is what
                             // the loop does when the parent has already exited.
-                            Err(_) => Admission::Own(Hold::open(admit, principal.clone(), *amount)),
+                            Err(_) => Admission::Own(Hold::open(admit, principal.clone())),
                         }
                     }
                 };

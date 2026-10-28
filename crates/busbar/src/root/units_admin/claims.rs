@@ -5,10 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::root::durability::{ClaimBalance, ClaimKey, ClaimStamp, Durability};
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
-use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-
-use crate::root::durability::{Durability, PostingStamp, Settling};
 
 /// The bucket every admin idempotency claim is journalled on: reserved away from every metering
 /// balance, so a claim can never be mistaken for, or matched against, a real hold.
@@ -43,27 +41,28 @@ impl RootClaimJournal {
 
 impl busbar_core_admin::idempotency::ClaimJournal for RootClaimJournal {
     fn journal_claim(&self, key: &(String, String), now: u64) {
-        let totals_key = TotalsKey::new(
-            BucketId::new(ADMIN_CLAIM_BUCKET),
-            CapDimension::Requests,
-            BucketScope::Pool(key.0.clone()),
-        );
-        let at = Settling {
-            key: &totals_key,
+        // The balance every build has journalled a claim on: the admin claim bucket, the requests
+        // dimension (tag 1), scoped to the actor's pool (tag 1), window `u64::MAX`.
+        let claim = ClaimBalance {
+            claim: format!("{}:{}", key.0, key.1),
+            key: ClaimKey {
+                bucket: ADMIN_CLAIM_BUCKET.to_string(),
+                dimension: (1, String::new()),
+                scope: (1, key.0.clone()),
+            },
             window: u64::MAX,
-            durability: &self.token,
-            step: StepName::Route,
-            stamp: PostingStamp {
-                rate_card_version: 0,
+        };
+        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        // A durability loss here is retained and re-offered by the log like any other append; it is
+        // never a refusal of the mint or rotate that took the claim.
+        let _ = durability.journal_claim(
+            claim,
+            ClaimStamp {
                 wall: now,
                 mono: now,
             },
-        };
-        let claim = format!("{}:{}", key.0, key.1);
-        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        // A durability loss here is retained and re-offered by the log like any other append (see
-        // `Durability::journal_claim`); it is never a refusal of the mint or rotate that took the
-        // claim, exactly as `journal_dispatch`'s failure is never a refusal of the dispatch.
-        let _ = durability.journal_claim(&at, &claim);
+            &self.token,
+            StepName::Route,
+        );
     }
 }

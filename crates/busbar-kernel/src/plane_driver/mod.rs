@@ -58,7 +58,6 @@ mod cancel;
 mod close;
 pub mod dispatch;
 pub mod door;
-mod epoch;
 mod far_end;
 pub(crate) mod hooks;
 pub mod host;
@@ -96,7 +95,6 @@ use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
-pub use epoch::FlushEpoch;
 pub use far_end::{
     AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, MemberSignals, MemberStanding,
     ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
@@ -111,7 +109,7 @@ pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
+pub use money::{EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
@@ -1503,7 +1501,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
             destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
         evidence(ctx: &UnitCtx) -> Evidence;
-        at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
+        at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<(), Refusal>;
     }
 
     /// The unit's audit, after the steps are told how its answer went ([`DriverSteps::answered`]).

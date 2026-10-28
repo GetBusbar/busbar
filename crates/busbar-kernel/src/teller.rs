@@ -203,12 +203,10 @@ impl Kernel {
         Grant::<Consumption>::mint(&self.seal)
     }
 
-    /// The seal itself, for the other two places in the kernel that mint tokens. Between them they
-    /// mint seven, two of them `WriteMoney` — the source scan that accounts for every mint counts
-    /// these as well as the factories above:
+    /// The seal itself, for the other place in the kernel that mints tokens — the source scan that
+    /// accounts for every mint counts it as well as the factories above. Through it they mint four,
+    /// one of them `WriteMoney`:
     ///
-    /// - the recovery module, which materialises a hold from a journal record and settles it:
-    ///   `Recover`, `Consumption` and `WriteMoney`;
     /// - the node's sweep, which settles an abandoned unit: `Exit` for the take, `Consumption`,
     ///   `WriteMoney`, and `Exit` again to seal the end. The unit's audit pass it takes from
     ///   [`audit_pass`], the loop's one audit mint, rather than minting one of its own.
@@ -267,7 +265,7 @@ impl AccrualMeter {
     }
 }
 
-/// The settlement writer the exit, the sweep and recovery all settle by. Pure data and pure
+/// The settlement writer the exit and the sweep both settle by. Pure data and pure
 /// functions, kept in their own module and re-exported here so every path is unchanged.
 pub use crate::settlement::{
     requests_drawn, requests_settled, settle_written, Evidence, FinishClass, StatusAt,
@@ -392,15 +390,10 @@ pub trait Units {
     /// What the unit's evidence looks like once it has run. Read by the settlement table.
     fn evidence(&self, ctx: &UnitCtx) -> Evidence;
 
-    /// A child's parent exited while the child still ran: size the hold its accrual converts to,
-    /// or refuse it on the budget (owner ruling Q71(4)).
-    ///
-    /// The default is a door with no slice to draw against: the hold is sized at what the child
-    /// pushed and nothing refuses. A door that keeps the principal's slice draws the hold against
-    /// it and refuses a child the slice cannot back, with the budget block it renders for any
-    /// other unit.
-    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
-        Ok(accrual.amount())
+    /// A child's parent exited while the child still ran: let its accrual convert to a hold of
+    /// its own, or refuse it on the budget (owner ruling Q71(4)). The default refuses nothing.
+    fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
+        Ok(())
     }
 }
 
@@ -1189,9 +1182,9 @@ fn terminal<U: Units>(
                     Settling::Parent(accrual),
                 )
             }
-            Ok(sized) => {
+            Ok(()) => {
                 let admit = Grant::<Admittance>::mint_bound(seal, ctx.call);
-                match accrual.convert_at_parent_exit(sized, &admit) {
+                match accrual.convert_at_parent_exit(&admit) {
                     Ok(own) => {
                         drop_arrival(run.cell.admit(own, &admit).unwrap_or_else(|lost| lost.hold));
                         (outcome, Settling::Converted)
@@ -1372,20 +1365,13 @@ pub fn exit<U: Units>(
     run.leases.release_all(run.gauge);
     match taken {
         None => Ended::AlreadySettled,
-        Some(mut hold) => {
+        Some(hold) => {
             // The plane reported; the kernel writes what it was told (`BUSBAR-1.6.0.md` §7). No floor, no fee of the
             // kernel's own: the fee units are the plane's.
             let evidence = units.evidence(ctx);
             let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
             let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
             let requests = requests_settled(reached_admitted, drawn);
-            // ONE FIGURE: the hold is spent by the same `amount` the posting settles,
-            // so the overdraft counter and the settled figure can never disagree. Spending one
-            // number and settling another posted an OVERDRAFT on an end that settled inside its
-            // reservation. The spend lands in full and whatever nothing backs is carried out as an
-            // overdraft — no arm on this path refuses, value was delivered. Headroom is zero: no
-            // leg draws a slice at the exit, so the reservation does not grow here.
-            let _spend = hold.spend(amount, 0);
             let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {
                 class,
@@ -1402,12 +1388,11 @@ pub fn exit<U: Units>(
             };
             let posted = match usage {
                 Ok(usage) => {
-                    // `amount` is the settlement writer's money figure, in nano-units; the line
-                    // above carries it as a quantity against whichever class the unit metered on.
-                    // The posting settles the money, and reads the report for its evidence.
+                    // `amount` is the count the plane reported, against whichever class the unit
+                    // metered on. The posting carries it, and reads the report for its evidence.
                     Ok(Posted::settle(
                         hold,
-                        u128::from(amount),
+                        amount,
                         &usage,
                         &Grant::<WriteMoney>::mint_bound(seal, ctx.call),
                     )

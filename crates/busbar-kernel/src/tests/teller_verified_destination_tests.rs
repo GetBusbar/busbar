@@ -137,10 +137,7 @@ impl Units for Fixture {
         _destinations: &[VerifiedDestination],
         _leases: &GroupLeaseSlip,
     ) -> SeatVerdict<Admit> {
-        SeatVerdict::proceed(
-            token,
-            Admission::Own(Hold::open(admit, principal.clone(), 1_000)),
-        )
+        SeatVerdict::proceed(token, Admission::Own(Hold::open(admit, principal.clone())))
     }
 
     fn route(
@@ -222,8 +219,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
     let canary = busbar_contract::caps::Canary::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
-    let cell =
-        busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal(), 0));
+    let cell = busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal()));
 
     let run = Run {
         cell: &cell,

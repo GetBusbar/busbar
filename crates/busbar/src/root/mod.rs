@@ -35,11 +35,11 @@
 //! - [`units_admin`] — the admin plane's twelve steps, and the one seam an admin operation's body
 //!   is reached through. The root drives the loop; the operation's own logic stays where it lives.
 //! - the node — the root's half of a unit a plane's arrival hands it: the kernel, the in-flight
-//!   table, the one Route seam its leg is driven through and the book its money settles onto. The
-//!   unit itself is the plane's; the module is the one the manifest's `root-units` table names.
-//! - [`auth_bindings`], [`ledger_identity`], [`migration`], [`otlp`] — the authenticate unit's three
-//!   handed-in seams, the reconciliation identity against the previous release's rows, the first
-//!   boot after an upgrade, and the span exporter.
+//!   table, the one Route seam its leg is driven through and the journal its audit record is sealed
+//!   onto. The unit itself is the plane's; the module is the one the manifest's `root-units` table
+//!   names.
+//! - [`auth_bindings`], [`otlp`] — the authenticate unit's three handed-in seams, and the span
+//!   exporter.
 //!
 //! ## The order
 //!
@@ -81,11 +81,9 @@ pub mod harness;
 pub mod hooks;
 pub mod kernel;
 pub mod keyset;
-pub mod ledger_identity;
 pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
-pub mod migration;
 pub mod migration_table;
 pub mod model_egress;
 pub mod observe;

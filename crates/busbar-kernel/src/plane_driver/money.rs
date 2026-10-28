@@ -25,12 +25,9 @@
 //!   its own, and the session's one cleanup ([`MoneySeam::session_ended`]) ledgers the last
 //!   far-end-reported (or floor) cumulative counts once, however the session ended.
 //!
-//! * a running unit's cumulative counts are CHECKPOINTS (THE DESIGN §7: "a checkpoint is a
-//!   durability `unit.accrued` record"; "running reports are crash-safe checkpoints, never ledger
-//!   lines"): the piece path only marks the unit dirty, and the composition root's flush tick
-//!   ([`PlaneMoney::flush_checkpoints`], once per [`FlushEpoch`]) hands each dirty open unit's last
-//!   counts to its [`Checkpointer`], at most once per epoch. Nothing is journaled, and the root's
-//!   book is never locked, on the piece path.
+//! * a running unit's cumulative counts are CHECKPOINTS held in RAM only (MONEY-DESIGN §3c, "Long
+//!   units"): the unit's one line is ledgered at its end, and nothing is journaled on the piece
+//!   path.
 //!
 //! The kernel names no plane here: a unit's class names, lane, pool and key are handed in by the
 //! composition root when it opens the unit ([`PlaneMoney::open`]).
@@ -44,7 +41,6 @@ use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
-use super::epoch::FlushEpoch;
 use crate::config::groups::ExhaustionMode;
 use crate::cost::CostModel;
 use crate::governance::GovState;
@@ -59,28 +55,6 @@ pub trait EndPost: Send + Sync {
     /// Post `ended`, the end the loop sealed for the unit whose caller went away. Runs inside a
     /// `Drop`: it must not panic, await or cross a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended);
-}
-
-/// A unit's accrual so far, as its durability checkpoint carries it: counts, never a figure (#71).
-/// The same reading the unit's one line is priced from (the root's `report_of`): its billing
-/// counts (far-end-reported or floor, never an estimate) by class name with the fee units set
-/// aside, whether a fee unit was incurred, and the key it is ledgered under.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Accrued {
-    /// The key the unit is ledgered, metered and priced under ([`PlaneMoney::serving`]).
-    pub lane: String,
-    /// `1` when the plane reported a fee unit above zero, else `0`.
-    pub fee_count: u64,
-    /// The billing count per class name; a class at zero is left off.
-    pub classes: BTreeMap<String, u64>,
-}
-
-/// WHERE A RUNNING UNIT'S CHECKPOINT IS JOURNALED: the composition root's book, as a durability
-/// `unit.accrued` record on the hold the unit's admission opened (THE DESIGN §7). Called from the
-/// root's flush tick alone ([`PlaneMoney::flush_checkpoints`]), never on the piece path.
-pub trait Checkpointer: Send + Sync {
-    /// Journal unit `key`'s accrual so far. A unit the root holds no facts for journals nothing.
-    fn checkpoint(&self, key: UnitKey, accrued: &Accrued);
 }
 
 /// HOW A UNIT'S ANSWER ENDED, as the composition root hands it to [`PlaneMoney::settle_end_as`].
@@ -181,10 +155,6 @@ struct Open {
     /// The plane named the unit's ledger lane ([`MoneySeam::laned`]): it is [`UnitMoney::lane`]
     /// in `money` from then on, and a serving member no longer replaces it.
     laned: bool,
-    /// The plane reported counts since the unit's last checkpoint was handed to the root.
-    dirty: bool,
-    /// The flush epoch the unit's last checkpoint was handed over in: at most one per epoch.
-    flushed: Option<u64>,
 }
 
 /// How many locks the open units are spread over: a unit's checkpoint (the piece path) takes its
@@ -200,8 +170,6 @@ pub struct PlaneMoney {
     post: Arc<dyn EndPost>,
     /// The open units, by key, over [`SHARDS`] locks ([`PlaneMoney::shard`]).
     units: [Mutex<Shard>; SHARDS],
-    /// The root's flush epoch: a unit's checkpoint is handed over at most once per epoch.
-    epoch: FlushEpoch,
 }
 
 impl PlaneMoney {
@@ -212,50 +180,7 @@ impl PlaneMoney {
             gov,
             post,
             units: std::array::from_fn(|_| Mutex::new(HashMap::new())),
-            epoch: FlushEpoch::new(),
         }
-    }
-
-    /// The same money steps, their checkpoints paced by `epoch`: the composition root's flush
-    /// epoch, bumped by its flush tick, shared by every plane it composes.
-    #[must_use]
-    pub fn with_epoch(mut self, epoch: FlushEpoch) -> Self {
-        self.epoch = epoch;
-        self
-    }
-
-    /// THE CHECKPOINT FLUSH, run by the composition root's flush tick (never the piece path): every
-    /// open unit the plane reported counts for since its last checkpoint, and not yet checkpointed
-    /// in this flush epoch, hands its last counts ([`Accrued`]) to `site`, once. A unit with no new
-    /// counts writes nothing; a unit checkpointed in this epoch waits for the next; estimates alone
-    /// are no accrual. Each shard's lock is released before `site` is called. Answers how many
-    /// checkpoints were handed over.
-    pub fn flush_checkpoints(&self, site: &dyn Checkpointer) -> usize {
-        let now = self.epoch.now();
-        let mut handed = 0;
-        for shard in &self.units {
-            let due: Vec<(UnitKey, Accrued)> = {
-                let mut all = locked(shard);
-                all.iter_mut()
-                    .filter(|(_, open)| open.dirty && open.flushed != Some(now))
-                    .filter_map(|(key, open)| {
-                        open.dirty = false;
-                        let accrued = accrued(&open.money, &open.last);
-                        // Estimates alone are no accrual: nothing to journal.
-                        if accrued.classes.is_empty() && accrued.fee_count == 0 {
-                            return None;
-                        }
-                        open.flushed = Some(now);
-                        Some((*key, accrued))
-                    })
-                    .collect()
-            };
-            for (key, accrued) in &due {
-                site.checkpoint(*key, accrued);
-            }
-            handed += due.len();
-        }
-        handed
     }
 
     /// The slot its book lends a unit's caller reference under ([`GovState::caller_ref_slot`]),
@@ -284,8 +209,6 @@ impl PlaneMoney {
                 session: false,
                 provider: None,
                 laned: false,
-                dirty: false,
-                flushed: None,
             },
         );
     }
@@ -441,26 +364,6 @@ impl PlaneMoney {
     }
 }
 
-/// A unit's last counts as its checkpoint carries them: the billing counts by class name, the fee
-/// units set aside (a class at zero left off, a sum that will not add up saturated, as the ledger
-/// bills it), whether a fee unit was reported above zero, and its ledger key.
-fn accrued(m: &UnitMoney, last: &[UnitCount]) -> Accrued {
-    let counts = reported(last);
-    let mut classes = named(&m.classes, &usage_only(m, &counts), |a, b| {
-        Some(a.saturating_add(b))
-    })
-    .unwrap_or_default();
-    classes.retain(|_, n| *n > 0);
-    let fee = counts
-        .iter()
-        .any(|(class, amount)| *amount > 0 && m.fee.is_fee(*class));
-    Accrued {
-        lane: m.lane.clone(),
-        fee_count: u64::from(fee),
-        classes,
-    }
-}
-
 /// Whether `units`' amounts add up in a `u64` under the plane's class names, as [`named`] adds
 /// them with `u64::checked_add` (a class index the plane never declared is not billed, so not
 /// added), without building the sums: the checkpoint's check on the piece path. Units are a
@@ -534,8 +437,6 @@ impl MoneySeam for PlaneMoney {
         }
         open.last.clear();
         open.last.extend_from_slice(units);
-        // THE CHECKPOINT, marked: the root's flush tick journals it, once per epoch. No I/O here.
-        open.dirty = true;
         if open.money.mode != ExhaustionMode::CutStream {
             return Checkpoint::Continue;
         }

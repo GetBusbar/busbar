@@ -156,14 +156,20 @@ keeps them in 128-bit integers and a JSON number is a double, exact only to 2^53
 nano-unit total would silently lose its last digits while still looking like money. Counts are
 ordinary numbers.
 
-`POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — per billable class, as decimal
-strings — never a money figure; what the unit costs stays a read-time view of its counts at its own
-rate-card epoch. The body names the **`pool`** the unit was dispatched through, and it is
+`POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — a signed whole delta per
+billable class on the key's counts for one lane — never a money figure; what the unit costs stays
+its counts x the card in effect at the unit's own time. The body names the key, the lane, the
+rate-card history `entry` the counts were priced with, and the unit's **`card_epoch_ms`** (its
+arrival instant): the correction lands where the unit was ledgered — in each budget window, card
+entry segment and metering day holding that instant — never in the window or card current when the
+correction is made. It fails closed: an epoch no card entry covers, an `entry` other than the one
+the unit's counts were dated with, a window that no longer holds the counts a downward delta moves,
+or a count taken below zero is refused `400 invalid_request` with a message saying why, and nothing
+is applied. The body also names the **`pool`** the unit was dispatched through, and it is
 required: a pool-scoped group budget for that pool takes the correction as well as the group-wide
 budgets, so `/groups/{name}/usage` and the `/metrics` bucket gauges agree with `/admin/usage`
 afterwards. A missing pool, or one this node has not configured, is refused `400 invalid_request`
-with a message naming the fault. A correction sealed before the pool was recorded reaches the
-group-wide budgets only, as it always did. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
+with a message naming the fault. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
 fleet's operator key to the dated rate-card history. Each corrected rate's `micro_per_unit` is a
 decimal in micro-units per unit, and it must be exact to one nano-unit (a multiple of `0.001`): the
 card holds integers, and a finer figure is refused `400 invalid_request` rather than rounded into a
