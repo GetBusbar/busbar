@@ -48,12 +48,12 @@ fn openapi_operations_carry_stable_operation_ids() {
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 101 = those 81 + the 20 operations the 1.6.0 closed verb table adds, every one with its
-    // effect bound (9 money-governance verbs, 5 ledger views, 3
+    // 100 = those 81 + the 19 operations the 1.6.0 closed verb table adds, every one with its
+    // effect bound (8 money-governance verbs, 5 ledger views, 3
     // audit-chain reads) and the trust verbs (`GET /trust`,
     // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
     // and which the one document describes (items 45/46: no side-car document).
-    assert_eq!(checked, 101, "expected exactly 101 admin operations");
+    assert_eq!(checked, 100, "expected exactly 100 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
