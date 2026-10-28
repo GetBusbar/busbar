@@ -385,9 +385,7 @@ pub struct PlaneAuditLog {
 }
 
 /// THE PROCESS-WIDE admin audit READ MODEL on the seam. Process state, not config-derived state, so it
-/// lives as a global rather than on the swappable `App` snapshot — exactly like
-/// [`crate::residual_log::RESIDUALS`], and for the same reason: a
-/// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
+/// lives as a global rather than on the swappable `App` snapshot: a config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
 /// has one.
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
     std::sync::LazyLock::new(PlaneAuditLog::new);
