@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use crate::test_support::durable_store::{durable_cfg, open_durable};
+use crate::test_support::record_calls::RecordCalls;
 use crate::test_support::TestApp;
 use crate::trust::book::RulingRow;
 use crate::trust::DemotionRecord;
@@ -15,9 +16,11 @@ use crate::trust::DemotionRecord;
 #[test]
 fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     let (_file, cfg) = durable_cfg("boot-trust-sink");
+    let store = open_durable(&cfg);
     let gov = Arc::new(
-        crate::governance::GovState::new(open_durable(&cfg), None).expect("a governance store"),
+        crate::governance::GovState::new(store.clone(), None).expect("a governance store"),
     );
+    gov.attach_store_calls(RecordCalls::over(store));
     let app = TestApp::new().governance(gov).build();
     crate::boot::hydrate_all(&app).expect("boot hydrates");
 
@@ -37,7 +40,7 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     // A RESTART: a fresh record over the same store reads back what the booted process kept.
     let restarted = DemotionRecord::default();
     restarted.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        open_durable(&cfg),
+        RecordCalls::over(open_durable(&cfg)),
     ));
     assert_eq!(
         restarted.decisions().expect("the store reads"),
