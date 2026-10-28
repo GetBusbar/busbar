@@ -1136,6 +1136,8 @@ pub(crate) fn build_secret_resolver(
         }
         config::secret::resolve_settings(
             &mcfg.settings,
+            &registry.secret_slots(module),
+            module,
             &builtins,
             &busbar_contract::config_time::ConfigScope::config_time(),
         )

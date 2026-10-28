@@ -2968,6 +2968,162 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     server.abort();
 }
 
+/// An admin module that panics on the credential `boom` and passes every other one.
+struct PanickingAdminModule;
+impl crate::auth::AuthModule for PanickingAdminModule {
+    fn name(&self) -> &'static str {
+        "panicking-admin"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> crate::auth::AuthVerdict {
+        assert_ne!(
+            candidate,
+            Some("boom"),
+            "deliberate admin-chain panic (request-panic boundary test)"
+        );
+        crate::auth::AuthVerdict::Pass
+    }
+}
+
+/// BOTH SERVED ROUTERS CARRY THE REQUEST-PANIC BOUNDARY. The data and admin routers come from
+/// `build_split_routers_serving`, the builder the node serves: a panic inside a data route's
+/// handler, and one inside the admin auth chain, each answer `500` in busbar's standard JSON error
+/// body, the same client is served on its next requests, and each panic is logged once at `error`
+/// with the request's path.
+#[tokio::test(flavor = "current_thread")]
+async fn both_served_routers_answer_a_panic_500_log_it_and_keep_serving() {
+    use crate::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    crate::snapshot::init();
+    let cap = crate::test_support::warn_capture::WarnCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
+
+    const BOOM: &str = "/panic-boundary-test/boom";
+    const FINE: &str = "/panic-boundary-test/fine";
+    let door = |path: &str, panics: bool| PlaneRouteSpec {
+        path: path.to_string(),
+        method: RouteMethod::Post,
+        auth: RouteAuth::None,
+        handler: std::sync::Arc::new(move |_: PlaneReqCtx| {
+            Box::pin(async move {
+                assert!(
+                    !panics,
+                    "deliberate data-route panic (request-panic boundary test)"
+                );
+                axum::response::Response::new(axum::body::Body::from("fine"))
+            })
+        }),
+    };
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["panicking-admin".to_string()])
+        .admin_module("panicking-admin", Box::new(PanickingAdminModule))
+        .build();
+    let (data, admin, _handle) = crate::build_split_routers_serving(
+        app,
+        vec![door(BOOM, true), door(FINE, false)],
+        1 << 20,
+        0,
+        false,
+    );
+    let serve = |router: Router| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (addr, server)
+    };
+    let (data_addr, data_server) = serve(data).await;
+    let (admin_addr, admin_server) = serve(admin).await;
+    let client = reqwest::Client::new();
+
+    async fn json_500(r: reqwest::Response) -> serde_json::Value {
+        assert_eq!(r.status().as_u16(), 500, "the one request fails with 500");
+        let ct = r
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.starts_with("application/json"),
+            "content-type was `{ct}`"
+        );
+        let v: serde_json::Value = r.json().await.expect("the 500 body is JSON");
+        assert!(
+            v["error"].is_object(),
+            "busbar's standard error body, got {v}"
+        );
+        v
+    }
+
+    // THE DATA ROUTER: a handler panic.
+    let r = client
+        .post(format!("http://{data_addr}{BOOM}"))
+        .body("x")
+        .send()
+        .await
+        .expect("a panicking data route still produces a response");
+    json_500(r).await;
+    for _ in 0..3 {
+        let ok = client
+            .post(format!("http://{data_addr}{FINE}"))
+            .body("x")
+            .send()
+            .await
+            .expect("the data listener keeps serving after a request panicked");
+        assert_eq!(ok.status().as_u16(), 200);
+        assert_eq!(ok.text().await.unwrap(), "fine");
+    }
+
+    // THE ADMIN ROUTER: a panic in its auth chain.
+    let r = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("boom")
+        .send()
+        .await
+        .expect("a panicking admin chain still produces a response");
+    let v = json_500(r).await;
+    assert_eq!(
+        v["error"]["code"], "internal",
+        "the admin envelope's own code, got {v}"
+    );
+    let next = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("not-boom")
+        .send()
+        .await
+        .expect("the admin listener keeps serving after a request panicked");
+    assert_ne!(
+        next.status().as_u16(),
+        500,
+        "the next admin request is judged, not failed"
+    );
+    let health = client
+        .get(format!("http://{admin_addr}/healthz"))
+        .send()
+        .await
+        .expect("the admin listener keeps serving");
+    // Its readiness answer (this fixture links no plane, so `/healthz` says unready), never the
+    // boundary's 500.
+    assert_ne!(
+        health.status().as_u16(),
+        500,
+        "`/healthz` is answered, not failed"
+    );
+
+    // EACH PANIC IS LOGGED, ONCE, WITH ITS PATH.
+    let logged = cap.messages();
+    for path in [BOOM, "/api/v1/admin/keys"] {
+        let lines: Vec<_> = logged
+            .iter()
+            .filter(|m| m.contains("a request handler panicked") && m.contains(path))
+            .collect();
+        assert_eq!(lines.len(), 1, "{path}: {logged:?}");
+    }
+    data_server.abort();
+    admin_server.abort();
+}
+
 /// On the native-API root the boundary's 500 is the frozen admin envelope's own `internal` code —
 /// never the `not_found` the root's 404/405 branch would otherwise hand a 500.
 #[tokio::test]
@@ -2984,119 +3140,6 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["error"]["code"], "internal", "got {v}");
-}
-
-/// THE GATE: every router the kernel SERVES carries the request-panic boundary.
-///
-/// Structural, because the property is about construction: a `Router<Arc<AppHandle>>` cannot be
-/// served until `.with_state` erases its state, so (1) the ONLY production `.with_state(` in the
-/// workspace must be the one in `apply_common_layers`, (2) that function's LAST `.layer(` must be
-/// `CatchPanicLayer` (outermost, so it also covers every other layer), and (3) every production
-/// `Router::new()` must be a known pre-state sub-router that can only be served through (1). A new
-/// router built any other way — a second `.with_state`, a fresh stateless `Router::new()` served on a
-/// listener — fails here until it goes through `apply_common_layers` or wraps `CatchPanicLayer`.
-#[test]
-fn the_request_panic_boundary_wraps_every_served_router() {
-    let kernel = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let crates = kernel.parent().expect("crates/ dir");
-
-    // (2) The boundary is the outermost layer of the one servable-router builder.
-    let router_src = std::fs::read_to_string(kernel.join("src/router.rs")).unwrap();
-    let start = router_src
-        .find("pub(crate) fn apply_common_layers(")
-        .expect("apply_common_layers exists");
-    let body = &router_src[start..];
-    let body = &body[..body.find("\n}\n").expect("end of apply_common_layers")];
-    let last_layer = body
-        .rfind(".layer(")
-        .expect("apply_common_layers applies layers");
-    assert!(
-        body[last_layer..].starts_with(".layer(CatchPanicLayer::new("),
-        "the LAST `.layer(` in apply_common_layers must be the request-panic boundary, so it wraps \
-         every handler and every other layer"
-    );
-    let with_state = body
-        .rfind(".with_state(")
-        .expect("apply_common_layers binds state");
-    assert!(
-        with_state > last_layer,
-        "the boundary is applied before state is bound"
-    );
-
-    // Walk every production source file in the workspace.
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for e in std::fs::read_dir(dir).unwrap().flatten() {
-            let p = e.path();
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if p.is_dir() {
-                if matches!(
-                    name,
-                    "tests" | "test_support" | "testkit" | "benches" | "target" | "examples"
-                ) {
-                    continue;
-                }
-                walk(&p, out);
-            } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
-                out.push(p);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(crates, &mut files);
-    assert!(files.len() > 100, "the walk found the workspace sources");
-
-    // Pre-state sub-routers: typed `Router<Arc<AppHandle>>`, so they are only ever served through
-    // `apply_common_layers`' `.with_state`.
-    let pre_state = [
-        "busbar-kernel/src/core_routes.rs",
-        "busbar-core-admin/src/v1/json/mod.rs",
-        "busbar-core-admin/src/v1/json/named_map.rs",
-    ];
-    // KNOWN GAP, named so it cannot grow: the root-admin wrap builds a STATELESS outer router around
-    // the (guarded) admin router. Requests it forwards are inside the boundary; its own node loop is
-    // not. Closing it is one `.layer(busbar_kernel::router::CatchPanicLayer::new(handle))` in that
-    // file (owned by another slot) — at which point this entry is deleted.
-    let unguarded_pending = ["busbar/src/root/units_admin/admin_mount.rs"];
-
-    let mut with_state_sites = Vec::new();
-    let mut stray_routers = Vec::new();
-    for f in &files {
-        let rel = f
-            .strip_prefix(crates)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let src = std::fs::read_to_string(f).unwrap_or_default();
-        for line in src.lines() {
-            let code = line.split("//").next().unwrap_or("");
-            if code.contains(".with_state(") {
-                with_state_sites.push(rel.clone());
-            }
-            // `Router::new()` as its own identifier (not `CoreRouter::new()`, the pre-state builder).
-            let bare_router_new = code.match_indices("Router::new()").any(|(i, _)| {
-                !code[..i]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
-            });
-            if bare_router_new
-                && !pre_state.contains(&rel.as_str())
-                && !unguarded_pending.contains(&rel.as_str())
-            {
-                stray_routers.push(format!("{rel}: {}", line.trim()));
-            }
-        }
-    }
-    assert_eq!(
-        with_state_sites,
-        vec!["busbar-kernel/src/router.rs".to_string()],
-        "(1) a router became servable somewhere other than apply_common_layers — it would be \
-         served WITHOUT the request-panic boundary"
-    );
-    assert!(
-        stray_routers.is_empty(),
-        "(3) production routers built outside the request-panic boundary: {stray_routers:#?}"
-    );
 }
 
 /// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider

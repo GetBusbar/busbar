@@ -998,6 +998,15 @@ fn open_ready<K: crate::dispatch::Kind>(
     let mut block = instance_settings(opening.doc, K::CODE, instance)
         .map(|(v, _)| v.clone())
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(at) = busbar_contract::secret_fields::undeclared_reference(&block, &keys) {
+        let field = instance_settings(opening.doc, K::CODE, instance).map_or_else(
+            || format!("settings.{at}"),
+            |(_, base)| format!("{base}.{at}"),
+        );
+        return Err(busbar_contract::secret_fields::undeclared_refusal(
+            &field, &c.name,
+        ));
+    }
     let mut held = Secrets(resolve_secrets(
         &mut block,
         &keys,
@@ -1027,12 +1036,15 @@ fn open_ready<K: crate::dispatch::Kind>(
     plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
 }
 
-/// THE DECLARED SECRETS (the Statement's `secret_refs`, ARCHITECT 2026-10-02): each key — a path
-/// into the settings block, `.`-separated — is read as a secret reference, resolved through the
+/// THE DECLARED SECRETS (the Statement's `secret_refs`, ARCHITECT 2026-10-02): each EXACT path
+/// into the settings block, `.`-separated, is read as a secret reference, resolved through the
 /// secret kind's resolver, and REMOVED from the block, so the secret reaches `open` only as its
 /// `OpenIn::secrets` entry, in the Statement's order. A key the block does not set is an empty
 /// entry (its place is kept); a reference that does not parse or resolve refuses, naming the key
-/// and never a byte of the secret.
+/// and never a byte of the secret. Then each WILDCARD path's (`*` = any key or index) matches, in
+/// document order: a reference is resolved, a string is lent as written, and each is appended to
+/// the secrets and replaced in the block by its `{"$secret": <index>}` marker
+/// (`busbar_contract::secret_fields::lend`).
 ///
 /// # Errors
 /// The key whose reference is malformed or does not resolve.
@@ -1042,9 +1054,18 @@ pub fn resolve_secrets(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Vec<busbar_contract::redacted::Secret<Vec<u8>>>, String> {
-    keys.iter()
-        .map(|path| resolve_one(block, path, resolver, scope))
-        .collect()
+    busbar_contract::secret_fields::lend(
+        block,
+        keys,
+        false,
+        |path, found| resolve_one(found, path, resolver, scope),
+        |at, found| match found {
+            serde_json::Value::String(s) => {
+                Ok(busbar_contract::redacted::Secret::new(s.into_bytes()))
+            }
+            reference => resolve_one(Some(reference), at, resolver, scope),
+        },
+    )
 }
 
 /// One declared secret of [`resolve_secrets`]: taken out of the block, decoded as a reference and
@@ -1052,12 +1073,12 @@ pub fn resolve_secrets(
 /// with anything: a value that is not a reference may be the secret itself, pasted where its
 /// reference belongs, so its decode failure is described by [`not_a_reference`] alone.
 fn resolve_one(
-    block: &mut serde_json::Value,
+    found: Option<serde_json::Value>,
     path: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-    let Some(found) = take_path(block, path) else {
+    let Some(found) = found else {
         return Ok(busbar_contract::redacted::Secret::default());
     };
     let r: busbar_contract::secret_ref::SecretRef =
@@ -1083,18 +1104,6 @@ pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> S
         };
         format!("{at}: not a secret reference: {class} (the decoder's text is withheld)")
     }
-}
-
-/// Remove and answer the value at the `.`-separated `path` of `v`, if set.
-fn take_path(v: &mut serde_json::Value, path: &str) -> Option<serde_json::Value> {
-    let (parent, last) = match path.rsplit_once('.') {
-        Some((head, last)) => (
-            head.split('.').try_fold(&mut *v, |v, k| v.get_mut(k))?,
-            last,
-        ),
-        None => (v, path),
-    };
-    parent.as_object_mut()?.remove(last)
 }
 
 /// Resolved secret bytes, held for one `open` in the holders the secret plugins wrote them into

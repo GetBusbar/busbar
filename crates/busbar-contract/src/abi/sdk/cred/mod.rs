@@ -48,6 +48,7 @@
 //! let _: &[u8] = s.as_ref();
 //! ```
 
+mod floor;
 mod form;
 mod form_body;
 pub mod record;
@@ -57,10 +58,12 @@ pub(crate) mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
+pub use floor::{AuthFloor, PgAuth, RequireAuth};
 pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use form_body::{FormBody, FormValue};
 pub use resolved::resolved;
 pub use settings::{settings, SettingsError};
+pub use settings::{settings_lent, SECRET_MARKER};
 pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
@@ -115,6 +118,7 @@ type Bytes = Zeroizing<Vec<u8>>;
 pub struct Cred {
     held: std::sync::Arc<Held<Bytes>>,
     secure: bool,
+    floor: AuthFloor,
 }
 
 /// The URL schemes whose connection is secured from the first byte: a credential the operator
@@ -143,6 +147,7 @@ impl Cred {
         Self {
             held: std::sync::Arc::new(Held::new(bytes)),
             secure: false,
+            floor: AuthFloor::STRICT,
         }
     }
 
@@ -163,6 +168,19 @@ impl Cred {
         self
     }
 
+    /// THE AUTH FLOOR (rulings S4, S5): the auth methods weaker than a protocol's best that the
+    /// operator's connection string allows this credential, which the chip's recipes check. Set
+    /// only when a [`CredUrl`] is split from the operator's text; nothing relaxes it.
+    #[must_use]
+    pub fn floor(&self) -> AuthFloor {
+        self.floor
+    }
+
+    pub(crate) fn with_floor(mut self, floor: AuthFloor) -> Self {
+        self.floor = floor;
+        self
+    }
+
     /// This credential, required to go out secured.
     #[must_use]
     pub fn require_secure(mut self) -> Self {
@@ -175,6 +193,7 @@ impl Cred {
         Self {
             held: std::sync::Arc::new(Held::new(bytes)),
             secure: self.secure,
+            floor: self.floor,
         }
     }
 
@@ -269,6 +288,13 @@ impl Seal {
     /// Whether the credential it was made from goes out only secured ([`Cred::secure_required`]).
     pub fn secure_required(&self) -> bool {
         self.secure
+    }
+
+    /// This seal, required to go out secured (a recipe whose output the operator did not allow in
+    /// the open).
+    pub(crate) fn require_secure(mut self) -> Self {
+        self.secure = true;
+        self
     }
 }
 

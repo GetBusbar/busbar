@@ -142,6 +142,13 @@ pub enum NotText {
 /// check reads.
 impl<T: Zeroize> zeroize::ZeroizeOnDrop for Secret<T> {}
 
+/// A holder can be wiped before it drops (a lend that fails part-way wipes what it lent).
+impl<T: Zeroize> Zeroize for Secret<T> {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl<T: Zeroize> From<T> for Secret<T> {
     fn from(secret: T) -> Self {
         Self(secret)
