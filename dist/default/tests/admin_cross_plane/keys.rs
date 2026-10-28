@@ -420,7 +420,12 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     // This reqwest client has no gzip feature, so it performs no transparent decode: the bytes
     // observed here are the wire bytes.
     let mut bodies = Vec::new();
-    for accept in [None, Some("gzip"), Some("gzip;q=0"), Some("br, gzip, deflate")] {
+    for accept in [
+        None,
+        Some("gzip"),
+        Some("gzip;q=0"),
+        Some("br, gzip, deflate"),
+    ] {
         let mut req = client.get(&url).header("x-admin-token", "admintok");
         if let Some(a) = accept {
             req = req.header("accept-encoding", a);
