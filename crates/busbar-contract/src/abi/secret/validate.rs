@@ -25,7 +25,7 @@ abi_op! {
     ///
     /// # Errors
     /// The rule `out` breaks.
-    pub fn check_resolve(out: &ResolveOut, buf: usize, cap: u64) as "resolve", RESOLVE_RULES {
+    pub fn check_resolve(out: &ResolveOut, buf: usize, cap: u64) as "resolve", RESOLVE_RULES for out: ResolveOut {
         blob(secret);
         code(error_kind, ERROR_KIND_UNSET, ERROR_KIND_INTERNAL);
         // The material is the host's: a lease names plugin memory, which a resolve no longer keeps.

@@ -122,11 +122,12 @@ macro_rules! abi_struct {
 }
 pub(crate) use abi_struct;
 
-/// `abi_op! { <docs> pub fn check_<op>(out: &Out, <args>) as "<op>", <TABLE> { <steps> } }`:
-/// the validator, running the steps in order, and `<TABLE>`, its [`RedCase`]s.
+/// `abi_op! { <docs> pub fn check_<op>(<params>) as "<op>", <TABLE> for <out>: <Out> { <steps> } }`:
+/// the validator over its params (in their order), running the steps in order, and `<TABLE>`, the
+/// [`RedCase`]s of its unconditional field rules over `<out>` (one of the params, `&<Out>`).
 ///
-/// Steps (`<f>` is a field of `out`; a fault is named `"<op>.<f>"` unless `as "<name>"` names it,
-/// which a nested path `<f>.<g>` must):
+/// Field steps (`<f>` is a field of `<out>`; a fault is named `"<op>.<f>"` unless `as "<name>"`
+/// names it, which a nested path `<f>.<g>` must):
 /// - `blob(<f>);` a [`Blob`](super::call::Blob): [`Rule::NullWithCount`] `"<op>.<f>"`,
 ///   [`Rule::OverMax`] `"<op>.<f>.len"` ([`check::blob`](super::check::blob)).
 /// - `code(<f>, LO, HI);` [`Rule::UnknownCode`] outside `LO..=HI`.
@@ -134,67 +135,56 @@ pub(crate) use abi_struct;
 /// - `zero(<f>, <Rule>);` `<Rule>` when not `0`.
 /// - `list(<ptr>, <len>, MAX);` [`Rule::NullWithCount`] `"<op>.<ptr>"` for a count with a NULL
 ///   pointer, [`Rule::OverMax`] `"<op>.<len>"` above `MAX`.
-/// - `then <fn>(<args>);` explicit code: a cross-field rule, called with `?`.
+/// - `text(<f>);` an [`AbiStr`](super::call::AbiStr) never counted with a NULL pointer
+///   ([`check::text`](super::check::text)); `named(<f>);` one that is also present
+///   ([`check::named`](super::check::named)).
+/// - `span(<f>, BOUND);` a [`Span`](super::call::Span) absent or inside the first `BOUND` bytes
+///   ([`check::span`](super::check::span)).
+/// - `index(<f>, LEN);` [`Rule::IndexOutOfRange`] at or past `LEN`.
+/// - `within(<f>, CAP);` [`Rule::OverCap`] above `CAP`.
+///
+/// Explicit steps (plain Rust conditions, in place; not in the RED table):
+/// - `deny(<cond>, <Rule>, "<name>");` is `if <cond> { return Err(fault(Rule::<Rule>, "<name>")) }`.
+/// - `when(<cond>) { <steps> }` is `if <cond> { <steps> }`.
+/// - `then <fn>(<args>);` a cross-field rule in a plain function, called with `?`.
 macro_rules! abi_op {
     (
         $(#[$m:meta])*
-        $v:vis fn $check:ident ($o:ident : & $ot:ty $(, $p:ident : $pt:ty)* $(,)?)
-            as $op:literal, $table:ident { $($steps:tt)* }
+        $v:vis fn $check:ident ($($p:ident : $pt:ty),* $(,)?)
+            as $op:literal, $table:ident for $o:ident : $ot:ty { $($steps:tt)* }
     ) => {
         $(#[$m])*
-        $v fn $check($o: &$ot $(, $p: $pt)*) -> ::core::result::Result<(), $crate::abi::mechanism::check::Fault> {
+        $v fn $check($($p: $pt),*) -> ::core::result::Result<(), $crate::abi::mechanism::check::Fault> {
             $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($steps)*);
             ::core::result::Result::Ok(())
         }
 
-        #[doc = concat!("The RED table of `", stringify!($check), "`: one case per (field, rule) its declaration states.")]
+        #[doc = concat!("The RED table of `", stringify!($check), "`: one case per (field, rule) its declaration states unconditionally.")]
+        #[allow(dead_code)]
         $v const $table: &[$crate::abi::mechanism::decl::RedCase<$ot>] =
             $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [] $($steps)*);
     };
 
     // ── the validator's steps, in order ──
     (@check $o:ident, $op:literal;) => {};
-    (@check $o:ident, $op:literal; blob($f:ident); $($rest:tt)*) => {
-        $crate::abi::mechanism::check::blob(
-            &$o.$f,
-            concat!($op, ".", stringify!($f)),
-            concat!($op, ".", stringify!($f), ".len"),
-        )?;
-        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
-    };
-    (@check $o:ident, $op:literal; code($f:ident, $lo:expr, $hi:expr); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; code($f, $lo, $hi) as concat!($op, ".", stringify!($f)); $($rest)*);
-    };
-    (@check $o:ident, $op:literal; code($($f:ident).+, $lo:expr, $hi:expr) as $n:expr; $($rest:tt)*) => {
-        $crate::abi::mechanism::check::code(
-            $crate::abi::mechanism::decl::Word::word($o.$($f).+),
-            $crate::abi::mechanism::decl::Word::word($lo),
-            $crate::abi::mechanism::decl::Word::word($hi),
-            $n,
-        )?;
-        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
-    };
-    (@check $o:ident, $op:literal; bits($f:ident, $mask:expr); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; bits($f, $mask) as concat!($op, ".", stringify!($f)); $($rest)*);
-    };
-    (@check $o:ident, $op:literal; bits($($f:ident).+, $mask:expr) as $n:expr; $($rest:tt)*) => {
-        $crate::abi::mechanism::check::bits(
-            $crate::abi::mechanism::decl::Word::word($o.$($f).+),
-            $crate::abi::mechanism::decl::Word::word($mask),
-            $n,
-        )?;
-        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
-    };
-    (@check $o:ident, $op:literal; zero($f:ident, $rule:ident); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; zero($f, $rule) as concat!($op, ".", stringify!($f)); $($rest)*);
-    };
-    (@check $o:ident, $op:literal; zero($($f:ident).+, $rule:ident) as $n:expr; $($rest:tt)*) => {
-        if $crate::abi::mechanism::decl::Word::word($o.$($f).+) != 0 {
+    // The explicit steps first: a `deny` or `list` must never read as a field step.
+    (@check $o:ident, $op:literal; deny($cond:expr, $rule:ident, $n:expr); $($rest:tt)*) => {
+        if $cond {
             return ::core::result::Result::Err($crate::abi::mechanism::check::fault(
                 $crate::abi::mechanism::check::Rule::$rule,
                 $n,
             ));
         }
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; when($cond:expr) { $($inner:tt)* } $($rest:tt)*) => {
+        if $cond {
+            $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($inner)*);
+        }
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; then $hand:ident ($($a:expr),* $(,)?); $($rest:tt)*) => {
+        $hand($($a),*)?;
         $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
     };
     (@check $o:ident, $op:literal; list($ptr:ident, $len:ident, $max:expr); $($rest:tt)*) => {
@@ -207,68 +197,87 @@ macro_rules! abi_op {
         }
         $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
     };
-    (@check $o:ident, $op:literal; then $hand:ident ($($a:expr),* $(,)?); $($rest:tt)*) => {
-        $hand($($a),*)?;
+    (@check $o:ident, $op:literal; blob($f:ident); $($rest:tt)*) => {
+        $crate::abi::mechanism::check::blob(
+            &$o.$f,
+            concat!($op, ".", stringify!($f)),
+            concat!($op, ".", stringify!($f), ".len"),
+        )?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; blob($($f:ident).+) as $n:literal; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::blob(&$o.$($f).+, $n, concat!($n, ".len"))?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    // `zero`'s rule is an identifier, which an `expr` argument would hide.
+    (@check $o:ident, $op:literal; zero($f:ident, $rule:ident); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; zero($f, $rule) as concat!($op, ".", stringify!($f)); $($rest)*);
+    };
+    // A field step with no name: its name is "<op>.<f>".
+    (@check $o:ident, $op:literal; $step:ident($f:ident $(, $arg:expr)*); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $step($f $(, $arg)*) as concat!($op, ".", stringify!($f)); $($rest)*);
+    };
+    (@check $o:ident, $op:literal; code($($f:ident).+, $lo:expr, $hi:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::code(
+            $crate::abi::mechanism::decl::Word::word($o.$($f).+),
+            $crate::abi::mechanism::decl::Word::word($lo),
+            $crate::abi::mechanism::decl::Word::word($hi),
+            $n,
+        )?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; bits($($f:ident).+, $mask:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::bits(
+            $crate::abi::mechanism::decl::Word::word($o.$($f).+),
+            $crate::abi::mechanism::decl::Word::word($mask),
+            $n,
+        )?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; zero($($f:ident).+, $rule:ident) as $n:expr; $($rest:tt)*) => {
+        if $crate::abi::mechanism::decl::Word::word($o.$($f).+) != 0 {
+            return ::core::result::Result::Err($crate::abi::mechanism::check::fault(
+                $crate::abi::mechanism::check::Rule::$rule,
+                $n,
+            ));
+        }
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; text($($f:ident).+) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::text($o.$($f).+, $n)?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; named($($f:ident).+) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::named($o.$($f).+, $n)?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; span($($f:ident).+, $bound:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::span($o.$($f).+.offset, $o.$($f).+.len, $bound, $n)?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; index($($f:ident).+, $len:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::index($o.$($f).+, $len, $n)?;
+        $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
+    };
+    (@check $o:ident, $op:literal; within($($f:ident).+, $cap:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::check::within(
+            $crate::abi::mechanism::decl::Word::word($o.$($f).+),
+            $cap,
+            $n,
+        )?;
         $crate::abi::mechanism::decl::abi_op!(@check $o, $op; $($rest)*);
     };
 
-    // ── the RED table: one case per (field, rule); `then` steps are explicit code, tested by hand ──
+    // ── the RED table: one case per unconditional (field, rule); explicit steps are tested by hand ──
     (@red $ot:ty, $op:literal, [$($acc:tt)*]) => { &[$($acc)*] };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] blob($f:ident); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
-            $crate::abi::mechanism::decl::RedCase::<$ot> {
-                rule: $crate::abi::mechanism::check::Rule::NullWithCount,
-                field: concat!($op, ".", stringify!($f)),
-                red: |o: &mut $ot| {
-                    o.$f.ptr = ::core::ptr::null();
-                    o.$f.len = 1;
-                },
-            },
-            $crate::abi::mechanism::decl::RedCase::<$ot> {
-                rule: $crate::abi::mechanism::check::Rule::OverMax,
-                field: concat!($op, ".", stringify!($f), ".len"),
-                red: |o: &mut $ot| {
-                    o.$f.ptr = ::core::ptr::NonNull::<u8>::dangling().as_ptr();
-                    o.$f.len = $crate::abi::mechanism::check::HARD_MAX_BYTES as usize + 1;
-                },
-            },
-        ] $($rest)*)
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] deny($cond:expr, $rule:ident, $n:expr); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] $($rest)*)
     };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] code($f:ident, $lo:expr, $hi:expr); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] code($f, $lo, $hi) as concat!($op, ".", stringify!($f)); $($rest)*)
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] when($cond:expr) { $($inner:tt)* } $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] $($rest)*)
     };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] code($($f:ident).+, $lo:expr, $hi:expr) as $n:expr; $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
-            $crate::abi::mechanism::decl::RedCase::<$ot> {
-                rule: $crate::abi::mechanism::check::Rule::UnknownCode,
-                field: $n,
-                red: |o: &mut $ot| o.$($f).+ = ($hi) + 1,
-            },
-        ] $($rest)*)
-    };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] bits($f:ident, $mask:expr); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] bits($f, $mask) as concat!($op, ".", stringify!($f)); $($rest)*)
-    };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] bits($($f:ident).+, $mask:expr) as $n:expr; $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
-            $crate::abi::mechanism::decl::RedCase::<$ot> {
-                rule: $crate::abi::mechanism::check::Rule::UnknownCode,
-                field: $n,
-                red: |o: &mut $ot| o.$($f).+ = !($mask),
-            },
-        ] $($rest)*)
-    };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] zero($f:ident, $rule:ident); $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] zero($f, $rule) as concat!($op, ".", stringify!($f)); $($rest)*)
-    };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] zero($($f:ident).+, $rule:ident) as $n:expr; $($rest:tt)*) => {
-        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
-            $crate::abi::mechanism::decl::RedCase::<$ot> {
-                rule: $crate::abi::mechanism::check::Rule::$rule,
-                field: $n,
-                red: |o: &mut $ot| o.$($f).+ = 1,
-            },
-        ] $($rest)*)
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] then $hand:ident ($($a:expr),* $(,)?); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] $($rest)*)
     };
     (@red $ot:ty, $op:literal, [$($acc:tt)*] list($ptr:ident, $len:ident, $max:expr); $($rest:tt)*) => {
         $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
@@ -291,7 +300,120 @@ macro_rules! abi_op {
             },
         ] $($rest)*)
     };
-    (@red $ot:ty, $op:literal, [$($acc:tt)*] then $hand:ident ($($a:expr),* $(,)?); $($rest:tt)*) => {
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] blob($f:ident); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] blob($f) names(
+            concat!($op, ".", stringify!($f)),
+            concat!($op, ".", stringify!($f), ".len")
+        ); $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] blob($($f:ident).+) as $n:literal; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] blob($($f).+) names($n, concat!($n, ".len")); $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] blob($($f:ident).+) names($n:expr, $nl:expr); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::NullWithCount,
+                field: $n,
+                red: |o: &mut $ot| {
+                    o.$($f).+.ptr = ::core::ptr::null();
+                    o.$($f).+.len = 1;
+                },
+            },
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::OverMax,
+                field: $nl,
+                red: |o: &mut $ot| {
+                    o.$($f).+.ptr = ::core::ptr::NonNull::<u8>::dangling().as_ptr();
+                    o.$($f).+.len = $crate::abi::mechanism::check::HARD_MAX_BYTES as usize + 1;
+                },
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] zero($f:ident, $rule:ident); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] zero($f, $rule) as concat!($op, ".", stringify!($f)); $($rest)*)
+    };
+    // A field step with no name: its name is "<op>.<f>".
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] $step:ident($f:ident $(, $arg:expr)*); $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] $step($f $(, $arg)*) as concat!($op, ".", stringify!($f)); $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] code($($f:ident).+, $lo:expr, $hi:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::UnknownCode,
+                field: $n,
+                red: |o: &mut $ot| o.$($f).+ = ($crate::abi::mechanism::decl::Word::word($hi) + 1) as _,
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] bits($($f:ident).+, $mask:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::UnknownCode,
+                field: $n,
+                red: |o: &mut $ot| o.$($f).+ = !$crate::abi::mechanism::decl::Word::word($mask) as _,
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] zero($($f:ident).+, $rule:ident) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::$rule,
+                field: $n,
+                red: |o: &mut $ot| o.$($f).+ = 1,
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] text($($f:ident).+) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::NullWithCount,
+                field: $n,
+                red: |o: &mut $ot| {
+                    o.$($f).+.ptr = ::core::ptr::null();
+                    o.$($f).+.len = 1;
+                },
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] named($($f:ident).+) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::Missing,
+                field: $n,
+                red: |o: &mut $ot| o.$($f).+.len = 0,
+            },
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::NullWithCount,
+                field: $n,
+                red: |o: &mut $ot| {
+                    o.$($f).+.ptr = ::core::ptr::null();
+                    o.$($f).+.len = 1;
+                },
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] span($($f:ident).+, $bound:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::SpanNotAbsent,
+                field: $n,
+                red: |o: &mut $ot| {
+                    o.$($f).+.offset = $crate::abi::mechanism::check::SPAN_ABSENT;
+                    o.$($f).+.len = 1;
+                },
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] index($($f:ident).+, $len:expr) as $n:expr; $($rest:tt)*) => {
+        $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*
+            $crate::abi::mechanism::decl::RedCase::<$ot> {
+                rule: $crate::abi::mechanism::check::Rule::IndexOutOfRange,
+                field: $n,
+                red: |o: &mut $ot| o.$($f).+ = u32::MAX,
+            },
+        ] $($rest)*)
+    };
+    (@red $ot:ty, $op:literal, [$($acc:tt)*] within($($f:ident).+, $cap:expr) as $n:expr; $($rest:tt)*) => {
         $crate::abi::mechanism::decl::abi_op!(@red $ot, $op, [$($acc)*] $($rest)*)
     };
 }

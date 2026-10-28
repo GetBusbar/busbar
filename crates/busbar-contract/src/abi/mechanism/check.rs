@@ -10,6 +10,7 @@
 //! check for an op with no short path.
 
 use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
+use super::decl::abi_op;
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
     MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_ROLE,
@@ -435,16 +436,15 @@ pub const fn absent(s: AbiStr, field: &'static str) -> Result<(), Fault> {
 /// The rule a mark breaks.
 pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
     bits(marks, MARKS_KNOWN, "statement.marks")?;
-    for w in words {
-        code(
-            u64::from(w.class),
-            u64::from(MARK_WORD_HOOK),
-            u64::from(MARK_WORD_ISSUED_SECRET_ALPHABET),
-            "mark_word.class",
-        )?;
-        named(w.word, "mark_word.word")?;
+    words.iter().try_for_each(check_mark_word)
+}
+
+abi_op! {
+    /// One word mark: a known class, and named.
+    fn check_mark_word(w: &MarkWord) as "mark_word", MARK_WORD_RULES for w: MarkWord {
+        code(class, MARK_WORD_HOOK, MARK_WORD_ISSUED_SECRET_ALPHABET);
+        named(word);
     }
-    Ok(())
 }
 
 /// The rewrites: a known class and a named `from`; `to` is absent for an alias, optional for a
@@ -455,21 +455,25 @@ pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
 ///
 /// The rule a rewrite breaks.
 pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
-    for r in rewrites {
-        code(
-            u64::from(r.class),
-            u64::from(REWRITE_ALIAS),
-            u64::from(REWRITE_SUGAR_ROLE),
-            "rewrite.class",
-        )?;
-        named(r.from, "rewrite.from")?;
-        match r.class {
-            REWRITE_ALIAS => absent(r.to, "rewrite.to")?,
-            REWRITE_SUGAR => {}
-            _ => named(r.to, "rewrite.to")?,
-        }
+    rewrites.iter().try_for_each(check_rewrite)
+}
+
+abi_op! {
+    /// One rewrite, as [`check_rewrites`] states.
+    fn check_rewrite(r: &Rewrite) as "rewrite", REWRITE_RULES for r: Rewrite {
+        code(class, REWRITE_ALIAS, REWRITE_SUGAR_ROLE);
+        named(from);
+        then rewrite_to(r);
     }
-    Ok(())
+}
+
+/// A rewrite's `to`, by its class.
+fn rewrite_to(r: &Rewrite) -> Result<(), Fault> {
+    match r.class {
+        REWRITE_ALIAS => absent(r.to, "rewrite.to"),
+        REWRITE_SUGAR => Ok(()),
+        _ => named(r.to, "rewrite.to"),
+    }
 }
 
 /// The sections: each named, known flags, and at most one declaring section (a plane has exactly
@@ -479,16 +483,7 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
 ///
 /// The rule the sections break.
 pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_SELECTS;
-    for s in sections {
-        named(s.name, "section.name")?;
-        bits(u64::from(s.flags), u64::from(known), "section.flags")?;
-        // The declaring section selects its plane already: the selecting bit beside it is
-        // redundant, and refused.
-        if s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_SELECTS != 0 {
-            return Err(fault(Rule::Contradiction, "section.flags"));
-        }
-    }
+    sections.iter().try_for_each(check_section)?;
     if sections
         .iter()
         .filter(|s| s.flags & SECTION_DECLARING != 0)
@@ -500,6 +495,17 @@ pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
     Ok(())
 }
 
+abi_op! {
+    /// One section: named, with known flags, never both declaring and selecting.
+    fn check_section(s: &Section) as "section", SECTION_RULES for s: Section {
+        named(name);
+        bits(flags, SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_SELECTS);
+        // The declaring section selects its plane already: the selecting bit beside it is
+        // redundant, and refused.
+        deny(s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_SELECTS != 0, Contradiction, "section.flags");
+    }
+}
+
 /// The needs: a known direction and a transport claim; strings and details never counted with a
 /// NULL pointer.
 ///
@@ -507,27 +513,22 @@ pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
 ///
 /// The rule a need breaks.
 pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
-    for n in needs {
-        code(
-            u64::from(n.direction),
-            u64::from(DIRECTION_INBOUND),
-            u64::from(DIRECTION_OUTBOUND),
-            "need.direction",
-        )?;
-        code(
-            u64::from(n.egress_class),
-            u64::from(EGRESS_DEFAULT),
-            u64::from(EGRESS_LOOPBACK_ALLOWED),
-            "need.egress_class",
-        )?;
-        named(n.transport, "need.transport")?;
-        text(n.auth, "need.auth")?;
-        text(n.target_from, "need.target_from")?;
-        text(n.trust_from, "need.trust_from")?;
-        listed(n.details.ptr, n.details.len, "need.details")?;
-        keep_response_headers(n)?;
+    needs.iter().try_for_each(check_need)
+}
+
+abi_op! {
+    /// One need, as [`check_needs`] states.
+    fn check_need(n: &Need) as "need", NEED_RULES for n: Need {
+        code(direction, DIRECTION_INBOUND, DIRECTION_OUTBOUND);
+        code(egress_class, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED);
+        named(transport);
+        text(auth);
+        text(target_from);
+        text(trust_from);
+        then listed(n.details.ptr, n.details.len, "need.details");
+        zero(_reserved, UnknownCode);
+        then keep_response_headers(n);
     }
-    Ok(())
 }
 
 /// A need's response head rule ([`Need::keep_mode`]):
@@ -540,9 +541,6 @@ pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
 fn keep_response_headers(n: &Need) -> Result<(), Fault> {
     const KEPT: &str = "need.keep_response_headers";
     const DENIED: &str = "need.deny_response_headers";
-    if n._reserved != 0 {
-        return Err(fault(Rule::UnknownCode, "need._reserved"));
-    }
     match n.keep_mode {
         KEEP_NAMED => {
             if n.deny_response_headers_len != 0 || !n.deny_response_headers.is_null() {

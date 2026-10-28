@@ -105,7 +105,7 @@ fn an_abi_struct_declaration_renders_as_the_plain_struct() {
             pub struct Holder { pub pair: Pair }
         }
         abi_op! {
-            pub fn check_pair(out: &Pair) as "pair", PAIR_RULES { code(a, 0, 1); }
+            pub fn check_pair(out: &Pair) as "pair", PAIR_RULES for out: Pair { code(a, 0, 1); }
         }
         abi_answers! { cx: (); }
         "#;
