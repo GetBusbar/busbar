@@ -890,10 +890,10 @@ impl WakeRoute for Pool {
         }
     }
 
-    fn services(&self) -> Option<Served> {
+    fn services(&self) -> Option<Served<'_>> {
         Some(Served {
-            store: Arc::clone(&self.env.services),
-            provider: Arc::clone(self.env.provider.as_ref()?),
+            store: &self.env.services,
+            provider: self.env.provider.as_deref()?,
         })
     }
 

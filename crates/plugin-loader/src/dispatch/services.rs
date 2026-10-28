@@ -189,23 +189,36 @@ impl Issue {
 /// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
 /// ticket's current one is DROPPED, never stored under the next op's same-numbered handle and
 /// never a wake for it (THE DESIGN §11.11 H2, §11.12).
+/// Held in [`SHARDS`] maps by the worker a ticket's slot names, so calls on different workers'
+/// tickets never wait on one another's lock.
 #[derive(Debug, Default)]
 pub struct ServiceStore {
-    inner: Mutex<HashMap<Ticket, Held>>,
+    shards: [Mutex<HashMap<Ticket, Held>>; SHARDS],
     /// The last epoch minted.
     epochs: AtomicU64,
     /// The driver tickets' held exchanges, by handle (`super::held`).
     pub(crate) held: super::held::Held,
 }
 
+/// How many maps a [`ServiceStore`] is split into: a worker's tickets all land in one.
+const SHARDS: usize = 16;
+
 impl ServiceStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    /// The map worker `worker`'s tickets live in, locked.
+    fn shard(&self, worker: u32) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
+        self.shards[worker as usize % SHARDS]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The map `ticket` lives in, locked.
+    fn lock(&self, ticket: Ticket) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
+        self.shard(decode(ticket.slot).0)
     }
 
     /// Store a pended service's result; `false` when the handle is not running under `epoch`.
     fn complete(&self, h: CompletionHandle, issue: Issue, epoch: u64, stored: Stored) -> bool {
-        let mut map = self.lock();
+        let mut map = self.lock(h.ticket);
         match map
             .get_mut(&h.ticket)
             .filter(|held| held.epoch == epoch)
@@ -222,14 +235,14 @@ impl ServiceStore {
     /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
     /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
-        self.lock()
+        self.lock(ticket)
             .remove(&ticket)
             .map_or(0, |held| held.entries.len())
     }
 
     /// Forget every result of worker `worker` (it was replaced).
     pub(crate) fn forget_worker(&self, worker: u32) {
-        self.lock().retain(|t, _| decode(t.slot).0 != worker);
+        self.shard(worker).retain(|t, _| decode(t.slot).0 != worker);
     }
 
     /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the
@@ -237,7 +250,7 @@ impl ServiceStore {
     #[cfg(test)]
     pub(crate) fn keep(&self, ticket: Ticket, seq: u32) {
         let epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
-        self.lock()
+        self.lock(ticket)
             .entry(ticket)
             .or_insert_with(|| Held {
                 epoch,
@@ -259,7 +272,14 @@ impl ServiceStore {
     /// How many results the store holds.
     #[cfg(test)]
     pub(crate) fn held(&self) -> usize {
-        self.lock().values().map(|held| held.entries.len()).sum()
+        (0..SHARDS as u32)
+            .map(|w| {
+                self.shard(w)
+                    .values()
+                    .map(|held| held.entries.len())
+                    .sum::<usize>()
+            })
+            .sum()
     }
 }
 
@@ -296,11 +316,11 @@ impl Completer {
     }
 }
 
-/// What a dispatcher serves its instances from.
-#[derive(Clone)]
-pub(crate) struct Served {
-    pub(crate) store: Arc<ServiceStore>,
-    pub(crate) provider: Arc<dyn HostServices>,
+/// What a dispatcher serves its instances from, borrowed from it for one call.
+#[derive(Clone, Copy)]
+pub(crate) struct Served<'a> {
+    pub(crate) store: &'a Arc<ServiceStore>,
+    pub(crate) provider: &'a dyn HostServices,
 }
 
 // ── the answer ─────────────────────────────────────────────────────────────────────────────────
@@ -479,50 +499,67 @@ unsafe fn serve_kept(
     into: Option<&ServiceBufs>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
-    // The epoch of the op on the ticket: the one its first result minted, or a fresh one; `None`
-    // when the handle is bound to another service or request.
+    // The epoch of the op on the ticket: the one its first result minted, or a fresh one. A handle
+    // already used is redeemed under this one lock; one bound to another service or request is
+    // `None`; a fresh one is noted running, so a completion has an entry to land in.
     let issue = Issue::of(route, h.seq);
-    let Some((epoch, fresh)) = ({
-        let mut map = store.lock();
+    let fresh = {
+        let mut map = store.lock(h.ticket);
         let held = map.entry(h.ticket).or_insert_with(|| Held {
             epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
             entries: HashMap::new(),
         });
         let epoch = held.epoch;
         match held.entries.entry(issue) {
-            std::collections::hash_map::Entry::Occupied(o) => {
-                (o.get().0 == bound).then_some((epoch, false))
+            std::collections::hash_map::Entry::Occupied(mut o) if o.get().0 == bound => {
+                // SAFETY: the caller's contract.
+                return unsafe { redeem(&mut o.get_mut().1, into) };
             }
+            std::collections::hash_map::Entry::Occupied(_) => None,
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert((bound, Entry::Running));
-                Some((epoch, true))
+                Some(epoch)
             }
         }
-    }) else {
+    };
+    let Some(epoch) = fresh else {
         return rebound(route);
     };
-    if fresh {
-        let completer = Completer {
-            store: Arc::downgrade(store),
-            waking: route.clone(),
-            handle: h,
-            epoch,
-        };
-        match body(Some(completer)) {
-            Ran::Now(stored) => {
-                store.complete(h, issue, epoch, stored);
-            }
-            Ran::Later => {}
-        }
-    }
-    let mut map = store.lock();
-    match map
+    let completer = Completer {
+        store: Arc::downgrade(store),
+        waking: route.clone(),
+        handle: h,
+        epoch,
+    };
+    let ran = body(Some(completer));
+    // What it ran to is stored and redeemed under one lock.
+    let mut map = store.lock(h.ticket);
+    let Some((_, e)) = map
         .get_mut(&h.ticket)
         .filter(|held| held.epoch == epoch)
         .and_then(|held| held.entries.get_mut(&issue))
-    {
-        Some((_, Entry::Running)) => Answered::bare(Outcome::Pending, ""),
-        Some((_, Entry::Done { stored, shorts })) => {
+    else {
+        // Forgotten under the call: its ticket was recycled.
+        return Answered::fault();
+    };
+    if let Ran::Now(stored) = ran {
+        if matches!(e, Entry::Running) {
+            *e = Entry::Done { stored, shorts: 0 };
+        }
+    }
+    // SAFETY: the caller's contract.
+    unsafe { redeem(e, into) }
+}
+
+/// A handle's stored result, written into the caller's buffers: PENDING while it runs; a short
+/// answer counted, and a second one on the handle FAULT.
+///
+/// # Safety
+/// As [`deliver`].
+unsafe fn redeem(e: &mut Entry, into: Option<&ServiceBufs>) -> Answered {
+    match e {
+        Entry::Running => Answered::bare(Outcome::Pending, ""),
+        Entry::Done { stored, shorts } => {
             if *shorts >= 2 {
                 return Answered::bare(Outcome::Fault, SECOND_SHORT);
             }
@@ -539,8 +576,6 @@ unsafe fn serve_kept(
                 }
             }
         }
-        // Forgotten under the call: its ticket was recycled.
-        None => Answered::fault(),
     }
 }
 
@@ -595,19 +630,6 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     session_emit: Some(session_emit),
 };
 
-/// The dispatcher an instance's context routes to, and what it serves.
-fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
-    let wake = super::handle::resolve(ctx)?;
-    let waking = Waking::of(wake)?;
-    let served = waking.route.upgrade()?.services()?;
-    Some((served, waking))
-}
-
-/// The caller an instance's context names; `None` before bind stated one.
-fn caller(ctx: HostCtx) -> Option<Caller> {
-    super::handle::resolve(ctx)?.caller.get().cloned()
-}
-
 /// A checked range of the caller's, copied: `None` for NULL with a length, or a length over the
 /// hard byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
@@ -636,18 +658,29 @@ fn later_of(completer: Option<Completer>) -> Option<Later> {
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there, the head is this service's and covers its `in`,
-/// a may-pend service has a ticket, then `body`. A panic answers FAULT; the whole `out` is written.
+/// a may-pend service has a ticket, then `body` with what the dispatcher the context routes to
+/// serves (borrowed for the call) and the instance's route, the context resolved once. A panic
+/// answers FAULT; the whole `out` is written.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(Served, Waking, ServiceHead) -> Answered,
+    body: impl FnOnce(Served<'_>, Waking, ServiceHead) -> Answered,
 ) -> RawOutcome {
-    framed(input, out, service, in_size, |head| match served(ctx) {
-        Some((served, route)) => body(served, route, head),
-        None => Answered::bare(Outcome::Refused, "no host services are bound"),
+    framed(input, out, service, in_size, |head| {
+        let unbound = || Answered::bare(Outcome::Refused, "no host services are bound");
+        let Some(waking) = super::handle::resolve(ctx).and_then(Waking::of) else {
+            return unbound();
+        };
+        let Some(route) = waking.route.upgrade() else {
+            return unbound();
+        };
+        match route.services() {
+            Some(served) => body(served, waking, head),
+            None => unbound(),
+        }
     })
 }
 
@@ -738,7 +771,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                 return Answered::fault();
             };
             let dest = String::from_utf8_lossy(dest).into_owned();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
             unsafe {
                 let req = Fp::of(&[
@@ -770,7 +803,7 @@ fn scoped(
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(Served, Waking, ServiceHead, Caller) -> Answered,
+    body: impl FnOnce(Served<'_>, Waking, ServiceHead, &Caller) -> Answered,
 ) -> RawOutcome {
     slot(
         ctx,
@@ -778,7 +811,7 @@ fn scoped(
         out,
         service,
         in_size,
-        |served, route, head| match caller(ctx) {
+        |served, route, head| match route.supplier.and_then(|w| w.caller.get()) {
             Some(c) => body(served, route, head, c),
             None => Answered::bare(Outcome::Refused, NO_CALLER),
         },
@@ -791,7 +824,7 @@ fn scoped(
 /// # Safety
 /// As [`deliver`].
 unsafe fn pended(
-    served: &Served,
+    served: &Served<'_>,
     route: &Waking,
     head: &ServiceHead,
     req: u64,
@@ -833,7 +866,7 @@ extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             if check_bufs(&i.into).is_err() {
                 return Answered::fault();
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), &key]);
@@ -845,9 +878,10 @@ extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-/// The credential kinds an instance's context declares it reads; none before bind stated them.
-fn credential_kinds(ctx: HostCtx) -> &'static [String] {
-    let Some(wake) = super::handle::resolve(ctx) else {
+/// The credential kinds the calling instance (`route`'s supplier) declares it reads; none before
+/// bind stated them.
+fn credential_kinds(route: &Waking) -> &'static [String] {
+    let Some(wake) = route.supplier else {
         return &[];
     };
     wake.credential_kinds.get().map_or(&[], Vec::as_slice)
@@ -879,10 +913,10 @@ extern "C" fn records_secret(
             // THE DECLARED NEED: the caller's Statement names the kinds it reads; every other kind,
             // and every caller that names none (any non-auth instance), is refused before the
             // kernel reads anything.
-            if !credential_kinds(ctx).contains(&kind) {
+            if !credential_kinds(&route).contains(&kind) {
                 return Answered::bare(Outcome::Refused, UNDECLARED_KIND);
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), id.as_bytes()]);
@@ -894,10 +928,10 @@ extern "C" fn records_secret(
     )
 }
 
-/// The destination the calling instance's `key` is bound to; `None` when it was granted no such
-/// key, or its settings leave it unset.
-fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::DiskDest> {
-    let wake = super::handle::resolve(ctx)?;
+/// The destination the calling instance's (`route`'s supplier's) `key` is bound to; `None` when it
+/// was granted no such key, or its settings leave it unset.
+fn destination(route: &Waking, key: &str) -> Option<busbar_contract::services::DiskDest> {
+    let wake = route.supplier?;
     if !wake.destinations.get()?.iter().any(|k| k == key) {
         return None;
     }
@@ -935,7 +969,7 @@ extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             ) else {
                 return Answered::fault();
             };
-            let Some(dest) = destination(ctx, &key) else {
+            let Some(dest) = destination(&route, &key) else {
                 // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
                 unsafe {
                     i.result.write_unaligned(DiskWritten {
@@ -952,7 +986,7 @@ extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             };
             let whole = bytes.len() as u64;
             let req = Fp::of(&[key.as_bytes(), &bytes]);
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer: the result is the `DiskWritten` slot, written below.
             let mut a = unsafe {
                 pended(&served, &route, &head, req, None, |later| {
@@ -1024,7 +1058,7 @@ extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut Service
                 after: (!i.after.ptr.is_null()).then_some(after),
                 limit: i.limit,
             };
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
@@ -1058,7 +1092,7 @@ extern "C" fn records_claim(
             if check_records_claim_in(&i).is_err() {
                 return Answered::bare(Outcome::Refused, NO_TTL);
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), &key, &i.ttl_ms.to_le_bytes()]);
@@ -1086,7 +1120,7 @@ extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
             if check_bufs(&i.into).is_err() {
                 return Answered::fault();
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 serve(
@@ -1115,7 +1149,7 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             let Some(counterparty) = text_of(i.counterparty, "trust_sight.counterparty") else {
                 return Answered::fault();
             };
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             match i.outcome {
                 svc::TRUST_REACHED => {}
                 // Unreached: the last verdict, nothing sighted (the hash is unread).
@@ -1169,7 +1203,7 @@ extern "C" fn trust_sight_item(
             ) else {
                 return Answered::fault();
             };
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
@@ -1201,7 +1235,7 @@ extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut Service
             let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
             let some = |s: String| (!s.is_empty()).then_some(s);
             let (item, digest) = (some(item), some(digest));
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 serve(&served.store, &route, &head, req, None, |_| {
@@ -1247,7 +1281,7 @@ extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut Service
             ]);
             let some = |s: String| (!s.is_empty()).then_some(s);
             let (item, expected) = (some(item), some(expected));
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 serve(&served.store, &route, &head, req, None, |_| {
@@ -1278,7 +1312,7 @@ extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             let Some(counterparty) = text_of(i.counterparty, "trust_state.counterparty") else {
                 return Answered::fault();
             };
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[counterparty.as_bytes()]);
@@ -1303,7 +1337,7 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             if check_bufs(&i.into).is_err() {
                 return Answered::fault();
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 serve(
@@ -1339,7 +1373,7 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
             if check_bufs(&i.into).is_err() {
                 return Answered::fault();
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[counterparty.as_bytes(), &payload, &signatures]);
@@ -1421,7 +1455,7 @@ extern "C" fn entitlement_check(
                 return Answered::fault();
             };
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[target.as_bytes()]);
@@ -1449,7 +1483,7 @@ extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut Service
             if svc::check_session_emit_in(&i).is_err() {
                 return Answered::bare(Outcome::Refused, EMIT_NOTHING);
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[&i.session.to_le_bytes(), &bytes]);
@@ -1480,7 +1514,7 @@ extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             if check_random_fill_in(&i).is_err() {
                 return Answered::bare(Outcome::Refused, FILL_OUT_OF_RANGE);
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[&i.len.to_le_bytes()]);
@@ -1513,7 +1547,7 @@ extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return Answered::fault();
             }
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             let req = Fp::of(&[verb.as_bytes(), target.as_bytes(), &body]);
             let ask = NestAsk { verb, target, body };
             // SAFETY: `into` checked above; the caller's buffers, where the whole reply goes.
@@ -1553,7 +1587,7 @@ extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
             }
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), &record]);
@@ -1582,7 +1616,7 @@ extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return Answered::fault();
             }
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[&reference]);
@@ -1612,7 +1646,7 @@ extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             }
             // The unit this crossing serves: the kernel judges the settle against it.
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[&i.handle.to_le_bytes(), &record]);
@@ -1638,7 +1672,7 @@ extern "C" fn work_resume(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
                 return Answered::fault();
             }
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[&i.handle.to_le_bytes()]);
@@ -1684,7 +1718,7 @@ extern "C" fn verify_lookup(
             if key.is_empty() {
                 return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers, where the entry goes.
             unsafe {
                 let req = Fp::of(&[&key]);
@@ -1715,7 +1749,7 @@ extern "C" fn verify_store(ctx: HostCtx, input: *const c_void, out: *mut Service
             if key.is_empty() {
                 return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
             }
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[&key, &entry, &i.ttl_ms.to_le_bytes()]);
@@ -1744,7 +1778,7 @@ extern "C" fn content_scan(ctx: HostCtx, input: *const c_void, out: *mut Service
                 return Answered::fault();
             }
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers, where rewritten content goes.
             unsafe {
                 let req = Fp::of(&[&content]);
@@ -1830,7 +1864,7 @@ extern "C" fn hook_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 messages,
             };
             let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
+            let provider = served.provider;
             // SAFETY: `into` checked above; the caller's buffers, where the reply goes.
             unsafe {
                 pended(&served, &route, &head, req.0, Some(&i.into), |later| {

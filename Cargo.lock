@@ -516,6 +516,7 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
+ "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-stub-auth-verify",

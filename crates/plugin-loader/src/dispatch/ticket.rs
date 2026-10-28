@@ -43,8 +43,8 @@ pub(crate) trait WakeRoute: Send + Sync {
     /// plugin.
     fn wake(&self, t: Ticket, supplier: Option<&'static InstanceWake>);
 
-    /// The host services this route's instances are served from; `None` = none.
-    fn services(&self) -> Option<super::services::Served> {
+    /// The host services this route's instances are served from, borrowed; `None` = none.
+    fn services(&self) -> Option<super::services::Served<'_>> {
         None
     }
 

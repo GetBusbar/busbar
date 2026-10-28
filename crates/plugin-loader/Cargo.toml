@@ -74,6 +74,7 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+arc-swap = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }

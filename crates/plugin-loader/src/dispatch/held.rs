@@ -17,11 +17,13 @@
 //!   cycle would be answered another exchange's kept answer. It is REFUSED as a fault instead (the
 //!   one fault answer, `Outcome::Fault`, no text), and nothing runs.
 //!
-//! Only driver tickets are tracked ([`Held::track`]); a call on any other ticket passes untouched.
+//! Only driver tickets are tracked ([`Held::track`]); a call on any other ticket passes untouched,
+//! and takes no lock.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use arc_swap::ArcSwap;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 
 use super::ticket::decode;
@@ -43,6 +45,10 @@ struct Cycle {
 #[derive(Debug, Default)]
 pub(crate) struct Held {
     inner: Mutex<HashMap<Ticket, Cycle>>,
+    /// The tickets `inner` tracks, read without its lock: a service call on any other ticket
+    /// (every call but a driver ticket's) is told so here and takes no lock ([`Held::tracks`]).
+    /// Replaced, under `inner`'s lock, whenever a ticket is tracked or stops being tracked.
+    drivers: ArcSwap<HashSet<Ticket>>,
 }
 
 impl Held {
@@ -50,19 +56,44 @@ impl Held {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Whether `ticket` is tracked, read without the lock. A driver ticket is tracked from before
+    /// it is handed out until it is recycled, so no call on it races its tracking.
+    fn tracks(&self, ticket: Ticket) -> bool {
+        let drivers = self.drivers.load();
+        !drivers.is_empty() && drivers.contains(&ticket)
+    }
+
+    /// `all`'s tickets, as the lock-free read sees them.
+    fn publish(&self, all: &HashMap<Ticket, Cycle>) {
+        self.drivers.store(Arc::new(all.keys().copied().collect()));
+    }
+
     /// Track `driver`, a driver ticket just minted.
     pub(crate) fn track(&self, driver: Ticket) {
-        self.lock().insert(driver, Cycle::default());
+        let mut all = self.lock();
+        all.insert(driver, Cycle::default());
+        self.publish(&all);
     }
 
     /// Stop tracking `ticket` (it was recycled).
     pub(crate) fn untrack(&self, ticket: Ticket) {
-        self.lock().remove(&ticket);
+        if !self.tracks(ticket) {
+            return;
+        }
+        let mut all = self.lock();
+        if all.remove(&ticket).is_some() {
+            self.publish(&all);
+        }
     }
 
     /// Stop tracking every ticket of worker `worker` (it was replaced).
     pub(crate) fn untrack_worker(&self, worker: u32) {
-        self.lock().retain(|t, _| decode(t.slot).0 != worker);
+        let mut all = self.lock();
+        let before = all.len();
+        all.retain(|t, _| decode(t.slot).0 != worker);
+        if all.len() != before {
+            self.publish(&all);
+        }
     }
 
     /// A new cycle on `driver`: nothing is held or issued.
@@ -106,6 +137,9 @@ impl Held {
     /// A call under `h` is about to be served: `false` when it reuses a handle another exchange
     /// issued in a kept cycle (refused, as a fault, and nothing runs).
     pub(crate) fn call(&self, h: CompletionHandle) -> bool {
+        if !self.tracks(h.ticket) {
+            return true;
+        }
         let mut all = self.lock();
         let Some(c) = all.get_mut(&h.ticket) else {
             return true;
@@ -119,6 +153,9 @@ impl Held {
 
     /// The call under `h` answered: PENDING (`pending`) or anything else.
     pub(crate) fn answered(&self, h: CompletionHandle, pending: bool) {
+        if !self.tracks(h.ticket) {
+            return;
+        }
         if let Some(c) = self.lock().get_mut(&h.ticket) {
             if pending {
                 c.pending.insert(h.seq);

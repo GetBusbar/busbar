@@ -394,10 +394,10 @@ impl WakeRoute for Route {
         self.wakes.lock().unwrap().push(t);
     }
 
-    fn services(&self) -> Option<Served> {
+    fn services(&self) -> Option<Served<'_>> {
         Some(Served {
-            store: Arc::clone(&self.store),
-            provider: self.provider.clone(),
+            store: &self.store,
+            provider: &*self.provider,
         })
     }
 }
