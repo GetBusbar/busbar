@@ -84,29 +84,20 @@ use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::transport as tkind;
 // THE STORE KIND (v3): aliased with a `Store` prefix so a golden line names its kind.
 use busbar_contract::abi::store::{
-    AddUsageBatchIn as StoreAddUsageBatchIn, AddUsageIn as StoreAddUsageIn,
-    AppendBatchIn as StoreAppendBatchIn, AppendPlaneRecordIn as StoreAppendPlaneRecordIn,
-    BlobIn as StoreBlobIn, CellGrant as StoreCellGrant, CountOut as StoreCountOut,
-    GetPlaneRecordIn as StoreGetPlaneRecordIn, HeadOut as StoreHeadOut, HeadsOut as StoreHeadsOut,
+    AddUsageBatchIn as StoreAddUsageBatchIn, AppendPlaneRecordIn as StoreAppendPlaneRecordIn,
+    BlobIn as StoreBlobIn, CountOut as StoreCountOut, GetPlaneRecordIn as StoreGetPlaneRecordIn,
     HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostBytesOut as StoreHostBytesOut,
-    HostListOut as StoreHostListOut, HostRecords as StoreHostRecords,
-    HostSessions as StoreHostSessions, IdIn as StoreIdIn, IdReasonIn as StoreIdReasonIn,
-    KeyWithCredentialIn as StoreKeyWithCredentialIn, KindBeforeIn as StoreKindBeforeIn,
-    KindIdIn as StoreKindIdIn, LeasedBlobOut as StoreLeasedBlobOut,
-    LeasedListOut as StoreLeasedListOut, LeasedStrListOut as StoreLeasedStrListOut,
-    ListPlaneRecordsIn as StoreListPlaneRecordsIn, OpBlobIn as StoreOpBlobIn,
+    HostListOut as StoreHostListOut, HostRecords as StoreHostRecords, IdIn as StoreIdIn,
+    IdReasonIn as StoreIdReasonIn, KeyWithCredentialIn as StoreKeyWithCredentialIn,
+    KindBeforeIn as StoreKindBeforeIn, KindIdIn as StoreKindIdIn,
+    LeasedBlobOut as StoreLeasedBlobOut, LeasedListOut as StoreLeasedListOut,
+    LeasedStrListOut as StoreLeasedStrListOut, ListPlaneRecordsIn as StoreListPlaneRecordsIn,
     OpBlobsIn as StoreOpBlobsIn, OpId as StoreOpId, PlaneRecordRow as StorePlaneRecordRow,
     PutUsageIn as StorePutUsageIn, RecordEntry as StoreRecordEntry,
     RecordGetIn as StoreRecordGetIn, RecordPutIn as StoreRecordPutIn,
-    RecordScanIn as StoreRecordScanIn, ReleaseItem as StoreReleaseItem,
-    ReserveIn as StoreReserveIn, ReserveOut as StoreReserveOut, SessionPutIn as StoreSessionPutIn,
-    SessionRow as StoreSessionRow, SessionsForIn as StoreSessionsForIn,
-    SliceReleaseIn as StoreSliceReleaseIn, SliceReleaseOut as StoreSliceReleaseOut,
-    StoreTail as StoreStoreTail, StreamHead as StoreStreamHead, TokenIn as StoreTokenIn,
-    U64In as StoreU64In, UnitCell as StoreUnitCell,
-    UpsertPlaneRecordIn as StoreUpsertPlaneRecordIn, UsageCell as StoreUsageCell,
-    VerdictOut as StoreVerdictOut, WindowCap as StoreWindowCap, WindowCapsIn as StoreWindowCapsIn,
-    WindowIn as StoreWindowIn,
+    RecordScanIn as StoreRecordScanIn, StoreTail as StoreStoreTail, TokenIn as StoreTokenIn,
+    U64In as StoreU64In, UpsertPlaneRecordIn as StoreUpsertPlaneRecordIn,
+    UsageCell as StoreUsageCell, VerdictOut as StoreVerdictOut, WindowIn as StoreWindowIn,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -371,58 +362,14 @@ fn compute_layout() -> String {
         [head, durable_plane, fork_refusal, _reserved]
     );
     record!(s, StoreOpId, []);
-    record!(
-        s,
-        StoreUnitCell,
-        [bucket, pool, dimension, _r, class_key, amount, window_start]
-    );
-    record!(s, StoreCellGrant, [slice_id, granted, valid_until_ms]);
-    record!(
-        s,
-        StoreReserveIn,
-        [head, op_id, epoch, cells, cells_len, grants, grants_cap]
-    );
-    record!(
-        s,
-        StoreReserveOut,
-        [head, grants_len, reason, failed_cell, needed_grants]
-    );
-    record!(s, StoreReleaseItem, [slice_id, unspent]);
-    record!(
-        s,
-        StoreSliceReleaseIn,
-        [head, op_id, epoch, items, items_len, released, released_cap]
-    );
-    record!(
-        s,
-        StoreSliceReleaseOut,
-        [head, released_len, needed_released]
-    );
     record!(s, StoreUsageCell, [bucket, window_start, delta]);
     record!(s, StoreAddUsageBatchIn, [head, op_id, cells, cells_len]);
     record!(s, StoreOpBlobsIn, [head, op_id, records, records_len]);
-    record!(
-        s,
-        StoreWindowCap,
-        [
-            bucket,
-            pool,
-            dimension,
-            _r,
-            class_key,
-            window_start,
-            cap,
-            config_gen
-        ]
-    );
-    record!(s, StoreWindowCapsIn, [head, op_id, caps, caps_len]);
     record!(s, StoreIdIn, [head, id]);
     record!(s, StoreU64In, [head, value]);
     record!(s, StoreWindowIn, [head, bucket, window_start]);
     record!(s, StorePutUsageIn, [head, bucket, window_start, ledger]);
-    record!(s, StoreAddUsageIn, [head, op_id, cell]);
     record!(s, StoreBlobIn, [head, record]);
-    record!(s, StoreOpBlobIn, [head, op_id, record]);
     record!(s, StoreKeyWithCredentialIn, [head, key, credential]);
     record!(s, StoreKindIdIn, [head, kind, id]);
     record!(s, StoreIdReasonIn, [head, id, reason]);
@@ -445,18 +392,6 @@ fn compute_layout() -> String {
         [head, kind, before, retention, _reserved]
     );
     record!(s, StoreTokenIn, [head, kind, token, expires_at, now]);
-    record!(
-        s,
-        StoreAppendBatchIn,
-        [head, op_id, stream, records, records_len]
-    );
-    record!(s, StoreHeadOut, [head, seq, epoch]);
-    record!(s, StoreStreamHead, [stream, seq, epoch]);
-    record!(s, StoreHeadsOut, [head, items, items_len]);
-    record!(s, StoreSessionPutIn, [head, session, node, principal]);
-    record!(s, StoreSessionRow, [session, node]);
-    record!(s, StoreHostSessions, [items, items_cap, bytes]);
-    record!(s, StoreSessionsForIn, [head, principal, out]);
     record!(s, StoreRecordPutIn, [head, schema, key, value]);
     record!(s, StoreRecordGetIn, [head, schema, key, value]);
     record!(s, StoreRecordEntry, [key, value]);
@@ -475,22 +410,15 @@ fn compute_layout() -> String {
             get_key,
             list_keys,
             delete_key,
-            scrub_key,
             list_keys_since,
             get_usage,
             put_usage,
-            add_usage,
-            add_metering,
             list_metering,
-            purge_windows_before,
-            purge_metering_before,
             put_credential,
             put_key_with_credential,
             list_credentials,
-            lookup_credential_secret,
             revoke_credential,
             list_credentials_since,
-            append_audit,
             list_audit,
             add_denylist,
             list_denylist,
@@ -504,20 +432,11 @@ fn compute_layout() -> String {
             delete_plane_record,
             redeem_plane_token,
             plane_token_live,
-            append_batch,
-            reserve,
-            slice_release,
-            heads,
-            session_put,
-            session_remove,
-            sessions_for,
             record_put,
             record_get,
             record_scan,
             add_usage_batch,
-            add_metering_batch,
-            append_audit_batch,
-            window_caps
+            add_metering_batch
         ]
     );
     record!(
@@ -2199,14 +2118,14 @@ fn a_perturbed_hook_golden_line_fails_the_comparator() {
     assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
 }
 
-/// RED ARM, store kind: one perturbed store golden line (a `UnitCell`'s `window_start` offset, the
-/// money shape of m3-inputs "store v3 money slots" / "window caps") fails the comparator.
+/// RED ARM, store kind: one perturbed store golden line (a `UsageCell`'s `window_start` offset)
+/// fails the comparator.
 #[test]
 fn a_perturbed_store_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "StoreUnitCell.window_start=64";
+    let line = "StoreUsageCell.window_start=16";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "StoreUnitCell.window_start=56", 1);
+    let perturbed = actual.replacen(line, "StoreUsageCell.window_start=24", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed store line must fail");
-    assert!(err.contains("StoreUnitCell.window_start=56"), "{err}");
+    assert!(err.contains("StoreUsageCell.window_start=24"), "{err}");
 }

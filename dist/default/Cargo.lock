@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=d253d3d9284b8ef6bd5642a6a3dce16879f8ce93#d253d3d9284b8ef6bd5642a6a3dce16879f8ce93"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=254cddb5b7c9783f7697ac07a08cc72024761703#254cddb5b7c9783f7697ac07a08cc72024761703"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -792,9 +792,10 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2#dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dfce32ebc3b9c705183a055c33e409bd7290eb68#dfce32ebc3b9c705183a055c33e409bd7290eb68"
 dependencies = [
  "busbar-contract",
+ "serde_json",
  "sha2",
 ]
 
@@ -804,6 +805,7 @@ version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-core-connector",
  "busbar-plugin-loader",
  "hex",
  "ring",
@@ -3063,7 +3065,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
