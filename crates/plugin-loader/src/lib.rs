@@ -356,6 +356,11 @@ mod dispatch_kind_plane_tests;
 #[path = "tests/dispatch_kind_store_tests.rs"]
 mod dispatch_kind_store_tests;
 
+/// The stub store's plane records: an upsert is keyed on its own id, parent or not.
+#[cfg(test)]
+#[path = "tests/stub_store_plane_tests.rs"]
+mod stub_store_plane_tests;
+
 /// The hook kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
