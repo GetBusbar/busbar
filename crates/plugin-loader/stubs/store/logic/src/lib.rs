@@ -173,11 +173,14 @@ impl MemoryStore {
     pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
         // No age sweep rides this write: a record-leg row is never evicted by age (see the
         // `records` field's doc), because nothing here can tell an active work handle from a
-        // settled one.
-        self.records
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((schema.to_string(), key.to_vec()), value.clone());
+        // settled one. An EMPTY value is the host's strike (slot 40's rule): it removes the row.
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
+        let at = (schema.to_string(), key.to_vec());
+        if value.as_slice().is_empty() {
+            records.remove(&at);
+        } else {
+            records.insert(at, value.clone());
+        }
     }
 
     /// Read one of a plane's kernel-held durable records.

@@ -1344,7 +1344,7 @@ dispatcher that is the thread's default only while the body runs, fed `log` reco
 `tracing-log`'s `LogTracer` (the plugin image installs it, and so does the host). The capture lives
 in one slot per thread per plugin image. The host bounds each reply at 128 records and 64 KiB; the
 rest, plus whatever the plugin's own capture could not carry, is one counted line. It filters by
-the instance's level and writes `<dir>/<instance>.log`, one record per line (`time LEVEL instance
+the instance's level and writes `<dir>/<section>.<instance>.log`, the instance named after its kind's config section (`export.metrics.log`, `store.memory.log`, `identity-providers.memory.log`; instance names are unique only within a kind, a plane's instance is its own section), one record per line (`time LEVEL instance
 kind target: message`), rotating by its rename rule. The keys are `plugins.logs`: `dir`, `level`,
 `levels`, `rotate_mb` and `keep`, set live through `POST /config/apply`. A plugin never writes to
 stdout, stderr, a file or a global logger itself. What it writes outside a call (from another
@@ -3592,6 +3592,7 @@ The loader checks in this order:
   - plane records;
   - the ten 1.6.0 ledger ops: `append_batch`, `reserve`, `slice_release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`, `record_scan`, with the semantics in `store_adapter.rs` documented per slot (constant slice epoch, replay cache `REPLAY_TTL_SECS` surviving a restore, shipping ack);
   - batch slots `add_usage_batch`, `add_metering_batch`, `append_audit_batch`.
+- **An empty record put removes the row** (ARCHITECT 2026-10-21, store kind, record leg). A `record_put` whose value is empty REMOVES the `(schema, key)` row: `record_get` answers absent and `record_scan` never returns it. No new slot; the store ABI stays v3 and the layout is unchanged. The host writes every strike (a swept work handle, a dropped chain, a tombstone) as an empty put and reads empty as absent; journal parts are never empty. The store conformance script holds it for every backend.
 - **Writes.** Every additive or appending write carries `op_id` and is deduped, and uses the `write_behind` class.
 - **Kernel side.** The migration read (`migration_audit_head`, `migration_cells_read`) and the marker run in the kernel over `StoreClient`; the `store-persist` cell proves them. ITEM-580 closes: the store's own declared version is read.
 - **Tail:** `ephemeral`, `durable_plane`, `fork_refusal` (Q79). [STATUS 2026-10-14: `ephemeral` is a Statement mark (`MARK_EPHEMERAL`, abi/sdk/door.rs); the tail holds `durable_plane` and `fork_refusal` (`crates/busbar-contract/src/abi/store/mod.rs:238-253`)]

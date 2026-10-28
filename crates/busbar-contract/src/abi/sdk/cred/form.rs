@@ -5,7 +5,7 @@
 
 use zeroize::Zeroizing;
 
-use super::Cred;
+use super::{AuthFloor, Cred};
 
 /// A URL (`scheme://user:pass@host/...?password=...`, or `?pass=`) or key/value connection string
 /// (`host=h password='p'`) with its password taken out and sealed. [`CredUrl::public`] is the text
@@ -17,6 +17,7 @@ pub struct CredUrl {
     public: String,
     password: Option<Cred>,
     at: Option<PasswordAt>,
+    floor: AuthFloor,
 }
 
 /// Where in the text the password was written (public: a plugin keeps its own URL rules).
@@ -47,6 +48,24 @@ impl CredUrl {
     /// Where the password was written.
     pub fn password_at(&self) -> Option<PasswordAt> {
         self.at
+    }
+
+    /// The auth floor the text sets ([`Cred::floor`]): its password carries it.
+    pub fn floor(&self) -> AuthFloor {
+        self.floor
+    }
+
+    /// The password, or an empty one when the text carries none: either carries the text's
+    /// [`CredUrl::floor`] and its secure requirement.
+    pub fn credential(&self) -> Cred {
+        self.password.clone().unwrap_or_else(|| {
+            let c = Cred::empty().with_floor(self.floor);
+            if secure_requested(&self.public) {
+                c.require_secure()
+            } else {
+                c
+            }
+        })
     }
 
     /// Split `text` (a URL or connection string the plugin already holds).
@@ -91,9 +110,10 @@ impl CredUrl {
             (text.to_owned(), None)
         };
         let secure = secure_requested(&public);
+        let floor = AuthFloor::of(&public);
         let (password, at) = match found {
             Some((b, at)) => {
-                let c = Cred::from_bytes(b);
+                let c = Cred::from_bytes(b).with_floor(floor);
                 (Some(if secure { c.require_secure() } else { c }), Some(at))
             }
             None => (None, None),
@@ -102,6 +122,7 @@ impl CredUrl {
             public,
             password,
             at,
+            floor,
         })
     }
 }
