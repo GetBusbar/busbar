@@ -725,10 +725,11 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=c4b8599250ff7996af33494bfe56e4526f5526b8#c4b8599250ff7996af33494bfe56e4526f5526b8"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=74bbd10f864a54f144b37b4be54e340c1958246c#74bbd10f864a54f144b37b4be54e340c1958246c"
 dependencies = [
  "busbar-contract",
  "bytes",
+ "getrandom 0.3.4",
  "serde",
  "serde_json",
  "sonic-rs",

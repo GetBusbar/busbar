@@ -71,6 +71,15 @@ Everything else in this release is identical to 1.5.5, apart from the improvemen
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
+- **A request that asks for a stream gets a stream.**
+  1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.
+  1.5.5 relayed such an answer as one `application/json` body to a caller that asked for
+  `stream: true`. busbar answers in the caller's dialect and mode (owner, 2026-10-27).
+- **A stream cut mid-flight ends on the error its spec names.**
+  1.6.0 Changed: an Anthropic-dialect stream cut mid-flight ends on an error event whose `error.type` is a published type (`api_error`), with the text in `error.message`, as the Anthropic spec says.
+  1.6.0 Changed: a Bedrock ConverseStream cut mid-flight ends on an exception frame whose `:exception-type` is the spec's union member name `internalServerException`.
+  1.5.5 wrote the message text into Anthropic's error type and `InternalServerException` on the
+  Bedrock frame (owner, 2026-10-26).
 - **A key refresh link rotates only from busbar's own page.** `GET /auth/token?method=<m>&refresh=1`
   rotates the caller's key only when the browser reports a same-origin navigation (the key page's
   "Refresh key" link). From any other site, a typed URL or a non-browser client it re-shows the
@@ -485,13 +494,6 @@ as an improvement or does not exist: a config written for 1.5.5 boots, validates
 identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
 minted secret carries over.
 
-- 1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an
-  error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only
-  InvokeModel declares. The message, the `Retry-After` header and the charge (none) are unchanged,
-  and the five other dialects already answered an exhausted budget with 429. **Migration:** a
-  Bedrock client that matched `ServiceQuotaExceededException` on Converse must match
-  `ThrottlingException`; the AWS SDKs retry it under their standard retry mode, as they retry the
-  other dialects' 429.
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
   fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the

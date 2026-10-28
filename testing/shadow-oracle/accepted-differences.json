@@ -416,13 +416,12 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$|^llm\\|(anthropic\\|(bedrock|cohere|gemini|openai|responses)|bedrock\\|(anthropic|cohere|gemini|openai|responses)|cohere\\|(anthropic|bedrock|gemini|openai|responses)|gemini\\|(anthropic|bedrock|cohere|openai|responses)|openai\\|(anthropic|bedrock|cohere|gemini|responses)|responses\\|(anthropic|bedrock|cohere|gemini|openai))\\|request\\|ok_stream_whole_answer$",
-      "expected_cells": 36,
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$|^llm\\|bedrock\\|(anthropic|cohere|gemini|openai|responses)\\|request\\|ok_stream_whole_answer$",
+      "expected_cells": 11,
       "classes": [
-        "body",
-        "headers"
+        "body"
       ],
-      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the stream-synthesis behaviour (a stream:true request served as a spec-shaped event stream, not a buffered application/json body) also produces its difference on the 20 ok_stream_whole_answer cells of the anthropic, cohere, gemini and openai doors (every backend but the door's own): llm|anthropic|bedrock|request|ok_stream_whole_answer, llm|anthropic|cohere|request|ok_stream_whole_answer, llm|anthropic|gemini|request|ok_stream_whole_answer, llm|anthropic|openai|request|ok_stream_whole_answer, llm|anthropic|responses|request|ok_stream_whole_answer, llm|cohere|anthropic|request|ok_stream_whole_answer, llm|cohere|bedrock|request|ok_stream_whole_answer, llm|cohere|gemini|request|ok_stream_whole_answer, llm|cohere|openai|request|ok_stream_whole_answer, llm|cohere|responses|request|ok_stream_whole_answer, llm|gemini|anthropic|request|ok_stream_whole_answer, llm|gemini|bedrock|request|ok_stream_whole_answer, llm|gemini|cohere|request|ok_stream_whole_answer, llm|gemini|openai|request|ok_stream_whole_answer, llm|gemini|responses|request|ok_stream_whole_answer, llm|openai|anthropic|request|ok_stream_whole_answer, llm|openai|bedrock|request|ok_stream_whole_answer, llm|openai|cohere|request|ok_stream_whole_answer, llm|openai|gemini|request|ok_stream_whole_answer, llm|openai|responses|request|ok_stream_whole_answer. Classes stay body and headers. WIDENED AGAIN 2026-10-20 (OWNER ruling \"widen the entries\", relayed by the coordinator, PR #1292): the same synthesis also covers the ok_stream_whole_answer cells of the bedrock door (5; body 6 -> 5 events, no empty contentBlockStart) and the responses door (5; 1.5.5 application/json -> 1.6.0 text/event-stream, the same stream:true-answered-whole difference), and llm|bedrock|gemini|request|ok_stream (the gemini-upstream cell added 2026-10-13; 6 -> 5 events). All 30 ok_stream_whole_answer cells of the six doors are now listed.",
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the stream-synthesis behaviour (a stream:true request served as a spec-shaped event stream, not a buffered application/json body) also produces its difference on the 20 ok_stream_whole_answer cells of the anthropic, cohere, gemini and openai doors (every backend but the door's own): llm|anthropic|bedrock|request|ok_stream_whole_answer, llm|anthropic|cohere|request|ok_stream_whole_answer, llm|anthropic|gemini|request|ok_stream_whole_answer, llm|anthropic|openai|request|ok_stream_whole_answer, llm|anthropic|responses|request|ok_stream_whole_answer, llm|cohere|anthropic|request|ok_stream_whole_answer, llm|cohere|bedrock|request|ok_stream_whole_answer, llm|cohere|gemini|request|ok_stream_whole_answer, llm|cohere|openai|request|ok_stream_whole_answer, llm|cohere|responses|request|ok_stream_whole_answer, llm|gemini|anthropic|request|ok_stream_whole_answer, llm|gemini|bedrock|request|ok_stream_whole_answer, llm|gemini|cohere|request|ok_stream_whole_answer, llm|gemini|openai|request|ok_stream_whole_answer, llm|gemini|responses|request|ok_stream_whole_answer, llm|openai|anthropic|request|ok_stream_whole_answer, llm|openai|bedrock|request|ok_stream_whole_answer, llm|openai|cohere|request|ok_stream_whole_answer, llm|openai|gemini|request|ok_stream_whole_answer, llm|openai|responses|request|ok_stream_whole_answer. Classes stay body and headers. WIDENED AGAIN 2026-10-20 (OWNER ruling \"widen the entries\", relayed by the coordinator, PR #1292): the same synthesis also covers the ok_stream_whole_answer cells of the bedrock door (5; body 6 -> 5 events, no empty contentBlockStart) and the responses door (5; 1.5.5 application/json -> 1.6.0 text/event-stream, the same stream:true-answered-whole difference), and llm|bedrock|gemini|request|ok_stream (the gemini-upstream cell added 2026-10-13; 6 -> 5 events). All 30 ok_stream_whole_answer cells of the six doors are now listed. NARROWED 2026-10-27 (ORACLE-116 review, S-1): back to the Bedrock frame it was signed for. Its 11 cells are the Bedrock door's: the 6 ok_stream cells and the 5 ok_stream_whole_answer cells, where 1.5.5 already answered an event stream and the only difference is the empty text contentBlockStart (body /len 6 -> 5); class `body` only. The 25 other-door ok_stream_whole_answer cells, where a stream:true request answered whole is now served as the caller's stream (application/json -> the caller's stream), leave for their own entry, `S-1-SYNTH`, signed by the owner 2026-10-27.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok_stream",
         "status": 200
@@ -442,6 +441,45 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "S-1-SYNTH a stream:true request is answered as a stream even when the far end answered one whole body",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Yes, adopt the rule\"",
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer)$",
+      "expected_cells": 25,
+      "classes": [
+        "headers",
+        "body",
+        "effects.audit"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "body_contains": "event: message_start"
+          },
+          {
+            "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): \"Yes, adopt the rule\": busbar answers in the caller's dialect AND mode, converting when it can and refusing with an explanation when it can't; synthesized streams are audited and billed from the real upstream body; own entry and CHANGELOG line."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape."
     },
     {
       "id": "S-2 responses stream lifecycle frames",
@@ -1100,38 +1138,6 @@
         "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-05",
         "ruling": "2026-09-05 oracle Phase 0 group-budget-total cell",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
-      "id": "S-9 responses url citations survive the hop",
-      "kind": "improvement",
-      "changelog": "**A Responses URL citation survives the hop.**",
-      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok(_stream)?$",
-      "expected_cells": 12,
-      "classes": [
-        "body",
-        "headers"
-      ],
-      "rationale": "Spec fidelity: the Responses API's published UrlCitationBody FLATTENS url/title/start_index/end_index onto the annotation, while Chat nests them under a url_citation object. 1.5.5 wrote the flat shape but read only the nested one, so every URL citation on a Responses-shaped upstream response was dropped -- including Responses->Responses, where the reader consumed bytes the writer had just produced. 1.6.0 reads both published shapes, so a citation the upstream sent reaches the client. Additive: a response that carried no citation is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
-      "premise": {
-        "cell": "llm|responses|anthropic|request|ok",
-        "status": 200
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
-        "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-09-30",
@@ -2570,31 +2576,6 @@
       }
     },
     {
-      "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
-      "kind": "improvement",
-      "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
-      "cells": "^llm\\|((anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)|gemini\\|gemini\\|request\\|(ok|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture))$",
-      "expected_cells": 21,
-      "classes": [
-        "headers"
-      ],
-      "rationale": "Dialect fidelity F2 (handoffs DIALECT-FIDELITY-DESIGN.md, under the owner's LLM dialect fidelity rule of 2026-10-02): on a same-dialect route the response head is the upstream's: every field passes except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's declared tenant/credential-derived headers (dialect.rs governed_response_headers: anthropic-organization-id, openai-organization, openai-project). 1.5.5 built a fresh head instead: Content-Type plus the ingress dialect's relayed request-id names only (v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1862-1880 passthrough error relay, :1927-1940 client-fault relay, :2300-2335 streamed 2xx; proxy/wire.rs:24-58; the names: proto/anthropic/writer.rs:104-106 request-id, proto/bedrock/writer.rs:1143-1147 x-amzn-requestid + x-amzn-errortype, proto/mod.rs:695-697 none for the rest). The plane relays through exchange::reply wire::relay_far_head; the llm door's needs state KEEP_ALL_EXCEPT_DENIED with the governed names denied (busbar-plane-llm plane_door.rs DENY_RESPONSE_HEADERS). Headers class only: no status, body or usage class is forgiven. Translated routes are unchanged (no far head crosses a dialect).",
-      "premise": {
-        "cell": "llm|anthropic|anthropic|request|ok",
-        "status": 200
-      },
-      "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-02",
-        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02, pre-approved register entries), F2 response headers; applied by ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
       "id": "S-16b relayed upstream server/date on the raw header-order cells",
       "kind": "breaking",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
@@ -3731,42 +3712,6 @@
       }
     },
     {
-      "id": "C-22 bedrock budget refusal is a declared Converse error",
-      "kind": "breaking",
-      "changelog": "1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only InvokeModel declares.",
-      "by": "ruling:§NAMED CONFORMANCE GAPS ARE 0 (registered under a standing ruling; no owner signature on this entry); rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C)",
-      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|over_budget_total$",
-      "expected_cells": 1,
-      "classes": [
-        "status",
-        "body",
-        "headers"
-      ],
-      "rationale": "1.5.5 answered a Bedrock caller whose group budget is spent with HTTP 400 `__type`/`x-amzn-errortype` `ServiceQuotaExceededException` (golden/1.5.5/cells/llm__bedrock__bedrock__request__over_budget_total.json; v1.5.5 proto bedrock writer quota_exceeded_status() = 400). That exception is not in the `errors` of Converse or ConverseStream in the pinned botocore bedrock-runtime model (testing/llm-conformance/spec-digests.tsv, e5c8122617a2: AccessDenied, InternalServer, ModelError, ModelNotReady, ModelTimeout, ResourceNotFound, ServiceUnavailable, Throttling, Validation); only InvokeModel declares it. So the llm spec-conformance rig failed `error.declared` on this row, and the row sat in testing/llm-conformance/named-gaps.json as a named gap. Owner rule 22 (2026-10-14) makes every named conformance gap a defect to fix in code. 1.6.0 answers 429 `ThrottlingException`, the declared Converse error whose AWS description is 'Your request was denied due to exceeding the account quotas for Amazon Bedrock' (httpStatusCode 429), matching the other five dialects' 429 for the same refusal. Moved classes: status 400 -> 429, body `__type` (the message is unchanged), headers `x-amzn-errortype` and the content-length that follows the body. Not money: the refusal charges nothing on either side and effects.usage is untouched (the metrics outcome label is client_error for both statuses). Code: crates/busbar-plane-llm/src/codec/bedrock/mod.rs error_kind_to_bedrock_type and quota_exceeded_status, crates/busbar-plane-llm/src/refusal.rs (the bedrock OVER_BUDGET row removed, so the class default 429 answers). SCOPE: exactly one cell.",
-      "premise": {
-        "all": [
-          {
-            "cell": "llm|bedrock|bedrock|request|over_budget_total",
-            "status": 429
-          },
-          {
-            "cell": "llm|bedrock|bedrock|request|over_budget_total",
-            "pointer": "/__type",
-            "equals": "ThrottlingException"
-          }
-        ]
-      },
-      "signoff": {
-        "who": "ruling:§NAMED CONFORMANCE GAPS ARE 0",
-        "when": "2026-10-14",
-        "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C: ThrottlingException/429)"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
       "id": "GEN-LIMITS an apply's limits are in force only once its generation is live",
       "kind": "improvement",
       "changelog": "A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits.",
@@ -4673,6 +4618,72 @@
         ]
       },
       "rationale": "New store-ABI surface: the same op_id with a different body is refused with STORE_OPID_CONFLICT and nothing is applied (1.5.5 had no op_id). No oracle cell replays a store op_id today."
+    },
+    {
+      "id": "STREAMERR-ANTHROPIC a cut Anthropic stream's error event names a published error type (api_error), the text in message",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: an Anthropic-dialect stream cut mid-flight ends on an error event whose `error.type` is a published type (`api_error`), with the text in `error.message`, as the Anthropic spec says.",
+      "by": "owner (Matthew Jackson), 2026-10-26 \"Fix and sign\"",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "\"error\":\\{\"message\":\"The response stream was interrupted\\.\",\"type\":\"api_error\"\\}",
+            "\"error\":{\"message\":\"The response stream was interrupted.\",\"type\":\"The response stream was interrupted.\"}"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "llm|anthropic|anthropic|request|stream_upstream_cut",
+        "body_contains": "\"type\":\"api_error\""
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-26",
+        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): before `{\"error\":{\"message\":\"The response stream was interrupted.\",\"type\":\"The response stream was interrupted.\"},\"type\":\"error\"}`, after `...\"type\":\"api_error\"}` with the same message. 1.5.5 copied the message text into the error-type field, which fails Anthropic's conformance schema. A transform: only that `type` member is read back as 1.5.5's; every other byte of the stream (and R-22's request_id) stays judged by its own entry."
+    },
+    {
+      "id": "STREAMERR-BEDROCK a cut Bedrock stream's exception frame names the union member internalServerException",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a Bedrock ConverseStream cut mid-flight ends on an exception frame whose `:exception-type` is the spec's union member name `internalServerException`.",
+      "by": "owner (Matthew Jackson), 2026-10-26 \"Fix and sign\"",
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^internalServerException$",
+            "InternalServerException"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "llm|bedrock|bedrock|request|stream_upstream_cut",
+        "body_contains": "internalServerException"
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-26",
+        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): the frame's `:exception-type` header value moves from `InternalServerException` to `internalServerException`, as the ConverseStream output union names it; the payload `{\"message\":\"The response stream was interrupted.\"}` is unchanged (the frame CRCs change with the header; the recording holds the decoded frames). A transform: only that one exception-name string is read back as 1.5.5's; every other frame stays judged."
     }
   ]
 }
