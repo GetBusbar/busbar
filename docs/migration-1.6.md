@@ -101,7 +101,7 @@ What the migration changes for you, and the one edit it leaves to you:
   `token_url` is on a private or loopback address (a local ollama or vLLM, an in-cluster gateway)
   is refused when dialled unless `advanced.allow_destinations` names it. `--migrate-config` adds
   exactly the hosts the provider's plane and your sign-in plugins report, and `--validate` names a
-  provider URL the guard will refuse (BUSBAR-3022). Cloud metadata addresses are refused either way.
+  provider URL the guard will refuse (BUSBAR-3025). Cloud metadata addresses are refused either way.
 - a signed-in user that no role binding grants is refused (401); 1.5.5 let such a user through with
   no pool limit and no budget. `--migrate-config` writes `role_bindings.<provider>."*": {}` for each
   data-plane provider whose users 1.5.5 admitted that way, and warns: it keeps 1.5.5's access, and
