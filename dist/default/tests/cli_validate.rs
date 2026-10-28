@@ -264,7 +264,7 @@ fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
 /// Regression test for the config_validate/main.rs layering bug this session found and fixed:
 /// `auth.chain` naming a plugin-shaped module that ISN'T actually installed must still fail
 /// `--validate` (fail-closed end to end) -- just via the LATER, registry-aware check
-/// (`preflight_plugins_and_secrets` in main.rs), not the earlier pre-registry `config_validate`
+/// (`config_validate::check`), not the earlier pre-registry `config_validate`
 /// pass. Before the fix, `config_validate::validate` hard-rejected every non-`keys` chain module
 /// unconditionally, which (as an unwanted side effect neither layer's own tests caught, since each
 /// tested its own layer in isolation) meant a genuinely INSTALLED `kind: auth` plugin could never

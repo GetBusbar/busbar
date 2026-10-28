@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through. A shape,
-//! shared: the connector reads the process environment into it once (`busbar_core_connector::proxy`,
-//! the one parser) and every dial it makes asks it; the composition root hands the same value to
-//! the kernel's remaining egress engine, which reads no environment of its own.
+//! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through. The connector reads the
+//! process environment into it once ([`crate::proxy`], the one parser) and every dial it makes asks
+//! it. It is the connector's alone: it lived in `busbar-contract` while the composition root handed
+//! the same value to the kernel's outbound engine, and moved here when that engine was deleted: the
+//! contract holds only cross-kind shapes.
 //!
 //! The rules are reqwest 0.12's implicit proxy environment, as 1.5.5 shipped them: a secured target
 //! uses the secured slot and every other target the plain slot (each set from its own variable,
