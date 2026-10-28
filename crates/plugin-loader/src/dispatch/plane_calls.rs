@@ -315,7 +315,7 @@ impl<I: InFrame, O: OutFrame> InFlight<I, O> {
     fn answer_out(&self) -> Option<O> {
         self.done
             .as_ref()
-            .and_then(|d| d.frame.as_deref())
+            .and_then(|d| d.frame.as_ref())
             .map(|f| f.out)
     }
 }
