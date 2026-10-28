@@ -16,7 +16,9 @@ pub mod filled;
 pub mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
+pub mod migrate_catalog;
 pub mod migrate_export;
+pub mod migrate_plugins;
 /// The root migration table the composition root hands in, and the one rewrite over it.
 pub mod migration_table;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as

@@ -525,7 +525,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=70f9efc205abaced72ba2e2d3f5002cf91c03c27#70f9efc205abaced72ba2e2d3f5002cf91c03c27"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -540,7 +540,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=70f9efc205abaced72ba2e2d3f5002cf91c03c27#70f9efc205abaced72ba2e2d3f5002cf91c03c27"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -654,8 +654,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "bytes",
- "futures",
 ]
 
 [[package]]
