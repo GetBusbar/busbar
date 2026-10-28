@@ -1711,7 +1711,9 @@ async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() 
         ("serve-hook-seats-rerank-bare", true),
     ] {
         let _published = Published(instance);
-        let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_1")).await;
+        // An answer billing no search units: the rig's card prices none, and this cell is about the
+        // request, not its price.
+        let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_unbilled")).await;
         let rig = rig(
             instance,
             RigOpts {
