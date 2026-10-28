@@ -661,6 +661,21 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     .expect("the blocking call ran");
     assert_eq!(written.map(|v| v.as_slice().to_vec()), Some(b"v".to_vec()));
 
+    // A claim is redeemed through the same slots, under the kind it names: the first redemption of
+    // a token wins, a second loses, and the same token under another kind is its own claim.
+    let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
+    let claims = tokio::task::spawn_blocking(move || {
+        let now = 1_000;
+        [
+            rows.claim("attach-claim", "t", now + 60, now),
+            rows.claim("attach-claim", "t", now + 60, now),
+            rows.claim("attach-other", "t", now + 60, now),
+        ]
+    })
+    .await
+    .expect("the blocking call ran");
+    assert_eq!(claims, [Ok(true), Ok(false), Ok(true)]);
+
     // With the governance store's slots kept, the attach binds it; a second bind is refused.
     let gov = busbar_kernel::governance::GovState::new(Arc::clone(&opened.records), None)
         .expect("governance");
@@ -677,12 +692,9 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         &[],
     );
     assert!(
-        !k.attach_records(
-            Arc::new(busbar_kernel::host_records::StoreRows(
-                gov.store_calls().expect("kept")
-            )),
-            gov.store()
-        ),
+        !k.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(
+            gov.store_calls().expect("kept")
+        ))),
         "the governance store is already the record store"
     );
 
@@ -704,12 +716,9 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         &[],
     );
     assert!(
-        k.attach_records(
-            Arc::new(busbar_kernel::host_records::StoreRows(Arc::clone(
-                &gov.store_calls().expect("kept")
-            ))),
-            bare.store()
-        ),
+        k.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(
+            Arc::clone(&gov.store_calls().expect("kept"))
+        ))),
         "a store with no slots bound nothing"
     );
 }
