@@ -2031,7 +2031,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         SecretResolver::builtins_only()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
-        b"s3cr3t-value".to_vec()
+        busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
@@ -2059,9 +2059,12 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
         SecretResolver::builtins_only().resolve(&sref).unwrap(),
-        b"file-secret\n".to_vec()
+        busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(&sref).unwrap(),
+        busbar_contract::redacted::Secret::new("file-secret".to_string())
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.

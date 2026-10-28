@@ -2510,7 +2510,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
-                busbar_kernel::config::secret::resolve_linked_string_at_config,
+                busbar_core_connector::spawn_env::linked_spawn_secret,
             )
             .expect("the connector builds");
             let plane = bound(
@@ -7674,6 +7674,8 @@ fn per_hop_over(
 ) -> super::PerHop {
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
     let value = secrets.resolve_string(&secret).expect("it resolves");
+    let seal = busbar_kernel::seal::lend();
+    let value = value.expose(&seal);
     let settings = serde_json::json!({});
     let handle = {
         use busbar_contract::auth_calls::OutboundAuth as _;
@@ -7864,7 +7866,10 @@ struct CountingResolves {
 }
 
 impl busbar_contract::secret::SecretResolve for CountingResolves {
-    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
@@ -7873,7 +7878,7 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
     fn resolve_string(
         &self,
         secret: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<String, String> {
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)

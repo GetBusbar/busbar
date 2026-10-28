@@ -586,6 +586,8 @@ macro_rules! lend_kinds_list {
                 buf(groups, groups_cap) -> Span;
             }
             ValidateIn { buf(err_buf, err_cap) -> u8; }
+            // THE SECRET KIND (`abi::secret`): the host's buffer a resolved value is written into.
+            crate::abi::secret::ResolveIn { buf(secret_buf, secret_cap) -> u8; }
             // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
             PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
             ArriveIn {
@@ -1252,6 +1254,7 @@ macro_rules! lent_field_list {
             crate::abi::secret::ResolveIn {
                 sub head: crate::abi::mechanism::call::InHead;
                 blob settings;
+                val secret_cap: usize;
             }
             crate::abi::store::ledger::HostRecords {
                 val items_cap: usize;

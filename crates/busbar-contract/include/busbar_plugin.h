@@ -107,6 +107,7 @@ extern "C" {
 #define BB_STORE_LIST_ITEMS_HARD_MAX UINT64_C(0x100000) /* The hard maximum of any store list's item count (`needed_items`, a leased list's length): */
 #define BB_STORE_NEEDED_BYTES_HARD_MAX UINT64_C(0xffffffff) /* The hard maximum of any `needed_bytes` (`needed_bytes <= u32::MAX`). */
 #define BB_STORE_ABI_VERSION UINT32_C(3) /* The store kind's ABI version: v1.5.5 shipped `2` (`ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_STORE_LAYOUT_FINGERPRINT UINT64_C(0x56bdc8a89ba6e6e0) /* The store kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_STORE_FOUND UINT32_C(1) /* [`HostBytesOut::found`]: the record exists and was written. */
 #define BB_STORE_ABSENT UINT32_C(0) /* [`HostBytesOut::found`] / [`LeasedBlobOut::found`]: no such record. `0`, so an `out` nobody */
 #define BB_STORE_VERDICT_NO UINT32_C(0) /* [`VerdictOut::verdict`]: no (and the fail-closed zero). */
@@ -158,6 +159,7 @@ extern "C" {
 
 /* secret */
 #define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version: v1.5.5 shipped `1` (`SECRET_ABI_VERSION`), so 1.6.0 ships `2`. */
+#define BB_SECRET_LAYOUT_FINGERPRINT UINT64_C(0x7195caed69bcfcbd) /* The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_SECRET_SLOT_RESOLVE UINT32_C(9) /* `resolve`. */
 #define BB_SECRET_SLOT_CHECK UINT32_C(10) /* `check`. */
 #define BB_SECRET_SLOTS UINT32_C(11) /* How many slots the secret kind's whole table holds (the lifecycle, `resolve` and `check`). */
@@ -167,12 +169,14 @@ extern "C" {
 #define BB_SECRET_ERROR_KIND_DENIED UINT32_C(3) /* [`ResolveOut::error_kind`]: the caller is not entitled to it — OLD `SecretErrorKind::Denied`. */
 #define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed — OLD */
 #define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above — OLD */
+#define BB_SECRET_FIRST_SECRET_CAP ((size_t)4096) /* The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM */
 #define BB_SECRET_CANCEL_ABORTED UINT32_C(0) /* The pending `resolve` was aborted; no lease was granted. */
 
 /* auth */
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0xc89280c6692621) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */
 #define BB_AUTH_SLOT_COMPLETE_LOGIN UINT32_C(11) /* `complete_login`. */
@@ -238,6 +242,7 @@ extern "C" {
 
 /* hook */
 #define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`. */
+#define BB_HOOK_LAYOUT_FINGERPRINT UINT64_C(0xe66698e71abe2054) /* The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_HOOK_SLOT_DECIDE UINT32_C(9) /* `decide`. */
 #define BB_HOOK_SLOT_TRANSFORM UINT32_C(10) /* `transform`. */
 #define BB_HOOK_SLOT_NOTIFY UINT32_C(11) /* `notify`. */
@@ -309,6 +314,7 @@ extern "C" {
 
 /* export */
 #define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0x95a37b669466aab6) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
 #define BB_EXPORT_SLOT_STATUS UINT32_C(11) /* `status`. */
@@ -340,6 +346,7 @@ extern "C" {
 #define BB_PLANE_MAX_SIGNALS UINT64_C(64) /* The most signals one `project` answer may carry. */
 #define BB_PLANE_MAX_TURNS UINT64_C(0x10000) /* The most prompt turns one `project` answer may carry. */
 #define BB_PLANE_ABI_VERSION UINT32_C(1) /* The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`. */
+#define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0x344ee53291ab670c) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_PLANE_SLOT_ARRIVE UINT32_C(9) /* Classify an arrival. */
 #define BB_PLANE_SLOT_ON_PIECE UINT32_C(10) /* One piece of a unit's bytes. */
 #define BB_PLANE_SLOT_REFUSAL UINT32_C(11) /* Render a refusal in the unit's dialect. */
@@ -479,6 +486,7 @@ extern "C" {
 #define BB_TRANSPORT_SEPARATOR ": " /* Between a field's name and its value. */
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
+#define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x715dbad81f3872c0) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_TRANSPORT_SLOT_LISTEN UINT32_C(9) /* Carrier: bind a listener. */
 #define BB_TRANSPORT_SLOT_ACCEPT UINT32_C(10) /* Carrier: accept one connection. */
 #define BB_TRANSPORT_SLOT_DIAL UINT32_C(11) /* Carrier: dial a destination. */
@@ -1294,6 +1302,7 @@ struct bb_mech_Door {
     const bb_mech_OpsHead *ops;
     bb_mech_Op ready;
     bb_mech_Op migrate;
+    uint64_t layout;
 };
 
 /* One metric family, declared ONCE in the Statement and validated at `open`; a per-call */
@@ -1790,6 +1799,8 @@ struct bb_secret_Ops {
 struct bb_secret_ResolveIn {
     bb_mech_InHead head;
     bb_mech_Blob settings;
+    uint8_t *secret_buf;
+    size_t secret_cap;
 };
 
 /* `resolve`'s `out`. */
@@ -1798,6 +1809,7 @@ struct bb_secret_ResolveOut {
     bb_mech_Blob secret;
     uint32_t error_kind;
     uint32_t _reserved;
+    uint64_t needed;
 };
 
 /* `check`'s `in`: one reference's settings object and the host's reason buffer, as */
@@ -4164,7 +4176,7 @@ BB_ASSERT(offsetof(bb_mech_OutHead, lease) == 16, "bb_mech_OutHead.lease: offset
 BB_ASSERT(offsetof(bb_mech_OutHead, error) == 24, "bb_mech_OutHead.error: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, envelope) == 40, "bb_mech_OutHead.envelope: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, extensions) == 72, "bb_mech_OutHead.extensions: offset");
-BB_ASSERT(sizeof(bb_mech_Door) == 56, "bb_mech_Door: size");
+BB_ASSERT(sizeof(bb_mech_Door) == 64, "bb_mech_Door: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Door) == 8, "bb_mech_Door: alignment");
 BB_ASSERT(offsetof(bb_mech_Door, magic) == 0, "bb_mech_Door.magic: offset");
 BB_ASSERT(offsetof(bb_mech_Door, mechanism_version) == 8, "bb_mech_Door.mechanism_version: offset");
@@ -4175,6 +4187,7 @@ BB_ASSERT(offsetof(bb_mech_Door, statement) == 24, "bb_mech_Door.statement: offs
 BB_ASSERT(offsetof(bb_mech_Door, ops) == 32, "bb_mech_Door.ops: offset");
 BB_ASSERT(offsetof(bb_mech_Door, ready) == 40, "bb_mech_Door.ready: offset");
 BB_ASSERT(offsetof(bb_mech_Door, migrate) == 48, "bb_mech_Door.migrate: offset");
+BB_ASSERT(offsetof(bb_mech_Door, layout) == 56, "bb_mech_Door.layout: offset");
 BB_ASSERT(sizeof(bb_mech_MetricFamily) == 72, "bb_mech_MetricFamily: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_MetricFamily) == 8, "bb_mech_MetricFamily: alignment");
 BB_ASSERT(offsetof(bb_mech_MetricFamily, name) == 0, "bb_mech_MetricFamily.name: offset");
@@ -4557,16 +4570,19 @@ BB_ASSERT(BB_ALIGNOF(bb_secret_Ops) == 8, "bb_secret_Ops: alignment");
 BB_ASSERT(offsetof(bb_secret_Ops, head) == 0, "bb_secret_Ops.head: offset");
 BB_ASSERT(offsetof(bb_secret_Ops, resolve) == 80, "bb_secret_Ops.resolve: offset");
 BB_ASSERT(offsetof(bb_secret_Ops, check) == 88, "bb_secret_Ops.check: offset");
-BB_ASSERT(sizeof(bb_secret_ResolveIn) == 112, "bb_secret_ResolveIn: size");
+BB_ASSERT(sizeof(bb_secret_ResolveIn) == 128, "bb_secret_ResolveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_ResolveIn) == 8, "bb_secret_ResolveIn: alignment");
 BB_ASSERT(offsetof(bb_secret_ResolveIn, head) == 0, "bb_secret_ResolveIn.head: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveIn, settings) == 88, "bb_secret_ResolveIn.settings: offset");
-BB_ASSERT(sizeof(bb_secret_ResolveOut) == 128, "bb_secret_ResolveOut: size");
+BB_ASSERT(offsetof(bb_secret_ResolveIn, secret_buf) == 112, "bb_secret_ResolveIn.secret_buf: offset");
+BB_ASSERT(offsetof(bb_secret_ResolveIn, secret_cap) == 120, "bb_secret_ResolveIn.secret_cap: offset");
+BB_ASSERT(sizeof(bb_secret_ResolveOut) == 136, "bb_secret_ResolveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_ResolveOut) == 8, "bb_secret_ResolveOut: alignment");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, head) == 0, "bb_secret_ResolveOut.head: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, secret) == 96, "bb_secret_ResolveOut.secret: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, error_kind) == 120, "bb_secret_ResolveOut.error_kind: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, _reserved) == 124, "bb_secret_ResolveOut._reserved: offset");
+BB_ASSERT(offsetof(bb_secret_ResolveOut, needed) == 128, "bb_secret_ResolveOut.needed: offset");
 BB_ASSERT(sizeof(bb_secret_CheckIn) == 128, "bb_secret_CheckIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_CheckIn) == 8, "bb_secret_CheckIn: alignment");
 BB_ASSERT(offsetof(bb_secret_CheckIn, head) == 0, "bb_secret_CheckIn.head: offset");

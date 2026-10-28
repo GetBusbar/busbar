@@ -6,7 +6,7 @@
 //! a failed resolve FAILED with the error's code and text.
 
 use super::*;
-use crate::abi::mechanism::call::{Outcome, BLOB_JSON, BLOB_OCTETS};
+use crate::abi::mechanism::call::{Outcome, BLOB_JSON};
 use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use crate::abi::sdk::door::statement;
 use crate::abi::sdk::life::{Held, Life, Refreshed};
@@ -50,9 +50,9 @@ impl SafeSlot for Resolve {
         input: Lent<'_, ResolveIn>,
         mut out: Out<'_, ResolveOut>,
     ) -> Outcome {
-        let Some(held) = instance.get() else {
+        if instance.get().is_none() {
             return Outcome::Refused;
-        };
+        }
         let answered = settings_of(input.field(|i| &i.settings).bytes()).and_then(|s| {
             s.get("key")
                 .and_then(|v| v.as_str())
@@ -60,11 +60,12 @@ impl SafeSlot for Resolve {
                 .ok_or_else(|| SecretModuleError::not_found("probe: no key"))
         });
         match answered {
-            Ok(material) => {
-                out.lease_secret(|o| &o.secret, held.leases(), material, BLOB_OCTETS);
-                out.set(|o| &o.error_kind, ERROR_KIND_UNSET);
-                Outcome::Ready
-            }
+            // Into the host's buffer, never leased (the credential chip, row 6).
+            Ok(material) => crate::abi::sdk::cred::resolved(
+                input,
+                &mut out,
+                crate::abi::sdk::cred::Held::new(material),
+            ),
             Err(e) => failed(&mut out, e),
         }
     }
@@ -157,13 +158,16 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     assert_eq!(c.outcome, Outcome::Ready);
     let instance = c.take_instance().expect("an instance");
 
+    // The host lends the buffer a READY value is written into (row 6); the reply copies it out.
     let resolve_with = |settings: &'static [u8]| {
+        let mut secret = [0u8; 64];
         reply::call_in(
             resolve,
             Some(&instance),
             &TestIn::<ResolveIn>::new()
                 .set(|i| &i.head.op, crate::abi::secret::slot::RESOLVE)
-                .blob(|i| &i.settings, settings, BLOB_JSON),
+                .blob(|i| &i.settings, settings, BLOB_JSON)
+                .buffer(|i| &i.secret_buf, |i| &i.secret_cap, &mut secret),
             zeroed::<ResolveOut>(),
         )
     };

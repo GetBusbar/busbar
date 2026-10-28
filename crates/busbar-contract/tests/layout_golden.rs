@@ -1570,8 +1570,12 @@ fn compute_layout() -> String {
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve, check]);
-    record!(s, SecretResolveIn, [head, settings]);
-    record!(s, SecretResolveOut, [head, secret, error_kind, _reserved]);
+    record!(s, SecretResolveIn, [head, settings, secret_buf, secret_cap]);
+    record!(
+        s,
+        SecretResolveOut,
+        [head, secret, error_kind, _reserved, needed]
+    );
     record!(s, SecretCheckIn, [head, settings, err_buf, err_cap]);
     // M3-SHAPES (abi-v2-perkind.md B.4): the hook kind's decide/transform/notify/configure/
     // status/describe/serve, its views and its Statement tail.

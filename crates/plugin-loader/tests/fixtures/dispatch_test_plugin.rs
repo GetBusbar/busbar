@@ -201,6 +201,7 @@ static DOOR: Shared<Door> = Shared(unsafe {
         statement: &STATEMENT.0 as *const Statement,
         ops: &OPS.0 as *const OpsHead,
         ready: None,
+        layout: KIND.layout_fingerprint(),
     })
 });
 

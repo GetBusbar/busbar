@@ -1192,7 +1192,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     &busbar_contract::config_time::ConfigScope::config_time(),
                 )
                 .unwrap_or_default();
-                if !resolved_key.trim().is_empty() {
+                if !resolved_key.expose(&crate::seal::lend()).trim().is_empty() {
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
                         provider = %provider_name,
@@ -2644,6 +2644,7 @@ fn validate_providers_with(
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
             .unwrap_or_default();
+            let cred = cred.expose(&crate::seal::lend());
             if !cred.trim().is_empty() {
                 // The credential's shape is the serving auth plugin's to judge, in its own words,
                 // through the same `open_outbound` the build binds it with (never dialing).
@@ -2653,7 +2654,7 @@ fn validate_providers_with(
                     "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
-                for e in outbound_credential_refusals(style, &cred, &params) {
+                for e in outbound_credential_refusals(style, cred, &params) {
                     errors.push(format!(
                         "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2684,9 +2685,12 @@ fn validate_providers_with(
             )
             .unwrap_or_default();
             // A credential naming its key file is read as the build reads it, in the same words.
-            let cred = match service_account_json(cred.into_bytes(), |file| {
+            // OWED (row 7): `service_account_json` takes and answers plain bytes.
+            let seal = crate::seal::lend();
+            let cred = match service_account_json(cred.expose(&seal).clone().into_bytes(), |file| {
                 crate::config::secret::SecretResolver::builtins_only()
                     .resolve_at_config(file, &config_time)
+                    .map(|held| held.expose(&seal).clone())
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
                 Err(e) => {

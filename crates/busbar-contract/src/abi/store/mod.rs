@@ -95,6 +95,64 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The store kind's ABI version: v1.5.5 shipped `2` (`ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
+/// The store kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the store table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x56bdc8a89ba6e6e0;
+
+/// The store kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/store/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(HostBuf => ptr, cap),
+    crate::layout_shape!(HostBlobs => items, items_cap, bytes),
+    crate::layout_shape!(HostBytesOut => head, found, _reserved, written, needed),
+    crate::layout_shape!(HostListOut =>
+        head, items_written, bytes_written, needed_items, needed_bytes
+    ),
+    crate::layout_shape!(LeasedBlobOut => head, found, _reserved, record),
+    crate::layout_shape!(LeasedListOut => head, items, items_len),
+    crate::layout_shape!(LeasedStrListOut => head, items, items_len),
+    crate::layout_shape!(CountOut => head, count),
+    crate::layout_shape!(VerdictOut => head, verdict, _reserved),
+    crate::layout_shape!(StoreTail => head, durable_plane, fork_refusal, _reserved),
+    crate::layout_shape!(OpId =>),
+    crate::layout_shape!(UsageCell => bucket, window_start, delta),
+    crate::layout_shape!(AddUsageBatchIn => head, op_id, cells, cells_len),
+    crate::layout_shape!(OpBlobsIn => head, op_id, records, records_len),
+    crate::layout_shape!(IdIn => head, id),
+    crate::layout_shape!(U64In => head, value),
+    crate::layout_shape!(WindowIn => head, bucket, window_start),
+    crate::layout_shape!(PutUsageIn => head, bucket, window_start, ledger),
+    crate::layout_shape!(BlobIn => head, record),
+    crate::layout_shape!(KeyWithCredentialIn => head, key, credential),
+    crate::layout_shape!(KindIdIn => head, kind, id),
+    crate::layout_shape!(IdReasonIn => head, id, reason),
+    crate::layout_shape!(PlaneRecordRow => kind, id, parent, seq, ts, disposition, _reserved, body),
+    crate::layout_shape!(UpsertPlaneRecordIn => head, record),
+    crate::layout_shape!(AppendPlaneRecordIn => head, op_id, record),
+    crate::layout_shape!(GetPlaneRecordIn => head, kind, id, body),
+    crate::layout_shape!(ListPlaneRecordsIn => head, kind, selector, _reserved, parent, out),
+    crate::layout_shape!(KindBeforeIn => head, kind, before, retention, _reserved),
+    crate::layout_shape!(TokenIn => head, kind, token, expires_at, now),
+    crate::layout_shape!(RecordPutIn => head, schema, key, value),
+    crate::layout_shape!(RecordGetIn => head, schema, key, value),
+    crate::layout_shape!(RecordEntry => key, value),
+    crate::layout_shape!(HostRecords => items, items_cap, bytes),
+    crate::layout_shape!(RecordScanIn => head, schema, prefix, limit, _reserved, out),
+    crate::layout_shape!(Ops =>
+        head, put_key, get_key, list_keys, delete_key, list_keys_since, get_usage, put_usage,
+        list_metering, put_credential, put_key_with_credential, list_credentials,
+        revoke_credential, list_credentials_since, list_audit, add_denylist, list_denylist,
+        list_audit_tail, upsert_plane_record, get_plane_record, append_plane_record,
+        list_plane_records, list_plane_record_parents, purge_plane_records_before,
+        delete_plane_record, redeem_plane_token, plane_token_live, record_put, record_get,
+        record_scan, add_usage_batch, add_metering_batch
+    ),
+];
+
 // ── shared host-buffer shapes (mechanism memory class (i)) ────────────────────────────────────
 
 /// A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin
