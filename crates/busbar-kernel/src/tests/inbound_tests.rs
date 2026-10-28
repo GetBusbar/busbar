@@ -1298,6 +1298,10 @@ fn reader_kit(gov: &Arc<crate::governance::GovState>, reader: Arc<Script>, signs
 fn minted_with_credential(gov: &crate::governance::GovState) -> (String, String) {
     let (kind, shape) = crate::test_support::issued::double();
     let now = crate::store::now();
+    // A recoverable credential is stored sealed, so the governance holds at-rest keys.
+    gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+        &[3u8; 32], None,
+    )));
     let (key, _token, public_id, _secret) = gov
         .mint_signed_with_credential(
             crate::governance::NewKeySpec {
