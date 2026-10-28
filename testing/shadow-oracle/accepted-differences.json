@@ -4733,7 +4733,7 @@
       "id": "S-1-SYNTH a stream:true request is answered as a stream even when the far end answered one whole body",
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Yes, adopt the rule\"",
+      "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded ~/Developer/tmp/cleanup/NEXT.md:328)",
       "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer)$",
       "expected_cells": 25,
       "classes": [
@@ -4760,7 +4760,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): \"Yes, adopt the rule\": busbar answers in the caller's dialect AND mode, converting when it can and refusing with an explanation when it can't; synthesized streams are audited and billed from the real upstream body; own entry and CHANGELOG line."
+        "ruling": "OWNER SIGNED 2026-10-27, as recorded ~/Developer/tmp/cleanup/NEXT.md:328: \"S-1 -> OWNER SIGNED 2026-10-27: rule 'busbar answers in the caller's dialect and mode; convert when possible, refuse explained otherwise'; synthesized streams audited, billed from real body; own entry + CHANGELOG.\""
       },
       "expires": {
         "baseline": "1.5.5",
