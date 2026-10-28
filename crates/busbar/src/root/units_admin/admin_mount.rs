@@ -762,8 +762,8 @@ pub fn mount(
 /// admin-only composition sharing the node's one `book`, bound to this node's live snapshot
 /// (`app`): the configured pools an `adjust` may
 /// name, the planes and their record sink, the kernel's trust book the three trust verbs read and
-/// decide over (ARCHITECT 2026-10-06, through `late`), the kernel's own breaker (`breaker`), and
-/// the governance directory the authenticate step gates an identification with.
+/// decide over (ARCHITECT 2026-10-06, through `late`), and the governance directory the
+/// authenticate step gates an identification with.
 ///
 /// ONE function, called by the boot path and by a root cell that builds its own admin router, so
 /// the surface a cell drives is the one production serves (ruling (d), coordinator 2026-10-07: the
@@ -775,7 +775,9 @@ pub fn mount(
 /// `set_operator_key` does not exist). Nothing reads it. It stays in the call shape because the
 /// root cells a pinned door plugin carries (its `tests/root/mod.rs`) drive this one function
 /// with it, the way the v3 amendment record keeps its `operator_fingerprint` slot written empty so
-/// no stored shape moves; it leaves with the repin that drops it from that call.
+/// no stored shape moves; it leaves with the repin that drops it from that call. `retired_breaker`
+/// is the same: the admin surface holds no breaker (the walks' breakers are the egresses'), and
+/// nothing reads it.
 #[cfg(feature = "root-admin")]
 pub fn mount_node(
     admin_router: axum::Router,
@@ -784,9 +786,9 @@ pub fn mount_node(
     book: &crate::root::durability::NodeBook,
     retired_operator_key: Option<[u8; 32]>,
     late: &Arc<crate::root::serve::LateServices>,
-    breaker: crate::root::adapters::BreakerPolicy,
+    retired_breaker: crate::root::adapters::BreakerPolicy,
 ) -> axum::Router {
-    let _ = retired_operator_key;
+    let _ = (retired_operator_key, retired_breaker);
     mount(
         admin_router,
         crate::root::kernel::new_kernel(),
@@ -818,10 +820,6 @@ pub fn mount_node(
             // book — the composed services, reached through the late install.
             let late = Arc::clone(late);
             units.admin.trust = Arc::new(move || late.kernel());
-            // The root breaker is the kernel's own: one cell set on the node, read through the
-            // live snapshot so an apply's rebuilt store is the one it observes into.
-            units.breaker =
-                crate::root::adapters::BreakerAdapter::over_kernel(Arc::clone(app), breaker);
             // THE REVOCATION SET the authenticate step gates an identification with: the same
             // governance state's directory, so the revocation set is the one this node keeps. No
             // governance state is no directory, left as the assembly built it.

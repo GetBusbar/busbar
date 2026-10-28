@@ -48,12 +48,11 @@
 use busbar_contract::caps::{Pass, Route};
 use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_breaker::classify::Reading;
-use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
+use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId, LaneState};
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// The per-pool breaker configuration the adapter closes over.
 ///
@@ -89,21 +88,6 @@ impl BreakerPolicy {
         self
     }
 
-    /// The policy a deployment's `pools:` declare: every configured pool under its own resolved
-    /// `breaker:` block (or the defaults, when it declares none), and the default cell under the
-    /// defaults — the same ladder each pool's own dispatch resolves, lowered by the kernel's one
-    /// lowering so the two cannot disagree.
-    #[must_use]
-    pub fn from_pools(pools: &HashMap<String, busbar_kernel::config::PoolCfg>) -> Self {
-        use busbar_kernel::store::pool_breaker_cfg;
-        pools.iter().fold(
-            BreakerPolicy::new().with_default_cell(pool_breaker_cfg(None)),
-            |policy, (name, pool)| {
-                policy.with_pool(name.as_str(), pool_breaker_cfg(pool.breaker.as_ref()))
-            },
-        )
-    }
-
     /// The ladder in force for one pool, if the configuration declared one.
     ///
     /// The default cell's declaration answers for the default cell and nothing else. A NAMED pool
@@ -126,88 +110,93 @@ impl BreakerPolicy {
 /// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
 /// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
-    unit: UnitSource,
+    unit: BreakerUnit,
     policy: BreakerPolicy,
 }
-
-/// Where the adapter reaches its breaker unit: asked on every call, so a source that follows the
-/// live configuration hands back the unit the node is admitting on NOW, not the one it booted with.
-pub type UnitSource = Arc<dyn Fn() -> Arc<BreakerUnit> + Send + Sync>;
 
 impl BreakerAdapter {
     /// Bind the egress port to a breaker unit, under a declared per-pool policy.
     #[must_use]
-    pub fn new(unit: Arc<BreakerUnit>, policy: BreakerPolicy) -> Self {
-        BreakerAdapter::over(Arc::new(move || Arc::clone(&unit)), policy)
-    }
-
-    /// Bind the egress port to whatever unit `source` answers with, under a declared policy.
-    #[must_use]
-    pub fn over(source: UnitSource, policy: BreakerPolicy) -> Self {
-        BreakerAdapter {
-            unit: source,
-            policy,
-        }
-    }
-
-    /// Bind the egress port to the kernel's OWN breaker — the unit the live snapshot's lane store is
-    /// a handle onto — so there is one cell set on the node: an observation through this port is
-    /// the one admission reads, and a trip the kernel records is the one this port answers with.
-    /// Read through the handle on every call, because a config apply rebuilds the store (carrying
-    /// its learned health over by lane identity) and the unit with it.
-    #[must_use]
-    pub fn over_kernel(
-        handle: Arc<busbar_kernel::state::AppHandle>,
-        policy: BreakerPolicy,
-    ) -> Self {
-        BreakerAdapter::over(Arc::new(move || handle.load().store.breaker_unit()), policy)
-    }
-
-    /// Bind the egress port to a fresh breaker unit, under a declared per-pool policy. The
-    /// one-call form of [`BreakerAdapter::new`] for a caller with no unit of its own to hand in.
-    #[must_use]
-    pub fn with_policy(policy: BreakerPolicy) -> Self {
-        BreakerAdapter::new(Arc::new(BreakerUnit::new()), policy)
-    }
-
-    /// The breaker unit behind the port, as its source answers now.
-    #[must_use]
-    pub fn unit(&self) -> Arc<BreakerUnit> {
-        (self.unit)()
-    }
-
-    /// The breaker unit's reading of an answer: the transport's fault reading of it, or — when the
-    /// status carries neither a class nor a fault reading — the fact that no answer came.
-    ///
-    /// No number crosses: what a code means is the transport's own declared fault table, read on
-    /// its side of the frame. An answer whose transport states no reading (a framer with no fault
-    /// table) is the caller's, so it records nothing.
-    fn reading(status: UpstreamStatus) -> Reading {
-        if status.class.is_none() && status.fault.is_none() {
-            return Reading::NoAnswer;
-        }
-        Reading::Answered(status.fault)
+    pub fn new(unit: BreakerUnit, policy: BreakerPolicy) -> Self {
+        BreakerAdapter { unit, policy }
     }
 }
 
-fn to_breaker_outcome(outcome: Outcome) -> busbar_kernel_breaker::Outcome {
-    use busbar_kernel_breaker::Outcome as B;
-    match outcome {
-        Outcome::Success => B::Success,
-        Outcome::Transient { retry_after } => B::Transient { retry_after },
-        Outcome::HardDown => B::HardDown,
-        Outcome::RecordNothing => B::RecordNothing,
+/// The breaker unit's admission, in the egress port's words.
+pub(crate) fn try_admit(
+    unit: &BreakerUnit,
+    pool: &str,
+    destination: DestinationId,
+    now: u64,
+) -> Result<Admit, Unavailable> {
+    unit.try_admit(pool, destination, now)
+        .map_err(|state| match state {
+            LaneState::Suppressed { until } => Unavailable::BreakerOpen { until },
+            LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
+            LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
+            // The unit refuses only from a state that would not have admitted, so this arm
+            // does not arise. It still answers with a refusal rather than by aborting: a
+            // routing step holding a dispatch open is the wrong place to discover that an
+            // invariant of another crate has drifted, and the caller has a shed for it.
+            LaneState::Ready => Unavailable::ProbeInFlight,
+        })
+}
+
+/// Whether the cell would admit now: the unit's own read-only state.
+pub(crate) fn ready(
+    unit: &BreakerUnit,
+    pool: &str,
+    destination: DestinationId,
+    now: u64,
+    token: &Pass<Route>,
+) -> bool {
+    matches!(unit.state(pool, destination, now, token), LaneState::Ready)
+}
+
+/// The destination-scoped fact the breaker unit holds is the lifetime budget. Whether a
+/// destination is administratively down is declared configuration, which is the egress and
+/// configuration layer's to know and not this unit's. Answered from `budget_remaining` alone,
+/// never from the sealed `state`/`observe`, so no token crosses here.
+pub(crate) fn admissible(unit: &BreakerUnit, destination: DestinationId) -> bool {
+    unit.budget_remaining(destination) != Some(0)
+}
+
+/// The whole seconds of genuine cooldown the cell has left, or zero.
+pub(crate) fn cooldown_remaining(
+    unit: &BreakerUnit,
+    pool: &str,
+    destination: DestinationId,
+    now: u64,
+    token: &Pass<Route>,
+) -> u64 {
+    match unit.state(pool, destination, now, token) {
+        LaneState::Suppressed { until } => until.saturating_sub(now),
+        _ => 0,
     }
 }
 
-fn from_breaker_outcome(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
-    use busbar_kernel_breaker::Outcome as B;
-    match outcome {
-        B::Success => Outcome::Success,
-        B::Transient { retry_after } => Outcome::Transient { retry_after },
-        B::HardDown => Outcome::HardDown,
-        B::RecordNothing => Outcome::RecordNothing,
+/// The status alone, against no operator map: the breaker keeps none. Reading an error body
+/// against the operator's `error_map` is the plane's classifier's work, and the unit is told that
+/// verdict; this port answers only for the transport's reading of the frame.
+///
+pub(crate) fn classify(status: UpstreamStatus) -> Classified {
+    busbar_kernel_breaker::port::classify_upstream(busbar_kernel_breaker::port::UpstreamStatus {
+        reading: reading(status),
+        retry_after: status.retry_after,
+    })
+}
+
+/// The breaker unit's reading of an answer: the transport's fault reading of it, or — when the
+/// status carries neither a class nor a fault reading — the fact that no answer came.
+///
+/// No number crosses: what a code means is the transport's own declared fault table, read on its
+/// side of the frame. An answer whose transport states no reading (a framer with no fault table) is
+/// the caller's, so it records nothing.
+fn reading(status: UpstreamStatus) -> Reading {
+    if status.class.is_none() && status.fault.is_none() {
+        return Reading::NoAnswer;
     }
+    Reading::Answered(status.fault)
 }
 
 impl Breaker for BreakerAdapter {
@@ -217,38 +206,15 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        match self.unit().try_admit(pool, destination, now) {
-            Ok(admit) => Ok(Admit {
-                probe_epoch: admit.probe_epoch,
-            }),
-            Err(state) => Err(match state {
-                busbar_kernel_breaker::LaneState::Suppressed { until } => {
-                    Unavailable::BreakerOpen { until }
-                }
-                busbar_kernel_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
-                busbar_kernel_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
-                // The unit refuses only from a state that would not have admitted, so this arm
-                // does not arise. It still answers with a refusal rather than by aborting: a
-                // routing step holding a dispatch open is the wrong place to discover that an
-                // invariant of another crate has drifted, and the caller has a shed for it.
-                busbar_kernel_breaker::LaneState::Ready => Unavailable::ProbeInFlight,
-            }),
-        }
+        try_admit(&self.unit, pool, destination, now)
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
-        matches!(
-            self.unit().state(pool, destination, now, token),
-            busbar_kernel_breaker::LaneState::Ready
-        )
+        ready(&self.unit, pool, destination, now, token)
     }
 
     fn admissible(&self, destination: DestinationId) -> bool {
-        // The destination-scoped fact the breaker unit holds is the lifetime budget. Whether a
-        // destination is administratively down is declared configuration, which is the egress and
-        // configuration layer's to know and not this unit's. Answered from `budget_remaining`
-        // alone, never from the sealed `state`/`observe`, so no token crosses here.
-        self.unit().budget_remaining(destination) != Some(0)
+        admissible(&self.unit, destination)
     }
 
     fn cooldown_remaining(
@@ -258,27 +224,11 @@ impl Breaker for BreakerAdapter {
         now: u64,
         token: &Pass<Route>,
     ) -> u64 {
-        match self.unit().state(pool, destination, now, token) {
-            busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
-            _ => 0,
-        }
+        cooldown_remaining(&self.unit, pool, destination, now, token)
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        // The status alone, against no operator map: the breaker keeps none. Reading an error body
-        // against the operator's `error_map` is the plane's classifier's work, and the unit is told
-        // that verdict; this port answers only for the transport's reading of the frame.
-        let classified = busbar_kernel_breaker::port::classify_upstream(
-            busbar_kernel_breaker::port::UpstreamStatus {
-                reading: Self::reading(status),
-                retry_after: status.retry_after,
-            },
-        );
-        Classified {
-            disposition: classified.disposition,
-            outcome: from_breaker_outcome(classified.outcome),
-            label: classified.label,
-        }
+        classify(status)
     }
 
     fn observe(
@@ -296,26 +246,20 @@ impl Breaker for BreakerAdapter {
         let Some(cfg) = self.policy.for_pool(pool) else {
             return false;
         };
-        self.unit().observe(
-            pool,
-            destination,
-            to_breaker_outcome(outcome),
-            cfg,
-            now,
-            token,
-        )
+        self.unit
+            .observe(pool, destination, outcome, cfg, now, token)
     }
 
     fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
-        self.unit().suppressing(destination, now)
+        self.unit.suppressing(destination, now)
     }
 
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
         // Each cell under its own pool's ladder, and a pool nobody configured records nothing: the
         // same rule `observe` applies to an organic answer.
-        self.unit().probed(
+        self.unit.probed(
             destination,
-            to_breaker_outcome(outcome),
+            outcome,
             &|pool| self.policy.for_pool(pool).cloned(),
             now,
             token,
@@ -323,15 +267,15 @@ impl Breaker for BreakerAdapter {
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
-        self.unit().release_probe(pool, destination, epoch);
+        self.unit.release_probe(pool, destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
-        self.unit().spend_budget(destination)
+        self.unit.spend_budget(destination)
     }
 
     fn refund_budget(&self, destination: DestinationId) {
-        self.unit().refund_budget(destination);
+        self.unit.refund_budget(destination);
     }
 }
 

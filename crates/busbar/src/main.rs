@@ -792,10 +792,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Each door plane's pools, by its section key: each door plane's section carries its own pools
     // (DoorPools), captured before `cfg` is consumed.
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
-    // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
-    // own dispatch cfg from, before `cfg` is consumed.
-    #[cfg(feature = "root-admin")]
-    let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
@@ -1243,7 +1239,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             book,
             None,
             &late_services,
-            breaker_policy,
+            root::adapters::BreakerPolicy::new(),
         ),
         None => admin_router,
     };

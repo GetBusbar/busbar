@@ -6,9 +6,7 @@ use super::*;
 use busbar_kernel::test_support::{LaneSpec, TestApp};
 
 /// The served breaker port over `app`'s lane store, each of `pools` a cell under the default ladder.
-fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> DirectCells {
-    let source: AppSource = Arc::new(move || Arc::clone(&app));
-    let unit = Arc::clone(&source);
+fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells {
     let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = pools
         .iter()
         .map(|pool| {
@@ -19,15 +17,13 @@ fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> DirectCell
         })
         .collect();
     records.insert(String::new(), busbar_kernel::store::BreakerCfg::default());
-    DirectCells {
-        inner: BreakerAdapter::over(
-            Arc::new(move || unit().store.breaker_unit()),
-            BreakerPolicy::new(),
-        ),
-        app: source,
-        records,
-        direct: HashSet::new(),
-    }
+    WalkCells::over(
+        app,
+        Arc::new(CellPlan {
+            records,
+            direct: HashSet::new(),
+        }),
+    )
 }
 
 fn wall_secs() -> u64 {

@@ -1603,13 +1603,6 @@ pub type VerbStoreHandle = Option<Arc<dyn busbar_contract::verb_store::Store + S
 /// functions or unit structs the step calls with the facts it was handed — and holding an empty
 /// value for each of them would be furniture rather than structure.
 pub struct ProductionUnits {
-    /// Every `(pool, destination)` breaker cell and every destination's lifetime budget, behind the
-    /// port the egress unit reaches it through.
-    ///
-    /// There is exactly one of these and it is reached only here. Two breaker units would be two
-    /// sets of cells: a trip recorded through one would be invisible to the other, and a lane the
-    /// walk had benched would still read as ready at Verify.
-    pub breaker: crate::root::adapters::BreakerAdapter,
     /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
     /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
     /// second one here would be a second answer to "has this credential been seen" that an
@@ -1669,14 +1662,12 @@ impl ProductionUnits {
     pub fn new(
         kernel: &busbar_kernel::teller::Kernel,
         durability: crate::root::durability::Durability,
-        breaker_policy: crate::root::adapters::BreakerPolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits::new_sharing(
             kernel,
             Arc::new(Mutex::new(durability)),
-            breaker_policy,
             #[cfg(feature = "root-admin")]
             admin,
             store,
@@ -1694,12 +1685,10 @@ impl ProductionUnits {
     pub fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
-        breaker_policy: crate::root::adapters::BreakerPolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits {
-            breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
             // The unbound posture, which is the one a node has until it is handed a directory:
             // the cache is real, and the two authorities are absent rather than permissive. A
             // deployment whose keys are busbar's own binds them through
@@ -1820,7 +1809,6 @@ impl ProductionUnits {
         let mut units = ProductionUnits::new_sharing(
             &kernel,
             Arc::clone(&durability),
-            crate::root::adapters::BreakerPolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch, door),
             store,
         );

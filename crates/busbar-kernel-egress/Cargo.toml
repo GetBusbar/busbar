@@ -14,9 +14,10 @@
 # the 31-row classification table is data the breaker trait consumes, not a match arm here). The
 # money is the admission and ledger units'.
 #
-# DEPENDENCIES. One workspace crate: `busbar-contract`, for the capability tokens that seal the
-# step and the destination ids. Every other seam — the breaker, the journal, the pool's own permit
-# store — enters through a `// contract:`-marked trait in `ports`, for the integrator to bind.
+# DEPENDENCIES. Two workspace crates: `busbar-contract`, for the capability tokens that seal the
+# step and the destination ids, and `busbar-kernel-breaker`, for the breaker's own vocabulary (its
+# admit, outcome and classification types). Every seam — the breaker, the journal, the pool's own
+# permit store — enters through a `// contract:`-marked trait in `ports`, for the integrator to bind.
 # `futures` is here for exactly one item: the chunk `Stream` `upstream::read_capped` reads. There is
 # no async runtime dependency; the clock and the sleep are ports too, so a test drives the walk on
 # one thread with no timer wheel.
@@ -35,6 +36,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 futures = { workspace = true }
 # The capped upstream-body read (`upstream::read_capped`) is generic over any chunk stream; `Bytes`
 # is the chunk type it reads and the prefix it returns. Opens nothing.

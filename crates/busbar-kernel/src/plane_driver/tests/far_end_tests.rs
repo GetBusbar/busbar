@@ -581,7 +581,7 @@ fn rig(
     let egress = Egress {
         caller: InstanceId(9),
         conns: table.clone(),
-        breaker: book.clone(),
+        breaker: crate::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
         clock: Arc::new(Wall),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,

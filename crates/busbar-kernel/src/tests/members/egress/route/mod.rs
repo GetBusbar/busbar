@@ -188,7 +188,7 @@ impl Node {
         Egress {
             caller: InstanceId(1),
             conns: self.conns.clone(),
-            breaker: self.breaker.clone(),
+            breaker: crate::plane_driver::fixed_breaker(self.breaker.clone()),
             capacity: self.capacity.clone(),
             clock: self.clock.clone(),
             journal: self.journal.clone(),

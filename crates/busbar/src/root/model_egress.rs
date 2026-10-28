@@ -29,7 +29,7 @@ use busbar_kernel_egress::ports::{
 };
 use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool};
 
-use crate::root::adapters::{BreakerAdapter, BreakerPolicy};
+use crate::root::adapters;
 
 /// The kernel's App, as the live configuration answers it (a config apply rebuilds it, its lane
 /// store and its telemetry bank with it).
@@ -61,7 +61,6 @@ struct ModelLane {
 pub struct ModelPools {
     pools: BTreeMap<String, ModelPool>,
     lanes: BTreeMap<String, ModelLane>,
-    breaker: BreakerPolicy,
     /// The all-pools `upstream_credentials:` default is `passthrough`: a route naming a model
     /// directly reaches it with the caller's own credential.
     passthrough: bool,
@@ -208,7 +207,6 @@ impl ModelPools {
             meta,
             pools,
             lanes,
-            breaker: BreakerPolicy::from_pools(&cfg.pools),
             passthrough: cfg.upstream_credentials
                 == busbar_contract::config::UpstreamCreds::Passthrough,
             records,
@@ -396,23 +394,34 @@ pub struct ModelShown {
     pub signals: Arc<dyn busbar_kernel::plane_driver::MemberSignals>,
 }
 
-/// The kernel's breaker port over its lane store: a model-named direct route is mapped onto the
-/// lane-default cell, and every outcome is recorded through the store's own record calls.
-struct DirectCells {
-    inner: BreakerAdapter,
-    app: AppSource,
+/// What the lane cells are sealed over beside the App: each pool's ladder as the store's record
+/// calls take it, and the pools that are a model a route names directly.
+struct CellPlan {
     records: HashMap<String, busbar_kernel::store::BreakerCfg>,
     direct: HashSet<String>,
 }
 
-/// The lane a destination of this egress names (its destination is the model's lane index).
-fn lane_of(destination: DestinationId) -> usize {
-    usize::try_from(destination.get()).unwrap_or(usize::MAX)
+/// The kernel's breaker port over one App's lane store, bound for one walk (the walk asks the live
+/// configuration for its App once, at its start): a model-named direct route is mapped onto the
+/// lane-default cell, every read is the lane store's breaker unit's own, and every outcome is
+/// recorded through the store's own record calls (the lane's counters move with its cells).
+struct WalkCells {
+    app: Arc<busbar_kernel::state::App>,
+    unit: Arc<busbar_kernel_breaker::BreakerUnit>,
+    plan: Arc<CellPlan>,
 }
 
-impl DirectCells {
+impl WalkCells {
+    fn over(app: Arc<busbar_kernel::state::App>, plan: Arc<CellPlan>) -> Self {
+        WalkCells {
+            unit: app.store.breaker_unit(),
+            app,
+            plan,
+        }
+    }
+
     fn cell<'p>(&self, pool: &'p str) -> &'p str {
-        if self.direct.contains(pool) {
+        if self.plan.direct.contains(pool) {
             ""
         } else {
             pool
@@ -420,22 +429,27 @@ impl DirectCells {
     }
 }
 
-impl Breaker for DirectCells {
+/// The lane a destination of this egress names (its destination is the model's lane index).
+fn lane_of(destination: DestinationId) -> usize {
+    usize::try_from(destination.get()).unwrap_or(usize::MAX)
+}
+
+impl Breaker for WalkCells {
     fn try_admit(
         &self,
         pool: &str,
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        self.inner.try_admit(self.cell(pool), destination, now)
+        adapters::try_admit(&self.unit, self.cell(pool), destination, now)
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
-        self.inner.ready(self.cell(pool), destination, now, token)
+        adapters::ready(&self.unit, self.cell(pool), destination, now, token)
     }
 
     fn admissible(&self, destination: DestinationId) -> bool {
-        self.inner.admissible(destination)
+        adapters::admissible(&self.unit, destination)
     }
 
     fn cooldown_remaining(
@@ -445,12 +459,11 @@ impl Breaker for DirectCells {
         now: u64,
         token: &Pass<Route>,
     ) -> u64 {
-        self.inner
-            .cooldown_remaining(self.cell(pool), destination, now, token)
+        adapters::cooldown_remaining(&self.unit, self.cell(pool), destination, now, token)
     }
 
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
-        self.inner.classify(destination, status)
+    fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
+        adapters::classify(status)
     }
 
     fn observe(
@@ -477,7 +490,7 @@ impl Breaker for DirectCells {
         _token: &Pass<Route>,
     ) -> bool {
         let cell = self.cell(pool);
-        let (store, lane) = (Arc::clone(&(self.app)().store), lane_of(destination));
+        let (store, lane) = (&self.app.store, lane_of(destination));
         // The caller's own fault (the one answer the far end records as nothing): counted on the
         // lane, its breaker untouched, whatever its pool configured (1.5.5's `record_outcome`
         // `ClientFault` arm). The far end records through this call alone, so the count is here.
@@ -485,7 +498,7 @@ impl Breaker for DirectCells {
             store.record_client_fault(lane);
             return false;
         }
-        let Some(cfg) = self.records.get(cell) else {
+        let Some(cfg) = self.plan.records.get(cell) else {
             return false;
         };
         match outcome {
@@ -516,7 +529,7 @@ impl Breaker for DirectCells {
         now: u64,
         token: &Pass<Route>,
     ) -> (Classified, bool) {
-        let classified = self.classify(destination, status);
+        let classified = adapters::classify(status);
         // The far end's number in the kernel's first reserved numbering (the one the previous
         // release's ladder reads its 429 and 4xx in), read as the kernel's far end reads it.
         let code = status.code.and_then(|c| {
@@ -527,12 +540,11 @@ impl Breaker for DirectCells {
         let tripped = match (classified.outcome, code) {
             // The previous release's rate-limit record: its own ladder step, the far end's wait
             // honoured.
-            (Outcome::Transient { retry_after }, Some(429)) => match self.records.get(cell) {
-                Some(cfg) => {
-                    (self.app)()
-                        .store
-                        .record_rate_limit_in(cell, lane, now, cfg, retry_after)
-                }
+            (Outcome::Transient { retry_after }, Some(429)) => match self.plan.records.get(cell) {
+                Some(cfg) => self
+                    .app
+                    .store
+                    .record_rate_limit_in(cell, lane, now, cfg, retry_after),
                 None => false,
             },
             // The caller's own fault is counted by `observe`, the one call the far end records
@@ -543,9 +555,7 @@ impl Breaker for DirectCells {
     }
 
     fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
-        (self.app)()
-            .store
-            .lane_needs_probe(lane_of(destination), now)
+        self.app.store.lane_needs_probe(lane_of(destination), now)
     }
 
     /// A health probe's answer, recorded as 1.5.5's prober recorded it (`engine/health.rs`): a
@@ -554,8 +564,7 @@ impl Breaker for DirectCells {
     /// cell; a client fault records nothing. Every write is at the walk's `now`, the one clock the
     /// walk's own records and reads take (BUSBAR-1.6.0.md l.161).
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, _token: &Pass<Route>) {
-        let (app, lane) = ((self.app)(), lane_of(destination));
-        let store = &app.store;
+        let (store, lane) = (&self.app.store, lane_of(destination));
         match outcome {
             Outcome::Success => {
                 if store.lane_needs_probe(lane, now) {
@@ -564,7 +573,7 @@ impl Breaker for DirectCells {
                 store.record_probe_success_all_cells(lane, now);
             }
             Outcome::Transient { retry_after } => {
-                let resolve = |pool: &str| self.records.get(pool).cloned().unwrap_or_default();
+                let resolve = |pool: &str| self.plan.records.get(pool).cloned().unwrap_or_default();
                 store.record_probe_failure_all_cells(
                     lane,
                     "health-probe",
@@ -584,17 +593,16 @@ impl Breaker for DirectCells {
         }
     }
 
-    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.inner
-            .release_probe(self.cell(pool), destination, epoch, now);
+    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
+        self.unit.release_probe(self.cell(pool), destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
-        self.inner.spend_budget(destination)
+        self.unit.spend_budget(destination)
     }
 
     fn refund_budget(&self, destination: DestinationId) {
-        self.inner.refund_budget(destination);
+        self.unit.refund_budget(destination);
     }
 }
 
@@ -765,21 +773,20 @@ pub fn compose(
             reservoirs: Arc::clone(&reservoirs),
         }),
     };
-    let app = Arc::clone(&serving.app);
-    let breaker = DirectCells {
-        inner: BreakerAdapter::over(
-            Arc::new(move || app().store.breaker_unit()),
-            plan.breaker.clone(),
-        ),
-        app: Arc::clone(&serving.app),
+    let cells = Arc::new(CellPlan {
         records: plan.records.clone(),
         direct,
-    };
+    });
+    let app = Arc::clone(&serving.app);
+    let breaker: busbar_kernel::plane_driver::BreakerSource =
+        Arc::new(move || -> Arc<dyn Breaker> {
+            Arc::new(WalkCells::over(app(), Arc::clone(&cells)))
+        });
     Ok((
         busbar_kernel::plane_driver::Egress {
             caller,
             conns,
-            breaker: Arc::new(breaker),
+            breaker,
             capacity: permits,
             clock,
             journal,

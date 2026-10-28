@@ -76,40 +76,11 @@ impl Unavailable {
     }
 }
 
-/// What a successful admission hands over.
-///
-/// The probe epoch is an owner token, not a flag. A dispatch that abandons after an await could
-/// otherwise release a probe a different request has since won, so every release is checked
-/// against the epoch that was captured at the moment of the win.
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Admit {
-    /// Set only when this admission actually won a half-open recovery probe. A plain ready-cell
-    /// admission wins nothing and owns nothing to release.
-    pub probe_epoch: Option<u64>,
-}
-
-/// What one attempt meant to the destination's breaker.
-///
-/// The 31-row table that turns an upstream status into one of these is the breaker unit's data,
-/// not this unit's code. This unit hands over the classified answer and the upstream's own retry
-/// request; what that does to a cooldown is decided on the other side of this trait.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// The upstream served the request.
-    Success,
-    /// A transient failure. Cooldown and error counter, with the upstream's own wait as a floor.
-    Transient {
-        /// The wait the upstream asked for, in seconds, where it asked for one.
-        retry_after: Option<u64>,
-    },
-    /// A definitive signal about the shared destination — a rejected key, an exhausted account.
-    /// It trips every pool's cell for that destination, not only the one this attempt ran through.
-    HardDown,
-    /// The caller's own fault, or a request too large for this destination's window. The
-    /// destination is healthy either way and nothing is recorded.
-    RecordNothing,
-}
+/// What a successful admission hands over, what one attempt meant to the destination's breaker,
+/// and what the classifier made of one upstream answer: the breaker unit's own types, so the two
+/// sides of the [`Breaker`] port speak one vocabulary and nothing maps between them.
+pub use busbar_kernel_breaker::port::Classified;
+pub use busbar_kernel_breaker::{Admit, Outcome};
 
 /// What the upstream said, as the classifier reads it.
 ///
@@ -141,17 +112,6 @@ pub struct UpstreamStatus {
 /// the build here rather than falling through some default arm on the request path — and one
 /// type on both sides of the [`Breaker`] port, so the integrator no longer re-spells it.
 pub use busbar_contract::upstream::Disposition;
-
-/// What the classifier made of one upstream answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Classified {
-    /// Where the walk sends the request next.
-    pub disposition: Disposition,
-    /// What the destination's breaker should be told.
-    pub outcome: Outcome,
-    /// The metric label for this failure.
-    pub label: &'static str,
-}
 
 /// `// contract:` the breaker unit, as this unit needs it.
 ///

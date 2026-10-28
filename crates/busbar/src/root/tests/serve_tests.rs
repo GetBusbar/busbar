@@ -4477,7 +4477,7 @@ impl Serving {
 
     /// Whether the model's member's breaker cell would take a request now (the walk's own filter).
     fn ready(&self) -> bool {
-        self.egress.breaker.ready(
+        (self.egress.breaker)().ready(
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
@@ -4487,7 +4487,7 @@ impl Serving {
 
     /// The seconds of cooldown the member's breaker cell has left; zero for a closed cell.
     fn cooldown(&self) -> u64 {
-        self.egress.breaker.cooldown_remaining(
+        (self.egress.breaker)().cooldown_remaining(
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),

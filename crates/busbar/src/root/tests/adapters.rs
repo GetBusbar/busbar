@@ -115,7 +115,7 @@ fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_read
 #[test]
 fn the_adapter_reads_the_fault_reading_and_never_the_class() {
     let read = |class, fault| {
-        BreakerAdapter::reading(UpstreamStatus {
+        reading(UpstreamStatus {
             class,
             fault,
             code: None,
@@ -162,7 +162,12 @@ fn a_slow_ladder() -> BreakerCfg {
 }
 
 fn adapter_for(pool: &str) -> BreakerAdapter {
-    BreakerAdapter::with_policy(BreakerPolicy::new().with_pool(pool, a_slow_ladder()))
+    adapter(BreakerPolicy::new().with_pool(pool, a_slow_ladder()))
+}
+
+/// An adapter over a fresh unit, under `policy`.
+fn adapter(policy: BreakerPolicy) -> BreakerAdapter {
+    BreakerAdapter::new(BreakerUnit::new(), policy)
 }
 
 /// The seam is implementable over the two real APIs, and a fresh destination behaves as both
@@ -197,8 +202,7 @@ fn the_configured_ladder_reaches_the_unit_and_not_the_default() {
     );
     let under_configured = configured.cooldown_remaining("pool", dest, 0, &route_token());
 
-    let defaulted =
-        BreakerAdapter::with_policy(BreakerPolicy::new().with_pool("pool", BreakerCfg::default()));
+    let defaulted = adapter(BreakerPolicy::new().with_pool("pool", BreakerCfg::default()));
     assert!(
         !defaulted.observe("pool", dest, failure, 0, &route_token()),
         "the default ladder waits for an error rate and logs no trip on one failure"
@@ -219,7 +223,7 @@ fn the_configured_ladder_reaches_the_unit_and_not_the_default() {
 /// name. A lane that never trips is visible; a lane that trips for the wrong duration is not.
 #[test]
 fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
-    let breaker = BreakerAdapter::with_policy(BreakerPolicy::new());
+    let breaker = adapter(BreakerPolicy::new());
     let dest = DestinationId::new(2);
 
     assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
@@ -234,8 +238,7 @@ fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
 /// is still a pool nobody configured, and still records nothing.
 #[test]
 fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
-    let breaker =
-        BreakerAdapter::with_policy(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
+    let breaker = adapter(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
     let dest = DestinationId::new(5);
 
     assert!(
@@ -258,8 +261,7 @@ fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
 /// declaration of its own rather than a pool that happens to be missing.
 #[test]
 fn the_default_cell_takes_its_own_declared_ladder() {
-    let breaker =
-        BreakerAdapter::with_policy(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
+    let breaker = adapter(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
     let dest = DestinationId::new(4);
     assert!(breaker.observe("", dest, Outcome::HardDown, 0, &route_token()));
     assert!(breaker.cooldown_remaining("", dest, 0, &route_token()) > 0);
@@ -427,63 +429,6 @@ fn the_boot_seal_refuses_a_planted_label_drift() {
         Err(other) => panic!("the seal refused for another reason: {other}"),
         Ok(_) => panic!("the boot seal sealed over a label drift: it does not run the check"),
     }
-}
-
-/// ONE CELL SET ON THE NODE. The root's breaker is bound to the kernel's own unit through the live
-/// snapshot, so a pool observation made through the root adapter is the cell the kernel's admission
-/// reads, and a trip the kernel records is the one the adapter answers with. A second unit would
-/// pass neither half: its cells are not the lane store's.
-#[test]
-fn the_root_breaker_observes_into_the_kernels_own_cells() {
-    use busbar_kernel::test_support::{LaneSpec, TestApp};
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-        .lane(LaneSpec::new("m1", "wire-under-test", "http://127.0.0.1:9"))
-        .pool("pool", &[(0, 1), (1, 1)])
-        .build();
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    let trip_on_first = BreakerCfg {
-        trip: busbar_kernel_breaker::cfg::TripConfig {
-            mode: busbar_kernel_breaker::cfg::TripMode::Consecutive,
-            consecutive_n: 1,
-            ..Default::default()
-        },
-        ..BreakerCfg::default()
-    };
-    let breaker = BreakerAdapter::over_kernel(
-        Arc::clone(&handle),
-        BreakerPolicy::new().with_pool("pool", trip_on_first),
-    );
-
-    // The kernel's own clock: its hard-down below stamps the wall clock in seconds.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs();
-
-    // Through the root adapter, into the kernel's cell.
-    assert!(breaker.observe(
-        "pool",
-        DestinationId::new(0),
-        Outcome::Transient { retry_after: None },
-        now,
-        &route_token(),
-    ));
-    assert!(
-        !handle.load().store.ready_in("pool", 0, now),
-        "the kernel's admission reads the trip the root adapter recorded"
-    );
-
-    // From the kernel's record, out through the root adapter.
-    assert!(breaker.ready("pool", DestinationId::new(1), now, &route_token()));
-    handle
-        .load()
-        .store
-        .record_hard_down_all_cells(1, "one cell set", now);
-    assert!(
-        !breaker.ready("pool", DestinationId::new(1), now, &route_token()),
-        "the root adapter answers with the trip the kernel recorded"
-    );
 }
 
 /// A HEALTH PROBE through the adapter (K7): its answer reaches every cell of the member under the

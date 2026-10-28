@@ -1581,7 +1581,7 @@ pub fn compose_egress(
     }
     // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
     // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
-    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // top-level pools are (`busbar_kernel::store::pool_breaker_cfg`), else the default ladder (BUSBAR-1.6.0.md
     // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
     // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
     // reads exactly the ladder it always did.
@@ -1614,9 +1614,8 @@ pub fn compose_egress(
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::new(
-            Arc::new(unit),
-            policy,
+        breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(
+            crate::root::adapters::BreakerAdapter::new(unit, policy),
         )),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock,

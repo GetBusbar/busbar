@@ -347,26 +347,6 @@ fn probed(p: &Probing) -> Vec<(DestinationId, Outcome)> {
 /// (`crates/busbar/src/root/adapters.rs`), every pool under the default ladder.
 struct Cells(busbar_kernel_breaker::BreakerUnit);
 
-fn unit_outcome(outcome: Outcome) -> busbar_kernel_breaker::Outcome {
-    use busbar_kernel_breaker::Outcome as B;
-    match outcome {
-        Outcome::Success => B::Success,
-        Outcome::Transient { retry_after } => B::Transient { retry_after },
-        Outcome::HardDown => B::HardDown,
-        Outcome::RecordNothing => B::RecordNothing,
-    }
-}
-
-fn port_outcome(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
-    use busbar_kernel_breaker::Outcome as B;
-    match outcome {
-        B::Success => Outcome::Success,
-        B::Transient { retry_after } => Outcome::Transient { retry_after },
-        B::HardDown => Outcome::HardDown,
-        B::RecordNothing => Outcome::RecordNothing,
-    }
-}
-
 impl busbar_kernel_egress::ports::Breaker for Cells {
     fn try_admit(
         &self,
@@ -375,14 +355,13 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
         now: u64,
     ) -> Result<Admit, Unavailable> {
         use busbar_kernel_breaker::LaneState;
-        match self.0.try_admit(pool, destination, now) {
-            Ok(admit) => Ok(Admit {
-                probe_epoch: admit.probe_epoch,
-            }),
-            Err(LaneState::Suppressed { until }) => Err(Unavailable::BreakerOpen { until }),
-            Err(LaneState::BudgetExhausted) => Err(Unavailable::BudgetExhausted),
-            Err(LaneState::ProbeInFlight | LaneState::Ready) => Err(Unavailable::ProbeInFlight),
-        }
+        self.0
+            .try_admit(pool, destination, now)
+            .map_err(|state| match state {
+                LaneState::Suppressed { until } => Unavailable::BreakerOpen { until },
+                LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
+                LaneState::ProbeInFlight | LaneState::Ready => Unavailable::ProbeInFlight,
+            })
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
@@ -415,17 +394,12 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
         } else {
             busbar_kernel_breaker::classify::Reading::Answered(status.fault)
         };
-        let classified = busbar_kernel_breaker::port::classify_upstream(
+        busbar_kernel_breaker::port::classify_upstream(
             busbar_kernel_breaker::port::UpstreamStatus {
                 reading,
                 retry_after: status.retry_after,
             },
-        );
-        Classified {
-            disposition: classified.disposition,
-            outcome: port_outcome(classified.outcome),
-            label: classified.label,
-        }
+        )
     }
 
     fn observe(
@@ -440,7 +414,7 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
             &self.0,
             pool,
             destination,
-            unit_outcome(outcome),
+            outcome,
             &busbar_kernel_breaker::cfg::BreakerCfg::default(),
             now,
             token,
@@ -454,7 +428,7 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
         self.0.probed(
             destination,
-            unit_outcome(outcome),
+            outcome,
             &|_: &str| Some(busbar_kernel_breaker::cfg::BreakerCfg::default()),
             now,
             token,
@@ -481,7 +455,7 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
     let cells = Arc::new(Cells(busbar_kernel_breaker::BreakerUnit::new()));
     let _ = cells.0.cell(POOL, TRIPPED);
-    r.egress.breaker = Arc::clone(&cells) as Arc<dyn busbar_kernel_egress::ports::Breaker>;
+    r.egress.breaker = crate::plane_driver::fixed_breaker(Arc::clone(&cells) as _);
     let driver = PlaneDriver::new(
         Arc::new(Prober::default()),
         DriverConfig {
