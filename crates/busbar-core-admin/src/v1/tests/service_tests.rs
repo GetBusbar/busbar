@@ -4067,6 +4067,7 @@ mod plane_fees_on_admin_usage {
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
+    busbar_kernel::test_support::root::ensure();
     let stores = busbar_kernel::preflight::root_rows().stores;
     let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
     assert!(!linked.is_empty(), "the build links a store row");

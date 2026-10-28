@@ -108,30 +108,16 @@ pub trait RateEpoch: Send + Sync {
 }
 
 /// THE RATE HOLDER this process answers to: the one the composition root hands in on its install
-/// record ([`crate::preflight::RootInstall::rate_apply`]), never a static of this module. A test
-/// binary's own holder (`test_support::rate_holders::install_rate_apply`) stands in front
-/// of the record's. `None`: the build installed no holder.
+/// record ([`crate::preflight::RootInstall::rate_apply`]), never a static of this module.
+/// `None`: the build installed no holder.
 fn holder() -> Option<&'static dyn RateApply> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        if let Some(holder) = crate::test_support::rate_holders::apply() {
-            return Some(holder);
-        }
-    }
     crate::preflight::root_rows().rate_apply
 }
 
 /// THE RATE DATER this process answers to: the one on the composition root's install record
-/// ([`crate::preflight::RootInstall::rate_epoch`]), beside [`holder`]. A test binary's own dater
-/// (`test_support::rate_holders::install_rate_epoch`) stands in front of the record's.
-/// `None`: the build installed no dater.
+/// ([`crate::preflight::RootInstall::rate_epoch`]), beside [`holder`]. `None`: the build installed
+/// no dater.
 fn dater() -> Option<&'static dyn RateEpoch> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        if let Some(dater) = crate::test_support::rate_holders::epoch() {
-            return Some(dater);
-        }
-    }
     crate::preflight::root_rows().rate_epoch
 }
 
