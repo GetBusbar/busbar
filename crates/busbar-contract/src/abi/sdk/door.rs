@@ -54,6 +54,7 @@ use crate::abi::host::conn::connector::Need;
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{
     Door, DoorFn, DoorParts, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
+    REWRITE_ALIAS,
 };
 use crate::abi::mechanism::lifecycle::{
     self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn,
@@ -548,6 +549,17 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
     AbiStr {
         ptr: s.as_ptr(),
         len: s.len(),
+    }
+}
+
+/// The module name `from` an operator may write for the plugin, as the Statement's
+/// [`REWRITE_ALIAS`] rewrite (`to` absent).
+#[must_use]
+pub const fn alias(from: &'static str) -> Rewrite {
+    Rewrite {
+        class: REWRITE_ALIAS,
+        from: abi_str(from),
+        ..Rewrite::ZERO
     }
 }
 
@@ -1218,6 +1230,34 @@ macro_rules! plugin_door {
             // `lane-row159-abi-unsafe-fn`.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
 
+    };
+    // `lifecycle: plane_life(P)`: the plane's nine lifecycle slots over its `PlaneLife` `P`
+    // (`abi::sdk::plane_life`), every one a `Safe` slot over `P`.
+    (
+        ops: $ops:ty,
+        statement: $statement:expr,
+        lifecycle: plane_life($plane:ty)
+        $(, ready: $ready:ty)?
+        $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(,)?
+    ) => {
+        $crate::plugin_door! {
+            ops: $ops,
+            statement: $statement,
+            lifecycle: {
+                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Validate<$plane>>,
+                open: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Open<$plane>>,
+                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Refresh<$plane>>,
+                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Retire<$plane>>,
+                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Tick<$plane>>,
+                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Drive<$plane>>,
+                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Cancel<$plane>>,
+                release: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Release<$plane>>,
+                close: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Close<$plane>>,
+            }
+            $(, ready: $ready)?
+            $(, kind_ops: { $($field : $slot),* })?
+        }
     };
 }
 
