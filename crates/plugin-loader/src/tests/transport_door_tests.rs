@@ -221,7 +221,10 @@ fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
         .open_transport_entries(&bind(), &uses(&["door-fixture"]), &logs)
         .expect("the door opens");
     assert_eq!(entries.doors.len(), 1);
-    let path = logs.path_for("door-fixture");
+    let path = logs.path_for(
+        "door-fixture",
+        busbar_contract::abi::mechanism::KindCode::Transport,
+    );
     assert!(
         path.is_file(),
         "the transport instance's plugin log file {} was not opened at its bind",

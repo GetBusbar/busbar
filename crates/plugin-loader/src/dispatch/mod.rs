@@ -54,6 +54,7 @@ pub mod io_slots;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
+pub mod migrate;
 pub mod plane_calls;
 pub mod plugin;
 pub mod ready;

@@ -5624,8 +5624,8 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 /// Reading the finer clock made the same script answer 277,530,000 exactly.
 ///
 /// Behavioural: `record_metered_request_dated` is driven with a wall-clock double and a rate-dater
-/// double (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
-/// dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
+/// double (the governance's own dater, `GovState::effective_from_at`, is not touched, so no other
+/// accrual is dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
 /// inside the same second as both. The cell must carry the SECOND card's start. An accrual that
 /// lifts `now * 1_000` into milliseconds asks the dater for `T0` and dates the cell at the first
 /// card, which is the RED arm: this test fails against that implementation.
@@ -5889,6 +5889,44 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
         "the open class, and not the input tier the token columns carry"
     );
     assert_eq!(rows.len(), 3, "nothing else was written");
+}
+
+/// SPEND IS ALWAYS ATTRIBUTED (ORACLE-116 review, LEDGER-SIMPLE): a served pools unit's open class
+/// (a provider-stated total's `unitemized_tokens`, LEDGER-100) lands on the SAME `(model,
+/// provider)` metering row its request meters on, so the usage report shows one row for the
+/// serving provider and never a second `(model, "")` row with no provider to bill it to.
+/// RED: before, the class mirrored onto `(m, "")` beside the request's `(m, p)` row.
+#[test]
+fn a_served_units_open_class_lands_on_its_providers_row() {
+    use busbar_contract::records::RecordStore as _;
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let units: std::collections::BTreeMap<String, u64> = [
+        ("input".to_string(), 18),
+        ("output".to_string(), 7),
+        ("unitemized_tokens".to_string(), 3),
+    ]
+    .into_iter()
+    .collect();
+    gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
+    gov.record_lane_metering(&k.id, "m", Some("p"), &units, AT);
+    gov.flush_metering();
+    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
+    assert_eq!(
+        mine.iter()
+            .map(|r| (r.model.as_str(), r.provider.as_str()))
+            .collect::<Vec<_>>(),
+        [("m", "p")],
+        "one row, attributed to the serving provider: {mine:?}"
+    );
+    let row = mine[0];
+    assert_eq!(row.requests, 1);
+    assert_eq!(
+        row.usage_units.get("unitemized_tokens"),
+        Some(&3),
+        "the open class rides its provider's row"
+    );
 }
 
 #[test]
