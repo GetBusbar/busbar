@@ -105,7 +105,7 @@ const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
 /// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
 /// configured the cap.
 fn total_body_deadline() -> Duration {
-    let cap_bytes = busbar_kernel::proxy::max_translate_body_bytes() as u64;
+    let cap_bytes = busbar_kernel_egress::upstream::max_translate_body_bytes() as u64;
     Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
 }
 
@@ -672,7 +672,12 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
         Box::pin(async move {
             let (parts, body) = req.into_parts();
             let mut body = TimeoutBody::new(body, timeout);
-            match read_whole(&mut body, busbar_kernel::proxy::max_translate_body_bytes()).await {
+            match read_whole(
+                &mut body,
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            )
+            .await
+            {
                 Ok(bytes) => {
                     let req = hyper::Request::from_parts(parts, axum::body::Body::from(bytes));
                     inner.call(req).await

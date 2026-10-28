@@ -130,3 +130,16 @@ fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
         .expect("check answers")
         .is_empty());
 }
+
+/// RED (export ABI defect 4): dropping an opened instance sends its `close`. Before, the export
+/// path never closed an instance, so each instance a configuration check opened stayed open.
+#[test]
+fn a_dropped_instance_is_closed() {
+    let (plugin, dispatcher) = linked();
+    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
+        .expect("the sink opens");
+    let instance = Arc::clone(&sink.plugin().inner);
+    assert!(instance.is_open());
+    drop(sink);
+    assert!(!instance.is_open(), "the dropped instance was never closed");
+}
