@@ -515,12 +515,7 @@ impl GovState {
             let holds = (self.budget.read(bucket_id).get(bucket_id.as_str()))
                 .is_some_and(|c| c.window_start == *window);
             if !holds {
-                let mut cell = durable_cell(self.store.get_usage(bucket_id, *window)?, *window);
-                cell.flushed_requests = cell.requests;
-                cell.flushed_billable_requests = cell.billable_requests;
-                for m in &mut cell.models {
-                    m.flushed = m.cur.clone();
-                }
+                let mut cell = self.stored_cell(bucket_id, *window)?;
                 cell.last_touch = adj.now;
                 durable.insert(bucket_id.clone(), cell);
             }

@@ -1632,8 +1632,8 @@ impl GovState {
             .map(|b| (b.bucket_id.as_str(), b.window));
         for (bucket_id, period) in key_buckets.chain(group_buckets) {
             let window = budget_window(period, now);
-            let ledger = self.store.get_usage(bucket_id, window)?;
-            if ledger.requests == 0 && ledger.models.is_empty() {
+            let mut cell = self.stored_cell(bucket_id, window)?;
+            if cell.requests == 0 && cell.models.is_empty() {
                 continue;
             }
             // `billable_requests` is trusted UNCONDITIONALLY from the persisted ledger — it is
@@ -1650,17 +1650,10 @@ impl GovState {
             // production data yet, so there was no live refunded-to-zero row that migration could
             // have mis-fired against. From v6 onward every row is written correctly from the
             // start, so this function has nothing left to infer.
-            let mut cell = durable_cell(ledger, window);
             // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
             // TTL, so the first post-boot sweep would discard every restored key's history before
             // that key had served a single request.
             cell.last_touch = now;
-            // The store already holds every count restored here: the flush baselines start level.
-            cell.flushed_requests = cell.requests;
-            cell.flushed_billable_requests = cell.billable_requests;
-            for m in &mut cell.models {
-                m.flushed = m.cur.clone();
-            }
             self.budget
                 .write(bucket_id)
                 .insert(bucket_id.to_string(), cell);
@@ -1699,10 +1692,9 @@ impl GovState {
     }
 
     /// The DERIVED current-window usage of one bucket (key or group): cell-authoritative, durable
-    /// fallback, spend recomputed from tokens x the card in force per era (Q14; the durable row
-    /// carries no era, so the fallback prices it as the cell hydrated from it would: era zero, the
-    /// card in force when the window opened). `include_request_fee` controls whether
-    /// the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
+    /// fallback, spend recomputed from tokens x the card in force per era (Q14; the fallback prices
+    /// the durable rows as the cell hydrated from them would, [`durable_cell`]).
+    /// `include_request_fee` controls whether the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
     /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
     /// must pass `true` for both. The parameter exists only for callers that deliberately want
     /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
@@ -1779,18 +1771,29 @@ impl GovState {
         self.money_view.pricings()
     }
 
-    /// The bucket's current-window cell: the live one, else the durable row read AS THE CELL
-    /// HYDRATED FROM IT (era zero, the card in force when the window opened), so a read that
-    /// reaches the store answers what the same read answers once the bucket is hydrated — never the
-    /// current card over stored history.
+    /// The bucket's current-window cell: the live one, else the durable rows read AS THE CELL
+    /// HYDRATED FROM THEM ([`durable_cell`]), so a read that reaches the store answers what the same
+    /// read answers once the bucket is hydrated — never the current card over stored history.
     fn bucket_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
             .cloned();
         Ok(match live {
             Some(cell) => cell,
-            None => durable_cell(self.store.get_usage(bucket_id, window)?, window),
+            None => self.stored_cell(bucket_id, window)?,
         })
+    }
+
+    /// The bucket's durable `window` as a cell ([`durable_cell`]): its plain row and, when that
+    /// holds anything, its card-era row.
+    fn stored_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
+        let row = self.store.get_usage(bucket_id, window)?;
+        let eras = if row.models.is_empty() && row.billable_requests == 0 {
+            busbar_contract::records::UsageLedger::default()
+        } else {
+            self.store.get_usage(&era_bucket(bucket_id), window)?
+        };
+        Ok(durable_cell(row, eras, window))
     }
 
     /// THE MONEY VIEW over one cell: its counts, priced by the one function.
@@ -2415,6 +2418,7 @@ impl GovState {
             requests: u64,
             billable_requests: u64,
             models: Vec<ModelCell>,
+            fee_eras: busbar_kernel_ledger::usage::FeeEras,
         }
         /// One delta to write: the PER-MODEL TOKEN delta payload for `Store::add_usage`, under the
         /// window it belongs to. `acked` is `Some` for the cell's live window and `None` for a
@@ -2424,6 +2428,8 @@ impl GovState {
             bucket_id: String,
             window: u64,
             delta: UsageDelta,
+            /// The dated part of a live window's delta, for its card-era row (empty when rolled).
+            eras: UsageDelta,
             acked: Option<Acked>,
         }
         // Snapshot dirty cells across ALL shards and clear their flags. One shard is locked at a
@@ -2440,6 +2446,7 @@ impl GovState {
                         bucket_id: id.clone(),
                         window,
                         delta,
+                        eras: UsageDelta::default(),
                         acked: None,
                     });
                 }
@@ -2447,10 +2454,12 @@ impl GovState {
                     bucket_id: id.clone(),
                     window: cell.window_start,
                     delta: cell.unflushed(),
+                    eras: cell.unflushed_eras(),
                     acked: Some(Acked {
                         requests: cell.requests,
                         billable_requests: cell.billable_requests,
                         models: cell.models.clone(),
+                        fee_eras: cell.fee_eras.clone(),
                     }),
                 });
                 cell.dirty = false;
@@ -2471,6 +2480,17 @@ impl GovState {
                 self.store
                     .add_usage(&snap.bucket_id, snap.window, &snap.delta)
             };
+            // The dated part goes to the card-era row once the plain row has it. Not retried: a
+            // retry would count the plain delta twice, and what it misses only reads at the
+            // window's opening card after a restart, as a row without an era always has.
+            if outcome.is_ok() && !snap.eras.is_zero() {
+                let eras =
+                    self.store
+                        .add_usage(&era_bucket(&snap.bucket_id), snap.window, &snap.eras);
+                if let Err(e) = eras {
+                    tracing::warn!(bucket = %snap.bucket_id, error = %e, "budget flush: the bucket's card-era row was not written; those counts price at the window's opening card after a restart");
+                }
+            }
             let mut map = self.budget.write(&snap.bucket_id);
             match outcome {
                 Ok(()) => {
@@ -2483,6 +2503,7 @@ impl GovState {
                         // Advance the acked baselines: the cell still holds the window written.
                         cell.flushed_requests = acked.requests;
                         cell.flushed_billable_requests = acked.billable_requests;
+                        cell.flushed_fee_eras = acked.fee_eras;
                         cell.advance_model_baselines(&acked.models);
                     } else if cell.window_start > snap.window {
                         // The cell rolled while this write was in flight, and the roll parked
@@ -2747,16 +2768,70 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     ))
 }
 
-/// The durable ledger's per-model rows as undated segments (the row carries no era).
-/// A bucket's durable window row as a cell: the counts it holds, each model at era zero (the row
-/// carries no era). The ONE reading of a durable row — boot hydration builds the cell it keeps from
-/// this, and a read of a bucket with no live cell prices this — so the two cannot answer different
-/// figures for the same row.
-fn durable_cell(row: busbar_contract::records::UsageLedger, window: u64) -> BudgetCell {
+/// A bucket's durable window row as a cell. The bucket's card-era row (`eras`, [`era_bucket`])
+/// gives back each dated segment and fee era, clamped to what the plain `row` holds; the rest of the
+/// plain row is era zero, the card in force when the window opened (all of it, where no era row
+/// exists). The flush baselines start level: the store holds every count. The ONE reading of a
+/// durable row — boot hydration, a read of a bucket with no live cell, and a correction's window —
+/// so they cannot answer different figures for the same row.
+fn durable_cell(
+    row: busbar_contract::records::UsageLedger,
+    eras: busbar_contract::records::UsageLedger,
+    window: u64,
+) -> BudgetCell {
     let mut cell = BudgetCell::fresh(window);
     cell.requests = row.requests;
     cell.billable_requests = row.billable_requests;
+    cell.flushed_requests = row.requests;
+    cell.flushed_billable_requests = row.billable_requests;
     cell.models = durable_segments(row.models);
+    let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
+    for e in eras.models {
+        let (era, model) = match e.model.split_once('\u{1f}') {
+            Some((era, model)) => (era, Some(model)),
+            None => (e.model.as_str(), None),
+        };
+        let Ok(era @ 1..) = era.parse::<u64>() else {
+            continue;
+        };
+        let Some(model) = model else {
+            let n = (e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0)).min(undated_fees);
+            undated_fees -= n;
+            fees.push((era, n));
+            continue;
+        };
+        let rest = (cell.models.iter_mut()).find(|m| m.era == 0 && *m.model == *model);
+        let Some(rest) = rest else {
+            continue;
+        };
+        let mut cur = BTreeMap::new();
+        for (unit, n) in e.usage_units {
+            let left = rest.cur.get(&unit).copied().unwrap_or(0);
+            let n = n.min(left);
+            if n == 0 {
+                continue;
+            }
+            if left == n {
+                rest.cur.remove(&unit);
+            } else {
+                rest.cur.insert(unit.clone(), left - n);
+            }
+            cur.insert(unit, n);
+        }
+        let model = rest.model.clone();
+        let flushed = BTreeMap::new();
+        cell.models.push(ModelCell {
+            model,
+            era,
+            cur,
+            flushed,
+        });
+    }
+    for m in &mut cell.models {
+        m.flushed = m.cur.clone();
+    }
+    cell.fee_eras = busbar_kernel_ledger::usage::FeeEras::of(fees);
+    cell.flushed_fee_eras = cell.fee_eras.clone();
     cell
 }
 
