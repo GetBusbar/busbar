@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-store-plugin"
+version = "1.5.0"
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+description = "First-party signed kind:store plugin cdylib: the in-memory store, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+
+[lib]
+test = false
+doctest = false
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
+# rlib: what `cargo test` links, and what makes `cargo test` emit the cdylib the conformance test
+# loads (a cdylib-only package builds a trivial test harness and never produces the library).
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# THE DROPPED-IN DOOR: the logic crate's store v3 `door` exported as this image's ONE symbol,
+# `busbar_plugin_door`, by the logic crate's own `export_door!` (its `door_export` module, behind
+# ITS `dropped-in`). Forwarded, not restated: one `export_door!` in the source, so no build that
+# switches both crates' features on can define the symbol twice. OFF by default (a busbar build
+# that links the store carries no door symbol); the dropped-in artifact is built
+# `cargo build --release -p busbar-store-memory-plugin --features dropped-in`, and `cargo test` names
+# this crate below with it on, so the cdylib the conformance test opens carries the door.
+dropped-in = ["busbar-stub-store/dropped-in"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door` is the door this image exports. A busbar build that LINKS the
+# store names the logic crate, with no door symbol.
+busbar-stub-store = { path = "../logic" }

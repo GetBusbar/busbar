@@ -104,7 +104,7 @@ fn refusal(content_type: &str, content_length: &str, body: &str) -> String {
 
 /// A 1.5.5 golden cell (`testing/shadow-oracle/golden/1.5.5`, recorded from the published binary).
 fn golden_cell(cell: &str) -> serde_json::Value {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = std::path::Path::new(env!("BUSBAR_CORE_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
         .join(cell);
     let text = std::fs::read_to_string(&path).expect("the 1.5.5 golden cell");

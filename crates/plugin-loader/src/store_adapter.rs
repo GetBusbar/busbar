@@ -248,11 +248,6 @@ impl StoreAdapter {
         }
     }
 
-    /// The kernel's slice seam.
-    pub fn slice_store(&self) -> Arc<dyn SliceStore> {
-        Arc::new(self.clone())
-    }
-
     /// The previous release's chain head: its last administrative sequence number and the hash at
     /// that point.
     ///
