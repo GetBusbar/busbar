@@ -253,7 +253,7 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 /// rather than from a recording, and the oracle cannot confirm them.
 #[cfg(feature = "root-admin")]
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
     error_answer_with_message(
         403,
         "forbidden",
