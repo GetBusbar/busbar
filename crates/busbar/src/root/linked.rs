@@ -323,10 +323,10 @@ pub fn linked_exports(
                 .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // In 1.5.5's order (the root migration table's `export_modules`, the order 1.5.5 listed its
     // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
     // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
-    let order = crate::root::legacy::export_order();
+    let order = crate::root::migration_table::export_order();
     rows.sort_by_key(|p| {
         order
             .iter()
@@ -483,7 +483,7 @@ pub fn link_secrets(
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
+    rows.with_former_names(busbar_kernel::config::migration_table::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
