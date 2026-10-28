@@ -2390,7 +2390,10 @@ pub(crate) struct ApplyConfigReq {
     config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "busbar_kernel::config::providers::catalog"
+    )]
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
 }
 
@@ -5288,7 +5291,10 @@ pub(crate) struct ValidateConfigReq {
     /// The provider definitions (`providers.yaml` shape), keyed by provider name. Optional: a config
     /// that references no providers.yaml entries validates against an empty def set (and reports the
     /// dangling references as errors).
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "busbar_kernel::config::providers::catalog"
+    )]
     providers: std::collections::HashMap<String, busbar_kernel::config::ProviderDef>,
 }
 
