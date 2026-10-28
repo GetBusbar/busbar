@@ -23,10 +23,11 @@
 //!   every view and every admission sees it, and the write-behind flush carries it to the store as a
 //!   signed `add_usage` delta under that window — today's path, until the poster replaces it (PR-B2);
 //! - FAIL CLOSED: a correction whose card cannot be resolved (no entry covers its epoch, or it names
-//!   another entry than the one its counts were dated with), whose epoch's window holds none of its counts for a
-//!   downward delta to move, or that would take any count of its segment below zero is REFUSED,
-//!   with the reason, and nothing is applied, so no store floors the row while RAM goes negative
-//!   (MONEY-REVIEW review 17, NB5) and no correction is ever moved onto another window's counts;
+//!   another entry than the one its counts were dated with), whose epoch's window holds none of its
+//!   counts for a downward delta to move, or that would take any count of its segment below zero is
+//!   REFUSED, with the reason, and nothing is applied, so no store floors the row while RAM goes
+//!   negative (MONEY-REVIEW review 17, NB5) and no correction is ever moved onto another window's
+//!   counts;
 //! - it reaches THE METERED VIEW (`GET /api/v1/admin/usage`) as an ADJUSTMENT ROW: the metering rows
 //!   carry unsigned counts, so the signed delta is kept beside them on two usage rows of the day
 //!   ([`ADJUST_UP_BUCKET`], [`ADJUST_DOWN_BUCKET`]), each only ever added to, and the usage read
