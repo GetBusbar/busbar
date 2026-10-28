@@ -186,3 +186,96 @@ fn verified_download_is_written() {
     assert_eq!(std::fs::read(dir.join("p.tar.gz")).unwrap(), body);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A sealed first-party tarball whose keys document expired at `expires` (Unix seconds).
+fn sealed_tarball(expires: u64) -> Vec<u8> {
+    use crate::release_trust::tests::{
+        entry, keys_doc, seal_keys, seal_targets, targets_doc, TestSigner,
+    };
+    let (root, signer) = (TestSigner::p256(), TestSigner::p256());
+    let lib = b"lib";
+    let m = crate::sign::Manifest {
+        name: "busbar-store-x".into(),
+        alias: "x".into(),
+        kind: "store".into(),
+        version: "1.6.0".into(),
+        publisher: "busbar".into(),
+        abi_version: 1,
+        sha256: sha256_hex(lib),
+        ..Default::default()
+    };
+    let listed = sha256_hex(&crate::sign::canonical_manifest_bytes(&m));
+    let mut keys = keys_doc(&[&signer]);
+    keys.expires = expires;
+    let mut targets = targets_doc(vec![entry(
+        &m.name,
+        &m.version,
+        crate::release_trust::PLUGIN_TARGET,
+        &listed,
+    )]);
+    targets.expires = expires;
+    let m = crate::sign::Manifest {
+        signature: crate::release_trust::wire::write_seal(
+            &seal_keys(&keys, &[&root]),
+            &seal_targets(&targets, &[&signer]),
+        )
+        .unwrap(),
+        ..m
+    };
+    crate::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// FETCH is install time (TUF's semantics): a downloaded sealed tarball whose keys document has
+/// expired is refused and never written, naming the audit code.
+#[test]
+fn a_fetched_tarball_whose_seal_has_expired_is_refused_and_not_written() {
+    let dir = tmpdir();
+    let body = sealed_tarball(1_600_000_000); // 2020
+    let dl = |_: &str| Ok(body.clone());
+    let err = fetch_plugins(
+        &dir,
+        &[spec("https://x/p.tar.gz", None, "p.tar.gz")],
+        true,
+        &dl,
+    )
+    .unwrap_err();
+    assert!(err[0].contains("keys-expired"), "{err:?}");
+    assert!(
+        !dir.join("p.tar.gz").exists(),
+        "an expired download is never written"
+    );
+    let fresh = sealed_tarball(crate::release_trust::now() + 86_400);
+    let dl = |_: &str| Ok(fresh.clone());
+    fetch_plugins(
+        &dir,
+        &[spec("https://x/p.tar.gz", None, "p.tar.gz")],
+        true,
+        &dl,
+    )
+    .expect("a fresh seal is written");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An INSTALLED (cached, pinned) tarball is not re-judged for expiry: boot keeps it.
+#[test]
+fn an_installed_tarball_whose_seal_has_since_expired_is_kept() {
+    let dir = tmpdir();
+    let body = sealed_tarball(1_600_000_000);
+    std::fs::write(dir.join("p.tar.gz"), &body).unwrap();
+    let pin = sha256_hex(&body);
+    let never = |_: &str| -> Result<Vec<u8>, String> { panic!("network must not be touched") };
+    let out = fetch_plugins(
+        &dir,
+        &[spec("https://x/p.tar.gz", Some(&pin), "p.tar.gz")],
+        true,
+        &never,
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        vec![FetchOutcome::Cached {
+            filename: "p.tar.gz".into()
+        }]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

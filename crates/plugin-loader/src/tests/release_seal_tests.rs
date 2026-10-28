@@ -224,18 +224,63 @@ fn a_plugin_listed_for_another_target_is_refused() {
     assert!(e.reason.contains(PLUGIN_TARGET), "{}", e.reason);
 }
 
+/// INSTALL (an upload, its preview, a fetch, an update) judges expiry: a plugin whose keys document
+/// has expired is refused.
 #[test]
-fn an_expired_keys_document_is_refused() {
+fn installing_a_plugin_whose_keys_document_has_expired_is_refused() {
     let r = Release::new();
     let m = r.good(unsealed(), &r.kms);
-    let late = TrustPolicy {
+    let install = TrustPolicy {
         release_clock: Some(NOW + 91 * 86_400),
+        release_enforce_expiry: true,
         ..r.policy()
     };
     refused(
-        evaluate(LIB, &m, &late),
+        evaluate(LIB, &m, &install),
         RejectKind::Tampered,
         "keys-expired",
+    );
+}
+
+/// BOOT does not: a plugin already installed whose keys document (90 days) and release manifest have
+/// since expired still loads as first-party.
+#[test]
+fn an_installed_plugin_whose_documents_have_since_expired_still_loads_at_boot() {
+    let r = Release::new();
+    let m = r.good(unsealed(), &r.kms);
+    let boot = TrustPolicy {
+        release_clock: Some(NOW + 2 * 365 * 86_400),
+        ..r.policy()
+    };
+    assert!(!boot.release_enforce_expiry, "boot is the default posture");
+    assert_eq!(evaluate(LIB, &m, &boot), Ok(first_party()));
+}
+
+/// BOOT still honours a revocation, digest or signer, in a keys document that has expired.
+#[test]
+fn a_revocation_is_refused_at_boot_though_the_keys_document_has_expired() {
+    let r = Release::new();
+    let boot = TrustPolicy {
+        release_clock: Some(NOW + 365 * 86_400),
+        ..r.policy()
+    };
+    let m = unsealed();
+    let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
+    let mut keys = keys_doc(&[&r.signer]);
+    keys.revoked_digests.insert(listed(&m), "pulled".into());
+    let sealed = r.seal(m.clone(), &keys, &r.kms, vec![e.clone()], &r.signer);
+    refused(
+        evaluate(LIB, &sealed, &boot),
+        RejectKind::Revoked,
+        "digest-revoked",
+    );
+    let mut keys = keys_doc(&[&r.signer]);
+    keys.revoked_keyids.insert(r.signer.id());
+    let sealed = r.seal(m, &keys, &r.kms, vec![e], &r.signer);
+    refused(
+        evaluate(LIB, &sealed, &boot),
+        RejectKind::Revoked,
+        "signer-revoked",
     );
 }
 

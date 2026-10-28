@@ -48,6 +48,7 @@ fn first_party_only_policy(release: &SigningKey) -> TrustPolicy {
         revoked: Default::default(),
         release_keys_floor: 0,
         release_clock: None,
+        release_enforce_expiry: false,
         binary_version: "1.6.0".into(),
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),

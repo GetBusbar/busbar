@@ -629,6 +629,11 @@ pub struct TrustPolicy {
     /// The time (Unix seconds) keys-document and release-manifest expiry is judged at. `None`, the
     /// system clock; a test sets it.
     pub release_clock: Option<u64>,
+    /// Whether keys-document and release-manifest EXPIRY is judged (TUF's semantics,
+    /// `docs/design/release-trust.md`): `true` at install, fetch and update (an upload, its
+    /// preview); `false`, the default, at boot for a plugin already installed, which never stops
+    /// loading because time passed. Signatures, revocations and rollback are judged either way.
+    pub release_enforce_expiry: bool,
     /// The running binary's version (`CARGO_PKG_VERSION`). Informational (error text/telemetry)
     /// only: it is NOT a floor. First-party plugins version on their own independent lines
     /// (1.0.x stores/auth/hooks under a 1.5.0 engine), so the pre-release
@@ -721,6 +726,7 @@ impl TrustPolicy {
             revoked: revoked_digests(),
             release_keys_floor: 0,
             release_clock: None,
+            release_enforce_expiry: false,
             binary_version: i.binary_version.to_string(),
             first_party_floors: i.first_party_floors.clone(),
             first_party_high_water: BTreeMap::new(),
@@ -1459,6 +1465,7 @@ pub fn evaluate(
             .release_clock
             .unwrap_or_else(crate::release_trust::now),
         keys_floor: policy.release_keys_floor,
+        enforce_expiry: true,
     };
     let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.signature.trim().is_empty() {
         Err(Untrusted::Unsigned {

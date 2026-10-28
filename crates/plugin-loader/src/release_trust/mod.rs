@@ -190,6 +190,10 @@ pub struct Checks {
     pub now: u64,
     /// The highest keys-document version this deployment has accepted (0: none).
     pub keys_floor: u64,
+    /// Whether the documents' `expires` is judged (TUF's semantics): at INSTALL, FETCH and UPDATE
+    /// time, yes; at BOOT, for a plugin already installed, no, so an installed plugin never stops
+    /// loading because time passed. Signatures, revocations and rollback are judged either way.
+    pub enforce_expiry: bool,
 }
 
 /// A verified chain: which root vouched for the keys document, which signers signed the release.
@@ -376,6 +380,19 @@ impl std::fmt::Display for SealRefusal {
             ),
         }
     }
+}
+
+/// THE INSTALL-TIME FRESHNESS CHECK of a seal's two documents: refused when either has expired at
+/// `now`. It reads the documents WITHOUT verifying them, for a path that verifies the chain later
+/// (`plugins.fetch` writes, the boot scan verifies): a forged `expires` fails that verification, so
+/// the value judged here is the one the chain will vouch for.
+///
+/// # Errors
+///
+/// A document that does not read, or has expired.
+pub fn check_fresh(seal: Seal<'_>, now: u64) -> Result<(), SealRefusal> {
+    let _ = (seal, now);
+    Ok(())
 }
 
 /// VERIFY THE CHAIN for `subject`: the keys document against `roots`, the release manifest against

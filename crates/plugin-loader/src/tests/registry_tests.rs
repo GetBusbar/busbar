@@ -131,6 +131,7 @@ fn policy(first_party: &SigningKey) -> TrustPolicy {
         revoked: Default::default(),
         release_keys_floor: 0,
         release_clock: None,
+        release_enforce_expiry: false,
         binary_version: "1.5.0".into(),
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),

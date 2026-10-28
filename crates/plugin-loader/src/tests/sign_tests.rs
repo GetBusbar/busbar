@@ -103,6 +103,7 @@ fn policy(
         revoked: BTreeMap::new(),
         release_keys_floor: 0,
         release_clock: None,
+        release_enforce_expiry: false,
         binary_version: "1.5.0".to_string(),
         first_party_floors: BTreeMap::new(),
         first_party_high_water: BTreeMap::new(),

@@ -66,6 +66,7 @@ pub(crate) fn checks() -> Checks {
     Checks {
         now: NOW,
         keys_floor: 0,
+        enforce_expiry: true,
     }
 }
 
@@ -378,6 +379,58 @@ fn an_expired_release_manifest_is_refused() {
         .verify(&keys, &targets, &artefact(), checks())
         .unwrap_err();
     assert!(matches!(e, SealRefusal::TargetsExpired { .. }), "{e:?}");
+}
+
+/// AT BOOT (TUF's semantics): an installed plugin's expired keys document and release manifest are
+/// not judged, so it never stops loading because time passed; everything else still is.
+#[test]
+fn at_boot_expired_documents_are_not_judged() {
+    let w = World::new();
+    let keys = seal_keys(&keys_doc(&[&w.signer]), &[&w.kms]);
+    let mut doc = targets_doc(vec![entry(NAME, VERSION, PLUGIN_TARGET, &artefact())]);
+    doc.expires = NOW + 30 * DAY;
+    let targets = seal_targets(&doc, &[&w.signer]);
+    let boot = Checks {
+        now: NOW + 400 * DAY,
+        enforce_expiry: false,
+        ..checks()
+    };
+    w.verify(&keys, &targets, &artefact(), boot)
+        .expect("an installed plugin keeps loading after its documents expire");
+    let install = Checks {
+        enforce_expiry: true,
+        ..boot
+    };
+    assert!(matches!(
+        w.verify(&keys, &targets, &artefact(), install),
+        Err(SealRefusal::KeysExpired { .. })
+    ));
+}
+
+/// AT BOOT a revocation in an expired keys document is still honoured, digest and signer alike.
+#[test]
+fn at_boot_a_revocation_is_refused_though_the_keys_document_has_expired() {
+    let w = World::new();
+    let boot = Checks {
+        now: NOW + 400 * DAY,
+        enforce_expiry: false,
+        ..checks()
+    };
+    let (_, targets) = w.release(&w.kms);
+    let mut doc = keys_doc(&[&w.signer]);
+    doc.revoked_digests.insert(artefact(), "pulled".into());
+    let keys = seal_keys(&doc, &[&w.kms]);
+    assert!(matches!(
+        w.verify(&keys, &targets, &artefact(), boot),
+        Err(SealRefusal::DigestRevoked { .. })
+    ));
+    let mut doc = keys_doc(&[&w.signer]);
+    doc.revoked_keyids.insert(w.signer.id());
+    let keys = seal_keys(&doc, &[&w.kms]);
+    assert!(matches!(
+        w.verify(&keys, &targets, &artefact(), boot),
+        Err(SealRefusal::SignerRevoked { .. })
+    ));
 }
 
 #[test]

@@ -274,6 +274,7 @@ fn release_checks() -> release_trust::Checks {
     release_trust::Checks {
         now: release_trust::now(),
         keys_floor: 0,
+        enforce_expiry: true,
     }
 }
 
