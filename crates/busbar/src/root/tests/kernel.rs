@@ -290,65 +290,6 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     assert_eq!(priced.minor(), 13, "each era at the plane fee in force");
 }
 
-/// A unit no plane on this node composed is not sealed as an administrative read.
-///
-/// Both audit doors are asked, because both used to answer with the admin plane's word for a
-/// verb that did not resolve: a plane unit refused at the root came out of the record as an
-/// operator reading a page. The assertion is written as an inequality against that word as well
-/// as an equality on the right one, because what matters is not which class replaced it but
-/// that no unit of another plane wears the admin plane's.
-#[cfg(feature = "root-admin")]
-#[test]
-fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
-    let units = ProductionUnits::admin_only(
-        std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
-        crate::root::units_admin::open_door(),
-    );
-    let seal = busbar_kernel::test_support::tokens::seal();
-    let ctx = UnitCtx {
-        call: busbar_contract::caps::CallId::UNBOUND,
-        key: busbar_contract::ids::UnitKey::new(9),
-        origin: busbar_contract::caps::OriginKind::Client,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: false,
-        kernel_verb_only: false,
-    };
-    assert!(
-        !units.is_admin(&ctx),
-        "the fixture must be a unit the admin plane never claimed"
-    );
-    let admin_read = busbar_contract::ids::OpClassId::new("admin_read");
-
-    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
-    let refused = units
-        .audit_refused(
-            &token,
-            &ctx,
-            &Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
-        )
-        .into_result(&seal)
-        .expect("the door seals a record for a unit it did not compose");
-    assert_ne!(refused.op_class, admin_read);
-    assert_eq!(
-        refused.op_class,
-        busbar_contract::ids::OpClassId::new(OP_UNCLAIMED)
-    );
-    assert_eq!(refused.finish, busbar_contract::FinishClass::Error);
-
-    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
-    let ended = units
-        .audit(&token, &ctx, &Outcome::Completed)
-        .into_result(&seal)
-        .expect("the other door seals one too");
-    assert_ne!(ended.op_class, admin_read);
-    assert_eq!(
-        ended.op_class,
-        busbar_contract::ids::OpClassId::new(OP_UNCLAIMED)
-    );
-    assert_eq!(ended.finish, busbar_contract::FinishClass::Complete);
-}
-
 /// The arrival door is the admission unit's, and the hold it opens is the caller's — the point of
 /// the arrival hold is that even a refusal is an event with a cell of its own to settle.
 #[test]
@@ -391,11 +332,6 @@ fn the_units_assemble_from_values_configuration_decided() {
         ),
         None,
     );
-
-    // Nothing is in flight before anything arrives, which is the machine-checkable half of
-    // "an entry that outlived its unit would be a leak per request".
-    #[cfg(feature = "root-admin")]
-    assert!(units.admin.units.is_empty());
 
     // The journal opened nothing: the safe end of a choice that had an unsafe end, checkable here
     // rather than at the first request.

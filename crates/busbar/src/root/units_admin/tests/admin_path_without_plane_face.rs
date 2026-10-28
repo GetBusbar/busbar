@@ -16,14 +16,13 @@
 //!    `busbar_core_admin::admin_codec::verbs::resolve` name a row for this method and path — and
 //!    hands anything else straight to the surface that already answers it;
 //! 3. the body is read to the operator's own cap, an `AdminRequest` is built, and
-//!    `AdminNode::answer` walks it through `busbar_kernel::teller::run_unit`;
-//! 4. the steps are the ADMIN UNITS' — `impl RegisteredUnits for units_admin::AdminPlane` — not a
-//!    `Plane`'s: decode resolves the verb off the same closed table, authenticate/verify resolve and
-//!    keep the principal, approve compares the 1.5.5 matrix against the grant, admit takes no
-//!    concurrency lease, ROUTE hands the operation to the mounted surface, METER reports the empty
-//!    line, and AUDIT seals the operation class and finish — the mutation's row on the ONE
+//!    `AdminNode::answer` runs its steps directly ([`super::decide`]);
+//! 4. the steps are the ADMIN UNITS', not a `Plane`'s: decode resolves the verb off the same closed
+//!    table, authenticate/verify resolve and keep the principal, approve compares the 1.5.5 matrix
+//!    against the grant, admit takes no concurrency lease, ROUTE hands the operation to the mounted
+//!    surface, and AUDIT seals the operation class and finish — the mutation's row on the ONE
 //!    administrative ring is the kernel's, written by the core-admin handler at Route (item 237);
-//! 5. the answer the surface produced comes back through the exit path, byte for byte.
+//! 5. the answer the surface produced comes back, byte for byte.
 //!
 //! So these cells assert two things the removal must not have cost: that a real verb still travels
 //! that whole chain and comes back with the surface's own bytes, and that the metering and audit the

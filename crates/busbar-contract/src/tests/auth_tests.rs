@@ -78,3 +78,42 @@ fn login_module_defaults_are_fail_closed() {
         LoginOutcome::Reject
     );
 }
+
+/// RED (auth ABI defect 2): the login step types never print a credential through `Debug`: not
+/// the authorization code or the PKCE verifier, not a hop's form or header values, not a token
+/// response's body. Before, each derived `Debug` and printed them verbatim.
+#[test]
+fn login_debug_never_prints_a_credential() {
+    let hop = LoginHop {
+        method: "POST".into(),
+        url: "https://idp.example/token?code=url-code".into(),
+        form: vec![("client_id".into(), "form-value".into())],
+        secret_form_field: Some("client_secret".into()),
+        headers: vec![("authorization".into(), "Bearer header-token".into())],
+    };
+    let login = CompleteLogin {
+        code: Some("the-code".into()),
+        redirect_uri: Some("https://busbar.example/cb".into()),
+        code_verifier: Some("the-verifier".into()),
+        submitted: vec![("password".into(), Secret::new("the-password".to_string()))],
+        token_response: Some(LoginHttpResponse {
+            status: 200,
+            body: r#"{"access_token":"the-token"}"#.into(),
+        }),
+    };
+    let shown = format!("{login:?} {:?}", LoginOutcome::Exchange(hop));
+    for secret in [
+        "the-code",
+        "the-verifier",
+        "the-password",
+        "the-token",
+        "url-code",
+        "form-value",
+        "header-token",
+    ] {
+        assert!(!shown.contains(secret), "`{secret}` printed: {shown}");
+    }
+    for named in ["redirect_uri", "client_id", "authorization", "status: 200"] {
+        assert!(shown.contains(named), "`{named}` not named: {shown}");
+    }
+}

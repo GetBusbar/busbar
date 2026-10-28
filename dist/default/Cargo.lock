@@ -458,6 +458,7 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
+ "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -762,7 +763,6 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "base64 0.22.1",
  "busbar-contract",
  "ed25519-dalek",
  "flate2",
@@ -771,7 +771,6 @@ dependencies = [
  "hex",
  "libc",
  "libloading",
- "ring",
  "serde",
  "serde_json",
  "tar",
@@ -807,6 +806,20 @@ dependencies = [
  "busbar-contract",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "busbar-test-kit"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
