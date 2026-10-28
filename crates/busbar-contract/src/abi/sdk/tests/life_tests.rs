@@ -85,6 +85,14 @@ impl Life for Echo {
     fn tick(&self, now_ns: u64) -> u64 {
         now_ns + self.0.len() as u64
     }
+
+    fn flagged(&self) -> Option<Flagged> {
+        self.0.strip_prefix(b"flag:").map(|why| Flagged {
+            id_idx: 0,
+            severity: crate::abi::mechanism::call::SEVERITY_WARN,
+            text: String::from_utf8_lossy(why).into_owned(),
+        })
+    }
 }
 
 /// `resolve`: the state's bytes, under a secret lease.
@@ -767,4 +775,42 @@ fn a_recycled_ticket_never_resumes_a_finished_ops_parked_state() {
         "the new op's RESUME must not see the earlier op's state"
     );
     assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// The declared diagnostics on a reply's envelope: `(id_idx, severity, text)`.
+fn raised(head: &OutHead) -> Vec<(u32, u8, String)> {
+    if head.envelope.diags_len == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the instance holds the entries until its next lifecycle op.
+    let diags = unsafe { std::slice::from_raw_parts(head.envelope.diags, head.envelope.diags_len) };
+    diags
+        .iter()
+        .map(|d| (d.id_idx, d.severity, text(d.text)))
+        .collect()
+}
+
+/// RED (BIND-AUDIT): what the instance an `open` or `refresh` built raises ([`Life::flagged`])
+/// rides that reply's envelope as its one declared diagnostic, for the host to audit on the
+/// plugin's behalf; an instance that raises nothing answers a bare envelope.
+#[test]
+fn an_open_and_a_refresh_carry_what_the_instance_raises() {
+    let warn = crate::abi::mechanism::call::SEVERITY_WARN;
+    let (o, out) = open_lent(b"flag:plain http", None);
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(raised(&out.head), vec![(0, warn, "plain http".to_string())]);
+    let inst = out.instance;
+    let (o, out) = refresh(inst, b"uncounted");
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(raised(&out), vec![(0, warn, "plain http".to_string())]);
+    let (o, out) = refresh(inst, b"count");
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(out.envelope.metrics_len, 1, "the count rides beside it");
+    assert_eq!(raised(&out), vec![(0, warn, "plain http".to_string())]);
+    assert_eq!(close(inst), Outcome::Ready);
+
+    let (o, out) = open_lent(b"{}", None);
+    assert_eq!(o, Outcome::Ready);
+    assert!(raised(&out.head).is_empty());
+    assert_eq!(close(out.instance), Outcome::Ready);
 }

@@ -61,7 +61,7 @@ use std::task::Poll;
 use zeroize::Zeroizing;
 
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
+    AbiStr, Blob, Diag, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
 };
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, TickIn,
@@ -346,6 +346,19 @@ pub struct Refreshed {
     pub counted: Option<Counted>,
 }
 
+/// A diagnostic the plugin's Statement declares, raised by the instance an `open` or `refresh`
+/// built: the host audits one at warn or error on the plugin's behalf (a flagged open loaded,
+/// `plugin.open`, `degraded`), and writes it to the plugin's own log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flagged {
+    /// The index of its id in the plugin's Statement `diag_ids`.
+    pub id_idx: u32,
+    /// `SEVERITY_WARN` or `SEVERITY_ERROR` (`abi::mechanism::call`).
+    pub severity: u8,
+    /// The operator's words; never secret material.
+    pub text: String,
+}
+
 /// ONE KIND'S LIFECYCLE, as its SDK states it: the instance state the nine generic slots serve,
 /// and each per-kind value. A kind's SDK implements it over its author trait; a plugin names it
 /// through its kind's door macro.
@@ -411,7 +424,23 @@ pub trait Life: Send + Sync + Sized + 'static {
         let _ = (host, ticket);
         Poll::Ready(Ok(()))
     }
+
+    /// What the instance an `open` or `refresh` just built raises on that answer
+    /// ([`Flagged`]): asked after each READY `open` and `refresh`. `None` (the default) raises
+    /// nothing.
+    fn flagged(&self) -> Option<Flagged> {
+        None
+    }
 }
+
+/// The diagnostic an `open` or `refresh` raised ([`Life::flagged`]), held by the instance until
+/// the host has copied the reply, as [`Reported`] is.
+struct Raised(Mutex<Option<(Flagged, Diag)>>);
+
+// SAFETY: the entry's one pointer (`text`) points into the `Flagged` text held beside it.
+unsafe impl Send for Raised {}
+// SAFETY: as above.
+unsafe impl Sync for Raised {}
 
 /// The metric entry a `refresh` reports, held by the instance until the host has copied the reply
 /// (lifecycle ops never overlap on one instance, and the host copies a reply as it returns).
@@ -428,6 +457,7 @@ pub struct Held<L> {
     life: L,
     leases: Leases,
     reported: Reported,
+    raised: Raised,
     host: Option<Host>,
 }
 
@@ -448,6 +478,7 @@ impl<L: Life> Held<L> {
             life,
             leases: Leases::default(),
             reported: Reported(Mutex::new(entry(None))),
+            raised: Raised(Mutex::new(None)),
             host,
         }
     }
@@ -478,6 +509,31 @@ fn entry(counted: Option<Counted>) -> MetricEntry {
         label_vals: std::ptr::null(),
         label_vals_len: 0,
     }
+}
+
+/// Put what `h`'s instance raises ([`Life::flagged`]) in `head`'s envelope as its one declared
+/// diagnostic, held by the instance until its next lifecycle op; nothing when it raises none.
+fn raise<L: Life>(h: &Held<L>, head: &mut OutHead) {
+    let Some(flag) = h.life.flagged() else {
+        return;
+    };
+    let mut held = h
+        .raised
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (flag, diag) = held.insert((flag, Diag::ZERO));
+    *diag = Diag {
+        id_idx: flag.id_idx,
+        severity: flag.severity,
+        text: AbiStr {
+            ptr: flag.text.as_ptr(),
+            len: flag.text.len(),
+        },
+        ..Diag::ZERO
+    };
+    head.envelope.diags = std::ptr::from_ref(&*diag);
+    head.envelope.diags_len = 1;
 }
 
 fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
@@ -527,6 +583,9 @@ life_slot!(
             Ok(life) => {
                 let host = input.host().map(|h| Host::of(&h));
                 instance.open(Held::new(life, host));
+                if let Some(h) = instance.get() {
+                    raise(h, &mut out.raw().head);
+                }
                 Outcome::Ready
             }
             Err(r) => out.fail(r),
@@ -552,9 +611,13 @@ life_slot!(
                 let o = out.raw();
                 o.envelope.metrics = std::ptr::from_ref(&*held);
                 o.envelope.metrics_len = 1;
+                raise(h, o);
                 Outcome::Ready
             }
-            Ok(Refreshed { counted: None }) => Outcome::Ready,
+            Ok(Refreshed { counted: None }) => {
+                raise(h, out.raw());
+                Outcome::Ready
+            }
             Err(r) => out.fail(r),
         }
     }
