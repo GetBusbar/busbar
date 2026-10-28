@@ -4120,7 +4120,7 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
         let also = Arc::clone(&c);
         let second = std::thread::spawn(move || {
             let wrote = also.write(OWNER, id, b"x", true, false);
-            let waited = also.wait(OWNER, &[id], 8);
+            let waited = also.landed(OWNER, id, 8);
             beside_tx.send((wrote, waited)).unwrap();
         });
         let (wrote, waited) = beside
@@ -4130,7 +4130,7 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
         assert_eq!(
             waited,
             Err(ConnError::Pending),
-            "the wait waits on the dial"
+            "the landing waits on the dial"
         );
         let before = wakes.load(Ordering::SeqCst);
         release.send(()).unwrap();
@@ -4138,7 +4138,7 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
         second.join().unwrap();
         assert!(
             wakes.load(Ordering::SeqCst) > before,
-            "the wait that found the dial crossing is woken once it came to its end"
+            "the landing wait that found the dial crossing is woken once it came to its end"
         );
         c.close(OWNER, id).unwrap();
     });
