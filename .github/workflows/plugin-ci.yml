@@ -44,7 +44,7 @@
 # THE C PATH (`plugin_lang: c`; BUSBAR-1.6.0.md decision #84, witness GetBusbar/busbar-secret-c): a
 # plugin repo with no Rust and no busbar crate. Its `.c` sources (`c_dir`) are compiled with the
 # system C compiler against `busbar_plugin.h` from busbar AT THE PIN, into the library a release
-# packs; then busbar's own `crates/plugin-loader/tests/dropped_conformance.rs`, at the same pin,
+# packs; then busbar's own `crates/busbar-test-kit/examples/dropped_conformance.rs`, at the same pin,
 # loads that library through `load_dropped`, drives the kind's conformance script over the plugin's
 # `<c_dir>/conformance.json`, and keeps its RED arm (the sources rebuilt at another kind ABI are
 # refused). It has no crates, so the Rust steps and the Rust gates do not run for it; the pin check
@@ -136,7 +136,9 @@ jobs:
           repository: GetBusbar/busbar
           ref: ${{ steps.pin.outputs.sha }}
           path: busbar
-          sparse-checkout: scripts/fleet
+          sparse-checkout: |
+            scripts/fleet
+            dist/default
       - name: pin-check selftest (every refusal fires before the verdict is trusted)
         run: bash busbar/scripts/fleet/pin-check.sh --selftest
       - name: pin-check
@@ -395,7 +397,7 @@ jobs:
           for t in $suite; do
             grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
           done
-          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee >(cat >&2))"
           for t in $suite; do
             printf '%s\n' "$out" | grep -qx "test $t ... ok" || { echo "::error::the published suite's test '$t' did not RUN green"; exit 1; }
           done
@@ -426,10 +428,9 @@ jobs:
         working-directory: busbar
         run: |
           set -euo pipefail
-          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
-          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
-          [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests (the script and the RED arm)"; exit 1; }
-          echo "C conformance: $passed test(s) passed"
+          out="$(cargo run --locked -p busbar-test-kit --example dropped_conformance 2>&1 | tee >(cat >&2))"
+          printf '%s\n' "$out" | grep -qx "dropped conformance: 2 proofs passed" \
+            || { echo "::error::the C conformance did not run both of its proofs (the script and the RED arm)"; exit 1; }
 
   macos:
     name: build, test [macos]
@@ -566,9 +567,9 @@ jobs:
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
           cd busbar
           out="$(BUSBAR_DROPPED_LIB="$lib" BUSBAR_DROPPED_SOURCES="$src" BUSBAR_DROPPED_SCRIPT="$src/conformance.json" \
-            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
-          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
-          [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
+            cargo run --locked -p busbar-test-kit --example dropped_conformance 2>&1 | tee >(cat >&2))"
+          printf '%s\n' "$out" | grep -qx "dropped conformance: 2 proofs passed" \
+            || { echo "::error::the C conformance did not run both of its proofs"; exit 1; }
 
   coverage:
     name: coverage

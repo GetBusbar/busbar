@@ -148,7 +148,7 @@ fn an_unbound_node_binds_no_authority() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// THE ROOT LEGACY TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live. The kernel's own tests
+// THE ROOT MIGRATION TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live. The kernel's own tests
 // run on a kind-neutral double; these run on the words this root hands in at boot.
 // ------------------------------------------------------------------------------------------------
 

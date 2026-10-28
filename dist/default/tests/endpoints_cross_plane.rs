@@ -67,17 +67,17 @@ fn topology() -> TestApp {
     TestApp::new()
         .lane(LaneSpec::new(
             "model-a0",
-            busbar_kernel::ingress::protocols::PROTO_OPENAI,
+            busbar_kernel::test_support::protocols::PROTO_OPENAI,
             "http://a0",
         ))
         .lane(LaneSpec::new(
             "model-a1",
-            busbar_kernel::ingress::protocols::PROTO_OPENAI,
+            busbar_kernel::test_support::protocols::PROTO_OPENAI,
             "http://a1",
         ))
         .lane(LaneSpec::new(
             "model-b",
-            busbar_kernel::ingress::protocols::PROTO_OPENAI,
+            busbar_kernel::test_support::protocols::PROTO_OPENAI,
             "http://b",
         ))
         .pool("pool-a", &[(0, 1), (1, 1)])
@@ -165,7 +165,7 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
         .lane(
             LaneSpec::new(
                 "bounded",
-                busbar_kernel::ingress::protocols::PROTO_OPENAI,
+                busbar_kernel::test_support::protocols::PROTO_OPENAI,
                 "http://b",
             )
             .max(1)
@@ -174,7 +174,7 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
         .lane(
             LaneSpec::new(
                 "unbounded",
-                busbar_kernel::ingress::protocols::PROTO_OPENAI,
+                busbar_kernel::test_support::protocols::PROTO_OPENAI,
                 "http://u",
             )
             .max(tokio::sync::Semaphore::MAX_PERMITS),
@@ -254,7 +254,7 @@ async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
         .lane(
             LaneSpec::new(
                 "bounded",
-                busbar_kernel::ingress::protocols::PROTO_OPENAI,
+                busbar_kernel::test_support::protocols::PROTO_OPENAI,
                 "http://b",
             )
             .max(3),
@@ -262,7 +262,7 @@ async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
         .lane(
             LaneSpec::new(
                 "unbounded",
-                busbar_kernel::ingress::protocols::PROTO_OPENAI,
+                busbar_kernel::test_support::protocols::PROTO_OPENAI,
                 "http://u",
             )
             .max(tokio::sync::Semaphore::MAX_PERMITS),
@@ -309,7 +309,7 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
         .lane(
             LaneSpec::new(
                 "wedged",
-                busbar_kernel::ingress::protocols::PROTO_OPENAI,
+                busbar_kernel::test_support::protocols::PROTO_OPENAI,
                 "http://w",
             )
             .max(1)
@@ -575,7 +575,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     let fallback = linked::fallback();
     let door = opening_door();
     let _isolated =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[fallback, door]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[fallback, door]);
     let section = busbar_kernel::plane_driver::door::DoorSection::new(
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
@@ -596,7 +596,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     let mut fixture = TestApp::new()
         .lane(LaneSpec::new(
             "model-h",
-            busbar_kernel::ingress::protocols::PROTO_OPENAI,
+            busbar_kernel::test_support::protocols::PROTO_OPENAI,
             "http://h",
         ))
         .pool("p", &[(0, 1)])

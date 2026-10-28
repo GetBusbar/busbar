@@ -6,8 +6,7 @@
 //! The ledger states what an opening figure MEANS; the store side reads it off the previous
 //! release's rows, because that is where the loaded plugin and its row shapes already are. These
 //! are the shapes the two halves trade and the three traits the store side implements and the
-//! ledger consumes, so they are the contract's (the same division `slice::SliceStore` makes): the
-//! store side names the contract alone.
+//! ledger consumes, so they are the contract's: the store side names the contract alone.
 //!
 //! **It never writes to what it read.** A deployment may be booting against a read-only replica or
 //! a grant-restricted database — the previous release's supported shape — so the source seams have a
@@ -39,7 +38,7 @@ impl std::error::Error for SignError {}
 /// mean a configuration that worked yesterday stops working on upgrade, which is the one outcome a
 /// migration may not produce.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyHead {
+pub struct MigrationHead {
     /// The last sequence number the previous release's chain reached, if any.
     pub seq: Option<u64>,
     /// The hash at that point, if any.
@@ -50,10 +49,10 @@ pub struct LegacyHead {
     pub cells_read: u64,
 }
 
-impl LegacyHead {
+impl MigrationHead {
     /// The answer a store with nothing to say gives.
     pub fn empty() -> Self {
-        LegacyHead::default()
+        MigrationHead::default()
     }
 
     /// Whether there was anything there.
@@ -63,10 +62,10 @@ impl LegacyHead {
 }
 
 /// Reads the previous release's chain head and balances at migration time.
-pub trait LegacyMigrationSource {
+pub trait MigrationSource {
     /// The head and balances. An implementation that cannot answer returns an empty head rather
     /// than an error, and the migration seals a zero opening balance.
-    fn read_head(&self) -> LegacyHead;
+    fn read_head(&self) -> MigrationHead;
 }
 
 /// Which of the previous release's two row families a figure was read from.
@@ -75,7 +74,7 @@ pub trait LegacyMigrationSource {
 /// decides the scope, and the scope is the whole of what keeps two views of one consumption from
 /// being added together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LegacyFamily {
+pub enum MigrationFamily {
     /// A bucket's token ledger for one window: what the bucket consumed, with no lane on it.
     Window,
     /// A metering row: one day, one lane, one provider, under the key that was charged.
@@ -87,7 +86,7 @@ pub enum LegacyFamily {
 /// A class is held by its NAME, as the rows hold it; the ledger turns this into its own totals
 /// dimension when it folds the figure.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LegacyCapDimension {
+pub enum MigrationCapDimension {
     /// A count of units admitted.
     Requests,
     /// A declared meter class, by name.
@@ -99,9 +98,9 @@ pub enum LegacyCapDimension {
 /// Deliberately plain — identifiers as strings, the amount as the integer that was read. Anything
 /// richer would be the ledger having an opinion about a row shape it does not own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyFigure {
+pub struct MigrationFigure {
     /// Which family the figure came from.
-    pub family: LegacyFamily,
+    pub family: MigrationFamily,
     /// Which bucket it is against.
     pub bucket: String,
     /// Which window or day it fell in, as that window's opening instant in whole seconds.
@@ -111,7 +110,7 @@ pub struct LegacyFigure {
     /// Which provider served it. Empty where the row carries no provider.
     pub provider: String,
     /// What is being counted.
-    pub dimension: LegacyCapDimension,
+    pub dimension: MigrationCapDimension,
     /// How much, as the previous release's row holds it.
     pub amount: i128,
 }
@@ -122,9 +121,9 @@ pub struct LegacyFigure {
 /// refuse: a store that could not answer for one bucket must not stop a node booting. What it must
 /// not do is lose the fact, so the names come back and whatever runs the migration can say so.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyFigures {
+pub struct MigrationFigures {
     /// Every figure read, in whatever order the rows came back.
-    pub figures: Vec<LegacyFigure>,
+    pub figures: Vec<MigrationFigure>,
     /// The rows that could not be read, named.
     pub unreadable: Vec<String>,
 }
@@ -136,10 +135,10 @@ pub struct LegacyFigures {
 ///
 /// It extends the head-reading seam rather than replacing it, so the head and the figures come from
 /// one object that read one store, and the two cannot disagree about what was there.
-pub trait LegacyLedgerRows: LegacyMigrationSource {
+pub trait MigrationLedgerRows: MigrationSource {
     /// The figures. An implementation that cannot answer returns an empty set rather than an error,
     /// exactly as the head does, and the migration seals a zero opening balance.
-    fn read_figures(&self) -> LegacyFigures;
+    fn read_figures(&self) -> MigrationFigures;
 }
 
 /// The record that says this deployment has already migrated.

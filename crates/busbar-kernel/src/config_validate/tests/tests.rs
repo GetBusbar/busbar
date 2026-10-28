@@ -15,6 +15,7 @@ fn make_root_cfg(
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
+        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
@@ -73,8 +74,6 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         error_map,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -84,6 +83,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         anthropic_adaptive_thinking: None,
         native_structured_output: None,
         model_capabilities: Vec::new(),
+        options: Default::default(),
     }
 }
 
@@ -166,22 +166,74 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
+/// RED (arch-audit u29 F1; BUSBAR-1.6.0.md #50: "the auth style resolves ... as opaque
+/// strings"): a provider's `auth:` is an OPAQUE word some loaded auth plugin declares, never a
+/// closed kernel set. Every declared word parses, a dropped-in one (`x-double-mint`, a style no
+/// release named) as well as 1.5.5's four; a word no plugin declares is refused at deserialize time
+/// in serde's own unknown-variant words over the declared list, ranked first, so 1.5.5's refusal of
+/// an unknown word is the prefix of this one. The words here are the test double's declarations
+/// (`test_support::outbound_auth::double_outbound_styles`).
 #[test]
-fn test_provider_auth_style_is_a_closed_enum() {
-    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
-    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
-    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
-        config::ProviderAuth::Bearer
-    );
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
-        config::ProviderAuth::ApiKey
-    );
+fn test_provider_auth_style_is_a_declared_word() {
+    for word in [
+        "bearer",
+        "api-key",
+        "jwt-bearer",
+        "oauth-client-credentials",
+        "x-double-mint",
+    ] {
+        let style = serde_yaml::from_str::<config::ProviderAuth>(word)
+            .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
+        assert_eq!(style.as_str(), word);
+    }
+    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
+        .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")
+        .to_string();
     assert!(
-        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
-        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+        refused.starts_with(
+            "unknown variant `oauth2`, expected one of `bearer`, `api-key`, `jwt-bearer`, \
+             `oauth-client-credentials`, `x-double-mint`"
+        ),
+        "an undeclared style is refused in serde's words over the declared list: {refused}"
+    );
+}
+
+/// RED (arch-audit u29 F1): a style's token endpoint is judged by the bit its plugin DECLARES
+/// (`STYLE_ENDPOINT_TOKEN_URL`), never by its name: a style no release named that states the bit
+/// gets 1.5.5's `token_url` and `scope` findings, in 1.5.5's sentences over its own word, and a
+/// style that does not state it (`bearer`) is left unjudged, as 1.5.5 left it.
+#[test]
+fn a_token_url_is_judged_for_any_style_declaring_it() {
+    crate::test_support::register_neutral_test_plane();
+    let build = |word: &str| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut mint = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        mint.auth = Some(config::ProviderAuth::named(word));
+        providers.insert("mint".to_string(), mint);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("mint", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+            .err()
+            .unwrap_or_default()
+    };
+    let errs = build("x-double-mint");
+    for want in [
+        "provider 'mint' uses auth: x-double-mint but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
+        "provider 'mint' uses auth: x-double-mint but has no `scope`",
+    ] {
+        assert!(
+            errs.iter().any(|e| e == want),
+            "a style declaring STYLE_ENDPOINT_TOKEN_URL is judged by the bit: want {want:?} in {errs:?}"
+        );
+    }
+    let errs = build("bearer");
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("token_url") || e.contains("scope")),
+        "a style stating no endpoint is not judged for one: {errs:?}"
     );
 }
 
@@ -467,7 +519,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
-        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        entra.auth = Some(config::ProviderAuth::named("oauth-client-credentials"));
         providers.insert("entra".to_string(), entra);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("entra", 10));
@@ -2199,7 +2251,8 @@ models:
     );
 
     // The removed `api_key_env:` provider key is likewise a parse error (renamed to
-    // `api_key: { env: ... }`).
+    // `api_key: { env: ... }`): it is not the credential, so the entry names none. (A key beyond
+    // busbar's is a provider option, judged at validation by the plane, owner ruling 2026-10-27.)
     let yaml2 = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -2212,8 +2265,8 @@ models:
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
     assert!(
-        err2.to_string().contains("unknown field"),
-        "expected an unknown-field error for api_key_env; got: {err2}"
+        err2.to_string().contains("missing field `api_key`"),
+        "expected the entry with no credential refused; got: {err2}"
     );
 }
 
@@ -6744,7 +6797,7 @@ fn plane_card(
 /// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
     let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
@@ -6766,7 +6819,7 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
 /// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m", "n"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
@@ -6778,8 +6831,7 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
 /// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let _iso =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "class-plane",
@@ -6833,7 +6885,7 @@ static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
     let _iso =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
@@ -6883,7 +6935,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[dropped]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[dropped]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
     let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
@@ -6902,7 +6954,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
 /// plus `units: { search_units: 0 }`) passes.
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         &FLAT_PLANE,
         &CLASS_PLANE,
     ]);
@@ -6948,7 +7000,7 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         session,
         &CLASS_PLANE,
     ]);
@@ -6995,7 +7047,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[session]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[session]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));

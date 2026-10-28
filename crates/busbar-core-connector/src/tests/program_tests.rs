@@ -94,7 +94,7 @@ fn open(c: &Connector, target: &str, body: &[u8]) -> Result<ConnId, ConnError> {
         NEED,
         &OpenDesc {
             target,
-            body,
+            body: busbar_contract::conn::Bytes::copy_from_slice(body),
             ..OpenDesc::default()
         },
     )
@@ -614,7 +614,7 @@ fn open_bounded(c: &Connector, target: &str) -> ConnId {
         NEED,
         &OpenDesc {
             target,
-            body: b"ask\n",
+            body: busbar_contract::conn::Bytes::from_static(b"ask\n"),
             timeout_ms: 300,
             ..OpenDesc::default()
         },

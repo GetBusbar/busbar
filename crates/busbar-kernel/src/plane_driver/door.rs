@@ -174,6 +174,30 @@ pub fn provider_keys() -> Option<&'static busbar_contract::provider_keys::Provid
         .find_map(|f| f.reg.provider_keys.as_ref())
 }
 
+/// THE JUDGE OF ONE PROVIDER ENTRY'S OPTIONS (`config::providers::judge_options`): the folded
+/// door whose tail flags the provider's dialect a provider dialect validates
+/// `{"providers": {<name>: <table>}}`, the entry as the plane receives it at open, and answers in
+/// its own words. `None` when no folded door speaks that dialect.
+#[must_use]
+pub fn judge_provider(
+    name: &str,
+    table: &crate::config::ProviderTable,
+) -> Option<Result<(), String>> {
+    let dialect = table
+        .get(busbar_contract::section::MODEL_PROTOCOL_KEYS[0])
+        .and_then(serde_json::Value::as_str)?;
+    let fold = DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find(|f| f.provider_dialects.contains(&dialect))?;
+    let blob = serde_json::json!({ "providers": { name: table } });
+    Some(
+        serde_json::to_vec(&blob)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| (fold.reg.validate)(&bytes)),
+    )
+}
+
 /// The folded door at `index`.
 fn door(index: usize) -> Option<&'static Folded> {
     DOORS.get(index).and_then(OnceLock::get)
@@ -194,6 +218,9 @@ pub struct DoorSection {
     /// The secret references the section holds at its door's declared paths
     /// (`PlaneRegistration::secret_refs`), each with the config path it was read at.
     refs: Vec<(String, busbar_contract::secret_ref::SecretRef)>,
+    /// The refusal for the first secret reference the section holds at a position its door did
+    /// NOT declare (OWNER RULING, CHIP-REVIEW-v4 change 2), if any.
+    undeclared: Option<String>,
 }
 
 impl DoorSection {
@@ -215,10 +242,11 @@ impl DoorSection {
     /// `--validate` and boot resolve each one as they resolve every other reference.
     #[must_use]
     pub fn new(section: &'static str, value: serde_yaml::Value) -> Self {
-        let paths = DOORS
+        let door = DOORS
             .iter()
             .filter_map(OnceLock::get)
-            .find(|f| f.reg.section == section)
+            .find(|f| f.reg.section == section);
+        let paths = door
             .map(|f| f.reg.secret_refs.as_slice())
             .unwrap_or_default();
         let mut refs = Vec::new();
@@ -229,10 +257,23 @@ impl DoorSection {
             let segments: Vec<&str> = rest.split('.').collect();
             collect_refs(&value, &segments, section.to_string(), &mut refs);
         }
+        let declared: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.strip_prefix("settings.").map(str::to_string))
+            .collect();
+        let undeclared = serde_json::to_value(&value).ok().and_then(|tree| {
+            busbar_contract::secret_fields::undeclared_reference(&tree, &declared).map(|at| {
+                busbar_contract::secret_fields::undeclared_refusal(
+                    &format!("{section}.{at}"),
+                    door.map_or(section, |f| f.reg.key),
+                )
+            })
+        });
         Self {
             section,
             value,
             refs,
+            undeclared,
         }
     }
 
@@ -258,6 +299,10 @@ impl PlaneCfg for DoorSection {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         // The references at the door's declared paths, so `--validate` and boot resolve each one.
         self.refs.iter().map(|(at, r)| (at.clone(), r)).collect()
+    }
+
+    fn undeclared_secret_ref(&self) -> Option<String> {
+        self.undeclared.clone()
     }
 
     fn contains_def(&self, name: &str) -> bool {
@@ -420,6 +465,12 @@ fn collect_refs(
         }
         return;
     };
+    if let (Some(items), true) = (value.as_sequence(), *head == "*") {
+        for (i, v) in items.iter().enumerate() {
+            collect_refs(v, rest, format!("{at}.{i}"), out);
+        }
+        return;
+    }
     let Some(map) = value.as_mapping() else {
         return;
     };

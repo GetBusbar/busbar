@@ -12,8 +12,8 @@ use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
     FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY,
-    VERDICT_PASS,
+    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_FROM_CREDENTIAL,
+    STYLE_ENDPOINT_TOKEN_URL, STYLE_NEEDS_HEADERS, STYLE_RANK_MASK, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
@@ -405,16 +405,26 @@ pub fn check_target(outcome: Outcome, out: &TargetOut, buf_cap: usize) -> Result
 }
 
 /// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
-/// [`STYLE_CALLER_CREDENTIAL`] flag bits, nothing else, and a valid, non-empty point set
-/// ([`check_points`]). Run by the loader when it reads a plugin's declared styles, so a plugin
-/// build with a stray or future bit, or a style that needs no point, refuses the load rather than
-/// have the host silently ignore it.
+/// [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] | [`STYLE_ENDPOINT_FROM_CREDENTIAL`]
+/// flag bits (never both endpoint bits) and a list rank ([`STYLE_RANK_MASK`]), nothing else, and a
+/// valid, non-empty point set ([`check_points`]). Run by the loader when it reads a plugin's
+/// declared styles, so a plugin build with a stray or future bit, or a style that needs no point,
+/// refuses the load rather than have the host silently ignore it.
 ///
 /// # Errors
-/// An unknown flag bit, or a point set [`check_points`] refuses.
+/// An unknown flag bit, both endpoint bits, or a point set [`check_points`] refuses.
 pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
-    if flags & !(STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL) != 0 {
+    const KNOWN: u32 = STYLE_NEEDS_HEADERS
+        | STYLE_CALLER_CREDENTIAL
+        | STYLE_ENDPOINT_TOKEN_URL
+        | STYLE_ENDPOINT_FROM_CREDENTIAL
+        | STYLE_RANK_MASK;
+    const BOTH: u32 = STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL;
+    if flags & !KNOWN != 0 {
         return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
+    }
+    if flags & BOTH == BOTH {
+        return Err(fault(Rule::Contradiction, "style.endpoints"));
     }
     check_points(points, true)
 }

@@ -9,6 +9,7 @@ use super::*;
 use crate::abi::hook::slot;
 use crate::abi::hook::validate::{check_decide, check_transform};
 use crate::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
+use crate::hook_wire::{OP_DECIDE, OP_TRANSFORM};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -764,6 +765,59 @@ fn a_validate_failure_states_its_text() {
         Outcome::Failed
     );
     assert_eq!(error_text(&out), "settings: must be a JSON object");
+}
+
+/// A hook whose `open` refuses any settings naming `"refuse"`.
+struct OpenPicky;
+impl HookOpen for OpenPicky {
+    fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
+        if settings.contains("refuse") {
+            return Err("settings: `refuse` is not a setting this hook reads".to_owned());
+        }
+        Ok(Box::new(Forward))
+    }
+}
+
+/// `validate` over `raw` for `P`'s hook, lent a reason buffer as the host's dispatcher lends every
+/// `validate` one: its outcome and, when it failed, its text.
+fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
+    let mut reason = vec![0_u8; 1024];
+    let mut input: ValidateIn = zeroed();
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    input.err_buf = reason.as_mut_ptr();
+    input.err_cap = reason.len();
+    let mut out: OutHead = zeroed();
+    let o = call::<life::Validate<HookLife<P>>>(std::ptr::null_mut(), VALIDATE, &input, &mut out);
+    let text = if o == Outcome::Ready {
+        String::new()
+    } else {
+        error_text(&out)
+    };
+    (o, text)
+}
+
+/// RED (hook ABI defect 1): `validate` refuses the settings `open` refuses, in `open`'s words, so
+/// `--validate` never passes a hook configuration that boot refuses. Before, `validate` only
+/// checked that the settings are a JSON object.
+#[test]
+fn validate_refuses_what_open_refuses() {
+    assert_eq!(
+        validated::<OpenPicky>(br#"{"refuse": true}"#),
+        (
+            Outcome::Failed,
+            "settings: `refuse` is not a setting this hook reads".to_owned()
+        )
+    );
+    assert_eq!(
+        validated::<OpenPicky>(br#"{"fine": true}"#),
+        (Outcome::Ready, String::new())
+    );
+    assert_eq!(validated::<OpenPicky>(b""), (Outcome::Ready, String::new()));
 }
 
 /// RED (ARCHITECT ruling 2026-09-29, the hooks law: memory ABI, body zero-copy): a typed hook's

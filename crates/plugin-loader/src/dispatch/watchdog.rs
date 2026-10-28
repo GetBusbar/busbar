@@ -24,7 +24,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::DeadlineClass;
 
@@ -82,14 +82,9 @@ pub(crate) fn spawn(pool: Weak<Pool>, period: Duration) {
 fn scan(pool: &Pool) {
     for (i, slot) in pool.slots.iter().enumerate() {
         let w = slot.get();
-        let hung = w
-            .crossing
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .filter(|c| c.started.elapsed() > c.budget)
-            .map(|c| c.started);
-        if let Some(started) = hung {
+        let started = w.crossing_since.load(Ordering::Acquire);
+        let budget = w.crossing_budget.load(Ordering::Relaxed);
+        if started != 0 && super::now_ns().saturating_sub(started) > budget {
             replace(pool, i, &w, started);
         }
     }
@@ -113,10 +108,10 @@ fn ticketless(pool: &Pool) {
         let fresh: Vec<u64> = inst
             .lock_calls()
             .iter()
-            .filter(|&&(id, started, s)| {
+            .filter(|&(&id, &(started, s))| {
                 id >= from && started.elapsed() > pool.env.budgets.of(s, DeadlineClass::Call)
             })
-            .map(|&(id, _, _)| id)
+            .map(|(&id, _)| id)
             .collect();
         let Some(&last) = fresh.iter().max() else {
             continue;
@@ -134,21 +129,19 @@ fn ticketless(pool: &Pool) {
     }
 }
 
-/// Replace worker `i` if it is STILL inside the crossing that began at `started`: re-checked under
-/// the state lock and the crossing lock, so a crossing that returned meanwhile is never faulted.
-fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
+/// Replace worker `i` if it is STILL inside the crossing that began at `started` (its
+/// [`super::now_ns`]): re-checked under the state lock, which the worker takes back only after it
+/// cleared the start, so a crossing that returned meanwhile is never faulted.
+fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
     let (gone, gens, breached, quarantined) = {
         let mut st = old.lock();
-        if st.dead {
+        if st.dead || old.crossing_since.load(Ordering::Acquire) != started {
             return;
         }
-        let crossing = old.crossing.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(record) = crossing.as_ref().filter(|c| c.started == started) else {
+        let Some(breached) = st.crossing.clone() else {
             return;
         };
-        let quarantined = breach(pool, &record.instance);
-        let breached = Arc::clone(&record.instance);
-        drop(crossing);
+        let quarantined = breach(pool, &breached);
         st.dead = true;
         // Every slot's next mint counter; a spent one RETIRED (`None`), never handed out again.
         let gens: Vec<Option<u32>> = st

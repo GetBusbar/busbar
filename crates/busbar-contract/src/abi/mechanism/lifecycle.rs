@@ -16,6 +16,13 @@
 //! is at slot index [`LIFECYCLE_SLOTS`]` + k`. [`OpsHead::slots`] and [`OpsHead::size`] must EQUAL
 //! the host's values for that kind's ABI version, or the load is refused.
 //!
+//! WHICH KINDS THE HOST REFRESHES. The host calls `refresh` on an `auth` and a `plane` instance,
+//! on a configuration apply. A `store`, `secret`, `hook`, `export` or `transport` instance is
+//! never refreshed: a changed configuration reaches it through a fresh instance (a reload that
+//! replaces it, or a restart), opened over the new settings. Its `refresh` slot must still be
+//! present (every slot is), and the SDK's default answers it; nothing a plugin of those kinds
+//! does in `refresh` reaches an operator.
+//!
 //! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
 //! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's
 //! table and no kind op's index moves. A plugin that must reach the network before it serves (a
@@ -25,6 +32,21 @@
 //! instance serves; FAILED or REFUSED refuses the boot with the plugin's `OutHead.error` text. A
 //! door without it (NULL, or a door whose `size` ends before it) is opened exactly as before.
 //! `ready` is a lifecycle op: it never overlaps `open`, `refresh`, `retire` or `close`.
+//!
+//! MIGRATE, THE SECOND OPTIONAL LIFECYCLE OP (owner ruling 2026-10-27: each plugin migrates its own
+//! settings; core migrates only core's own configuration). Kind-neutral, it rides the door's
+//! append-only tail ([`super::door::Door::migrate`]) after `ready`, so no table and no op index
+//! moves and a door without it loads exactly as before. `busbar --migrate-config` calls it with no
+//! instance (NULL) and [`super::ticket::Ticket::NONE`] (it may not pend), on [`ValidateIn`]:
+//! `settings` is the plugin's settings section as the operator wrote it (JSON), `head.extensions`
+//! the busbar version the configuration came from (UTF-8, [`super::call::BLOB_OCTETS`]), and
+//! `err_buf`/`err_cap` the host's buffer for the answer. On READY the plugin has written its answer
+//! into `err_buf` and names those bytes in `head.error`: one JSON object,
+//! `{"settings": <the new section>, "report": ["<what changed and why>", ...], "needs": [...]}`,
+//! where each need asks core to change a key core owns (`{"allow_destination": "<host>"}`: add the
+//! host to `advanced.allow_destinations`). FAILED or REFUSED name their reason the same way; the
+//! host then leaves the section as written and reports the reason. Plain key renames are the
+//! plugin's own too: nothing in core knows any plugin's keys.
 
 use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};
@@ -53,6 +75,9 @@ pub mod slot {
     /// `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table
     /// slot; [`InHead::op`] carries this number on its call.
     pub const READY: u32 = u32::MAX;
+    /// `migrate`: the door's optional tail op ([`super::super::door::Door::migrate`]), NOT a table
+    /// slot; [`InHead::op`] carries this number on its call.
+    pub const MIGRATE: u32 = u32::MAX - 1;
 }
 
 /// How many lifecycle slots [`OpsHead`] holds.

@@ -66,12 +66,31 @@ pub(crate) fn settings_keys(settings: &serde_json::Map<String, serde_json::Value
 /// credential there is fully supported and must not ride out on the "it isn't a map so it can't be a
 /// secret" assumption.
 pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
+    redact_settings_bags_with(v, &busbar_kernel::config::settings_public::public);
+}
+
+/// [`redact_settings_bags`] over `public` (the settings a `module:` declares public): a bag whose
+/// sibling `module` declares some of its keys public also carries `settings_public`, those keys'
+/// values alone. Every other value stays withheld: a setting is sensitive unless its plugin's
+/// settings schema declares it `x-busbar-public` (`busbar_contract::settings_public`).
+pub(crate) fn redact_settings_bags_with(
+    v: &mut serde_json::Value,
+    public: &dyn Fn(&str) -> std::collections::BTreeSet<String>,
+) {
     match v {
         serde_json::Value::Object(map) => {
             if let Some(bag) = map.remove("settings") {
-                let keys = match bag {
-                    serde_json::Value::Object(o) => settings_keys(&o),
-                    _ => Vec::new(),
+                let module = map
+                    .get("module")
+                    .and_then(serde_json::Value::as_str)
+                    .map(public)
+                    .unwrap_or_default();
+                let (keys, shown) = match bag {
+                    serde_json::Value::Object(o) => (
+                        settings_keys(&o),
+                        busbar_contract::settings_public::public_view(&o, &module),
+                    ),
+                    _ => (Vec::new(), serde_json::Map::new()),
                 };
                 map.insert(
                     "settings_keys".to_string(),
@@ -79,14 +98,22 @@ pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
                         keys.into_iter().map(serde_json::Value::String).collect(),
                     ),
                 );
+                if !shown.is_empty() {
+                    map.insert(
+                        "settings_public".to_string(),
+                        serde_json::Value::Object(shown),
+                    );
+                }
             }
-            for (_, child) in map.iter_mut() {
-                redact_settings_bags(child);
+            for (key, child) in map.iter_mut() {
+                if key != "settings_public" {
+                    redact_settings_bags_with(child, public);
+                }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                redact_settings_bags(item);
+                redact_settings_bags_with(item, public);
             }
         }
         _ => {}
@@ -273,8 +300,11 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
 /// the latest `priced_from_ms` among this key's rows on this lane that is not after the epoch
 /// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
 /// its `was` — so it is the unit's latest counts minus what it recorded.
+///
+/// `corrections` is the row's own share — the usage read indexes the node's list by (key, lane)
+/// once and hands each row only what can land on it; every condition is still checked here.
 pub fn row_count_corrections(
-    corrections: &[amend::Amendment],
+    corrections: &[&amend::Amendment],
     key_id: &str,
     lane: &str,
     window: (u64, u64),

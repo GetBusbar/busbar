@@ -1253,6 +1253,7 @@ impl EgressFarEnd<'_> {
                 true
             }
         });
+        busbar_kernel_egress::upstream::apply_upstream_encoding(&mut request.fields);
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
         // EVERY ATTEMPT THAT LEAVES NOTHING ON THE WIRE says why (`State::unsent`): the walk's
         // exhausted refused piece names it, so the plane can tell a hop that never left from one
@@ -1407,8 +1408,13 @@ impl EgressFarEnd<'_> {
                 target: &url,
                 fields: &borrowed,
                 // A TEXT message rides no opening: the connection opens bare and the message is
-                // written to it as text once open (the opening carries no text bit).
-                body: if request.text { &[] } else { &request.body },
+                // written to it as text once open (the opening carries no text bit). Any other body
+                // is frozen here, once: the connector keeps it without a copy.
+                body: if request.text {
+                    bytes::Bytes::new()
+                } else {
+                    std::mem::take(&mut request.body).into()
+                },
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
@@ -2043,7 +2049,10 @@ impl FarEnd for EgressFarEnd<'_> {
             .filter(|l| l.degraded)
             .map(|l| l.member.destination.get());
         match lane {
+            // 1.5.5's target: `forward_once` was a `#[tracing::instrument]` in
+            // `proxy::engine::walk`.
             Some(lane) => tracing::span!(
+                target: "busbar::proxy::engine::walk",
                 crate::observability::HOTPATH_LEVEL,
                 "forward_once",
                 lane = lane

@@ -48,6 +48,7 @@ const CHILD: &str = "BUSBAR_CAP_PERF_STREAMS_2000_CHILD";
 #[test]
 fn cap_perf_streams_2000() {
     if std::env::var_os(CHILD).is_some() {
+        cap_perf_streams_2000_body();
         return;
     }
     let exe = std::env::current_exe().expect("the test binary");
@@ -57,7 +58,7 @@ fn cap_perf_streams_2000() {
          if [ \"$n\" != unlimited ] && [ \"$n\" -lt {need} ]; then \
            echo \"cap.perf.streams-2000: this host allows $n open files, the cell needs {need}\" >&2; exit 3; \
          fi; \
-         exec \"$0\" --exact cap_perf_streams_2000_body --ignored --nocapture",
+         exec \"$0\" --exact cap_perf_streams_2000 --nocapture",
         need = STREAMS * 2 + 512
     );
     let out = Command::new("sh")
@@ -79,14 +80,8 @@ fn cap_perf_streams_2000() {
     );
 }
 
-/// The cell's body, run by [`cap_perf_streams_2000`] under the raised limit.
-#[test]
-#[ignore = "run by cap_perf_streams_2000 under a raised open-files limit"]
+/// The cell's body, run by [`cap_perf_streams_2000`] in its re-run under the raised limit.
 fn cap_perf_streams_2000_body() {
-    assert!(
-        std::env::var_os(CHILD).is_some(),
-        "run through cap_perf_streams_2000, which raises the open-files limit first"
-    );
     let dir = fixture_dir();
     let upstream = Upstream::spawn();
     let data_port = common::boot::free_port();

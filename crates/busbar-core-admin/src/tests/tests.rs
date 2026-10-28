@@ -17,7 +17,23 @@ const OAS_OPERATION_STATUSES: &str =
 /// of a 409 "signed-token minting is unavailable". Every admin test that mints (directly or over
 /// HTTP) builds its gov through this so the signer is always present; a read-only test could stay on
 /// `GovState::new`, but giving them all a signer keeps the fixtures uniform and future-proof.
+///
+/// It carries an at-rest key (`credentials.at_rest`) too, so a recoverable credential can be minted;
+/// [`gov_without_at_rest_key`] is the node that configures none.
 fn gov_with_signer(
+    store: Arc<dyn busbar_kernel::governance::RecordStore>,
+    admin_token: Option<String>,
+) -> Arc<GovState> {
+    let gov = gov_without_at_rest_key(store, admin_token);
+    gov.set_at_rest_keys(Some(busbar_kernel::governance::at_rest::AtRestKeys::new(
+        &[3u8; 32], None,
+    )));
+    gov
+}
+
+/// [`gov_with_signer`] with no `credentials.at_rest`: it mints bearer keys, and refuses a recoverable
+/// credential.
+fn gov_without_at_rest_key(
     store: Arc<dyn busbar_kernel::governance::RecordStore>,
     admin_token: Option<String>,
 ) -> Arc<GovState> {
@@ -957,7 +973,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
+            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -1038,7 +1054,6 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -1917,7 +1932,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let (addr, handle, client) = spin_up(router).await;
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
+            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -4916,6 +4931,63 @@ async fn test_admin_v1_all_reads_require_admin_token() {
         );
     }
 
+    handle.abort();
+}
+
+/// RED before the dedicated at-rest key: the credential was sealed under the signing key, so a node
+/// with a signing key minted it. Now a node with no `credentials.at_rest` refuses `POST /keys
+/// {"issue_aws_credential": true}` with a 409 that says what to configure, writes nothing, and
+/// audits the refusal; a bearer-only mint is unaffected.
+#[tokio::test]
+async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_without_at_rest_key(store.clone(), Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
+        .first()
+        .map(|e| e.seq)
+        .unwrap_or(0);
+
+    let refused = client
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "no-at-rest", "issue_aws_credential": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 409);
+    let body: serde_json::Value = refused.json().await.unwrap();
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert_eq!(
+        message,
+        busbar_kernel::governance::at_rest::NO_KEY_REFUSAL,
+        "{body}"
+    );
+    assert!(message.contains("credentials.at_rest.key"), "{body}");
+    use busbar_kernel::governance::RecordStore as _;
+    assert!(store.list_keys().unwrap().is_empty(), "a key was written");
+    assert!(store.list_credentials_since(0).unwrap().is_empty());
+    assert!(
+        busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("key:-"))
+            .into_iter()
+            .any(|e| e.seq > baseline_seq
+                && e.action == "key.create"
+                && e.outcome == audit_ring::OUTCOME_REJECTED),
+        "the refusal is audited"
+    );
+
+    let plain = client
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "bearer-only"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.status().as_u16(), 201);
     handle.abort();
 }
 
@@ -8280,7 +8352,6 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -9585,7 +9656,6 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -10786,4 +10856,114 @@ fn auth_modules_list_inbound_rows_only() {
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),
         vec!["inbound-row"]
     );
+}
+
+/// Rotate one existing key as a delegated `app-admin` whose role mint ceiling allows only
+/// `pool-ok`: the key is minted straight into the store bound to `bound_pools`, then `POST
+/// /keys/{id}/rotate` runs through the real handler. Returns the HTTP status, the response body,
+/// and whether the key's credential generation moved (the old token died).
+async fn rotate_under_a_pool_ceiling(
+    bound_pools: Option<Vec<String>>,
+) -> (u16, serde_json::Value, bool) {
+    busbar_kernel::snapshot::init();
+    let principal = busbar_kernel::auth::Principal {
+        id: "delegated-admin".to_string(),
+        name: None,
+        roles: vec!["app-admin".to_string()],
+        ttl_secs: None,
+    };
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (key, _token) = gov
+        .create_key(
+            NewKeySpec {
+                name: "svc".to_string(),
+                allowed_pools: bound_pools,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        busbar_kernel::governance::mint_policy::RoleCeiling {
+            max_ttl_secs: None,
+            allowed_pools: Some(vec!["pool-ok".to_string()]),
+            binding_modes: None,
+        },
+    );
+    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
+        self_mint: None,
+        block_max_ttl_secs: None,
+        block_binding_modes: None,
+        ceilings,
+    };
+    let app = crate::new_test_app()
+        .governance(gov.clone())
+        .mint_policy(policy)
+        .build();
+    let before = gov
+        .store()
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .generation_hash;
+    let resp = super::rotate_key(
+        busbar_kernel::state::CurrentApp(app),
+        axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal))),
+        axum::extract::Path(key.id.clone()),
+        axum::http::HeaderMap::new(),
+        axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
+    )
+    .await;
+    let status = resp.status().as_u16();
+    use http_body_util::BodyExt;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let after = gov
+        .store()
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .generation_hash;
+    (status, body, before != after)
+}
+
+/// THE ROLE MINT CEILING HOLDS ON ROTATION (`auth.policy.mint_ceilings.<role>.allowed_pools`). A
+/// rotate re-mints the key's token, so it hands the caller a working credential for every pool the
+/// key is bound to — a mint, judged by the mint's ceiling. A delegated app-admin limited to
+/// `pool-ok` must not obtain an ALL-pools credential by rotating an all-pools key it could never
+/// have minted.
+///
+/// RED while rotate asked the ceiling about no pools at all (`requested_pools: Some(&[])`): the
+/// over-ceiling rotate answered 200 with a fresh all-pools token, and the key's legitimate holder
+/// lost theirs.
+#[tokio::test]
+async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
+    let (status, body, moved) = rotate_under_a_pool_ceiling(None).await;
+    assert_eq!(
+        status, 400,
+        "rotating an all-pools key past the role's pool ceiling must be refused: {body}"
+    );
+    assert_eq!(body["error"]["code"], "invalid_request", "{body}");
+    assert!(
+        body.get("token").is_none(),
+        "a refused rotate shows no token"
+    );
+    assert!(
+        !moved,
+        "a refused rotate leaves the key's credential as it was"
+    );
+}
+
+/// GREEN twin: a key bound inside the ceiling still rotates for the same delegated admin — a fresh
+/// token, the old generation retired.
+#[tokio::test]
+async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
+    let (status, body, moved) =
+        rotate_under_a_pool_ceiling(Some(vec!["pool-ok".to_string()])).await;
+    assert_eq!(status, 200, "an in-ceiling rotate answers: {body}");
+    assert!(body["token"].is_string(), "{body}");
+    assert!(moved, "the rotate retired the previous generation");
 }

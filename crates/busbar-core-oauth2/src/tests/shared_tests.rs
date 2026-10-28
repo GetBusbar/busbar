@@ -15,12 +15,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::sdk::store::{Cap, Cell, Grant};
 use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::{Head, RecordBytes};
-use busbar_contract::records::{
-    AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta,
-};
+use busbar_contract::kinds::RecordBytes;
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 use oauth_as::store::Storage as _;
 
@@ -137,17 +134,6 @@ fn not_this<'a, T: Send + 'a>() -> StoreCall<'a, T> {
 }
 
 impl StoreCalls for OneStore {
-    fn reserve<'a>(&'a self, _: OpId, _: u64, _: &'a [Cell<'a>]) -> StoreCall<'a, Vec<Grant>> {
-        not_this()
-    }
-    fn slice_release<'a>(
-        &'a self,
-        _: OpId,
-        _: u64,
-        _: &'a [(u64, u64)],
-    ) -> StoreCall<'a, Vec<u64>> {
-        not_this()
-    }
     fn add_usage_batch<'a>(
         &'a self,
         _: OpId,
@@ -156,32 +142,6 @@ impl StoreCalls for OneStore {
         not_this()
     }
     fn add_metering_batch<'a>(&'a self, _: OpId, _: &'a [MeteringDelta]) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn append_audit_batch<'a>(&'a self, _: OpId, _: &'a [AuditRecord]) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn window_caps<'a>(&'a self, _: OpId, _: &'a [Cap<'a>]) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn append_batch<'a>(
-        &'a self,
-        _: OpId,
-        _: &'a str,
-        _: &'a [RecordBytes],
-    ) -> StoreCall<'a, Head> {
-        not_this()
-    }
-    fn heads(&self) -> StoreCall<'_, Vec<(String, Head)>> {
-        not_this()
-    }
-    fn session_put<'a>(&'a self, _: u64, _: &'a str, _: &'a str) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn session_remove(&self, _: u64) -> StoreCall<'_, ()> {
-        not_this()
-    }
-    fn sessions_for<'a>(&'a self, _: &'a str) -> StoreCall<'a, Vec<(u64, String)>> {
         not_this()
     }
     fn record_put<'a>(&'a self, _: &'a str, _: &'a [u8], _: &'a RecordBytes) -> StoreCall<'a, ()> {
@@ -809,7 +769,7 @@ fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCo
     )
 }
 
-/// RED (row 159): a cell the sweep retired never blocks the cell made again under its id. The sweep
+/// A cell the sweep retired never blocks the cell made again under its id. The sweep
 /// retires an emptied bucket at version 2 under the claim on version 3, which stands for two
 /// minutes; a client whose records come back inside them climbs to version 3 again. Before the fix
 /// that write lost the retirement's claim on every attempt and answered a storage error (a login
@@ -861,7 +821,7 @@ async fn a_retired_cell_never_blocks_its_own_recreation() {
     );
 }
 
-/// RED (row 159): with the store, a second answer to one request on one session is spent, once, as
+/// With the store, a second answer to one request on one session is spent, once, as
 /// the in-process table spends it. Before the fix the spend claim named only the session and the
 /// request, so it stood from the first answer's spend and a second answer could never be spent:
 /// `/authorize` sent the operator back to the consent screen for the session's life.
@@ -898,7 +858,7 @@ async fn a_second_answer_on_one_session_is_spent_once() {
     );
 }
 
-/// RED (row 159): in the deployment's store, a self-registered client whose bucket has held nothing
+/// In the deployment's store, a self-registered client whose bucket has held nothing
 /// for the idle period is reclaimed by the sweep, bucket and all. Before the fix a bucket holding a
 /// client never held nothing, so it was kept for good.
 #[tokio::test]
@@ -984,7 +944,7 @@ fn names(store: &OneStore, name: &str, word: &str) -> bool {
         .any(|(_, (_, body))| body.windows(word.len()).any(|w| w == word.as_bytes()))
 }
 
-/// RED (audit core-oauth2 #4): a subject's index entry for a client is reclaimed once that client
+/// A subject's index entry for a client is reclaimed once that client
 /// no longer holds a consent of the subject, and only then; once no client holds one, nothing of
 /// the subject's index is left. Two clients hold `alice`'s consent; one is withdrawn, then the
 /// other. Before the fix every subject index row was kept forever.

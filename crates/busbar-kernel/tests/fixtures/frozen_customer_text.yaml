@@ -14,10 +14,10 @@ renamed_module_1_5_3: valkey
 durable_store_advice: Configure a durable store plugin.
 # The persisted credential `kind` of a row-looked-up (AccessKeyId) signed-ingress credential.
 signed_credential_kind: sigv4
-# THE ROOT LEGACY TABLE's rows, as a test build stands them in (`config::legacy::rows`, no root to hand
+# THE ROOT MIGRATION TABLE's rows, as a test build stands them in (`config::migration_table::rows`, no root to hand
 # them in): the same rows plugins.yaml renders into the root manifest's
-# `[package.metadata.busbar.legacy]`; the root's tests hold the two equal.
-legacy_rows:
+# `[package.metadata.busbar.migration]`; the root's tests hold the two equal.
+migration_rows:
   export_module_streams: "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
   export_modules: "prometheus | request-log-webhook | request-log-file | otlp"
   export_trace_instance: "traces"

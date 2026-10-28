@@ -11,7 +11,7 @@ use std::process::Command;
 
 use busbar_contract::abi::hook::{Tail, CLASS_GATE, PROMPT_RW, USER_RO};
 use busbar_contract::abi::host::conn::connector::{
-    Need, DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, KEEP_NAMED,
+    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::Statement;
@@ -25,7 +25,8 @@ const NONE: AbiStr = AbiStr {
 
 const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
-    egress_class: EGRESS_LOOPBACK_ALLOWED,
+    // The one class the loader grants a first-party plugin only (sign.rs FIRST_PARTY_EGRESS).
+    egress_class: EGRESS_PROVIDER,
     transport: abi_str("http"),
     auth: NONE,
     target_from: NONE,
@@ -107,7 +108,7 @@ fn the_signing_gates_reader_reads_a_tailed_statement_that_declares_secret_fields
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "http\tloopback-allowed\n",
+        "http\tprovider\n",
         "the gate reads the first-party need"
     );
 }
