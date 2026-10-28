@@ -447,6 +447,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -674,6 +675,14 @@ dependencies = [
  "busbar-contract",
  "ring",
  "serde",
+]
+
+[[package]]
+name = "busbar-kernel-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-kernel",
 ]
 
 [[package]]

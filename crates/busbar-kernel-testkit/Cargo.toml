@@ -1,0 +1,19 @@
+# busbar-kernel-testkit: the kernel's test fixtures for the crates that test against it (core-admin,
+# oauth2, connector, the composition root and the default distribution), written on the kernel's
+# pub API. A dev-dependency only: no busbar build links it. The kernel's own unit tests mount the same
+# source files (`#[path]`), so a fixture is written once.
+[package]
+name = "busbar-kernel-testkit"
+version = "1.6.0"
+publish = false            # internal workspace crate
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar kernel's test fixtures, on the kernel's pub API."
+license = "Apache-2.0"
+
+[lib]
+test = false
+
+[dependencies]
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+busbar-contract = { path = "../busbar-contract" }

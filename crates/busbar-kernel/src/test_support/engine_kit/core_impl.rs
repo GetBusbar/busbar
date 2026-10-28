@@ -356,9 +356,9 @@ impl EngineApp for crate::state::App {
         self.plane_breakers.reset(key);
     }
     fn data_route_paths(&self) -> Vec<String> {
-        crate::base_data_route_table_view(self)
+        crate::base_data_core_lines(self)
             .into_iter()
-            .map(|(path, _auth)| path)
+            .map(|(path, _method, _auth)| path)
             .collect()
     }
 }

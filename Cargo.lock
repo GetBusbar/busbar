@@ -387,6 +387,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-testkit",
  "bytes",
  "futures",
  "http",
@@ -502,6 +503,14 @@ dependencies = [
  "ring",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "busbar-kernel-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-kernel",
 ]
 
 [[package]]
