@@ -456,13 +456,15 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 /// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its
 /// credential headers indexable, so the 1.5.5 styles do NOT set it (ARCHITECT ruling 2026-09-28:
 /// the 1.5.5 bytes win); marking them is a behaviour change taken only with the owner. Set or not,
-/// the whole field buffer is never logged and is zeroised after encode.
+/// the field is treated as sensitive everywhere else: the whole field buffer is never logged, no
+/// value is printed, and it is zeroised after encode (an undeclared sensitivity is sensitive, owner
+/// ruling 2026-10-27).
 pub const FIELD_SENSITIVE: u32 = 1;
 /// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
 /// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
 /// after any query the target already has, in the order written) and never sends it as a header.
 /// The plane never sees it, and every target the host logs, reports in an error or labels a metric
-/// with has its value redacted (the egress seam's `query_auth`). Optional: a style that presents
+/// with has its value redacted. Optional: a style that presents
 /// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
 pub const FIELD_QUERY: u32 = 2;
 

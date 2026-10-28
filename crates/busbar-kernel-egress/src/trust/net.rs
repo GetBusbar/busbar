@@ -4,7 +4,7 @@
 //! The network guard: what a destination may be dialled.
 //!
 //! This file holds the URL readers the kernel's own dials use ([`split_url`] and the userinfo
-//! helpers) and the configuration-time denylist ([`ssrf_blocked_host`], [`Denylist`]). The judgement
+//! helpers) and the configuration-time denylist ([`ssrf_blocked_host`]). The judgement
 //! a plugin's dial asks through `dest.judge` is the connector's destination guard
 //! (`busbar-core-connector` `guard.rs`), built on the same `busbar_contract::net` readers; this
 //! file keeps no second copy of it.
@@ -326,8 +326,6 @@ pub fn ssrf_blocked_host(
     allow_all: bool,
     extra_blocked: &[String],
 ) -> Option<String> {
-    // The one-shot spelling: a caller holding raw entries pays the canonicalization here. A caller
-    // that dials repeatedly states its lists once, as a [`Denylist`], and pays it never again.
     if allow_all {
         return None;
     }
@@ -419,72 +417,4 @@ fn judge_against_lists(
     };
 
     is_blocked.then(|| host.to_string())
-}
-
-//   THE CHECK OVER A SEALED DESTINATION, run once, before anything is dialled.
-
-/// The operator's own additions to, and carve-outs from, the metadata denylist.
-///
-/// The precedence is the locked one-rule matrix, and it is the reason this is one value rather than
-/// three arguments a caller assembles: a host is blocked IFF `!allow_all` AND on-denylist (the
-/// hardcoded set union `blocked`) AND NOT in `allowed`. Allow always wins over block, and
-/// `allow_all` wins over both — an operator who has disabled the guard has disabled it, and a guard
-/// that half-applied would be worse than either answer.
-///
-/// The two lists are held canonicalized rather than as the strings an operator wrote, and that is
-/// why they are stated once through [`Denylist::new`] rather than assigned field by field: trimming
-/// an entry, dropping its trailing FQDN dot and parsing the IP literals among them does not depend
-/// on the host being judged, so a dial that re-did it was paying for a deployment's configuration
-/// on the request path. A field a caller could edit afterwards would be a second, stale answer.
-#[derive(Debug, Default, Clone)]
-pub struct Denylist {
-    /// Operator additions to the denylist: the answer to an unknown cloud's metadata address.
-    blocked: HostSet,
-    /// Surgical carve-outs. An IP entry unblocks every spelling of that address, the same way a
-    /// block entry blocks every spelling of one.
-    allowed: HostSet,
-    /// The nuclear override. When set, the metadata guard is off wholesale.
-    allow_all: bool,
-}
-
-impl Denylist {
-    /// State a deployment's additions, carve-outs and override, canonicalizing both lists once.
-    ///
-    /// `blocked` is `security.blocked_metadata_hosts`, `allowed` is the union of a destination's
-    /// `allow_metadata_hosts` and the global one, and `allow_all` is `security.allow_all_metadata`.
-    #[must_use]
-    pub fn new(blocked: &[String], allowed: &[String], allow_all: bool) -> Self {
-        Denylist {
-            blocked: HostSet::parse(blocked),
-            allowed: HostSet::parse(allowed),
-            allow_all,
-        }
-    }
-
-    /// Whether the guard is off wholesale, for a caller reporting what it is running under.
-    #[must_use]
-    pub fn allows_all(&self) -> bool {
-        self.allow_all
-    }
-
-    /// THE SAME RULE, ASKED OF AN ADDRESS A NAME RESOLVED TO. The configuration-time check reads the
-    /// host the operator wrote; a name is free to resolve somewhere else when it is dialled, so the
-    /// dial asks this of every address the name answered with. An address is refused when it is a
-    /// cloud-metadata address or an operator-blocked one, unless the name or the address is carved
-    /// out, or the guard is off. Private and loopback addresses pass, exactly as they pass at
-    /// configuration time.
-    #[must_use]
-    pub fn refuses_address(&self, host: &str, addr: IpAddr) -> bool {
-        let literal = addr.to_string();
-        self.lists(host, addr)
-            && !(self.allow_all || self.allowed.matches(host) || self.allowed.matches(&literal))
-    }
-
-    /// Whether `addr` is on the list at all, override or not: a cloud-metadata address, or one the
-    /// operator blocked (by address, or by the name that answered it).
-    fn lists(&self, host: &str, addr: IpAddr) -> bool {
-        ip_is_cloud_metadata(&addr)
-            || self.blocked.matches(&addr.to_string())
-            || self.blocked.matches(host)
-    }
 }
