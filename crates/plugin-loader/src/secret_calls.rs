@@ -407,11 +407,6 @@ impl std::fmt::Debug for SecretRows {
     }
 }
 
-/// Whether config names `c` by `word` (its name or an alias).
-fn answers(c: &Candidate, word: &str) -> bool {
-    c.name == word || c.aliases.iter().any(|a| a == word)
-}
-
 impl SecretRows {
     /// No rows yet; every instance opens on the dispatcher `dispatcher` answers, asked for at the
     /// first open (so the rows can be built before the process dispatcher is), its needs declared on
@@ -514,11 +509,7 @@ impl SecretRows {
         former_of: impl Fn(&str) -> Vec<String>,
     ) -> Result<&mut Self, String> {
         for c in &mut self.linked {
-            let words: Vec<String> = std::iter::once(c.name.clone())
-                .chain(c.aliases.iter().cloned())
-                .flat_map(|w| former_of(&w))
-                .collect();
-            *c = c.clone().answering(words);
+            *c = c.clone().answering_former(&former_of);
         }
         crate::boot::one_owner(&self.linked)?;
         Ok(self)
@@ -585,14 +576,14 @@ impl SecretRows {
     fn find(&self, module: &str) -> Option<Candidate> {
         self.linked
             .iter()
-            .find(|c| answers(c, module))
+            .find(|c| c.answers(module))
             .cloned()
             .or_else(|| {
                 self.dropped
                     .read()
                     .unwrap_or_else(PoisonError::into_inner)
                     .iter()
-                    .find(|c| answers(c, module))
+                    .find(|c| c.answers(module))
                     .cloned()
             })
     }
@@ -662,14 +653,14 @@ impl SecretAxis for SecretRows {
     }
 
     fn linked(&self, module: &str) -> bool {
-        self.linked.iter().any(|c| answers(c, module))
+        self.linked.iter().any(|c| c.answers(module))
     }
 
     fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .linked
             .iter()
-            .find(|c| answers(c, module))
+            .find(|c| c.answers(module))
             .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
         // Bound and opened with the map's lock let go (THE DESIGN §11.13 M1).
         let label = Self::label(module);

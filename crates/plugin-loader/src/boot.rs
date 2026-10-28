@@ -357,8 +357,17 @@ impl Candidate {
     }
 
     /// Whether config names this plugin by `word` (its name or an alias).
-    fn answers(&self, word: &str) -> bool {
+    pub(crate) fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
+    }
+
+    /// This candidate, answering also to the former names `former_of` gives for any of its words
+    /// (its name or an alias): a LINKED row's earlier releases' names, as a dropped-in copy states
+    /// them in its signed manifest (compiled in = dropped in).
+    #[must_use]
+    pub(crate) fn answering_former(self, former_of: impl Fn(&str) -> Vec<String>) -> Self {
+        let words: Vec<String> = self.words().flat_map(former_of).collect();
+        self.answering(words)
     }
 
     /// LAW 7 FOR A TRANSPORT, off its Statement alone (nothing is opened): a URL scheme the

@@ -812,7 +812,7 @@ fn claims(c: &Candidate, word: &str) -> bool {
 /// Statement alias, the manifest alias, a former name) or one of the hook words its Statement claims.
 /// The ONE rule [`HookRows`] finds a row by.
 fn answers(c: &Candidate, module: &str) -> bool {
-    c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
+    c.answers(module) || claims(c, module)
 }
 
 /// Whether a DROPPED-IN `kind: hook` row of `registry` answers `module` by the rule the hook axis
@@ -912,11 +912,7 @@ impl HookRows {
     ) -> Result<Self, String> {
         for c in &mut self.candidates {
             if matches!(c.origin, Origin::Linked(_)) {
-                let words: Vec<String> = std::iter::once(c.name.clone())
-                    .chain(c.aliases.iter().cloned())
-                    .flat_map(|w| former_of(&w))
-                    .collect();
-                *c = c.clone().answering(words);
+                *c = c.clone().answering_former(&former_of);
             }
         }
         crate::boot::one_owner(&self.candidates)?;
