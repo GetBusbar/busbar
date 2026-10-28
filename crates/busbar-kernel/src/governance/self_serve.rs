@@ -90,7 +90,7 @@ impl GovState {
     /// TEST-ONLY: hold an admin's state and the minting provider across a self-serve login, as the
     /// signed rule would ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]), so the rule stays tested
     /// while it waits behind its const.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn hold_self_mint_state(&self) {
         self.self_mint_holds
             .store(true, std::sync::atomic::Ordering::Relaxed);

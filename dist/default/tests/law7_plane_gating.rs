@@ -14,7 +14,7 @@
 
 mod linked;
 
-use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static HYDRATED: AtomicUsize = AtomicUsize::new(0);
