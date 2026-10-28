@@ -1,35 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-kernel-scope — the APPROVE step's scope half
-//!
-//! The kernel loop's approve step asks one question: does the principal hold enough scope for what
-//! this operation needs? This crate is that question for the admin API: a small, pure data model
-//! with no I/O, no wire format and no store, so it can be proven correct on its own.
-//!
-//! ## What is in here
-//!
-//! - [`Scope`] and [`Grants`] — the two-rung authorization chain and the set a principal holds,
-//!   re-exported from their one home, `busbar_contract::authz`.
-//! - [`admin_required_scope`] — THE admin-API scope matrix: derived from HTTP method and path alone
-//!   (never the request body, so a crafted request cannot escalate). It is the only copy: the
-//!   kernel's admin gate and the root's approve step both call it.
-//! - The 66 operations that matrix was mechanically extracted from at the 1.5.5 tag are the
-//!   oracle corpus's DATA (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`, each operation's
-//!   `x-busbar-required-scope`): the rule above is proven against every one of them, read from the
-//!   1.5.5 document itself, instead of a hand-picked sample or a second copy here.
+//! The admin-API scope matrix: the scope an admin request needs, from method and path alone.
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
-/// The two-rung authorization chain and a principal's grant set, from their one home.
-pub use busbar_contract::authz::{Grants, Scope};
-
-/// The frozen Admin API v1 path prefix every admin operation is mounted under.
-///
-/// The contract's own, re-exported: the prefix is closed structure of the node's surface, and every
-/// crate that has to name it names one literal.
-pub use busbar_contract::surface::ADMIN_PREFIX;
+use busbar_contract::authz::Scope;
+use busbar_contract::surface::ADMIN_PREFIX;
 
 /// `POST /config/validate` and `POST /plugins/inspect` — stateless dry-runs (reads in POST
 /// clothing: the body is the config to lint / tarball to preview) that stay `read-only` although
