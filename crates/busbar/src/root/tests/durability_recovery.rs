@@ -15,7 +15,7 @@ use super::*;
 use crate::root::durability::{build_on_store, DurabilityConfig, JournalLane};
 use busbar_contract::caps::AdminVerb;
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
-use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
+use busbar_kernel_seams::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 
 /// The store's label, as the configuration names it.
 const STORE: &str = "configured";

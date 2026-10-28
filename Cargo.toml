@@ -15,6 +15,7 @@ members = [
     "crates/busbar-kernel-breaker",
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
+    "crates/busbar-kernel-seams",
     "crates/plugin-loader",
     "crates/busbar-test-kit",
     "crates/plugin-loader/stubs/*/logic",

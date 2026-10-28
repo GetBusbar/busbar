@@ -19,6 +19,8 @@
 
 use busbar_contract::caps::*;
 
+use crate::canary::Canary;
+
 fn seal() -> KernelSeal {
     KernelSeal::acquire_for_kernel()
 }
@@ -227,4 +229,30 @@ fn a_durability_loss_names_the_step_the_write_was_attempted_at() {
     let at_route = DurabilityLost::observed(&Grant::<DurableWrite>::mint(&k), StepName::Route);
     assert_eq!(at_route.step(), StepName::Route);
     assert_ne!(lost, at_route);
+}
+
+#[test]
+fn a_broken_canary_prints_all_four_counts_and_says_which_side_is_short() {
+    // The canary's whole value is arithmetic nobody can reconstruct from a boolean. Its rendering is
+    // the evidence: four numbers, in the shape the invariant is stated in.
+    let canary = Canary::new();
+    for _ in 0..5 {
+        canary.draft_accepted();
+    }
+    canary.hold_opened();
+    canary.hold_opened();
+    canary.accrual_taken();
+    canary.settled();
+
+    let broken = canary.balanced().expect_err("five drafts, three openings");
+    let printed = broken.to_string();
+    assert!(printed.contains("canary broken"), "{printed}");
+    assert!(printed.contains("5 drafts"), "{printed}");
+    assert!(printed.contains("2 holds"), "{printed}");
+    assert!(printed.contains("1 accruals"), "{printed}");
+    assert!(printed.contains("1 settlements"), "{printed}");
+
+    let as_error: &dyn std::error::Error = &broken;
+    assert_eq!(as_error.to_string(), printed);
+    assert_eq!(broken, canary.counts(), "the break IS the counts");
 }

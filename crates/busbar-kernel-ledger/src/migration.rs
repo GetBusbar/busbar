@@ -83,7 +83,7 @@ pub const OPENING_CHECKPOINT_SEQ: u64 = 0;
 
 /// The figures the migration reads, the seams it reads them through and the marker it seals: the
 /// contract's, because the store adapter implements the seams on the other side of it.
-pub use busbar_contract::migration::{
+pub use busbar_kernel_seams::migration::{
     MigrationCapDimension, MigrationError, MigrationFamily, MigrationFigure, MigrationFigures,
     MigrationHead, MigrationLedgerRows, MigrationMarker, MigrationRecords, MigrationSource,
 };

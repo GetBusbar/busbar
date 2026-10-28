@@ -18,8 +18,9 @@
 //! ([`crate::host_services::KernelServices::flushes`]) beats it ([`beat`]) and runs what each beat
 //! answers. The clock holds the work WEAKLY, so letting the work go is the whole of stopping it.
 
+use crate::canary::Canary;
 use busbar_contract::caps::{
-    Audit, Canary, Consumption, Exit, Grant, Outcome, Pass, Posted, PostingFlags, QuantitySource,
+    Audit, Consumption, Exit, Grant, Outcome, Pass, Posted, PostingFlags, QuantitySource,
     ReasonCode, StepName, UnitEnd, Usage, UsageLine, WriteMoney,
 };
 

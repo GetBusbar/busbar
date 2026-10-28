@@ -712,11 +712,11 @@ fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
 #[derive(Default)]
 struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
 
-impl busbar_contract::verb_store::Store for ReplaySlots {
+impl busbar_kernel_seams::verb_store::Store for ReplaySlots {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 
@@ -724,21 +724,21 @@ impl busbar_contract::verb_store::Store for ReplaySlots {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 
     fn reseal_epoch_floor(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 
     fn replay_new_verb(
         &self,
         key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+    ) -> Result<Option<Vec<u8>>, busbar_kernel_seams::verb_store::StoreError> {
         Ok(self
             .0
             .lock()
@@ -751,7 +751,7 @@ impl busbar_contract::verb_store::Store for ReplaySlots {
         &self,
         key: &(String, String),
         response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.0
             .lock()
             .expect("no test panics under this lock")
@@ -765,7 +765,7 @@ impl busbar_contract::verb_store::Store for ReplaySlots {
 /// identity.
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
-    use busbar_contract::verb_store::Store;
+    use busbar_kernel_seams::verb_store::Store;
 
     let answer = AdminAnswer {
         status: 201,
@@ -1433,42 +1433,42 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     #[derive(Debug, Default)]
     struct RecordingStore(Mutex<Vec<String>>);
 
-    impl busbar_contract::verb_store::Store for RecordingStore {
+    impl busbar_kernel_seams::verb_store::Store for RecordingStore {
         fn chain_break(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
 
         fn store_restore(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
             backup_ref: &str,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
 
         fn reseal_epoch_floor(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push("reseal_epoch_floor".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
 
         fn replay_new_verb(
             &self,
             _key: &(String, String),
-        ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+        ) -> Result<Option<Vec<u8>>, busbar_kernel_seams::verb_store::StoreError> {
             Ok(None)
         }
 
@@ -1476,7 +1476,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &self,
             _key: &(String, String),
             _response: &[u8],
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             Ok(())
         }
     }
@@ -1518,7 +1518,10 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
 
         let outcome = route(
             &binding,
-            Some(Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>),
+            Some(Arc::clone(&store)
+                as Arc<
+                    dyn busbar_kernel_seams::verb_store::Store + Send + Sync,
+                >),
             &admin,
             &mut walk,
         );
@@ -2996,7 +2999,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
-            None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
+            None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -3028,7 +3031,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
-        None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
+        None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );

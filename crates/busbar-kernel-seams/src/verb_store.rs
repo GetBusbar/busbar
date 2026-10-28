@@ -3,18 +3,17 @@
 
 //! The kernel-verb store face and the idempotency replay window.
 //!
-//! This is the ABI face the admin verb-execution unit (which owns the verb *semantics*) and a
-//! loaded store's adapter both bind to. It lives on the contract — the ONE ABI crate, DECISIONS
-//! #38 — so the two sides reach one face here rather than naming each other's crate (DECISIONS
-//! #40): the execution unit implements the verb over a `dyn Store`, the loaded store's adapter
-//! answers it, and neither depends on the other.
+//! This is the face the admin verb-execution unit (which owns the verb *semantics*) and a loaded
+//! store's adapter both bind to. It lives in this seams crate so the two sides reach one face here
+//! rather than naming each other's crate (DECISIONS #40): the execution unit implements the verb
+//! over a `dyn Store`, the loaded store's adapter answers it, and neither depends on the other.
 //!
 //! The store seam here is the disaster-recovery primitives named in the architecture document's
 //! irreducible set (`chain_break`, `store_restore`, `reseal_epoch_floor`), plus the store-backed
 //! sealed idempotency cache the new credential-minting verbs use. Every method is a `// contract:`
 //! seam: the actual durable operation is always the integrator's.
 
-use crate::caps::{AdminVerb, Grant};
+use busbar_contract::caps::{AdminVerb, Grant};
 
 /// Replay window (seconds) — 600 s, exactly `IDEMPOTENCY_TTL_SECS` in 1.5.5/1.6.0-legacy admin.
 ///

@@ -2184,7 +2184,7 @@ async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
         ConcurrencyGauge::new(),
-        busbar_contract::caps::Canary::new(),
+        busbar_kernel::canary::Canary::new(),
         LeaseCell::new(),
         AccrualMeter::new(),
     );
@@ -2700,7 +2700,7 @@ async fn drive_gone(
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
         ConcurrencyGauge::new(),
-        busbar_contract::caps::Canary::new(),
+        busbar_kernel::canary::Canary::new(),
         LeaseCell::new(),
         AccrualMeter::new(),
     );
@@ -3167,7 +3167,7 @@ async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
         busbar_kernel::slice::ConcurrencyGauge::new(),
-        busbar_contract::caps::Canary::new(),
+        busbar_kernel::canary::Canary::new(),
         busbar_kernel::slice::LeaseCell::new(),
         AccrualMeter::new(),
     );

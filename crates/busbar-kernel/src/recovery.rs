@@ -22,9 +22,10 @@
 //! and a checksum, the reader stops at the first record that does not check out, and the tail is
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
+use crate::canary::Canary;
 use busbar_contract::caps::{
-    Canary, Consumption, Grant, Hold, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
-    Recover, StepName, UnitKey, Usage, UsageLine, WriteMoney,
+    Consumption, Grant, Hold, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode, Recover,
+    StepName, UnitKey, Usage, UsageLine, WriteMoney,
 };
 
 use crate::slice::Epoch;

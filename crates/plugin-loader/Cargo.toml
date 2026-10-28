@@ -70,6 +70,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel-seams = { path = "../busbar-kernel-seams" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }

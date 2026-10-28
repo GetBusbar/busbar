@@ -4,7 +4,7 @@
 //! The store adapter: the unit-side store seams over ONE loaded store plugin.
 //!
 //! The admin verb-execution unit binds to a store without naming one: the sealed new-verb replay
-//! cache, which the composition root's `busbar_contract::verb_store::Store` answers through this
+//! cache, which the composition root's `busbar_kernel_seams::verb_store::Store` answers through this
 //! adapter. The composition root binds it to a single adapter over the store this crate loaded, so
 //! there is exactly one store handle in the process and one place that says what this adapter
 //! answers itself.
@@ -55,16 +55,16 @@
 //! back onto the rows, because a deployment booting on a read-only replica or a grant-restricted
 //! database is the previous release's supported shape and must keep booting.
 
-use busbar_contract::migration::{
-    MigrationCapDimension, MigrationFamily, MigrationFigure, MigrationFigures, MigrationHead,
-    MigrationLedgerRows, MigrationSource,
-};
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
-use busbar_contract::slice::Epoch;
-use busbar_contract::verb_store::StoreError as VerbStoreError;
+use busbar_kernel_seams::migration::{
+    MigrationCapDimension, MigrationFamily, MigrationFigure, MigrationFigures, MigrationHead,
+    MigrationLedgerRows, MigrationSource,
+};
+use busbar_kernel_seams::slice::Epoch;
+use busbar_kernel_seams::verb_store::StoreError as VerbStoreError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -111,10 +111,10 @@ type ReplaySlots = HashMap<(String, String), (u64, Option<Vec<u8>>)>;
 /// How long a sealed replay slot answers for, in seconds.
 ///
 /// The seam's own contract names the window, and the in-process sibling
-/// [`busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS`] keeps exactly this one — so a deployment whose store predates
+/// [`busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS`] keeps exactly this one — so a deployment whose store predates
 /// the durable cache gets the same replay window it would get from the store, rather than a
 /// different one because the shim is answering.
-pub const REPLAY_TTL_SECS: u64 = busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
+pub const REPLAY_TTL_SECS: u64 = busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS;
 
 /// The clock the sealed replay cache ages its slots against, in unix seconds.
 ///
@@ -549,7 +549,7 @@ impl StoreAdapter {
 }
 
 /// THE SEALED NEW-VERB REPLAY CACHE, which the composition root's verb store answers through this
-/// adapter (`busbar_contract::verb_store::Store::replay_new_verb` and `commit_new_verb_replay`).
+/// adapter (`busbar_kernel_seams::verb_store::Store::replay_new_verb` and `commit_new_verb_replay`).
 impl StoreAdapter {
     /// Read the sealed replay slot for a credential-minting verb, reserving it on first sighting so
     /// a concurrent second call sees a reservation rather than another first sighting — the same

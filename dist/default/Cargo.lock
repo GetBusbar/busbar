@@ -358,6 +358,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-seams",
  "flate2",
  "schemars",
  "serde",
@@ -448,6 +449,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-seams",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -602,6 +604,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-seams",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -671,8 +674,16 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-seams",
  "ring",
  "serde",
+]
+
+[[package]]
+name = "busbar-kernel-seams"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
 ]
 
 [[package]]
@@ -755,6 +766,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-seams",
  "ed25519-dalek",
  "flate2",
  "futures",

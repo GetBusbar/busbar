@@ -22,7 +22,8 @@
 //!   outbound decoration and both secret placeholders are the destination module's alone
 //!   ([`crate::AuthDecoration`], [`crate::SecretSlot`], [`crate::SecretOnce`]).
 //! - [`Origin`], [`SessionId`], [`IdempotencyKey`], [`UnitEnd`] — the kernel's own.
-//! - The [canary] the kernel balances.
+//!
+//! The canary the kernel balances is the kernel's own (`busbar_kernel::canary`).
 //!
 //! The rules Rust cannot carry are written down as data in `fixtures/lint_rules.txt`, next to the
 //! crate rather than inside it, because nothing that uses this crate ever names them.
@@ -52,7 +53,7 @@
 //! | Only the kernel mints tokens | the seal reaches only the kernel, through a symbol only the kernel defines ([`KernelSeal::deliver`]); a second definer is a link error | link |
 //! | The recovery token stays in the recovery module | source scan over the seal-site list, same file | CI |
 //! | A hold is taken only in the kernel, at exactly three sites | the construction gate confines the literal `take(&Grant::<Exit>::mint(` to the kernel — confinement, not a count, and the sweep's take through a named grant does not spell that literal; the count is held by the take-site census in `caps::hold`'s tests, which reads the kernel's own source | CI |
-//! | Every unit that was admitted actually settled | the two-sided [`canary::Canary`] | runtime + CI |
+//! | Every unit that was admitted actually settled | the two-sided canary (`busbar_kernel::canary::Canary`) | runtime + CI |
 //!
 //! The row that matters most is the one that is NOT compile-time: Rust has no linear types, so
 //! "this value must be consumed by exactly this function" cannot be said. `#[must_use]` catches the
@@ -67,7 +68,6 @@
 // than adding Debug impls that would change them.
 #![allow(missing_debug_implementations)]
 
-pub mod canary;
 pub mod capability;
 pub mod egress;
 pub mod hold;
@@ -77,7 +77,6 @@ pub mod token;
 pub mod unit_end;
 pub mod usage;
 
-pub use canary::{Canary, CanaryBreak};
 pub use capability::{
     AdminVerb, Admittance, Capability, Consumption, Dial, DurableWrite, Exit, KeyHandle, Recover,
     Sign, WriteMoney,

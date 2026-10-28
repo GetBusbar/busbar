@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 bumpalo = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel-seams = { path = "../busbar-kernel-seams" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }

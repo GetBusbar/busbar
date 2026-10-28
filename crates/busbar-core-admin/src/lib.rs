@@ -44,8 +44,8 @@ pub mod admin_codec;
 // ── KERNEL-VERB EXECUTION (absorbed from busbar-unit-verbs, W4.b #36) ────────────────────────────
 // The admin units resolve a request to a `KernelVerb` and hand it here; this is the only place a
 // kernel verb's SEMANTICS live. The store face (`Store`/`StoreError`) and the idempotency window
-// (`IDEMPOTENCY_TTL_SECS`) it binds against now live on `busbar_contract::verb_store` (DECISIONS
-// #38/#40), so this unit and the loader's store adapter reach one face rather than
+// (`IDEMPOTENCY_TTL_SECS`) it binds against now live on `busbar_kernel_seams::verb_store` (DECISIONS
+// #40), so this unit and the loader's store adapter reach one face rather than
 // naming each other's crate.
 pub mod governance;
 pub mod idempotency;

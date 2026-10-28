@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel-seams = { path = "../busbar-kernel-seams" }
 ring = { workspace = true }
 serde = { workspace = true }
 

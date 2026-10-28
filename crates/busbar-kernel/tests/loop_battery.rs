@@ -12,9 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Waker};
 
 use busbar_contract::caps::{
-    Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, PrincipalId, ReasonCode,
-    StepName, UnitKey,
+    Abort, HoldCellState, OriginKind, Outcome, PostingFlags, PrincipalId, ReasonCode, StepName,
+    UnitKey,
 };
+use busbar_kernel::canary::Canary;
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 use busbar_kernel::teller::{

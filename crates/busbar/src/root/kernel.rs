@@ -1595,7 +1595,7 @@ impl ArrivalDoor for AdmissionDoor {
 /// The node's store behind the published ABI, as the verbs unit reaches it: the loader's ABI-2 adapter
 /// over the CONFIGURED store (bound at boot, [`crate::root::durability::NodeBook::verb_store`]), or
 /// `None` on a node with no store, where each disaster-recovery verb answers as a store failure.
-pub type VerbStoreHandle = Option<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>;
+pub type VerbStoreHandle = Option<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>;
 
 /// The long-lived objects the root owns, as the admin surface's steps read them.
 ///

@@ -21,7 +21,8 @@ use std::future::Future;
 use std::sync::atomic::AtomicBool;
 use std::task::{Context, Waker};
 
-use busbar_contract::caps::{Canary, OriginKind, UnitKey};
+use busbar_contract::caps::{OriginKind, UnitKey};
+use busbar_kernel::canary::Canary;
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::ConcurrencyGauge;
 use busbar_kernel::teller::{run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run};

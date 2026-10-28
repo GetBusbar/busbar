@@ -360,11 +360,11 @@ impl ReachedStore {
 }
 
 #[cfg(feature = "root-admin")]
-impl busbar_contract::verb_store::Store for ReachedStore {
+impl busbar_kernel_seams::verb_store::Store for ReachedStore {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.note("chain_break".to_string());
         Ok(())
     }
@@ -373,7 +373,7 @@ impl busbar_contract::verb_store::Store for ReachedStore {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.note(format!("store_restore {backup_ref}"));
         Ok(())
     }
@@ -381,7 +381,7 @@ impl busbar_contract::verb_store::Store for ReachedStore {
     fn reseal_epoch_floor(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.note("reseal_epoch_floor".to_string());
         Ok(())
     }
@@ -389,7 +389,7 @@ impl busbar_contract::verb_store::Store for ReachedStore {
     fn replay_new_verb(
         &self,
         key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+    ) -> Result<Option<Vec<u8>>, busbar_kernel_seams::verb_store::StoreError> {
         self.note(format!("replay_new_verb {} {}", key.0, key.1));
         Ok(None)
     }
@@ -398,7 +398,7 @@ impl busbar_contract::verb_store::Store for ReachedStore {
         &self,
         key: &(String, String),
         _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.note(format!("commit_new_verb_replay {} {}", key.0, key.1));
         Ok(())
     }

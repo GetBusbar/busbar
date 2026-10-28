@@ -163,7 +163,7 @@ impl Record {
 }
 
 /// What a shipper sees of a record: its identity, and nothing of its framing.
-impl busbar_contract::ship::ShippedRecord for Record {
+impl crate::ship::ShippedRecord for Record {
     fn identity(&self) -> (u64, u64) {
         Record::identity(self)
     }

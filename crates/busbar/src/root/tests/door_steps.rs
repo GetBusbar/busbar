@@ -8589,7 +8589,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
             &ctx,
             &principal,
             &[],
-            &busbar_contract::slice::GroupLeaseSlip::default(),
+            &busbar_kernel_seams::slice::GroupLeaseSlip::default(),
         );
         let Err(refused) = refused else {
             panic!("{reach:?}: refused at admission");

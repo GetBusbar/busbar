@@ -33,7 +33,7 @@
 //!    [`crate::idempotency::IdempotencyCache`]; [`Verbs::execute`] refuses both verbs.
 //!
 //! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
-//! or [`busbar_contract::verb_store::Store`]. That holds for the three disaster-recovery verbs too: their effect
+//! or [`busbar_kernel_seams::verb_store::Store`]. That holds for the three disaster-recovery verbs too: their effect
 //! lands on the store rather than on governance, but they are new verbs like any other, so they
 //! reach the store only through [`Verbs::chain_break`], [`Verbs::store_restore`] and
 //! [`Verbs::reseal_epoch_floor`], each of which runs the same admission first. The bound store is
@@ -45,7 +45,7 @@ use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, NEW_VERBS};
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_contract::verb_store::Store;
+use busbar_kernel_seams::verb_store::Store;
 use std::sync::Arc;
 
 /// Resolve the scope a [`KernelVerb`] requires: the scope its row in [`crate::verb::TABLE`]
@@ -192,10 +192,10 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
 
     /// The bound store, or the refusal a node with none answers: there is nothing for the verb to
     /// reach, so it fails as a store failure rather than succeeding over nothing.
-    fn bound_store(&self) -> Result<&S, busbar_contract::verb_store::StoreError> {
+    fn bound_store(&self) -> Result<&S, busbar_kernel_seams::verb_store::StoreError> {
         self.store
             .as_deref()
-            .ok_or(busbar_contract::verb_store::StoreError::Failed)
+            .ok_or(busbar_kernel_seams::verb_store::StoreError::Failed)
     }
 
     /// `chain_break` — deliberately break the journal chain. Admitted through

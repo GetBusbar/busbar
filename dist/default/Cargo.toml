@@ -75,6 +75,7 @@ busbar-plugin-loader = { path = "../../crates/plugin-loader" }
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../../crates/busbar-kernel", default-features = false }
 busbar-contract = { path = "../../crates/busbar-contract" }
+busbar-kernel-seams = { path = "../../crates/busbar-kernel-seams" }
 # The seven kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../../crates/busbar-kernel-identity" }
 busbar-kernel-ledger = { path = "../../crates/busbar-kernel-ledger" }

@@ -64,7 +64,7 @@ impl Signature {
 }
 
 /// Why a checkpoint could not be signed: the contract's, because a migration's error carries it.
-pub use busbar_contract::migration::SignError;
+pub use busbar_kernel_seams::migration::SignError;
 
 /// Signs checkpoint bodies. Implemented by whatever holds the deployment's keys.
 pub trait CheckpointSecret {

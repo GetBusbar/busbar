@@ -9,7 +9,8 @@
 
 mod common;
 
-use busbar_contract::caps::{Canary, OriginKind, PostingFlags, ReasonCode, StepName};
+use busbar_contract::caps::{OriginKind, PostingFlags, ReasonCode, StepName};
+use busbar_kernel::canary::Canary;
 use busbar_kernel::inflight::{
     arrival_hold, cap_refusal_step, Binding, Enter, InFlight, Progression, Sessions,
 };

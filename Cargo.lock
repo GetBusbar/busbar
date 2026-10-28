@@ -272,6 +272,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-seams",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -336,6 +337,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-kernel-seams",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -421,6 +423,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-seams",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -499,9 +502,17 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-seams",
  "ring",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "busbar-kernel-seams"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
 ]
 
 [[package]]
@@ -519,6 +530,7 @@ version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-kernel-seams",
  "busbar-stub-auth-verify",
  "busbar-stub-auth-verify-plugin",
  "busbar-stub-export",

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 // crate (DECISIONS #38/#40) so the loader's sealed store cache and this in-process
 // cache age their slots against one number. Re-exported here so the doc links and the existing
 // `crate::idempotency::IDEMPOTENCY_TTL_SECS` call sites keep resolving.
-pub use busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
+pub use busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS;
 
 /// THE REPLAY KEY FOR A ROTATE, FRAMED SO THAT NO TWO `(id, header)` PAIRS JOIN TO ONE KEY.
 ///

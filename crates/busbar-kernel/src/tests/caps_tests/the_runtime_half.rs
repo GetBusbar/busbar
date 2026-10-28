@@ -9,6 +9,8 @@
 
 use busbar_contract::caps::*;
 
+use crate::canary::Canary;
+
 /// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
 /// seal on its own.
 struct Kernel {
@@ -952,4 +954,38 @@ fn a_grant_of_another_call_neither_admits_nor_converts() {
         .expect("call B's own grant converts it");
     assert_eq!(converted.reserved(), 1_000);
     let _ = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
+}
+
+#[test]
+fn the_canary_balances_a_clean_run_and_sees_a_missing_settlement() {
+    let canary = Canary::new();
+    for _ in 0..3 {
+        canary.draft_accepted();
+        canary.hold_opened();
+        canary.settled();
+    }
+    // A child that accrued into a parent instead of opening its own still has to settle.
+    canary.draft_accepted();
+    canary.accrual_taken();
+    canary.settled();
+    assert!(canary.balanced().is_ok());
+
+    // A unit that got through the door and never settled is exactly what this is for.
+    canary.draft_accepted();
+    canary.hold_opened();
+    let broken = canary.balanced().expect_err("one settlement is missing");
+    assert_eq!(broken.drafts, 5);
+    assert_eq!(broken.holds + broken.accruals, 5);
+    assert_eq!(broken.settlements, 4);
+}
+
+#[test]
+fn the_canary_also_catches_a_settlement_with_no_hold_behind_it() {
+    let canary = Canary::new();
+    canary.draft_accepted();
+    canary.settled();
+    assert!(
+        canary.balanced().is_err(),
+        "a settlement that references no hold is the other side of the same check"
+    );
 }

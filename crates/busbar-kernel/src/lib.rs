@@ -128,6 +128,7 @@ mod alloc_gate_instrument {
 // These modules are the original busbar-kernel's own — the loop, the pump, the in-flight/session
 // tables, recovery, the registry, the closed grammars, the ticks and the per-unit scratch pad —
 // plus the settlement table the loop re-exports (`teller::settle_written` and its evidence).
+pub mod canary;
 pub mod door;
 pub mod grammar;
 pub mod guest;
@@ -143,9 +144,9 @@ mod settlement;
 pub mod teller;
 pub mod tick;
 
-// The node's slice/lease types live in busbar-contract (the ONE ABI crate, #38); re-exported so
-// `crate::slice` / `busbar_kernel::slice` paths are unchanged.
-pub use busbar_contract::slice;
+// The node's slice/lease types live in busbar-kernel-seams (the loader names them too); re-exported
+// so `crate::slice` / `busbar_kernel::slice` paths are unchanged.
+pub use busbar_kernel_seams::slice;
 
 /// Milliseconds on the kernel's monotonic clock (re-exported from busbar-contract, #38).
 pub use busbar_contract::Millis;

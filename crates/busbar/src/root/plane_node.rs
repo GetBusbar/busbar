@@ -181,7 +181,7 @@ pub struct Node {
     kernel: Arc<busbar_kernel::teller::Kernel>,
     inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_contract::caps::Canary,
+    canary: busbar_kernel::canary::Canary,
     door: crate::root::kernel::AdmissionDoor,
     /// THE NODE'S ONE INTERNER. A configured lane's name is read out of config as a runtime `String`
     /// and a `LaneId` is a borrowed static one, so the two are bridged by leaking each name exactly
@@ -300,7 +300,7 @@ impl Node {
             // answered.
             inflight: busbar_kernel::inflight::InFlight::new(usize::MAX),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_contract::caps::Canary::new(),
+            canary: busbar_kernel::canary::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
             lanes: Arc::clone(&lanes),
             lane_names: Arc::new(Mutex::new(LaneNames {

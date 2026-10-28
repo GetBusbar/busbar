@@ -27,6 +27,7 @@ busbar-core-connector = { path = "../busbar-core-connector" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel-seams = { path = "../busbar-kernel-seams" }
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }

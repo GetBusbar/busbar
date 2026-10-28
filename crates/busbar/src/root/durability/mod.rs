@@ -100,7 +100,6 @@ use std::path::PathBuf;
 use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
-use busbar_contract::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
 };
@@ -114,6 +113,7 @@ use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
     past_retention, BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
 };
+use busbar_kernel_seams::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_wal::{
     BodyReader, BodyWriter, Entry, Journal, JournalAck, JournalRecord, Mode, OpenError,
     RecordClass, Shipper,
@@ -904,8 +904,8 @@ impl Durability {
         }
         let kernel = busbar_kernel::teller::Kernel::new();
         let token = kernel.durability_token();
-        let canary = busbar_contract::caps::Canary::new();
-        let current = busbar_contract::slice::Epoch(self.incarnation);
+        let canary = busbar_kernel::canary::Canary::new();
+        let current = busbar_kernel_seams::slice::Epoch(self.incarnation);
         let pinned = (self.history)();
         let view = pinned.as_ref().map(PinnedHistory::view);
         // The checkpoint's figure, derived from its counts like every figure on this book. One the
@@ -930,7 +930,7 @@ impl Durability {
                 reserved: held.hold.reserved(view.as_ref()),
                 checkpointed: checkpointed.as_ref().copied().unwrap_or(0),
                 dispatched: held.dispatched,
-                lease_epoch: busbar_contract::slice::Epoch(held.hold.incarnation),
+                lease_epoch: busbar_kernel_seams::slice::Epoch(held.hold.incarnation),
             })
             .collect();
         let posted = busbar_kernel::recovery::recover_all(&kernel, &records, current, &canary);
