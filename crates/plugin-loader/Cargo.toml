@@ -20,24 +20,11 @@ license = "Apache-2.0"
 #   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 [features]
 pack = ["dep:jsonschema"]
-# The auth axis's TEST STAND-IN (`auth_axis::stand_in`): a build with no composition root opens its
-# auth rows on a dispatcher of its own. A test double, so it never ships: a dependent crate's
-# `test-support` forwards here.
-#
-# It also gates `test_support`, the fake-call store harness, for the store adapter's minted-token
-# tests in busbar's integration suite (`crates/busbar/tests/store_adapter_verb_seam.rs`; the verb
-# seam takes a `Grant<AdminVerb>`). Enabled from busbar's [dev-dependencies] and busbar-kernel's own
-# `test-support`; never by a shipped build. The harness locates the store both-ways proof's cdylib
-# by the name `build.rs` exports, and the dependent's own graph builds it. Its local token issuer
-# (`test_issuer`: an ES256 key, its JWKS, signed tokens) takes `ring` and `base64`, optional deps
-# turned on only here; no TLS library (TLS stays in the connector).
-test-support = ["dep:ring", "dep:base64"]
-# THE PUBLISHED CONFORMANCE SUITE (`src/conformance/`, TODO ABI-b4): every real plugin repo's own
-# `tests/conformance.rs` names this crate as a dev-dependency with this feature, at the busbar commit
-# it pins, and runs the suite over its linked door and its built cdylib (`plugin-ci.yml`'s
-# conformance step). OWNER 2026-10-03: plugins test themselves against busbar; busbar tests no
-# plugin. Its canary spells credentials in base64 (already an optional dependency here).
-conformance = ["dep:base64"]
+# TEST SEAMS, never in a shipped build: the auth axis's stand-in (`auth_axis::stand_in`), the
+# fake-call store harness (`test_support`), the composition root's door fixtures
+# (`root_door_fixtures`), and the dispatcher accessors busbar-test-kit's conformance suite reads.
+# Turned on by busbar-test-kit and by dependents' [dev-dependencies] only.
+test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -131,10 +118,6 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-# `test-support` only (`test_issuer`: a local token issuer's ES256 key and base64url JWKS/JWS):
-# never in a shipped build.
-ring = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
@@ -182,7 +165,7 @@ getrandom = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
-# `test_issuer` in this crate's own tests (its `test-support` deps, here too).
+# busbar-test-kit's `test_issuer`, compiled into this crate's own tests.
 ring = { workspace = true }
 base64 = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
@@ -200,19 +183,19 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io
 # plugin model). The file sink's `-plugin` crate takes its `dropped-in` feature, so its cdylib exports
 # the door (its rlib is never named here). Their busbar-contract resolves to this tree through the
 # workspace `[patch]` table.
-busbar-export-file = { workspace = true }
-busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
-busbar-export-webhook = { workspace = true }
-busbar-export-webhook-plugin = { workspace = true, features = ["dropped-in"] }
-busbar-export-prometheus = { workspace = true }
-busbar-export-prometheus-plugin = { workspace = true }
-busbar-export-otlp = { workspace = true }
-busbar-export-otlp-plugin = { workspace = true }
+busbar-stub-export = { path = "stubs/export/logic" }
+busbar-stub-export-plugin = { path = "stubs/export/plugin", features = ["dropped-in"] }
+busbar-stub-export-carried = { path = "stubs/export-carried/logic" }
+busbar-stub-export-carried-plugin = { path = "stubs/export-carried/plugin", features = ["dropped-in"] }
+busbar-stub-export-scrape = { path = "stubs/export-scrape/logic" }
+busbar-stub-export-scrape-plugin = { path = "stubs/export-scrape/plugin" }
+busbar-stub-export-trace = { path = "stubs/export-trace/logic" }
+busbar-stub-export-trace-plugin = { path = "stubs/export-trace/plugin" }
 # The `kind: store` proof is a REAL store (owner FIXTURES ruling: "store: store-memory + store-*"): the
 # build's default RAM store, its `rlib` the COMPILED-IN door. The store v3 door DROPPED IN is the
 # `store_v3_door` example below, not the crate's own `dropped-in` feature: that exports
 # `busbar_plugin_door` from the rlib too, which this test build's own linked fixtures already define.
-busbar-store-memory = { workspace = true }
+busbar-stub-store = { path = "stubs/store/logic" }
 # The `kind: secret` BOTH-WAYS proof is a REAL secret source (owner FIXTURES ruling: "real plugins are the
 # examples"): the env source from its own repo (GetBusbar/busbar-secret-env) at the rev the workspace pins.
 # The edge is its LOGIC crate: that crate's door is the LINKED door. The DROPPED-IN door is the same repo's
@@ -220,7 +203,7 @@ busbar-store-memory = { workspace = true }
 # `busbar_plugin_door`, a second one beside the dispatcher's own test door and the tcp plugin's under LTO)
 # and found beside the test binaries. `secret_door_conformance_tests` drives both through the one dispatcher
 # over one script and asserts the exact crossing count.
-busbar-secret-env = { workspace = true }
+busbar-stub-secret = { path = "stubs/secret/logic" }
 # The `kind: auth` BOTH-WAYS witness — #2's auth witness, step (4) (OWNER-LOCKED) — is a REAL plugin, not
 # a fixture (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real plugins are the examples"; R-FIX2): the
 # token-verifying OIDC module from its own repo (GetBusbar/busbar-auth-oidc) at a pinned rev, on the
@@ -230,8 +213,6 @@ busbar-secret-env = { workspace = true }
 # auth rows, bound to a test connection table that fetches the plugin's JWKS from a local issuer,
 # and requires them to be one plugin. Their busbar-contract resolves to this tree through the
 # workspace `[patch]` table.
-busbar-auth-oidc = { workspace = true }
-busbar-auth-oidc-plugin = { workspace = true }
 # The `kind: auth` VERIFY-VERDICT both-ways proof (the `auth-verify` row below), over a second REAL
 # auth plugin: the shipped operator admin-auth module (ARCHITECT 2026-09-27: it is a REAL auth
 # plugin — door + both-ways conformance, the AUTH kind proof). The row above proves the
@@ -241,8 +222,8 @@ busbar-auth-oidc-plugin = { workspace = true }
 # memory ABI (ARCHITECT 2026-09-30, AUTH-DOOR Q1). The row names its LOGIC crate, whose `door::door`
 # is the linked door; its `-plugin` crate's cdylib (built under `deps/`, hashed, by the edge below;
 # never linked here: that crate's rlib exports `busbar_plugin_door` too) is the dropped-in one.
-busbar-auth-admin-tokens = { workspace = true }
-busbar-auth-admin-tokens-plugin = { workspace = true }
+busbar-stub-auth-verify = { path = "stubs/auth-verify/logic" }
+busbar-stub-auth-verify-plugin = { path = "stubs/auth-verify/plugin" }
 # The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
 h2 = { workspace = true }
 log = { workspace = true }
@@ -254,10 +235,10 @@ tungstenite = { workspace = true }
 # Reached by KIND through `[package.metadata.busbar.both-ways]` below. From its own repo
 # (GetBusbar/busbar-transport-tcp) at the rev the workspace pins. The `-plugin` crate is an edge only
 # so cargo builds its cdylib; its rlib is never named (it exports `busbar_plugin_door`).
-busbar-transport-tcp-plugin = { workspace = true }
+busbar-stub-transport-plugin = { path = "stubs/transport/plugin" }
 # The tcp LOGIC crate (same pin, no door symbol), the row's crate: `transport_door_conformance_tests`
 # drives its linked door against the plugin's cdylib.
-busbar-transport-tcp = { workspace = true }
+busbar-stub-transport = { path = "stubs/transport/logic" }
 # The contract's blessed test seal (#65), as the wire crates' own batteries use it. The host-services
 # doubles (`ClockOnly`, `DiskHost`, the services `Provider`) are the contract's
 # shared `services::double`, so a service the host adds does not reopen them.
@@ -289,22 +270,21 @@ libc = { workspace = true }
 [package.metadata.busbar.both-ways]
 # The store row: the crate's own `door` is linked, and the `store_v3_door` example is its dropped-in
 # door (`build.rs` writes the example's one `export_door!` line from this row).
-store = "busbar-store-memory"
-auth = "busbar-auth-oidc"
+store = "busbar-stub-store"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
 # test reaches the row by that whole key (`door_fixture`), never by the plugin's name.
-auth-verify = "busbar-auth-admin-tokens"
-secret = "busbar-secret-env"
+auth-verify = "busbar-stub-auth-verify"
+secret = "busbar-stub-secret"
 # The transport row. It is also the one wire crate this crate may take a (dev) edge on —
 # kind-isolation's transport-registration rule reads this row.
-transport = "busbar-transport-tcp"
+transport = "busbar-stub-transport"
 # The EXPORT kind's fixtures (owner FIXTURES ruling: "real plugins are the proofs"): each row names
 # a sink's LOGIC crate (its `door`, LINKED); `build.rs` emits its `<row>_fixture` alias and the name
 # of its `-plugin` crate's `cdylib` (the DROPPED-IN build), so the export tests reach each sink by
 # the proof it serves and no test source names a sink. `export` is the host-written destination (the
 # #11 test's subject), `export-carried` the host-carried outbound request, `export-scrape` the
 # recorder snapshot's render and `export-trace` the span collector with a first-party egress class.
-export = "busbar-export-file"
-export-carried = "busbar-export-webhook"
-export-scrape = "busbar-export-prometheus"
-export-trace = "busbar-export-otlp"
+export = "busbar-stub-export"
+export-carried = "busbar-stub-export-carried"
+export-scrape = "busbar-stub-export-scrape"
+export-trace = "busbar-stub-export-trace"
