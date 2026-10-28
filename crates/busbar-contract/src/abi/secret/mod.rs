@@ -252,7 +252,7 @@ super::sdk::door::slot_structs!(
 // and states no rule beyond the mechanism's.
 abi_answers! {
     cx: ();
-    RESOLVE => resolve(in ResolveIn, out ResolveOut) |_, i, o, _| {
+    slot::RESOLVE => resolve(in ResolveIn, out ResolveOut) |_, i, o, _| {
         validate::check_resolve(o, i.secret_buf as usize, i.secret_cap as u64)
     }
 }

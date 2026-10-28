@@ -5,6 +5,8 @@
 //! PURE function over an op's `out`, the capacities the host handed in, and the host's own view of
 //! what it handed. It uses `u64`
 //! math, holds no state and dereferences no pointer: a pointer is compared as an address only.
+//! [`check_answer`] is the one call per op answer: it reads the op's frames, builds each
+//! plugin-reported slice through [`reported`] against its capacity, and calls the op's validator.
 //! The dispatcher calls it on every answer, whatever its outcome, and any `Err` makes the answer
 //! FAULT. No host re-implements them.
 //!
@@ -14,12 +16,14 @@
 
 use super::ledger::{HostRecords, RecordEntry};
 use super::{
-    CountOut, HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
-    VerdictOut, ABSENT, CANCEL_APPLIED, FOUND, VERDICT_YES,
+    slot, CountOut, GetPlaneRecordIn, HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut,
+    LeasedListOut, LeasedStrListOut, ListPlaneRecordsIn, RecordGetIn, RecordScanIn, VerdictOut,
+    ABSENT, CANCEL_APPLIED, FOUND, VERDICT_YES,
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_OCTETS};
-use crate::abi::mechanism::check::{fault, Rule};
-use crate::abi::mechanism::lifecycle::CancelOut;
+use crate::abi::mechanism::check::{fault, reported, Rule};
+use crate::abi::mechanism::decl::abi_answers;
+use crate::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use crate::bounded::MAX_RECORD_BYTES;
 
 pub use crate::abi::mechanism::check::Fault;
@@ -435,6 +439,118 @@ pub fn check_cancel(outcome: Outcome, out: &CancelOut) -> Result<(), Fault> {
         return Err(CANCEL_DISPOSITION);
     }
     Ok(())
+}
+
+/// An off-path list of records under a lease, read only on READY (only a READY answer holds a
+/// lease); its count is capped at [`LIST_ITEMS_HARD_MAX`] before any slice exists.
+///
+/// # Safety
+/// On READY, `out.items` is plugin memory held under `out.head.lease`.
+unsafe fn leased_list(
+    outcome: Outcome,
+    out: &LeasedListOut,
+    field: &'static str,
+) -> Result<(), Fault> {
+    // This gate guards the slice, not the check: any other outcome is checked with no items.
+    if outcome != Outcome::Ready {
+        return check_leased_list(outcome, out, &[]);
+    }
+    // SAFETY: the caller's contract; the count is capped and a NULL pointer with a count refused
+    // before the slice is built.
+    let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
+    check_leased_list(outcome, out, items)
+}
+
+/// An off-path list of strings under a lease, as [`leased_list`].
+///
+/// # Safety
+/// As [`leased_list`].
+unsafe fn leased_strs(
+    outcome: Outcome,
+    out: &LeasedStrListOut,
+    field: &'static str,
+) -> Result<(), Fault> {
+    if outcome != Outcome::Ready {
+        return check_leased_strs(outcome, out, &[]);
+    }
+    // SAFETY: as `leased_list`.
+    let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
+    check_leased_strs(outcome, out, items)
+}
+
+// THE STORE KIND'S ANSWERS (`check_answer`), in the order the loader reads each op's frames. Every
+// slice a plugin-reported count names is built through `reported` against the host's own
+// capacity (a leased list's against `LIST_ITEMS_HARD_MAX`), so a count above it is FAULT before
+// any slice exists. An op whose `out` is a bare `OutHead` is the mechanism's, and passes here.
+abi_answers! {
+    cx: ();
+    // Request path, host buffers, each with a short-buffer path.
+    slot::RECORD_GET => record_get(in RecordGetIn, out HostBytesOut) |outcome, i, o, _| {
+        check_record_get(outcome, o, u(i.value.cap))
+    }
+    slot::GET_PLANE_RECORD => get_plane_record(in GetPlaneRecordIn, out HostBytesOut) |outcome, i, o, _| {
+        check_get_plane_record(outcome, o, u(i.body.cap))
+    }
+    slot::LIST_PLANE_RECORDS => list_plane_records(in ListPlaneRecordsIn, out HostListOut) |outcome, i, o, _| {
+        let host = &i.out;
+        // SAFETY: `host.items` is the host's own array of `items_cap` blobs; `reported` refuses
+        // an `items_written` above that cap before any slice exists.
+        let items = unsafe {
+            reported(host.items.cast_const(), o.items_written, u(host.items_cap), "list_plane_records.items")
+        }?;
+        check_list_plane_records(outcome, o, host, items)
+    }
+    slot::RECORD_SCAN => record_scan(in RecordScanIn, out HostListOut) |outcome, i, o, _| {
+        let host = &i.out;
+        // SAFETY: `host.items` is the host's own array of `items_cap` entries; `reported` refuses
+        // an `items_written` above that cap before any slice exists.
+        let entries = unsafe {
+            reported(host.items.cast_const(), o.items_written, u(host.items_cap), "record_scan.entries")
+        }?;
+        check_record_scan(outcome, o, host, entries, i.limit)
+    }
+    // Off path, under a lease.
+    slot::GET_KEY | slot::GET_USAGE => leased_blob(out LeasedBlobOut) |outcome, _, o, _| {
+        check_leased_blob(outcome, o)
+    }
+    // SAFETY (each leased list below): `check_answer`'s contract.
+    slot::LIST_KEYS => list_keys(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_keys.items") }
+    }
+    slot::LIST_KEYS_SINCE => list_keys_since(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_keys_since.items") }
+    }
+    slot::LIST_METERING => list_metering(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_metering.items") }
+    }
+    slot::LIST_CREDENTIALS => list_credentials(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_credentials.items") }
+    }
+    slot::LIST_CREDENTIALS_SINCE => list_credentials_since(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_credentials_since.items") }
+    }
+    slot::LIST_AUDIT => list_audit(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_audit.items") }
+    }
+    slot::LIST_AUDIT_TAIL => list_audit_tail(out LeasedListOut) |outcome, _, o, _| {
+        unsafe { leased_list(outcome, o, "list_audit_tail.items") }
+    }
+    slot::LIST_DENYLIST => list_denylist(out LeasedStrListOut) |outcome, _, o, _| {
+        unsafe { leased_strs(outcome, o, "list_denylist.items") }
+    }
+    slot::LIST_PLANE_RECORD_PARENTS => list_plane_record_parents(out LeasedStrListOut) |outcome, _, o, _| {
+        unsafe { leased_strs(outcome, o, "list_plane_record_parents.items") }
+    }
+    // Verdicts, the cancel disposition, a purge's rows removed.
+    slot::REDEEM_PLANE_TOKEN | slot::PLANE_TOKEN_LIVE => verdict(out VerdictOut) |outcome, _, o, _| {
+        check_verdict(outcome, o)
+    }
+    life::CANCEL => cancel(out CancelOut) |outcome, _, o, _| {
+        check_cancel(outcome, o)
+    }
+    slot::PURGE_PLANE_RECORDS_BEFORE => purge_plane_records_before(out CountOut) |outcome, _, o, _| {
+        check_count(outcome, o)
+    }
 }
 
 #[cfg(test)]

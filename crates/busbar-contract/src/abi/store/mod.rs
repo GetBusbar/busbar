@@ -82,6 +82,7 @@ pub mod money;
 pub mod plane;
 pub mod records;
 
+pub use check::check_answer;
 pub use ledger::*;
 pub use money::*;
 pub use plane::*;

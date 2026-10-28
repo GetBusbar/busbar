@@ -297,9 +297,9 @@ macro_rules! abi_op {
 }
 pub(crate) use abi_op;
 
-/// `abi_answers! { cx: <Cx>; <SLOT> => <op>(<frames>) |<outcome>, <in>, <out>, <cx>| <body> ... }`:
-/// the kind's `answer::<op>` per listed slot and its `check_answer`, the loader's one call per op
-/// answer.
+/// `abi_answers! { cx: <Cx>; <slots> => <op>(<frames>) |<outcome>, <in>, <out>, <cx>| <body> ... }`:
+/// the kind's `answer::<op>` per listed slot pattern (`slot::A` or `slot::A | slot::B`) and its
+/// `check_answer`, the loader's one call per op answer.
 ///
 /// `<frames>` names what the op reads, in the order the loader reads it: `in In, out Out`,
 /// `out Out, in In`, `out Out` or `in In` (an unnamed frame is the bare `InHead`/`OutHead` and is
@@ -308,7 +308,7 @@ pub(crate) use abi_op;
 macro_rules! abi_answers {
     (
         cx: $cx:ty;
-        $( $slot:ident => $op:ident ($($frames:tt)*)
+        $( $slot:pat => $op:ident ($($frames:tt)*)
             |$oc:pat_param, $i:pat_param, $o:pat_param, $c:pat_param| $body:block )*
     ) => {
         /// The kind's answer checks, one per op that has one ([`check_answer`] dispatches here).
@@ -330,7 +330,8 @@ macro_rules! abi_answers {
         /// # Safety
         /// `input` and `out` point at live host-owned buffers of at least `in_size`/`out_size`
         /// bytes (each at least its head), aligned for the op's structs, that nothing writes
-        /// during the call.
+        /// during the call; every buffer the `in` lends is the host's own, of its stated
+        /// capacity, and every list a READY answer names under its lease is live plugin memory.
         pub unsafe fn check_answer(
             slot: u32,
             outcome: $crate::abi::mechanism::call::Outcome,
@@ -342,7 +343,7 @@ macro_rules! abi_answers {
         ) -> ::core::result::Result<(), $crate::abi::mechanism::check::Fault> {
             match slot {
                 $(
-                    slot::$slot => {
+                    $slot => {
                         $crate::abi::mechanism::decl::abi_answers!(@frames ($($frames)*) input, in_size, out, out_size; i, o);
                         // SAFETY: the caller's contract; both frames were read at their structs.
                         unsafe { answer::$op(outcome, i, o, cx) }
