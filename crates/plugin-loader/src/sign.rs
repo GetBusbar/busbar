@@ -1074,8 +1074,30 @@ pub fn first_party_signer<'k>(
     keys: &'k [FirstPartyKey],
     checks: crate::release_trust::Checks,
 ) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
+    first_party_signer_for(
+        manifest,
+        bytes,
+        keys,
+        checks,
+        crate::release_trust::PLUGIN_TARGET,
+    )
+}
+
+/// [`first_party_signer`] for a plugin built for `target` rather than this binary's own: the
+/// release tooling verifies every target's tarball on one machine.
+///
+/// # Errors
+///
+/// As [`first_party_signer`].
+pub fn first_party_signer_for<'k>(
+    manifest: &Manifest,
+    bytes: &[u8],
+    keys: &'k [FirstPartyKey],
+    checks: crate::release_trust::Checks,
+    target: &str,
+) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
     if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
-        return first_party_sealed(manifest, bytes, keys, checks, seal);
+        return first_party_sealed(manifest, bytes, keys, checks, seal, target);
     }
     let sig = bound_signature(manifest, bytes).map_err(FirstPartyUnverified::Malformed)?;
     let canonical = canonical_manifest_bytes(manifest);
@@ -1093,8 +1115,9 @@ fn first_party_sealed<'k>(
     keys: &'k [FirstPartyKey],
     checks: crate::release_trust::Checks,
     seal: Result<(Vec<u8>, Vec<u8>), String>,
+    target: &str,
 ) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
-    use crate::release_trust::{verify_release, Seal, SealRefusal, Subject, PLUGIN_TARGET};
+    use crate::release_trust::{verify_release, Seal, SealRefusal, Subject};
     let trusted_keys = || keys.iter().map(|k| k.id.clone()).collect::<Vec<_>>();
     let lib_sha256 = sha256_hex(bytes);
     if lib_sha256 != manifest.sha256.to_ascii_lowercase() {
@@ -1119,7 +1142,7 @@ fn first_party_sealed<'k>(
         Subject {
             name: &manifest.name,
             version: &manifest.version,
-            target: PLUGIN_TARGET,
+            target,
             sha256: &canonical,
             lib_sha256: &lib_sha256,
         },

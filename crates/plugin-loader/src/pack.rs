@@ -22,16 +22,21 @@
 //! `busbar-plugin-pack keygen` generates a fresh keypair and prints both halves (hex). The PUBLIC
 //! half goes in `plugins.trust.publishers` (third-party); the PRIVATE half is the signing secret.
 //!
-//! FIRST-PARTY SIGNING IS OFFLINE (SECURITY-FIRST-PLAN C1): no first-party seed is in CI. A release
-//! packs UNSIGNED, `canonical` writes the bytes the owner signs on the hardware key, and `attach`
-//! inserts that signature, refusing unless it verifies against a first-party key list (`--keys`, or
-//! the `BUSBAR_RELEASE_PUBKEY` list this tool was built with, the same list the engine embeds).
-//! `verify` re-checks a signed tarball against that list. The release gate
-//! (`scripts/release/publish_gate.py`) drives all three.
+//! FIRST-PARTY RELEASES ARE SEALED, ONE SIGNATURE PER RELEASE (`docs/design/release-trust.md`). A
+//! release packs every plugin UNSIGNED; `release-manifest` writes the bytes of the one release
+//! manifest listing every tarball for its target; the release signer signs those bytes once;
+//! `envelope` wraps them with that signature (refusing one that does not verify); `seal` puts the
+//! keys document and the release manifest into each tarball, refusing unless the result verifies
+//! through the chain against the ROOT key list (`--keys`, or the `BUSBAR_RELEASE_PUBKEY` list this
+//! tool was built with, the same list the engine embeds); `verify` re-checks a sealed tarball.
+//! `keys-doc` writes the bytes of a keys document a root signs. The byte encoding of every
+//! document is `busbar_plugin_loader::release_trust::wire`'s alone; the release gate
+//! (`scripts/release/publish_gate.py`) drives these commands and never spells a byte itself.
 
+use busbar_plugin_loader::release_trust::{self, wire, ReleaseKey};
 use busbar_plugin_loader::settings_schema::validate_secret_fields;
 use busbar_plugin_loader::sign::{
-    canonical_manifest_bytes, embedded_release_keys, first_party_signer, parse_release_keys,
+    canonical_manifest_bytes, embedded_release_keys, first_party_signer_for, parse_release_keys,
     sha256_hex, sign, Declares, FirstPartyKey, HookNeeds, Manifest, NeedLevel, SigningKey,
     FIRST_PARTY_PUBLISHER,
 };
@@ -87,8 +92,13 @@ USAGE:
                             [--allow-unsigned]
     busbar-plugin-pack keygen
     busbar-plugin-pack canonical <unsigned.tar.gz> [--out <file>]
-    busbar-plugin-pack attach <unsigned.tar.gz> --signature <128 hex | @file> [--keys <list>] --out <signed.tar.gz>
-    busbar-plugin-pack verify <signed.tar.gz> [--keys <list>] [--name <name>] [--version <semver>]
+    busbar-plugin-pack release-manifest --version <n> --expires <time> --out <file> <tarball>=<target>...
+    busbar-plugin-pack keys-doc --spec <spec.json> --out <file>
+    busbar-plugin-pack envelope --signed <file> --key <alg>:<hex> --signature <file> --out <file>
+    busbar-plugin-pack keyid <alg>:<hex>
+    busbar-plugin-pack seal <unsigned.tar.gz> --keys-doc <file> --release <file> --target <triple>
+                            [--keys <list>] --out <sealed.tar.gz>
+    busbar-plugin-pack verify <sealed.tar.gz> [--keys <list>] [--target <triple>] [--name <name>] [--version <semver>]
 
     pack     builds manifest.json over the cdylib (sha256 binding), signs it with the ed25519 seed
              in $BUSBAR_SIGN_KEY (64 hex chars), and writes the {cdylib + manifest.json} .tar.gz.
@@ -126,13 +136,23 @@ USAGE:
              writes the tarball manifest's canonical signed bytes (every field but `signature`) to
              --out, and prints one k=v line: canonical-sha256, name, version, kind, publisher,
              lib-sha256, signed. The canonical bytes are what a first-party signature is made over.
-    attach   inserts a first-party signature (hex, or @file holding the raw 64 bytes or their hex)
-             into an UNSIGNED tarball and writes the signed one, refusing unless the repackaged
-             tarball is `publisher: busbar`, structurally valid and verifies against a first-party
-             key: --keys <list> (the BUSBAR_RELEASE_PUBKEY format), or the list this tool was built
-             with.
-    verify   checks a signed first-party tarball against those keys (and --name/--version when
-             given): prints VERIFIED ... and exits 0, or REFUSED <path>: <reason> and exits 1."
+    release-manifest
+             writes the SIGNED BYTES of one release manifest listing each <tarball> (first-party,
+             unsigned) for its <target>: name, version, target, canonical-manifest sha256 and
+             length. <time> is YYYY-MM-DDTHH:MM:SSZ. The release signer signs exactly these bytes.
+    keys-doc writes the SIGNED BYTES of a keys document from a JSON spec: version, expires,
+             signers ([\"<alg>:<hex>\"...]), threshold, revoked_keyids, revoked_digests
+             ({\"<sha256>\": \"<why>\"}). A root key signs exactly these bytes.
+    envelope wraps signed bytes with one signature (raw: DER for p256, 64 bytes for ed25519) by the
+             key <alg>:<hex>, refusing a signature that does not verify over them.
+    keyid    prints the key id of <alg>:<hex> (alg: p256 | ed25519).
+    seal     puts the keys document and the release manifest into an UNSIGNED first-party tarball
+             and writes the sealed one, refusing unless it verifies through the chain for
+             --target against the root keys: --keys <list> (the BUSBAR_RELEASE_PUBKEY format), or
+             the list this tool was built with.
+    verify   checks a sealed (or per-plugin signed) first-party tarball against those keys, for
+             --target (default: this tool's own) and --name/--version when given: prints VERIFIED
+             ... and exits 0, or REFUSED <path>: <reason> and exits 1."
 }
 
 fn main() -> ExitCode {
@@ -141,7 +161,11 @@ fn main() -> ExitCode {
         Some("keygen") => keygen(),
         Some("pack") => pack(&args[1..]),
         Some("canonical") => report(canonical_cli(&args[1..])),
-        Some("attach") => report(attach_cli(&args[1..])),
+        Some("release-manifest") => report(release_manifest_cli(&args[1..])),
+        Some("keys-doc") => report(keys_doc_cli(&args[1..])),
+        Some("envelope") => report(envelope_cli(&args[1..])),
+        Some("keyid") => report(keyid_cli(&args[1..])),
+        Some("seal") => report(seal_cli(&args[1..])),
         Some("verify") => verify_cli(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{}", usage());
@@ -245,86 +269,310 @@ fn canonical_cli(args: &[String]) -> Result<String, String> {
     ))
 }
 
-/// A signature given as 128 hex digits, or as `@file` holding either the raw 64 bytes a hardware
-/// key writes or their hex.
-fn read_signature(spec: &str) -> Result<[u8; 64], String> {
-    let raw: Vec<u8> = if let Some(path) = spec.strip_prefix('@') {
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("cannot read signature file '{path}': {e}"))?;
-        if bytes.len() == 64 {
-            bytes
-        } else {
-            let text = String::from_utf8(bytes)
-                .map_err(|_| format!("signature file '{path}' is neither 64 raw bytes nor hex"))?;
-            hex::decode(text.trim())
-                .map_err(|e| format!("signature file '{path}' is not hex: {e}"))?
-        }
-    } else {
-        hex::decode(spec.trim()).map_err(|e| format!("--signature is not hex: {e}"))?
-    };
-    raw.as_slice()
-        .try_into()
-        .map_err(|_| format!("the signature is {} bytes, not 64", raw.len()))
+/// The checks a release command judges a seal at: now, and no accepted floor (a fresh install).
+fn release_checks() -> release_trust::Checks {
+    release_trust::Checks {
+        now: release_trust::now(),
+        keys_floor: 0,
+    }
 }
 
-/// `attach <tarball> --signature <hex|@file> [--keys <list>] --out <file>`
-fn attach_cli(args: &[String]) -> Result<String, String> {
-    let (path, flags) = release_args(args, &["signature", "keys", "out"])?;
-    let sig =
-        read_signature(flag(&flags, "signature").ok_or("missing --signature <128 hex | @file>")?)?;
-    let keys = release_keys(&flags)?;
-    let out = flag(&flags, "out").ok_or("missing --out <file>")?;
-    let (tarball, key_id) =
-        attach(&read_file(&path)?, &sig, &keys).map_err(|e| format!("'{path}': {e}"))?;
-    let m = busbar_plugin_loader::tarball::unpack(&tarball)?.manifest;
-    std::fs::write(out, &tarball).map_err(|e| format!("cannot write '{out}': {e}"))?;
+/// A public key spelled `<alg>:<hex>` (the key list's per-key spelling, without the id).
+fn public_key(spec: &str) -> Result<ReleaseKey, String> {
+    parse_release_keys(&format!("key:{}", spec.trim()))
+        .map(|mut k| k.remove(0).key)
+        .map_err(|e| format!("key '{spec}': {e}"))
+}
+
+/// A command's arguments: `--flag value` pairs from `known` (each at most once), and the
+/// positionals.
+fn flag_args(
+    args: &[String],
+    known: &[&str],
+) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+    let mut pos = Vec::new();
+    let mut flags: Vec<(String, String)> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if let Some(name) = a.strip_prefix("--") {
+            if !known.contains(&name) {
+                return Err(format!("unknown flag --{name}"));
+            }
+            if flags.iter().any(|(k, _)| k == name) {
+                return Err(format!("--{name} given twice"));
+            }
+            let v = it.next().ok_or_else(|| format!("--{name} needs a value"))?;
+            flags.push((name.to_string(), v.clone()));
+        } else {
+            pos.push(a.clone());
+        }
+    }
+    Ok((pos, flags))
+}
+
+fn need<'a>(flags: &'a [(String, String)], name: &str) -> Result<&'a str, String> {
+    flag(flags, name).ok_or_else(|| format!("missing --{name}"))
+}
+
+fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|e| format!("cannot write '{path}': {e}"))
+}
+
+/// One release-manifest entry for an UNSIGNED first-party tarball built for `target`.
+pub(crate) fn release_entry(tarball: &[u8], target: &str) -> Result<release_trust::Target, String> {
+    let up = busbar_plugin_loader::tarball::unpack(tarball)?;
+    let m = &up.manifest;
+    busbar_plugin_loader::sign::validate_structure(
+        m,
+        &up.lib_bytes,
+        &busbar_plugin_loader::supported_abi,
+        busbar_plugin_loader::sign::HOST_IDENTITY,
+    )
+    .map_err(|e| format!("structural validation: {e}"))?;
+    if m.publisher != FIRST_PARTY_PUBLISHER {
+        return Err(format!(
+            "publisher is '{}', not '{FIRST_PARTY_PUBLISHER}': a release lists first-party plugins only",
+            m.publisher
+        ));
+    }
+    if !m.signature.trim().is_empty() {
+        return Err("already signed or sealed; a release lists the UNSIGNED tarballs".to_string());
+    }
+    let bytes = canonical_manifest_bytes(m);
+    Ok(release_trust::Target {
+        name: m.name.clone(),
+        version: m.version.clone(),
+        target: target.to_string(),
+        sha256: sha256_hex(&bytes),
+        length: bytes.len() as u64,
+    })
+}
+
+/// The SIGNED BYTES of the release manifest listing `entries`.
+pub(crate) fn release_manifest_bytes(
+    version: u64,
+    expires: u64,
+    targets: Vec<release_trust::Target>,
+) -> Result<Vec<u8>, String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for t in &targets {
+        if !seen.insert((t.name.clone(), t.version.clone(), t.target.clone())) {
+            return Err(format!(
+                "{}/{}/{} is listed twice",
+                t.name, t.version, t.target
+            ));
+        }
+    }
+    wire::canonical(&wire::targets_signed(&release_trust::TargetsDoc {
+        role: release_trust::PLUGINS_ROLE.to_string(),
+        version,
+        expires,
+        targets,
+    }))
+}
+
+/// `release-manifest --version <n> --expires <time> --out <file> <tarball>=<target>...`
+fn release_manifest_cli(args: &[String]) -> Result<String, String> {
+    let (pos, flags) = flag_args(args, &["version", "expires", "out"])?;
+    let version: u64 = need(&flags, "version")?
+        .parse()
+        .map_err(|e| format!("--version: {e}"))?;
+    let expires = wire::parse_time(need(&flags, "expires")?)?;
+    if pos.is_empty() {
+        return Err("no <tarball>=<target> given".to_string());
+    }
+    let mut targets = Vec::new();
+    for p in &pos {
+        let (path, target) = p
+            .rsplit_once('=')
+            .ok_or_else(|| format!("'{p}' is not <tarball>=<target>"))?;
+        targets
+            .push(release_entry(&read_file(path)?, target).map_err(|e| format!("'{path}': {e}"))?);
+    }
+    let n = targets.len();
+    let bytes = release_manifest_bytes(version, expires, targets)?;
+    let out = need(&flags, "out")?;
+    write_file(out, &bytes)?;
     Ok(format!(
-        "attached {} v{} key={key_id} canonical-sha256={} tarball-sha256={} -> {out}",
-        m.name,
-        m.version,
-        canonical_sha256(&m),
-        sha256_hex(&tarball)
+        "release-manifest version={version} entries={n} signed-sha256={} -> {out}",
+        sha256_hex(&bytes)
     ))
 }
 
-/// ATTACH: insert `sig` into the unsigned first-party tarball `unsigned` and return the signed
-/// tarball with the id of the key in `keys` that made it. Refused for an already-signed tarball,
-/// and unless the REPACKAGED bytes pass [`verify_first_party`]: nothing that would not load as
-/// first-party leaves here.
-pub(crate) fn attach(
-    unsigned: &[u8],
-    sig: &[u8; 64],
-    keys: &[FirstPartyKey],
-) -> Result<(Vec<u8>, String), String> {
-    let up = busbar_plugin_loader::tarball::unpack(unsigned)?;
-    if !up.manifest.signature.trim().is_empty() {
-        return Err(
-            "already signed; attach takes the UNSIGNED tarball the release build emitted"
-                .to_string(),
-        );
-    }
-    let before = canonical_sha256(&up.manifest);
-    let manifest = Manifest {
-        signature: hex::encode(sig),
-        ..up.manifest
-    };
-    // The signature is outside the canonical bytes, so attaching cannot change what was signed.
-    // Checked anyway: a change here would mean the owner signed other bytes.
-    if canonical_sha256(&manifest) != before {
-        return Err("attaching the signature changed the canonical bytes".to_string());
-    }
-    let signed = busbar_plugin_loader::tarball::package(&manifest, &up.lib_name, &up.lib_bytes)?;
-    // Verify what is written, not the in-memory copy.
-    let id = verify_first_party(&signed, keys)?;
-    Ok((signed, id))
+/// The keys-document spec `keys-doc --spec` reads.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeysSpec {
+    version: u64,
+    expires: String,
+    signers: Vec<String>,
+    #[serde(default = "one")]
+    threshold: u64,
+    #[serde(default)]
+    revoked_keyids: Vec<String>,
+    #[serde(default)]
+    revoked_digests: std::collections::BTreeMap<String, String>,
 }
 
-/// VERIFY: the tarball is structurally valid, `publisher: busbar`, signed, and its signature
-/// verifies against one of `keys` (the loader's own [`first_party_signer`]); the id of that key.
-pub(crate) fn verify_first_party(tarball: &[u8], keys: &[FirstPartyKey]) -> Result<String, String> {
-    if keys.is_empty() {
+fn one() -> u64 {
+    1
+}
+
+/// The SIGNED BYTES of the keys document a spec describes.
+pub(crate) fn keys_doc_bytes(spec: &[u8]) -> Result<Vec<u8>, String> {
+    let spec: KeysSpec = serde_json::from_slice(spec).map_err(|e| format!("the spec: {e}"))?;
+    if spec.signers.is_empty() || spec.threshold == 0 || spec.threshold > spec.signers.len() as u64
+    {
+        return Err(format!(
+            "the spec names {} signer(s) with threshold {}; it must name at least one and a \
+             threshold between 1 and their number",
+            spec.signers.len(),
+            spec.threshold
+        ));
+    }
+    let mut keys = std::collections::BTreeMap::new();
+    for s in &spec.signers {
+        let k = public_key(s)?;
+        keys.insert(wire::key_id(&k), k);
+    }
+    let keyids: Vec<String> = keys.keys().cloned().collect();
+    wire::canonical(&wire::keys_signed(&release_trust::KeysDoc {
+        version: spec.version,
+        expires: wire::parse_time(&spec.expires)?,
+        keys,
+        roles: [(
+            release_trust::PLUGINS_ROLE.to_string(),
+            release_trust::Role {
+                keyids,
+                threshold: spec.threshold,
+            },
+        )]
+        .into(),
+        revoked_keyids: spec.revoked_keyids.into_iter().collect(),
+        revoked_digests: spec.revoked_digests,
+    }))
+}
+
+/// `keys-doc --spec <spec.json> --out <file>`
+fn keys_doc_cli(args: &[String]) -> Result<String, String> {
+    let (pos, flags) = flag_args(args, &["spec", "out"])?;
+    if !pos.is_empty() {
+        return Err(format!("unexpected argument '{}'", pos[0]));
+    }
+    let bytes = keys_doc_bytes(&read_file(need(&flags, "spec")?)?)?;
+    let out = need(&flags, "out")?;
+    write_file(out, &bytes)?;
+    Ok(format!(
+        "keys-doc signed-sha256={} -> {out}",
+        sha256_hex(&bytes)
+    ))
+}
+
+/// The envelope over `signed` (the exact bytes `release-manifest`/`keys-doc` wrote) with `sig`, made
+/// by `key`; refused unless the signature verifies over those bytes.
+pub(crate) fn envelope(signed: &[u8], key: &ReleaseKey, sig: &[u8]) -> Result<Vec<u8>, String> {
+    let value: serde_json::Value = serde_json::from_slice(signed)
+        .map_err(|e| format!("the signed bytes are not JSON: {e}"))?;
+    if wire::canonical(&value)? != signed {
         return Err(
-            "no first-party key to verify against (pass --keys, or build this tool with \
+            "the signed bytes are not canonical; sign what release-manifest or keys-doc wrote"
+                .into(),
+        );
+    }
+    if !wire::verify(key, signed, sig) {
+        return Err(format!(
+            "the signature does not verify over the signed bytes with {} key {}",
+            key.algorithm(),
+            wire::key_id(key)
+        ));
+    }
+    wire::write_envelope(&value, &[(wire::key_id(key), sig.to_vec())])
+}
+
+/// `envelope --signed <file> --key <alg>:<hex> --signature <file> --out <file>`
+fn envelope_cli(args: &[String]) -> Result<String, String> {
+    let (pos, flags) = flag_args(args, &["signed", "key", "signature", "out"])?;
+    if !pos.is_empty() {
+        return Err(format!("unexpected argument '{}'", pos[0]));
+    }
+    let key = public_key(need(&flags, "key")?)?;
+    let env = envelope(
+        &read_file(need(&flags, "signed")?)?,
+        &key,
+        &read_file(need(&flags, "signature")?)?,
+    )?;
+    let out = need(&flags, "out")?;
+    write_file(out, &env)?;
+    Ok(format!("envelope keyid={} -> {out}", wire::key_id(&key)))
+}
+
+/// `keyid <alg>:<hex>`
+fn keyid_cli(args: &[String]) -> Result<String, String> {
+    match args {
+        [spec] => Ok(wire::key_id(&public_key(spec)?)),
+        _ => Err("keyid takes one <alg>:<hex>".to_string()),
+    }
+}
+
+/// SEAL: put `keys` and `release` (envelopes) into the unsigned first-party tarball `unsigned`
+/// and return the sealed tarball with the id of the root that vouches for it. Refused for a
+/// tarball that is not an unsigned first-party one, and unless the REPACKAGED bytes pass
+/// [`verify_first_party`] for `target`: nothing that would not load as first-party leaves here.
+pub(crate) fn seal(
+    unsigned: &[u8],
+    keys: &[u8],
+    release: &[u8],
+    target: &str,
+    roots: &[FirstPartyKey],
+) -> Result<(Vec<u8>, String), String> {
+    release_entry(unsigned, target)?;
+    let up = busbar_plugin_loader::tarball::unpack(unsigned)?;
+    let manifest = Manifest {
+        signature: wire::write_seal(keys, release)?,
+        ..up.manifest
+    };
+    let sealed = busbar_plugin_loader::tarball::package(&manifest, &up.lib_name, &up.lib_bytes)?;
+    // Verify what is written, not the in-memory copy.
+    let id = verify_first_party(&sealed, roots, target)?;
+    Ok((sealed, id))
+}
+
+/// `seal <tarball> --keys-doc <file> --release <file> --target <triple> [--keys <list>] --out <file>`
+fn seal_cli(args: &[String]) -> Result<String, String> {
+    let (path, flags) = release_args(args, &["keys-doc", "release", "target", "keys", "out"])?;
+    let roots = release_keys(&flags)?;
+    let target = need(&flags, "target")?;
+    let (sealed, root) = seal(
+        &read_file(&path)?,
+        &read_file(need(&flags, "keys-doc")?)?,
+        &read_file(need(&flags, "release")?)?,
+        target,
+        &roots,
+    )
+    .map_err(|e| format!("'{path}': {e}"))?;
+    let m = busbar_plugin_loader::tarball::unpack(&sealed)?.manifest;
+    let out = need(&flags, "out")?;
+    write_file(out, &sealed)?;
+    Ok(format!(
+        "sealed {} v{} target={target} root={root} canonical-sha256={} tarball-sha256={} -> {out}",
+        m.name,
+        m.version,
+        canonical_sha256(&m),
+        sha256_hex(&sealed)
+    ))
+}
+
+/// VERIFY: the tarball is structurally valid, `publisher: busbar`, sealed (or per-plugin signed),
+/// and verifies for `target` through the loader's own [`first_party_signer_for`] against `roots`;
+/// the id of the vouching root.
+pub(crate) fn verify_first_party(
+    tarball: &[u8],
+    roots: &[FirstPartyKey],
+    target: &str,
+) -> Result<String, String> {
+    if roots.is_empty() {
+        return Err(
+            "no first-party root key to verify against (pass --keys, or build this tool with \
              BUSBAR_RELEASE_PUBKEY set to the key list)"
                 .to_string(),
         );
@@ -345,25 +593,26 @@ pub(crate) fn verify_first_party(tarball: &[u8], keys: &[FirstPartyKey]) -> Resu
         ));
     }
     if m.signature.trim().is_empty() {
-        return Err("the manifest carries no signature".to_string());
+        return Err("the manifest carries no seal or signature".to_string());
     }
-    // The loader's own reason is 1.5.5's bare "signature does not verify"; this tool names the key
-    // ids it tried, from the refusal's structured field.
-    first_party_signer(m, &up.lib_bytes, keys)
+    // The loader's own reason for a per-plugin signature is 1.5.5's bare "signature does not
+    // verify"; this tool names the key ids it tried, from the refusal's structured field.
+    first_party_signer_for(m, &up.lib_bytes, roots, release_checks(), target)
         .map(|k| k.id.clone())
         .map_err(|unverified| unverified.naming_trusted_keys())
 }
 
-/// `verify <tarball> [--keys <list>] [--name <name>] [--version <semver>]`: `VERIFIED …` and exit
-/// 0, or `REFUSED <path>: <reason>` on stdout and exit 1.
+/// `verify <tarball> [--keys <list>] [--target <triple>] [--name <name>] [--version <semver>]`:
+/// `VERIFIED …` and exit 0, or `REFUSED <path>: <reason>` on stdout and exit 1.
 fn verify_cli(args: &[String]) -> ExitCode {
     let mut path = String::new();
     let mut run = || -> Result<String, String> {
-        let (p, flags) = release_args(args, &["keys", "name", "version"])?;
+        let (p, flags) = release_args(args, &["keys", "target", "name", "version"])?;
         path = p.clone();
         let keys = release_keys(&flags)?;
+        let target = flag(&flags, "target").unwrap_or(release_trust::PLUGIN_TARGET);
         let bytes = read_file(&p)?;
-        let key_id = verify_first_party(&bytes, &keys)?;
+        let key_id = verify_first_party(&bytes, &keys, target)?;
         let m = busbar_plugin_loader::tarball::unpack(&bytes)?.manifest;
         if let Some(want) = flag(&flags, "name") {
             if m.name != want {
@@ -379,7 +628,7 @@ fn verify_cli(args: &[String]) -> ExitCode {
             }
         }
         Ok(format!(
-            "VERIFIED {p} name={} version={} kind={} key={key_id} lib-sha256={} canonical-sha256={}",
+            "VERIFIED {p} name={} version={} kind={} target={target} root={key_id} lib-sha256={} canonical-sha256={}",
             m.name,
             m.version,
             m.kind,

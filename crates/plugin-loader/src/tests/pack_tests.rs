@@ -1238,13 +1238,13 @@ fn pack_refuses_a_version_the_statement_does_not_state() {
     );
 }
 
-// ── OFFLINE FIRST-PARTY SIGNING: canonical -> (hardware key) -> attach -> verify ───────────────
+// ── ONE SIGNATURE PER RELEASE: release-manifest -> (signer) -> envelope -> seal -> verify ───────
 
-/// An UNSIGNED first-party tarball, as a release's pack step emits it for the offline signer.
-fn unsigned_first_party(lib: &[u8]) -> Vec<u8> {
+/// An UNSIGNED first-party tarball, as a release's pack step emits it.
+fn unsigned_first_party(name: &str, lib: &[u8]) -> Vec<u8> {
     let m = Manifest {
-        name: "busbar-store-x".into(),
-        alias: "x".into(),
+        name: name.into(),
+        alias: name.trim_start_matches("busbar-store-").into(),
         kind: "store".into(),
         version: "1.6.0".into(),
         publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
@@ -1259,136 +1259,217 @@ fn unsigned_first_party(lib: &[u8]) -> Vec<u8> {
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// What the offline signer does: sign the canonical bytes; the raw 64-byte signature.
-fn offline_signature(key: &SigningKey, unsigned: &[u8]) -> [u8; 64] {
-    use ed25519_dalek::Signer;
-    let up = busbar_plugin_loader::tarball::unpack(unsigned).unwrap();
-    key.sign(&canonical_manifest_bytes(&up.manifest)).to_bytes()
-}
+/// A P-256 key the test holds (what KMS, the PIV slot or the interim signer hold).
+struct P256(ring::signature::EcdsaKeyPair);
 
-fn keys(list: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
-    list.iter()
-        .map(|(id, k)| FirstPartyKey {
-            id: (*id).into(),
-            key: busbar_plugin_loader::sign::ReleaseKey::Ed25519(k.verifying_key()),
-        })
-        .collect()
-}
-
-/// GREEN: a signature made offline over the canonical bytes attaches, verifies, names the key that
-/// made it, and the signed tarball loads as first-party under the engine's own trust evaluation.
-#[test]
-fn an_offline_signature_attaches_and_the_tarball_loads_as_first_party() {
-    let (a, b) = (
-        SigningKey::from_bytes(&[11; 32]),
-        SigningKey::from_bytes(&[12; 32]),
-    );
-    let list = keys(&[("plugins-a", &a), ("plugins-b", &b)]);
-    let unsigned = unsigned_first_party(b"cdylib");
-    let (signed, id) = attach(&unsigned, &offline_signature(&b, &unsigned), &list).unwrap();
-    assert_eq!(id, "plugins-b");
-    assert_eq!(verify_first_party(&signed, &list).unwrap(), "plugins-b");
-    let up = busbar_plugin_loader::tarball::unpack(&signed).unwrap();
-    let policy = busbar_plugin_loader::sign::TrustPolicy {
-        first_party_keys: list,
-        ..Default::default()
-    };
-    assert!(matches!(
-        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
-        busbar_plugin_loader::sign::Verdict::Trusted {
-            first_party: true,
-            ..
+impl P256 {
+    fn new() -> Self {
+        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING as ALG};
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
+        P256(EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap())
+    }
+    fn spec(&self) -> String {
+        use ring::signature::KeyPair as _;
+        format!("p256:{}", hex::encode(self.0.public_key().as_ref()))
+    }
+    fn key(&self) -> ReleaseKey {
+        public_key(&self.spec()).unwrap()
+    }
+    /// What `openssl dgst -sha256 -sign`, `gcloud kms asymmetric-sign` and the PIV slot return: DER.
+    fn sign(&self, bytes: &[u8]) -> Vec<u8> {
+        self.0
+            .sign(&ring::rand::SystemRandom::new(), bytes)
+            .unwrap()
+            .as_ref()
+            .to_vec()
+    }
+    fn root(&self, id: &str) -> FirstPartyKey {
+        FirstPartyKey {
+            id: id.into(),
+            key: self.key(),
         }
-    ));
+    }
 }
 
-/// RED: every shape the publish step must refuse.
+const TARGET_A: &str = "x86_64-unknown-linux-gnu";
+const TARGET_B: &str = "aarch64-apple-darwin";
+
+/// A keys document `root` vouches for, naming `signer`, expiring 2099.
+fn keys_envelope(root: &P256, signer: &P256) -> Vec<u8> {
+    let spec = format!(
+        r#"{{"version": 1, "expires": "2099-01-01T00:00:00Z", "signers": ["{}"]}}"#,
+        signer.spec()
+    );
+    let signed = keys_doc_bytes(spec.as_bytes()).unwrap();
+    envelope(&signed, &root.key(), &root.sign(&signed)).unwrap()
+}
+
+/// GREEN: one release manifest lists every tarball of the release for its target, one signature
+/// covers it, and each tarball sealed with it verifies for its own target and loads as first-party
+/// under the engine's own trust evaluation on its own target.
 #[test]
-fn attach_refuses_what_would_not_load_as_first_party() {
-    let a = SigningKey::from_bytes(&[11; 32]);
-    let stranger = SigningKey::from_bytes(&[13; 32]);
-    let list = keys(&[("plugins-a", &a)]);
-    let unsigned = unsigned_first_party(b"cdylib");
-
-    let err = attach(&unsigned, &offline_signature(&stranger, &unsigned), &list).unwrap_err();
-    assert!(
-        err.contains("[plugins-a]"),
-        "an unlisted key is refused naming the list: {err}"
-    );
-
-    let other = unsigned_first_party(b"another cdylib");
-    assert!(
-        attach(&unsigned, &offline_signature(&a, &other), &list).is_err(),
-        "a signature over a different manifest is refused"
-    );
-    assert!(
-        attach(&unsigned, &offline_signature(&a, &unsigned), &[]).is_err(),
-        "a tool built with no first-party key verifies nothing"
-    );
-
-    let (signed, _) = attach(&unsigned, &offline_signature(&a, &unsigned), &list).unwrap();
-    assert!(
-        attach(&signed, &offline_signature(&a, &unsigned), &list).is_err(),
-        "an already-signed tarball is refused"
-    );
-
-    let mut third = busbar_plugin_loader::tarball::unpack(&unsigned)
-        .unwrap()
-        .manifest;
-    third.publisher = "acme".into();
-    let third = busbar_plugin_loader::tarball::package(&third, "lib.so", b"cdylib").unwrap();
-    assert!(
-        attach(&third, &offline_signature(&a, &third), &list).is_err(),
-        "attach signs first-party manifests only"
-    );
+fn one_signature_seals_every_tarball_of_a_release() {
+    let (kms, piv, signer) = (P256::new(), P256::new(), P256::new());
+    let roots = vec![
+        kms.root("busbar-plugins-root"),
+        piv.root("busbar-plugins-2026a"),
+    ];
+    let tarballs = [
+        (unsigned_first_party("busbar-store-x", b"x on a"), TARGET_A),
+        (unsigned_first_party("busbar-store-x", b"x on b"), TARGET_B),
+        (unsigned_first_party("busbar-store-y", b"y on a"), TARGET_A),
+        (
+            unsigned_first_party("busbar-store-y", b"y here"),
+            release_trust::PLUGIN_TARGET,
+        ),
+    ];
+    let entries = tarballs
+        .iter()
+        .map(|(t, target)| release_entry(t, target).unwrap())
+        .collect::<Vec<_>>();
+    let signed = release_manifest_bytes(
+        1,
+        wire::parse_time("2099-01-01T00:00:00Z").unwrap(),
+        entries,
+    )
+    .unwrap();
+    let release = envelope(&signed, &signer.key(), &signer.sign(&signed)).unwrap();
+    let keys = keys_envelope(&kms, &signer);
+    for (unsigned, target) in &tarballs {
+        let (sealed, root) = seal(unsigned, &keys, &release, target, &roots).unwrap();
+        assert_eq!(root, "busbar-plugins-root");
+        assert_eq!(verify_first_party(&sealed, &roots, target).unwrap(), root);
+        if *target == release_trust::PLUGIN_TARGET {
+            let up = busbar_plugin_loader::tarball::unpack(&sealed).unwrap();
+            let policy = busbar_plugin_loader::sign::TrustPolicy {
+                first_party_keys: roots.clone(),
+                ..Default::default()
+            };
+            assert!(matches!(
+                busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy),
+                Ok(busbar_plugin_loader::sign::Verdict::Trusted {
+                    first_party: true,
+                    ..
+                })
+            ));
+        }
+    }
 }
 
-/// VERIFY names the trusted key ids: a first-party tarball signed by a key not in the list (a
-/// retired or leaked one) is REFUSED with every id this tool trusts, taken from the loader's
-/// structured refusal; the loader's own reason stays 1.5.5's bare "signature does not verify".
+/// RED: every shape the release tooling must refuse.
+#[test]
+fn the_release_tooling_refuses_what_would_not_load_as_first_party() {
+    let (kms, signer, stranger) = (P256::new(), P256::new(), P256::new());
+    let roots = vec![kms.root("busbar-plugins-root")];
+    let x = unsigned_first_party("busbar-store-x", b"x");
+    let y = unsigned_first_party("busbar-store-y", b"y");
+    let far = wire::parse_time("2099-01-01T00:00:00Z").unwrap();
+    let signed =
+        release_manifest_bytes(1, far, vec![release_entry(&x, TARGET_A).unwrap()]).unwrap();
+    let release = envelope(&signed, &signer.key(), &signer.sign(&signed)).unwrap();
+    let keys = keys_envelope(&kms, &signer);
+
+    let e = envelope(&signed, &signer.key(), &stranger.sign(&signed)).unwrap_err();
+    assert!(
+        e.contains("does not verify"),
+        "a signature by another key: {e}"
+    );
+
+    let e = seal(&y, &keys, &release, TARGET_A, &roots).unwrap_err();
+    assert!(
+        e.contains("does not list 'busbar-store-y'"),
+        "unlisted: {e}"
+    );
+
+    let e = seal(&x, &keys, &release, TARGET_B, &roots).unwrap_err();
+    assert!(
+        e.contains("not for this binary's target"),
+        "wrong target: {e}"
+    );
+
+    let other = vec![P256::new().root("other-root")];
+    let e = seal(&x, &keys, &release, TARGET_A, &other).unwrap_err();
+    assert!(
+        e.contains("[other-root]"),
+        "a keys document no listed root signed: {e}"
+    );
+    assert!(
+        seal(&x, &keys, &release, TARGET_A, &[]).is_err(),
+        "no root verifies nothing"
+    );
+
+    let (sealed, _) = seal(&x, &keys, &release, TARGET_A, &roots).unwrap();
+    assert!(
+        seal(&sealed, &keys, &release, TARGET_A, &roots)
+            .unwrap_err()
+            .contains("already"),
+        "an already-sealed tarball is refused"
+    );
+    let mut third = busbar_plugin_loader::tarball::unpack(&x).unwrap().manifest;
+    third.publisher = "acme".into();
+    let third = busbar_plugin_loader::tarball::package(&third, "lib.so", b"x").unwrap();
+    assert!(
+        release_entry(&third, TARGET_A).is_err(),
+        "a release lists first-party plugins only"
+    );
+    assert!(
+        release_manifest_bytes(
+            1,
+            far,
+            vec![
+                release_entry(&x, TARGET_A).unwrap(),
+                release_entry(&x, TARGET_A).unwrap()
+            ]
+        )
+        .is_err(),
+        "an entry listed twice is refused"
+    );
+    assert!(
+        keys_doc_bytes(br#"{"version":1,"expires":"2099-01-01T00:00:00Z","signers":[]}"#).is_err()
+    );
+    assert!(keys_doc_bytes(
+        format!(
+            r#"{{"version":1,"expires":"2099-01-01T00:00:00Z","signers":["{}"],"threshold":0}}"#,
+            signer.spec()
+        )
+        .as_bytes()
+    )
+    .is_err());
+}
+
+/// VERIFY names the trusted root ids for a per-plugin signature by a key not in the list; the
+/// loader's own reason stays 1.5.5's bare "signature does not verify".
 #[test]
 fn verify_refuses_an_unlisted_key_naming_the_trusted_ids() {
-    let (a, b) = (
-        SigningKey::from_bytes(&[11; 32]),
-        SigningKey::from_bytes(&[12; 32]),
-    );
+    use ed25519_dalek::Signer as _;
     let stranger = SigningKey::from_bytes(&[13; 32]);
-    let list = keys(&[("plugins-a", &a), ("plugins-b", &b)]);
-    let unsigned = unsigned_first_party(b"cdylib");
+    let roots = vec![P256::new().root("busbar-plugins-root")];
+    let unsigned = unsigned_first_party("busbar-store-x", b"cdylib");
     let up = busbar_plugin_loader::tarball::unpack(&unsigned).unwrap();
     let manifest = Manifest {
-        signature: hex::encode(offline_signature(&stranger, &unsigned)),
+        signature: hex::encode(
+            stranger
+                .sign(&canonical_manifest_bytes(&up.manifest))
+                .to_bytes(),
+        ),
         ..up.manifest
     };
     let signed =
         busbar_plugin_loader::tarball::package(&manifest, "lib.so", &up.lib_bytes).unwrap();
     assert_eq!(
-        verify_first_party(&signed, &list).unwrap_err(),
-        "signature verifies against none of this build's first-party keys [plugins-a, plugins-b]"
+        verify_first_party(&signed, &roots, TARGET_A).unwrap_err(),
+        "signature verifies against none of this build's first-party keys [busbar-plugins-root]"
     );
 }
 
-/// The CLI contract the release gate drives: `@file` signatures in both forms, `canonical --out`,
-/// and an unknown flag refused.
+/// The CLI contract the release gate drives: `canonical --out`, `keyid`, and an unknown flag
+/// refused.
 #[test]
-fn the_release_cli_reads_both_signature_files_and_names_the_canonical_bytes() {
-    let a = SigningKey::from_bytes(&[11; 32]);
-    let unsigned = unsigned_first_party(b"cdylib");
-    let sig = offline_signature(&a, &unsigned);
+fn the_release_cli_names_the_canonical_bytes_and_key_ids() {
+    let unsigned = unsigned_first_party("busbar-store-x", b"cdylib");
     let dir = std::env::temp_dir().join(format!("pack-release-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (raw, hexed) = (dir.join("sig.bin"), dir.join("sig.hex"));
-    std::fs::write(&raw, sig).unwrap();
-    std::fs::write(&hexed, format!("{}\n", hex::encode(sig))).unwrap();
-    for f in [&raw, &hexed] {
-        assert_eq!(read_signature(&format!("@{}", f.display())).unwrap(), sig);
-    }
-    assert_eq!(read_signature(&hex::encode(sig)).unwrap(), sig);
-    assert!(
-        read_signature("abcd").is_err(),
-        "a short signature is refused"
-    );
-
     let tgz = dir.join("u.tar.gz");
     std::fs::write(&tgz, &unsigned).unwrap();
     let canon = dir.join("u.canonical");
@@ -1407,6 +1488,8 @@ fn the_release_cli_reads_both_signature_files_and_names_the_canonical_bytes() {
         line.contains(" publisher=busbar ") && line.ends_with(" signed=false"),
         "{line}"
     );
+    let k = P256::new();
+    assert_eq!(keyid_cli(&[k.spec()]).unwrap(), wire::key_id(&k.key()));
     assert!(
         release_args(&["x".into(), "--bogus".into(), "1".into()], &["out"]).is_err(),
         "an unknown flag is refused"
