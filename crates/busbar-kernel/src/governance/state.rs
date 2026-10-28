@@ -517,7 +517,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some(crate::plane_driver::registry::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
-            issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
+            issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
         })
     }
 
@@ -535,7 +535,7 @@ impl GovState {
         let domain = crate::plane_driver::registry::plane_decl_for_config_section("agents")?
             .card_signing_domain?;
         let m = self.signing_material()?;
-        Some(m.signer.sign_with_card_subkey(domain, signing_input))
+        Some(m.signer.sign_with_subkey(domain, signing_input))
     }
 
     /// SIGN `input` with the subkey this node's signing key derives for `domain`: the key id and the
@@ -545,7 +545,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some((
             m.signer.kid().to_string(),
-            m.signer.sign_with_card_subkey(domain, input),
+            m.signer.sign_with_subkey(domain, input),
         ))
     }
 
@@ -599,6 +599,23 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
+        self.record_usage_served(cost, key, pool, model, None, units, now);
+    }
+
+    /// [`GovState::record_usage`] for a unit whose serving member's `provider` is known: a pools
+    /// lane's classes mirror onto the `(model, provider)` metering row its request meters on
+    /// ([`GovState::record_lane_metering`]), never onto an unattributed `(model, "")` row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_usage_served(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        model: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+    ) {
         if units.values().all(|v| *v == 0) {
             return; // nothing to ledger
         }
@@ -608,7 +625,7 @@ impl GovState {
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
         // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
         // lands — so the admin usage read prices exactly the counts this book prices.
-        self.meter_classes(&key.id, model, units, era, now);
+        self.meter_classes(&key.id, model, provider, units, era, now);
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
         let chain = match cost.chain_for(key) {
@@ -634,7 +651,10 @@ impl GovState {
     /// THE ROW IS THE ONE THE PLANE'S OWN SERIES ROW IS KEYED BY. A plane-qualified lane
     /// `"<plane>\u{1f}<subject>"` lands on `(model: <subject>, provider: <plane>)` — the row a plane's
     /// metered request already writes, whose provider column names the plane — and a plane's fee lane
-    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>, "")`.
+    /// `"<plane>\u{1f}"` on `("", <plane>)`. An unqualified (pools) lane lands on `(<lane>,
+    /// <provider>)`, the serving member's provider, the row its request meters on: spend is always
+    /// attributed. Only a count with no serving member at all (no attempt committed) keeps an empty
+    /// provider, so it is never dropped.
     ///
     /// NOTHING IS COUNTED TWICE. On an unqualified lane the four reserved token tiers are left off:
     /// the same response's `record_metering` carries them in the row's token columns. Every other
@@ -644,6 +664,7 @@ impl GovState {
         &self,
         key_id: &str,
         lane: &str,
+        provider: Option<&str>,
         units: &std::collections::BTreeMap<String, u64>,
         priced_from_ms: u64,
         now: u64,
@@ -662,7 +683,7 @@ impl GovState {
             return;
         }
         let (model, provider) = if plane.is_empty() {
-            (lane, "")
+            (lane, provider.unwrap_or(""))
         } else {
             (subject, plane)
         };
@@ -1652,61 +1673,64 @@ impl GovState {
 
     /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
     /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
-    /// (key and group usage, the `/metrics` money gauges) prices `segments` only after this folds in
-    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or a
-    /// bucket of that key's group chain the correction's pool participates in (Q64/Q67: an unscoped
-    /// bucket always, a pool-scoped one for its own pool; a sealed correction naming no pool reaches
-    /// the unscoped buckets only), whose window holds the unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
-    /// A correction leaving a count fractional or below zero REFUSES (`Overflow`), never clamps.
+    /// (key and group usage, the `/metrics` money gauges) AND the admission check
+    /// ([`Self::try_admit`]) price `segments` only after this folds in Σ (now − was) of each
+    /// correction that lands on the bucket ([`Self::landing_corrections`]). The delta lands on the
+    /// unit's lane in the latest era not after the epoch. A correction leaving a count fractional or
+    /// below zero REFUSES (`Overflow`), never clamps.
     fn corrected(
         &self,
         cost: &crate::cost::CostModel,
-        (bucket_id, period, window): (&str, &str, u64),
+        bucket: (&str, &str, u64),
         segments: &mut Vec<ModelCell>,
     ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
+        let corrections = self.amendments.corrections();
+        let landing = self.landing_corrections(cost, bucket, &corrections)?;
+        Ok(fold_corrections(segments, &landing))
+    }
+
+    /// The corrections among `corrections` that land on one bucket's window: its principal's own
+    /// bucket, or a bucket of that key's group chain the correction's pool participates in (Q64/Q67:
+    /// an unscoped bucket always, a pool-scoped one for its own pool; a sealed correction naming no
+    /// pool reaches the unscoped buckets only), whose window holds the unit's card epoch. The
+    /// principal's key is read from the key cache, and from the store only for a key the cache no
+    /// longer holds (a deleted key's row is kept), so a read and an admission resolve it the same way
+    /// and an admission makes no store round-trip for a live key.
+    fn landing_corrections<'c>(
+        &self,
+        cost: &crate::cost::CostModel,
+        (bucket_id, period, window): (&str, &str, u64),
+        corrections: &'c [crate::audit::amend::Amendment],
+    ) -> RecordStoreResult<Vec<&'c crate::audit::amend::Adjust>> {
         use crate::audit::amend::{AmendBody, Subject};
-        for amendment in self.amendments.corrections() {
+        let mut landing = Vec::new();
+        for amendment in corrections {
             let AmendBody::Adjust(adj) = &amendment.body else {
                 continue;
             };
             let Subject::PrincipalId(p) = &adj.subject else {
                 continue;
             };
-            let lands = budget_window(period, adj.card_epoch_ms / 1_000) == window
-                && (p == bucket_id
-                    || self.store.get_key(p)?.is_some_and(|k| {
-                        (cost.chain_for(&k).ok()).is_some_and(|c| {
-                            c.iter()
-                                .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
-                        })
-                    }));
-            if !lands {
+            if budget_window(period, adj.card_epoch_ms / 1_000) != window {
                 continue;
             }
-            let at = adj.card_epoch_ms;
-            let seg = (segments.iter().enumerate())
-                .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
-                .max_by_key(|(_, m)| m.era)
-                .map(|(i, _)| i);
-            let i = seg.unwrap_or_else(|| {
-                segments.push(ModelCell {
-                    model: std::sync::Arc::from(adj.lane.as_str()),
-                    era: crate::rate_apply::effective_from_at(at),
-                    cur: BTreeMap::new(),
-                    flushed: BTreeMap::new(),
-                });
-                segments.len() - 1
-            });
-            for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
-                let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
-                let slot = segments[i].cur.entry(class.clone()).or_insert(0);
-                match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
-                    Some(n) if frac == 0 => *slot = n,
-                    _ => return Ok(Err(busbar_kernel_ledger::cost::MoneyError::Overflow)),
-                }
+            let lands = p == bucket_id || {
+                let key = match self.lookup_by_sub(p) {
+                    Some(key) => Some(key),
+                    None => self.store.get_key(p)?.map(Arc::new),
+                };
+                key.is_some_and(|k| {
+                    (cost.chain_for(&k).ok()).is_some_and(|c| {
+                        c.iter()
+                            .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
+                    })
+                })
+            };
+            if lands {
+                landing.push(adj);
             }
         }
-        Ok(Ok(()))
+        Ok(landing)
     }
 
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
@@ -1759,14 +1783,25 @@ impl GovState {
         let mut out = Vec::with_capacity(chain.len());
         for bucket in chain.iter() {
             let window = budget_window(bucket.window, now);
-            let spend = {
+            let live = {
                 let map = self.budget.read(bucket.bucket_id);
-                match map.get(bucket.bucket_id) {
-                    Some(cell) if cell.window_start == window => {
-                        cell.spend(cost, true).and_then(Money::micros_i64)
+                (map.get(bucket.bucket_id))
+                    .filter(|cell| cell.window_start == window)
+                    .cloned()
+            };
+            // Q51: the counts as corrected, as every other read of the book prices them; a
+            // correction that cannot be resolved reads as a refused figure.
+            let spend = match live {
+                Some(mut cell) => {
+                    let key = (bucket.bucket_id, bucket.window, window);
+                    match self.corrected(cost, key, &mut cell.models) {
+                        Ok(Ok(())) => {
+                            (cell.spend(cost, true).and_then(Money::micros_i64)).map_err(|_| ())
+                        }
+                        Ok(Err(_)) | Err(_) => Err(()),
                     }
-                    _ => Ok(0),
                 }
+                None => Ok(0),
             };
             // A REFUSED figure (#42: the card present and silent about a model or class the bucket
             // holds; item 28: an overflow) is not a figure, and the projection has no error channel
@@ -1860,14 +1895,16 @@ impl GovState {
     ///   in-flight admitted request (as with TPM, a hard token cap would need admit-time
     ///   reservation - out of scope).
     ///
-    /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
-    /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
+    /// SYNCHRONOUS and INFALLIBLE (in-memory cells, no await; the one store read is below). The
+    /// flat fee is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
     /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via
     /// [`GovState::refund_charge`]. This allocates a handful of chain-sized scratch `Vec`s per call
     /// (`chain_for`'s two Vecs, the collected bucket slice, the shard-index/order/guard Vecs sized
     /// to the chain depth, the grant's charged cells) — there are no fixed
-    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
-    /// round-trip and no `await` anywhere on this path.
+    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no `await`
+    /// anywhere on this path, and no store round-trip except one case: a sealed `adjust` whose
+    /// principal's key the key cache no longer holds (a deleted key) is read from the store, before
+    /// any shard lock is taken, to learn whether it lands on a capped bucket (Q51).
     ///
     /// PER-PLANE FEES (#47): a `pool` qualified `"<plane>\u{1f}<pool>"` is a request of THAT plane
     /// — the pool predicate reads the unqualified part — and it charges that plane's own
@@ -1969,6 +2006,26 @@ impl GovState {
             }
             grant.gauges.push(gauge);
         }
+
+        // Q51 AT THE DOOR: a capped bucket is checked on the counts every read of the book prices,
+        // corrected by each sealed `adjust` landing on it ([`Self::landing_corrections`]), so an
+        // upward correction is enforced and a downward one stops refusing. Resolved here, before any
+        // shard lock is taken; a landing that cannot be resolved (`None`) blocks the bucket, fail
+        // closed. No correction sealed on this node: nothing is resolved and nothing allocated.
+        let corrections = self.amendments.corrections();
+        let landing: Vec<Option<Vec<&crate::audit::amend::Adjust>>> = (buckets.iter())
+            .map(|b| {
+                let capped = b.requests_cap.is_some()
+                    || b.tokens_cap.is_some()
+                    || !b.class_caps.is_empty()
+                    || b.budget_cap.is_some();
+                if corrections.is_empty() || !capped {
+                    return Some(Vec::new());
+                }
+                let bucket = (b.bucket_id, b.window, budget_window(b.window, now));
+                self.landing_corrections(cost, bucket, &corrections).ok()
+            })
+            .collect();
 
         // 3. WINDOWED limits: acquire every involved shard's write lock in ASCENDING shard order
         // (dedup) - scratch sized by the chain actually resolved. `guard_shards[j]` = the shard
@@ -2073,20 +2130,46 @@ impl GovState {
             // read only for a class that carries a cap — the same best-effort post-paid shape as
             // `tokens_cap`. A class counts only itself: a `tokens_input` cap reads the `input`
             // class, so a cache-read count never counts against it.
-            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
-                Some(cell) if cell.window_start >= window => (
+            let live = match map.get(bucket.bucket_id) {
+                Some(cell) if cell.window_start >= window => Some(cell),
+                // stale or absent cell = fresh window = nothing used
+                _ => None,
+            };
+            // The counts as corrected (Q51): the live cell itself when nothing lands on it; a
+            // corrected copy when something does (a correction landing on a fresh window corrects
+            // an empty one); `Err` when a landing could not be resolved or the fold refused. In the
+            // straddle the live cell already holds a NEWER window, which this window's corrections
+            // do not land on.
+            let fixed: Option<Result<BudgetCell, ()>> = match &landing[bi] {
+                Some(l) if l.is_empty() => None,
+                Some(_) if live.is_some_and(|c| c.window_start > window) => None,
+                Some(l) => {
+                    let mut cell = live.cloned().unwrap_or_else(|| BudgetCell::fresh(window));
+                    Some(
+                        fold_corrections(&mut cell.models, l)
+                            .map(|()| cell)
+                            .map_err(|_| ()),
+                    )
+                }
+                None => Some(Err(())),
+            };
+            let (live, unresolved) = match &fixed {
+                None => (live, false),
+                Some(Ok(cell)) => (Some(cell), false),
+                Some(Err(())) => (live, true),
+            };
+            let (requests, tokens, derived) = match live {
+                Some(cell) => (
                     cell.requests,
                     bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
-                    Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
                         (cell.spend(cost, true)).and_then(Money::minor_i64)
                     }),
                 ),
-                // stale or absent cell = fresh window = nothing used
-                _ => (0, 0, None, Ok(0)),
+                None => (0, 0, Ok(0)),
             };
             let class_blocked = (bucket.class_caps.iter())
-                .find(|c| live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
+                .find(|c| unresolved || live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
                 .map(|c| c.metric.as_str());
             // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
             // silent about a model or class this bucket holds, or an overflow — BLOCKS on the
@@ -2094,7 +2177,7 @@ impl GovState {
             // (`if let Some(rate)`), so a model the card did not name ran uncapped on spend. A
             // refusal is never downgraded: a cheaper pool is no answer to "this cannot be priced".
             let (derived, refused) = match derived {
-                Ok(d) => (d, false),
+                Ok(d) => (d, unresolved),
                 Err(_) => (0, true),
             };
             // `admission: estimate`: this bucket must also hold the unit's estimate; an
@@ -2109,7 +2192,10 @@ impl GovState {
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
             {
                 Some("requests")
-            } else if bucket.tokens_cap.is_some_and(|cap| tokens >= cap) {
+            } else if bucket
+                .tokens_cap
+                .is_some_and(|cap| unresolved || tokens >= cap)
+            {
                 Some("tokens")
             } else if class_blocked.is_some() {
                 class_blocked
@@ -2643,6 +2729,41 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     RecordStoreError(format!(
         "the spend of bucket `{bucket_id}` cannot be priced: {e}"
     ))
+}
+
+/// Fold `landing` corrections into a bucket's `segments`: each one's Σ (now − was) per class lands
+/// on its lane in the latest era not after its card epoch (a new segment at the era in force then
+/// when the bucket holds none). A count left fractional or below zero REFUSES (`Overflow`), never
+/// clamps. The one fold behind every read of the book and the admission check.
+fn fold_corrections(
+    segments: &mut Vec<ModelCell>,
+    landing: &[&crate::audit::amend::Adjust],
+) -> Result<(), busbar_kernel_ledger::cost::MoneyError> {
+    for adj in landing {
+        let at = adj.card_epoch_ms;
+        let seg = (segments.iter().enumerate())
+            .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
+            .max_by_key(|(_, m)| m.era)
+            .map(|(i, _)| i);
+        let i = seg.unwrap_or_else(|| {
+            segments.push(ModelCell {
+                model: std::sync::Arc::from(adj.lane.as_str()),
+                era: crate::rate_apply::effective_from_at(at),
+                cur: BTreeMap::new(),
+                flushed: BTreeMap::new(),
+            });
+            segments.len() - 1
+        });
+        for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
+            let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
+            let slot = segments[i].cur.entry(class.clone()).or_insert(0);
+            match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
+                Some(n) if frac == 0 => *slot = n,
+                _ => return Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The durable ledger's per-model rows as undated segments (the row carries no era).

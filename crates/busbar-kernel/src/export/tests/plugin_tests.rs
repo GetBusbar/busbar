@@ -127,3 +127,134 @@ fn each_plugin_sink_instance_gets_its_own_admission_gate() {
         "b is untouched by a's saturation"
     );
 }
+
+// ── Q128 arch u31 #36/#37: what a sink is fed, and what is audited as read ─────────────────────
+
+/// A sink double answering every delivery with `answer`, stating `stated` at start, and counting
+/// the deliveries it shed.
+struct AnsweringSink {
+    answer: Delivered,
+    stated: Option<(bool, u64, String)>,
+    sheds: std::sync::atomic::AtomicU64,
+}
+
+impl ExportCalls for AnsweringSink {
+    fn streams(&self) -> &[u8] {
+        &[]
+    }
+    fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
+        &[]
+    }
+    fn deliver(&self, _: u8, _: Vec<u8>, _: Box<dyn Send>) -> Delivered {
+        self.answer
+    }
+    fn scrape(&self, _: &[busbar_contract::export_calls::Family]) -> Result<Vec<u8>, String> {
+        Ok(Vec::new())
+    }
+    fn status(&self) -> Option<Vec<u8>> {
+        None
+    }
+    fn serve(
+        &self,
+        _: &busbar_contract::export_calls::ServeRequest<'_>,
+    ) -> Result<busbar_contract::export_calls::Served, String> {
+        Err("the double serves nothing".to_string())
+    }
+    fn admission(&self) -> Option<(bool, u64, String)> {
+        self.stated.clone()
+    }
+    fn shed(&self) {
+        self.sheds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// An opened (not yet started) sink over `double`, recording its reads on a journal of its own.
+fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
+    PluginSink {
+        name: module.to_string(),
+        module: module.to_string(),
+        sink: double,
+        scrape: false,
+        projection: Projection::for_test(&[ExportStream::Logs], &[]),
+        admission: OnceLock::new(),
+        reads: OnceLock::from(Arc::new(crate::audit::amend::NodeAmendments::new())),
+    }
+}
+
+fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<AnsweringSink> {
+    Arc::new(AnsweringSink {
+        answer,
+        stated,
+        sheds: std::sync::atomic::AtomicU64::new(0),
+    })
+}
+
+/// The export access amendments `s` sealed on its journal under `op` (each test uses its own label).
+fn reads_under(s: &PluginSink, op: &str) -> usize {
+    s.reads
+        .get()
+        .map(|journal| journal.recent())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| {
+            matches!(&a.body, crate::audit::amend::AmendBody::Access(x) if x.op_class.as_str() == op)
+        })
+        .count()
+}
+
+fn payload(_: Projection) -> Arc<Value> {
+    Arc::new(serde_json::json!({ "path": "/v1/x" }))
+}
+
+/// A line the sink's queue SHED never reached it, so it is not audited as read; a line it QUEUED is
+/// audited once. RED before the fix: the amendment was written before the hand-off, so a shed line
+/// was recorded as an export read of fields that never left the node.
+#[test]
+fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
+    let shedding = double(Delivered::Shed, None);
+    let s = opened("q128b-u31-36-shed", Arc::clone(&shedding));
+    start_one(&s);
+    deliver_to(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
+    assert_eq!(
+        reads_under(&s, "q128b-u31-36-shed"),
+        0,
+        "a shed line is no read"
+    );
+    assert_eq!(shedding.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    let queueing = double(Delivered::Queued, None);
+    let s = opened("q128b-u31-36-queued", Arc::clone(&queueing));
+    start_one(&s);
+    deliver_to(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
+    assert_eq!(
+        reads_under(&s, "q128b-u31-36-queued"),
+        1,
+        "a queued line is one read"
+    );
+    assert_eq!(queueing.sheds.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+/// A sink is fed under the admission IT stated at start, even when a delivery reached it first: a
+/// delivery before start is shed, and the sink's own `live: false` then holds. RED before the fix:
+/// the first delivery filled the admission with the host's default (live), start's `set` was a
+/// no-op, and the sink's stated admission was ignored for the life of the process.
+#[test]
+fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
+    let paused = double(Delivered::Queued, Some((false, 1, String::new())));
+    let s = opened("q128b-u31-37", Arc::clone(&paused));
+    deliver_to(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
+    assert_eq!(
+        reads_under(&s, "q128b-u31-37-early"),
+        0,
+        "nothing is fed before start"
+    );
+    assert_eq!(paused.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
+    start_one(&s);
+    deliver_to(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
+    assert_eq!(
+        reads_under(&s, "q128b-u31-37-late"),
+        0,
+        "the sink stated live: false, and that holds"
+    );
+}

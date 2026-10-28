@@ -523,20 +523,24 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
     })
 }
 
-/// THE PRODUCTION RECORD SINK: the live configuration's governance store, narrowed to the
-/// plane-facing seam every plane persists through. A node with no store configured keeps nothing,
-/// and says so (`Err`), rather than acknowledging a write that went nowhere.
+/// THE PRODUCTION RECORD SINK: the live configuration's governance store, written through its v3
+/// `upsert_plane_record`. A node with no store configured keeps nothing, and says so (`Err`),
+/// rather than acknowledging a write that went nowhere. The sink is synchronous and the admin unit
+/// that calls it answers on the blocking pool, so the store call is awaited here, on that thread:
+/// the sink's one wait.
 #[must_use]
 pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSink {
     Arc::new(move |record: &PlaneRecord| {
         let snapshot = app.load();
-        let gov = snapshot
+        let calls = snapshot
             .governance
             .as_ref()
+            .and_then(|gov| gov.store_calls())
             .ok_or_else(|| "no record store is configured".to_string())?;
-        busbar_kernel::store::plane_view::PlaneStoreView::narrow(gov.store())
-            .upsert_plane_record(record.view())
-            .map_err(|e| e.0)
+        crate::root::durability::off_runtime(|| {
+            crate::root::durability::wait_for(calls.upsert_plane_record(record.view()))
+        })
+        .map_err(|e| e.to_string())
     })
 }
 
