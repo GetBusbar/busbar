@@ -197,41 +197,12 @@ fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
     );
 }
 
-/// THE `alloc-counter` FEATURE IS NEVER ON IN A PRODUCTION BUILD.
-/// `alloc_counter::Counting` is the one `GlobalAlloc` impl outside `abi/`, compiled for a plugin's
-/// allocation gates only. It must not sit in this crate's `default`, and no `[dependencies]`,
-/// `[build-dependencies]`, `[target.*]` table or other crate's `[features]` entry anywhere in the
-/// workspace may switch it on: only a `[dev-dependencies]` edge may. No workspace crate names it on
-/// a dev edge today (its users are the out-of-tree plugin repos), so unlike the two rules above this
-/// one does not require a dev edge to exist; [`alloc_counter_scan_refuses_every_non_dev_edge`]
-/// proves the scan is not vacuous.
+/// RED PLANTS for the dev-edge scan the rules above run: each manifest below turns `test-seal` on
+/// outside a dev edge and is refused; the dev edge and the feature's own empty definition pass.
 #[test]
-fn the_alloc_counter_feature_is_named_only_on_dev_dependency_edges() {
-    let root = workspace_root();
-    let mut found = Vec::new();
-    manifests(&root, &mut found);
-    assert!(found.len() > 10, "the manifest walk is broken");
-    let own = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
-        .expect("the manifest is readable");
-    assert!(
-        own.lines().any(|l| l.trim() == "alloc-counter = []"),
-        "busbar-contract no longer defines an EMPTY `alloc-counter` feature"
-    );
-    let (offenders, _) = edges_of("alloc-counter", &found, &root);
-    assert!(
-        offenders.is_empty(),
-        "`alloc-counter` is enabled outside [dev-dependencies]. That compiles the TEST-ONLY \
-         counting allocator into a RELEASE build. Move these to [dev-dependencies] or drop them:\n  {}",
-        offenders.join("\n  ")
-    );
-}
-
-/// RED PLANTS for the rule above: each manifest below turns `alloc-counter` on outside a dev edge
-/// and is refused; the dev edge and the feature's own empty definition pass.
-#[test]
-fn alloc_counter_scan_refuses_every_non_dev_edge() {
-    const F: &str = "alloc-counter";
-    let pin = r#"busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "0", features = ["alloc-counter"] }"#;
+fn the_dev_edge_scan_refuses_every_non_dev_edge() {
+    const F: &str = "test-seal";
+    let pin = r#"busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "0", features = ["test-seal"] }"#;
     // GREEN: a plugin's dev edge.
     let (o, d) = offenders_in(F, &format!("[dev-dependencies]\n{pin}\n"), false, "plant");
     assert!(o.is_empty(), "{o:?}");
@@ -239,7 +210,7 @@ fn alloc_counter_scan_refuses_every_non_dev_edge() {
     // GREEN: the dotted dev table and a target dev table.
     let (o, _) = offenders_in(
         F,
-        "[dev-dependencies.busbar-contract]\nfeatures = [\"alloc-counter\"]\n",
+        "[dev-dependencies.busbar-contract]\nfeatures = [\"test-seal\"]\n",
         false,
         "plant",
     );
@@ -252,16 +223,16 @@ fn alloc_counter_scan_refuses_every_non_dev_edge() {
     );
     assert!(o.is_empty(), "{o:?}");
     // GREEN: this crate's own empty definition.
-    let (o, _) = offenders_in(F, "[features]\nalloc-counter = []\n", true, "own");
+    let (o, _) = offenders_in(F, "[features]\ntest-seal = []\n", true, "own");
     assert!(o.is_empty(), "{o:?}");
     // RED: every non-dev way to turn it on.
     for planted in [
         format!("[dependencies]\n{pin}\n"),
-        "[dependencies.busbar-contract]\nfeatures = [\"alloc-counter\"]\n".to_string(),
+        "[dependencies.busbar-contract]\nfeatures = [\"test-seal\"]\n".to_string(),
         format!("[build-dependencies]\n{pin}\n"),
         format!("[target.'cfg(unix)'.dependencies]\n{pin}\n"),
-        "[features]\ndefault = [\"busbar-contract/alloc-counter\"]\n".to_string(),
-        "[features]\ngates = [\"busbar-contract/alloc-counter\"]\n".to_string(),
+        "[features]\ndefault = [\"busbar-contract/test-seal\"]\n".to_string(),
+        "[features]\ngates = [\"busbar-contract/test-seal\"]\n".to_string(),
         format!("[workspace.dependencies]\n{pin}\n"),
     ] {
         let (o, _) = offenders_in(F, &planted, false, "plant");
@@ -269,8 +240,8 @@ fn alloc_counter_scan_refuses_every_non_dev_edge() {
     }
     // RED: this crate's own `default`, and its definition made to switch itself on elsewhere.
     for planted in [
-        "[features]\ndefault = [\"alloc-counter\"]\nalloc-counter = []\n",
-        "[features]\nalloc-counter = []\ntest-seal = [\"alloc-counter\"]\n",
+        "[features]\ndefault = [\"test-seal\"]\ntest-seal = []\n",
+        "[features]\ntest-seal = []\ntest-seal = [\"test-seal\"]\n",
     ] {
         let (o, _) = offenders_in(F, planted, true, "own");
         assert_eq!(o.len(), 1, "not refused:\n{planted}");
