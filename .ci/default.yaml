@@ -351,6 +351,19 @@ checks:
       - qa/field-inventory.json
       - providers.yaml
       - plugins.yaml
+      # What the cells read too (2026-10-28, a missing path is a stale green): the migration corpus
+      # (tests/migration-corpus), the shipped docker/config.yaml, the root config.yaml, the plane
+      # subject rigs (scripts/*-subject), and, over-included, the rest of bin/, qa/, examples/,
+      # assets/ and the Dockerfile.
+      - tests/**
+      - docker/**
+      - Dockerfile
+      - scripts/**
+      - config.yaml
+      - bin/**
+      - qa/**
+      - examples/**
+      - assets/**
     # busbar's own judge, fetched by bin/oracle itself exactly as .ci/dev.yaml does (no backend tool):
     # the judge is the one dev's oracle-rust.pin names, run only when its
     # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
