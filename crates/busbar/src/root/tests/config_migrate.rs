@@ -146,20 +146,23 @@ secrets:
 fn the_release_index_picks_the_newest_release_built_for_this_core() {
     let kind = "store";
     let speaks = crate::root::loader::registry::supported_abi(kind)[0];
-    let index: Index = serde_json::from_value(serde_json::json!({
-        "plugins": [{
-            "repo": "Acme/busbar-store-stub",
-            "former_repos": ["Acme/stub-store"],
-            "kind": kind,
-            "answers_to": ["stub", "busbar-store-stub", "busbar-store-stub-plugin"],
-            "releases": [
-                { "tag": "v1.0.6", "abi_version": speaks - 1 },
-                { "tag": "v1.6.1", "abi_version": speaks },
-                { "tag": "v1.6.0", "abi_version": speaks },
-                { "tag": "v2.0.0", "abi_version": speaks + 1 }
-            ]
-        }]
-    }))
+    let index = Index::parse(
+        &serde_json::to_vec(&serde_json::json!({
+            "plugins": [{
+                "repo": "Acme/busbar-store-stub",
+                "former_repos": ["Acme/stub-store"],
+                "kind": kind,
+                "answers_to": ["stub", "busbar-store-stub", "busbar-store-stub-plugin"],
+                "releases": [
+                    { "tag": "v1.0.6", "abi_version": speaks - 1 },
+                    { "tag": "v1.6.1", "abi_version": speaks },
+                    { "tag": "v1.6.0", "abi_version": speaks },
+                    { "tag": "v2.0.0", "abi_version": speaks + 1 }
+                ]
+            }]
+        }))
+        .expect("JSON"),
+    )
     .expect("an index");
     let plugin: &IndexPlugin = index
         .by_repo("acme/STUB-store")
@@ -174,7 +177,7 @@ fn the_release_index_picks_the_newest_release_built_for_this_core() {
         "a module is looked up on its own kind"
     );
     assert!(
-        serde_json::from_value::<Index>(serde_json::json!({"plugins": [], "extra": 1})).is_err(),
+        Index::parse(br#"{"plugins": [], "extra": 1}"#).is_err(),
         "an index with keys this core does not know is refused"
     );
 }

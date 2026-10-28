@@ -219,8 +219,10 @@ fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
     };
     input.err_buf = buf.as_mut_ptr();
     input.err_cap = buf.len();
-    let mut out = OutHead::default();
-    out.size = size_of::<OutHead>() as u32;
+    let mut out = OutHead {
+        size: size_of::<OutHead>() as u32,
+        ..OutHead::default()
+    };
     let raw = op(
         std::ptr::null_mut(),
         std::ptr::from_ref(&input).cast(),

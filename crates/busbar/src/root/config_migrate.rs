@@ -22,7 +22,6 @@ use std::path::PathBuf;
 use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
 use busbar_kernel::config::PluginsCfg;
-use serde::Deserialize;
 
 use crate::root::loader::PluginRegistry;
 
@@ -41,35 +40,30 @@ pub const INDEX_ENV: &str = "BUSBAR_PLUGIN_INDEX";
 /// THE RELEASE INDEX: every plugin the index knows, each with its repository, the repositories it
 /// was published from before, its kind, the words a configuration may name it by, and its
 /// releases with the ABI version each was built for.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default)]
 pub struct Index {
     /// The plugins.
     pub plugins: Vec<IndexPlugin>,
 }
 
 /// One plugin in the [`Index`].
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct IndexPlugin {
     /// `org/repo`, as a `plugins.fetch` GitHub pin names it.
     pub repo: String,
     /// The repositories its earlier releases were published from.
-    #[serde(default)]
     pub former_repos: Vec<String>,
     /// Its kind (`store`, `auth`, ...).
     pub kind: String,
     /// Every word a configuration's `module:` may name it by: its manifest name, alias and former
     /// names.
-    #[serde(default)]
     pub answers_to: Vec<String>,
     /// Its releases.
     pub releases: Vec<IndexRelease>,
 }
 
 /// One release of an [`IndexPlugin`].
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct IndexRelease {
     /// The release tag (`v1.6.0`).
     pub tag: String,
@@ -78,6 +72,96 @@ pub struct IndexRelease {
 }
 
 impl Index {
+    /// Read a release index document: `{"plugins": [{"repo", "former_repos"?, "kind",
+    /// "answers_to"?, "releases": [{"tag", "abi_version"}]}]}`. A key this core does not know is
+    /// refused, never skipped.
+    ///
+    /// # Errors
+    /// The bytes are not such a document, naming what is wrong.
+    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        use serde_json::Value;
+        fn object<'a>(
+            v: &'a Value,
+            at: &str,
+            known: &[&str],
+        ) -> Result<&'a serde_json::Map<String, Value>, String> {
+            let m = v
+                .as_object()
+                .ok_or_else(|| format!("{at} is not an object"))?;
+            match m.keys().find(|k| !known.contains(&k.as_str())) {
+                Some(k) => Err(format!("{at} has the unknown key `{k}`")),
+                None => Ok(m),
+            }
+        }
+        fn text(m: &serde_json::Map<String, Value>, k: &str, at: &str) -> Result<String, String> {
+            m.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("{at}.{k} is not a string"))
+        }
+        fn texts(
+            m: &serde_json::Map<String, Value>,
+            k: &str,
+            at: &str,
+        ) -> Result<Vec<String>, String> {
+            match m.get(k) {
+                None => Ok(Vec::new()),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("{at}.{k} holds a non-string"))
+                    })
+                    .collect(),
+                Some(_) => Err(format!("{at}.{k} is not a list")),
+            }
+        }
+        let doc: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let top = object(&doc, "the index", &["plugins"])?;
+        let list = top
+            .get("plugins")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "the index's plugins is not a list".to_string())?;
+        let mut plugins = Vec::new();
+        for (i, p) in list.iter().enumerate() {
+            let at = format!("plugins[{i}]");
+            let m = object(
+                p,
+                &at,
+                &["repo", "former_repos", "kind", "answers_to", "releases"],
+            )?;
+            let releases = m
+                .get("releases")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("{at}.releases is not a list"))?
+                .iter()
+                .enumerate()
+                .map(|(j, r)| {
+                    let rat = format!("{at}.releases[{j}]");
+                    let r = object(r, &rat, &["tag", "abi_version"])?;
+                    let abi = r
+                        .get("abi_version")
+                        .and_then(Value::as_u64)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| format!("{rat}.abi_version is not a version number"))?;
+                    Ok(IndexRelease {
+                        tag: text(r, "tag", &rat)?,
+                        abi_version: abi,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            plugins.push(IndexPlugin {
+                repo: text(m, "repo", &at)?,
+                former_repos: texts(m, "former_repos", &at)?,
+                kind: text(m, "kind", &at)?,
+                answers_to: texts(m, "answers_to", &at)?,
+                releases,
+            });
+        }
+        Ok(Self { plugins })
+    }
+
     /// The plugin the GitHub repository `repo` (`org/repo`) publishes, under its current or a former
     /// repository name.
     fn by_repo(&self, repo: &str) -> Option<&IndexPlugin> {
@@ -199,8 +283,7 @@ impl RootHost {
                 } else {
                     std::fs::read(&source).map_err(|e| format!("{source}: {e}"))?
                 };
-                serde_json::from_slice::<Index>(&bytes)
-                    .map_err(|e| format!("{source}: not a release index: {e}"))
+                Index::parse(&bytes).map_err(|e| format!("{source}: not a release index: {e}"))
             })
             .as_ref()
             .map_err(Clone::clone)
