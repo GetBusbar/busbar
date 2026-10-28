@@ -60,6 +60,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
+        credentials: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -109,7 +110,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // production. Every hook is `None`/no-op: this stands for "a plane is installed", never for what a
 // plane does. Idempotent (`register_test_plane` dedupes by key) and NOT isolated — a test that also
 // asserts against the registered SET (or needs a plane-free registry) wraps its own body in
-// `crate::plane_driver::registry::TestRegistryIsolation::empty()` around this call, the same as any other
+// `crate::test_support::planes::TestRegistryIsolation::empty()` around this call, the same as any other
 // `register_test_plane` caller.
 static NEUTRAL_FALLBACK_PLANE: crate::plane_driver::registry::PlaneDecl = NEUTRAL_FALLBACK;
 
@@ -172,7 +173,7 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
 /// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
-    crate::plane_driver::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
+    crate::test_support::planes::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
 
 /// The neutral fallback plane [`register_neutral_test_plane`] registers, for a test that seeds an

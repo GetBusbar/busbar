@@ -113,6 +113,111 @@ if hits:
 PY
 }
 if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
+
+# ── ONE ORACLE RUN, SHARDED BY CELL ─────────────────────────────────────────────────────────────
+# The corpus is split into N shards so one run spreads over N machines (ModernCI checks oracle-1..N),
+# each recording and replaying ITS cells, as strict as the whole run: a shard exits non-zero on any
+# unsigned FAIL (the replay's own exit), and `shard-verify` refuses a shard whose report did not
+# select every cell it owns. The split is the corpus's ids in sorted order, the i-th to shard
+# i mod N + 1: deterministic, and it spreads every family over every shard. `shard-cover` (the cheap
+# `oracle` check, after every shard) proves the N filters the shards ran select every id in
+# cells.json exactly once, so the union of the shards is the whole corpus. A shard's filter is
+# widened to the premise cells its forgivenesses probe (as any filtered run is), so a premise cell
+# may be judged again, as context, in another shard: never fewer judgements, never a weaker one.
+shard_ids() {  # shard_ids <k> <n> -> the ids shard k of n owns, one per line
+  python3 - "$1" "$2" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" <<'PY'
+import json, sys
+k, n, data = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+if not (n >= 1 and 1 <= k <= n):
+    sys.exit(f"oracle: shard {k} of {n} is not a shard (1 <= k <= n)")
+ids = sorted(c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"])
+print("\n".join(i for x, i in enumerate(ids) if x % n == k - 1))
+PY
+}
+shard_filter() {  # shard_filter <k> <n> -> the anchored regex selecting exactly shard k's ids
+  shard_ids "$1" "$2" | python3 -c 'import re,sys; ids=[l.rstrip("\n") for l in sys.stdin if l.strip()]; print("^(?:" + "|".join(re.escape(i) for i in ids) + ")$")'
+}
+if [ "${1:-}" = "shard-filter" ]; then shard_filter "${2:?shard-filter <k> <n>}" "${3:?shard-filter <k> <n>}"; exit 0; fi
+if [ "${1:-}" = "shard-cover" ]; then
+  n="${2:?shard-cover <n>}"
+  # The N filters together name every id, more than one argv string may hold (Linux caps one at
+  # 128 KiB), so they reach python through a file.
+  filters="$(mktemp)" || exit 3
+  for k in $(seq 1 "$n"); do shard_filter "$k" "$n" >>"$filters" || { rm -f "$filters"; exit 3; }; done
+  python3 - "$n" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$filters" <<'PY' || { rm -f "$filters"; exit 3; }
+import json, re, sys
+n, data = int(sys.argv[1]), sys.argv[2]
+filters = open(sys.argv[3]).read().rstrip("\n").split("\n")
+ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
+if len(filters) != n:
+    sys.exit(f"oracle shard-cover: {len(filters)} filters for {n} shards")
+rx = [re.compile(f) for f in filters]
+bad = []
+for i in ids:
+    hits = [k + 1 for k, r in enumerate(rx) if r.search(i)]
+    if len(hits) != 1:
+        bad.append(f"{i!r} is selected by shard(s) {hits or 'none'}")
+if len(set(ids)) != len(ids):
+    bad.append("cells.json repeats an id")
+if bad:
+    sys.exit("oracle shard-cover: the shards do not cover the corpus exactly once:\n  " + "\n  ".join(bad[:20]))
+print(f"oracle shard-cover: {n} shards select all {len(ids)} cells of cells.json, each exactly once")
+PY
+  rm -f "$filters"
+  exit 0
+fi
+if [ "${1:-}" = "shard-verify" ]; then
+  k="${2:?shard-verify <k> <n> <report-dir>}" n="${3:?shard-verify <k> <n> <report-dir>}" rep="${4:?shard-verify <k> <n> <report-dir>}"
+  owned="$(mktemp)" || exit 3
+  shard_ids "$k" "$n" >"$owned" || { rm -f "$owned"; exit 3; }
+  python3 - "$k" "$n" "$rep" "$owned" <<'PY' || { rm -f "$owned"; exit 3; }
+import sys
+k, n, rep = sys.argv[1], sys.argv[2], sys.argv[3]
+owned = set(filter(None, open(sys.argv[4]).read().split("\n")))
+try:
+    selected = set(filter(None, open(f"{rep}/selected-ids.txt").read().split("\n")))
+except OSError as e:
+    sys.exit(f"oracle shard-verify: shard {k}/{n} wrote no selected-ids.txt ({e}); nothing proves what it judged. Refusing.")
+missing = sorted(owned - selected)
+if not owned:
+    sys.exit(f"oracle shard-verify: shard {k}/{n} owns no cell. Refusing.")
+if missing:
+    sys.exit(f"oracle shard-verify: shard {k}/{n} did not select {len(missing)} of its {len(owned)} cells: {missing[:10]}. Refusing.")
+print(f"oracle shard-verify: shard {k}/{n} selected all {len(owned)} cells it owns")
+PY
+  rm -f "$owned"
+  exit 0
+fi
+# shard-selftest: each guard refuses what it exists to refuse, before its green is trusted.
+if [ "${1:-}" = "shard-selftest" ]; then
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT; fail=0
+  ok() { echo "  [ok]     $1"; }; bad() { echo "  [FAILED] $1"; fail=1; }
+  printf '%s' '{"cells":[{"id":"a|1"},{"id":"a|2"},{"id":"b|1"},{"id":"b|2"},{"id":"c|1"}]}' >"$st/cells.json"
+  printf '%s' '{"accepted":[]}' >"$st/accepted-differences.json"
+  me=("$here/bin/oracle")
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-cover 2 >/dev/null 2>&1 \
+    && ok "two shards cover five cells exactly once" || bad "a sound split was refused"
+  for n in 1 3 5 7; do
+    BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-cover "$n" >/dev/null 2>&1 || bad "$n shards: a sound split was refused"
+  done
+  printf '%s' '{"cells":[{"id":"a|1"},{"id":"a|2"},{"id":"a|1"}]}' >"$st/dup.json"
+  mkdir -p "$st/dup"; cp "$st/dup.json" "$st/dup/cells.json"; cp "$st/accepted-differences.json" "$st/dup/"
+  BUSBAR_ORACLE_DATA="$st/dup" bash "${me[@]}" shard-cover 2 >/dev/null 2>&1 \
+    && bad "a corpus that repeats an id was covered" || ok "a corpus that repeats an id is refused"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-filter 3 2 >/dev/null 2>&1 \
+    && bad "shard 3 of 2 answered a filter" || ok "a shard outside 1..n is refused"
+  mkdir -p "$st/rep"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
+    && bad "a shard with no report was verified" || ok "a shard that wrote no report is refused"
+  printf 'a|1\nb|1\n' >"$st/rep/selected-ids.txt"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
+    && bad "a shard missing one of its cells was verified" || ok "a shard that did not select a cell it owns is refused"
+  printf 'a|1\nb|1\nc|1\nb|2\n' >"$st/rep/selected-ids.txt"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
+    && ok "a shard that selected all it owns (and premise context) is verified" || bad "a complete shard was refused"
+  [ "$fail" = 0 ] && { echo "oracle shard-selftest: the shards cover the corpus exactly once, and a shard that judged less is red"; exit 0; }
+  echo "oracle shard-selftest: FAILED"; exit 1
+fi
 # `--filter` is record's flag; replay and diff select with `--id-filter`. Refused by name, before
 # anything runs (2026-10-07: a replay handed it judged nothing and printed only its fence rows).
 refuse_filter_flag() {  # refuse_filter_flag <subcommand>
@@ -268,8 +373,8 @@ mkdir -p "$root"
 
 # ── obtain the Rust engine ──────────────────────────────────────────────────────────────────────
 # Precedence UNDER MODERNCI (resolve_bin): ModernCI's pre-fetched judge at $BUSBAR_ORACLE_JUDGE_PATH
-# (no fetch, no token read), else on Linux the fetched judge (2 below); BUSBAR_ORACLE_RUST_BIN is
-# ignored in any CI run. Outside CI:
+# (no fetch, no token read), else NO JUDGE; BUSBAR_ORACLE_RUST_BIN is ignored, and no token is
+# read, in any CI run (ci_run, below). Outside CI:
 #   1. BUSBAR_ORACLE_RUST_BIN=<path>   a prebuilt binary chosen by the operator (verify-1.6.0-done.sh
 #                                      refuses a DONE run with it set).
 #   2. on Linux: THE FETCHED JUDGE      busbar-release's published `busbar-oracle-linux-<arch>-<ref>`,
@@ -278,15 +383,29 @@ mkdir -p "$root"
 #   3. elsewhere (a laptop): BUSBAR_RELEASE_CHECKOUT=<dir>, a busbar-release checkout to
 #      `cargo build --release` from, else git clone busbar-release at the pinned ref, then build.
 # ── the engine clone: a token is USED, never STORED (Q128 WARN, ARCHITECT 2026-10-05) ──────────────
-# The token (the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set) reaches git as a
+# The token (a LOCAL run's only: release_token; a CI run reads none) reaches git as a
 # one-shot `http.<github>.extraheader` through git's environment config (GIT_CONFIG_COUNT/KEY/VALUE):
 # not in the clone URL, not on any argv, and never in the checkout's .git/config. It used to be folded
 # into the URL as `x-access-token:<token>@`, which `git clone` wrote into `remote.origin.url` on disk,
 # where it outlived the run. An existing checkout's origin is reset to the plain URL (scrubbing a URL a
 # previous version stored), and after every clone/fetch `assert_no_token` refuses the run if the token
 # or an `x-access-token` credential is anywhere in that config.
-git_with_token() {  # git_with_token <git args...> — git, authenticated for github.com if a token is set
+# ── A CI RUN READS NO TOKEN (OWNER 2026-10-26, "cut it"; G8: a move's checks receive no credential) ──
+# In any CI run (a ModernCI marker, BUSBAR_ORACLE_JUDGE_PATH, or CI=) this shim never reads
+# BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN, even when one is set: the judge is the file ModernCI's
+# daemon fetched OUTSIDE the run from its tool pin (.ci/oracle-judge.pin) and handed over as
+# $BUSBAR_ORACLE_JUDGE_PATH; the 1.5.5 golden is BUSBAR_GOLDEN_1_5_5_TREE from this checkout's own object
+# database; the 1.5.5 reference binary and the plugins are public release assets the engine fetches
+# with no token. release_token is the ONE reader of those names; outside CI it is the first one set.
+ci_run() { [ -n "${BUSBAR_ORACLE_JUDGE_PATH:-}${MODERNCI:-}${MODERNCI_JOB:-}${MODERNCI_TO_SHA:-}${MODERNCI_HEAD:-}${MODERNCI_COMMIT:-}${CI:-}" ]; }
+release_token() {  # release_token — the token a LOCAL run may use; in a CI run nothing, and 1
+  ci_run && return 1
   local tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  [ -n "$tok" ] || return 1
+  printf '%s' "$tok"
+}
+git_with_token() {  # git_with_token <git args...> — git, authenticated for github.com if a local run has a token
+  local tok; tok="$(release_token)" || tok=""
   if [ -n "$tok" ]; then
     local b64; b64="$(printf 'x-access-token:%s' "$tok" | base64 | tr -d '\n')"
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
@@ -296,7 +415,7 @@ git_with_token() {  # git_with_token <git args...> — git, authenticated for gi
   fi
 }
 assert_no_token() {  # assert_no_token <checkout> — refuse if a credential persisted in its git config
-  local cfg="$1/.git/config" tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  local cfg="$1/.git/config" tok; tok="$(release_token)" || tok=""
   [ -f "$cfg" ] || return 0
   if grep -qiE 'x-access-token|extraheader|://[^/@[:space:]]+@' "$cfg" || { [ -n "$tok" ] && grep -qF -- "$tok" "$cfg"; }; then
     echo "oracle: a credential persisted in $cfg; refusing (the engine clone must never store a token)" >&2
@@ -354,7 +473,25 @@ if [ "${1:-}" = "token-selftest" ]; then
   if grep -qE 'plant-token|x-access-token|extraheader' "$st/fresh/.git/config"; then
     echo "  [FAILED] the offline reuse stored the token"; fail=1
   fi
-  [ "$fail" = 0 ] && { echo "oracle token-selftest: the engine clone stores no credential"; exit 0; }
+  # A CI RUN READS NO TOKEN: under each CI marker, with every token name set, git is handed no
+  # credential header and release_token yields nothing; with none, a local run's token is used.
+  hdr() { git_with_token -C "$st/src" config --get "http.https://github.com/.extraheader" 2>/dev/null || true; }
+  for marker in MODERNCI=1 MODERNCI_JOB=oracle MODERNCI_TO_SHA="$ref" MODERNCI_HEAD="$ref" MODERNCI_COMMIT="$ref" \
+      BUSBAR_ORACLE_JUDGE_PATH=/nonexistent CI=true; do
+    # The subshell is the point: each marker and token lives only there. ("$marker" is NAME=value.)
+    # shellcheck disable=SC2163,SC2030
+    got="$( unset MODERNCI MODERNCI_JOB MODERNCI_TO_SHA MODERNCI_HEAD MODERNCI_COMMIT BUSBAR_ORACLE_JUDGE_PATH CI
+      export "$marker" BUSBAR_RELEASE_TOKEN=plant-token-0123456789 GH_TOKEN=plant-token-0123456789 GITHUB_TOKEN=plant-token-0123456789
+      hdr; release_token || true )"
+    if [ -n "$got" ]; then echo "  [FAILED] under ${marker%%=*} a token was read (git got a credential header)"; fail=1
+    else echo "  [ok]     under ${marker%%=*} no token is read, every token name set"; fi
+  done
+  # shellcheck disable=SC2030,SC2031
+  got="$( unset MODERNCI MODERNCI_JOB MODERNCI_TO_SHA MODERNCI_HEAD MODERNCI_COMMIT BUSBAR_ORACLE_JUDGE_PATH CI
+    export GH_TOKEN=plant-token-0123456789; hdr )"
+  if [ -n "$got" ]; then echo "  [ok]     GREEN twin: a local run (no CI marker) still hands git its token"
+  else echo "  [FAILED] a local run's token was not used: the CI rows above prove nothing"; fail=1; fi
+  [ "$fail" = 0 ] && { echo "oracle token-selftest: the engine clone stores no credential; a CI run reads no token"; exit 0; }
   echo "oracle token-selftest: FAILED"; exit 1
 fi
 # ── the pinned judge, FETCHED (OWNER 2026-10-13: no hand-installed tools; ModernCI installs no judge) ──
@@ -370,7 +507,8 @@ fi
 # busbar-release-cli update.rs RELEASE_KEY_SPKI) before the bytes are ever made executable; a
 # `.sha256` beside it must agree with the pin. The verified binary is cached by its sha256 and
 # re-hashed on every use, so a cache cannot substitute a judge. The token (BUSBAR_RELEASE_TOKEN, else
-# GH_TOKEN, else GITHUB_TOKEN) reaches curl on stdin as a config line: never on an argv, never on disk.
+# GH_TOKEN, else GITHUB_TOKEN; a LOCAL run only, release_token) reaches curl on stdin as a config line:
+# never on an argv, never on disk. A CI run never fetches: NO JUDGE without ModernCI's judge path.
 ORACLE_RELEASE_API="https://api.github.com/repos/GetBusbar/busbar-release"
 ORACLE_RELEASE_KEY_PEM='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU=
@@ -401,6 +539,7 @@ judge_env() { printf '%s-%s-%s' "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(ju
 judge_starts() { "$1" --help >/dev/null 2>&1; }
 # token_word — which token the release API is read with, never its value.
 token_word() {
+  if ci_run; then printf 'a CI run reads no token (BUSBAR_RELEASE_TOKEN, GH_TOKEN and GITHUB_TOKEN are never read)'; return; fi
   if [ -n "${BUSBAR_RELEASE_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN present'
   elif [ -n "${GH_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN absent, GH_TOKEN present'
   elif [ -n "${GITHUB_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN absent, GITHUB_TOKEN present'
@@ -417,7 +556,7 @@ ORACLE_ENV_KEYS="BUSBAR_ORACLE_RELEASE_REPO=release_repo BUSBAR_ORACLE_RELEASE_R
 # BUSBAR_ORACLE_JUDGE_PATH is a ModernCI marker too: only ModernCI hands it over (see resolve_bin).
 under_modernci() { [ -n "${BUSBAR_ORACLE_JUDGE_PATH:-}${MODERNCI:-}${MODERNCI_JOB:-}${MODERNCI_TO_SHA:-}${MODERNCI_HEAD:-}${MODERNCI_COMMIT:-}" ]; }
 # in_ci — any CI run: a ModernCI marker or a generic CI=. No CI run takes BUSBAR_ORACLE_RUST_BIN.
-in_ci() { under_modernci || [ -n "${CI:-}" ]; }
+in_ci() { ci_run; }
 # THE CANDIDATE is the tree $BUSBAR_ORACLE_DATA names (else this shim's own checkout): ModernCI may run
 # the TARGET's copy of this shim with DATA pointing into the candidate's tree. Its pin and golden are
 # the ones held to the config.
@@ -472,8 +611,12 @@ odb_golden() {  # odb_golden <repo> <out dir> — BUSBAR_GOLDEN_1_5_5_TREE, from
   rm -rf "$out" && mkdir -p "$out" && git -C "$repo" archive --format=tar "$want" | tar -xf - -C "$out"
 }
 release_api() {  # release_api <url> [<accept> [<out> [<what>]]] — an authenticated GET; the token never on an argv
-  local tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-  [ -n "$tok" ] || { echo "oracle: no token to read busbar-release's dev-bin release ($(token_word))" >&2; return 1; }
+  local tok
+  if ci_run; then
+    echo "oracle: NO JUDGE: a CI run never reads busbar-release's dev-bin release: the judge is ModernCI's \$BUSBAR_ORACLE_JUDGE_PATH, fetched outside the run from its tool pin ($(token_word))" >&2
+    return 1
+  fi
+  tok="$(release_token)" || { echo "oracle: no token to read busbar-release's dev-bin release ($(token_word))" >&2; return 1; }
   local accept="${2:-application/vnd.github+json}" out="${3:-}" what="${4:-$1}" body code
   body="$(mktemp)"
   code="$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
@@ -638,6 +781,72 @@ sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
 fi
 # `judge-pin`: the pin text the judge would be fetched by, or the refusal.
 if [ "${1:-}" = "judge-pin" ]; then rc=0; judge_pin_text "$here" || rc=$?; exit "$rc"; fi
+if [ "${1:-}" = "ci-token-selftest" ]; then
+  # A CI RUN READS NO TOKEN (OWNER 2026-10-26, "cut it"), end to end. The shim under test runs in a
+  # scratch checkout with the branch file's judge env set and EVERY token name planted; the release
+  # API (curl) and git are logging fakes and `uname -s` answers $FAKE_OS. The GREEN twin, a local run
+  # (no CI marker), still hands git its token, so the CI rows prove the rule and not a broken fake.
+  # (These rows rode in base-selftest until the judge was named by the env alone and it went.) An
+  # optional argument names the shim under test (for the red proof).
+  under="${2:-$here/bin/oracle}"
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  fail=0
+  NOSHA="$(printf 'f%.0s' $(seq 1 64))"
+  CFG=(BUSBAR_ORACLE_RELEASE_REPO=https://github.com/GetBusbar/busbar-release.git
+       BUSBAR_ORACLE_RELEASE_REF=151ad095a21819dca97e8bdb3384c3c3eb2eb806
+       BUSBAR_ORACLE_SHA256_LINUX_X86_64="$NOSHA" BUSBAR_ORACLE_SHA256_LINUX_AARCH64="$NOSHA"
+       BUSBAR_ORACLE_CRATE=busbar-release-oracle BUSBAR_ORACLE_BIN=busbar-oracle)
+  TOKS=(BUSBAR_RELEASE_TOKEN=plant-token-0123456789 GH_TOKEN=plant-token-0123456789 GITHUB_TOKEN=plant-token-0123456789)
+  # fakes on PATH: uname -s answers $FAKE_OS (uname -m is the host's); curl logs, keeps any config it
+  # is handed on stdin (-K -: where a token would ride) and fails (no fetch); git logs whether it was
+  # handed a credential header (GIT_CONFIG_KEY_0) and never clones (no network).
+  mkdir -p "$st/fakebin"
+  printf '#!/bin/sh\nif [ "$1" = -s ]; then echo "$FAKE_OS"; else exec %s "$@"; fi\n' "$(command -v uname)" >"$st/fakebin/uname"
+  printf '#!/bin/sh\necho "curl $*" >>"%s/curl"\ncase "$*" in *"-K -"*) cat >>"%s/curl.stdin";; esac\nexit 22\n' "$st" "$st" >"$st/fakebin/curl"
+  printf '#!/bin/sh\n[ -n "${GIT_CONFIG_KEY_0:-}" ] && echo "git-credential $GIT_CONFIG_KEY_0" >>"%s/git"\ncase " $* " in *" clone "*) echo "git clone" >>"%s/git"; exit 128;; esac\nexec %s "$@"\n' "$st" "$st" "$(command -v git)" >"$st/fakebin/git"
+  chmod +x "$st/fakebin/uname" "$st/fakebin/curl" "$st/fakebin/git"
+  r="$st/repo"; git init -q "$r"; mkdir -p "$r/bin" "$r/testing/shadow-oracle"; cp "$under" "$r/bin/oracle"
+  printf '{"cells": [{"id": "fam|a"}]}\n' >"$r/testing/shadow-oracle/cells.json"
+  printf '{"accepted": []}\n' >"$r/testing/shadow-oracle/accepted-differences.json"
+  shim() {  # shim <env...> -- <args...> — rc in $st/rc, stderr in $st/err; the fakes' logs emptied first
+    local -a e=(); while [ "$1" != -- ]; do e+=("$1"); shift; done; shift
+    : >"$st/curl"; : >"$st/curl.stdin"; : >"$st/git"; local rc=0
+    ( cd "$r" && env -u MODERNCI -u MODERNCI_JOB -u MODERNCI_TO_SHA -u MODERNCI_HEAD -u MODERNCI_COMMIT \
+        -u BUSBAR_ORACLE_JUDGE_PATH -u BUSBAR_ORACLE_RUST_BIN -u CI -u BUSBAR_RELEASE_TOKEN -u GH_TOKEN -u GITHUB_TOKEN \
+        -u BUSBAR_ORACLE_RELEASE_REPO -u BUSBAR_ORACLE_RELEASE_REF -u BUSBAR_ORACLE_SHA256_LINUX_X86_64 \
+        -u BUSBAR_ORACLE_SHA256_LINUX_AARCH64 -u BUSBAR_ORACLE_CRATE -u BUSBAR_ORACLE_BIN -u BUSBAR_GOLDEN_1_5_5_TREE -u BUSBAR_ORACLE_DATA \
+        -u BUSBAR_ORACLE_PRODUCT_ROOT -u BUSBAR_ORACLE_TOOL_DIR -u BUSBAR_RELEASE_CHECKOUT -u MODERNCI_CACHE_DIR \
+        PATH="$st/fakebin:$PATH" ${e[@]+"${e[@]}"} bash "$r/bin/oracle" "$@" ) >/dev/null 2>"$st/err" || rc=$?
+    echo "$rc" >"$st/rc"
+  }
+  ok() { echo "  [ok]     $1"; }
+  bad() { echo "  [FAILED] $1 (rc=$(cat "$st/rc"); $(head -c 400 "$st/err" | tr '\n' ' '))"; fail=1; }
+  no_token_read() { [ ! -s "$st/curl" ] && ! grep -q plant-token "$st/curl.stdin"; }
+  # (e) under ModernCI, the config's judge env, NO judge path handed over, on Linux: NO JUDGE naming
+  # BUSBAR_ORACLE_JUDGE_PATH, nothing fetched, no token read.
+  shim MODERNCI=1 "${CFG[@]}" "${TOKS[@]}" FAKE_OS=Linux -- --help
+  { [ "$(cat "$st/rc")" != 0 ] && no_token_read \
+      && grep -q "NO JUDGE: ModernCI handed over no BUSBAR_ORACLE_JUDGE_PATH" "$st/err"; } \
+    && ok "(e) under ModernCI, the config's judge, no judge path, every token set: NO JUDGE, zero fetches, no token read" \
+    || bad "(e) a ModernCI run without a judge path fetched the judge ($(wc -l <"$st/curl" | tr -d ' ') fetches)"
+  # (f) a bare CI= run on Linux, every token set: the release API is never called, so no token is read.
+  shim CI=true "${CFG[@]}" "${TOKS[@]}" FAKE_OS=Linux -- --help
+  { [ "$(cat "$st/rc")" != 0 ] && no_token_read && grep -q "a CI run never reads busbar-release" "$st/err"; } \
+    && ok "(f) a bare CI= run on Linux, every token set: NO JUDGE, the release API never called, no token read" \
+    || bad "(f) a CI= run reached the release API ($(wc -l <"$st/curl" | tr -d ' ') fetches; token on curl's stdin: $(grep -c plant-token "$st/curl.stdin"))"
+  # (g) a bare CI= run off Linux, every token set: the engine clone gets no credential header.
+  shim CI=true "${CFG[@]}" "${TOKS[@]}" FAKE_OS=Darwin -- --help
+  { grep -q "git clone" "$st/git" && ! grep -q git-credential "$st/git"; } \
+    && ok "(g) a bare CI= run off Linux, every token set: the engine clone carries no credential" \
+    || bad "(g) a CI= run handed git a credential ($(tr '\n' ';' <"$st/git"))"
+  # GREEN twin of (g): a LOCAL run (no CI marker) still authenticates its engine clone with the token.
+  shim "${CFG[@]}" "${TOKS[@]}" FAKE_OS=Darwin -- --help
+  grep -q "git-credential" "$st/git" \
+    && ok "(g) GREEN twin: a local run's engine clone still uses the token" \
+    || bad "(g) twin: a local run's clone carried no credential ($(tr '\n' ';' <"$st/git"))"
+  [ "$fail" = 0 ] && { echo "oracle ci-token-selftest: a CI run reads no token; a local run still may"; exit 0; }
+  echo "oracle ci-token-selftest: FAILED"; exit 1
+fi
 resolve_bin() {
   # NO CI RUN TAKES BUSBAR_ORACLE_RUST_BIN: it names a binary the job's own environment chose, so in
   # CI (a ModernCI marker, BUSBAR_ORACLE_JUDGE_PATH, or CI=) it is ignored entirely, said on stderr.
@@ -651,7 +860,7 @@ resolve_bin() {
   # BUSBAR_ORACLE_RELEASE_REF, sha256 per architecture) -- no fetch, no network, no token read, so no
   # job that runs candidate code needs BUSBAR_RELEASE_TOKEN -- taken only at the config's
   # BUSBAR_ORACLE_SHA256_LINUX_<arch>, and re-verified before every exec (verify_judge_now). Without a
-  # judge path, only the fetched Linux binary. Never a source build, never another digest.
+  # judge path, NO JUDGE. Never a fetch, never a source build, never another digest.
   if under_modernci; then
     local pin_text arch var want got
     pin_text="$(judge_pin_text "$here")" || exit 1
@@ -673,12 +882,10 @@ resolve_bin() {
       fi
       printf '%s\n' "$BUSBAR_ORACLE_JUDGE_PATH"; return 0
     fi
-    if [ "$(uname -s)" != Linux ]; then
-      echo "oracle: NO JUDGE: judge is the config's fetched Linux binary only (this host is $(uname -s))" >&2
-      exit 1
-    fi
-    fetch_judge "$pin_text" "$cache_home/busbar-oracle-judge" api || exit 1
-    return 0
+    # No judge path handed over: NO JUDGE, on every OS. A check never fetches the judge itself (that
+    # took BUSBAR_RELEASE_TOKEN inside the run); ModernCI's tool pin is the only source.
+    echo "oracle: NO JUDGE: ModernCI handed over no BUSBAR_ORACLE_JUDGE_PATH (its tool pin busbar-oracle-judge, .ci/oracle-judge.pin, fetched outside the run). A check never fetches the judge and never reads a token. Refusing." >&2
+    exit 1
   fi
   if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ] && ! in_ci; then
     [ -x "$BUSBAR_ORACLE_RUST_BIN" ] || { echo "oracle: BUSBAR_ORACLE_RUST_BIN is not executable: $BUSBAR_ORACLE_RUST_BIN" >&2; exit 1; }
