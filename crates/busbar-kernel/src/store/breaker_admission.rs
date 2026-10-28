@@ -265,7 +265,7 @@ impl PlaneBreakers {
             .record_success_in(key, lane, HealthState::now_secs());
     }
 
-    /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`crate::breaker::classify`],
+    /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`StatusClass::disposition`](busbar_contract::upstream::StatusClass::disposition),
     /// Stage 2) onto the target's cell. The plane's own Stage-1 normalizer produced `sig`; the
     /// hard-down is per cell (see the module header: on a shared degenerate lane, "all cells" would
     /// be every other target). Returns the disposition so a caller can log it without re-deciding.
@@ -273,16 +273,18 @@ impl PlaneBreakers {
         &self,
         key: &str,
         lane: usize,
-        sig: &crate::breaker::CanonicalSignal,
-    ) -> crate::breaker::Disposition {
-        let disposition = crate::breaker::classify(sig);
+        sig: &busbar_contract::upstream::CanonicalSignal,
+    ) -> busbar_contract::upstream::Disposition {
+        let disposition = sig.class.disposition();
         if !self.provisioned {
             return disposition; // inert: nothing was ever dispatched (see `try_admit`).
         }
         match disposition {
-            crate::breaker::Disposition::ClientFault => self.health.record_client_fault(lane),
-            crate::breaker::Disposition::TransientUpstream => {
-                let tripped = if sig.class == crate::breaker::StatusClass::RateLimit {
+            busbar_contract::upstream::Disposition::ClientFault => {
+                self.health.record_client_fault(lane)
+            }
+            busbar_contract::upstream::Disposition::TransientUpstream => {
+                let tripped = if sig.class == busbar_contract::upstream::StatusClass::RateLimit {
                     self.health.record_rate_limit_in(
                         key,
                         lane,
@@ -312,7 +314,7 @@ impl PlaneBreakers {
                     );
                 }
             }
-            crate::breaker::Disposition::HardDown => {
+            busbar_contract::upstream::Disposition::HardDown => {
                 self.health.record_hard_down_for(
                     key,
                     lane,
@@ -326,7 +328,7 @@ impl PlaneBreakers {
                 );
             }
             // The target is healthy and the request was wrong for it — record nothing.
-            crate::breaker::Disposition::ContextLength => {}
+            busbar_contract::upstream::Disposition::ContextLength => {}
         }
         disposition
     }

@@ -2802,13 +2802,6 @@ impl AdminBinding {
         self.amendments = Some(journal);
         self
     }
-
-    /// Bind the journal an idempotency claim is recorded on (item 271).
-    #[must_use]
-    pub fn with_claim_journal(mut self, journal: Arc<RootClaimJournal>) -> Self {
-        self.claims = Some(journal);
-        self
-    }
 }
 
 /// The kernel verb the closed table's row names: the row of the one table in `busbar-core-admin`

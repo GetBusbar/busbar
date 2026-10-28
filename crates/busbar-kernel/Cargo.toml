@@ -57,15 +57,8 @@ arc-swap = { workspace = true }
 httpdate = { workspace = true }
 
 [features]
-default = ["plane-mcp", "plane-a2a"]
-# Default-on; off compiles out `src/mcp`, and the `tools:`/`mcp:` config sections are refused if used.
-plane-mcp = ["dispatch"]
-# Default-on; off compiles out `src/a2a`, and the `agents:` config section is refused if used.
-plane-a2a = ["relay"]
 # Off by default so the shipped build carries no `axum/ws` edge.
 duplex-ws  = ["runtime"]
-dispatch = []
-relay = []
 runtime = ["axum/ws"]
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]

@@ -520,7 +520,7 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
 
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
         self.tap_faults.lock().unwrap().push((dialect, reason));
-        busbar_kernel::handlers::usage_tap_fault(TAP_FAULT_PROTOCOL, reason);
+        busbar_kernel::snapshot::usage_tap_fault(TAP_FAULT_PROTOCOL, reason);
     }
 }
 

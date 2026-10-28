@@ -177,7 +177,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
     ]);
     gov.record_usage(&cost, &in_team, "", "m", &units, now);
-    let usage = busbar_kernel::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 700,
         output: 200,
         ..Default::default()

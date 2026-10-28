@@ -235,12 +235,12 @@ plane-llm = ["plane-llm-door", "auth-sigv4", "auth-oauth"]
 # THE MCP PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # MCP. The plane is served through its memory-ABI door alone (`plane-mcp-door`): every word the root
 # reads about it is the door's own (its Statement, its tail's `cli_help`, its `declares.json`).
-plane-mcp = ["plane-mcp-door", "busbar-kernel/plane-mcp"]
+plane-mcp = ["plane-mcp-door"]
 # THE A2A PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # A2A. The plane is served through its memory-ABI door alone (`plane-a2a-door`): every word the root
 # reads about it is the door's own (its Statement, its `declares.json`). `--no-default-features`
 # compiles it out while core still routes the other planes (the plane-split deletion test).
-plane-a2a = ["plane-a2a-door", "busbar-kernel/plane-a2a"]
+plane-a2a = ["plane-a2a-door"]
 # THE STREAMING PLANE, through its memory-ABI door (FLIP-STREAMING; BUSBAR-1.6.0.md Part 3 section 12,
 # "The switch": the fold's development-only switch is deleted when the fold completes, and the
 # plane's one switch carries its door). IN `default`; `--no-default-features` compiles it out. On, the

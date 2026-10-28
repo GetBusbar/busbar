@@ -849,14 +849,6 @@ impl Connector {
         }
     }
 
-    /// The same connector serving its carriers from `io`: the host I/O the process's dispatcher serves
-    /// every carrier instance (`io.*`), so what the connector admits is what the carriers reach.
-    #[must_use]
-    pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
-        self.io = io;
-        self
-    }
-
     /// The same connector resolving its programs' environment references through `secrets`, at
     /// config time: the need's declaration and the refresher's lease, never a spawn
     /// ([`spawn_env`]).

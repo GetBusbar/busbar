@@ -2308,7 +2308,7 @@ fn validate_providers_with(
         }
 
         for (code, mapped_class) in provider_cfg.error_map() {
-            if crate::config::status_class_from_str(mapped_class).is_none() {
+            if busbar_contract::upstream::StatusClass::parse(mapped_class).is_none() {
                 errors.push(format!(
                     "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
                 ));

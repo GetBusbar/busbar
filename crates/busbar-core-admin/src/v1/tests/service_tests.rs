@@ -2791,7 +2791,7 @@ mod dated_rate_card_history {
         let gov =
             Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance builds"));
         let now = busbar_kernel::store::now();
-        let usage = busbar_kernel::billing::TokenUsage {
+        let usage = busbar_contract::billing::TokenUsage {
             input: 11,
             output: 7,
             ..Default::default()
@@ -3755,7 +3755,7 @@ mod plane_fees_on_admin_usage {
             match call {
                 Call::Tokens { input, output } => {
                     assert!(gov.try_admit(&cost, &key, "", now).is_ok());
-                    let t = busbar_kernel::billing::TokenUsage {
+                    let t = busbar_contract::billing::TokenUsage {
                         input: *input,
                         output: *output,
                         ..Default::default()

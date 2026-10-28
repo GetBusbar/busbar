@@ -39,9 +39,8 @@
 //! [`install_crypto_provider`] are relocated byte-for-byte (only the module path each name is
 //! reached through changed) from `busbar-kernel`'s own `tls` module, where the SAME native inbound
 //! TLS termination has built its `rustls::ServerConfig` this way since before this crate existed.
-//! `busbar_kernel::tls` keeps `read_pem` (the one turn-a-`SecretRef`-into-PEM function, which the
-//! readers below call) and the accept-loop/hyper-serving machinery — a LISTENER concern this crate
-//! does not touch — but no longer builds a `ServerConfig` itself.
+//! The accept-loop/hyper-serving machinery is a LISTENER concern this crate does not touch, and
+//! `read_pem` (the one turn-a-`SecretRef`-into-PEM function, which the readers below call) lives here.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -93,6 +92,21 @@ pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
         .unwrap_or_else(|| Arc::new(ring()))
 }
 
+/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
+/// source-named message. Never logs contents.
+fn read_pem(
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    secret: &SecretRef,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    resolver
+        .resolve_at_config(
+            secret,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+}
+
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
 /// public, but we still avoid echoing them.
 ///
@@ -102,7 +116,7 @@ fn load_cert_chain(
     secret: &SecretRef,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
+    let bytes = read_pem(resolver, secret, "cert")?;
     let certs = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
@@ -123,7 +137,7 @@ fn load_private_key(
     secret: &SecretRef,
 ) -> Result<PrivateKeyDer<'static>, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
+    let bytes = read_pem(resolver, secret, "key")?;
     // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1, and SEC1 sections, picking the first
     // private-key section it finds. `NoItemsFound` means none was present; any other variant is a
     // genuine parse error. Neither path echoes key material - error messages name only the source.
@@ -165,7 +179,7 @@ fn load_client_roots(
     secret: &SecretRef,
 ) -> Result<RootCertStore, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
+    let bytes = read_pem(resolver, secret, "client_ca")?;
     let cas = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;

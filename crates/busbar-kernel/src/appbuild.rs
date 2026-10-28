@@ -23,10 +23,9 @@ use crate::state::App;
 use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
-    observability, operation, plugin_routes, profile, ratelimit, snapshot, state, store, telemetry,
-    tls, transport, trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
+    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, transport, trust,
 };
 use busbar_kernel::plane_driver::route_input::{
     AffinityInput, AuthStyleInput, FailoverInput, HealthInput, HealthModeInput, LaneInput,
@@ -596,7 +595,7 @@ impl ResolvedRates {
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
 struct ResolvedRates {
-    lanes: Vec<(String, crate::billing::RawTierRates)>,
+    lanes: Vec<(String, busbar_contract::billing::RawTierRates)>,
     units: Vec<(String, String, u64)>,
     flat_minor: i64,
     present: bool,
