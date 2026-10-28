@@ -2105,7 +2105,10 @@ impl FarEnd for EgressFarEnd<'_> {
             .filter(|l| l.degraded)
             .map(|l| l.member.destination.get());
         match lane {
+            // 1.5.5's target: `forward_once` was a `#[tracing::instrument]` in
+            // `proxy::engine::walk`.
             Some(lane) => tracing::span!(
+                target: "busbar::proxy::engine::walk",
                 crate::observability::HOTPATH_LEVEL,
                 "forward_once",
                 lane = lane

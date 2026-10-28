@@ -26,10 +26,11 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::task::{Context, Poll, Waker};
 
+use arc_swap::ArcSwapOption;
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
@@ -96,16 +97,111 @@ enum Kind {
 }
 
 struct Entry {
+    /// The whole handle: its slot and the slot's generation when it was made.
+    id: u64,
     owner: u64,
     kind: Kind,
+}
+
+/// Slots in the handle table's first segment; each next segment holds twice the one before.
+const FIRST: usize = 64;
+/// Segments: room for every slot a handle's low 32 bits name.
+const SEGMENTS: usize = 26;
+/// The slots the table can make.
+const SLOTS: u64 = (FIRST as u64) * ((1 << SEGMENTS) - 1);
+/// A handle's generation, above its slot.
+const GENERATION: u64 = 1 << 32;
+
+/// THE HANDLE TABLE: a slot per live handle, read by every `io.*` call WITHOUT A LOCK (one atomic
+/// load). A handle is its slot (its low 32 bits, counted from 1: a handle is never 0) and the slot's
+/// generation (its high 32 bits); the entry carries its whole handle, so a handle released (or
+/// taken) names nothing even once its slot holds another: a handle is never made twice. A slot whose
+/// generations are spent is retired. Making and releasing serialise on [`Table::free`].
+struct Table {
+    segments: [OnceLock<Box<[ArcSwapOption<Entry>]>>; SEGMENTS],
+    free: Mutex<Free>,
+}
+
+/// The table's writers' side.
+#[derive(Default)]
+struct Free {
+    /// The next handle of each released slot (its next generation).
+    released: Vec<u64>,
+    /// Slots ever made.
+    made: u64,
+    /// Handles held.
+    live: usize,
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self {
+            segments: std::array::from_fn(|_| OnceLock::new()),
+            free: Mutex::default(),
+        }
+    }
+}
+
+impl Table {
+    /// The segment and the place in it of handle `id`'s slot (low 32 bits, from 1).
+    fn place(id: u64) -> Option<(usize, usize)> {
+        let slot = usize::try_from((id & (GENERATION - 1)).checked_sub(1)?).ok()?;
+        let seg = (slot / FIRST + 1).ilog2() as usize;
+        Some((seg, slot - FIRST * ((1 << seg) - 1)))
+    }
+
+    /// Handle `id`'s entry, if `id` is still held.
+    fn get(&self, id: u64) -> Option<Arc<Entry>> {
+        let (seg, at) = Self::place(id)?;
+        self.segments.get(seg)?.get()?[at]
+            .load_full()
+            .filter(|e| e.id == id)
+    }
+
+    /// Hold `kind` for `owner` under a new handle.
+    fn make(&self, owner: u64, kind: Kind) -> IoResult<u64> {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = match free.released.pop() {
+            Some(next) => next,
+            None if free.made < SLOTS => {
+                free.made += 1;
+                free.made
+            }
+            None => {
+                return Err(IoRefusal::Failed(
+                    "the host holds as many handles as it can".into(),
+                ));
+            }
+        };
+        let (seg, at) = Self::place(id).ok_or_else(IoRefusal::unknown)?;
+        self.segments
+            .get(seg)
+            .ok_or_else(IoRefusal::unknown)?
+            .get_or_init(|| (0..FIRST << seg).map(|_| ArcSwapOption::empty()).collect())[at]
+            .store(Some(Arc::new(Entry { id, owner, kind })));
+        free.live += 1;
+        Ok(id)
+    }
+
+    /// Release handle `id` when `mine` says so: it names nothing from here on.
+    fn release(&self, id: u64, mine: impl FnOnce(&Entry) -> bool) -> Option<Arc<Entry>> {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let (seg, at) = Self::place(id)?;
+        let slot = &self.segments.get(seg)?.get()?[at];
+        slot.load_full().filter(|e| e.id == id && mine(e))?;
+        if let Some(next) = id.checked_add(GENERATION) {
+            free.released.push(next);
+        }
+        free.live -= 1;
+        slot.swap(None)
+    }
 }
 
 /// THE HOST'S I/O (module docs).
 #[derive(Default)]
 pub struct HostIo {
-    handles: RwLock<HashMap<u64, Arc<Entry>>>,
+    handles: Table,
     admitted: Mutex<HashMap<Ticket, Admitted>>,
-    next: AtomicU64,
     /// The sockets offered for adoption, each to the accept on its ticket.
     offered: Mutex<HashMap<Ticket, TcpStream>>,
     /// Each carrier's adoption listener, by its entry: the carrier's listener token.
@@ -150,9 +246,10 @@ impl HostIo {
     #[must_use]
     pub fn held(&self) -> usize {
         self.handles
-            .read()
+            .free
+            .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .len()
+            .live
     }
 
     /// ADMIT `what` for the op about to run on `ticket` (the destination guard's pinned address, the
@@ -263,22 +360,10 @@ impl HostIo {
         }
     }
 
-    fn hold(&self, owner: u64, kind: Kind) -> u64 {
-        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        self.handles
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, Arc::new(Entry { owner, kind }));
-        id
-    }
-
     fn entry(&self, owner: u64, id: u64) -> IoResult<Arc<Entry>> {
         self.handles
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&id)
+            .get(id)
             .filter(|e| e.owner == owner)
-            .cloned()
             .ok_or_else(IoRefusal::unknown)
     }
 
@@ -287,12 +372,7 @@ impl HostIo {
     /// leaves the reactor, non-blocking. `None` for no such stream, or one still referenced.
     #[must_use]
     pub fn take_stream(&self, id: u64) -> Option<TcpStream> {
-        let entry = self
-            .handles
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id)?;
-        let entry = Arc::into_inner(entry)?;
+        let entry = Arc::into_inner(self.handles.release(id, |_| true)?)?;
         match entry.kind {
             Kind::Stream { sock, .. } => match sock.deregister() {
                 Sock::Tcp(s) => Some(s),
@@ -306,7 +386,7 @@ impl HostIo {
     /// other handle, and for one no longer held.
     #[must_use]
     pub fn program_exited(&self, id: u64) -> bool {
-        let Ok(e) = self.lookup(id) else {
+        let Some(e) = self.handles.get(id) else {
             return false;
         };
         match &e.kind {
@@ -324,28 +404,17 @@ impl HostIo {
     /// The process id of the program handle `id` runs; `None` for any other handle, or once reaped.
     #[must_use]
     pub fn program_id(&self, id: u64) -> Option<u32> {
-        let e = self.lookup(id).ok()?;
+        let e = self.handles.get(id)?;
         match &e.kind {
             Kind::Program(p) => p.child.lock().unwrap_or_else(PoisonError::into_inner).id(),
             _ => None,
         }
     }
 
-    fn lookup(&self, id: u64) -> IoResult<Arc<Entry>> {
-        self.handles
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&id)
-            .cloned()
-            .ok_or_else(IoRefusal::unknown)
-    }
-
     fn release(&self, owner: u64, id: u64) -> IoResult<Arc<Entry>> {
-        let mut held = self.handles.write().unwrap_or_else(PoisonError::into_inner);
-        match held.get(&id) {
-            Some(e) if e.owner == owner => held.remove(&id).ok_or_else(IoRefusal::unknown),
-            _ => Err(IoRefusal::unknown()),
-        }
+        self.handles
+            .release(id, |e| e.owner == owner)
+            .ok_or_else(IoRefusal::unknown)
     }
 
     /// Begin a connect to `addr`: a unix-domain path or an `ip:port`.
@@ -451,13 +520,13 @@ impl IoHost for HostIo {
             self.record(ticket, None, Some(OpenFailure::Failed(e.to_string())));
             failed(&e)
         })?;
-        let id = self.hold(
+        let id = self.handles.make(
             owner,
             Kind::Stream {
                 sock,
                 connecting: AtomicBool::new(true),
             },
-        );
+        )?;
         self.record(ticket, Some(id), None);
         Ok(id)
     }
@@ -476,7 +545,7 @@ impl IoHost for HostIo {
         let l = socket::listen(bind).map_err(|e| failed(&e))?;
         let local = l.local_addr().map_err(|e| failed(&e))?;
         let sock = reactor::register(l).map_err(|e| failed(&e))?;
-        let id = self.hold(owner, Kind::Listener(sock));
+        let id = self.handles.make(owner, Kind::Listener(sock))?;
         self.record(ticket, Some(id), None);
         Ok((id, local.to_string()))
     }
@@ -511,13 +580,17 @@ impl IoHost for HostIo {
                         Ok(s) => s,
                         Err(e) => return Poll::Ready(Err(failed(&e))),
                     };
-                    let id = self.hold(
+                    let made = self.handles.make(
                         owner,
                         Kind::Stream {
                             sock,
                             connecting: AtomicBool::new(false),
                         },
                     );
+                    let id = match made {
+                        Ok(id) => id,
+                        Err(r) => return Poll::Ready(Err(r)),
+                    };
                     self.record(ticket, Some(id), None);
                     return Poll::Ready(Ok((id, peer.to_string())));
                 }
@@ -706,14 +779,14 @@ impl IoHost for HostIo {
             .map_err(|e| failed(&e))?;
         let stdout = tokio::net::unix::pipe::Receiver::from_owned_fd(host_reads.into())
             .map_err(|e| failed(&e))?;
-        let id = self.hold(
+        let id = self.handles.make(
             owner,
             Kind::Program(Box::new(Pipes {
                 child: Mutex::new(child),
                 stdin: Mutex::new(Some(stdin)),
                 stdout,
             })),
-        );
+        )?;
         self.record(ticket, Some(id), None);
         Ok(id)
     }
