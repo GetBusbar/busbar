@@ -1187,6 +1187,9 @@ impl Worker {
         let Some(cur) = e.current.take() else {
             return;
         };
+        // A wake latched behind this op on a driver ticket is owed a `drive`; on any other ticket
+        // it was this op's and goes with it.
+        let owed = e.driver.is_some() && std::mem::take(&mut e.latched);
         e.latched = false;
         // THE ONE RE-CALL: a short answer may be re-asked once on this ticket; short twice is FAULT.
         let recall = e.short_slot.take() == Some(cur.meta.slot);
@@ -1203,7 +1206,6 @@ impl Worker {
             }
         }
         drop(cur.meta);
-        let owed = e.driver.is_some() && std::mem::take(&mut e.latched);
         if !e.queue.is_empty() {
             Self::schedule(st, idx, Action::Start);
         } else if e.recycle_when_idle {
