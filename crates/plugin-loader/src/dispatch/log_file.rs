@@ -755,11 +755,24 @@ fn mirror(level: LogLevel, text: &[u8]) {
         .split_once(": ")
         .map_or(text.as_ref(), |(_, rest)| rest);
     let mut said = String::new();
-    escape_into(&mut said, said_raw.as_bytes());
+    escape_into(&mut said, without_diag_field(said_raw).as_bytes());
     match level {
         LogLevel::Error => tracing::error!(target: MIRROR_TARGET, "{said}"),
         _ => tracing::warn!(target: MIRROR_TARGET, "{said}"),
     }
+}
+
+/// `text` without its ` diag=<code>` field: 1.5.5 printed a plugin's line with no code (the code
+/// is the plugin's own file's, and a declared diagnostic reaches busbar's log under it through the
+/// host's observer).
+fn without_diag_field(text: &str) -> std::borrow::Cow<'_, str> {
+    const FIELD: &str = " diag=";
+    let Some(at) = text.find(FIELD) else {
+        return std::borrow::Cow::Borrowed(text);
+    };
+    let rest = &text[at + FIELD.len()..];
+    let end = rest.find(' ').map_or(text.len(), |i| at + FIELD.len() + i);
+    std::borrow::Cow::Owned([&text[..at], &text[end..]].concat())
 }
 
 /// The target a mirrored plugin line carries in busbar's own log ([`mirror`]).
