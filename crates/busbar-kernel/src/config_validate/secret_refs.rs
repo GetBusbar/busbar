@@ -30,8 +30,8 @@ use busbar_contract::plugin_rows::PluginRows;
 /// 1. A NEW FIELD ON A TYPE ALREADY WALKED HERE is a COMPILE ERROR. Every struct below is taken
 ///    apart with an EXHAUSTIVE destructure and no `..`, the idiom already used by
 ///    `RootSettings::is_empty` and `config::patch`. Adding a field to `RootCfg`, `TlsCfg`,
-///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg` or
-///    `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
+///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg`,
+///    `CredentialsCfg`, `AtRestCfg` or `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
 ///    decided, here, whether it carries a secret.
 /// 2. A NEW SECRET-BEARING TYPE is a TEST failure. The compiler cannot help with a `SecretRef`
 ///    added to a struct this function never destructures, so
@@ -183,6 +183,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         auth,
         providers,
         identity_providers,
+        credentials,
         // ── ADDRESSES, NAMES AND REFERENCES: strings the operator types in the clear. A listen
         // address, a public URL, a module name or a bare hook/group/definition name is not a
         // credential and has no `SecretRef` anywhere beneath it. ──
@@ -271,6 +272,17 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     }) = oauth_as
     {
         refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));
+    }
+
+    // THE AT-REST KEYS a recoverable credential is sealed under (`credentials.at_rest`). Boot
+    // resolves both, so `--validate` must too: a `previous:` that does not resolve would leave every
+    // credential sealed under it unable to authenticate.
+    let crate::config::CredentialsCfg { at_rest } = credentials;
+    if let Some(crate::config::AtRestCfg { key, previous }) = at_rest {
+        refs.push(("credentials.at_rest.key".to_string(), key));
+        if let Some(previous) = previous {
+            refs.push(("credentials.at_rest.previous".to_string(), previous));
+        }
     }
 
     for (name, p) in providers {
@@ -468,6 +480,8 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     ("AuthCfg", SecretBearing::Walked),
+    // `credentials.at_rest.{key,previous}`: the keys a recoverable credential is sealed under.
+    ("AtRestCfg", SecretBearing::Walked),
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),

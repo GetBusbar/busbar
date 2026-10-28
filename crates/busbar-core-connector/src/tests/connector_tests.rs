@@ -1647,7 +1647,7 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
 fn a_settings_derived_target_is_declared_without_its_userinfo() {
     const USER: &str = "the-user";
     const SECRET: &str = "s3cret-pw";
-    let cap = busbar_contract::testkit::WarnCapture::capturing_debug();
+    let cap = crate::warn_capture::WarnCapture::capturing_debug();
     let mut said: Vec<String> = Vec::new();
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
