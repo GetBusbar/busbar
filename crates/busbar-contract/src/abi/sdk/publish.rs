@@ -460,14 +460,32 @@ impl<T: Publish, P> Generations<T, P> {
 /// It lives INSIDE the instance state and nowhere else: a plugin holds no process-global state, so
 /// what it keeps is per-instance and dropped with the instance (`close`). It is not `const`
 /// constructible, so it cannot be a `static`. The plugin bounds it: [`Keyed::len`] is what it
-/// checks before an insert that grows it.
+/// checks before an insert that grows it, and [`Keyed::with_or_insert_within`] keeps a bound
+/// exactly.
+///
+/// ONE MAP OR SHARDS. [`Keyed::new`] is one map under one lock. [`Keyed::sharded`] (a table of
+/// units, one entry per request in flight) spreads its entries over [`KEYED_SHARDS`] maps by their
+/// key's hash, each with its own lock, so the per-request and per-piece ops ([`Keyed::with`],
+/// [`Keyed::insert`], [`Keyed::remove`], [`Keyed::get`], [`Keyed::contains_key`],
+/// [`Keyed::with_or_insert_within`]) take one shard's lock and two units never wait on each other.
+/// [`Keyed::len`] is a count, read without a lock. [`Keyed::with_all`] holds every shard and hands
+/// `f` the whole map, gathered and spread back: on a sharded map it is for a scan or a sweep, never
+/// a per-piece path.
 pub struct Keyed<K, V> {
-    map: Mutex<BTreeMap<K, V>>,
+    shards: Box<[Mutex<BTreeMap<K, V>>]>,
+    shard_of: fn(&K) -> usize,
+    len: std::sync::atomic::AtomicUsize,
 }
+
+/// How many shards a [`Keyed::sharded`] map spreads its entries over.
+pub const KEYED_SHARDS: usize = 16;
 
 impl<K, V> std::fmt::Debug for Keyed<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Keyed").field("len", &self.len()).finish()
+        f.debug_struct("Keyed")
+            .field("len", &self.len())
+            .field("shards", &self.shards.len())
+            .finish()
     }
 }
 
@@ -477,54 +495,186 @@ impl<K: Ord, V> Default for Keyed<K, V> {
     }
 }
 
-impl<K, V> Keyed<K, V> {
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<K, V>> {
-        self.map
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+/// A shard's map, its poison recovered: an op that panicked left it as far as it got.
+fn keyed_lock<K, V>(shard: &Mutex<BTreeMap<K, V>>) -> std::sync::MutexGuard<'_, BTreeMap<K, V>> {
+    shard
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
+/// The shard a key of a [`Keyed::sharded`] map lives in: its hash's remainder.
+fn keyed_shard<K: std::hash::Hash>(key: &K) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    // The remainder is below `KEYED_SHARDS`, so it fits a `usize`.
+    (h.finish() % KEYED_SHARDS as u64) as usize
+}
+
+impl<K, V> Keyed<K, V> {
     /// How many entries are held.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lock().len()
+        self.len.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Whether none is held.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
+        self.len() == 0
+    }
+
+    /// Count what one shard's op changed: `before` entries, now `after`.
+    fn recount(&self, before: usize, after: usize) {
+        use std::sync::atomic::Ordering::AcqRel;
+        if after > before {
+            self.len.fetch_add(after - before, AcqRel);
+        } else if before > after {
+            self.len.fetch_sub(before - after, AcqRel);
+        }
+    }
+
+    /// `key`'s shard, locked.
+    fn shard(&self, key: &K) -> std::sync::MutexGuard<'_, BTreeMap<K, V>> {
+        keyed_lock(&self.shards[(self.shard_of)(key)])
+    }
+}
+
+/// The whole of a sharded map, as [`Keyed::with_all`] hands it out, every shard held; on drop (a
+/// panic in `f` included) each entry goes back to its shard.
+struct AllShards<'a, K: Ord, V> {
+    keyed: &'a Keyed<K, V>,
+    held: Vec<std::sync::MutexGuard<'a, BTreeMap<K, V>>>,
+    all: BTreeMap<K, V>,
+}
+
+impl<K: Ord, V> Drop for AllShards<'_, K, V> {
+    fn drop(&mut self) {
+        let all = std::mem::take(&mut self.all);
+        // Every shard is held, so no other op moves the count meanwhile.
+        self.keyed
+            .len
+            .store(all.len(), std::sync::atomic::Ordering::Release);
+        for (k, v) in all {
+            let at = (self.keyed.shard_of)(&k);
+            self.held[at].insert(k, v);
+        }
     }
 }
 
 impl<K: Ord, V> Keyed<K, V> {
-    /// None held.
+    /// None held, in one map under one lock.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            map: Mutex::new(BTreeMap::new()),
+            shards: Box::new([Mutex::new(BTreeMap::new())]),
+            shard_of: |_| 0,
+            len: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// None held, spread over [`KEYED_SHARDS`] maps by key: a table of units, reached per piece.
+    #[must_use]
+    pub fn sharded() -> Self
+    where
+        K: std::hash::Hash,
+    {
+        Self {
+            shards: (0..KEYED_SHARDS)
+                .map(|_| Mutex::new(BTreeMap::new()))
+                .collect(),
+            shard_of: keyed_shard::<K>,
+            len: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     /// Hold `value` under `key`, answering what it replaced.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        self.lock().insert(key, value)
+        let mut map = self.shard(&key);
+        let before = map.len();
+        let replaced = map.insert(key, value);
+        self.recount(before, map.len());
+        replaced
     }
 
     /// Drop what `key` holds, answering it.
     pub fn remove(&self, key: &K) -> Option<V> {
-        self.lock().remove(key)
+        // Counted under the shard's lock, so a `with_all` that holds every shard sees the count
+        // and the maps agree.
+        let mut map = self.shard(key);
+        let gone = map.remove(key);
+        if gone.is_some() {
+            self.recount(1, 0);
+        }
+        gone
     }
 
-    /// Run `f` over the entry `key` names, or `None`, under the lock. `f` must not reach this
-    /// same `Keyed` again.
+    /// Whether `key` holds an entry.
+    #[must_use]
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.shard(key).contains_key(key)
+    }
+
+    /// Run `f` over the entry `key` names, or `None`, under its shard's lock. `f` must not reach
+    /// this same `Keyed` again.
     pub fn with<R>(&self, key: &K, f: impl FnOnce(Option<&mut V>) -> R) -> R {
-        f(self.lock().get_mut(key))
+        f(self.shard(key).get_mut(key))
     }
 
-    /// Run `f` over the whole map, under the lock. `f` must not reach this same `Keyed` again.
+    /// Run `f` over the entry `key` names, made with `make` when it has none and fewer than
+    /// `bound` are held; `None` when it has none and `bound` are held already (none is dropped to
+    /// make room). The bound is kept exactly, arrivals at once included. `f` must not reach this
+    /// same `Keyed` again.
+    pub fn with_or_insert_within<R>(
+        &self,
+        key: K,
+        bound: usize,
+        make: impl FnOnce() -> V,
+        f: impl FnOnce(&mut V) -> R,
+    ) -> Option<R> {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        let mut map = self.shard(&key);
+        if let Some(v) = map.get_mut(&key) {
+            return Some(f(v));
+        }
+        // Room is taken in the count before the entry goes in, so two arrivals at once in two
+        // shards never both take the last place.
+        self.len
+            .fetch_update(AcqRel, Acquire, |n| (n < bound).then_some(n + 1))
+            .ok()?;
+        Some(f(map.entry(key).or_insert_with(make)))
+    }
+
+    /// Keep only the entries `keep` answers `true` for, one shard at a time.
+    pub fn retain(&self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        for shard in &*self.shards {
+            let mut map = keyed_lock(shard);
+            let before = map.len();
+            map.retain(|k, v| keep(k, v));
+            self.recount(before, map.len());
+        }
+    }
+
+    /// Run `f` over the whole map, under every lock. `f` must not reach this same `Keyed` again.
+    /// A sharded map is gathered for `f` and spread back after it: a scan or a sweep, never a
+    /// per-piece path ([`Keyed::with`] is that).
     pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
-        f(&mut self.lock())
+        if let [one] = &*self.shards {
+            let mut map = keyed_lock(one);
+            let before = map.len();
+            let r = f(&mut map);
+            self.recount(before, map.len());
+            return r;
+        }
+        let mut whole = AllShards {
+            keyed: self,
+            held: self.shards.iter().map(keyed_lock).collect(),
+            all: BTreeMap::new(),
+        };
+        for map in &mut whole.held {
+            whole.all.append(map);
+        }
+        f(&mut whole.all)
     }
 
     /// A copy of what `key` holds.
@@ -533,7 +683,7 @@ impl<K: Ord, V> Keyed<K, V> {
     where
         V: Clone,
     {
-        self.lock().get(key).cloned()
+        self.shard(key).get(key).cloned()
     }
 }
 
