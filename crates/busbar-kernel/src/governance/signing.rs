@@ -189,18 +189,18 @@ impl TokenSigner {
 
     /// A DOMAIN-SEPARATED SUBKEY SEED derived from this signer's secret.
     ///
-    /// busbar holds one long-lived ed25519 secret and other planes need a signing key of their own
-    /// (the A2A plane signs the agent cards it serves, so an external caller has something to pin
-    /// busbar by). Handing them THIS key would put the credential-minting secret on a path that
+    /// busbar holds one long-lived ed25519 secret and a plane may need a signing key of its own
+    /// (to sign a document it serves, so an external caller has something to pin busbar by).
+    /// Handing it THIS key would put the credential-minting secret on a path that
     /// signs documents somebody else largely authored. Handing them a second CONFIGURED key would
     /// be a second secret an operator can fail to generate, hold or rotate — and a zero-config
     /// first boot would then serve unsigned cards.
     ///
     /// A one-way derivation is the answer to both: the subkey is not this key, and compromise of a
     /// subkey does not walk back to this one, while a deployment still holds exactly one secret and
-    /// a rotation of it rotates every subkey with it. `domain` MUST be a versioned constant — see
-    /// [`crate::a2a::sign::CARD_SIGNING_DOMAIN`] — so that changing a derivation is a new key
-    /// rather than a silently different one under the same name.
+    /// a rotation of it rotates every subkey with it. `domain` MUST be a versioned constant (the
+    /// plane declares it) so that changing a derivation is a new key rather than a silently
+    /// different one under the same name.
     ///
     /// The secret NEVER leaves this method: callers get 32 derived bytes, not
     /// [`Self::secret_bytes`].
@@ -208,20 +208,20 @@ impl TokenSigner {
         subkey_seed(&self.key.to_bytes(), domain)
     }
 
-    /// SIGN `input` with this signer's DOMAIN-DERIVED card subkey — the host-owned card-signing
-    /// primitive behind the plane host `card_sign` seam. Deterministic Ed25519 over the plane-framed
+    /// SIGN `input` with this signer's DOMAIN-DERIVED subkey — the host-owned signing primitive
+    /// behind the neutral `sign_in_domain` host service. Deterministic Ed25519 over the plane-framed
     /// signing input; the subkey is expanded from [`Self::derived_subkey_seed`] and the secret NEVER
     /// leaves this method — the plane receives only the 64 signature bytes.
-    pub fn sign_with_card_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
+    pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         key.sign(input).to_bytes()
     }
 
-    /// BUSBAR'S PUBLISHED CARD-ISSUER KEY for `domain`, as base64 SubjectPublicKeyInfo — the string a
-    /// counterparty pins busbar by. The PUBLIC half of the same domain-derived card subkey
-    /// [`Self::sign_with_card_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
+    /// BUSBAR'S PUBLISHED KEY for `domain`, as base64 SubjectPublicKeyInfo — the string a
+    /// counterparty pins busbar by. The PUBLIC half of the same domain-derived subkey
+    /// [`Self::sign_with_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
     /// verifier accepts, so a value emitted here and a value that verifier reads back cannot drift.
-    pub fn card_subkey_key_info_base64(&self, domain: &str) -> String {
+    pub fn subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
         der.extend_from_slice(&ED25519_KEY_INFO_PREFIX);
