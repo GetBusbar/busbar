@@ -1465,7 +1465,7 @@ pub fn evaluate(
             .release_clock
             .unwrap_or_else(crate::release_trust::now),
         keys_floor: policy.release_keys_floor,
-        enforce_expiry: true,
+        enforce_expiry: policy.release_enforce_expiry,
     };
     let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.signature.trim().is_empty() {
         Err(Untrusted::Unsigned {

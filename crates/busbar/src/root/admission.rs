@@ -47,6 +47,17 @@ fn policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String>
     crate::root::boot::trust_policy(cfg, binary_version)
 }
 
+/// [`policy`] for an INSTALL or UPDATE (an upload, and the preview of one): a first-party plugin's
+/// release seal is also judged for EXPIRY, as TUF judges metadata when it fetches. Boot judges an
+/// installed plugin without it, so time passing never stops one from loading
+/// (`docs/design/release-trust.md`).
+fn install_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
+    policy(cfg, binary_version).map(|p| TrustPolicy {
+        release_enforce_expiry: true,
+        ..p
+    })
+}
+
 /// `tarball` unpacked in memory and its manifest checked for completeness, integrity and a
 /// supported ABI; `what` names the tarball in a refusal (empty: the upload's own words).
 fn unpack_checked(
@@ -111,7 +122,7 @@ impl PluginAdmission for RootAdmission {
         tarball: &[u8],
         cfg: &PluginsCfg,
     ) -> Result<Admitted, Refusal> {
-        let policy = policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
+        let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
         let manifest = &unpacked.manifest;
         let judged = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
@@ -128,13 +139,20 @@ impl PluginAdmission for RootAdmission {
         };
         // A corrupt tarball already in the directory makes the scan refuse: the conflict status of
         // the upload cannot be determined, so it is refused rather than published unchecked.
-        let installed = crate::root::loader::scan_and_validate(dir, &policy).map_err(|errors| {
-            Refusal::Conflict(format!(
+        // The INSTALLED set is judged as boot will judge it (expiry not enforced): an installed
+        // plugin whose seal has since expired still loads at boot, so it still claims its names here.
+        let installed_policy = TrustPolicy {
+            release_enforce_expiry: false,
+            ..policy.clone()
+        };
+        let installed =
+            crate::root::loader::scan_and_validate(dir, &installed_policy).map_err(|errors| {
+                Refusal::Conflict(format!(
                 "cannot validate the installed plugin set before publishing (fix or remove the \
                  offending tarball first): {}",
                 errors.join("; ")
             ))
-        })?;
+            })?;
         for existing in installed.loadable() {
             if existing.file == file {
                 continue; // overwriting the same tarball file is a legitimate upgrade
@@ -177,7 +195,7 @@ impl PluginAdmission for RootAdmission {
     }
 
     fn inspect(&self, tarball: &[u8], cfg: &PluginsCfg) -> Result<(Stated, Judged), Refusal> {
-        let policy = policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
+        let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
         // Trust is REPORTED, never a refusal to answer: an untrusted candidate is the case an
         // operator most wants to preview.

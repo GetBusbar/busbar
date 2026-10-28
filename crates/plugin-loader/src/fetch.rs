@@ -3,8 +3,11 @@
 
 //! Declarative plugin FETCH (`plugins.fetch:`): download the signed tarballs an operator declared
 //! into `plugins.dir` BEFORE the loader scans it. This is an INTEGRITY + CACHE layer only — it never
-//! `dlopen`s, evaluates trust, or parses a manifest; the unchanged `scan_and_validate` signature
-//! check remains the sole trust gate over whatever bytes land here.
+//! `dlopen`s or evaluates trust; the unchanged `scan_and_validate` signature check remains the sole
+//! trust gate over whatever bytes land here. The one manifest read is the FRESHNESS check a fetch
+//! owes (TUF's semantics, `docs/design/release-trust.md`): a DOWNLOADED sealed first-party tarball
+//! whose keys document or release manifest has expired is refused and never written. A cached
+//! (installed) tarball is not re-judged, so time passing never removes an installed plugin.
 //!
 //! ## Contract
 //! - **Cache-by-pin.** A `sha256`-pinned spec whose target file already hashes to the pin skips the
@@ -191,6 +194,17 @@ pub fn fetch_plugins(
             }
         }
 
+        // FRESHNESS (install time): a sealed tarball whose documents have expired is not installed.
+        // Its chain is verified by the scan; a forged `expires` fails there.
+        if let Err(r) = fresh(&bytes) {
+            record_problem(
+                &mut errors,
+                &mut outcomes,
+                format!("release seal refused ({}): {r} (not written)", r.code()),
+            );
+            continue;
+        }
+
         // Durable write via the single owner (`crate::durable`): temp -> fsync -> atomic rename ->
         // parent fsync; no partial or wrong file ever appears at the target.
         match crate::durable::write(&dir.join(&spec.filename), &bytes).map_err(|e| e.to_string()) {
@@ -205,6 +219,29 @@ pub fn fetch_plugins(
         Err(errors)
     } else {
         Ok(outcomes)
+    }
+}
+
+/// The install-time freshness of a downloaded tarball's release seal
+/// ([`crate::release_trust::check_fresh`]); `Ok` for a tarball that is not sealed or does not
+/// unpack (the scan judges those).
+fn fresh(tarball: &[u8]) -> Result<(), crate::release_trust::SealRefusal> {
+    let Ok(up) = crate::tarball::unpack(tarball) else {
+        return Ok(());
+    };
+    match crate::release_trust::wire::read_seal(&up.manifest.signature) {
+        None => Ok(()),
+        Some(Err(why)) => Err(crate::release_trust::SealRefusal::Malformed {
+            doc: "release seal",
+            why,
+        }),
+        Some(Ok((keys, targets))) => crate::release_trust::check_fresh(
+            crate::release_trust::Seal {
+                keys: &keys,
+                targets: &targets,
+            },
+            crate::release_trust::now(),
+        ),
     }
 }
 

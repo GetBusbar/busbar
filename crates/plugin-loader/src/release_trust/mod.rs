@@ -391,7 +391,27 @@ impl std::fmt::Display for SealRefusal {
 ///
 /// A document that does not read, or has expired.
 pub fn check_fresh(seal: Seal<'_>, now: u64) -> Result<(), SealRefusal> {
-    let _ = (seal, now);
+    let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
+    let keys = wire::read_keys(seal.keys)
+        .map_err(malformed("keys document"))?
+        .doc;
+    if keys.expires <= now {
+        return Err(SealRefusal::KeysExpired {
+            version: keys.version,
+            expires: keys.expires,
+            now,
+        });
+    }
+    let targets = wire::read_targets(seal.targets)
+        .map_err(malformed("release manifest"))?
+        .doc;
+    if targets.expires <= now {
+        return Err(SealRefusal::TargetsExpired {
+            version: targets.version,
+            expires: targets.expires,
+            now,
+        });
+    }
     Ok(())
 }
 
@@ -427,7 +447,7 @@ pub fn verify_release(
         });
     }
     let kd = &keys.doc;
-    if kd.expires <= checks.now {
+    if checks.enforce_expiry && kd.expires <= checks.now {
         return Err(SealRefusal::KeysExpired {
             version: kd.version,
             expires: kd.expires,
@@ -485,7 +505,7 @@ pub fn verify_release(
         });
     }
     let td = &targets.doc;
-    if td.expires <= checks.now {
+    if checks.enforce_expiry && td.expires <= checks.now {
         return Err(SealRefusal::TargetsExpired {
             version: td.version,
             expires: td.expires,

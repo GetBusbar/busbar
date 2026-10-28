@@ -66,11 +66,11 @@ what to do.
 |---|---|---|---|
 | 1 | The seal and both documents parse as one well-formed document of their kind | `release-seal-malformed` | `allow_unsigned` only |
 | 2 | At least `ROOT_THRESHOLD` distinct compiled-in roots signed the keys document | `keys-signature` | `allow_unsigned` only |
-| 3 | The keys document has not expired (`expires` > now) | `keys-expired` | `allow_unsigned` only |
+| 3 | The keys document has not expired (`expires` > now). **At install, fetch and update only** (see "When expiry is judged") | `keys-expired` | `allow_unsigned` only |
 | 4 | Its version is not below the highest one this deployment has accepted | `keys-rollback` | **never** (AntiDowngrade) |
 | 5 | It names a `busbar-plugins` role with at least one key id and a threshold of 1 or more | `keys-no-role` | `allow_unsigned` only |
 | 6 | The release manifest names that role, and at least `threshold` distinct, non-revoked keys of the role signed it | `release-signature`, or `signer-revoked` when only revoked signers signed | `release-signature`: `allow_unsigned` only. `signer-revoked`: **never** (Revoked) |
-| 7 | The release manifest has not expired | `release-expired` | `allow_unsigned` only |
+| 7 | The release manifest has not expired. **At install, fetch and update only** | `release-expired` | `allow_unsigned` only |
 | 8 | Neither the artefact digest nor the library digest is revoked by the keys document | `digest-revoked` | **never** (Revoked) |
 | 9 | The release manifest lists the plugin's name and version | `not-in-release` | `allow_unsigned` only |
 | 10 | It lists them for this binary's target (`PLUGIN_TARGET`, its Rust target triple) | `wrong-target` | `allow_unsigned` only |
@@ -83,6 +83,30 @@ explicit opt-in for plugins that cannot prove trust. A seal that fails a check i
 like any other failed first-party signature, and loading under the opt-in still emits
 `PLUGIN_LOADED_UNVERIFIED`. Revocation and rollback are hard rejects that no opt-in relaxes, just
 like the compiled-in revocation list and the anti-downgrade floors.
+
+**When expiry is judged (TUF's semantics; coordinator ruling 2026-10-28).** TUF judges metadata
+expiry when a client fetches or updates, not every time it uses what it already installed.
+Busbar does the same:
+
+- **Install, fetch and update judge expiry.** This covers:
+  - an upload (`POST /plugins`, which installs or updates) and its preview
+    (`POST /plugins/inspect`), through `TrustPolicy::release_enforce_expiry = true` in the root's
+    admission;
+  - a `plugins.fetch` download: an expired seal is refused and never written;
+  - `busbar-plugin-pack seal` and `verify`.
+- **Boot does not judge expiry.** This covers the scan of `plugins.dir`, an explicit rollback to an
+  installed artefact, and the conflict scan of the installed set during an upload. An installed
+  plugin never stops loading because time passed.
+- **Boot still judges everything else:**
+  - every signature in the chain;
+  - the role and its threshold;
+  - the listing, target and hash;
+  - **revocations of digests and signers, even in a keys document that has expired**;
+  - the keys-document **rollback** floor.
+
+A cached `plugins.fetch` target (pinned, already on disk) is installed, so it is not re-judged.
+An unpinned fetch downloads again on every boot, so it is judged every time. The release repository
+must serve tarballs sealed under a current keys document.
 
 **Rollback floor.** The highest accepted keys-document version is stored beside the per-plugin
 anti-downgrade marks in the data dir's marks file, under the reserved mark `busbar-release-keys`
@@ -214,15 +238,10 @@ keys.sig`), and `busbar-plugin-pack envelope --key <root> ...` wraps the signatu
 
 ## 5. Open questions
 
-1. **Expiry and installed plugins.** The loader checks expiry against the current time on every
-   boot. A sealed dropped-in plugin therefore stops loading when its keys document (90 days) or its
-   release manifest expires, unless it is replaced by a re-sealed copy. A config that names the
-   plugin then fails at boot. Linked (compiled-in) plugins are unaffected. Three ways out:
-   - judge expiry at install or fetch time instead of at every boot;
-   - let the operator drop a newer keys document beside the plugins;
-   - use a longer expiry for the keys documents that releases ship with.
-
-   The owner needs to rule on this before 1.6.0.
+1. **Expiry.** Resolved: expiry is judged at install, fetch and update, not at boot (see "When
+   expiry is judged"). One consequence remains: an unpinned `plugins.fetch` re-downloads at every
+   boot. Once the 90-day keys document it carries has expired, that download is refused until the
+   release is re-sealed under a current one.
 2. **Root count.** `the_default_release_key_input_is_the_real_release_key_list` requires at least
    two committed keys. With only the KMS root committed, it stays red until the PIV root exists.
 3. **ModernCI requirement 1** ("ModernCI never holds a private key that can sign a release on its
