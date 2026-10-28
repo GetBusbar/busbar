@@ -477,11 +477,14 @@ struct Redial {
     mark: u64,
 }
 
+/// A piece a short caller buffer left, and its unread bytes.
+type Left = (Piece, Vec<u8>);
+
 /// What a short caller buffer left of a piece (the piece and its unread bytes), and whether the
 /// end was answered.
 #[derive(Default)]
 struct Rest {
-    piece: Option<(Piece, Vec<u8>)>,
+    piece: Option<Left>,
     ended: bool,
     /// A read (or an upgrade) has the rest out.
     reading: bool,
@@ -498,13 +501,13 @@ struct Reading<'h> {
     /// The end was answered.
     ended: bool,
     /// What a short buffer left, for the next read.
-    left: Option<(Piece, Vec<u8>)>,
+    left: Option<Left>,
 }
 
 impl<'h> Reading<'h> {
     /// Take the rest for one read: what a short buffer left, and whether the end was answered.
     /// `None` while another read has it, `waker` woken once it is back.
-    fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<(Piece, Vec<u8>)>)> {
+    fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<Left>)> {
         let mut r = rest.lock().expect("rest");
         if r.reading {
             if !r.missed.iter().any(|w| w.will_wake(waker)) {
