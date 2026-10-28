@@ -294,6 +294,11 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
         .unwrap_or("authentication failed")
 }
 
+/// The test registration's former path, which the pinned plane repos' root tests still name; it
+/// goes when they are re-pinned onto [`crate::test_support::protocols`].
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::test_support::protocols::register_test_protocols;
+
 #[cfg(test)]
 #[path = "tests/protocols_installed_tests.rs"]
 mod installed_tests;
