@@ -50,7 +50,7 @@ pub fn install() {
     let (mut seam, mut door) = (0, 0);
     for &is_door in TEST_LINKED_ORDER {
         if is_door {
-            busbar_kernel::plane_driver::registry::register_test_plane(doors[door]);
+            busbar_kernel::test_support::planes::register_test_plane(doors[door]);
             door += 1;
         } else {
             (TEST_LINKED[seam].install)();
