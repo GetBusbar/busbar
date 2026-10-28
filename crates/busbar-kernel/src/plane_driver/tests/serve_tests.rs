@@ -33,6 +33,10 @@ type Crossed = (String, Vec<String>);
 struct Echo {
     crossed: Mutex<Vec<Crossed>>,
     next: AtomicU32,
+    /// The status it answers (`0`: `200`).
+    status: AtomicU32,
+    /// The audit outcome it reports for the route's own row (`0`: none).
+    audit: AtomicU32,
 }
 
 const READY: Answered = Answered {
@@ -152,9 +156,14 @@ impl PlaneCalls for Echo {
     fn recycle(&self, _: Ticket) {}
     fn drop_client(&self, _: Ticket) {}
     fn serve(&self, _: Ticket, i: ServeIn, mut o: ServeOut, _: Lent) -> Box<dyn ServeInFlight> {
-        // SAFETY: the driver's target and `fields_len` head fields, live for the crossing.
+        // SAFETY: the driver's target and `fields_len` head fields, live for the crossing. An empty
+        // head crosses as a null pointer (`FieldList::as_ptr`), which no slice may be built over.
         let target = unsafe { text(i.target) };
-        let fields: &[Field] = unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) };
+        let fields: &[Field] = if i.fields_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
+        };
         let names = fields.iter().map(|f| unsafe { text(f.name) }).collect();
         self.crossed.lock().unwrap().push((target, names));
         let (key, value) = ROW;
@@ -178,7 +187,11 @@ impl PlaneCalls for Echo {
         }
         o.arena_written = words.len() as u64;
         o.records_written = 1;
-        o.status = 200;
+        o.audit = self.audit.load(Ordering::SeqCst);
+        o.status = match self.status.load(Ordering::SeqCst) {
+            0 => 200,
+            n => n,
+        };
         Box::new(Now(o))
     }
     fn on_piece(&self, _: Ticket, _: OnPieceIn, _: OnPieceOut, _: Lent) -> Box<dyn PieceInFlight> {
@@ -430,4 +443,53 @@ fn a_rebuild_carries_the_published_admin_table() {
             assert_eq!(served(on, path), Some(200), "{path}");
         }
     }
+}
+
+/// AN APPLIED SERVE ANSWER IS AUDITED EVEN WHEN ITS HEAD CANNOT BE RENDERED (Q128 arch u35 #43): the
+/// plane's record writes were committed, so the route's `<audit_kind>.<audit_verb>` row is written,
+/// and the caller gets the kernel's 502. RED before the fix: the reply failed to render first and
+/// the row was skipped, so a mutation the plane applied left no audit row.
+#[tokio::test]
+async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
+    // The admin audit rows land in the durable log's read model (the in-process ring is gone, C5).
+    crate::audit::auditlog::ensure_global_audit_stream_registered();
+    let echo = std::sync::Arc::new(Echo::default());
+    echo.status.store(1_000, Ordering::SeqCst);
+    // The plane applied the mutation: its answer asks for the route's audit row.
+    echo.audit.store(AUDIT_APPLIED, Ordering::SeqCst);
+    let tables = ServeTables::default();
+    tables
+        .publish(
+            ServeTable {
+                instance: "unrendered-red".to_string(),
+                audit_kind: "unrendered".to_string(),
+                calls: echo.clone(),
+                caps: BufferCaps::default(),
+                routes: vec![ServeRoute {
+                    verb: "POST".to_string(),
+                    target: "/unrendered-red/{name}/ping".to_string(),
+                    flags: ROUTE_PUBLIC,
+                    audit_verb: "ping".to_string(),
+                }],
+                records: None,
+            },
+            &[],
+        )
+        .expect("publishes");
+    let resp = tables
+        .answer_public(
+            "POST",
+            "/unrendered-red/a/ping",
+            "/unrendered-red/a/ping",
+            &axum::http::HeaderMap::new(),
+            Bytes::new(),
+        )
+        .await;
+    tables.withdraw("unrendered-red");
+    assert_eq!(resp.status(), 502, "no response can carry status 1000");
+    let rows =
+        crate::audit::auditlog::AUDIT_LOG.list_filtered(0, 16, Some("unrendered.ping"), None);
+    assert_eq!(rows.len(), 1, "the applied mutation is audited: {rows:?}");
+    assert_eq!(rows[0].resource, "unrendered:a");
+    assert_eq!(rows[0].outcome, busbar_contract::vocab::OUTCOME_APPLIED);
 }

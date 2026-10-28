@@ -238,7 +238,7 @@ impl ServeTables {
         let calls = &*table.calls;
         let at = index as u32;
         let served = serve(calls, table.caps, routes, at, target.as_bytes(), head, body).await;
-        let actor = principal.clone().unwrap_or(AuthPrincipal(None));
+        let actor = principal.unwrap_or(AuthPrincipal(None));
         let served = match served {
             Ok(s) => write_served_records(
                 table.records.as_ref(),
@@ -250,28 +250,7 @@ impl ServeTables {
             .map(|()| s),
             Err(e) => Err(e),
         };
-        Some(
-            match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
-                Ok((audit, resp)) => {
-                    let outcome = match audit {
-                        AUDIT_APPLIED => Some(busbar_contract::vocab::OUTCOME_APPLIED),
-                        AUDIT_REJECTED => Some(busbar_contract::vocab::OUTCOME_REJECTED),
-                        _ => None,
-                    };
-                    if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
-                        let actor = principal.unwrap_or(AuthPrincipal(None));
-                        crate::audit_ring::AUDIT.record_by(
-                            &format!("{}.{}", table.audit_kind, route.audit_verb),
-                            &format!("{}:{name}", table.audit_kind),
-                            outcome,
-                            actor.actor_id(),
-                        );
-                    }
-                    resp
-                }
-                Err(unserved) => status_only(unserved.status()),
-            },
-        )
+        Some(audited_reply(&table, route, &name, &actor, served))
     }
 
     /// THE PUBLIC SERVE PATH (SEAM-4o; `abi::plane::ROUTE_PUBLIC`: "`serve` serves it to an
@@ -338,26 +317,39 @@ impl ServeTables {
             .map(|()| s),
             Err(e) => Err(e),
         };
-        match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
-            Ok((audit, resp)) => {
-                let outcome = match audit {
-                    AUDIT_APPLIED => Some(busbar_contract::vocab::OUTCOME_APPLIED),
-                    AUDIT_REJECTED => Some(busbar_contract::vocab::OUTCOME_REJECTED),
-                    _ => None,
-                };
-                if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
-                    crate::audit_ring::AUDIT.record_by(
-                        &format!("{}.{}", table.audit_kind, route.audit_verb),
-                        &format!("{}:{name}", table.audit_kind),
-                        outcome,
-                        AuthPrincipal(None).actor_id(),
-                    );
-                }
-                resp
-            }
-            Err(unserved) => status_only(unserved.status()),
-        }
+        audited_reply(&table, route, &name, &AuthPrincipal(None), served)
     }
+}
+
+/// THE REPLY TO A SERVED ANSWER whose record writes are in (`served`), with the route's audit row.
+/// The row is written whenever the plane's writes were committed, whether or not the answer's head
+/// can be rendered: a mutation the plane applied is never left unaudited because its reply is a
+/// fault (502). A failed serve or record write answers its status and audits nothing.
+fn audited_reply(
+    table: &ServeTable,
+    route: &ServeRoute,
+    name: &str,
+    actor: &AuthPrincipal,
+    served: Result<Served, Unserved>,
+) -> Response {
+    let s = match served {
+        Ok(s) => s,
+        Err(unserved) => return status_only(unserved.status()),
+    };
+    let outcome = match s.audit {
+        AUDIT_APPLIED => Some(busbar_contract::vocab::OUTCOME_APPLIED),
+        AUDIT_REJECTED => Some(busbar_contract::vocab::OUTCOME_REJECTED),
+        _ => None,
+    };
+    if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
+        crate::audit_ring::AUDIT.record_by(
+            &format!("{}.{}", table.audit_kind, route.audit_verb),
+            &format!("{}:{name}", table.audit_kind),
+            outcome,
+            actor.actor_id(),
+        );
+    }
+    reply(&s).unwrap_or_else(|unserved| status_only(unserved.status()))
 }
 
 /// ONE ADMIN REQUEST as the admin shim hands it to [`ServeTables::served_at`]: its verb, its path

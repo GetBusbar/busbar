@@ -487,6 +487,39 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
     }
 }
 
+/// The 409 for a `kind` entry `name` the base config file defines: file-owned, so the additive
+/// overlay cannot durably shadow it.
+fn base_owned(kind: &str, name: &str) -> AdminError {
+    AdminError::Conflict(format!(
+        "{kind} `{name}` is defined in the base config file; edit config.yaml (the API cannot \
+         silently shadow operator file config)"
+    ))
+}
+
+/// `body` as the JSON a mutation takes, or the 400 that names it a `malformed <what> body`
+/// (boxed: the ready-to-return `Response` is large, and the happy path should not carry it).
+fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Box<Response>> {
+    serde_json::from_slice(body).map_err(|e| {
+        Box::new(err_json(&AdminError::Validation(format!(
+            "malformed {what} body: {e}"
+        ))))
+    })
+}
+
+/// The page a list read serves: `?cursor=`'s offset and `?limit=N` (unparsable or absent:
+/// `default`), clamped to `1..=LIST_LIMIT_MAX`. A foreign cursor answers as [`cursor_offset`] does.
+fn page_window(
+    q: &std::collections::HashMap<String, String>,
+    default: usize,
+) -> Result<(usize, usize), Box<Response>> {
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, crate::v1::contract::LIST_LIMIT_MAX);
+    Ok((cursor_offset(q).map_err(Box::new)?, limit))
+}
+
 /// Given a slice fetched with `limit + 1` starting at `start`, trim it IN PLACE to `limit` and return
 /// the next opaque cursor iff the probe row existed (i.e. a further page remains). The one seam that
 /// gives keys/audit/versions an identical `{items, next_cursor}` continuation.
