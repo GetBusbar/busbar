@@ -105,7 +105,7 @@ impl SafeSlot for Complete {
         input: Lent<'_, CompleteLoginIn>,
         mut out: Out<'_, IdentifyOut>,
     ) -> Outcome {
-        login_identity(&principal(), input.field(|i| &i.out_buf), &mut out)
+        login_identity(&principal(), input.out_buf(), &mut out)
     }
 }
 
