@@ -199,11 +199,8 @@ pub struct ProviderDef {
     /// jwt-bearer profile requires `sub`. Ignored for every other auth style.
     #[serde(default)]
     pub subject: Option<String>,
-    /// Optional auth-style override. Defaults to the protocol's native auth (bearer for
-    /// openai/anthropic/responses, `x-goog-api-key` for gemini, SigV4 for bedrock). Set to
-    /// `api-key` for backends that authenticate with an `api-key: <key>` header instead of a
-    /// bearer token — e.g. Azure OpenAI (which also carries `?api-version=` and the deployment in
-    /// its `path`). Recognized values: `bearer` (default) | `api-key`.
+    /// Optional auth-style override: a style a loaded auth plugin declares ([`ProviderAuth`]).
+    /// Omitted, the protocol's native auth.
     #[serde(default)]
     pub auth: Option<ProviderAuth>,
     /// The key this provider's upstream expects a CROSS-PROTOCOL output-token cap under, for the
@@ -298,30 +295,58 @@ pub struct ProviderDeploy {
     pub health: Option<HealthCfg>,
 }
 
-/// Per-provider auth-style override. Closed set: the request is signed with the protocol's native
-/// auth (`bearer`) unless `api-key` selects an `api-key: <key>` header (Azure OpenAI). The wire
-/// strings are unchanged from the pre-enum `Option<String>` field (`bearer` / `api-key`), so an
-/// unknown spelling is now a deserialize error instead of a hand-checked validation error.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderAuth {
-    #[serde(rename = "bearer")]
-    Bearer,
-    #[serde(rename = "api-key")]
-    ApiKey,
-    /// OAuth 2.0 JWT-bearer grant (RFC 7523): the provider's credential is a signing key (delivered as
-    /// a Google service-account JSON in `api_key_env`), which busbar uses to mint + auto-refresh a
-    /// short-lived bearer token per lane. Generic — Vertex AI is the first provider to select it. The
-    /// token minting/refresh lives in the auth plugin serving the `jwt-bearer` style; this is only
-    /// the selector.
-    #[serde(rename = "jwt-bearer")]
-    JwtBearer,
-    /// OAuth 2.0 client-credentials grant (RFC 6749 §4.4): `api_key_env` carries
-    /// `client_id:client_secret`, and the provider's `token_url` + `scope` complete the exchange for
-    /// an auto-refreshed bearer. Generic — Azure OpenAI via Microsoft Entra ID is the first consumer.
-    /// The token minting/refresh lives in the auth plugin serving the `oauth-client-credentials`
-    /// style.
-    #[serde(rename = "oauth-client-credentials")]
-    OAuthClientCredentials,
+/// Per-provider auth-style override: an OPAQUE style word (BUSBAR-1.6.0.md #50: "the auth style
+/// resolves ... as opaque strings"; arch-audit u29 F1). The words a provider may name are the
+/// outbound styles the loaded auth plugins DECLARE ([`crate::preflight::declared_styles`]: linked
+/// and dropped in), read at parse; the kernel names none. A word no loaded plugin declares is a
+/// deserialize error in serde's own unknown-variant words over the declared styles in the host's one
+/// listing order (ranked first: the previous release's four, in its order, as their plugins rank
+/// them), so a configuration the previous release refused for an unknown word is refused with its
+/// text as the prefix. What a style needs (a `token_url`, an endpoint its credential names) is the
+/// flag its plugin declares beside it, never its name.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct ProviderAuth(String);
+
+impl ProviderAuth {
+    /// The style word, as the configuration writes it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The style `word`, unchecked: a fixture or a rewrite that already holds a declared word.
+    #[must_use]
+    pub fn named(word: impl Into<String>) -> Self {
+        Self(word.into())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderAuth {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(d)?;
+        let declared = crate::preflight::declared_styles();
+        if declared.iter().any(|s| s.name == word) {
+            return Ok(Self(word));
+        }
+        Err(serde::de::Error::custom(unknown_style(&word, &declared)))
+    }
+}
+
+/// serde's unknown-variant refusal, word for word (`serde::de::Error::unknown_variant` and its
+/// `OneOf` list), over the declared styles in listing order: the text the previous release's closed
+/// enum refused an unknown `auth:` with, its list the declared one.
+fn unknown_style(word: &str, declared: &[busbar_contract::auth_calls::DeclaredStyle]) -> String {
+    let quoted: Vec<String> = declared.iter().map(|s| format!("`{}`", s.name)).collect();
+    match quoted.as_slice() {
+        [] => format!("unknown variant `{word}`, there are no variants"),
+        [one] => format!("unknown variant `{word}`, expected {one}"),
+        [a, b] => format!("unknown variant `{word}`, expected {a} or {b}"),
+        all => format!(
+            "unknown variant `{word}`, expected one of {}",
+            all.join(", ")
+        ),
+    }
 }
 
 // ── the resolved provider ─────────────────────────────────────────────────────────────────────────
@@ -470,7 +495,7 @@ impl ResolvedProvider {
             token_url: deploy.token_url.clone().or_else(|| def.token_url.clone()),
             scope: deploy.scope.clone().or_else(|| def.scope.clone()),
             subject: deploy.subject.clone().or_else(|| def.subject.clone()),
-            auth: deploy.auth.or(def.auth),
+            auth: deploy.auth.clone().or_else(|| def.auth.clone()),
             // A deployment list (`Some`) replaces the catalog default.
             allow_metadata_hosts: deploy
                 .allow_metadata_hosts
