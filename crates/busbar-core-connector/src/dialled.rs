@@ -153,7 +153,7 @@ impl UpstreamLeg {
                     held.out = true;
                     f
                 }
-                None if held.out => return out(&mut *held, arg),
+                None if held.out => return out(&mut held, arg),
                 None => {
                     drop(held);
                     return closed(arg);
