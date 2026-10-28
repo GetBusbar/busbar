@@ -1470,6 +1470,118 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     });
 }
 
+/// The test carrier, with an `accept` that HANGS once armed: it says it is inside the crossing,
+/// then does not come back until the test lets it.
+struct HangingAccept {
+    inner: TestDoor,
+    gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl FramerDoor for HangingAccept {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Accept(..)) {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// RED before a listener was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs
+/// under a host lock): the listener's mutex was held across the carrier's `accept`, so a second
+/// accept beside one that hung waited on the plugin for as long as it hung. Now the second answers
+/// PENDING at once, and is woken once the first puts the listener back.
+#[test]
+fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_back() {
+    let rt = worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let door = Arc::new(HangingAccept {
+            inner: TestDoor::identity("bytes"),
+            gate: std::sync::Mutex::new(None),
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&wakes);
+        let c = Arc::new(Connector::serving(
+            Transports::new(vec![Entry {
+                door: Arc::clone(&door) as Arc<dyn FramerDoor>,
+                alpn: Vec::new(),
+            }])
+            .unwrap(),
+            loopback_literals(),
+            None,
+            Arc::new(move |_, _| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        c.listen(
+            OWNER,
+            NeedId(0),
+            "127.0.0.1:0",
+            None,
+            crate::listen::AcceptLimits::default(),
+        )
+        .expect("listens");
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *door.gate.lock().unwrap() = Some((entered_tx, held_back));
+        let accepting = Arc::clone(&c);
+        let on = handle.clone();
+        let first = std::thread::spawn(move || {
+            let _rt = on.enter();
+            accepting.accept(OWNER, NeedId(0), 3).map(|_| ())
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the first accept reaches the carrier");
+        let (beside_tx, beside) = std::sync::mpsc::channel();
+        let also = Arc::clone(&c);
+        let second = std::thread::spawn(move || {
+            beside_tx
+                .send(also.accept(OWNER, NeedId(0), 4).map(|_| ()))
+                .unwrap();
+        });
+        let answered = beside
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an accept beside a hung carrier accept returned while it still hangs");
+        assert_eq!(answered, Err(ConnError::Pending));
+        let before = wakes.load(Ordering::SeqCst);
+        release.send(()).unwrap();
+        assert_eq!(
+            first.join().unwrap(),
+            Err(ConnError::Pending),
+            "nobody knocked"
+        );
+        second.join().unwrap();
+        assert!(
+            wakes.load(Ordering::SeqCst) > before,
+            "the accept that found the listener out is woken once it is back"
+        );
+    });
+}
+
 /// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo; kept by the row 159 settings-URL
 /// userinfo ruling (a)): the refusal of a userinfo in a need's target STAYS for every target the need's own
 /// settings did not give it — a need with no `target_from`, a member path, a path outside its
@@ -2478,6 +2590,175 @@ mod transport_pin {
                 accepted.load(Ordering::SeqCst),
                 1,
                 "the need's next open rode its kept line"
+            );
+        });
+    }
+
+    /// Every per-instance record `c` still holds for `owner`, by name.
+    fn records_of(c: &Connector, owner: InstanceId) -> Vec<&'static str> {
+        let mut held = Vec::new();
+        if c.over.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("needs");
+        }
+        if c.declared.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("declarations");
+        }
+        if c.slab.check_need(owner, NeedId(0)).is_ok() {
+            held.push("table needs");
+        }
+        if c.anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed destinations");
+        }
+        if c.member_anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed registrations");
+        }
+        if c.registered
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("registrations at a destination");
+        }
+        if c.reaching
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("private reaches");
+        }
+        if c.auths
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _, _)| *o == owner)
+        {
+            held.push("auth bindings");
+        }
+        if c.authority_held.lock().unwrap().contains(&owner) {
+            held.push("held authority");
+        }
+        if c.listeners.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("listeners");
+        }
+        held
+    }
+
+    /// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"):
+    /// a reload replaces an instance with one under a new id and the gone one is forgotten. Over
+    /// every replace cycle nothing a gone instance declared, sealed, bound or held stays on the
+    /// connector. GREEN twins: the instance that replaced it, and a neighbour never replaced, keep
+    /// every record and still exchange; a forgotten id declared again works.
+    #[test]
+    fn a_forgotten_instance_leaves_no_record_however_many_reloads() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let far = keeping_tls_far_end(&served).await;
+            let c = pooled_trusting(&pki);
+            let pinned = Anchors {
+                key_pin: Some(served.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            // Declared as the loader declares a plugin's need (`DeclaredConns::declare`), which
+            // records the declaration as well as the need.
+            let need = ReadNeed {
+                transport: "sec".to_owned(),
+                ..super::config_targeted_need("")
+            };
+            let hold = |owner: InstanceId| {
+                DeclaredConns::declare(&c, owner, NeedId(0), &need, None, None).expect("declared");
+                c.hold_authority(owner);
+                c.anchor(owner, NeedId(0), "", &far, &pinned)
+                    .expect("the destination sealed");
+                c.anchor(owner, NeedId(0), "planner", &far, &pinned)
+                    .expect("the registration sealed");
+                c.seal_reach(owner, NeedId(0), "planner", &far, true)
+                    .expect("the reach sealed");
+                c.bind_auth(
+                    owner,
+                    NeedId(0),
+                    "planner",
+                    "https://vendor.example",
+                    bound_as(1),
+                );
+            };
+            let every = vec![
+                "needs",
+                "declarations",
+                "table needs",
+                "sealed destinations",
+                "sealed registrations",
+                "registrations at a destination",
+                "private reaches",
+                "auth bindings",
+                "held authority",
+            ];
+            let whole = (b"x".to_vec(), true, None);
+            hold(OWNER);
+            let mut live = InstanceId(10);
+            hold(live);
+            assert_eq!(
+                records_of(&c, live),
+                every,
+                "a live instance holds its records"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                whole
+            );
+            let mut gone = Vec::new();
+            for cycle in 11..15 {
+                let next = InstanceId(cycle);
+                hold(next);
+                c.forget(live);
+                gone.push(live);
+                live = next;
+                for g in &gone {
+                    assert_eq!(
+                        records_of(&c, *g),
+                        Vec::<&str>::new(),
+                        "a forgotten instance holds no record (reload {cycle})"
+                    );
+                }
+                assert_eq!(
+                    records_of(&c, live),
+                    every,
+                    "the instance that replaced it holds its own"
+                );
+                assert_eq!(
+                    pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                    whole,
+                    "the instance that replaced it exchanges"
+                );
+            }
+            assert_eq!(
+                records_of(&c, OWNER),
+                every,
+                "a neighbour's records are untouched"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                whole,
+                "a neighbour still exchanges"
+            );
+            hold(gone[0]);
+            assert_eq!(
+                pooled_exchange(&c, (gone[0], 0), &far, b"first", true).await,
+                whole,
+                "a forgotten id declared again exchanges"
             );
         });
     }
@@ -3735,6 +4016,68 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
             accepted.load(Ordering::SeqCst),
             3,
             "control: the need's own next open rides its kept line"
+        );
+    });
+}
+
+/// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"): a
+/// forgotten instance's lines and listener go with it. The idle line its exchange finished on is
+/// closed at once, never left on the pool for the idle reaper, and its listener leaves the table.
+/// GREEN twin: a neighbour's kept line stays open and is lent to its next open.
+#[test]
+fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
+    worker().block_on(async {
+        let (far, accepted, ended) = keeping_far_end().await;
+        let c = pooled_messages(std::time::Duration::from_secs(60));
+        for owner in [OWNER, OTHER] {
+            c.declare_over(owner, NeedId(0), "messages")
+                .expect("a served scheme declares");
+        }
+        c.listen(
+            OTHER,
+            NeedId(0),
+            "127.0.0.1:0",
+            None,
+            crate::listen::AcceptLimits::default(),
+        )
+        .expect("listens");
+        let whole = (b"x".to_vec(), true, None);
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(
+            pooled_exchange(&c, (OTHER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(accepted.load(Ordering::SeqCst), 2, "each kept its own line");
+        c.forget(OTHER);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ended.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            1,
+            "the forgotten instance's idle line is closed at once"
+        );
+        assert!(
+            !c.listeners.lock().unwrap().keys().any(|(o, _)| *o == OTHER),
+            "the forgotten instance's listener leaves the table"
+        );
+        let again = pooled_exchange(&c, (OWNER, 0), &far, b"ask", false).await;
+        assert_eq!(
+            again.0,
+            b"x".to_vec(),
+            "the neighbour's next open is answered"
+        );
+        assert_eq!(
+            (
+                accepted.load(Ordering::SeqCst),
+                ended.load(Ordering::SeqCst)
+            ),
+            (2, 1),
+            "the neighbour's next open rides its kept line, still open"
         );
     });
 }

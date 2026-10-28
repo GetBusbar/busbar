@@ -1836,15 +1836,14 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
     );
 }
 
-/// **K9e-2 — A FIRST-PARTY EGRESS CLASS IS GRANTED TO A FIRST-PARTY PLUGIN ONLY** (`BUSBAR-1.6.0.md`
-/// §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03). The OTLP trace sink's one need is in the
-/// `loopback-allowed` class (a collector's loopback plaintext), a first-party grant: LINKED, and
-/// DROPPED IN signed by the release key, it is admitted and opens through either door. RED ARM: the
-/// same cdylib dropped in by a THIRD party (allowlisted, trusted, not first-party) is refused at the
-/// load — the scan never admits it, and an instance naming it is refused with the grant's words —
-/// while the webhook sink, whose need is in the open web, is admitted from the same third party.
+/// **K9e-2 — A LOOPBACK COLLECTOR THE OPERATOR TRUSTED LOADS, FIRST PARTY OR NOT** (`BUSBAR-1.6.0.md`
+/// §5; OWNER 2026-10-24, oracle BOOT-W23). The OTLP trace sink's one need is in the
+/// `loopback-allowed` class (a collector's loopback plaintext): LINKED, and DROPPED IN signed by
+/// the release key, it is admitted and opens through either door; the same cdylib dropped in by a
+/// THIRD party (allowlisted, trusted) is admitted and opens too, as 1.5.5 loaded it, and so is the
+/// webhook sink, whose need is in the open web. RED before: the third party's was refused.
 #[test]
-fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
+fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     let collector: DoorFn = TRACE_DOOR;
     let settings = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
     let doors = both(
@@ -1874,29 +1873,18 @@ fn a_first_party_egress_class_is_refused_to_a_third_party_at_load() {
     );
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
-    // RED ARM: the same collector from a third party is refused at the load.
+    // The same collector from a third party the operator trusted is admitted and opens, as 1.5.5
+    // loaded it (OWNER 2026-10-24, oracle BOOT-W23: the opt-in is the operator's grant).
     let lib = cdylib_bytes(trace_cdylib());
     let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
     let registry = both_ways::dropped_third_party(trace_cdylib(), third, &lib);
-    assert!(
-        registry.resolve("k9e2-third-otlp").is_none(),
-        "never admitted"
-    );
-    let words = "declares a `http` need in the `loopback-allowed` egress class, which the host \
-                 grants to a first-party plugin only";
-    let skipped = registry
-        .unresolved_reason("k9e2-third-otlp")
-        .expect("the scan names its refusal");
-    assert_eq!(skipped.kind, crate::sign::RejectKind::EgressGrant);
-    assert!(skipped.reason.contains(words), "{}", skipped.reason);
-    let Err(refused) = ExportRows::new(&registry, dispatcher())
+    let row = registry.resolve("k9e2-third-otlp").expect("admitted");
+    assert!(!row.first_party());
+    ExportRows::new(&registry, dispatcher())
         .with_conns(Arc::new(Far::default()))
         .open("k9e2-third-otlp", "export.trace", &settings)
-    else {
-        panic!("a third party's collector opened");
-    };
-    assert!(refused.contains(words), "{refused}");
+        .expect("an operator-trusted collector opens");
 
     // The open web is any trusted plugin's: the webhook from the same third party is admitted.
     let lib = cdylib_bytes(webhook_cdylib());
@@ -2098,4 +2086,36 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         "{linked}"
     );
     assert_eq!(linked, dropped, "both doors carry the same request");
+}
+
+/// THE OPERATOR'S `keep` OUTRANKS THE MANIFEST'S (owner signed 2026-10-27, "Keep N, default 9"):
+/// the file sink's manifest declares no `keep` (the host's default, 1.5.5's truncation), and the
+/// operator's `keep: 2` beside `path` has the host rotate the file by rename, keeping its archive.
+/// RED before the host read the operator's key: the file was truncated and no archive kept.
+#[test]
+fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
+    let dir = scratch("keep-setting");
+    let path = dir.join("requests.jsonl");
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            stating(manifest("keep-fixture", file_declares()), FILE_DOOR),
+            FILE_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    let mut settings = file_settings(&path);
+    settings["keep"] = serde_json::json!(2);
+    let sink = ExportRows::new(&registry, dispatcher())
+        .open("keep-fixture", "export.tail", &settings)
+        .expect("opens");
+    for n in 1..=4 {
+        deliver(sink.as_ref(), &line(n, 600_000));
+    }
+    until("the four lines landed", || ns(&path) == Some(vec![3, 4]));
+    drop(sink);
+    assert_eq!(
+        ns_settled(&archive(&path, 1)),
+        Some(vec![1, 2]),
+        "the rotated lines are kept in the first archive"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

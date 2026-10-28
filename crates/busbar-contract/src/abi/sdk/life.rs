@@ -467,6 +467,9 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
 
 // ── the nine slots ──────────────────────────────────────────────────────────────────────────
 
+/// What `release` answers for a lease this instance does not hold.
+pub const NO_SUCH_LEASE: &str = "release: no such lease";
+
 macro_rules! life_slot {
     ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         $(#[$doc])*
@@ -590,11 +593,13 @@ life_slot!(
 );
 
 life_slot!(
-    /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED.
-    Release(ReleaseIn => OutHead) |instance, input, _out| {
-        instance
-            .get()
-            .map_or(Outcome::Refused, |h| h.leases.release(input.lease))
+    /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED, in
+    /// [`NO_SUCH_LEASE`]'s words.
+    Release(ReleaseIn => OutHead) |instance, input, out| {
+        match instance.get().map(|h| h.leases.release(input.lease)) {
+            Some(Outcome::Ready) => Outcome::Ready,
+            _ => out.fail(Refusal::refused(NO_SUCH_LEASE)),
+        }
     }
 );
 

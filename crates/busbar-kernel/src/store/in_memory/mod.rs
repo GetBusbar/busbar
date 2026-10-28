@@ -198,7 +198,7 @@ pub(crate) const LATENCY_EWMA_ALPHA: f64 = 0.2;
 
 impl HealthState {
     /// Read a (pool, lane) cell's cumulative error counter — for concurrency/isolation tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn cell_err_for_test(&self, pool: &str, lane: usize) -> u64 {
         self.cell(pool, lane).fsm().err_count()
@@ -405,14 +405,14 @@ impl HealthState {
     }
 
     /// Transition the default cell Open with an escalated cooldown (test handle).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn open_state(&self, lane: usize, now_time: u64, cfg: &BreakerCfg) {
         self.open_state_with_retry_after(lane, now_time, cfg, None);
     }
 
     /// Transition the default cell Open with an escalated cooldown and optional Retry-After floor.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn open_state_with_retry_after(
         &self,
@@ -431,7 +431,7 @@ impl HealthState {
 
     /// Transition the default cell to Closed, then reset its SWRR accumulator — the production
     /// recovery path's two steps (test handle).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn closed_state(&self, lane: usize, _now_time: u64) {
         let cell = self.get_lane(lane);
@@ -459,12 +459,10 @@ pub struct LaneData {
     pub(crate) client_fault: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl LaneData {
-    /// TEST-SUPPORT constructor: a minimal live lane (alive, unlimited budget, zero counters) with
-    /// the given member/route/permit count — the shape the relocated probe-guard tests need. Gated
-    /// to the test-support surface so the plane's tests reach a `LaneData` through this public seam
-    /// instead of a cross-crate struct literal over its private fields.
+    /// A minimal live lane (alive, unlimited budget, zero counters) with the given
+    /// member/route/permit count, for the store's race tests.
     pub fn for_test(member: &str, route: &str, max: usize) -> Self {
         LaneData {
             member: member.into(),
@@ -485,7 +483,7 @@ impl LaneData {
 }
 
 /// Helper for weighted selection tests - creates a lane with specific weight.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (LaneData, u32) {
     let lane = LaneData {

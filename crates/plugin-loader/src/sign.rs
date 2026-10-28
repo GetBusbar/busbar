@@ -805,27 +805,23 @@ pub enum RejectKind {
 }
 
 /// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
-/// provider's allow-list and metadata hosts (a plane's upstreams) and a collector's loopback
-/// plaintext. The connector's default class and the open web are any trusted plugin's (ARCHITECT
-/// ruling EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+/// provider's allow-list and metadata hosts (a plane's upstreams). The connector's default class
+/// and the open web are any trusted plugin's (ARCHITECT ruling EGRESS-GRANT 2026-10-03; the cold
+/// lane's `declares.egress` grant, on the door's needs).
 ///
-/// `operator-infrastructure` is NOT here. §5's egress-class table gives it to "databases, vault,
+/// `loopback-allowed` is NOT here (OWNER 2026-10-24, oracle BOOT-W23): a collector or hook on
+/// loopback the operator admitted with `plugins.trust` loaded in 1.5.5, UNVERIFIED; the opt-in is
+/// the operator's grant. `operator-infrastructure` is NOT here either. §5's egress-class table gives it to "databases, vault,
 /// ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611): its
 /// targets come from operator settings, and the plugins that dial them (a store, a secret service, a
 /// directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an operator's
 /// `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted changes what
 /// 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the default is
 /// 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829, Part 2 #75 l.2276).
-pub const FIRST_PARTY_EGRESS: [(u32, &str); 2] = [
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
-        "provider",
-    ),
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
-        "loopback-allowed",
-    ),
-];
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 1] = [(
+    busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+    "provider",
+)];
 
 /// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
 /// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a

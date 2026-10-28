@@ -1270,6 +1270,12 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
+    /// Whether connection security is set and its handshake has completed: what
+    /// [`Self::peer_cert_hash`] is read off.
+    pub(crate) fn secured(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
+    }
+
     /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
     /// (the channel-binding input; SHA-256 unless the certificate is signed with SHA-384 or
     /// SHA-512, [`crate::tls::client::end_point_digest`]), lower-case hex, once a handshake
@@ -1346,6 +1352,30 @@ impl Connection {
                 Ok(false) if self.read_end && self.inbox.is_empty() => {
                     return Poll::Ready(Ok(None))
                 }
+                Ok(false) => return Poll::Pending,
+                Err(f) => self.fail(f),
+            }
+        }
+    }
+
+    /// WHETHER THE DIAL HAS LANDED: the far end took the connect (through the proxy's tunnel,
+    /// where one is asked for). `Ready(Ok)` once it has, `Ready(Err)` once the connect failed
+    /// (every address the name admitted refused it, or its deadline passed), `Pending` with `cx`'s
+    /// waker while it connects. What the far end sends meanwhile is kept for the reader.
+    ///
+    /// # Errors
+    ///
+    /// Why the connection failed.
+    pub fn poll_landed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        loop {
+            match &self.phase {
+                Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
+                Phase::Connecting => {}
+                _ if self.tunnel.as_ref().is_some_and(|t| t.asked) => {}
+                _ => return Poll::Ready(Ok(())),
+            }
+            match self.drive(cx) {
+                Ok(true) => {}
                 Ok(false) => return Poll::Pending,
                 Err(f) => self.fail(f),
             }

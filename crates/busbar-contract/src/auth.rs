@@ -187,7 +187,9 @@ pub struct LoginForm {
 
 /// [`LoginModule::complete_login`] input — an OAuth authorization-code shape OR the generic submitted
 /// credential map, plus the response of a prior core-executed [`LoginHop`] fed back for verification.
-#[derive(Debug, Clone, PartialEq, Default)]
+///
+/// Its `Debug` withholds the code, the PKCE verifier and every token response: each is a credential.
+#[derive(Clone, PartialEq, Default)]
 pub struct CompleteLogin {
     pub code: Option<String>,
     pub redirect_uri: Option<String>,
@@ -202,7 +204,9 @@ pub struct CompleteLogin {
 
 /// An HTTP hop the module DESCRIBES and the CORE EXECUTES. `secret_form_field` names the form key the
 /// core fills with the `client_secret` VALUE — the module writes only the KEY, never the secret.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Its `Debug` names the form and header KEYS only: a value may be a credential (a bearer token).
+#[derive(Clone, PartialEq)]
 pub struct LoginHop {
     pub method: String,
     pub url: String,
@@ -216,10 +220,58 @@ pub struct LoginHop {
 }
 
 /// The result of a core-executed [`LoginHop`], fed back to the module.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Its `Debug` withholds the body: a token response carries the tokens.
+#[derive(Clone, PartialEq)]
 pub struct LoginHttpResponse {
     pub status: u16,
     pub body: String,
+}
+
+/// What a withheld value prints as, the [`Secret`] redaction.
+const WITHHELD: &str = "[REDACTED]";
+
+/// `Some` as the redaction, `None` as itself.
+fn withheld<T>(v: &Option<T>) -> Option<&'static str> {
+    v.as_ref().map(|_| WITHHELD)
+}
+
+/// The keys of `pairs`, never their values.
+fn keys(pairs: &[(String, String)]) -> Vec<&str> {
+    pairs.iter().map(|(k, _)| k.as_str()).collect()
+}
+
+impl std::fmt::Debug for CompleteLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteLogin")
+            .field("code", &withheld(&self.code))
+            .field("redirect_uri", &self.redirect_uri)
+            .field("code_verifier", &withheld(&self.code_verifier))
+            .field("submitted", &self.submitted)
+            .field("token_response", &self.token_response)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for LoginHop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginHop")
+            .field("method", &self.method)
+            .field("url", &WITHHELD)
+            .field("form", &keys(&self.form))
+            .field("secret_form_field", &self.secret_form_field)
+            .field("headers", &keys(&self.headers))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for LoginHttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginHttpResponse")
+            .field("status", &self.status)
+            .field("body", &WITHHELD)
+            .finish()
+    }
 }
 
 /// The verdict of one login step (begin or complete). `Authorize` = redirect the browser here;
@@ -269,14 +321,6 @@ pub trait LoginModule: Send + Sync {
         LoginOutcome::Reject
     }
 }
-
-/// The unified auth-plugin handle: an auth module that is BOTH a verifier ([`AuthModule`]) and a
-/// login provider ([`LoginModule`], possibly by fail-closed default). The blanket impl means any
-/// type that is both is automatically an `AuthPlugin`, so `Box<dyn AuthPlugin>` is the single boxed
-/// handle the SDK exports and the loader boxes. Verify-only modules reach it through the SDK's
-/// fail-closed login adapter.
-pub trait AuthPlugin: AuthModule + LoginModule {}
-impl<T: AuthModule + LoginModule + ?Sized> AuthPlugin for T {}
 
 /// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
 /// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,

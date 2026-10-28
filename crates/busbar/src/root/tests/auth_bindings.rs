@@ -148,7 +148,7 @@ fn an_unbound_node_binds_no_authority() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// THE ROOT LEGACY TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live. The kernel's own tests
+// THE ROOT MIGRATION TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live. The kernel's own tests
 // run on a kind-neutral double; these run on the words this root hands in at boot.
 // ------------------------------------------------------------------------------------------------
 
@@ -366,7 +366,7 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
 #[test]
 fn the_shipped_config_needs_no_admin_token_to_boot() {
     let config_raw =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.yaml")).unwrap();
+        std::fs::read_to_string(concat!(env!("BUSBAR_CORE_DIR"), "/../../config.yaml")).unwrap();
     assert!(
         !config_raw.contains("${BUSBAR_ADMIN_TOKEN}"),
         "the shipped config must not force a mandatory boot failure on unset BUSBAR_ADMIN_TOKEN"
