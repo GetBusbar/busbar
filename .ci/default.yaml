@@ -364,6 +364,9 @@ checks:
       ts() { local n; n=$(date +%s); echo "[oracle-time] $1 +$((n - T0))s ($((n - TP))s)"; TP=$n; }
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       ts tool
+      # A tree whose bin/oracle has `ci-run` (busbar #1848) runs the check through it: the same
+      # judgement, with one build, thin LTO and phase times; a tree without it runs the body below.
+      if grep -qF '= "ci-run" ]; then' bin/oracle; then ./bin/oracle ci-run; exit $?; fi
       # A refusal to judge (no judge configured) is infra, never red or green: exit 97.
       if ! j=$(./bin/oracle tool-dir 2>&1 >/dev/null); then
         printf '%s\n' "$j"
