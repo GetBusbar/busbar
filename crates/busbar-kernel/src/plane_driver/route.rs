@@ -366,6 +366,8 @@ pub trait CallerEnd: Sync {
 /// flight.
 pub(crate) struct PieceBufs {
     reply: Vec<u8>,
+    /// The reply window every piece but the caller's is lent (`BufferCaps::reply`).
+    window: usize,
     units: Vec<UnitCount>,
     records: Vec<RecordWrite>,
     fields: Vec<OutField>,
@@ -405,9 +407,10 @@ pub(crate) fn lend_piece(input: &mut Vec<u8>, piece: &mut FarPiece) {
 impl PieceBufs {
     pub(crate) fn new(caps: &BufferCaps, body: bytes::Bytes) -> Self {
         let mut bufs = PieceBufs {
-            // The window is the default plus the arrival's length, so the request the plane binds
-            // from the caller's body crosses back once, not once per default window.
+            // The caller's piece is lent the window plus the arrival's length, so the request the
+            // plane binds from the caller's body crosses back once, not once per window.
             reply: vec![0; caps.reply + body.len()],
+            window: caps.reply,
             units: Vec::new(),
             records: Vec::new(),
             fields: Vec::new(),
@@ -548,7 +551,11 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         status_code: p.status.0,
         status_class: p.status.1,
         reply_buf: bufs.reply.as_mut_ptr(),
-        reply_cap: bufs.reply.len(),
+        reply_cap: if p.from == FROM_CALLER {
+            bufs.reply.len()
+        } else {
+            bufs.window
+        },
         units_buf: bufs.units.as_mut_ptr(),
         units_cap: bufs.units.len(),
         records_buf: bufs.records.as_mut_ptr(),
