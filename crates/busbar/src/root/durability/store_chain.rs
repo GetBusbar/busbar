@@ -115,7 +115,7 @@ fn parts_of(record: &Record) -> Result<Vec<RecordBytes>, String> {
 /// Wait for `fut` on this thread: the store's calls are futures the dispatcher completes on its own
 /// workers, and the two callers here (the boot's read and the lane's worker) are threads that may
 /// wait. Never called on a runtime worker's request path.
-pub(super) fn wait_for<F: Future>(fut: F) -> F::Output {
+pub(crate) fn wait_for<F: Future>(fut: F) -> F::Output {
     struct Unpark(std::thread::Thread);
     impl Wake for Unpark {
         fn wake(self: Arc<Self>) {
