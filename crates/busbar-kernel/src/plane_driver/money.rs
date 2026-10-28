@@ -379,6 +379,8 @@ impl PlaneMoney {
     /// Ledger `counts` (class index, amount) under the unit's lane, pool and arrival window. A sum
     /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
     /// the plane check refuses a class counted twice, so a validated report never gets here.
+    /// `provider` is the serving member's (once an attempt committed): the metering row the classes
+    /// mirror onto is the one the unit's request meters on, so spend is always attributed.
     ///
     /// Then, when `metered` holds of the usage counts, THE METERING ROW: one request against the
     /// serving member, with the unit's counts by class name (none when they do not add up) —
@@ -407,8 +409,9 @@ impl PlaneMoney {
                 &saturated
             }
         };
-        self.gov
-            .record_usage(&m.cost, &m.key, &m.pool, &m.lane, units, m.arrived);
+        self.gov.record_usage_served(
+            &m.cost, &m.key, &m.pool, &m.lane, provider, units, m.arrived,
+        );
         if metered(counts) {
             let units = checked.unwrap_or_default();
             self.gov
