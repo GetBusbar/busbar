@@ -40,7 +40,18 @@ use busbar_contract::records::{
 
 use super::{now, MemoryStore, NAME};
 
-busbar_contract::store_door!(MemoryStore, NAME, env!("CARGO_PKG_VERSION"), 1024);
+/// The settings paths the linked memory store declares may hold a secret reference (`*`, every
+/// top-level key, the surface 1.5.5 resolved); the double states the same.
+const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
+    &[busbar_contract::abi::sdk::door::abi_str("*")];
+
+busbar_contract::store_door!(
+    MemoryStore,
+    NAME,
+    env!("CARGO_PKG_VERSION"),
+    1024,
+    secret_refs: SECRET_REFS
+);
 
 /// A slot key owned by the store: `(bucket, pool, dimension, class_key, window_start)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
