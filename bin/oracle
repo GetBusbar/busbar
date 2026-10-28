@@ -338,6 +338,22 @@ fi
 #  * the recorder's in-machine workers default to the machine's CPUs (at least the engine's 4).
 if [ "${1:-}" = "ci-run" ]; then
   shift
+  # `ci-run --prepare <dir>`: only build what every shard records (the judge's `prepare`: the run
+  # key, the pack tool, the run-keyed candidate) into <dir>, and stop; the shards then run `ci-run`
+  # with ORACLE_PREPARED_DIR=<dir> and record that candidate instead of building it again.
+  PREPARE_OUT=""
+  if [ "${1:-}" = "--prepare" ]; then PREPARE_OUT="${2:?ci-run --prepare <dir>}"; shift 2; fi
+  PREPARED="${ORACLE_PREPARED_DIR:-}"
+  # The judge can prepare when it has the subcommand (busbar-release #445); a judge without it
+  # cannot take a prepared candidate either, and a run that names one is refused, never degraded.
+  if [ -n "$PREPARE_OUT$PREPARED" ] && ! "$here/bin/oracle" prepare --help >/dev/null 2>&1; then
+    echo "oracle ci-run: this judge has no \`prepare\` (busbar-release #445), so it cannot build or record a prepared candidate. Refusing: nothing was judged." >&2
+    exit 3
+  fi
+  if [ -n "$PREPARED" ] && [ ! -f "$PREPARED/prepared.json" ]; then
+    echo "oracle ci-run: ORACLE_PREPARED_DIR=$PREPARED holds no prepared.json. Refusing: nothing was judged." >&2
+    exit 3
+  fi
   T0=$(date +%s); TP=$T0
   ts() { local n; n=$(date +%s); echo "[oracle-time] $1 +$((n - T0))s ($((n - TP))s)"; TP=$n; }
   me="$here/bin/oracle"
@@ -376,6 +392,7 @@ PY
 )" || exit 3
   store_pid=""
   svc=testing/shadow-oracle/scripts/oracle-box-store-services.sh
+  [ -z "$PREPARE_OUT" ] || stores=no
   if [ "$stores" = yes ]; then
     sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
     free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
@@ -438,6 +455,11 @@ PY
     BIN=target/release/busbar
   fi
   ts build
+  if [ -n "$PREPARE_OUT" ]; then
+    "$me" prepare --busbar-repo "$here" --candidate-bin "$BIN" --out "$PREPARE_OUT" || exit 1
+    ts prepare
+    exit 0
+  fi
   "$me" fetch-golden || exit 1
   ts fetch-golden
   if [ -n "$store_pid" ]; then
@@ -456,7 +478,7 @@ PY
   echo "oracle ci-run: $ORACLE_RECORD_WORKERS recording workers"
   rec=target/oracle/recordings/candidate rep=target/oracle/reports/dev
   rm -rf "$rec" "$rep" target/oracle/recordings/w*
-  "$me" record --bin "$BIN" --plane all --out "$rec" ${F:+--filter "$F"} || exit $?
+  "$me" record --bin "$BIN" --plane all --out "$rec" ${F:+--filter "$F"} ${PREPARED:+--prepared "$PREPARED"} || exit $?
   ts record
   mt() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
   for f in target/oracle-candidate/release/busbar target/oracle/recordings/w*/record.log; do
@@ -1329,12 +1351,13 @@ case "$sub" in
 
   record)
     # OLD: record --bin B --plane P --out O [--filter F]  →  native Rust recorder.
-    BIN="" OUT="" PLANE="all" FILTER=""
+    BIN="" OUT="" PLANE="all" FILTER="" PREPARED_DIR=""
     while [ $# -gt 0 ]; do case "$1" in
       --bin) BIN="$2"; shift 2;;
       --out) OUT="$2"; shift 2;;
       --plane) PLANE="$2"; shift 2;;
       --filter) FILTER="$2"; shift 2;;
+      --prepared) PREPARED_DIR="$2"; shift 2;;
       --shared-state) shift;;
       *) shift;;
     esac; done
@@ -1367,7 +1390,8 @@ case "$sub" in
     # A filtered recording carries the premise cells its forgivenesses probe (see premise_closure).
     [ -z "$FILTER" ] || FILTER="$(widen_filter "$FILTER")"
     rc=0; verify_judge_now; private_tmp "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
-      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} || rc=$?
+      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} \
+      ${PREPARED_DIR:+--prepared "$PREPARED_DIR"} || rc=$?
     exit "$rc" ;;
 
   replay)
