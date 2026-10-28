@@ -1368,16 +1368,13 @@ struct Rows(Arc<MemoryStore>);
 impl RecordRows for Rows {
     fn claim(
         &self,
+        kind: &str,
         token: &str,
         expires_at: u64,
         now: u64,
     ) -> Result<bool, busbar_contract::kinds::StoreError> {
         busbar_contract::records::RecordStore::redeem_plane_token(
-            &*self.0,
-            busbar_kernel::host_records::CLAIM_KIND,
-            token,
-            expires_at,
-            now,
+            &*self.0, kind, token, expires_at, now,
         )
         .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
     }
@@ -1420,7 +1417,7 @@ fn instance() -> Instance {
 fn records() -> Arc<KernelServices> {
     let store = Arc::new(MemoryStore::new());
     let s = KernelServices::new()
-        .with_records(Arc::new(Rows(Arc::clone(&store))), store)
+        .with_records(Arc::new(Rows(Arc::clone(&store))))
         .with_pool(Arc::new(Inline));
     let facts = InstanceFacts {
         record_kinds: vec![RecordSchemaId::new("task")],
@@ -1751,7 +1748,7 @@ fn stored() -> Arc<KernelServices> {
     let store = Arc::new(MemoryStore::new());
     Arc::new(
         KernelServices::new()
-            .with_records(Arc::new(Rows(store.clone())), store)
+            .with_records(Arc::new(Rows(store)))
             .with_pool(Arc::new(Inline)),
     )
 }
@@ -1997,7 +1994,7 @@ fn a_planes_work_section_overrides_the_hosts_work_bounds() {
     };
     let services = Arc::new(
         KernelServices::new()
-            .with_records(Arc::new(Rows(store.clone())), store)
+            .with_records(Arc::new(Rows(store)))
             .with_pool(Arc::new(Inline))
             .with_work_bounds(host),
     );
@@ -2199,6 +2196,7 @@ async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     let ctx = common::ctx(7);
     let unit = run_unit_async(&kernel, &units, &ctx, run, &units);
@@ -2714,6 +2712,7 @@ async fn drive_gone(
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     let outcome = match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),
@@ -3180,6 +3179,7 @@ async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),

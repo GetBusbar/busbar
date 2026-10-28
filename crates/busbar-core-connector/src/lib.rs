@@ -428,7 +428,55 @@ type MemberAnchored =
 type AuthKey = (InstanceId, NeedId, String, String);
 
 /// The listeners, one per inbound need, by the need's owner and need.
-type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
+type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
+
+/// ONE INBOUND LISTENER, driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
+/// host lock): an accept takes the listener out, crosses the carrier's `accept` (and closes a
+/// connection past the cap) with nothing held, and puts it back. An accept that finds it out
+/// (another accept has it, or its bind is still crossing) answers PENDING, woken when it is back.
+#[derive(Default)]
+struct Accepting {
+    /// The listener while no accept has it out, and the accepts that found it out.
+    slot: Mutex<(Option<Listening>, Vec<Waker>)>,
+}
+
+impl Accepting {
+    /// Take the listener out; `None` (with `waker` woken once it is back) while it is out.
+    fn take(&self, waker: &Waker) -> Option<Listening> {
+        let mut slot = self.slot.lock().expect("listener");
+        let taken = slot.0.take();
+        if taken.is_none() && !slot.1.iter().any(|w| w.will_wake(waker)) {
+            slot.1.push(waker.clone());
+        }
+        taken
+    }
+
+    /// Put `listening` back (`None`: it is gone), waking every accept that found it out.
+    fn put(&self, listening: Option<Listening>) {
+        let waiting = {
+            let mut slot = self.slot.lock().expect("listener");
+            slot.0 = listening;
+            std::mem::take(&mut slot.1)
+        };
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
+/// A listener an accept has out: put back however the accept ends, an unwind included.
+struct AcceptingOut<'a> {
+    home: &'a Accepting,
+    listening: Option<Listening>,
+}
+
+impl Drop for AcceptingOut<'_> {
+    fn drop(&mut self) {
+        if let Some(l) = self.listening.take() {
+            self.home.put(Some(l));
+        }
+    }
+}
 
 /// A dial whose judgement pended: what to dial once it answers, the answer, and the waker of the
 /// read or wait that found it unanswered.
@@ -477,12 +525,48 @@ struct Redial {
     mark: u64,
 }
 
+/// A HELD CONNECTION'S DIAL, CROSSING WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
+/// runs under a host lock): its judgement is spent under the judgement's lock, which is let go
+/// before the carrier's `dial`, the ride and the early writes cross. Meanwhile the connection is
+/// neither judging nor dialled: a caller finds it still settling (`Pending`), woken once the dial
+/// came to its end, however it ends.
+struct Crossing<'h> {
+    held: &'h Held,
+}
+
+impl<'h> Crossing<'h> {
+    /// The dial of `held` begins crossing; `judging` (its spent judgement's lock) is let go.
+    fn begin(held: &'h Held, judging: std::sync::MutexGuard<'_, Option<Judging>>) -> Self {
+        *held.crossing.lock().expect("crossing") = Some(Vec::new());
+        drop(judging);
+        Self { held }
+    }
+}
+
+impl Drop for Crossing<'_> {
+    fn drop(&mut self) {
+        let waiting = self
+            .held
+            .crossing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default();
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
 /// there (a dialled exchange's own; an accepted connection's every stream).
 struct Held {
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// The judgement the dial waits on; `None` once dialled.
     judging: Mutex<Option<Judging>>,
+    /// THE DIAL IS CROSSING (`Some`, with the callers waiting on it): its judgement is spent and
+    /// its carrier's `dial` (and the early writes' framing) cross with no lock held ([`Crossing`]).
+    crossing: Mutex<Option<Vec<Waker>>>,
     /// The piece a short caller buffer left, and whether the end was answered.
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
     /// The far end's reason phrase, held until its head's last piece is read.
@@ -525,6 +609,7 @@ impl Held {
         Held {
             line: Mutex::new(line),
             judging: Mutex::new(judging),
+            crossing: Mutex::new(None),
             rest: Mutex::new((None, Vec::new(), false)),
             reason: Mutex::new(None),
             pooled,
@@ -716,7 +801,7 @@ impl Wake for TicketWake {
     }
 }
 
-fn map(f: &Failure) -> ConnError {
+pub(crate) fn map(f: &Failure) -> ConnError {
     match f {
         Failure::Refused(_) => ConnError::Refused,
         Failure::Timeout => ConnError::Timeout,
@@ -1279,16 +1364,40 @@ impl Connector {
                 registered
             }
         };
-        let mut listeners = self.listeners.lock().expect("listeners");
-        if listeners.contains_key(&(owner, need)) {
-            return Err(ConnError::Refused);
+        // The need's place is held first; the carrier's `listen` then crosses with no lock held.
+        let held = Arc::new(Accepting::default());
+        {
+            let mut listeners = self.listeners.lock().expect("listeners");
+            if listeners.contains_key(&(owner, need)) {
+                return Err(ConnError::Refused);
+            }
+            listeners.insert((owner, need), Arc::clone(&held));
         }
-        let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
-        let l =
-            Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
-        let addr = l.local_addr();
-        listeners.insert((owner, need), Arc::new(Mutex::new(l)));
-        Ok(addr)
+        let bound = self
+            .ride_on(&door)
+            .ok_or(ConnError::Refused)
+            .and_then(|(framer, via)| {
+                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)
+            });
+        match bound {
+            Ok(l) => {
+                let addr = l.local_addr();
+                held.put(Some(l));
+                Ok(addr)
+            }
+            Err(e) => {
+                let gone = {
+                    let mut listeners = self.listeners.lock().expect("listeners");
+                    let ours = listeners
+                        .get(&(owner, need))
+                        .is_some_and(|a| Arc::ptr_eq(a, &held));
+                    ours.then(|| listeners.remove(&(owner, need))).flatten()
+                };
+                drop(gone);
+                held.put(None);
+                Err(e)
+            }
+        }
     }
 
     /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
@@ -1314,10 +1423,19 @@ impl Connector {
             .cloned()
             .ok_or(ConnError::Refused)?;
         let waker = self.waker(owner, ticket);
-        let got = l
-            .lock()
-            .expect("listener")
+        let Some(listening) = l.take(&waker) else {
+            return Err(ConnError::Pending);
+        };
+        let mut out = AcceptingOut {
+            home: &l,
+            listening: Some(listening),
+        };
+        let got = out
+            .listening
+            .as_mut()
+            .expect("the listener is out")
             .poll_accept(&mut Context::from_waker(&waker));
+        drop(out);
         match got {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(Err(f)) => Err(map(&f)),
@@ -1360,7 +1478,18 @@ impl Connector {
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let mut judging = held.judging.lock().expect("judging");
         let Some(j) = judging.as_mut() else {
-            return Ok(true);
+            drop(judging);
+            // Judged: dialled, unless its dial is still crossing.
+            let mut crossing = held.crossing.lock().expect("crossing");
+            return Ok(match crossing.as_mut() {
+                Some(waiting) => {
+                    if let Some(w) = waker.filter(|w| !waiting.iter().any(|x| x.will_wake(w))) {
+                        waiting.push(w.clone());
+                    }
+                    false
+                }
+                None => true,
+            });
         };
         let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
@@ -1412,6 +1541,7 @@ impl Connector {
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
             let early = std::mem::take(&mut j.early);
             *judging = None;
+            let _crossing = Crossing::begin(held, judging);
             let connect = proxy::connect_request(planned.authority(), &spec);
             let conn = planned
                 .dial_through(proxy_addr, connect)
@@ -1438,6 +1568,7 @@ impl Connector {
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
+        let _crossing = Crossing::begin(held, judging);
         let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
         let line = self.ride(held, conn);
         for (bytes, end, text) in early {
@@ -2124,10 +2255,17 @@ impl DeclaredConns for Connector {
             let _ = self.close(owner, conn);
         }
         self.pools.forget(owner);
-        self.listeners
-            .lock()
-            .expect("listeners")
-            .retain(|(o, _), _| *o != owner);
+        // Let go once the table's lock is: a listener's last hold on its entry goes with it.
+        let gone: Vec<Arc<Accepting>> = {
+            let mut listeners = self.listeners.lock().expect("listeners");
+            let keys: Vec<(InstanceId, NeedId)> = listeners
+                .keys()
+                .filter(|(o, _)| *o == owner)
+                .copied()
+                .collect();
+            keys.iter().filter_map(|k| listeners.remove(k)).collect()
+        };
+        drop(gone);
         let needs: Vec<NeedId> = self
             .over
             .lock()
@@ -2265,13 +2403,13 @@ impl Connector {
         let due = (desc.timeout_ms != 0)
             .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
         // The exchange body: the description alone, or framed into the opener's form.
-        let body = dialled::composed_body(desc.fields, desc.body, &description)?;
+        let body = dialled::composed_body(desc.fields, &desc.body, &description)?;
         let held = self.dial_exchange(
             caller,
             need,
             &OpenDesc {
-                body: &body,
-                ..*desc
+                body: body.into(),
+                ..desc.clone()
             },
             (exchange, alpn),
             target,
@@ -2311,7 +2449,7 @@ impl Connector {
                     .iter()
                     .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                     .collect(),
-                desc.body.to_vec(),
+                desc.body.clone(),
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
@@ -2508,7 +2646,7 @@ impl Conns for Connector {
                 .get(program::member_of(desc.target))
                 .cloned()
                 .ok_or(ConnError::Refused)?;
-            let lease = member.lease(desc.body)?;
+            let lease = member.lease(&desc.body)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
             // A refused insert drops the held lease, which closes it.
@@ -2531,7 +2669,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2598,7 +2736,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2660,6 +2798,8 @@ impl Conns for Connector {
                     .push((bytes[..take].to_vec(), end && take == bytes.len(), text));
                 return Ok(take);
             }
+            // Its dial is crossing: re-offered after the caller's next read or wait.
+            return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         match line.emit(stream, bytes, end, text) {

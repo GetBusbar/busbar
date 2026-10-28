@@ -77,12 +77,12 @@
 #                  1.6.0 `busbar-hook-webrequest` (ARCHITECT ruling: 1.5.5 configs load unchanged).
 #                  Signed into the manifest (busbar-plugin-pack --former-name, plugin-release.yml's
 #                  `former_names` input, the rendered release.yml); a LINKED row answers them too
-#                  through its `former.<alias>` row of the root legacy table. `cargo xtask plugin-gates
+#                  through its `former.<alias>` row of the root migration table. `cargo xtask plugin-gates
 #                  former-names` is RED on an entry whose repo shipped a 1.5.5-era release under a
-#                  manifest name (`legacy:`'s `name_1_5_5.<repo>` rows) that this list does not carry
+#                  manifest name (`migration:`'s `name_1_5_5.<repo>` rows) that this list does not carry
 #   retired        the `module:` spellings this plugin answered to in an earlier release and no longer
-#                  does [none]. Each is a `retired.<kind>.<word>` row of the root legacy table
-#                  (`[package.metadata.busbar.legacy]` in dist/default/Cargo.toml), beside the plugin's
+#                  does [none]. Each is a `retired.<kind>.<word>` row of the root migration table
+#                  (`[package.metadata.busbar.migration]` in dist/default/Cargo.toml), beside the plugin's
 #                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
 #                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
 #   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
@@ -116,13 +116,13 @@ excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
   - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
 
-# THE ROOT LEGACY TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
+# THE ROOT MIGRATION TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
 # 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot
-# refusals print. These rows, then every entry's `retired:` rows, are the root legacy table,
-# `[package.metadata.busbar.legacy]` (dist/default/Cargo.toml), which the composition root hands to the
-# kernel; crates/busbar/src/root/tests/legacy.rs renders it from here and is red on drift (printing the
+# refusals print. These rows, then every entry's `retired:` rows, are the root migration table,
+# `[package.metadata.busbar.migration]` (dist/default/Cargo.toml), which the composition root hands to the
+# kernel; crates/busbar/src/root/tests/migration_table.rs renders it from here and is red on drift (printing the
 # table to paste). Every row cites the v1.5.5 tag line it is verbatim from; a value never changes.
-legacy:
+migration:
   # v1.5.5:crates/busbar/src/config/migrate.rs:267 (the legacy marker's "is Valkey — artifact")
   renamed_display: Valkey
   # The retired backend's own driver URL scheme, which the rewrite leaves untouched.

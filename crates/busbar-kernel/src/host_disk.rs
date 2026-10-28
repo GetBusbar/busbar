@@ -124,9 +124,13 @@ fn start() -> Option<SyncSender<Job>> {
         .spawn(move || {
             for job in rx {
                 match job {
+                    // An append whose completion panics is its own failure, never the lane's: the
+                    // appends behind it still run and answer.
                     Job::Append { dest, bytes, later } => {
                         let report = append(&dest, &bytes);
-                        later(report.stored());
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            later(report.stored());
+                        }));
                     }
                     // A job that panics is its own failure, never the lane's: the appends behind it
                     // still run.

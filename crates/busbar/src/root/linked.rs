@@ -126,7 +126,7 @@ pub mod node {
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
     use busbar_kernel::plane_driver::PlaneAnswer;
-    use busbar_kernel::teller::{RouteAwait, Units};
+    use busbar_kernel::teller::RouteAwait;
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
@@ -143,7 +143,7 @@ pub mod node {
     pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
     /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
     pub type Built = (
-        Arc<dyn Units + Send + Sync>,
+        Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync>,
         Arc<dyn RouteAwait + Send + Sync>,
         Finish,
     );
@@ -323,10 +323,10 @@ pub fn linked_exports(
                 .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // In 1.5.5's order (the root migration table's `export_modules`, the order 1.5.5 listed its
     // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
     // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
-    let order = crate::root::legacy::export_order();
+    let order = crate::root::migration_table::export_order();
     rows.sort_by_key(|p| {
         order
             .iter()
@@ -483,7 +483,7 @@ pub fn link_secrets(
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
+    rows.with_former_names(busbar_kernel::config::migration_table::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
