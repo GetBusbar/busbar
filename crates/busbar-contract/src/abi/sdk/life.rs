@@ -392,6 +392,13 @@ pub trait Life: Send + Sync + Sized + 'static {
         let _ = (host, ticket);
         Poll::Ready(Ok(()))
     }
+
+    /// `close`: what the instance lets go before the SDK drops it, over the host tables `open`
+    /// handed it (`None` when it was handed none): a carrier closes the host I/O handles it still
+    /// holds. The default lets go of nothing.
+    fn close(&self, host: Option<&Host>) {
+        let _ = host;
+    }
 }
 
 /// The metric entry a `refresh` reports, held by the instance until the host has copied the reply
@@ -599,8 +606,13 @@ life_slot!(
 );
 
 life_slot!(
-    /// `close`: READY; the SDK drops the state (every lease with it).
-    Close(InHead => OutHead) |_, _, _out| { Outcome::Ready }
+    /// `close`: [`Life::close`], then READY; the SDK drops the state (every lease with it).
+    Close(InHead => OutHead) |instance, _, _out| {
+        if let Some(h) = instance.get() {
+            h.life.close(h.host());
+        }
+        Outcome::Ready
+    }
 );
 
 #[cfg(test)]
