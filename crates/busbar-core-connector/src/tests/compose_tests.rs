@@ -752,12 +752,12 @@ fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
             EXCHANGE_STREAM,
         ));
         let mut d = dial(&far);
-        d.opening = Some((Vec::new(), b"first ".to_vec()));
+        d.opening = Some((Vec::new(), b"first ".to_vec().into()));
         let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
         let waker = std::task::Waker::noop();
         c.open_exchange(
             3,
-            Some((Vec::new(), b"second".to_vec())),
+            Some((Vec::new(), b"second".to_vec().into())),
             HeadWords::default(),
             &mut std::task::Context::from_waker(waker),
         )
