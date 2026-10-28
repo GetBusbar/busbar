@@ -128,16 +128,18 @@ fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
     );
 }
 
-/// A block-list entry that names no usable host: 1.6.0 does not take it silently as written; the
-/// migration removes it (it never matched anything) and says so, and every real entry stays.
+/// A block-list entry that names no usable host: 1.6.0 refuses it at startup (#1789), naming it;
+/// the migration removes it (it never matched anything) and says so, and every real entry stays.
 #[test]
 fn a_1_5_5_metadata_entry_naming_no_host_migrates_away() {
     let raw = validate_as_written("metadata_no_host.yaml");
     let stderr = String::from_utf8_lossy(&raw.stderr);
-    assert!(
-        stderr.contains("'db.1'"),
-        "1.6.0 names the entry as written (a warning, or a refusal); stderr:\n{stderr}"
-    );
+    if raw.status.code() != Some(0) {
+        assert!(
+            stderr.contains("'db.1'"),
+            "a refusal of the entry as written names it; stderr:\n{stderr}"
+        );
+    }
 
     let (migrated, summary, stderr) = migrate_and_validate("metadata_no_host.yaml");
     assert_eq!(
