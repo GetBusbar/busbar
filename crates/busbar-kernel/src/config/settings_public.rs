@@ -4,8 +4,8 @@
 //! THE SETTINGS EACH PLUGIN DECLARES PUBLIC, as the kernel reads them: every plugin setting is
 //! sensitive unless its plugin's settings schema marks it `x-busbar-public`
 //! (`busbar_contract::settings_public`). The composition root hands the table in once, before the
-//! first configuration is read, with the plugins' setting renames (`super::plugin_renames`). A
-//! surface that renders a settings bag shows the public keys' values and every other key alone.
+//! first configuration is read. A surface that renders a settings bag shows the public keys'
+//! values and every other key alone.
 
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
