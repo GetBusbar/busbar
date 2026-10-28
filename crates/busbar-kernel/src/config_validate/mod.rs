@@ -2205,9 +2205,11 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
+mod undeclared_secret_refs;
 #[cfg(test)]
 pub(crate) use secret_refs::registry_refusal;
 pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
+pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 /// The one validator every caller runs.
 mod check;
 pub use check::{check, no_root_rules, Check, Refusal};
