@@ -106,4 +106,7 @@ rcgen = { workspace = true, features = ["pem"] }
 # qa/dep-wall.ledger does not pin for it, and a new offender is never pinned in the change that
 # brings it in.
 busbar-stub-transport-plugin = { path = "../plugin-loader/stubs/transport/plugin" }
+# The suite's host connector (tests/conformance_host.rs): the test kit's, over the stub carrier.
+# Dev-only.
+busbar-test-kit = { path = "../busbar-test-kit" }
 

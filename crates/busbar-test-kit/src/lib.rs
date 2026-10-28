@@ -19,6 +19,8 @@ pub use busbar_plugin_loader::{
 /// built cdylib, through the one loader.
 #[allow(unsafe_code)] // REVIEWED: the published suite drives raw doors and plants faults
 pub mod conformance;
+/// The suite's host connector over the transport doors a plugin names (`conformance_host!`).
+pub mod conformance_host;
 /// The framed connection-table stand-in with in-process far ends, for a build that cannot link
 /// the process's connector. No TLS library: TLS stays in the connector.
 pub mod https_conns;

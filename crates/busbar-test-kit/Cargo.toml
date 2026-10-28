@@ -20,6 +20,8 @@ test = false
 [dependencies]
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract" }
+# The suite's host connector (`conformance_host`): busbar's connector and its TLS test kit.
+busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
 base64 = { workspace = true }
 hex = { workspace = true }
 ring = { workspace = true }
