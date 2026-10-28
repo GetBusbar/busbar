@@ -61,7 +61,7 @@
 // `BootHook` alias — relocated into `busbar-substrate` so an extracted plane crate
 // constructs its own `PlaneDecl` and names every seam type without a path back to core. Re-exported
 // HERE at their old paths so the population glue below, the built-in `PLANE_DECL`s and every in-core
-// caller (`busbar_kernel::plane::registry::{PlaneDecl, BuildCtx}`) resolve unchanged.
+// caller (`busbar_kernel::plane_driver::registry::{PlaneDecl, BuildCtx}`) resolve unchanged.
 // What did NOT move: the glue (it names `PlaneDispatch`/the built-in statics, all
 // core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
 // here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
@@ -347,7 +347,7 @@ pub fn merged_boot_plane_decls(
 
 /// THE TOP-LEVEL CONFIG SECTIONS CORE STILL OWNS CONCRETELY as fields of
 /// [`crate::config::DeployCfg`] — the reserved set the plane-owned-config dup-claim guard
-/// ([`crate::plane::registry::check_owned_config_claims`]) refuses a plane from claiming until the
+/// ([`crate::plane_driver::registry::check_owned_config_claims`]) refuses a plane from claiming until the
 /// section is actually evicted from core in the SAME change.
 ///
 /// STAGE 1 lists all five: `providers`/`models`/`pools`/`rate_card`/`limits` are all concrete today.
@@ -396,7 +396,7 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
 // ── TEST-SUPPORT PLANE REGISTRATION ──────────────────────────────────────────────────────────────
 // The extracted plane crates can't be hard-coded into `BUILTIN_PLANE_DECLS` (core cannot name them),
 // so under the test-support surface each plane's `testkit` REGISTERS its `&'static PlaneDecl` through
-// the NEUTRAL seam [`busbar_kernel::plane::registry::register_test_plane`] — the storage lives on
+// the NEUTRAL seam [`busbar_kernel::plane_driver::registry::register_test_plane`] — the storage lives on
 // the substrate so a plane crate names no `busbar_kernel::` implementation to register itself, exactly
 // as production's composition root `install_planes`. `plane_decls()` folds the registered set ahead of
 // the built-ins on every read, recomputing (and leaking once) only for a registration set it has not
@@ -418,13 +418,13 @@ type TestMemoEntry = (Vec<usize>, &'static [&'static PlaneDecl]);
 static TEST_MEMO: std::sync::Mutex<Vec<TestMemoEntry>> = std::sync::Mutex::new(Vec::new());
 
 // TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
-// from the neutral substrate ([`busbar_kernel::plane::registry::register_test_plane`], which owns
+// from the neutral substrate ([`busbar_kernel::plane_driver::registry::register_test_plane`], which owns
 // the storage) so core's own test-support callers keep one stable path; the plane crates call the
 // substrate function directly.
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    let reg = busbar_kernel::plane::registry::test_registered_planes();
+    let reg = busbar_kernel::plane_driver::registry::test_registered_planes();
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
     // Fold explicit `install_planes` registrations (registry's own tests) AND `register_test_plane`
     // registrations ahead of the built-ins.
@@ -547,7 +547,7 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
 ///
 /// # The two security ratchets it enforces
 /// - **R1 (every claimed path is audience-checked):** each `(path, wire)` a plane declares is
-///   mounted, so [`super::PlaneDispatch::admission_for`] resolves an audience on it. A path a plane
+///   mounted, so [`super::dispatch::PlaneDispatch::admission_for`] resolves an audience on it. A path a plane
 ///   answers on but omits here is unreachable through this table's audience check — which is why the
 ///   claim set, not the router, is the thing a test pins.
 /// - **R2 (mounted ⇒ admitted, or boot refuses):** a plane that claims a path but has no admission
@@ -561,8 +561,8 @@ pub fn build_dispatch(
     decls: &[&'static PlaneDecl],
     slots: &std::collections::BTreeMap<&'static str, &dyn std::any::Any>,
     key_chain: bool,
-) -> Result<super::PlaneDispatch, String> {
-    let mut dispatch = super::PlaneDispatch::default();
+) -> Result<super::dispatch::PlaneDispatch, String> {
+    let mut dispatch = super::dispatch::PlaneDispatch::default();
     for decl in decls {
         // A plane the operator did not configure has no runtime object, mounts nothing, and binds
         // no audience — skipped, exactly as the old `if let Some(..)` guards skipped it.
@@ -659,7 +659,7 @@ pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
 /// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
 /// the public half, it never signs, so no signing material crosses this seam (invariant (a)). Lives in
 /// the neutral substrate so the A2A boot hook reads it off [`PlaneBootCtx::card_issuer`] without naming
-/// a `busbar_kernel` type; core re-exports it at `busbar_kernel::plane::registry::CardIssuer` so every
+/// a `busbar_kernel` type; core re-exports it at `busbar_kernel::plane_driver::registry::CardIssuer` so every
 /// in-core caller (`governance::state`, the A2A plane's own card slot) resolves unchanged.
 #[derive(Clone)]
 pub struct CardIssuer {
@@ -668,7 +668,7 @@ pub struct CardIssuer {
 }
 
 /// THE NEUTRAL BOOT-CONTEXT SEAM a plane's [`PlaneDecl::hydrate`] / [`PlaneDecl::start`] hook reads,
-/// implemented core-side by `busbar_kernel::plane::registry::BootCtx` — so an extracted plane crate
+/// implemented core-side by `busbar_kernel::plane_driver::registry::BootCtx` — so an extracted plane crate
 /// (MCP) drives its boot restore through typed, neutral methods without the hook signature naming
 /// `busbar_kernel::state::App`.
 ///
@@ -796,7 +796,7 @@ impl std::ops::Deref for PlaneDecl {
 plane_behaviour! {
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
     /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
-    /// LLM plane's answer is `busbar_kernel::proto::known_protocols` — read off the live protocol
+    /// LLM plane's answer is `busbar_kernel::ingress::protocols::known_protocols` — read off the live protocol
     /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
@@ -829,7 +829,7 @@ plane_behaviour! {
     /// when the plane has no RECEIVING side to admit anyone to (A2A without a `public_url`); a plane
     /// that [`Self::claims`] a path but returns `None` here is refused at boot by `build_dispatch`
     /// rather than left serving an unauthenticated resource (ratchet R2).
-    admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
+    admission: fn(&dyn std::any::Any) -> Option<super::dispatch::PlaneAdmission>,
 
     /// BUILD THE PLANE'S RUNTIME OBJECT for one config generation, type-erased as
     /// `Arc<dyn Any + Send + Sync>` — the app-state SLOT that [`Self::claims`] and [`Self::admission`]
@@ -1101,8 +1101,8 @@ plane_behaviour! {
 // ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────
 // A plane's `testkit` registers its `&'static PlaneDecl` here — a SUBSTRATE type — exactly as
 // production's composition root `install_planes` does, so the extracted plane crates reach the neutral
-// ABI (`busbar_kernel::plane::registry::register_test_plane`) rather than back into
-// `busbar_kernel::plane::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
+// ABI (`busbar_kernel::plane_driver::registry::register_test_plane`) rather than back into
+// `busbar_kernel::plane_driver::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
 // its built-ins on every read, so a plane registered by any test before it reads the list is visible
 // regardless of test order.
 #[cfg(any(test, feature = "test-support"))]

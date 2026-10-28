@@ -2169,7 +2169,7 @@ async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overlo
         overloaded,
         (
             503,
-            Some(crate::proxy::APPLICATION_JSON.to_string()),
+            Some(busbar_contract::protocol::APPLICATION_JSON.to_string()),
             Some("1".to_string()),
             r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#
                 .to_string(),
@@ -2463,15 +2463,48 @@ fn naming_chain(
     )]))
 }
 
-/// A governance engine over a fresh in-memory record store (the default backend's ledger).
+/// A governance engine over a fresh store double opened through its door, as boot opens the
+/// configured store: its record store and its v3 calls, where a replay claim is redeemed.
 fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
-    std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            None,
+    use busbar_contract::store_calls::StoreDoor;
+    let opened = crate::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(crate::test_support::store_double::door),
+            crate::test_support::store_double::NAME,
+            b"{}",
         )
-        .expect("gov"),
+        .expect("the store double opens through its door");
+    let gov = crate::governance::GovState::new(opened.records, None).expect("gov");
+    assert!(gov.attach_store_calls(opened.calls.expect("a door-opened store has its calls")));
+    std::sync::Arc::new(gov)
+}
+
+/// FAIL-CLOSED: governance whose store has no v3 calls to redeem in refuses an identity that asks
+/// for a replay claim, as no governance at all does; one that asks for none is admitted.
+#[tokio::test]
+async fn a_replay_claim_with_no_store_calls_to_redeem_in_is_refused() {
+    use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
+    let bare = crate::governance::GovState::new(
+        std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        None,
     )
+    .expect("gov");
+    let now = busbar_kernel::store::now();
+    let asks = VerifiedIdentity {
+        subject: "subject".into(),
+        replay: Some(Box::new(Replay {
+            key: "message-1".into(),
+            ttl_secs: 300,
+        })),
+        ..VerifiedIdentity::default()
+    };
+    assert!(!signed_replay_claimed(Some(&bare), "verifier", &asks, now).await);
+    assert!(!signed_replay_claimed(None, "verifier", &asks, now).await);
+    let none = VerifiedIdentity {
+        subject: "subject".into(),
+        ..VerifiedIdentity::default()
+    };
+    assert!(signed_replay_claimed(Some(&bare), "verifier", &none, now).await);
 }
 
 /// RED (Q128 arch u27 LOW): the signed ingress claims the replay key its verified identity asks
@@ -2479,8 +2512,8 @@ fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
 /// "Inbound verify", l.845-846): the first presentation wins the claim, the same key inside its TTL
 /// loses it, and an identity that asks for no claim is never refused for one. RED before: the
 /// signed arm never claimed, so a replayed signed request was admitted every time.
-#[test]
-fn the_signed_ingress_claims_its_identitys_replay_key() {
+#[tokio::test]
+async fn the_signed_ingress_claims_its_identitys_replay_key() {
     use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
     let gov = replay_gov();
     let now = busbar_kernel::store::now();
@@ -2493,11 +2526,11 @@ fn the_signed_ingress_claims_its_identitys_replay_key() {
         ..VerifiedIdentity::default()
     };
     assert!(
-        signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now),
+        signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now).await,
         "the first presentation wins its claim"
     );
     assert!(
-        !signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now),
+        !signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now).await,
         "the same key inside its TTL is a replay"
     );
     let none = VerifiedIdentity {
@@ -2506,7 +2539,7 @@ fn the_signed_ingress_claims_its_identitys_replay_key() {
     };
     for _ in 0..2 {
         assert!(
-            signed_replay_claimed(Some(gov.as_ref()), "verifier", &none, now),
+            signed_replay_claimed(Some(gov.as_ref()), "verifier", &none, now).await,
             "an identity asking for no claim is never refused for one"
         );
     }
@@ -2787,7 +2820,7 @@ async fn door_serve(
     let (router, _admin, _handle) = crate::build_split_routers_serving(
         app,
         doors,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
@@ -3420,7 +3453,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     let env: serde_json::Value = serde_json::from_str(&raw).expect("401 body is JSON");
     assert_eq!(
         env["error"]["type"],
-        crate::proxy::KIND_AUTHENTICATION,
+        busbar_contract::protocol::KIND_AUTHENTICATION,
         "expected the data plane's native authentication_error: {env}"
     );
     assert!(
