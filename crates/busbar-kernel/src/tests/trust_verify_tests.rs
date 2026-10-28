@@ -403,7 +403,7 @@ fn a_rotation_carrying_two_signatures_verifies_under_either_pinned_key_and_no_th
 // A card busbar serves is signed through the host `sign` service ([`SignKey`] over
 // `GovState::sign_in_domain`) under the subkey the deployment's token secret derives for the
 // signing plane's declared domain; a caller pins busbar by that subkey's public half
-// (`TokenSigner::card_subkey_key_info_base64`). Nothing below re-implements a signature check:
+// (`TokenSigner::subkey_key_info_base64`). Nothing below re-implements a signature check:
 // every verdict is this verifier's, the one busbar points at every counterparty's signed document.
 
 /// A plane's declared card-signing domain. Any versioned domain derives the same way; the plane
@@ -447,7 +447,7 @@ fn deployment(seed: u8) -> crate::governance::GovState {
 
 /// The card-issuer key a caller pins the deployment `seed` names by.
 fn card_key(seed: u8) -> String {
-    token_signer(seed).card_subkey_key_info_base64(CARD_DOMAIN)
+    token_signer(seed).subkey_key_info_base64(CARD_DOMAIN)
 }
 
 /// `payload` signed by `deployment` through the `sign` service, as a served card is signed: the
