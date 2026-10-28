@@ -81,7 +81,8 @@ pub fn row(name: &str, alias: &str, kind: &str) -> Row {
     }
 }
 
-/// A plugin present in the directory and SKIPPED, `reason` in the trust evaluator's words.
+/// A plugin present in the directory and SKIPPED, `reason` in the trust evaluator's words, its
+/// category `unsigned` (a test sets another `code` on the returned row).
 #[must_use]
 pub fn skipped(name: &str, alias: &str, reason: &str) -> Skipped {
     Skipped {
@@ -89,6 +90,7 @@ pub fn skipped(name: &str, alias: &str, reason: &str) -> Skipped {
         name: name.to_string(),
         alias: alias.to_string(),
         reason: reason.to_string(),
+        code: "unsigned",
     }
 }
 
