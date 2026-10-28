@@ -89,19 +89,6 @@ fn the_server_timing_value_is_the_gateways_own_milliseconds() {
     assert_eq!(ms.split('.').nth(1).map(str::len), Some(3), "{value}");
 }
 
-/// The upstream slot answers what the forward path recorded inside it, and none when nothing was.
-#[tokio::test]
-async fn the_upstream_slot_answers_its_round_trip() {
-    let ((), none) = with_upstream_rtt(async {}).await;
-    assert_eq!(none, NO_UPSTREAM_RTT);
-    let ((), recorded) = with_upstream_rtt(async {
-        crate::proxy::UPSTREAM_RTT_US
-            .with(|slot| slot.store(250, std::sync::atomic::Ordering::Relaxed));
-    })
-    .await;
-    assert_eq!(recorded, 250);
-}
-
 /// ONE TICK per request entered.
 #[test]
 fn the_activity_tick_is_one_per_request() {

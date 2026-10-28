@@ -814,17 +814,6 @@ impl TestDoor {
                 let _ = io.close(OWNER, i.conn);
                 ("shut", io_crossed(Ok(()), |()| {}))
             }
-            Carry::Arrival(i, o) => (
-                "arrival",
-                io_crossed(io.ends(OWNER, i.conn), |ends| {
-                    let port = ends.port;
-                    let mut bytes: VecDeque<u8> = ends.peer.into_bytes().into();
-                    let n = bytes.len().min(i.peer_cap);
-                    put(i.peer_buf, &mut bytes, n);
-                    o.peer_written = n as u64;
-                    o.local_port = u32::from(port);
-                }),
-            ),
             Carry::Cancel(_, _) => ("cancel", io_crossed(Ok(()), |()| {})),
         };
         self.carried.lock().unwrap().push(op);

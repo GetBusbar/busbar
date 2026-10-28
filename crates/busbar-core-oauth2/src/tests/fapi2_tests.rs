@@ -66,8 +66,6 @@ fn now() -> u64 {
         .as_secs()
 }
 
-// ── the client's keys ────────────────────────────────────────────────────────────────────────────
-
 /// One ES256 key: a client's `private_key_jwt` key, or a DPoP key. Signed with `ring`, which the
 /// server under test verifies with as well — but the JOSE framing is assembled here by hand from
 /// the RFCs, so a server that misread RFC 7515 would not be agreeing with itself.
@@ -289,8 +287,6 @@ impl RsaKey {
         )
     }
 }
-
-// ── the subject ──────────────────────────────────────────────────────────────────────────────────
 
 /// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key,
 /// both PROVISIONED BY CONFIG (`oauth_as.clients:`), which is how a deployment gets one: RFC 7591
@@ -520,8 +516,6 @@ async fn metadata(s: &Subject) -> Value {
     assert_eq!(resp.status(), 200);
     resp.json().await.expect("JSON metadata")
 }
-
-// ── the tests ────────────────────────────────────────────────────────────────────────────────────
 
 /// RFC 8414 s2 as the profile reads it: the document names the PAR endpoint and makes it mandatory
 /// (RFC 9126 s5), names the DPoP algorithms (RFC 9449 s5.1), offers `private_key_jwt` with the
@@ -1032,8 +1026,6 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     .await;
 }
 
-// ── the protected resource (RFC 9449 s7) ─────────────────────────────────────────────────────────
-
 /// RFC 9449 s4.2 `ath`: base64url SHA-256 of the access token.
 fn ath(token: &str) -> String {
     B64.encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
@@ -1186,8 +1178,6 @@ async fn the_resource_refuses_what_rfc_9449_forbids() {
         "s11.1: a proof's jti is single use"
     );
 }
-
-// ── PS256: the profile's RSA algorithm (FAPI2 s5.4.1) ────────────────────────────────────────────
 
 /// A client provisioned with an RSA key runs the whole profile on PS256 — its `private_key_jwt`
 /// assertions at PAR and the token endpoint, and its DPoP proofs at the token endpoint and at

@@ -939,10 +939,10 @@ impl Journal {
     /// The same journal KEEPING every record at its bound instead of dropping the oldest.
     ///
     /// For a caller that decides what a full buffer means itself and has said so: the composition
-    /// root over a store, which refuses new money-bearing work while its store lane is full (ARCHITECT
-    /// 2026-10-07 H3 ruling: records are never dropped). What it costs is that the buffer is then
-    /// bounded by the caller's refusal rather than by this journal, so a caller that keeps admitting
-    /// work while the store refuses grows it.
+    /// root over a store, which refuses new money-bearing work while its store lane is full
+    /// (records are never dropped). What it costs is that the buffer is then bounded by the
+    /// caller's refusal rather than by this journal, so a caller that keeps admitting work while
+    /// the store refuses grows it.
     #[must_use]
     pub fn retaining_at_bound(mut self) -> Self {
         self.drop_at_bound = false;

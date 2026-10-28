@@ -22,9 +22,9 @@ use axum::response::Response;
 use busbar_core_connector::compose::{Connection, Failure, Via};
 use busbar_core_connector::framer::FramerDoor;
 use busbar_core_connector::listen::{Accepted, Admitted, Composer, Listening};
-use busbar_kernel::plane_driver::{HeadFields, Rendered};
 /// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
+use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
+use busbar_kernel::plane_driver::{HeadFields, Rendered};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::serve::{DataRoutes, DoorRequest, HandedDoor};
@@ -809,7 +809,7 @@ impl Conn {
             }
             return;
         }
-        let cap = busbar_kernel::proxy::max_translate_body_bytes();
+        let cap = busbar_kernel_egress::upstream::max_translate_body_bytes();
         match self.inflows.get_mut(&piece.stream) {
             None if piece.fields && !piece.failed => self.head(piece.stream, piece.end),
             // A piece of a stream no task holds (answered, or never handed in): dropped.
@@ -1311,9 +1311,11 @@ impl DataDoor {
             if !timing {
                 return observed.await;
             }
-            let (mut response, upstream) = busbar_kernel::router::with_upstream_rtt(observed).await;
-            if let Some((name, value)) = busbar_kernel::router::server_timing_field(start, upstream)
-            {
+            let mut response = observed.await;
+            if let Some((name, value)) = busbar_kernel::router::server_timing_field(
+                start,
+                busbar_kernel::router::NO_UPSTREAM_RTT,
+            ) {
                 response.headers_mut().insert(name, value);
             }
             response
@@ -1374,7 +1376,7 @@ impl DataDoor {
             .uri
             .path_and_query()
             .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-        let cap = busbar_kernel::proxy::max_translate_body_bytes();
+        let cap = busbar_kernel_egress::upstream::max_translate_body_bytes();
         let head = parts.method == axum::http::Method::HEAD;
         let bytes = match read_body(body, cap).await {
             Ok(bytes) => bytes,

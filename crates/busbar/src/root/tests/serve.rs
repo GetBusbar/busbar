@@ -826,7 +826,7 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
 /// written. RED before: the root spelled a vendor framing's media type beside the event stream.
 #[tokio::test]
 async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spells_none() {
-    use busbar_kernel::proto::streaming_content_types as declared_stream_media;
+    use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
     use http_body::Body as _;
     // The answer-shaping rules live in `accepted.rs` (`accepted::Reply::shape`), which the serve
     // path answers through: neither spells a dialect's media type.

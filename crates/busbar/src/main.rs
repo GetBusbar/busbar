@@ -272,7 +272,7 @@ fn register_protocols() {
 }
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
+/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane tables of [`LINKED`] (each
 /// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
 /// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
@@ -280,9 +280,9 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
-    // The root legacy table, before the first configuration read (the dropped-plugin scan below
+    // The root migration table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
-    root::legacy::install();
+    root::migration_table::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
@@ -584,7 +584,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // `x-busbar-route-policy` / `x-busbar-route-target` are a fingerprintable observable, same class
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
-    busbar_kernel::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
+    busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in scrape
     // EXPORTER (its `export:` entry) — present ⇒ install the recorder (COLLECTION) with the operator's
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
@@ -867,7 +867,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
     // signer and the hydrated demotion record this first build made, once.
-    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
+    let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .map(|d| &d.declaration)
         .collect();

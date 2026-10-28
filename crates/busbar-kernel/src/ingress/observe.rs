@@ -23,7 +23,7 @@
 //! release's duplicated hash chains and duplicated SSRF guards.
 //!
 //! So this is a LAYER, and it belongs to the MOUNT. That is the argument
-//! [`crate::plane::PlaneAdmission`] already makes for keeping the RFC 8707 audience check beside the door
+//! [`crate::plane_driver::dispatch::PlaneAdmission`] already makes for keeping the RFC 8707 audience check beside the door
 //! instead of in a handler: a property of the door is inherited by every path behind it, and a
 //! handler added later cannot forget it. A refusal the auth middleware issues before any handler
 //! runs is counted here too, which is the case an operator most needs to see and the one a
@@ -34,7 +34,7 @@
 //! Two questions could have been answered by comparing planes, and both are answered by the spine
 //! instead:
 //!
-//! * *Which dialect was spoken?* — [`crate::plane::PlaneDispatch::wire_format_of`], off the CLAIM the path
+//! * *Which dialect was spoken?* — [`crate::plane_driver::dispatch::PlaneDispatch::wire_format_of`], off the CLAIM the path
 //!   matched. A plane whose binding has a door of its own is labelled here with that binding's name
 //!   whatever else the plane speaks, because the door declares what is spoken at it. The fallback
 //!   plane still cannot be labelled here: not "it is the fallback plane" by comparison, but "it has
@@ -43,7 +43,7 @@
 //!   the response it is labelling. Needed as well as the claim, because two of one plane's three
 //!   bindings can SHARE one door: the claim can say `jsonrpc` there, and only the reader knows
 //!   whether the request line or a body member named the operation. See below.
-//! * *Which plane is this?* — [`crate::plane::PlaneDispatch::mounted_plane_of`], off the mount table the
+//! * *Which plane is this?* — [`crate::plane_driver::dispatch::PlaneDispatch::mounted_plane_of`], off the mount table the
 //!   router was built from.
 //!
 //! Add a fourth plane and it is observed by this file without an edit.
@@ -171,7 +171,7 @@ pub fn finish(app: &crate::state::App, path: &str, status: u16, elapsed: Duratio
         // credential could mint a new time series per distinct target name, which is the
         // memory-exhaustion DoS `pool_label` exists to close. Narrowing this to the configured
         // target's own name is the next step and it belongs where the target is resolved.
-        crate::proxy::POOL_LABEL_UNRESOLVED,
+        crate::telemetry::POOL_LABEL_UNRESOLVED,
         crate::telemetry::outcome_of(status),
         elapsed.as_secs_f64(),
     );

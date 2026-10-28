@@ -787,9 +787,11 @@ pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
 pub fn signed_by_dialect() -> SignedIngress {
     Arc::new(|app: &App, path: &str| {
         let ingress = app.planes.ingress_of(path);
-        matches!(ingress, crate::plane::Ingress::Fallback(_))
-            && crate::proto::decl_for(crate::ingress::native::envelope_dialect(ingress))
-                .is_some_and(|d| d.uses_sigv4_ingress_auth())
+        matches!(ingress, crate::plane_driver::dispatch::Ingress::Fallback(_))
+            && crate::ingress::protocols::decl_for(crate::ingress::native::envelope_dialect(
+                ingress,
+            ))
+            .is_some_and(|d| d.uses_sigv4_ingress_auth())
     })
 }
 

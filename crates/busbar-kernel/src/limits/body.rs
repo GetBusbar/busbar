@@ -52,7 +52,7 @@ pub const fn total_deadline_for(cap_bytes: u64) -> Duration {
 /// [`total_deadline_for`] the body cap installed now (`request_body_max_bytes`, the translate cap).
 #[must_use]
 pub fn total_deadline() -> Duration {
-    total_deadline_for(crate::proxy::max_translate_body_bytes() as u64)
+    total_deadline_for(busbar_kernel_egress::upstream::max_translate_body_bytes() as u64)
 }
 
 /// The bound a body read broke.

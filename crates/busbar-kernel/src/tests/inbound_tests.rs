@@ -833,7 +833,7 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
             &k.app.planes,
             MESSAGES,
             StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             "request body exceeds the maximum allowed size",
         ))
     );
@@ -1603,7 +1603,7 @@ fn red_a_unitless_refusal_is_shaped_by_the_requests_path() {
             REFUSE_OVER_GATE,
             k.line(MESSAGES),
             StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             "request body exceeds the maximum allowed size",
         ),
     ] {
@@ -2217,7 +2217,7 @@ async fn red_an_audience_bound_planes_refusals_are_the_old_paths_challenges() {
         t.mount_plane("bound-plane", MESSAGES, "bound-wire");
         t.admit_plane(
             "bound-plane",
-            crate::plane::PlaneAdmission {
+            crate::plane_driver::dispatch::PlaneAdmission {
                 audience: "https://gw.example/v1/messages".to_string(),
                 resource_metadata: "https://gw.example/.well-known/oauth-protected-resource"
                     .to_string(),
@@ -2325,7 +2325,7 @@ fn bind_audience(t: &mut crate::test_support::TestApp) {
     t.mount_plane("bound-plane", MESSAGES, "bound-wire");
     t.admit_plane(
         "bound-plane",
-        crate::plane::PlaneAdmission {
+        crate::plane_driver::dispatch::PlaneAdmission {
             audience: AUDIENCE.to_string(),
             resource_metadata: "https://gw.example/.well-known/oauth-protected-resource"
                 .to_string(),

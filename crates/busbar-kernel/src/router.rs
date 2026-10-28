@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, state, store, telemetry,
-    tls, transport, trust,
+    observability, operation, plugin_routes, profile, state, store, telemetry, tls, transport,
+    trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -34,7 +34,7 @@ pub const NO_UPSTREAM_RTT: u64 = u64::MAX;
 /// version of this function that tried shipped one dialect's envelope onto a different plane's own
 /// mounted path.
 pub fn fallback_error_response(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     status: axum::http::StatusCode,
     kind: &str,
@@ -74,7 +74,7 @@ pub fn fallback_error_response(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     reason: busbar_contract::caps::ReasonCode,
     path: &str,
     target: &str,
@@ -100,7 +100,7 @@ pub(crate) fn kernel_refusal_response(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_by(
     door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     reason: busbar_contract::caps::ReasonCode,
     path: &str,
     target: &str,
@@ -129,7 +129,7 @@ pub(crate) fn kernel_refusal_by(
 /// router's 405 handler renders it, through the door planes' rendering `door`.
 pub(crate) fn method_miss_refusal_by(
     door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     target: &str,
 ) -> axum::response::Response {
@@ -253,7 +253,7 @@ pub fn oversized_refusal(
 #[must_use]
 pub fn oversized_refusal_by(
     door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     target: &str,
 ) -> axum::response::Response {
@@ -264,7 +264,7 @@ pub fn oversized_refusal_by(
         path,
         target,
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-        crate::proxy::KIND_REQUEST_TOO_LARGE,
+        busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
         OVERSIZED_MESSAGE,
     )
 }
@@ -336,22 +336,9 @@ pub fn server_timing_field(
         .map(|v| (axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v))
 }
 
-/// Run `fut` with the upstream round-trip slot the forward path records into
-/// ([`proxy::UPSTREAM_RTT_US`]), and answer its output beside the round-trip it recorded
-/// ([`NO_UPSTREAM_RTT`] when no upstream was called).
-pub async fn with_upstream_rtt<F: std::future::Future>(fut: F) -> (F::Output, u64) {
-    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
-    let out = proxy::UPSTREAM_RTT_US.scope(slot.clone(), fut).await;
-    (out, slot.load(std::sync::atomic::Ordering::Relaxed))
-}
-
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
-/// reporting the latency Busbar itself added — total request wall-clock MINUS the upstream
-/// round-trip — so operators (and browser DevTools / APM tools) can see the gateway's own cost
-/// in-band on every response, without scraping `/metrics` or wiring traces. The upstream RTT is
-/// recorded by the forward path into the [`proxy::UPSTREAM_RTT_US`] task-local for the duration
-/// of this scope; a request that never dispatched upstream (admin / health / early error) reports
-/// its full processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at µs precision.
+/// reporting the request's processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at
+/// µs precision.
 ///
 /// Gated by `advanced.response_headers.server_timing` (default `false`) — but NOT with an internal
 /// `if` check like the pre-task-#139 version. `apply_common_layers` installs this middleware LAYER
@@ -365,8 +352,8 @@ pub(crate) async fn server_timing(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let start = std::time::Instant::now();
-    let (mut resp, upstream_us) = with_upstream_rtt(next.run(req)).await;
-    if let Some((name, value)) = server_timing_field(start, upstream_us) {
+    let mut resp = next.run(req).await;
+    if let Some((name, value)) = server_timing_field(start, NO_UPSTREAM_RTT) {
         resp.headers_mut().insert(name, value);
     }
     resp
@@ -382,7 +369,7 @@ pub(crate) async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -392,7 +379,7 @@ pub(crate) async fn reshape_oversized_413(
             path,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
             // CANONICAL kind for an oversized payload across the protocol writers.
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -415,7 +402,7 @@ async fn reshape_oversized_413_with(
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|ct| ct.starts_with(crate::proxy::APPLICATION_JSON));
+        .is_some_and(|ct| ct.starts_with(busbar_contract::protocol::APPLICATION_JSON));
     if is_json {
         return resp;
     }
@@ -454,7 +441,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_split_routers_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -601,7 +588,7 @@ pub(crate) fn base_data_router(
     // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
     // so the route order is stable.
     let mut router = router;
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::registry::plane_decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
@@ -1192,7 +1179,7 @@ pub fn request_panicked(
         uri.path(),
         target_of(uri),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        busbar_contract::protocol::KIND_API_ERROR,
         "internal error",
     )
 }

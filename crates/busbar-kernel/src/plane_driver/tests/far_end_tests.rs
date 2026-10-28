@@ -14,14 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::proxy::egress_unit::{
-    ports::{
-        Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
-        Unavailable, UpstreamStatus,
-    },
-    Failover, Member, OnExhausted, Pool, WeightedFloor,
-};
 use busbar_contract::abi::transport::{
     FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
 };
@@ -34,6 +26,14 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
+use busbar_kernel_egress::{
+    ports::{
+        Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
+        Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
+        Unavailable, UpstreamStatus,
+    },
+    Failover, Member, OnExhausted, Pool, WeightedFloor,
+};
 
 use super::*;
 use crate::plane_driver::{FarEnd, OutboundRequest, Pick};

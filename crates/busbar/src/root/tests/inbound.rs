@@ -49,7 +49,7 @@ fn line(path: &str, methods: u32) -> Line {
 /// list holding `NATIVE` (POST only).
 fn bare() -> (Arc<Inbound>, GuestList) {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
     let guests = GuestList::seal(vec![line(NATIVE, METHOD_POST)]).expect("the list seals");
     let next = Arc::new(AtomicU64::new(1));
