@@ -294,6 +294,9 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
+    // The outbound styles a provider's `auth:` may name: every linked and dropped-in auth row's,
+    // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
+    busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles);
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
@@ -1082,6 +1085,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
+    // under its mint ceiling, once the swap handle exists.
+    if let Some(kernel) = late_services.kernel() {
+        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
+            std::sync::Arc::clone(&app_handle),
+        )));
+    }
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)

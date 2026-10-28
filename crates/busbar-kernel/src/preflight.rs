@@ -423,6 +423,45 @@ pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::
     auth_axis(linked().ok()?)
 }
 
+/// The root's reader of the outbound styles this build's auth plugins declare, linked and dropped
+/// in ([`install_declared_styles`]).
+pub type DeclaredStyles = fn() -> Vec<busbar_contract::auth_calls::DeclaredStyle>;
+
+static DECLARED_STYLES: std::sync::OnceLock<DeclaredStyles> = std::sync::OnceLock::new();
+
+/// THE ROOT'S DOOR onto the declared outbound styles (the first install stands). Installed once
+/// the plugins directory is scanned and before the configuration is first parsed, so a provider's
+/// `auth:` is read against every auth plugin this process loads, a dropped-in one as a linked one
+/// (BUSBAR-1.6.0.md Part 2 #2), and nothing is opened to read them.
+pub fn install_declared_styles(read: DeclaredStyles) {
+    let _ = DECLARED_STYLES.set(read);
+}
+
+/// THE OUTBOUND STYLES a provider's `auth:` may name (BUSBAR-1.6.0.md #50; arch-audit u29 F1): the
+/// ones this build's auth plugins declare, in the host's one listing order
+/// (`busbar_contract::auth_calls::listed_styles`), each with its declared flags (its endpoint bits
+/// among them): the root's reader ([`install_declared_styles`]), else the auth axis over this
+/// build's linked rows (a build with no root: a test binary's stand-in). The kernel names none.
+#[must_use]
+pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    if let Some(read) = DECLARED_STYLES.get() {
+        return read();
+    }
+    linked_auth_axis()
+        .map(|axis| axis.outbound_styles())
+        .unwrap_or_default()
+}
+
+/// The declared flags of the outbound style `word` ([`declared_styles`]; `abi::auth::STYLE_*`);
+/// `0` when none declares it.
+#[must_use]
+pub fn style_flags(word: &str) -> u32 {
+    declared_styles()
+        .into_iter()
+        .find(|s| s.name == word)
+        .map_or(0, |s| s.flags)
+}
+
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores and the linked auth rows — a test build (no root) stands its fixture entries in. The
 /// root's registry build admits each through the admission a dropped-in row takes (DECISIONS #2
@@ -898,6 +937,14 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                     reason = %s.reason,
                     "plugin present but NOT loaded (trust policy)"
                 );
+                // AUDITED, in host words: the trust evaluator's category, never its reason text
+                // (which embeds manifest bytes).
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Trust,
+                    "file",
+                    &s.file,
+                    s.code,
+                );
             }
             for p in &loadable {
                 match &p.trust {
@@ -1327,3 +1374,7 @@ mod opened_secrets_tests;
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
 mod store_row_tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_refusal_tests.rs"]
+mod plugin_refusal_tests;
