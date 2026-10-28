@@ -7,7 +7,7 @@
 //! The binary boots with `plugins.logs.dir` set and one export instance, `metrics`, over the
 //! compiled-in `prometheus` plugin. A compiled-in plugin is called through the same door and table
 //! as a dropped-in one (BUSBAR-1.6.0.md THE DESIGN, §11.4), so once the instance is loaded, the host has bound it
-//! to its own log sink, and opening that sink creates `<plugins.logs.dir>/metrics.log`. The file
+//! to its own log sink, and opening that sink creates `<plugins.logs.dir>/export.metrics.log`. The file
 //! exists as soon as the instance is bound, whether or not the plugin has logged anything yet.
 //! The one load (the loader's `boot::load`) binds every memory-ABI instance it loads to
 //! `PluginLogConfig::sink`, and the compiled-in scrape sink is linked through its door.
@@ -147,7 +147,11 @@ fn a_loaded_plugin_instance_has_its_own_log_file() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    let file = dir.join("plugin-logs").join(format!("{INSTANCE}.log"));
+    // The host names an export instance by its kind and name (`export.<name>`), and its log file
+    // after that instance name.
+    let file = dir
+        .join("plugin-logs")
+        .join(format!("export.{INSTANCE}.log"));
     assert!(
         file.is_file(),
         "the loaded `{INSTANCE}` instance has no log file at {}; the plugin-logs directory holds \
