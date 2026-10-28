@@ -515,4 +515,4 @@ pub fn verify_release(
 
 #[cfg(test)]
 #[path = "../tests/release_trust_tests.rs"]
-mod tests;
+pub(crate) mod tests;

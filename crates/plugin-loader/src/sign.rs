@@ -621,6 +621,14 @@ pub struct TrustPolicy {
     /// REVOKED library digests (`sha256` -> why; [`REVOKED_DIGESTS`]): refused whoever signed them,
     /// before any opt-in is consulted.
     pub revoked: BTreeMap<String, String>,
+    /// The highest keys-document version this deployment has accepted
+    /// ([`crate::release_trust`]): a sealed plugin carrying an older one is a rollback, refused
+    /// whatever the opt-ins. `0`: none accepted yet. Armed by the registry build from the persisted
+    /// marks ([`crate::HighWaterMarks::release_keys_floor`]).
+    pub release_keys_floor: u64,
+    /// The time (Unix seconds) keys-document and release-manifest expiry is judged at. `None`, the
+    /// system clock; a test sets it.
+    pub release_clock: Option<u64>,
     /// The running binary's version (`CARGO_PKG_VERSION`). Informational (error text/telemetry)
     /// only: it is NOT a floor. First-party plugins version on their own independent lines
     /// (1.0.x stores/auth/hooks under a 1.5.0 engine), so the pre-release
@@ -711,6 +719,8 @@ impl TrustPolicy {
         Ok(TrustPolicy {
             first_party_keys: embedded_release_keys(),
             revoked: revoked_digests(),
+            release_keys_floor: 0,
+            release_clock: None,
             binary_version: i.binary_version.to_string(),
             first_party_floors: i.first_party_floors.clone(),
             first_party_high_water: BTreeMap::new(),
@@ -1530,3 +1540,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/declares_reader_tests.rs"]
 mod declares_reader_tests;
+
+#[cfg(test)]
+#[path = "tests/release_seal_tests.rs"]
+mod release_seal_tests;

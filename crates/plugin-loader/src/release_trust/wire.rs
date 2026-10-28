@@ -590,3 +590,52 @@ fn civil_from_days(mut days: u64) -> (u64, u64, u64) {
     }
     (y, m, days + 1)
 }
+
+// ── the seal a plugin manifest carries ──────────────────────────────────────────────────────────
+
+/// The prefix that marks a manifest `signature` as a RELEASE SEAL rather than a per-plugin ed25519
+/// signature (128 hex digits, which never start with it).
+pub const SEAL_PREFIX: &str = "seal:";
+
+/// The manifest `signature` spelling of a seal: [`SEAL_PREFIX`] then the canonical JSON
+/// `{"keys":<keys envelope>,"targets":<release manifest envelope>}`. The `signature` field is outside
+/// the plugin's canonical manifest bytes, so sealing never changes what the release lists.
+///
+/// # Errors
+///
+/// Either document is not a canonical-subset envelope.
+pub fn write_seal(keys: &[u8], targets: &[u8]) -> Result<String, String> {
+    let keys: Value = serde_json::from_slice(keys).map_err(|e| format!("keys document: {e}"))?;
+    let targets: Value =
+        serde_json::from_slice(targets).map_err(|e| format!("release manifest: {e}"))?;
+    let body = canonical(&serde_json::json!({"keys": keys, "targets": targets}))?;
+    Ok(format!(
+        "{SEAL_PREFIX}{}",
+        String::from_utf8(body).expect("canonical bytes are ASCII")
+    ))
+}
+
+/// The seal in a manifest `signature`: `None` when it is not a seal, else its two documents'
+/// bytes.
+pub fn read_seal(signature: &str) -> Option<Result<(Vec<u8>, Vec<u8>), String>> {
+    let body = signature.trim().strip_prefix(SEAL_PREFIX)?;
+    Some((|| {
+        let v: Value =
+            serde_json::from_str(body).map_err(|e| format!("the seal is not JSON: {e}"))?;
+        let obj = v.as_object().ok_or("the seal is not an object")?;
+        only_fields(obj, &["keys", "targets"], "seal")?;
+        let doc = |k: &str| -> Result<Vec<u8>, String> {
+            let d = obj.get(k).ok_or_else(|| format!("the seal has no `{k}`"))?;
+            serde_json::to_vec(d).map_err(|e| e.to_string())
+        };
+        Ok((doc("keys")?, doc("targets")?))
+    })())
+}
+
+/// The version of the keys document a seal carries, unverified (for raising the accepted floor
+/// after the chain was verified).
+pub fn sealed_keys_version(signature: &str) -> Option<u64> {
+    let (keys, _) = read_seal(signature)?.ok()?;
+    let v: Value = serde_json::from_slice(&keys).ok()?;
+    v.get("signed")?.get("version")?.as_u64()
+}
