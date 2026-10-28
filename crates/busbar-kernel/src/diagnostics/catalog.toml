@@ -233,7 +233,7 @@ action = "If the model is intentionally free, ignore this. Otherwise fill in the
 [[diagnostic]]
 name = "CONFIG_PROVIDER_DESTINATION_REFUSED"
 doc = "A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade)."
-code = 3022
+code = 3025
 class = "Config"
 slug = "config-provider-destination-refused"
 title = "A provider URL names a private or loopback host the destination guard refuses"
