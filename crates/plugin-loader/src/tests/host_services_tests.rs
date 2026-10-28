@@ -53,9 +53,9 @@ impl Provider {
     }
 }
 
-/// Every service but `trust.sight`, which the trait's default refuses as unserved
+/// Every service but `trust.sight`, which the contract's shared double refuses as unserved
 /// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
-impl busbar_contract::services::HostServices for Provider {
+impl crate::services_double::ServicesDouble for Provider {
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
@@ -385,7 +385,7 @@ const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 /// The route half: records every wake.
 struct Route {
     store: Arc<ServiceStore>,
-    provider: Arc<Provider>,
+    provider: Arc<crate::services_double::Double<Provider>>,
     wakes: Mutex<Vec<Ticket>>,
 }
 

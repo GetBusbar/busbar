@@ -795,10 +795,10 @@ fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
 // ── a bound over the dial AND the handshake (VALKEY-TIMEOUT: 1.5.5 bounded both) ───────────────
 
 /// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest as
-/// an unserved host does (the trait's defaults).
+/// the contract's shared double does.
 struct ClockOnly;
 
-impl busbar_contract::services::HostServices for ClockOnly {
+impl crate::services_double::ServicesDouble for ClockOnly {
     fn now(&self) -> busbar_contract::services::Reading {
         busbar_contract::services::Reading {
             wall_ns: 0,
@@ -858,7 +858,7 @@ fn a_bound_covers_the_handshake_after_the_dial() {
     });
     let d = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::new(ClockOnly),
+        Arc::new(crate::services_double::Double(ClockOnly)),
     ));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
         Arc::new(TcpConns::new(d.conn_waker()));

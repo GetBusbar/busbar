@@ -137,23 +137,27 @@ only the current version of each kind.
 ## Testing against host services
 
 A test that runs your plugin under the loader hands it the host's services as a
-`busbar_contract::services::HostServices`. Every method of that trait has a default body that
-answers the way a host that does not serve it answers: REFUSED with `services::UNSERVED`, at once.
-The clock reads zero. Implement the trait for your test's own type and override only the services
-your test serves; a service the host adds later answers unserved without an edit. No feature is
-needed:
+`busbar_contract::services::HostServices`. Don't implement that trait by hand: the host adds services,
+and a hand-written double stops compiling at the next busbar pin. Use the test kit's double
+(`busbar-test-kit`, already a dev-dependency for the conformance suite).
+
+Implement `busbar_test_kit::services_double::ServicesDouble` and override only the services your test
+serves. Every other service answers the way a host that does not serve it answers: REFUSED with
+`services::UNSERVED`, at once. The clock reads zero. Wrap it in `Double` to hand it to the host:
 
 ```rust
+use busbar_test_kit::services_double::{Double, ServicesDouble};
 struct Clock;
-impl busbar_contract::services::HostServices for Clock {
+impl ServicesDouble for Clock {
     fn now(&self) -> Reading { Reading { wall_ns: 7, mono_ns: 7 } }
 }
-let services: Arc<dyn HostServices> = Arc::new(Clock);
+let services: Arc<dyn HostServices> = Arc::new(Double(Clock));
 ```
 
-A double that serves nothing is an empty `impl HostServices for X {}`. A test written against the
-pre-release `services::double::ServicesDouble` implements `HostServices` in its place and drops
-`"services-double"` from its `busbar-contract` dev-dependency features (the feature is gone).
+`Double` derefs to your type, so the test still reads its own state through the `Arc`. If you need a
+double that serves nothing, use `Double(Unserved)`. A test written against the pre-release
+`busbar_contract::services::double` switches to these paths and drops `"services-double"` from its
+`busbar-contract` dev-dependency features (the feature is gone).
 
 ## Packaging and signing
 

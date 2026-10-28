@@ -56,43 +56,25 @@ pub struct TrustKeyRef<'a> {
 
 /// THE HOST SERVICES, as the kernel implements them. The dispatcher holds one for every instance it
 /// adopts; each slot validates the caller's `in`, applies the mechanism's rules, and calls in here
-/// at most once per completion handle.
-///
-/// EVERY SERVICE DEFAULTS TO AN UNSERVED HOST'S ANSWER: REFUSED with [`UNSERVED`], at once (its
-/// [`Later`] dropped, never called), and the clock reads zero. An implementor (the kernel, a test's
-/// host) overrides only what it serves; that the kernel serves every service is its own behaviour
-/// test (`busbar-kernel` `host_services_tests`), which walks `abi::host::service::SERVICES`.
+/// at most once per completion handle. Every service is required, with no default body (spec
+/// #38(a)): an implementor that does not serve one says so in its own body, never by inheriting.
 pub trait HostServices: Send + Sync {
     /// `clock.now`: the kernel's one clock. Never pends.
-    fn now(&self) -> Reading {
-        Reading {
-            wall_ns: 0,
-            mono_ns: 0,
-        }
-    }
+    fn now(&self) -> Reading;
 
     /// `dest.judge`: judge `dest` against egress class `class`'s rules; `flags` = the caller's
     /// `DEST_RESOLVE` | `DEST_REFUSE_PRIVATE` | `DEST_EXPLAIN`. Answers [`Ran::Now`] with a `DEST_*` verdict (or REFUSED for an unknown
     /// class), or hands `later` on and answers [`Ran::Later`]. `later` is `None` only for a call
     /// that may not pend, which never reaches here for this service.
-    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
-        let _ = (dest, class, flags, later);
-        unserved()
-    }
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran;
 
     /// `records.get`: `caller`'s record of `kind` under `key`, its own queued writes first.
     /// READY `FOUND` with span `0`'s value the record, or READY `ABSENT`.
-    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        let _ = (caller, kind, key, later);
-        unserved()
-    }
+    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran;
 
     /// `records.list`: `caller`'s records of `kind` under `prefix`, after `after`, in key order, at
     /// most `limit` (`0` = as many as one answer carries); one span per record, key and value.
-    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        let _ = (caller, list, later);
-        unserved()
-    }
+    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran;
 
     /// `records.claim`: put `key` of `kind` if absent, standing `ttl_ms` (never `0`). READY
     /// `CLAIM_WON` or `CLAIM_TAKEN`.
@@ -103,34 +85,26 @@ pub trait HostServices: Send + Sync {
         key: &[u8],
         ttl_ms: u64,
         later: Later,
-    ) -> Ran {
-        let _ = (caller, kind, key, ttl_ms, later);
-        unserved()
-    }
+    ) -> Ran;
 
     /// `sign`: sign `data` under `caller`'s declared signing domain. Span `0`: key = the key id,
     /// value = the signature. Never pends.
-    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
-        let _ = (caller, data);
-        Stored::refused(UNSERVED)
-    }
+    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored;
 
     /// `trust.sight`: judge `hash`, the catalogue `counterparty` reports, against the kernel's trust
     /// state. READY with a `TRUST_*` verdict.
-    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        let _ = (caller, counterparty, hash, later);
-        unserved()
-    }
+    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
     /// `trust.sight` with `TRUST_UNREACHABLE`: the plane could not reach `counterparty`. READY with
-    /// the LAST `TRUST_*` verdict, nothing changed. Never pends.
+    /// the LAST `TRUST_*` verdict, nothing changed. Never pends. Unserved by default.
     fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
         let _ = (caller, counterparty);
         Stored::refused(UNSERVED)
     }
 
     /// `trust.sight_item`: record the digest `item` of `counterparty` is offered at now (the
-    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends.
+    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends. Unserved by
+    /// default.
     fn trust_sight_item(
         &self,
         caller: &Caller,
@@ -145,7 +119,7 @@ pub trait HostServices: Send + Sync {
     /// `trust.decide`: the operator's decision (`approve`, at `expected` when stated) about the
     /// calling instance's trust key `counterparty` (`item`: one item there), through the plane's
     /// own administrative verb. READY with the `TRUST_DECIDED_*` verdict after it, or an
-    /// `UNDECIDED_*`. Never pends.
+    /// `UNDECIDED_*`. Never pends. Unserved by default.
     fn trust_decide(
         &self,
         caller: &Caller,
@@ -158,7 +132,8 @@ pub trait HostServices: Send + Sync {
     }
 
     /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
-    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends.
+    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends. Unserved by
+    /// default.
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
         let _ = (caller, counterparty);
         Stored::refused(UNSERVED)
@@ -166,7 +141,7 @@ pub trait HostServices: Send + Sync {
 
     /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
     /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
-    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends.
+    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.
     fn trust_serves(
         &self,
         caller: &Caller,
@@ -180,10 +155,7 @@ pub trait HostServices: Send + Sync {
 
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
     /// span each (key = the counterparty), drained. Never pends.
-    fn trust_due(&self, caller: &Caller) -> Stored {
-        let _ = caller;
-        Stored::refused(UNSERVED)
-    }
+    fn trust_due(&self, caller: &Caller) -> Stored;
 
     /// `trust.verify`: verify `signatures` (a JSON array as the document wrote it; empty = none)
     /// over `payload` against the root key `caller`'s declared pin names for `counterparty`. READY
@@ -194,18 +166,12 @@ pub trait HostServices: Send + Sync {
         counterparty: &str,
         payload: &[u8],
         signatures: &[u8],
-    ) -> Stored {
-        let _ = (caller, counterparty, payload, signatures);
-        Stored::refused(UNSERVED)
-    }
+    ) -> Stored;
 
     /// `entitlement.check`: whether the principal of `unit` (the unit the calling crossing
     /// serves, `None` for a crossing that serves none) is entitled to `target`,
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        let _ = (caller, unit, target);
-        Stored::refused(UNSERVED)
-    }
+    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored;
 
     /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session`, outside
     /// any unit: READY with nothing written back. A session that is not open, or not `caller`'s,
@@ -218,29 +184,20 @@ pub trait HostServices: Send + Sync {
 
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
-    fn random_fill(&self, len: u64) -> Stored {
-        let _ = len;
-        Stored::refused(UNSERVED)
-    }
+    fn random_fill(&self, len: u64) -> Stored;
 
     /// `records.secret`: the secret of the host-held credential `id` of `kind`, and whether it is
     /// live (`SECRET_LIVE`), in span `0`; an unknown id answers a fixed dummy secret, not live, in
     /// equal time. The loader has already checked that the caller declared `kind`. A host with no
     /// credential source refuses.
-    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
-        let _ = (kind, id, later);
-        unserved()
-    }
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran;
 
     /// `unit.nest`: run `ask` as a nested unit, a child of `unit` (the unit the calling crossing
     /// serves; `None` = it serves none, REFUSED): under its principal, its scope and its admission
     /// chain, depth-capped, on whatever serves the claim `ask` names. READY with the child's status
     /// as `value`, span `0`'s value its body and each span after it one head field. The kernel never
     /// learns what the child is.
-    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        let _ = (caller, unit, ask, later);
-        unserved()
-    }
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran;
 
     /// `work.open`: open a durable work handle of `kind` (a record kind `caller` declared) for the
     /// principal of `unit`, with `record`. READY with the handle, span `0`'s key its reference.
@@ -251,18 +208,12 @@ pub trait HostServices: Send + Sync {
         kind: &str,
         record: &[u8],
         later: Later,
-    ) -> Ran {
-        let _ = (caller, unit, kind, record, later);
-        unserved()
-    }
+    ) -> Ran;
 
     /// `work.find`: the handle `reference` names, within `caller` and the principal of `unit`.
     /// Every denial is READY `ABSENT` with nothing written; found, READY with the handle, span
     /// `0`'s key the state byte and its value the record.
-    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
-        let _ = (caller, unit, reference, later);
-        unserved()
-    }
+    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran;
 
     /// `work.settle`: settle `caller`'s live handle `handle` with its final `record`, from a
     /// crossing serving `unit`. While a unit the handle was opened or resumed by is still in flight,
@@ -275,26 +226,17 @@ pub trait HostServices: Send + Sync {
         handle: u64,
         record: &[u8],
         later: Later,
-    ) -> Ran {
-        let _ = (caller, unit, handle, record, later);
-        unserved()
-    }
+    ) -> Ran;
 
     /// `work.resume`: bind `caller`'s handle `handle` to `unit`, whose principal must be the one the
     /// handle recorded. READY `0`, span `0`'s key the state byte and its value the record.
-    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
-        let _ = (caller, unit, handle, later);
-        unserved()
-    }
+    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran;
 
     /// `disk.append` (THE DESIGN, the host's bounded disk lane): append `bytes` to the
     /// file `dest` names, rotating it first when `dest` says it is due, OFF the caller's thread,
     /// and hand the [`DiskReport`] (as [`DiskReport::stored`]) to `later`. The loader has already
     /// mapped the caller's destination key to `dest`. A host with no disk lane refuses.
-    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        let _ = (dest, bytes, later);
-        unserved()
-    }
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran;
 
     // THE APPEND ORDER IS THE LANDING ORDER (ARCHITECT H9): a later lander carries every service
     // above and appends its own below.
@@ -304,52 +246,27 @@ pub trait HostServices: Send + Sync {
     /// `verify.store`s); or, while another caller leads, the answer pends until the leader stores
     /// and is READY `VERIFY_FOLLOW` with the leader's entry in span `0` (a leader that never
     /// stores loses its lead, and a follower is handed it as `VERIFY_LEAD`).
-    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
-        let _ = (caller, key, later);
-        unserved()
-    }
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran;
 
     /// `verify.store`: store `entry` under `key` in `caller`'s verify cache for `ttl_ms` (`0` = the
     /// host's default), ending any lead on it and answering its followers. READY `0`. Never pends.
-    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
-        let _ = (caller, key, entry, ttl_ms);
-        Stored::refused(UNSERVED)
-    }
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored;
 
     /// `content.scan`: pass `content` through the gates the unit `unit` (the unit the calling
     /// crossing serves; `None` = it serves none, REFUSED) binds. READY `CONTENT_PASS` or
     /// `CONTENT_BLOCK`; the bytes, when written, the content as a gate rewrote it.
-    fn content_scan(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        content: &[u8],
-        later: Later,
-    ) -> Ran {
-        let _ = (caller, unit, content, later);
-        unserved()
-    }
+    fn content_scan(&self, caller: &Caller, unit: Option<u64>, content: &[u8], later: Later)
+        -> Ran;
 
     /// `hook.call`: run `ask` over the hook stage the unit `unit` binds (`None` = the crossing
     /// serves none, REFUSED), pinned to the generation it was bound under. READY with the stage's
     /// `value` (`HookCallIn`'s), the bytes a rewrite or a stopping hook's words.
-    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
-        let _ = (caller, unit, ask, later);
-        unserved()
-    }
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran;
 
     /// `snapshot.read`: the host's metric families of `scope` (`abi::host::service`'s
     /// `SNAPSHOT_SCOPE_*`, a kind-neutral argument), lent only to the crossing the host granted
     /// them; the loader lays them out in the caller's buffer. Never pends.
-    fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot {
-        let _ = (caller, scope);
-        Snapshot::Refused(UNSERVED)
-    }
-}
-
-/// An unserved may-pend service's answer: REFUSED [`UNSERVED`], at once.
-fn unserved() -> Ran {
-    Ran::Now(Stored::refused(UNSERVED))
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot;
 }
 
 /// A `hook.call` request, as the host copied it out of the caller's `in` (validated:

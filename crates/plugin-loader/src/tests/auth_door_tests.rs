@@ -1032,7 +1032,7 @@ mod ticketed {
         served: AtomicU64,
     }
 
-    impl busbar_contract::services::HostServices for SlowSecrets {
+    impl crate::services_double::ServicesDouble for SlowSecrets {
         fn records_secret(&self, kind: &str, id: &str, done: Later) -> Ran {
             assert_eq!(kind, KIND, "the host serves only the declared kind");
             self.served.fetch_add(1, Ordering::SeqCst);
@@ -1058,7 +1058,7 @@ mod ticketed {
         }
     }
 
-    fn opened(double: Arc<SlowSecrets>) -> Arc<dyn AuthCalls> {
+    fn opened(double: Arc<crate::services_double::Double<SlowSecrets>>) -> Arc<dyn AuthCalls> {
         let registry = PluginRegistry::empty()
             .link(vec![LinkedPlugin::auth_door("proves", door::door)])
             .expect("the linked door registers");
@@ -1092,7 +1092,7 @@ mod ticketed {
     /// secret could not be read at all.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_ticketed_verify_pends_on_records_secret_and_resumes_ready() {
-        let double = Arc::new(SlowSecrets::default());
+        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
         let a = opened(double.clone());
         let request = lent("AKID:open-sesame");
         assert_eq!(
@@ -1122,7 +1122,7 @@ mod ticketed {
     /// error, never a short cut.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_id_pends_and_resumes_on_the_same_path_and_is_rejected() {
-        let double = Arc::new(SlowSecrets::default());
+        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
         let a = opened(double.clone());
         let request = lent("NOBODY:dummy-secret-0000");
         assert_eq!(
@@ -1143,7 +1143,7 @@ mod ticketed {
     /// host services: the judge answers on the spot and submitted, reading no service.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sync_verify_plugin_still_answers_on_the_spot_and_submitted() {
-        let double = Arc::new(SlowSecrets::default());
+        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
         let registry = PluginRegistry::empty()
             .link(vec![LinkedPlugin::auth_door("judge", super::judge::door)])
             .expect("the linked door registers");

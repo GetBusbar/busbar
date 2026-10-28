@@ -114,7 +114,10 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::auth::{FieldKind, LoginOutcome};
-use busbar_contract::services::{HostServices, Later, Ran, Reading, Stored};
+use busbar_contract::services::{
+    Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored, UNSERVED,
+};
 
 mod outbound;
 
@@ -638,6 +641,10 @@ impl CredentialHost {
     }
 }
 
+fn unserved() -> Ran {
+    Ran::Now(Stored::refused(UNSERVED))
+}
+
 impl HostServices for CredentialHost {
     fn now(&self) -> Reading {
         let wall = std::time::SystemTime::now()
@@ -647,6 +654,69 @@ impl HostServices for CredentialHost {
             wall_ns: wall,
             mono_ns: now_ns(),
         }
+    }
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
+        unserved()
+    }
+    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        unserved()
+    }
+    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
+        unserved()
+    }
+    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        unserved()
+    }
+    fn trust_due(&self, _: &Caller) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn random_fill(&self, _: u64) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        unserved()
+    }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        unserved()
+    }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
+        unserved()
+    }
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        unserved()
+    }
+    fn snapshot_read(&self, _: &Caller, _: u32) -> Snapshot {
+        Snapshot::Refused(UNSERVED)
     }
     fn records_secret(&self, kind: &str, id: &str, _: Later) -> Ran {
         self.reads.fetch_add(1, Ordering::SeqCst);
