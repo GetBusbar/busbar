@@ -2895,17 +2895,16 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => kernel.with_records(
-                Arc::new(StoreRows(Arc::clone(&store))),
-                Arc::clone(&store) as _,
-            ),
-            Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
+            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(Arc::clone(&store)))),
+            Ledger::Store(claims) => {
+                kernel.with_records(Arc::new(ClaimsIn(Arc::new(Rows::default()), claims)))
+            }
             Ledger::Rows(rows, max_live) => kernel
                 .with_work_bounds(busbar_kernel::host_work::WorkBounds {
                     max_live,
                     ..Default::default()
                 })
-                .with_records(rows, Arc::clone(&store) as _),
+                .with_records(Arc::new(ClaimsIn(rows, Arc::clone(&store) as _))),
             Ledger::Unbound => kernel,
         });
         let late = crate::root::serve::LateServices::new();
@@ -3214,16 +3213,13 @@ pub(crate) mod tool_door {
     impl busbar_kernel::host_records::RecordRows for StoreRows {
         fn claim(
             &self,
+            kind: &str,
             token: &str,
             expires_at: u64,
             now: u64,
         ) -> Result<bool, busbar_contract::kinds::StoreError> {
             busbar_contract::records::RecordStore::redeem_plane_token(
-                &*self.0,
-                busbar_kernel::host_records::CLAIM_KIND,
-                token,
-                expires_at,
-                now,
+                &*self.0, kind, token, expires_at, now,
             )
             .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
         }
@@ -3258,6 +3254,59 @@ pub(crate) mod tool_door {
         }
     }
 
+    /// `rows`, every claim but a chained record's position claim redeemed in `claims`: a node whose
+    /// typed records are its own and whose claims are the deployment's.
+    struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
+
+    impl busbar_kernel::host_records::RecordRows for ClaimsIn {
+        fn claim(
+            &self,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            if kind == busbar_kernel::host_records::CLAIM_KIND {
+                return busbar_kernel::host_records::RecordRows::claim(
+                    &*self.0, kind, token, expires_at, now,
+                );
+            }
+            busbar_contract::records::RecordStore::redeem_plane_token(
+                &*self.1, kind, token, expires_at, now,
+            )
+            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+        }
+        fn record_put(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+            value: &busbar_contract::kinds::RecordBytes,
+        ) -> Result<(), busbar_contract::kinds::StoreError> {
+            busbar_kernel::host_records::RecordRows::record_put(&*self.0, schema, key, value)
+        }
+
+        fn record_get(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
+        {
+            busbar_kernel::host_records::RecordRows::record_get(&*self.0, schema, key)
+        }
+
+        fn record_scan(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            prefix: &[u8],
+            limit: u32,
+        ) -> Result<
+            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+            busbar_contract::kinds::StoreError,
+        > {
+            busbar_kernel::host_records::RecordRows::record_scan(&*self.0, schema, prefix, limit)
+        }
+    }
+
     /// Typed record rows in memory: the store kind's record slots, for the records services; and
     /// how many writes of a settled work handle the store refuses next.
     #[derive(Default)]
@@ -3275,6 +3324,7 @@ pub(crate) mod tool_door {
         /// One writer in this test: every claim is the first.
         fn claim(
             &self,
+            _kind: &str,
             _token: &str,
             _expires_at: u64,
             _now: u64,
