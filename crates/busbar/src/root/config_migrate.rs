@@ -430,9 +430,18 @@ impl MigrateHost for RootHost {
             .unwrap_or_default();
         // The catalog boot reads: `--providers` > `providers_file:` (beside the config) > the
         // `providers.yaml` beside the config.
-        let path = crate::root::cli::providers_override().unwrap_or_else(|| {
-            dir.join(self.providers_file.as_deref().unwrap_or("providers.yaml"))
-        });
+        // Read as boot reads it, without saying anything: boot already warns about the deprecated
+        // variable, and `--migrate-config`'s output stays the one 1.5.5 printed.
+        let path = crate::root::cli::value_flag(std::env::args().skip(1), "--providers", None)
+            .or_else(|| {
+                std::env::var(busbar_kernel::ENV_PROVIDERS)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            })
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dir.join(self.providers_file.as_deref().unwrap_or("providers.yaml"))
+            });
         let Ok(raw) = std::fs::read_to_string(&path) else {
             return Ok(None);
         };
