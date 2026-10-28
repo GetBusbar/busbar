@@ -69,7 +69,7 @@ What carries over without the migration doing anything:
   effects, so running the 1.6.0 binary's `--validate` in CI tells you before you deploy whether it
   will start. The cases it cannot see are marked in the list at the end of this page.
 - **Your log pipeline.** Plugins write their own log files, and every plugin warning and error is
-  also a line of busbar's own log, tagged with the plugin's name.
+  also a line of busbar's own log, written as 1.5.5 wrote it.
 
 The full step-by-step guide is [Migrating from 1.5.x to 1.6.0](migration-1.6.md).
 
@@ -232,7 +232,7 @@ migration does about it.
 | A `file:` secret that is a directory, device or pipe is refused. | Point it at a regular file. | No. |
 | A signed-in user that your role bindings grant nothing is refused (401). 1.5.5 let such users through with no pool limits and no budget. | Review the binding the migration wrote and tighten it. | Yes, `--migrate-config` writes `role_bindings.<provider>."*": {}` (every pool, no budget) with a warning. |
 | An identity provider reached by a DNS name whose discovery or key URL redirects to a private address fails sign-in. `--validate` does not catch this. | Point the issuer at the address it finally serves from. | No. |
-| Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). | Nothing: every plugin warning and error is also a line of busbar's own log, tagged with the plugin. Add the directory to your log collection for the rest. | Yes. |
+| Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). | Nothing: every plugin warning and error is also a line of busbar's own log, as in 1.5.5. Add the directory to your log collection for the rest. | Yes. |
 
 ### Behaviour you might see, with nothing to change
 
