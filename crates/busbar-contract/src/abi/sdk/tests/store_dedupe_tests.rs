@@ -7,8 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use sha2::{Digest as _, Sha256};
-
+// `Sha256` and its `Digest` methods come with the module's own imports.
 use super::*;
 use crate::abi::store::OpId;
 use crate::records::{
