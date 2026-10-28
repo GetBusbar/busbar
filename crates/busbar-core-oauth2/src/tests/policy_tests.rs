@@ -23,7 +23,7 @@ use crate::config::{AsIdentity, OauthAsCfg};
 use crate::plane::AsPlane;
 
 /// A plane with the operator's ceiling set to `grant`. Registration needs no turning on: the
-/// 1.6.0 ruling is that it is on whenever the plane is.
+/// rule is that it is on whenever the plane is.
 fn plane(grant: &[&str]) -> AsPlane {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
@@ -158,7 +158,7 @@ async fn a_client_that_names_itself_after_the_deployment_is_refused() {
 
 /// REGISTRATION IS ON WHENEVER THE PLANE IS. THE FLIPPED PROOF: this test used to pin the
 /// opposite — registration absent-not-refusing when the operator left the toggle off — and the
-/// 1.6.0 ruling deleted the toggle, so the same three layers are now pinned in the ON direction:
+/// toggle was deleted, so the same three layers are now pinned in the ON direction:
 /// the derived path exists, the metadata document advertises the endpoint (`oauth-as` routes from
 /// that document, so an unadvertised endpoint would be an unrouted path), and a registration with
 /// no asked-for scope is ADMITTED under an untouched (empty-by-default is exercised above) ceiling.
@@ -199,7 +199,7 @@ async fn registration_is_on_whenever_the_plane_is() {
         .expect("registration is one of the three always-on mechanisms and must admit a client");
 }
 
-/// RED (row 159): open registration is throttled. Before the fix no limiter was installed, so
+/// Open registration is throttled. Before the fix no limiter was installed, so
 /// `oauth-as` allowed every unauthenticated registration and each wrote a client nothing reclaimed.
 /// The shipped budget is 60 registrations a window, globally.
 #[tokio::test]
@@ -223,7 +223,7 @@ async fn open_registration_is_throttled() {
     );
 }
 
-/// RED (row 159): a self-registered client that has held nothing for the idle period is reclaimed
+/// A self-registered client that has held nothing for the idle period is reclaimed
 /// by the sweep, in this process's records. Before the fix a registered client was never deleted.
 /// One that still holds a live refresh token is kept, and so is a client nobody registered.
 #[tokio::test]

@@ -82,11 +82,11 @@ pub mod hooks;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
-pub mod legacy;
 pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
 pub mod migration;
+pub mod migration_table;
 pub mod model_egress;
 pub mod observe;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven
