@@ -2241,27 +2241,28 @@ fn env_var_guard_restores_on_panic() {
     std::env::remove_var(KEY);
 }
 
-/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
-/// `test-groups-module` is exempt ONLY when `is_test_build` is true — in a release build it must
-/// be treated as a real (unresolvable) plugin ref, so `--validate` fails it the same way real boot
-/// does, rather than silently agreeing a config naming it is fine. Every other name is always a
-/// real ref regardless of build flavor.
+/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin). A module
+/// the build's auth axis answers in process is exempt ONLY when the install record says so — with
+/// no such answer (every shipped build) it is a real (unresolvable) plugin ref, so `--validate` fails
+/// it the same way real boot does, rather than silently agreeing a config naming it is fine. Every
+/// other name is always a real ref.
 #[test]
-fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_test_builds() {
-    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, true));
-    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, false));
+fn is_real_auth_plugin_ref_exempts_keys_always_and_in_process_modules_only_where_answered() {
+    let none: fn(&str) -> bool = |_| false;
+    let test_modules: fn(&str) -> bool = crate::test_support::auth_modules::answers;
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, test_modules));
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, none));
     assert!(
-        !is_real_auth_plugin_ref("test-groups-module", true),
-        "exempt in a test build, matching AuthMiddleware::new's #[cfg(test)] arm"
+        !is_real_auth_plugin_ref("test-groups-module", test_modules),
+        "exempt where the build's auth axis answers it in process"
     );
     assert!(
-        is_real_auth_plugin_ref("test-groups-module", false),
-        "must NOT be exempt in a release build - it isn't a real registered module there, so a \
-         release config naming it must be treated as a real (and therefore unresolvable) plugin \
-         ref, not silently waved through"
+        is_real_auth_plugin_ref("test-groups-module", none),
+        "must NOT be exempt where nothing answers it in process - a release config naming it must \
+         be treated as a real (and therefore unresolvable) plugin ref, not silently waved through"
     );
-    assert!(is_real_auth_plugin_ref("test-idp-double", true));
-    assert!(is_real_auth_plugin_ref("test-idp-double", false));
+    assert!(is_real_auth_plugin_ref("test-idp-double", test_modules));
+    assert!(is_real_auth_plugin_ref("test-idp-double", none));
 }
 
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
