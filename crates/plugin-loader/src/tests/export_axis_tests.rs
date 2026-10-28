@@ -237,6 +237,36 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
     assert_eq!(after, 1, "a delivery after it never says it again");
 }
 
+/// RED (export ABI defect 3): `check` runs on the first instance whose settings open. Before, it
+/// opened only on the first instance's settings, and when those did not open every finding across
+/// the instances was dropped: here, the second scrape sink's refusal.
+#[test]
+fn check_runs_when_the_first_instance_does_not_open() {
+    let row = "export-scrape";
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(
+            manifest(row),
+            both_ways::export_scrape_fixture::door::door,
+        )])
+        .expect("the linked door admits the sink");
+    let rows = ExportRows::new(&registry, dispatcher());
+    let findings = rows
+        .check(
+            row,
+            busbar_contract::abi::export::CHECK_PHASE_LIMITS,
+            &[
+                ("metrics".into(), serde_json::json!({ "bogus": 1 })),
+                ("second".into(), serde_json::json!({ "buffer_seconds": 60 })),
+            ],
+        )
+        .expect("an export row");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(
+        findings[0].starts_with("export.second: a second `module: "),
+        "{findings:?}"
+    );
+}
+
 /// A module no `kind: export` row answers is not the axis's (`None`), and opening it is refused
 /// naming it.
 #[test]

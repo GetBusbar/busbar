@@ -204,9 +204,9 @@ impl PluginLogConfig {
         self.current().level_for(instance)
     }
 
-    /// The file `instance` logs to.
-    pub fn path_for(&self, instance: &str) -> PathBuf {
-        self.current().dir.join(file_name(instance))
+    /// The file `instance`, of `kind`, logs to.
+    pub fn path_for(&self, instance: &str, kind: KindCode) -> PathBuf {
+        self.current().dir.join(file_name(instance, kind))
     }
 
     /// This configuration's own words.
@@ -286,7 +286,7 @@ impl PluginLogConfig {
             sinks.push(Arc::downgrade(&admit));
             (admit, words)
         };
-        let name = file_name(instance);
+        let name = file_name(instance, kind);
         let path = words.dir.join(&name);
         let tag = Arc::new(Tag {
             instance: instance.to_string(),
@@ -323,10 +323,23 @@ impl PluginLogConfig {
     }
 }
 
-/// The file name `instance` logs to: the name with every byte outside `[A-Za-z0-9._-]` written as
-/// `_`, then `.log`.
-fn file_name(instance: &str) -> String {
-    let stem: String = instance
+/// The file name `instance`, of `kind`, logs to: `<section>.<instance>`, the kind's config section
+/// before the instance name (instance names are unique only within a kind, so a store and an auth
+/// provider may share one), with every byte outside `[A-Za-z0-9._-]` written as `_`, then `.log`.
+/// A name that already carries its section (`export.metrics`) is not prefixed twice; a plane's
+/// instance is its own section (its verb).
+fn file_name(instance: &str, kind: KindCode) -> String {
+    let qualified = match crate::boot::kind_of(kind).root_key() {
+        Some(section)
+            if !instance
+                .strip_prefix(section)
+                .is_some_and(|rest| rest.starts_with('.')) =>
+        {
+            format!("{section}.{instance}")
+        }
+        _ => instance.to_string(),
+    };
+    let stem: String = qualified
         .bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') {

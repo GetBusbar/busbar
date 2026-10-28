@@ -25,14 +25,14 @@ use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
 /// The 1.5.x store-module text this migration and its refusals print, read off the ROOT LEGACY
-/// TABLE the composition root hands in ([`crate::config::legacy`]; moved from
+/// TABLE the composition root hands in ([`crate::config::migration_table`]; moved from
 /// `data/legacy_store_modules.toml`): frozen text naming store backends no crate in the kernel
 /// declares, each row citing the v1.5.5 line it is verbatim from in `plugins.yaml`. Among them
 /// `gov14_db_path`, 1.4.x's real default `governance.db_path` (`DEFAULT_GOVERNANCE_DB` in the
 /// retired v1.4.1 schema): migration reproduces that exact default, so a config that omitted
 /// `db_path` still finds its real, existing database file after migration.
 pub fn legacy_store_text(key: &str) -> &'static str {
-    crate::config::legacy::text(key)
+    crate::config::migration_table::text(key)
 }
 
 /// The named boot error for a detected 1.x config. Every marker is listed so the operator
@@ -141,14 +141,14 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // 1.x REGISTRY (a transport entry, or any entry lacking `module:`) still LOUD-FAILS here,
     // because booting it under 1.5.x rules would silently drop the retired transport.
     // `is_new_hook_defs` is the SAME shape check the migrator uses to stay idempotent, so the two
-    // cannot drift. The URL transport's key is the root legacy table's (`hook_1x_url_transport`).
+    // cannot drift. The URL transport's key is the root migration table's (`hook_1x_url_transport`).
     if let Some(Value::Mapping(hooks)) = get(root, Kind::Hook.root()) {
         if !is_new_hook_defs(&hooks) {
             markers.push(format!(
                 "top-level `hooks:` REGISTRY block with legacy socket:/{}: entries (1.x \
                  transports removed; a 1.5.3 `hooks:` DEFINITION entry names a `module:` — a \
                  `kind: hook` plugin — and carries `groups:`/`phase:` scope)",
-                super::legacy::text("hook_1x_url_transport")
+                super::migration_table::text("hook_1x_url_transport")
             ));
         }
     }
@@ -163,7 +163,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         );
     }
     // 1.5.3 observability→export lift-out: the top-level `metrics:` block and the request-log
-    // `observability.*` keys (the root legacy table's `observability_log_keys`) are RETIRED into the
+    // `observability.*` keys (the root migration table's `observability_log_keys`) are RETIRED into the
     // exporters. An un-migrated config carrying any of them LOUD-FAILS here (before the typed parse)
     // with the migrate breadcrumb, so a lifted-out sink is never silently lost. Uses the SHARED
     // `crate::config::retired_observability_keys` table so the marker, the migrator, and the
@@ -172,7 +172,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         markers.push(format!(
             "top-level `metrics:` block (retired 1.5.3 → export.{}.settings.{{buffer_seconds, \
              key_gauge_limit}})",
-            super::legacy::text("metrics_type_key")
+            super::migration_table::text("metrics_type_key")
         ));
     }
     if let Some(obs) = get(root, "observability").and_then(|v| v.as_mapping().cloned()) {
@@ -201,7 +201,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         markers.push(format!(
             "top-level `observability:` block (DELETED 1.5.3 → {}); all telemetry egress is now the \
              single `export:` surface",
-            retired_home(super::legacy::text("observability_trace_key"))
+            retired_home(super::migration_table::text("observability_trace_key"))
         ));
     }
     // The boot-guard flag inverted.
@@ -261,12 +261,12 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // backend": nothing in the renamed artifact's manifest matches it, so the store the operator
     // asked for simply does not exist and boot dies on the loader's generic "does not match any
     // plugin", which names neither the rename nor the fix. Caught HERE instead, with the named
-    // marker + the migrate breadcrumb. Driven by the ONE rewrite over the root legacy table
-    // (`legacy::rewrite_retired`, here without applying) so this marker and `migrate_store_module`'s
+    // marker + the migrate breadcrumb. Driven by the ONE rewrite over the root migration table
+    // (`migration_table::rewrite_retired`, here without applying) so this marker and `migrate_store_module`'s
     // rewrite cannot drift over WHICH spellings are retired.
     if let Some(mut store) = get(root, Kind::Store.root()).and_then(|v| v.as_mapping().cloned()) {
         if let Some((module, alias)) =
-            crate::config::legacy::rewrite_retired(Kind::Store.root(), &mut store, false)
+            crate::config::migration_table::rewrite_retired(Kind::Store.root(), &mut store, false)
         {
             markers.push(format!(
                 "`store.module: {module}` (RENAMED 1.5.3 → `{alias}`; the first-party store plugin \
@@ -343,6 +343,20 @@ pub struct MigrateOutput {
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
+    migrate_config_with(raw, &super::migrate_plugins::NoPlugins)
+}
+
+/// [`migrate_config`], then every configured plugin's own migration of its settings section
+/// through `host` (the composition root's: it loads each plugin's current build and asks the
+/// release index which release matches this core), applying only the needs a plugin raises against
+/// core's keys and printing every report line under the plugin's name
+/// ([`super::migrate_plugins`]).
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+pub fn migrate_config_with(
+    raw: &str,
+    host: &dyn super::migrate_plugins::MigrateHost,
+) -> Result<MigrateOutput, String> {
     let doc: Value =
         serde_yaml::from_str(raw).map_err(|e| format!("input is not valid YAML: {e}"))?;
     let Value::Mapping(mut root) = doc else {
@@ -405,6 +419,16 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // cadence, default 6h) becomes `verify_ttl:` (max verification staleness on the `tools/call` path,
     // default 5s). A pure key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
     migrate_tools_verify_ttl(&mut root, &mut changes, &mut warnings);
+    // EACH PLUGIN MIGRATES ITS OWN SETTINGS: after every core step above has settled where a
+    // plugin's section sits, and before nothing else reads one.
+    super::migrate_plugins::migrate(
+        &mut root,
+        host,
+        &mut super::migrate_plugins::Ledger {
+            changes: &mut changes,
+            todos: &mut todos,
+        },
+    );
     // 1.6.0 Q-STORE = (B): `store:` is required. Runs LAST, after `migrate_governance` lifted a
     // 1.4.x `governance:` database into `store:`, so only a config that still names no store gains
     // the one 1.5.x ran it on.
@@ -1479,7 +1503,7 @@ fn at_to_phase(at: &Value) -> Option<Value> {
 /// entry — either a 1.x REGISTRY entry (a URL or `socket:` transport) or a 1.5.0/1.5.2 INLINE ref
 /// (`{ module: … }`). `module:` is derived (the URL transport → the module of the same word +
 /// `settings.url`, socket→`socket`+`settings.path`, else the entry's own `module:`/`plugin:`); the
-/// URL transport's word is the root legacy table's `hook_1x_url_transport` row (frozen 1.5.5 text:
+/// URL transport's word is the root migration table's `hook_1x_url_transport` row (frozen 1.5.5 text:
 /// the kernel names no hook plugin). The tap `at:` becomes the renamed `phase:` list; the retired
 /// `global:`/`default:`/`signals:` flags are dropped with a todo. Total: an unrecognized shape
 /// still yields a best-effort def.
@@ -1487,7 +1511,7 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
     let m = entry.as_mapping().cloned().unwrap_or_default();
     let mut def = Mapping::new();
     let mut settings = as_map(m.get(Value::from("settings")).cloned().unwrap_or_default());
-    let url_transport = super::legacy::text("hook_1x_url_transport");
+    let url_transport = super::migration_table::text("hook_1x_url_transport");
     if let Some(url) = m
         .get(Value::from(url_transport))
         .filter(|_| !url_transport.is_empty())
@@ -1567,7 +1591,9 @@ fn is_new_hook_defs(hooks: &Mapping) -> bool {
                     .and_then(|v| v.as_str())
                     .is_some_and(|s| !s.trim().is_empty())
                     && !em.contains_key(Value::from("socket"))
-                    && !em.contains_key(Value::from(super::legacy::text("hook_1x_url_transport")))
+                    && !em.contains_key(Value::from(super::migration_table::text(
+                        "hook_1x_url_transport",
+                    )))
             })
         })
 }
@@ -2015,8 +2041,8 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
         return;
     };
     let (old, new) = (
-        super::legacy::text("observability_trace_key_1_4"),
-        super::legacy::text("observability_trace_key"),
+        super::migration_table::text("observability_trace_key_1_4"),
+        super::migration_table::text("observability_trace_key"),
     );
     if old.is_empty() || new.is_empty() {
         return;
@@ -2028,7 +2054,7 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
 }
 
 /// 1.5.3 observability→export lift-out: mechanically rewrite the retired request-log
-/// `observability.*` keys (the root legacy table's `observability_log_keys`: retired key → its
+/// `observability.*` keys (the root migration table's `observability_log_keys`: retired key → its
 /// settings key) → `export.<observability_log_type_key>.settings.*`, and the top-level `metrics:`
 /// block → `export.<metrics_type_key>.settings.*`. Because the 1.5.5 exporters were BUILT-IN (not
 /// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
@@ -2053,7 +2079,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     // (a) the request-log keys off `observability:`.
     let mut log_settings = Mapping::new();
     if let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) {
-        for (old, leaf) in super::legacy::pairs("observability_log_keys") {
+        for (old, leaf) in super::migration_table::pairs("observability_log_keys") {
             if let Some(v) = take(obs, old) {
                 log_settings.insert(leaf.into(), v);
             }
@@ -2069,14 +2095,14 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         let mut body = Mapping::new();
         body.insert("settings".into(), Value::Mapping(log_settings));
         export_mut(root).insert(
-            super::legacy::text("observability_log_type_key").into(),
+            super::migration_table::text("observability_log_type_key").into(),
             Value::Mapping(body),
         );
-        changes.push(super::legacy::text("observability_log_change").into());
+        changes.push(super::migration_table::text("observability_log_change").into());
     }
 
     // (b) the top-level `metrics:` block -> export.<metrics_type_key>.settings.
-    let metrics_type_key = super::legacy::text("metrics_type_key");
+    let metrics_type_key = super::migration_table::text("metrics_type_key");
     let removed_metrics = root.remove(Value::from("metrics"));
     if let Some(Value::Mapping(mut metrics)) = removed_metrics {
         let mut settings = Mapping::new();
@@ -2306,8 +2332,8 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
 /// its current alias. The plugin was renamed WHOLESALE (repo, crate, artifact, manifest
 /// `name`, config `alias`), so `redis` / `busbar-store-redis` / `busbar-store-redis-plugin` match
 /// nothing in the renamed artifact's manifest and the store the operator asked for is simply gone.
-/// Driven by the ONE rewrite over the root legacy table
-/// ([`crate::config::legacy::rewrite_retired`]), so this rewrite and [`detect_legacy_markers`]'s
+/// Driven by the ONE rewrite over the root migration table
+/// ([`crate::config::migration_table::rewrite_retired`]), so this rewrite and [`detect_legacy_markers`]'s
 /// loud-fail cannot disagree about which spellings are retired.
 ///
 /// The `settings:` bag rides through VERBATIM. The connection URL's `redis://` / `rediss://` scheme
@@ -2330,7 +2356,7 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
         Taken::Absent | Taken::Malformed => return,
     };
     if let Some((old, alias)) =
-        crate::config::legacy::rewrite_retired(Kind::Store.root(), &mut store, true)
+        crate::config::migration_table::rewrite_retired(Kind::Store.root(), &mut store, true)
     {
         changes.push(format!(
             "store.module: {old} -> {alias} (the first-party store plugin for this backend was \

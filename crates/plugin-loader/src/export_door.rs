@@ -429,7 +429,9 @@ impl std::fmt::Debug for ExportInstance {
 
 /// Dropping the instance stops its flusher: the rest of the queue is shed, and the deliveries in
 /// flight are given [`STOP_GRACE`] to answer; past it they are abandoned, so the dropping thread
-/// never waits on plugin code longer than that (THE DESIGN §11.13 M1).
+/// never waits on plugin code longer than that (THE DESIGN §11.13 M1). Then the instance is
+/// closed. A `close` the dispatcher refuses because an abandoned delivery is still in flight leaves
+/// it open.
 impl Drop for ExportInstance {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
@@ -447,6 +449,8 @@ impl Drop for ExportInstance {
             // The flusher returns at once now: abandoning a delivery waits on nothing.
             let _ = f.join();
         }
+        let mut f = Frame::new(in_head(), out_head());
+        let _ = self.shared.plugin.call(lc::CLOSE, &mut f);
     }
 }
 

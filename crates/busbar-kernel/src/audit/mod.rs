@@ -486,6 +486,10 @@ fn walk<R: ChainedRecord>(records: &[R], anchor: Anchor) -> Result<(), ChainBrea
 }
 
 #[cfg(test)]
+#[path = "tests/audit_entry_record.rs"]
+pub(crate) mod audit_entry_record;
+
+#[cfg(test)]
 #[path = "tests/chain_tests.rs"]
 mod chain_tests;
 

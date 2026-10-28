@@ -957,7 +957,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
+            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -1038,7 +1038,6 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -1917,7 +1916,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let (addr, handle, client) = spin_up(router).await;
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
+            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -4583,7 +4582,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     crate::ensure_seam();
     // Every plane configured: the served document is then unfiltered (Law 7 filters only
     // unconfigured planes) and every plane admin route answers instead of its 404 gate.
-    let every_plane: Vec<&'static str> = busbar_kernel::plane::registry::plane_decls()
+    let every_plane: Vec<&'static str> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .map(|d| d.config_section)
         .collect();
@@ -5295,7 +5294,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         };
         let resp = req
             .header("x-admin-token", "admintok")
-            .header("content-type", busbar_kernel::proxy::APPLICATION_JSON)
+            .header("content-type", busbar_contract::protocol::APPLICATION_JSON)
             .body(malformed.clone())
             .send()
             .await
@@ -8280,7 +8279,6 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -9585,7 +9583,6 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -10756,7 +10753,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 /// linked test planes by its `fallback` flag, never by name.
 fn free_open_units() -> serde_json::Value {
     crate::ensure_seam();
-    busbar_kernel::plane::registry::plane_decls()
+    busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .find(|decl| decl.fallback)
         .expect("the linked test planes carry the fallback plane")
@@ -10786,4 +10783,114 @@ fn auth_modules_list_inbound_rows_only() {
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),
         vec!["inbound-row"]
     );
+}
+
+/// Rotate one existing key as a delegated `app-admin` whose role mint ceiling allows only
+/// `pool-ok`: the key is minted straight into the store bound to `bound_pools`, then `POST
+/// /keys/{id}/rotate` runs through the real handler. Returns the HTTP status, the response body,
+/// and whether the key's credential generation moved (the old token died).
+async fn rotate_under_a_pool_ceiling(
+    bound_pools: Option<Vec<String>>,
+) -> (u16, serde_json::Value, bool) {
+    busbar_kernel::snapshot::init();
+    let principal = busbar_kernel::auth::Principal {
+        id: "delegated-admin".to_string(),
+        name: None,
+        roles: vec!["app-admin".to_string()],
+        ttl_secs: None,
+    };
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (key, _token) = gov
+        .create_key(
+            NewKeySpec {
+                name: "svc".to_string(),
+                allowed_pools: bound_pools,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        busbar_kernel::governance::mint_policy::RoleCeiling {
+            max_ttl_secs: None,
+            allowed_pools: Some(vec!["pool-ok".to_string()]),
+            binding_modes: None,
+        },
+    );
+    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
+        self_mint: None,
+        block_max_ttl_secs: None,
+        block_binding_modes: None,
+        ceilings,
+    };
+    let app = crate::new_test_app()
+        .governance(gov.clone())
+        .mint_policy(policy)
+        .build();
+    let before = gov
+        .store()
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .generation_hash;
+    let resp = super::rotate_key(
+        busbar_kernel::state::CurrentApp(app),
+        axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal))),
+        axum::extract::Path(key.id.clone()),
+        axum::http::HeaderMap::new(),
+        axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
+    )
+    .await;
+    let status = resp.status().as_u16();
+    use http_body_util::BodyExt;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let after = gov
+        .store()
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .generation_hash;
+    (status, body, before != after)
+}
+
+/// THE ROLE MINT CEILING HOLDS ON ROTATION (`auth.policy.mint_ceilings.<role>.allowed_pools`). A
+/// rotate re-mints the key's token, so it hands the caller a working credential for every pool the
+/// key is bound to — a mint, judged by the mint's ceiling. A delegated app-admin limited to
+/// `pool-ok` must not obtain an ALL-pools credential by rotating an all-pools key it could never
+/// have minted.
+///
+/// RED while rotate asked the ceiling about no pools at all (`requested_pools: Some(&[])`): the
+/// over-ceiling rotate answered 200 with a fresh all-pools token, and the key's legitimate holder
+/// lost theirs.
+#[tokio::test]
+async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
+    let (status, body, moved) = rotate_under_a_pool_ceiling(None).await;
+    assert_eq!(
+        status, 400,
+        "rotating an all-pools key past the role's pool ceiling must be refused: {body}"
+    );
+    assert_eq!(body["error"]["code"], "invalid_request", "{body}");
+    assert!(
+        body.get("token").is_none(),
+        "a refused rotate shows no token"
+    );
+    assert!(
+        !moved,
+        "a refused rotate leaves the key's credential as it was"
+    );
+}
+
+/// GREEN twin: a key bound inside the ceiling still rotates for the same delegated admin — a fresh
+/// token, the old generation retired.
+#[tokio::test]
+async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
+    let (status, body, moved) =
+        rotate_under_a_pool_ceiling(Some(vec!["pool-ok".to_string()])).await;
+    assert_eq!(status, 200, "an in-ceiling rotate answers: {body}");
+    assert!(body["token"].is_string(), "{body}");
+    assert!(moved, "the rotate retired the previous generation");
 }

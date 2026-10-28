@@ -70,7 +70,7 @@ fn write_recover<T>(m: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_,
 // (e.g. set_now_for_test(1000)) would poison the clock for a concurrently-running forward
 // integration test that records breaker cooldowns against the real wall clock. Per-thread storage
 // isolates each test's injected time to its own thread while leaving real-time tests on real time.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 thread_local! {
     static TEST_NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -78,14 +78,14 @@ thread_local! {
 
 /// Test helper to inject time for unit tests (this thread only).
 #[allow(dead_code)]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn set_now_for_test(t: u64) {
     TEST_NOW.with(|c| c.set(t));
     IN_TEST.with(|c| c.set(true));
 }
 
 #[allow(dead_code)]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn now_for_test() -> u64 {
     // "Unset" is signalled SOLELY by the `IN_TEST` flag (set true by `set_now_for_test`), NOT by the
     // stored value. The old guard (`val != 0`) conflated a legitimately-injected instant of 0 with

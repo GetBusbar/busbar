@@ -28,12 +28,12 @@ use busbar_kernel::governance::{
     GovState, MemoryStore, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
     RecordStoreResult,
 };
-use busbar_kernel::proto::PROTO_OPENAI;
 use busbar_kernel::snapshot::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
 };
 use busbar_kernel::store::{now, LaneRuntime};
+use busbar_kernel::test_support::protocols::PROTO_OPENAI;
 use busbar_kernel::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
 
@@ -541,8 +541,8 @@ fn test_lane_state_emitted_for_plane_neutral_breaker_cells() {
         .pool("pool-pn", &[(0, 1)])
         .build();
 
-    let down = busbar_kernel::store::tool_key("t281-down");
-    let up = busbar_kernel::store::agent_key("t281-up");
+    let down = "tool:t281-down".to_string();
+    let up = "agent:t281-up".to_string();
     let t = now();
     app.plane_breakers.force_open(&down, 0, t + 600);
     app.plane_breakers.record_success(&up, 0);
@@ -639,9 +639,9 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     // Unique labels: the recorder and the park table are process-global.
     let pool = "q-live-pool";
     // The linked plane's own default dialect, read off the registry (this cell names none).
-    let dialect = busbar_kernel::proto::residual_default_dialect()
+    let dialect = busbar_kernel::ingress::protocols::residual_default_dialect()
         .or_else(|| {
-            busbar_kernel::proto::detect_protocol(
+            busbar_kernel::ingress::protocols::detect_protocol(
                 "/v1/chat/completions",
                 &axum::http::HeaderMap::new(),
             )

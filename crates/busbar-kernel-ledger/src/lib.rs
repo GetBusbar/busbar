@@ -102,14 +102,11 @@ pub use checkpoint::{
     CheckpointVerifier, SealRefusal, SelfAttestingAnchor, SignError, Signature,
 };
 pub use identity::{holds, residual, Imbalance, Residual};
-pub use legacy::{
-    opening_balances, LegacyHead, LegacyMigrationSource, LegacyPosting, LegacyRows,
-    LegacyWriteError, OpeningBalance, RecordingRows, SummedRows,
-};
+pub use legacy::{LegacyPosting, LegacyRows, LegacyWriteError, RecordingRows, SummedRows};
 pub use migration::{
-    migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
-    MigrationError, MigrationMarker, MigrationRecords, Opening, Outcome as MigrationOutcome,
-    OPENING_CHECKPOINT_SEQ,
+    migrate, opening_balances, opening_totals, MigrationError, MigrationFamily, MigrationFigure,
+    MigrationFigures, MigrationHead, MigrationLedgerRows, MigrationMarker, MigrationRecords,
+    MigrationSource, Opening, OpeningBalance, Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
 };
 pub use recompute::{divergence_of, price_line, Divergence, Posting, PricedLine, BASIS_POINTS};
 pub use settle::{Figures, Ledger, Overdraft, Settlement};
