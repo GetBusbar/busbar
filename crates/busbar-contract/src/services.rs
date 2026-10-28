@@ -414,6 +414,11 @@ impl DiskReport {
 pub trait CredentialRead: Send + Sync {
     /// The secret and its liveness.
     fn read(&self, kind: &str, id: &str) -> (crate::redacted::Secret<String>, bool);
+
+    /// Whether a read can be answered yet (a source set late cannot, until it is).
+    fn installed(&self) -> bool {
+        true
+    }
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.
