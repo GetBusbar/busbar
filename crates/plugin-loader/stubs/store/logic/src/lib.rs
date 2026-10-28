@@ -131,8 +131,7 @@ pub struct MemoryStore {
     /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
     /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
     clock: AtomicU64,
-    /// The store v3 slots' own state: the `op_id` dedupe log, the caps, the drawn totals, the
-    /// slices, the ledger streams and the session directory ([`v3`]).
+    /// The store v3 slots' own state: the `op_id` dedupe log ([`v3`]).
     v3: v3::State,
 }
 
@@ -430,22 +429,6 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn scrub_key(&self, id: &str) -> StoreResult<()> {
-        let mut keys = self.keys();
-        let Some(key) = keys.get_mut(id) else {
-            return Err(StoreError(format!("scrub_key: unknown key '{id}'")));
-        };
-        if key.deleted_at.is_none() {
-            return Err(StoreError(format!(
-                "scrub_key: '{id}' is not tombstoned — delete it first"
-            )));
-        }
-        key.name.clear();
-        key.labels.clear();
-        key.revision = self.next_revision();
-        Ok(())
-    }
-
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .keys_read()
@@ -461,16 +444,6 @@ impl Store for MemoryStore {
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
-    }
-
-    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
-        // The money slots' windows first (the v3 lock is always taken before a map lock), then the
-        // token ledger's.
-        let slots = self.v3.purge_windows_before(before, self.now());
-        let mut usage = self.usage();
-        let held = usage.len();
-        usage.retain(|(_, window_start), _| *window_start >= before);
-        Ok(slots + (held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -679,18 +652,6 @@ impl Store for MemoryStore {
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
             .collect())
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> StoreResult<Option<CredentialSecret>> {
-        Ok(self
-            .creds_read()
-            .values()
-            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
-            .cloned())
     }
 
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {

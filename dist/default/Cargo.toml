@@ -475,28 +475,10 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
-# A transport whose door is its crate root's one public item (transitional until its own door-root
-# round names it below): the row reads `door` and everything else off its Statement
-# (`linked_transport!`).
+# A transport whose door is its crate root's one public item: the row reads `door` and everything
+# else off its Statement (`linked_transport!`).
 busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming::door"
-
-# THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
-# has `fn door()` as its only public item): `<plugin crate> = "<crate>::door"`, the door its door
-# macro emits, a `DoorFn` answering a `&'static Door` (SEALED: a `Door`'s fields are private behind
-# the contract's one `unsafe` constructor; busbar-transport-grpc links transitionally until its own
-# repo's round names it here). A crate named here is linked by its door alone: the generated tables
-# read that door and nothing else, hand it to the loader's safe `admit_linked` (which admits it
-# through `open_linked`, the dlopen path's own checks), and read every fact its axis needs (a
-# transport's key, layers and session; an auth or store row's name; a store's `ephemeral`; an
-# export's name, alias and `declares`; a secret or plane door's `declares`) off the admitted door's
-# Statement (`root::door_root`). A crate not named here is TRANSITIONAL: it keeps its `linked-entry`
-# (else `<crate>::linked`) reads until its own door-root round names it here, and the transitional
-# arm is deleted once every crate is (#1495). A door-root row may name only axes that read its door,
-# and no `linked-entry` or `linked-declares` row. ARCHITECT ruling (row 195; l.272-274): this root
-# generates the linked table and alone depends on the plugin crates; the loader names none; this
-# root stays `forbid(unsafe_code)`.
-[package.metadata.busbar.door-root]
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
@@ -631,6 +613,8 @@ busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit", features = ["
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
 # loader's fake-call store harness and oracle-cache locator are `test-support` only.
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
+# The local token issuer and the framed connection table the auth chain tests serve its JWKS on.
+busbar-test-kit = { path = "../../crates/busbar-test-kit" }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
