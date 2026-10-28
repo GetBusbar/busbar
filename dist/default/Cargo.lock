@@ -458,6 +458,7 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
+ "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -695,7 +696,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=757897b71862489343d2e5449b1816619bdcf69e#757897b71862489343d2e5449b1816619bdcf69e"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=543fb7ec162e0ef6e28a6e92e2710d3e91197c4e#543fb7ec162e0ef6e28a6e92e2710d3e91197c4e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -763,7 +764,6 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "base64 0.22.1",
  "busbar-contract",
  "ed25519-dalek",
  "flate2",
@@ -772,7 +772,6 @@ dependencies = [
  "hex",
  "libc",
  "libloading",
- "ring",
  "serde",
  "serde_json",
  "tar",
@@ -807,6 +806,20 @@ source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=1367f8c318f2f
 dependencies = [
  "busbar-contract",
  "sha2",
+]
+
+[[package]]
+name = "busbar-test-kit"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

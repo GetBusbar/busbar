@@ -100,11 +100,11 @@ pub struct StoreCfg {
 /// `GOVERNANCE_STORE_MEMORY`, read by its `default_governance_store`). 1.6.0 holds no default:
 /// `busbar --migrate-config` writes this module into a config that has none, which is exactly 1.5.5's
 /// implicit behaviour made explicit, and [`store_required`] names it (Q-STORE = (B)). Read off the
-/// root legacy table's `store_1_5_default` row (frozen 1.5.5 text the composition root hands in), so
+/// root migration table's `store_1_5_default` row (frozen 1.5.5 text the composition root hands in), so
 /// the kernel spells no store instance (BUSBAR-1.6.0.md l.4205-4211).
 #[must_use]
 pub fn migrated_store_module() -> &'static str {
-    crate::config::legacy::text("store_1_5_default")
+    crate::config::migration_table::text("store_1_5_default")
 }
 
 /// THE REFUSAL of a config with no `store:` block (Q-STORE = (B)): one `--validate` / boot error line
