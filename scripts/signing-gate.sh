@@ -197,12 +197,10 @@ tar -czf "$WORK/tampered-manifest.tar.gz" -C "$WORK/t2" $(ls "$WORK/t2")
 
 # ── 3. Config that REFERENCES the plugin, strict trust posture (no allow_unsigned) ───────────────
 mkdir -p "$WORK/plugins"
-cat > "$WORK/providers.yaml" <<'EOF'
-mock:
-  protocol: anthropic
-  base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
-EOF
+# The config names NO provider: the gate's busbar is core alone, which compiles in no protocol
+# codec, and a provider on any protocol is refused there (BUSBAR-3015, "this build has NO protocol
+# with a wire codec compiled in") before the plugin reference is judged, so `signed-ok` would fail
+# on a config error instead of a trust verdict. Nothing here talks to an upstream.
 # The reference must be written in the CURRENT config grammar, per kind. 1.5.3 made two of these
 # DEFINE-ONCE maps, and the pre-1.5.3 spellings are now fail-closed boot refusals — which this gate
 # felt as its FIRST assertion (`signed-ok`) failing with a CONFIG error instead of a trust verdict,
@@ -237,12 +235,6 @@ STORE_REF=""
 write_config() { # $1 = extra `plugins:` lines (the RED plant's trust opt-in), else none
   cat > "$WORK/config.yaml" <<EOF
 listen: "127.0.0.1:0"
-providers:
-  mock:
-    api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
 plugins:
   enabled: true
   dir: '$WORK/plugins'
@@ -255,15 +247,7 @@ write_config ""
 
 validate() { # runs --validate against whatever is in $WORK/plugins; captures combined output
   rm -f "$WORK/out"
-  # MOCK_KEY must be SET, for the same reason the grammar note above exists. 1.5.3 made `--validate`
-  # RESOLVE built-in `env:`/`file:` secret references and exit 1 when one cannot, rather than
-  # checking only the reference's shape. The config above names `env: MOCK_KEY`, no CI runner sets
-  # it, and so this gate's FIRST assertion (`signed-ok`) failed with a SECRET error instead of a
-  # trust verdict: it had stopped testing signing at all, exactly the way the grammar change broke it
-  # before. The value is never used for anything; nothing here talks to an upstream.
-  MOCK_KEY="${MOCK_KEY:-signing-gate-placeholder}" \
-  BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" \
-    "$BUSBAR" --validate > "$WORK/out" 2>&1
+  BUSBAR_CONFIG="$WORK/config.yaml" "$BUSBAR" --validate > "$WORK/out" 2>&1
 }
 check() { # $1=case $2=want_rc $3...=regexes the output must ALL match; 0 = held, 1 = did not
   local c=$1 want=$2 rc=0 re; shift 2
