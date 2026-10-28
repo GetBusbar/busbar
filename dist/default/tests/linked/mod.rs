@@ -36,7 +36,7 @@ pub fn install() {
         // The linked doors' own dialect declarations, as the root's `register_protocols` installs
         // them in production (the door row's `protocols` axis).
         for decls in TEST_LINKED_PROTOCOLS {
-            busbar_kernel::ingress::protocols::register_test_protocols(decls);
+            busbar_kernel::test_support::protocols::register_test_protocols(decls);
         }
     });
     for &row in door_rows() {

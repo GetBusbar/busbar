@@ -66,6 +66,7 @@ pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
+pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
 pub mod dispatch;
@@ -92,6 +93,7 @@ pub mod plugin_fetch;
 pub mod policy;
 pub mod registry;
 pub mod serve;
+pub mod settings_public;
 pub mod shutdown;
 pub mod transports;
 #[cfg(feature = "root-admin")]

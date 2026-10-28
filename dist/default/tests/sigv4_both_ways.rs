@@ -783,8 +783,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16
     std::fs::write(
         dir.join("providers.yaml"),
         format!(
-            "bedrock-lane:\n  protocol: bedrock\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n  \
-             api_key_env: {UPSTREAM_CREDS_ENV}\n"
+            "bedrock-lane:\n  protocol: bedrock\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n"
         ),
     )
     .unwrap();

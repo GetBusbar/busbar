@@ -61,7 +61,6 @@ fn write_configs(dir: &Path, extra: &str) {
         r#"mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#,
     )
     .unwrap();
@@ -1162,7 +1161,6 @@ fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
         r#"mock:
   protocol: definitely-not-a-protocol
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#,
     )
     .unwrap();
@@ -1271,7 +1269,7 @@ fn providers_flag_overrides_providers_file_and_default() {
     let real_catalog = dir.join("real-providers.yaml");
     std::fs::write(
         &real_catalog,
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
 
@@ -1367,7 +1365,6 @@ fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
         r#"mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#,
     )
     .unwrap();
@@ -1498,7 +1495,6 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
             r#"mock:
   protocol: {protocol}
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#
         ),
     )
@@ -1917,7 +1913,6 @@ fn validate_refuses_an_http_token_url_on_a_public_host() {
             r#"entra:
   protocol: openai
   base_url: "https://res.example.com"
-  api_key_env: MOCK_KEY
 "#,
         )
         .unwrap();

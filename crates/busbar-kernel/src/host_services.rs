@@ -63,7 +63,6 @@ use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::caps::IdempotencyKey;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
     merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
     Stored,
@@ -407,25 +406,6 @@ fn nested_answer(reply: NestReply) -> Stored {
     s
 }
 
-/// A claim's owed answer. Dropped unanswered (the pool refused its job) it answers Taken.
-struct OwedClaim(Option<crate::host_claims::ClaimLater>);
-
-impl OwedClaim {
-    fn answer(mut self, claim: crate::host_claims::Claim) {
-        if let Some(later) = self.0.take() {
-            later(claim);
-        }
-    }
-}
-
-impl Drop for OwedClaim {
-    fn drop(&mut self) {
-        if let Some(later) = self.0.take() {
-            later(crate::host_claims::Claim::Taken { until_ns: 0 });
-        }
-    }
-}
-
 /// A settle the book has marked and the store has not yet taken. Dropped unwritten (the pool
 /// refused its job and dropped it unrun, or the store refused the write) it puts the handle back as
 /// it stood, so the book never says settled while the store says live.
@@ -573,10 +553,9 @@ fn trust_unread(why: String) -> AdmitRefused {
     AdmitRefused::TrustUnread(why)
 }
 
-/// The stores the records services reach.
+/// The store the records services reach: its typed records and its single-use redemption.
 struct Records {
     reads: Arc<dyn RecordRows>,
-    claims: Arc<dyn RecordStore>,
 }
 
 /// The wall clock, in milliseconds since the Unix epoch.
@@ -826,19 +805,19 @@ impl KernelServices {
         self
     }
 
-    /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
-    /// single-use redemption). Without them they are REFUSED.
+    /// Serve the records services over `reads` (the store's typed record reads and its single-use
+    /// redemption). Without them they are REFUSED.
     #[must_use]
-    pub fn with_records(self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> Self {
-        self.attach_records(reads, claims);
+    pub fn with_records(self, reads: Arc<dyn RecordRows>) -> Self {
+        self.attach_records(reads);
         self
     }
 
-    /// Serve the records services over `reads` and `claims` (see [`Self::with_records`]), attached
-    /// late, once: the configured store is opened after the services are installed (the composition
-    /// root's late attach). `false` when a record store was already bound.
-    pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
-        self.records.set(Records { reads, claims }).is_ok()
+    /// Serve the records services over `reads` (see [`Self::with_records`]), attached late, once:
+    /// the configured store is opened after the services are installed (the composition root's
+    /// late attach). `false` when a record store was already bound.
+    pub fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
+        self.records.set(Records { reads }).is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -1246,61 +1225,6 @@ impl KernelServices {
     pub fn record_kind(&self, caller: &Caller, index: u32) -> Option<RecordSchemaId> {
         let facts = self.facts(caller)?;
         facts.record_kinds.get(index as usize).copied()
-    }
-
-    /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend
-    /// the epoch it won. The kernel calls it on the instance's behalf (the inbound-auth replay claim
-    /// is one: `held` is always `None`, so a second sighting inside the window is Taken and nothing
-    /// extends it). The claim lives under the label the kernel derives from the instance's own
-    /// ([`crate::host_claims::reserved_label`]), so an instance only contends with itself; the rule
-    /// is [`crate::host_claims::decide`], run on the pool, answered through `later`. An answer
-    /// that arrives after `deadline_ns` (the kernel's clock) is Taken for this caller, never a
-    /// late Won. An instance never admitted, a zero `ttl_ms`, an empty `key`, or a host with no
-    /// store or pool is Taken at once.
-    #[allow(clippy::too_many_arguments)]
-    pub fn claim_own(
-        &self,
-        instance: &str,
-        op: &str,
-        key: &[u8],
-        ttl_ms: u64,
-        held: Option<u64>,
-        deadline_ns: u64,
-        later: crate::host_claims::ClaimLater,
-    ) -> crate::host_claims::Answer<crate::host_claims::Claim> {
-        use crate::host_claims::{decide, reserved_label, Answer, Ask, Claim};
-        let refused = Answer::Now(Claim::Taken { until_ns: 0 });
-        if ttl_ms == 0 || key.is_empty() || !self.lock_instances().contains_key(instance) {
-            return refused;
-        }
-        let (Some(records), Some(pool)) = (self.records.get(), self.pool()) else {
-            return refused;
-        };
-        let rows = Arc::clone(&records.reads);
-        let tokens = Arc::clone(&records.claims);
-        let wall_ms = Arc::clone(&self.wall_ms);
-        let label = reserved_label(instance);
-        let (op, key) = (op.to_string(), key.to_vec());
-        let ttl_ns = ttl_ms.saturating_mul(1_000_000);
-        let owed = OwedClaim(Some(later));
-        pool.run(Box::new(move || {
-            let now_ns = wall_ms().saturating_mul(1_000_000);
-            let ask = Ask {
-                label: &label,
-                op: &op,
-                key: &key,
-                ttl_ns,
-                held,
-                now_ns,
-            };
-            let claim = decide(&*rows, &*tokens, &ask);
-            let late = wall_ms().saturating_mul(1_000_000) > deadline_ns;
-            owed.answer(match claim {
-                Claim::Won { until_ns, .. } if late => Claim::Taken { until_ns },
-                c => c,
-            });
-        }));
-        Answer::Later
     }
 
     /// Run one flush of the record write queue on `pool`.
@@ -1755,10 +1679,10 @@ impl HostServices for KernelServices {
         let now = now_ms / 1000;
         let expires_at = expires_ms.div_ceil(1000);
         let token = claim_token(&caller.instance, kind, key);
-        let claims = Arc::clone(&records.claims);
+        let rows = Arc::clone(&records.reads);
         let kind = kind.to_string();
         submit(pool, later, move || {
-            match claims.redeem_plane_token(&kind, &token, expires_at, now) {
+            match rows.claim(&kind, &token, expires_at, now) {
                 Ok(true) => Stored::ready(svc::CLAIM_WON),
                 Ok(false) => Stored::ready(svc::CLAIM_TAKEN),
                 Err(_) => failed(STORE_FAILED),
