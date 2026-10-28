@@ -261,7 +261,7 @@ checks:
   oracle:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
-    requires: [cc, docker]
+    requires: [cc, docker, large]
     tools: [busbar-oracle-judge]
     # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
     # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
