@@ -311,11 +311,19 @@ impl RootHost {
                     })
                     .map(|door| (module.to_string(), *door))
             }
-            "hook" => crate::LINKED_HOOK_NAMES
-                .iter()
-                .zip(crate::LINKED.hook_doors.iter())
-                .find(|pair| *pair.0 == module)
-                .map(|(name, door)| ((*name).to_string(), *door)),
+            // A linked hook or secret door answers to its Statement's name and aliases.
+            "hook" | "secret" => {
+                let doors = if kind == "hook" {
+                    crate::LINKED.hook_doors
+                } else {
+                    crate::LINKED.secrets
+                };
+                doors.iter().find_map(|door| {
+                    let c = crate::root::loader::boot::Candidate::linked(*door).ok()?;
+                    (c.name == module || c.aliases.iter().any(|a| a == module))
+                        .then(|| (c.name.clone(), *door))
+                })
+            }
             _ => None,
         }
     }
