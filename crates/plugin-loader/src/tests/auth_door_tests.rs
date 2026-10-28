@@ -1032,7 +1032,7 @@ mod ticketed {
         served: AtomicU64,
     }
 
-    impl busbar_contract::services::double::ServicesDouble for SlowSecrets {
+    impl busbar_contract::services::HostServices for SlowSecrets {
         fn records_secret(&self, kind: &str, id: &str, done: Later) -> Ran {
             assert_eq!(kind, KIND, "the host serves only the declared kind");
             self.served.fetch_add(1, Ordering::SeqCst);

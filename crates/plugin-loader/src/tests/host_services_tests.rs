@@ -53,9 +53,9 @@ impl Provider {
     }
 }
 
-/// Every service but `trust.sight`, which the contract's shared double refuses as unserved
+/// Every service but `trust.sight`, which the trait's default refuses as unserved
 /// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
-impl busbar_contract::services::double::ServicesDouble for Provider {
+impl busbar_contract::services::HostServices for Provider {
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,

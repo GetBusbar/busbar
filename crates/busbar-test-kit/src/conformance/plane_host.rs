@@ -31,7 +31,7 @@
 //!   won once per key. An instance never admitted, a kind it did not declare and a claim with no
 //!   time to live are refused in the kernel's words. Every answer is ready at once (a may-pend
 //!   service that answers at once is within its contract).
-//! * Every other service is refused UNSERVED, as a host that serves none of it.
+//! * Every other service is refused UNSERVED (the trait's default), as an unserving host's.
 //!
 //! ```json
 //! "host": {
@@ -70,14 +70,11 @@ use busbar_contract::net::{
     is_alternate_ipv4_encoding, judged_host, parse_url, METADATA_HOSTS,
 };
 use busbar_contract::plane_calls::InstanceDecl;
-use busbar_contract::services::{
-    chain_key, chain_key_parts, merge_list, Caller, DiskDest, HookAsk, NestAsk, RecordsList,
-    Snapshot, UNSERVED,
-};
+use busbar_contract::services::{chain_key, chain_key_parts, merge_list, Caller, RecordsList};
 use serde_json::Value;
 
 use crate::dispatch::services::{FILL_OUT_OF_RANGE, NO_TTL, UNTICKETED};
-use crate::dispatch::{HostServices, Ran, Reading, Stored};
+use crate::dispatch::{HostServices, Ran, Stored};
 use crate::stand_in::FramedFacts;
 
 /// The completion a pending service answer is handed (the services' own callback type): never
@@ -555,13 +552,6 @@ fn rows_of(rows: Vec<(Vec<u8>, Vec<u8>)>) -> Stored {
 }
 
 impl HostServices for Host {
-    fn now(&self) -> Reading {
-        Reading {
-            wall_ns: 0,
-            mono_ns: 0,
-        }
-    }
-
     fn entitlement_check(&self, _: &Caller, unit: Option<u64>, target: &str) -> Stored {
         let entitled = unit.is_some_and(|u| {
             self.entitled.iter().any(|g| {
@@ -677,54 +667,5 @@ impl HostServices for Host {
             bytes: self.draw(len as usize),
             ..Stored::ready(0)
         }
-    }
-
-    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
-        Stored::refused(UNSERVED)
-    }
-    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn trust_due(&self, _: &Caller) -> Stored {
-        Stored::refused(UNSERVED)
-    }
-    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
-        Stored::refused(UNSERVED)
-    }
-    fn records_secret(&self, _: &str, _: &str, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
-        Stored::refused(UNSERVED)
-    }
-    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
-    }
-    fn snapshot_read(&self, _: &Caller, _: u32) -> Snapshot {
-        Snapshot::Refused(UNSERVED)
     }
 }

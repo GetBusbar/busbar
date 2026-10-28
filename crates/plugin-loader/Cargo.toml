@@ -239,10 +239,8 @@ busbar-stub-transport-plugin = { path = "stubs/transport/plugin" }
 # The tcp LOGIC crate (same pin, no door symbol), the row's crate: `transport_door_conformance_tests`
 # drives its linked door against the plugin's cdylib.
 busbar-stub-transport = { path = "stubs/transport/logic" }
-# The contract's blessed test seal (#65), as the wire crates' own batteries use it. The host-services
-# doubles (`ClockOnly`, `DiskHost`, the services `Provider`) are the contract's
-# shared `services::double`, so a service the host adds does not reopen them.
-busbar-contract = { path = "../busbar-contract", features = ["test-seal", "services-double"] }
+# The contract's blessed test seal (#65), as the wire crates' own batteries use it.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

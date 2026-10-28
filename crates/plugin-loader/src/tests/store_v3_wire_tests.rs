@@ -795,10 +795,10 @@ fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
 // ── a bound over the dial AND the handshake (VALKEY-TIMEOUT: 1.5.5 bounded both) ───────────────
 
 /// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest as
-/// the contract's shared double does.
+/// an unserved host does (the trait's defaults).
 struct ClockOnly;
 
-impl busbar_contract::services::double::ServicesDouble for ClockOnly {
+impl busbar_contract::services::HostServices for ClockOnly {
     fn now(&self) -> busbar_contract::services::Reading {
         busbar_contract::services::Reading {
             wall_ns: 0,

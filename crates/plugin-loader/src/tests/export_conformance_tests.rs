@@ -305,9 +305,9 @@ impl DiskHost {
     }
 }
 
-/// This binary's host serves the disk lane only: every other service answers as the contract's
-/// shared double does, REFUSED as unserved, and the clock reads zero.
-impl busbar_contract::services::double::ServicesDouble for DiskHost {
+/// This binary's host serves the disk lane only: every other service answers as the trait's
+/// default does, REFUSED as unserved, and the clock reads zero.
+impl busbar_contract::services::HostServices for DiskHost {
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
         later(Self::append(dest, &bytes).stored());
         Ran::Later
