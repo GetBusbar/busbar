@@ -509,7 +509,7 @@ impl BreakerUnit {
                 let _ = self.hard_down_all(destination, now);
             }
             Outcome::Success => {
-                for (cell, _) in cells() {
+                for (_, cell) in cells() {
                     if let Some(observed) = suppressed(&cell, now) {
                         let _ = cell.close_if_recoverable(now, observed);
                     }
@@ -517,7 +517,7 @@ impl BreakerUnit {
                 }
             }
             Outcome::Transient { retry_after } => {
-                for (cell, pool) in cells() {
+                for (pool, cell) in cells() {
                     if let Some(cfg) = cfg_of(&*pool) {
                         let _ = cell.record_failure(
                             now,
