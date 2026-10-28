@@ -866,7 +866,7 @@ impl Instance {
                 continue;
             };
             let code = String::from_utf8_lossy(code);
-            self.refused(crate::observe::BindRefusal::Open { code: &*code });
+            self.refused(crate::observe::BindRefusal::Open { code: &code });
         }
     }
 
