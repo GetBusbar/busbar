@@ -81,6 +81,9 @@ pub mod auth_outbound;
 pub mod login;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
+// THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the
+// takes-no-settings refusal and the failed resolve.
+pub mod secret;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
 pub use publish::{Generations, Keyed};
