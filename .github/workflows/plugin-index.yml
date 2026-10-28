@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# THE RELEASE INDEX: every busbar version tag (`v*`, a `-dev.N` pre-release included) gets a GitHub
+# release carrying `plugin-index.json`, the index `busbar --migrate-config` reads to rewrite a 1.5.5
+# configuration's `plugins.fetch` pins (crates/busbar/src/root/config_migrate.rs). It is generated
+# by busbar-release's `plugin index` verb, built here at the pinned busbar-release commit, from
+# plugins.yaml at the tagged commit and each plugin's published releases. A tag is a publication
+# only: nothing here builds, tests or moves a branch.
+name: plugin-index
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The busbar tag to (re)publish the index for"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # busbar-release at the commit whose `plugin index` this tag runs (a busbar-release dev commit).
+  BUSBAR_RELEASE_REV: 1b17da9d0b60d3331255b1ee2b6b69036d46bd63
+  CARGO_TERM_COLOR: never
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: busbar-release at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: GetBusbar/busbar-release
+          ref: ${{ env.BUSBAR_RELEASE_REV }}
+          token: ${{ secrets.FLEET_TOKEN }}
+          path: busbar-release
+          persist-credentials: false
+      - name: plugin-index.json for the tag
+        working-directory: busbar-release
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -q -p busbar-release-cli -- \
+            plugin index --registry-ref "$TAG" --out "$GITHUB_WORKSPACE/plugin-index.json"
+          jq -e '.plugins | length > 0' "$GITHUB_WORKSPACE/plugin-index.json" >/dev/null
+      - name: attach it to the tag's release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            pre=""; case "$TAG" in *-*) pre="--prerelease" ;; esac
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag $pre --title "$TAG" \
+              --notes "busbar $TAG. plugin-index.json: the release index \`busbar --migrate-config\` reads."
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$GITHUB_WORKSPACE/plugin-index.json"
