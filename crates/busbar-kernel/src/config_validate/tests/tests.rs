@@ -2198,7 +2198,8 @@ models:
     );
 
     // The removed `api_key_env:` provider key is likewise a parse error (renamed to
-    // `api_key: { env: ... }`).
+    // `api_key: { env: ... }`): it is not the credential, so the entry names none. (A key beyond
+    // busbar's is a provider option, judged at validation by the plane, owner ruling 2026-10-27.)
     let yaml2 = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -2211,8 +2212,8 @@ models:
     let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
         .expect_err("the removed api_key_env key must fail to parse");
     assert!(
-        err2.to_string().contains("unknown field"),
-        "expected an unknown-field error for api_key_env; got: {err2}"
+        err2.to_string().contains("missing field `api_key`"),
+        "expected the entry with no credential refused; got: {err2}"
     );
 }
 

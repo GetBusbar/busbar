@@ -1494,7 +1494,9 @@ models: {}
         "an inline literal api_key must be rejected at parse"
     );
 
-    // The removed api_key_env spelling: unknown-field error.
+    // The removed api_key_env spelling is not the credential: the entry names none and is refused
+    // at parse. (A key beyond busbar's is a provider option now, judged at validation by the plane,
+    // owner ruling 2026-10-27; boot's legacy-marker pass names this one with its migration first.)
     let yaml = r#"
 providers:
   myprov:
@@ -1504,10 +1506,7 @@ models: {}
     let err = serde_yaml::from_str::<DeployCfg>(yaml)
         .expect_err("the removed api_key_env key must be rejected");
     let msg = err.to_string();
-    assert!(
-        msg.contains("unknown field") && msg.contains("api_key_env"),
-        "{msg}"
-    );
+    assert!(msg.contains("missing field `api_key`"), "{msg}");
 }
 
 #[test]
@@ -4474,6 +4473,23 @@ fn an_option_written_twice_is_refused() {
     .map(|e| e.to_string())
     .unwrap_or_default();
     assert!(e.contains("x-a"), "{e}");
+}
+
+/// `CATALOG_KEYS` is the catalog's typed grammar's own list, in its order.
+#[test]
+fn the_catalog_keys_are_the_typed_grammars() {
+    let e = serde_yaml::from_str::<ProviderDef>("zzz: 1\n")
+        .expect_err("the typed grammar alone refuses a key it does not read")
+        .to_string();
+    let listed: String = crate::config::providers::CATALOG_KEYS
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        e.starts_with(&format!("unknown field `zzz`, expected one of {listed}")),
+        "{e}"
+    );
 }
 
 /// `DEPLOY_KEYS` is the typed grammar's own list, in its order: the derived reader's refusal of a

@@ -149,8 +149,10 @@ pub struct HealthCfg {
     pub timeout_secs: Option<u64>,
 }
 
-/// Provider definition - vetted knowledge shipped in providers.yaml (no keys).
+/// Provider definition - vetted knowledge shipped in providers.yaml (no keys). Read by [`catalog`]:
+/// its typed keys ([`CATALOG_KEYS`]) here, every other key into [`Self::options`].
 #[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderDef {
     pub protocol: String,
     pub base_url: String,
@@ -220,6 +222,11 @@ pub struct ProviderDef {
     /// this; `None` falls back to the catalog list. Default empty (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
+    /// The entry's OPTIONS: every key that is not one of the keys above, under its far end's own
+    /// wire name, judged at resolve by the plane that speaks its dialect (owner ruling 2026-10-27:
+    /// the catalog follows the `config.yaml` rule; see [`ProviderDeploy::options`]).
+    #[serde(skip)]
+    pub options: ProviderTable,
 }
 
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
@@ -455,6 +462,7 @@ impl<'de> serde::de::Visitor<'de> for DeploymentVisitor {
         let mut deploy = ProviderDeploy::deserialize(
             serde::de::value::MapAccessDeserializer::new(OptionsAside {
                 inner: map,
+                keys: DEPLOY_KEYS,
                 options: &mut options,
             }),
         )?;
@@ -463,10 +471,85 @@ impl<'de> serde::de::Visitor<'de> for DeploymentVisitor {
     }
 }
 
+/// THE KEYS A CATALOG ENTRY'S TYPED GRAMMAR READS ([`ProviderDef`]), in its order; every other key
+/// of the entry is one of its [`ProviderDef::options`]. A test holds this list to the struct's.
+pub const CATALOG_KEYS: &[&str] = &[
+    "protocol",
+    "base_url",
+    "error_map",
+    "health",
+    "path",
+    "path_base",
+    "token_url",
+    "scope",
+    "subject",
+    "auth",
+    "max_output_key",
+    "anthropic_adaptive_thinking",
+    "native_structured_output",
+    "model_capabilities",
+    "allow_metadata_hosts",
+];
+
+/// THE `providers.yaml` CATALOG, read as [`deployments`] reads `config.yaml`'s section: each entry's
+/// typed keys ([`CATALOG_KEYS`]) by its derived grammar, every other key into its
+/// [`ProviderDef::options`], judged at resolve.
+///
+/// # Errors
+///
+/// The typed grammar's, or a key written twice.
+pub fn catalog<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<HashMap<String, ProviderDef>, D::Error> {
+    let entries: HashMap<String, CatalogEntry> = HashMap::deserialize(de)?;
+    Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
+}
+
+/// [`catalog`] over a `providers.yaml` text.
+///
+/// # Errors
+///
+/// The YAML library's, with the path and position of the node it names.
+pub fn catalog_from_str(text: &str) -> Result<HashMap<String, ProviderDef>, serde_yaml::Error> {
+    catalog(serde_yaml::Deserializer::from_str(text))
+}
+
+/// One catalog entry read by [`catalog`].
+struct CatalogEntry(ProviderDef);
+
+impl<'de> Deserialize<'de> for CatalogEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_map(CatalogEntryVisitor)
+    }
+}
+
+struct CatalogEntryVisitor;
+
+impl<'de> serde::de::Visitor<'de> for CatalogEntryVisitor {
+    type Value = CatalogEntry;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("struct ProviderDef")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<CatalogEntry, A::Error> {
+        let mut options = ProviderTable::new();
+        let mut def =
+            ProviderDef::deserialize(serde::de::value::MapAccessDeserializer::new(OptionsAside {
+                inner: map,
+                keys: CATALOG_KEYS,
+                options: &mut options,
+            }))?;
+        def.options = options;
+        Ok(CatalogEntry(def))
+    }
+}
+
 /// A map read that hands the typed grammar only the keys it reads ([`DEPLOY_KEYS`]) and sets every
 /// other key, with its value, aside.
 struct OptionsAside<'a, A> {
     inner: A,
+    keys: &'static [&'static str],
     options: &'a mut ProviderTable,
 }
 
@@ -482,7 +565,7 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
             let Some(key) = self.inner.next_key::<String>()? else {
                 return Ok(None);
             };
-            if DEPLOY_KEYS.contains(&key.as_str()) {
+            if self.keys.contains(&key.as_str()) {
                 return seed
                     .deserialize(IntoDeserializer::<A::Error>::into_deserializer(key))
                     .map(Some);
@@ -513,12 +596,26 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
 ///
 /// The plane's refusal, or, when no loaded plane judges provider entries, the first option named.
 pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), String> {
+    judge_table(name, &provider.table)
+}
+
+/// [`judge_options`] of one CATALOG entry, alone: its typed keys and its options, as the plane would
+/// receive them were config.yaml to deploy it.
+///
+/// # Errors
+///
+/// As [`judge_options`].
+pub fn judge_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
+    judge_table(name, &with_options(def, &def.options))
+}
+
+fn judge_table(name: &str, table: &ProviderTable) -> Result<(), String> {
     let core = |k: &String| CORE_PROVIDER_KEYS.contains(&k.as_str());
     let typed = |k: &String| DEPLOY_KEYS.contains(&k.as_str()) || core(k);
-    let Some(first) = provider.table.keys().find(|k| !typed(k)) else {
+    let Some(first) = table.keys().find(|k| !typed(k)) else {
         return Ok(());
     };
-    match crate::plane_driver::door::judge_provider(name, &provider.table) {
+    match crate::plane_driver::door::judge_provider(name, table) {
         Some(judged) => judged,
         None => Err(format!(
             "providers.{name}: unknown field `{first}`: no loaded plane speaks this provider's \
@@ -608,7 +705,10 @@ impl ResolvedProvider {
                 .allow_metadata_hosts
                 .clone()
                 .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-            table: merge_tables(plane_table(def), with_options(deploy, &deploy.options)),
+            table: merge_tables(
+                with_options(def, &def.options),
+                with_options(deploy, &deploy.options),
+            ),
         }
     }
 
@@ -743,6 +843,7 @@ impl std::fmt::Debug for ProviderDef {
             native_structured_output,
             model_capabilities,
             allow_metadata_hosts,
+            options,
         } = self;
         f.debug_struct("ProviderDef")
             .field("protocol", protocol)
@@ -760,6 +861,8 @@ impl std::fmt::Debug for ProviderDef {
             .field("native_structured_output", native_structured_output)
             .field("model_capabilities", model_capabilities)
             .field("allow_metadata_hosts", allow_metadata_hosts)
+            // The names alone: a value is the plane's to judge, and is never printed.
+            .field("options", &options.keys().collect::<Vec<_>>())
             .finish()
     }
 }

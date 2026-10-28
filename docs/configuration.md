@@ -194,8 +194,9 @@ providers:
   sends the same header or query parameter, the caller's value is used. Names marked \* are forced:
   they select the account that is billed, so the configured value always goes out and a caller's
   value never does.
-- Options are a `config.yaml` setting. A `providers.yaml` catalog entry ignores keys it does not
-  know, as in 1.5.5.
+- A `providers.yaml` catalog entry follows the same rule: it may set options, and any other key
+  fails startup, naming the file and the key. This applies to every entry, deployed or not.
+  `busbar --migrate-config` reports stray catalog keys.
 
 ### Catalog fields
 
