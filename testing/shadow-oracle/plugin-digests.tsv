@@ -63,13 +63,14 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # 2026-10-28 (G14: each plugin declares its secret fields; busbar #1699 resolves a store setting's
 # reference only where the Statement declares one): each store row is its 31-slot table plus its real
 # secret field. store-sqlite dea3565 (branch pin-1667-secret-fields: a4b1316 with `license_key`, the
-# reference BOOT-170 holds); store-postgres 7e46dd8, store-valkey d4523d4 and store-mysql 1ac91b0 (branch
+# reference BOOT-170 holds); store-postgres d657675, store-valkey c435fab and store-mysql dedcbb3 (branch
 # pin-1667-secret-fields-2: 87fb817, b4f0902, 412a49c repinned to busbar 1f834fcaf3, with `url`, which
-# carries a 1.5.5 config's credentials).
+# carries a 1.5.5 config's credentials; each proves a url: {env:} reference passes the host's
+# secret-field check).
 store-sqlite	src:dea3565e64488076ea055fe55645342611578998	build:busbar-store-sqlite	-	1.6
-store-postgres	src:7e46dd8d290655053bce003a3a8a83c3a64cfa90	build:busbar-store-postgres	-	1.6
-store-valkey	src:d4523d4730b0cdfb7e738086a1676f3628cdec58	build:busbar-store-valkey	-	1.6
-store-mysql	src:1ac91b0909dbe5b9fa6b66d94aa5386df8e0aa61	build:busbar-store-mysql	-	1.6
+store-postgres	src:d657675f6d9fdcc7e34ed402daf5dfcd97bf9226	build:busbar-store-postgres	-	1.6
+store-valkey	src:c435fab009eef93b15106ebf414c487d16e35664	build:busbar-store-valkey	-	1.6
+store-mysql	src:dedcbb3c34f3936e98fb4a6e8e8865c1b945ce2d	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
 auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
 auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
