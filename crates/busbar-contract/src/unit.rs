@@ -6,9 +6,7 @@
 
 use crate::bounded::{BoundedVec, Facts, Ir, ScratchBytes, MAX_RESPONSE_PTRS, MAX_USAGE_LINES};
 use crate::grammar::Location;
-use crate::ids::{
-    CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId, UnitKey,
-};
+use crate::ids::{CorrelationRef, OpClassId, PrincipalId, SessionId, StreamId, UnitKey};
 use crate::plugin::KernelSeal;
 use crate::wire::Direction;
 use core::fmt;
@@ -313,30 +311,6 @@ pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass
         | UnitEnd::Aborted(AbortBy::Kernel { .. })
         | UnitEnd::Stalled => FinishClass::Partial,
     }
-}
-
-/// Where a plane found the values the metering step folds.
-///
-/// A plane returns locators, never amounts: the type carries a class, where the value was found,
-/// and the value itself when the plane read it out of a response it already parsed. The kernel's
-/// own accrual is the floor these are checked against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct UsageLocator {
-    /// Which class the value is for.
-    pub class: MeterClassId,
-    /// Where in the response the value was found.
-    pub location: Option<Location>,
-    /// The value, in the class's own quantity.
-    pub quantity: Option<u64>,
-    /// The lane the response itself named, where the dialect names one.
-    pub lane: Option<LaneId>,
-}
-
-/// Every locator one unit's metering step folds.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct UsageLocators {
-    /// The lines, one per class the plane read.
-    pub lines: BoundedVec<UsageLocator, MAX_USAGE_LINES>,
 }
 
 /// What the audit step seals about a unit.

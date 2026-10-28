@@ -15,7 +15,7 @@ pub use crate::transport::wire::{
     TransportError, Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
-use crate::bounded::{BoundedVec, ScratchBytes, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};
+use crate::bounded::{SlabBytes, MAX_CURSOR_BYTES};
 use crate::ids::StreamId;
 
 /// Transport bytes with a direction, a stream and meta. It has no meaning.
@@ -100,23 +100,4 @@ impl<'u> FrameCursor<'u> {
     pub fn scanned_bytes(&self) -> usize {
         self.scanned
     }
-}
-
-/// One field of an outbound request's transport envelope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EnvelopeField<'u> {
-    /// The field's name.
-    pub name: &'u str,
-    /// The field's bytes.
-    pub value: ScratchBytes<'u>,
-}
-
-/// The transport-level shape of an outbound request.
-///
-/// The envelope must still equal the verified destination after the egress-auth step has decorated
-/// it; the lane cross-check re-runs on the decorated bytes for exactly that reason.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TransportEnvelope<'u> {
-    /// The envelope's fields.
-    pub fields: BoundedVec<EnvelopeField<'u>, MAX_KEYS>,
 }

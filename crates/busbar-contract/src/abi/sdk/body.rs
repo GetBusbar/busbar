@@ -50,11 +50,3 @@ pub fn read_raw<'u>(body: &'u [u8], pointer: &str) -> Option<&'u [u8]> {
         _ => None,
     }
 }
-
-/// The string value at one pointer of a body, with its quotes stripped.
-#[must_use]
-pub fn read_str<'u>(body: &'u [u8], pointer: &str) -> Option<&'u str> {
-    let raw = read_raw(body, pointer)?;
-    let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-    core::str::from_utf8(inner).ok()
-}

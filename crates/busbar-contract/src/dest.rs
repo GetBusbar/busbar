@@ -5,10 +5,9 @@
 //! its own rule per kind, and only a verified destination can be dialled. A plane never holds a
 //! connection and never names a lane outside the set its claim's configuration declares.
 
-use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};
-use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UnitKey, UpstreamIdx};
+use crate::bounded::{BoundedVec, MAX_LEGS};
+use crate::ids::{LaneId, OpClassId, RecordSchemaId, StreamId, UnitKey, UpstreamIdx};
 use crate::plugin::KernelSeal;
-use crate::wire::TransportEnvelope;
 use core::fmt;
 
 /// Where a dial lands, as the transport family that dials it spells it.
@@ -259,20 +258,6 @@ impl fmt::Display for DestinationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "destination {}", self.0)
     }
-}
-
-/// The wire request a plane encoded for one verified destination.
-///
-/// The envelope is the transport's shape, the body is arena bytes, and the scheme names which
-/// egress-auth plugin decorates it. The plane names the scheme; it never holds the credential.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EgressBody<'u> {
-    /// The transport-level envelope.
-    pub envelope: TransportEnvelope<'u>,
-    /// The body bytes.
-    pub body: ScratchBytes<'u>,
-    /// Which egress-auth scheme decorates it.
-    pub auth: SchemeKey,
 }
 
 /// A placeholder the egress-auth unit substitutes a secret into.
