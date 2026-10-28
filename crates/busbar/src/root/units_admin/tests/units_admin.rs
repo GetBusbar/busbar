@@ -6146,17 +6146,9 @@ const ADJUST_ACK_PHASE: &str = "BUSBAR_TEST_ADJUST_ACK_PHASE";
 
 /// THE CHILD HALF of [`an_adjust_answers_only_once_the_store_kept_its_correction`], run only in a
 /// process of its own: it binds the node amendment journal's sink — one per process — to its book,
-/// as the production boot does (`root::boot`, `bind_amendments`). Ignored so the default run never
-/// counts it as a pass.
+/// as the production boot does (`root::boot`, `bind_amendments`).
 #[cfg(feature = "root-admin")]
-#[test]
-#[ignore = "child process of an_adjust_answers_only_once_the_store_kept_its_correction"]
 fn adjust_ack_phase() {
-    assert!(
-        std::env::var(ADJUST_ACK_PHASE).is_ok(),
-        "adjust_ack_phase is the child half of an_adjust_answers_only_once_the_store_kept_its_\
-         correction: run that, not this"
-    );
     let slots = crate::root::store_double::RecordSlots::new();
     let (book, digest) =
         a_store_kept_book_with_one_recorded_unit(&slots, "vk_adjust_h3_ack", "adjust-h3-ack");
@@ -6202,9 +6194,16 @@ fn adjust_ack_phase() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_adjust_answers_only_once_the_store_kept_its_correction() {
+    if std::env::var_os(ADJUST_ACK_PHASE).is_some() {
+        adjust_ack_phase();
+        return;
+    }
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::units_admin::tests::adjust_ack_phase"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .args([
+            "--exact",
+            "root::units_admin::tests::an_adjust_answers_only_once_the_store_kept_its_correction",
+        ])
+        .args(["--test-threads", "1", "--nocapture"])
         .env(ADJUST_ACK_PHASE, "1")
         .output()
         .expect("the test binary runs");

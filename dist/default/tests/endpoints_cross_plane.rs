@@ -575,7 +575,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     let fallback = linked::fallback();
     let door = opening_door();
     let _isolated =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[fallback, door]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[fallback, door]);
     let section = busbar_kernel::plane_driver::door::DoorSection::new(
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),

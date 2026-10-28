@@ -15,6 +15,7 @@ fn make_root_cfg(
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
+        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
@@ -6744,7 +6745,7 @@ fn plane_card(
 /// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
     let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
@@ -6766,7 +6767,7 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
 /// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m", "n"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
@@ -6778,8 +6779,7 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
 /// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let _iso =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "class-plane",
@@ -6833,7 +6833,7 @@ static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
     let _iso =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
@@ -6883,7 +6883,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[dropped]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[dropped]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
     let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
@@ -6902,7 +6902,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
 /// plus `units: { search_units: 0 }`) passes.
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         &FLAT_PLANE,
         &CLASS_PLANE,
     ]);
@@ -6948,7 +6948,7 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         session,
         &CLASS_PLANE,
     ]);
@@ -6995,7 +6995,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[session]);
+    let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[session]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
