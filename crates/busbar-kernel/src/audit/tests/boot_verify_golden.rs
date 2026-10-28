@@ -44,7 +44,7 @@
 //! bytes to make a failing test pass: a change here is a change to a persisted digest, and the test
 //! failing is the tripwire working.
 
-use crate::store::plane_view::{decode, PlaneStore, KIND_AUDIT};
+use crate::store::plane_view::{decode, SyncPlaneStore, KIND_AUDIT};
 use busbar_contract::records::{AuditRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 
 /// The one field this golden reads back off a frozen scoped-stream body — the tail digest. Decoded
@@ -104,7 +104,7 @@ impl FrozenStore {
     }
 }
 
-impl PlaneStore for FrozenStore {
+impl SyncPlaneStore for FrozenStore {
     fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
@@ -230,8 +230,12 @@ fn scoped_chain_boot_verifies_from_frozen_bytes() {
     // chain resumes after it.
     let tail: FrozenTailDigest = decode(SCOPED_2).unwrap();
     assert_eq!(tail.hash, SCOPED_TAIL_HASH);
-    let (seq, prev_hash, _hash) =
-        stream_registry::append_full(kind_id, FROZEN_SCOPE, b"next").expect("append");
+    let (seq, prev_hash, _hash) = crate::store::plane_view::wait_for(stream_registry::append_full(
+        kind_id,
+        FROZEN_SCOPE,
+        b"next",
+    ))
+    .expect("append");
     assert_eq!(
         (seq, prev_hash.as_str()),
         (3, SCOPED_TAIL_HASH),

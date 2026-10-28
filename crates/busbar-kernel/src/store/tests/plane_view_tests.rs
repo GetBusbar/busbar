@@ -3,7 +3,7 @@
 
 //! `PlaneStoreView` forwards to the real backend.
 
-use super::{PlaneStore, PlaneStoreView};
+use super::{wait_for, PlaneStore, PlaneStoreView};
 
 /// A single-use token kind, as a spent-approval ledger writes it (no production caller names one).
 const KIND_ASK: &str = "ask";
@@ -121,9 +121,11 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // Forwarding is observable: the wrapper hands a write and a read to the SAME inner `Store`, so
     // what one plane method persists another reads back. If `PlaneStoreView` did not forward, the
     // demotion would not survive the call and the redemption ledger would not advance.
-    let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(Arc::new(RecordingStore::default()));
+    let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(
+        crate::test_support::record_calls::RecordCalls::over(Arc::new(RecordingStore::default())),
+    );
     let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<DemoRow> {
-        s.list_plane_records(crate::store::plane_view::KIND_DEMOTION, &PlaneSelector::All)
+        wait_for(s.list_plane_records(crate::store::plane_view::KIND_DEMOTION, &PlaneSelector::All))
             .unwrap()
             .iter()
             .map(|body| crate::store::plane_view::decode(body).unwrap())
@@ -133,25 +135,21 @@ fn plane_store_view_forwards_to_the_real_backend() {
         list_demotions(&store).is_empty(),
         "a fresh backend holds no demotions"
     );
-    store
-        .upsert_plane_record(
-            PlaneRecord {
-                kind: crate::store::plane_view::KIND_DEMOTION.to_string(),
-                id: "srv-1".to_string(),
-                parent: None,
-                seq: 0,
-                ts: 100,
-                disposition: PlaneDisposition::Active,
-                body: crate::store::plane_view::encode(&DemoRow {
-                    server: "srv-1".to_string(),
-                    reason: "drift".to_string(),
-                    recorded_at: 100,
-                })
-                .unwrap(),
-            }
-            .view(),
-        )
-        .unwrap();
+    let demotion = PlaneRecord {
+        kind: crate::store::plane_view::KIND_DEMOTION.to_string(),
+        id: "srv-1".to_string(),
+        parent: None,
+        seq: 0,
+        ts: 100,
+        disposition: PlaneDisposition::Active,
+        body: crate::store::plane_view::encode(&DemoRow {
+            server: "srv-1".to_string(),
+            reason: "drift".to_string(),
+            recorded_at: 100,
+        })
+        .unwrap(),
+    };
+    wait_for(store.upsert_plane_record(demotion.view())).unwrap();
     let rows = list_demotions(&store);
     assert_eq!(rows.len(), 1, "the write forwarded to the inner backend");
     assert_eq!(rows[0].server, "srv-1");
@@ -159,15 +157,11 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // The spent-approval test-and-set forwards too: first redemption is fresh, the second is not,
     // which can only hold if both calls reached the one inner instance.
     assert!(
-        store
-            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
-            .unwrap(),
+        wait_for(store.redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)).unwrap(),
         "first redemption is fresh"
     );
     assert!(
-        !store
-            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
-            .unwrap(),
+        !wait_for(store.redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)).unwrap(),
         "second redemption sees the same inner ledger the wrapper forwarded to"
     );
 }

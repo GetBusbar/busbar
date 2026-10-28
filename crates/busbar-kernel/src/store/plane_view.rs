@@ -2,17 +2,21 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE STORE SEAM — the narrowing adapter that lets a plane persist its own trust state
-//! WITHOUT ever holding a handle that can write the append-only audit chain.
+//! WITHOUT ever holding a handle that can reach the rest of the store.
 //!
-//! [`busbar_contract::records::RecordStore`] is ONE trait that carries two unrelated authorities at once: the durable
-//! governance AUDIT CHAIN (`append_audit`/`list_audit`/`list_audit_tail`) and the per-plane durable
-//! state (a plane's own kind-tagged rows, the demotion record, the spent-approval ledger). Handing a plane an `Arc<dyn Store>` to persist its rows would, by the same handle, let it
-//! append audit records and forge a record's `prev_hash`/`hash` — the one thing the chain exists to
-//! make impossible.
+//! The host's one store seam, [`StoreCalls`], carries every op a store serves at once: keys,
+//! credentials, usage and metering, the legacy audit table, and the per-plane durable state (a
+//! plane's own kind-tagged rows, the demotion record, the spent-approval ledger). Handing a plane
+//! an `Arc<dyn StoreCalls>` to persist its rows would, by the same handle, let it rewrite keys and
+//! forge the audit chain's `prev_hash`/`hash` — the one thing the chain exists to make impossible.
 //!
-//! [`PlaneStore`] is the narrower of the two. It declares ONLY the eight neutral kind-tagged
+//! [`PlaneStore`] is the narrower of the two. It declares ONLY the nine neutral kind-tagged
 //! PLANE-RECORD verbs (`upsert_plane_record`/`append_plane_record`/… over the [`PlaneRecord`](busbar_contract::records::PlaneRecord)
-//! envelope), and NONE of the audit-chain, credential, key, usage or metering methods.
+//! envelope), and NONE of the key, credential, usage, metering or audit-table ops.
+//!
+//! Every verb is a FUTURE, as every [`StoreCalls`] op is: an op crosses on a ticket's dispatcher
+//! worker and the caller awaits it, so no thread is parked on a store. A caller that is itself a
+//! blocking thread (boot, the host pool) owns its one wait ([`wait_for`]).
 //!
 //! ## Neutral kind-tagged verbs, OPAQUE bodies
 //!
@@ -32,7 +36,14 @@
 //! wrapper — receives an already-sealed row and persists it verbatim; it never computes or recomputes
 //! a digest.
 
-use busbar_contract::records::{PlaneRecordRef, RecordStoreError, RecordStoreResult};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use busbar_contract::records::{
+    PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
+};
+use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
 // ── THE KIND TAG CONSTANTS (the neutral on-wire `PlaneRecord.kind` vocabulary) ───────────────────
 //
@@ -71,38 +82,181 @@ pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<
 #[path = "tests/plane_view_tests.rs"]
 mod plane_view_tests;
 
-use busbar_contract::records::{PlaneSelector, RecordStore};
-use std::sync::Arc;
+/// One plane-store call in flight.
+pub type PlaneCall<'a, T> = Pin<Box<dyn Future<Output = RecordStoreResult<T>> + Send + 'a>>;
 
-/// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
-/// [`busbar_contract::records::RecordStore`], and provably none of its audit-chain / key / credential / usage authority.
-/// A plane persists its trust state through this and cannot reach [`RecordStore::append_audit`] because the
-/// method is not on the trait.
-///
-/// The method names and signatures MIRROR `Store`'s neutral verbs so a `Store` implementation
-/// forwards to them one-to-one (see [`PlaneStoreView`]); the mirroring is deliberate and is NOT a
-/// modification of `Store` — this is an additional, strictly-narrower trait owned by core.
+/// The PLANE-FACING durable sink: exactly the nine neutral kind-tagged verbs of [`StoreCalls`],
+/// and provably none of its key / credential / usage / audit-table authority. A plane persists its
+/// trust state through this and cannot reach the rest of the store because no other op is on the
+/// trait.
 pub trait PlaneStore: Send + Sync + 'static {
-    /// See [`RecordStore::upsert_plane_record`] — the neutral upsert.
+    /// See [`StoreCalls::upsert_plane_record`] — the neutral upsert.
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> PlaneCall<'a, ()>;
+    /// See [`StoreCalls::get_plane_record`] — the neutral point read.
+    fn get_plane_record<'a>(&'a self, kind: &'a str, id: &'a str)
+        -> PlaneCall<'a, Option<Vec<u8>>>;
+    /// See [`StoreCalls::append_plane_record`] — the neutral append.
+    fn append_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> PlaneCall<'a, ()>;
+    /// See [`StoreCalls::list_plane_records`] — the neutral list (kind × selector).
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> PlaneCall<'a, Vec<Vec<u8>>>;
+    /// See [`StoreCalls::list_plane_record_parents`] — the neutral parent enumeration.
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> PlaneCall<'a, Vec<String>>;
+    /// See [`StoreCalls::purge_plane_records_before`] — the neutral retention purge (honoring the
+    /// store's terminal-only-vs-all-older split per kind).
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> PlaneCall<'a, u64>;
+    /// See [`StoreCalls::delete_plane_record`] — the neutral delete.
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> PlaneCall<'a, ()>;
+    /// See [`StoreCalls::redeem_plane_token`] — the neutral single-use test-and-set.
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> PlaneCall<'a, bool>;
+    /// See [`StoreCalls::plane_token_live`] — the neutral MULTI-USE capability check:
+    /// live while the record is present, still `Active`, and inside its deadline. Spends nothing.
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> PlaneCall<'a, bool>;
+}
+
+/// The one bridge across the plane store seam: wraps the configured store's [`StoreCalls`] and
+/// forwards each neutral verb to it, exposing ONLY [`PlaneStore`]. Boot builds one per configured
+/// store via [`PlaneStoreView::narrow`] and every plane state type holds the resulting
+/// `Arc<dyn PlaneStore>`, so a plane's durable writes reach the same backend the engine uses while
+/// its handle carries none of the rest of the store's authority.
+///
+/// No `Debug`: a store handle is deliberately not `Debug` (a backend must not be obliged to render
+/// itself, where a credential could surface in a log), so neither is this.
+pub struct PlaneStoreView(Arc<dyn StoreCalls>);
+
+impl PlaneStoreView {
+    /// Narrow a store's calls to a plane-facing handle. The ONLY place an `Arc<dyn StoreCalls>`
+    /// becomes an `Arc<dyn PlaneStore>`; called once per configured store at boot.
+    pub fn narrow(calls: Arc<dyn StoreCalls>) -> Arc<dyn PlaneStore> {
+        Arc::new(Self(calls))
+    }
+}
+
+/// A store call's failure in the plane verbs' words: a FAILED op carries the store's own text
+/// unchanged, so an operator reads the backend's text exactly as 1.5.5 printed it; the other
+/// failures have no 1.5.5 counterpart and keep their typed wording.
+pub(crate) fn answer<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
+    r.map_err(|f| match f {
+        StoreFailure::Failed(text) => RecordStoreError(text),
+        other => RecordStoreError(other.to_string()),
+    })
+}
+
+impl PlaneStore for PlaneStoreView {
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> PlaneCall<'a, ()> {
+        Box::pin(async move { answer(self.0.upsert_plane_record(record).await) })
+    }
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> PlaneCall<'a, Option<Vec<u8>>> {
+        Box::pin(async move { answer(self.0.get_plane_record(kind, id).await) })
+    }
+    /// The append is deduped on an `op_id` from the node's one allocator ([`crate::door::op_id`]).
+    fn append_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> PlaneCall<'a, ()> {
+        let op = crate::door::op_id();
+        Box::pin(async move { answer(self.0.append_plane_record(op, record).await) })
+    }
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> PlaneCall<'a, Vec<Vec<u8>>> {
+        Box::pin(async move { answer(self.0.list_plane_records(kind, selector).await) })
+    }
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> PlaneCall<'a, Vec<String>> {
+        Box::pin(async move { answer(self.0.list_plane_record_parents(kind).await) })
+    }
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> PlaneCall<'a, u64> {
+        Box::pin(async move { answer(self.0.purge_plane_records_before(kind, before).await) })
+    }
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> PlaneCall<'a, ()> {
+        Box::pin(async move { answer(self.0.delete_plane_record(kind, id).await) })
+    }
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> PlaneCall<'a, bool> {
+        Box::pin(async move {
+            answer(
+                self.0
+                    .redeem_plane_token(kind, token, expires_at, now)
+                    .await,
+            )
+        })
+    }
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> PlaneCall<'a, bool> {
+        Box::pin(async move { answer(self.0.plane_token_live(kind, token, expires_at, now).await) })
+    }
+}
+
+/// WAIT for `fut` on this thread: parks until it is woken, polling it on this thread. The ONE
+/// boundary a blocking caller owns (boot before a listener binds, a host-pool job, the admin audit
+/// writer's own thread): a store op crosses on a dispatcher worker, never on the waiting thread, so
+/// the wait completes. Never called from a runtime worker or a dispatcher worker.
+pub fn wait_for<F: Future>(fut: F) -> F::Output {
+    use std::task::{Context, Poll, Wake, Waker};
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if let Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+            return out;
+        }
+        std::thread::park();
+    }
+}
+
+/// TEST ONLY: a plane-store double written as plain synchronous methods. Each verb runs when it is
+/// called and its future answers at once, so a cell can park, fail or re-enter inside a store
+/// crossing exactly where the crossing happens.
+#[cfg(test)]
+pub(crate) trait SyncPlaneStore: Send + Sync + 'static {
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
-    /// See [`RecordStore::get_plane_record`] — the neutral point read.
     fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
-    /// See [`RecordStore::append_plane_record`] — the neutral append.
     fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
-    /// See [`RecordStore::list_plane_records`] — the neutral list (kind × selector).
     fn list_plane_records(
         &self,
         kind: &str,
         selector: &PlaneSelector,
     ) -> RecordStoreResult<Vec<Vec<u8>>>;
-    /// See [`RecordStore::list_plane_record_parents`] — the neutral parent enumeration.
     fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>>;
-    /// See [`RecordStore::purge_plane_records_before`] — the neutral retention purge (honoring the
-    /// store's terminal-only-vs-all-older split per kind).
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64>;
-    /// See [`RecordStore::delete_plane_record`] — the neutral delete.
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()>;
-    /// See [`RecordStore::redeem_plane_token`] — the neutral single-use test-and-set.
     fn redeem_plane_token(
         &self,
         kind: &str,
@@ -110,8 +264,6 @@ pub trait PlaneStore: Send + Sync + 'static {
         expires_at: u64,
         now: u64,
     ) -> RecordStoreResult<bool>;
-    /// See [`RecordStore::plane_token_live`] — the neutral MULTI-USE capability check:
-    /// live while the record is present, still `Active`, and inside its deadline. Spends nothing.
     fn plane_token_live(
         &self,
         kind: &str,
@@ -121,66 +273,71 @@ pub trait PlaneStore: Send + Sync + 'static {
     ) -> RecordStoreResult<bool>;
 }
 
-/// The one bridge across the plane store seam: wraps the real [`busbar_contract::records::RecordStore`] and forwards
-/// each neutral verb to it, exposing ONLY [`PlaneStore`]. Boot builds one per configured store via
-/// [`PlaneStoreView::narrow`] and every plane state type holds the resulting `Arc<dyn PlaneStore>`,
-/// so a plane's durable writes reach the same backend the engine uses while its handle carries none
-/// of the audit-chain authority `Store` also holds.
-///
-/// No `Debug`: `dyn Store` is deliberately not `Debug` (a backend must not be obliged to render
-/// itself, where a credential could surface in a log), so neither is this.
-pub struct PlaneStoreView(Arc<dyn RecordStore>);
-
-impl PlaneStoreView {
-    /// Narrow a real store handle to a plane-facing one. The ONLY place an `Arc<dyn Store>` becomes
-    /// an `Arc<dyn PlaneStore>`; called once per configured store at boot.
-    pub fn narrow(store: Arc<dyn RecordStore>) -> Arc<dyn PlaneStore> {
-        Arc::new(Self(store))
+#[cfg(test)]
+impl<S: SyncPlaneStore> PlaneStore for S {
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> PlaneCall<'a, ()> {
+        Box::pin(std::future::ready(SyncPlaneStore::upsert_plane_record(
+            self, record,
+        )))
     }
-}
-
-impl PlaneStore for PlaneStoreView {
-    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.0.upsert_plane_record(record)
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> PlaneCall<'a, Option<Vec<u8>>> {
+        Box::pin(std::future::ready(SyncPlaneStore::get_plane_record(
+            self, kind, id,
+        )))
     }
-    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        self.0.get_plane_record(kind, id)
+    fn append_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> PlaneCall<'a, ()> {
+        Box::pin(std::future::ready(SyncPlaneStore::append_plane_record(
+            self, record,
+        )))
     }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.0.append_plane_record(record)
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> PlaneCall<'a, Vec<Vec<u8>>> {
+        Box::pin(std::future::ready(SyncPlaneStore::list_plane_records(
+            self, kind, selector,
+        )))
     }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.0.list_plane_records(kind, selector)
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> PlaneCall<'a, Vec<String>> {
+        Box::pin(std::future::ready(
+            SyncPlaneStore::list_plane_record_parents(self, kind),
+        ))
     }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.0.list_plane_record_parents(kind)
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> PlaneCall<'a, u64> {
+        Box::pin(std::future::ready(
+            SyncPlaneStore::purge_plane_records_before(self, kind, before),
+        ))
     }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.0.purge_plane_records_before(kind, before)
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> PlaneCall<'a, ()> {
+        Box::pin(std::future::ready(SyncPlaneStore::delete_plane_record(
+            self, kind, id,
+        )))
     }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.0.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
         expires_at: u64,
         now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.0.redeem_plane_token(kind, token, expires_at, now)
+    ) -> PlaneCall<'a, bool> {
+        Box::pin(std::future::ready(SyncPlaneStore::redeem_plane_token(
+            self, kind, token, expires_at, now,
+        )))
     }
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
         expires_at: u64,
         now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.0.plane_token_live(kind, token, expires_at, now)
+    ) -> PlaneCall<'a, bool> {
+        Box::pin(std::future::ready(SyncPlaneStore::plane_token_live(
+            self, kind, token, expires_at, now,
+        )))
     }
 }

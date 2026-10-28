@@ -41,14 +41,23 @@
 //!
 //! ## What a deployment with no durable store gets
 //!
-//! Exactly what it had. [`busbar_contract::records::RecordStore`]'s methods here are defaulted to accept-and-keep-
-//! nothing, so with no sink attached — or with a backend that implements none of them, which is the
-//! same thing from here — the write is discarded and the boot read is empty. The quarantine is then
-//! process-local and bounded by one sweep interval, which is the pre-existing behaviour. As
+//! Exactly what it had. With no sink attached — or with a backend that keeps no plane records, which
+//! is the same thing from here — the write is discarded and the boot read is empty. The quarantine is
+//! then process-local and bounded by one sweep interval, which is the pre-existing behaviour. As
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
+//!
+//! ## Where it waits
+//!
+//! Each call owns its one wait for the store's answer ([`wait_for`]): on the host pool (the
+//! sighting's settle, the trust re-read), at boot and plane open, on an admin handler, and on a
+//! plugin's own crossing (its trust decision). A store op never waits for the worker it was called
+//! on: the loader crosses it on another of the dispatcher's workers, and on the dispatcher's only
+//! worker, on the calling thread itself.
 
-use crate::store::plane_view::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
+use crate::store::plane_view::{
+    decode, encode, wait_for, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION,
+};
 use crate::trust::book::RulingRow;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};
@@ -134,7 +143,7 @@ impl DemotionRecord {
         };
         if let Err(e) = row
             .to_plane_record()
-            .and_then(|rec| store.upsert_plane_record(rec.view()))
+            .and_then(|rec| wait_for(store.upsert_plane_record(rec.view())))
         {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
@@ -154,7 +163,7 @@ impl DemotionRecord {
         let Some(store) = self.sink() else {
             return;
         };
-        if let Err(e) = store.delete_plane_record(KIND_DEMOTION, upstream) {
+        if let Err(e) = wait_for(store.delete_plane_record(KIND_DEMOTION, upstream)) {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_CLEAR_FAILED,
                 server = %upstream,
@@ -178,8 +187,7 @@ impl DemotionRecord {
         let Some(store) = self.sink() else {
             return Ok(Vec::new());
         };
-        store
-            .list_plane_records(KIND_DEMOTION, &PlaneSelector::All)
+        wait_for(store.list_plane_records(KIND_DEMOTION, &PlaneSelector::All))
             .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
             .map_err(|e| format!("the durable demotion records could not be read: {e}"))
     }
@@ -219,9 +227,7 @@ impl DemotionRecord {
             disposition: PlaneDisposition::Active,
             body: encode(row).map_err(|e| e.to_string())?,
         };
-        store
-            .upsert_plane_record(record.view())
-            .map_err(|e| e.to_string())
+        wait_for(store.upsert_plane_record(record.view())).map_err(|e| e.to_string())
     }
 
     /// EVERY kept trust decision; empty when no store is attached or none was kept.
@@ -234,8 +240,7 @@ impl DemotionRecord {
         let Some(store) = self.sink() else {
             return Ok(Vec::new());
         };
-        store
-            .list_plane_records(KIND_TRUST_DECISION, &PlaneSelector::All)
+        wait_for(store.list_plane_records(KIND_TRUST_DECISION, &PlaneSelector::All))
             .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
             .map_err(|e| format!("the durable trust decisions could not be read: {e}"))
     }

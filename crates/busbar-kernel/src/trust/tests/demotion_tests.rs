@@ -44,7 +44,7 @@ impl<T: RecordStore + ?Sized> DemotionStoreTestExt for T {}
 fn node(cfg: &str) -> DemotionRecord {
     let d = DemotionRecord::new();
     d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        open_durable(cfg),
+        crate::test_support::record_calls::RecordCalls::over(open_durable(cfg)),
     ));
     d
 }
@@ -235,7 +235,9 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     let d = DemotionRecord::new();
     d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        crate::test_support::record_calls::RecordCalls::over(std::sync::Arc::new(
+            crate::governance::MemoryStore::new(),
+        )),
     ));
     d.record("fs", "quarantined", 100);
     assert_eq!(
@@ -247,7 +249,9 @@ fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     // The restart: a new process gets a new map, and the demotion is not in it.
     let restarted = DemotionRecord::new();
     restarted.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        crate::test_support::record_calls::RecordCalls::over(std::sync::Arc::new(
+            crate::governance::MemoryStore::new(),
+        )),
     ));
     assert!(
         restarted.list().is_empty(),

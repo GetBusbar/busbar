@@ -253,8 +253,8 @@ pub(crate) fn residual_record_from_body(
 
 /// Register the residual stream under `kind_id` (production pins [`KIND_ID_RESIDUAL`]; a test
 /// passes a fresh id), decoded in core by [`reframe_residual`], its position cache bounded at
-/// [`MAX_TRACKED_PRINCIPALS`]. The durable sink is `app.governance`'s store.
-pub(crate) fn register_residual_stream_as(kind_id: u32, app: &Arc<crate::state::App>) {
+/// [`MAX_TRACKED_PRINCIPALS`]. The durable sink is `sink` (production: `app.governance`'s store).
+pub(crate) fn register_residual_stream_as(kind_id: u32, sink: Option<Arc<dyn PlaneStore>>) {
     stream_registry::register(
         kind_id,
         KIND_RESIDUAL.to_string(),
@@ -262,9 +262,7 @@ pub(crate) fn register_residual_stream_as(kind_id: u32, app: &Arc<crate::state::
         RESIDUAL_DIGESTS_SCOPE,
         Decode::Native(reframe_residual),
         MAX_TRACKED_PRINCIPALS,
-        app.governance
-            .as_ref()
-            .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store())),
+        sink,
     );
 }
 
@@ -284,7 +282,7 @@ pub struct PlaneResidualLog {
     unresumable: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Serialises the tolerant resume ([`PlaneResidualLog::resume_past_unreadable`]), the one path
     /// that seeds a position outside the stream's own append.
-    resume: std::sync::Mutex<()>,
+    resume: tokio::sync::Mutex<()>,
 }
 
 /// THE PROCESS-WIDE RESIDUAL LOG. Process state, like [`crate::audit::auditlog::AUDIT_LOG`]: a config apply
@@ -309,11 +307,11 @@ impl PlaneResidualLog {
     /// as living in the store, so its first append reads its rows back and resumes from the stored
     /// tail instead of opening a second chain at seq 1. No row is read here; that cost is paid once
     /// per principal, by the principal, when it next settles.
-    pub fn restore_from_store(
+    pub async fn restore_from_store(
         &self,
         store: &dyn PlaneStore,
     ) -> RecordStoreResult<ResidualRestored> {
-        let principals = store.list_plane_record_parents(KIND_RESIDUAL)?;
+        let principals = store.list_plane_record_parents(KIND_RESIDUAL).await?;
         let Some(stream) = stream_registry::handle(self.kind_id) else {
             return Err(RecordStoreError(
                 "the usage.residual stream is not registered".to_string(),
@@ -328,29 +326,35 @@ impl PlaneResidualLog {
     }
 
     /// One append on the stream. `Err` carries whether a stored row refused to decode during the
-    /// append's resume (see [`REFRAME_REFUSED`]).
-    fn try_append(
+    /// append's resume (see [`REFRAME_REFUSED`]: the reframe that sets it runs after the resume's
+    /// last await, in the poll that returns the error, so it is read on the thread that set it).
+    async fn try_append(
         &self,
         principal: &str,
         content: &[u8],
     ) -> Result<(u64, String, String), (RecordStoreError, bool)> {
         REFRAME_REFUSED.with(|refused| refused.set(false));
         stream_registry::append_full(self.kind_id, principal, content)
+            .await
             .map_err(|e| (e, REFRAME_REFUSED.with(|refused| refused.replace(false))))
     }
 
     /// Append `content` on `principal`'s chain. The stream resumes a principal it holds no position
     /// for from the store, and that resume refuses outright if any stored row will not decode; this
     /// log instead skips such rows ([`PlaneResidualLog::resume_past_unreadable`]) and appends.
-    fn append(&self, principal: &str, content: &[u8]) -> RecordStoreResult<(u64, String, String)> {
-        match self.try_append(principal, content) {
+    async fn append(
+        &self,
+        principal: &str,
+        content: &[u8],
+    ) -> RecordStoreResult<(u64, String, String)> {
+        match self.try_append(principal, content).await {
             Ok(minted) => return Ok(minted),
             Err((e, false)) => return Err(e),
             Err((_, true)) => {}
         }
-        let _serial = self.resume.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = self.resume.lock().await;
         // Another writer may have resumed this principal while this one waited.
-        match self.try_append(principal, content) {
+        match self.try_append(principal, content).await {
             Ok(minted) => return Ok(minted),
             Err((e, false)) => return Err(e),
             Err((_, true)) => {}
@@ -358,8 +362,8 @@ impl PlaneResidualLog {
         // The stream still holds no position for the principal (a miss is what resumes, and a
         // resume that meets an undecodable row commits nothing), and no other path can seed one
         // while this lock is held, so seeding from the store here cannot rewind a live position.
-        self.resume_past_unreadable(principal)?;
-        stream_registry::append_full(self.kind_id, principal, content)
+        self.resume_past_unreadable(principal).await?;
+        stream_registry::append_full(self.kind_id, principal, content).await
     }
 
     /// THE TOLERANT RESUME of one principal whose stored rows do not all decode: read its rows,
@@ -367,14 +371,14 @@ impl PlaneResidualLog {
     /// does not verify still resumes from its tail and is reported. When the TAIL will not decode
     /// the position is unknown, so the principal is marked unresumable and its appends are refused
     /// rather than forking the log.
-    fn resume_past_unreadable(&self, principal: &str) -> RecordStoreResult<()> {
+    async fn resume_past_unreadable(&self, principal: &str) -> RecordStoreResult<()> {
         let store = stream_registry::handle(self.kind_id)
             .and_then(|stream| stream.journal.sink())
             .ok_or_else(|| {
                 RecordStoreError("the usage.residual stream has no durable store".to_string())
             })?;
-        let raw =
-            store.list_plane_records(KIND_RESIDUAL, &PlaneSelector::Parent(principal.into()))?;
+        let selector = PlaneSelector::Parent(principal.into());
+        let raw = store.list_plane_records(KIND_RESIDUAL, &selector).await?;
         let mut bodies = Vec::with_capacity(raw.len());
         let mut tail_unreadable = false;
         for body in raw {
@@ -421,7 +425,7 @@ impl PlaneResidualLog {
     /// RECORD one row with no host (the settle runs on the accrual funnel, which may be off a
     /// dispatch scope). Mints the link on the principal's chain and writes the body through to the
     /// store; on a store failure the position is untouched.
-    pub(crate) fn record_hostless(
+    pub(crate) async fn record_hostless(
         &self,
         principal: &str,
         input: ResidualInput,
@@ -430,7 +434,7 @@ impl PlaneResidualLog {
             return Err(unresumable_error());
         }
         let content = residual_suffix(&input);
-        let (seq, prev_hash, hash) = self.append(principal, &content)?;
+        let (seq, prev_hash, hash) = self.append(principal, &content).await?;
         Ok(ResidualRecorded {
             principal: principal.to_string(),
             seq,
@@ -448,26 +452,30 @@ impl PlaneResidualLog {
     }
 
     /// READ one principal's rows back from the store, oldest first.
-    pub fn read_back(
+    pub async fn read_back(
         &self,
         store: &dyn PlaneStore,
         principal: &str,
     ) -> RecordStoreResult<Vec<ResidualRecorded>> {
+        let selector = PlaneSelector::Parent(principal.into());
         store
-            .list_plane_records(KIND_RESIDUAL, &PlaneSelector::Parent(principal.into()))?
+            .list_plane_records(KIND_RESIDUAL, &selector)
+            .await?
             .iter()
             .map(|body| residual_record_from_body(principal, body))
             .collect()
     }
 
     /// VERIFY one principal's persisted chain end to end: `Ok(Ok(n))` is `n` rows verified.
-    pub fn verify_principal_chain(
+    pub async fn verify_principal_chain(
         &self,
         store: &dyn PlaneStore,
         principal: &str,
     ) -> RecordStoreResult<Result<usize, ChainBreak>> {
+        let selector = PlaneSelector::Parent(principal.into());
         let records: Vec<StreamRecord> = store
-            .list_plane_records(KIND_RESIDUAL, &PlaneSelector::Parent(principal.into()))?
+            .list_plane_records(KIND_RESIDUAL, &selector)
+            .await?
             .iter()
             .map(|b| reframe_residual(principal, b))
             .collect::<RecordStoreResult<_>>()?;
@@ -486,7 +494,7 @@ fn unresumable_error() -> RecordStoreError {
 /// THE SETTLE: one `usage.residual` row on `log` per non-empty `residual` map; an empty map writes
 /// nothing and returns `None`. The kernel spells the row, so a plane hands the counts over and
 /// never writes it itself.
-pub(crate) fn settle(
+pub(crate) async fn settle(
     log: &PlaneResidualLog,
     residual: &BTreeMap<String, u64>,
     plane: &str,
@@ -506,13 +514,13 @@ pub(crate) fn settle(
         request_id,
         units: residual.clone(),
     };
-    Some(log.record_hostless(principal, input))
+    Some(log.record_hostless(principal, input).await)
 }
 
 /// THE EMITTER: settle on [`RESIDUALS`] and report the result. A failure is raised at `error!` on the transition into
 /// failing (then held at `debug!` until a write succeeds), never swallowed silently and never
 /// failing the request.
-pub fn emit(
+pub async fn emit(
     residual: &BTreeMap<String, u64>,
     plane: &str,
     dialect: &str,
@@ -524,7 +532,9 @@ pub fn emit(
     use std::sync::atomic::Ordering::Relaxed;
     match settle(
         &RESIDUALS, residual, plane, dialect, lane, request_id, principal,
-    ) {
+    )
+    .await
+    {
         None => {}
         Some(Ok(row)) => {
             FAILING.store(false, Relaxed);
@@ -565,13 +575,19 @@ pub fn emit(
 /// With no governance store the stream still registers and keeps its positions in RAM.
 /// The restore summary logs at `debug!`: an LLM-only boot on a durable store prints no line 1.5.5
 /// never printed (the same neutrality the root boot applies to its seal line).
+///
+/// Boot, before a listener binds: this thread owns the one wait for the store's answer.
 pub(crate) fn register_and_restore(app: &Arc<crate::state::App>) {
-    register_residual_stream_as(KIND_ID_RESIDUAL, app);
-    let Some(gov) = app.governance.as_ref() else {
+    let sink = app
+        .governance
+        .as_ref()
+        .and_then(|gov| gov.store_calls())
+        .map(crate::store::plane_view::PlaneStoreView::narrow);
+    register_residual_stream_as(KIND_ID_RESIDUAL, sink.clone());
+    let Some(store) = sink else {
         return;
     };
-    let store = crate::store::plane_view::PlaneStoreView::narrow(gov.store());
-    match RESIDUALS.restore_from_store(store.as_ref()) {
+    match crate::store::plane_view::wait_for(RESIDUALS.restore_from_store(store.as_ref())) {
         Ok(r) if r.principals > 0 => tracing::debug!(
             principals = r.principals,
             "usage.residual log restored from the durable store; each principal resumes from its \
@@ -594,8 +610,8 @@ fn fresh_test_kind_id() -> u32 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// TEST ONLY: a residual log over a fresh stream id, registered against an app whose governance
-/// store is `store`. A "restart" is a second `over` the SAME store.
+/// TEST ONLY: a residual log over a fresh stream id, registered over `store`. A "restart" is a
+/// second `over` the SAME store.
 #[cfg(test)]
 pub(crate) struct ResidualTestHarness {
     pub(crate) log: PlaneResidualLog,
@@ -605,10 +621,12 @@ pub(crate) struct ResidualTestHarness {
 impl ResidualTestHarness {
     pub(crate) fn over(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
         let kind_id = fresh_test_kind_id();
-        let gov =
-            Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
-        let app = crate::test_support::TestApp::new().governance(gov).build();
-        register_residual_stream_as(kind_id, &app);
+        register_residual_stream_as(
+            kind_id,
+            Some(crate::store::plane_view::PlaneStoreView::narrow(
+                crate::test_support::record_calls::RecordCalls::over(store),
+            )),
+        );
         Self {
             log: PlaneResidualLog::with_kind_id(kind_id),
         }
@@ -619,7 +637,7 @@ impl ResidualTestHarness {
         &self,
         store: &dyn PlaneStore,
     ) -> RecordStoreResult<ResidualRestored> {
-        self.log.restore_from_store(store)
+        crate::store::plane_view::wait_for(self.log.restore_from_store(store))
     }
 }
 

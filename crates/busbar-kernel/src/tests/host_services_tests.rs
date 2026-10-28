@@ -197,7 +197,7 @@ fn rig() -> Rig {
 fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
     d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        store.clone(),
+        crate::test_support::record_calls::RecordCalls::over(store.clone()),
     ));
     Arc::new(d)
 }
@@ -1920,7 +1920,7 @@ struct ParkingStore {
     release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
-impl crate::store::plane_view::PlaneStore for ParkingStore {
+impl crate::store::plane_view::SyncPlaneStore for ParkingStore {
     fn upsert_plane_record(
         &self,
         _: busbar_contract::records::PlaneRecordRef<'_>,
@@ -2085,7 +2085,7 @@ struct Probe {
     lock_free_at_read: Mutex<Vec<bool>>,
 }
 
-impl crate::store::plane_view::PlaneStore for Probe {
+impl crate::store::plane_view::SyncPlaneStore for Probe {
     fn upsert_plane_record(
         &self,
         record: busbar_contract::records::PlaneRecordRef<'_>,
@@ -2262,7 +2262,7 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
 /// A store that is down: every plane-record call fails.
 struct DownStore;
 
-impl crate::store::plane_view::PlaneStore for DownStore {
+impl crate::store::plane_view::SyncPlaneStore for DownStore {
     fn upsert_plane_record(
         &self,
         _record: busbar_contract::records::PlaneRecordRef<'_>,

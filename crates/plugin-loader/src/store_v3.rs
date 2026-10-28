@@ -262,7 +262,7 @@ impl LoadedStore {
         }
     }
 
-    /// The worker the bridge submits to: the next in turn, never the calling thread's own; `None`
+    /// The worker an op is submitted to: the next in turn, never the calling thread's own; `None`
     /// when the calling thread is the dispatcher's only worker.
     fn bridge_worker(&self) -> Option<u32> {
         pick_worker(
@@ -271,10 +271,8 @@ impl LoadedStore {
         )
     }
 
-    /// A ticket-less crossing on this thread, the one re-call of a short answer: the bridge's path
-    /// on a dispatcher's only worker, where a ticketed op could never run.
-    // TRANSITIONAL: the one-worker fallback of the bridge's wait (ARCHITECT ruling 2026-10-03 on
-    // Q-L16-1); drains with the bridge (D2/D3; 1.6.0-TODO.md).
+    /// A ticket-less crossing on this thread, the one re-call of a short answer: an op's path on a
+    /// dispatcher's only worker, where a ticketed op could never run while that worker waits.
     fn inline<R: Req>(&self, r: &mut R) -> Ran<R::O> {
         let s = r.slot();
         let mut f = Frame::new(r.input(), r.out());
@@ -297,11 +295,16 @@ impl LoadedStore {
     }
 
     /// THE TYPED RUNNER: submitted on a ticket, awaited, a short answer re-submitted once on the
-    /// same ticket.
-    async fn submit<R: Req>(&self, r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
+    /// same ticket. Called on one of the dispatcher's own workers (a host service the kernel
+    /// answers on a plugin's crossing, which may wait for the op there), the op goes to another
+    /// worker; on a dispatcher with that worker alone it crosses ticket-less on this thread
+    /// ([`LoadedStore::inline`]), so the op never waits for the thread waiting on it.
+    async fn submit<R: Req>(&self, mut r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
-        let workers = self.dispatcher.workers().max(1);
-        let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
+        let Some(worker) = self.bridge_worker() else {
+            let ran = self.inline(&mut r);
+            return (ran, Lend::new(r));
+        };
         let Some(ticket) = self.dispatcher.mint(worker) else {
             return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
         };

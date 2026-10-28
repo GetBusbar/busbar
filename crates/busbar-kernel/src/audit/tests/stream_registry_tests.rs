@@ -5,12 +5,21 @@
 //! driven with NO host handle — append, restart, seed, continue — and a decode fault reads back with
 //! the same text the seam bridge it replaces reported.
 
-use super::{append_full, handle, register, seed, Decode, StreamRecord};
+use super::{handle, register, seed, Decode, StreamRecord};
 use crate::audit::journal::NeutralBody;
 use crate::audit::Framing;
 use crate::store::plane_view::{decode, encode};
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use std::sync::atomic::{AtomicU32, Ordering};
+
+/// [`super::append_full`], awaited on this thread.
+fn append_full(
+    kind_id: u32,
+    scope: &str,
+    content: &[u8],
+) -> Result<(u64, String, String), RecordStoreError> {
+    crate::store::plane_view::wait_for(super::append_full(kind_id, scope, content))
+}
 
 /// Base 400_000: clear of the production ids and of every other suite's test range (the seam's
 /// 10_000, the task journal's 100_000, the residual log's 200_000, the admin audit's 300_000).

@@ -7,14 +7,31 @@
 //! money evidence, so it lives on the DURABLE per-principal journal stream, survives a restart and
 //! replays, and never touches the bounded in-RAM admin audit ring.
 
-use crate::residual_log::{settle, ResidualTestHarness, USAGE_RESIDUAL_ACTION};
-use crate::store::plane_view::KIND_RESIDUAL;
+use crate::residual_log::{
+    PlaneResidualLog, ResidualRecorded, ResidualTestHarness, USAGE_RESIDUAL_ACTION,
+};
+use crate::store::plane_view::{wait_for, KIND_RESIDUAL};
 use busbar_contract::records::{
     PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult,
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// [`crate::residual_log::settle`], awaited on this thread.
+fn settle(
+    log: &PlaneResidualLog,
+    residual: &BTreeMap<String, u64>,
+    plane: &str,
+    dialect: &str,
+    lane: &str,
+    request_id: u64,
+    principal: &str,
+) -> Option<RecordStoreResult<ResidualRecorded>> {
+    wait_for(crate::residual_log::settle(
+        log, residual, plane, dialect, lane, request_id, principal,
+    ))
+}
 
 /// A durable store double: keeps the `usage_residual` bodies verbatim by `(principal, seq)`, as a
 /// real backend's primary key would, and refuses a DIFFERENT body on an occupied position (a fork).
@@ -144,7 +161,9 @@ impl RecordStore for DurableResidualStore {
 }
 
 fn plane_store(store: &Arc<dyn RecordStore>) -> Arc<dyn crate::store::plane_view::PlaneStore> {
-    crate::store::plane_view::PlaneStoreView::narrow(store.clone())
+    crate::store::plane_view::PlaneStoreView::narrow(
+        crate::test_support::record_calls::RecordCalls::over(store.clone()),
+    )
 }
 
 /// ONE ROW PER NON-EMPTY MAP, ON THE DURABLE PER-PRINCIPAL JOURNAL, AND IT SURVIVES A REPLAY. The row
@@ -175,8 +194,7 @@ fn a_residual_settles_as_one_unbilled_row_on_the_durable_journal_and_survives_a_
             "an empty residual map writes no row"
         );
         assert!(
-            h.log
-                .read_back(view.as_ref(), "key-1")
+            wait_for(h.log.read_back(view.as_ref(), "key-1"))
                 .expect("read")
                 .is_empty(),
             "an empty residual map leaves the journal empty"
@@ -218,7 +236,7 @@ fn a_residual_settles_as_one_unbilled_row_on_the_durable_journal_and_survives_a_
         "the restore finds the one principal"
     );
     assert_eq!(
-        h2.log.read_back(view.as_ref(), "key-1").expect("read back"),
+        wait_for(h2.log.read_back(view.as_ref(), "key-1")).expect("read back"),
         vec![first.clone()],
         "the row is in the durable journal, field for field, after the restart"
     );
@@ -240,9 +258,7 @@ fn a_residual_settles_as_one_unbilled_row_on_the_durable_journal_and_survives_a_
     );
     assert_eq!(next.prev_hash, first.hash, "linked to the replayed row");
     assert_eq!(
-        h2.log
-            .verify_principal_chain(view.as_ref(), "key-1")
-            .expect("verify"),
+        wait_for(h2.log.verify_principal_chain(view.as_ref(), "key-1")).expect("verify"),
         Ok(2),
         "the whole persisted chain verifies"
     );
@@ -339,9 +355,7 @@ fn a_boot_restore_reads_no_rows_and_each_principal_resumes_on_its_first_append()
     for principal in ["key-a", "key-b", "key-c"] {
         let expected = if principal == "key-b" { 5 } else { 3 };
         assert_eq!(
-            h2.log
-                .verify_principal_chain(view.as_ref(), principal)
-                .expect("verify"),
+            wait_for(h2.log.verify_principal_chain(view.as_ref(), principal)).expect("verify"),
             Ok(expected),
             "{principal}'s persisted chain verifies"
         );

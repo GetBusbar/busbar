@@ -127,7 +127,8 @@ mod breaker_admission;
 pub use breaker_admission::{PlaneBreakers, MAX_POOL_MEMBERS};
 
 /// THE PLANE STORE SEAM: the `PlaneStore` trait a plane persists its own kind-tagged rows through,
-/// and the `PlaneStoreView` that narrows a real `RecordStore` to it (no audit-chain authority).
+/// and the `PlaneStoreView` that narrows a store's `StoreCalls` to it (no key, usage or audit-table
+/// authority).
 pub mod plane_view;
 // `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with no plane
 // consumer compiled in nothing names it, so this re-export is unused in that config alone.

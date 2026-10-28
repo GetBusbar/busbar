@@ -12,7 +12,7 @@
 use super::{Journal, NeutralBody};
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, ChainedRecord, Framing};
-use crate::store::plane_view::{decode, PlaneStore};
+use crate::store::plane_view::{decode, wait_for, SyncPlaneStore};
 use busbar_contract::records::{PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -80,7 +80,7 @@ impl GateStore {
     }
 }
 
-impl PlaneStore for GateStore {
+impl SyncPlaneStore for GateStore {
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.rows.lock().unwrap().push(record.to_record());
         Ok(())
@@ -92,9 +92,11 @@ impl PlaneStore for GateStore {
         let row = record.to_record();
         let reenter = self.reenter.lock().unwrap().take();
         if let Some(r) = reenter {
-            let inner = r
-                .journal
-                .append_scoped(KIND, &r.scope, input(b"inner"), &reframe)
+            let inner =
+                wait_for(
+                    r.journal
+                        .append_scoped(KIND, &r.scope, input(b"inner"), &reframe),
+                )
                 .map(|rec| rec.seq())
                 .map_err(|e| e.to_string());
             let _ = r.answer.send(inner);
@@ -205,8 +207,7 @@ fn append_in_thread(
     let j = Arc::clone(j);
     let scope = scope.to_string();
     std::thread::spawn(move || {
-        let out = j
-            .append_scoped(KIND, &scope, input(content), &reframe)
+        let out = wait_for(j.append_scoped(KIND, &scope, input(content), &reframe))
             .map(|r| r.seq())
             .map_err(|e| e.to_string());
         let _ = tx.send(out);
@@ -342,8 +343,7 @@ fn two_concurrent_appends_to_one_scope_still_chain_gap_free() {
 fn an_append_completes_while_a_resume_is_parked_reading_another_scope() {
     let store = Arc::new(GateStore::default());
     let j = journal_over(&store);
-    j.append_scoped(KIND, "scope-a", input(b"a1"), &reframe)
-        .expect("seed scope A");
+    wait_for(j.append_scoped(KIND, "scope-a", input(b"a1"), &reframe)).expect("seed scope A");
     j.forget("scope-a");
     let (entered, release) = park(&store, Op::List, "scope-a");
     let a = append_in_thread(&j, "scope-a", b"a2");
@@ -396,7 +396,7 @@ fn a_same_scope_append_behind_a_parked_store_write_is_refused_at_the_claim_deadl
     );
     assert_eq!(first.recv_timeout(WAIT).expect("first finishes"), Ok(1));
     assert_eq!(
-        j.append_scoped(KIND, "scope-a", input(b"third"), &reframe)
+        wait_for(j.append_scoped(KIND, "scope-a", input(b"third"), &reframe))
             .map(|r| r.seq())
             .map_err(|e| e.to_string()),
         Ok(2),

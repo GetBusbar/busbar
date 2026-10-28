@@ -51,10 +51,11 @@
 //!
 //! ## A same-scope wait has a deadline
 //!
-//! A second writer of a claimed scope waits for the first one's store crossing, but never past
-//! [`CLAIM_WAIT`]. The admin audit log writes ONE scope, so without a deadline one slow store write
-//! would park every admin mutation's audit write, and whichever thread made it (a runtime worker
-//! included), for as long as the store took. On the deadline the append is refused with a store
+//! An append is a future: its store calls are awaited ([`PlaneStore`]), with the scope claimed
+//! across the await. A second writer of a claimed scope waits for the first one's store crossing,
+//! but never past [`CLAIM_WAIT`]. The admin audit log writes ONE scope through its one ordered writer
+//! ([`crate::audit::auditlog`]), so its appends never contend for the claim; the deadline bounds any
+//! other stream's same-scope writers. On the deadline the append is refused with a store
 //! error and commits nothing, exactly like a failed durable write: the position is untouched, the
 //! next append reuses the sequence, and the caller handles it as it handles any failed write (the
 //! admin audit log queues the record and lands it on its next successful write).
@@ -329,7 +330,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// never re-based onto a fresh chain — the same judgement [`Journal::seed_position`] makes —
     /// but RECORD the break rather than discard it, so it is never silently
     /// dropped (an evict-then-resume can happen long after boot).
-    fn resume_from_store(
+    async fn resume_from_store(
         &self,
         kind: &str,
         scope: &str,
@@ -341,8 +342,10 @@ impl<R: ChainedRecord> Journal<R> {
         let Some(store) = self.sink() else {
             return Ok(Chain::new());
         };
+        let selector = PlaneSelector::Parent(scope.into());
         let bodies = store
-            .list_plane_records(kind, &PlaneSelector::Parent(scope.into()))
+            .list_plane_records(kind, &selector)
+            .await
             .map_err(JournalError::Store)?;
         if bodies.is_empty() {
             return Ok(Chain::new());
@@ -404,23 +407,24 @@ impl<R: ChainedRecord> Journal<R> {
     /// than refused as a fork on every append after.
     /// The scope may be evicted or forgotten while its write is in flight; the commit then puts the
     /// durable tail back as the most-recently-used position, the same position a resume would read.
-    fn append_with(
+    /// `resume` is a future, run only on a cache miss.
+    async fn append_with(
         &self,
         scope: &str,
         input: R::Input,
-        resume: impl FnOnce() -> Result<Chain<R>, JournalError>,
+        resume: impl std::future::Future<Output = Result<Chain<R>, JournalError>>,
         envelope: impl FnOnce(&R) -> RecordStoreResult<PlaneRecord>,
     ) -> Result<R, JournalError> {
         let _claim = self.claim(scope).map_err(JournalError::Store)?;
         let cached = self.positions().get(scope).cloned();
         let mut candidate = match cached {
             Some(chain) => chain,
-            None => resume()?,
+            None => resume.await?,
         };
         let record = candidate.append(scope, input);
         if let Some(store) = self.sink() {
             let envelope = envelope(&record).map_err(JournalError::Store)?;
-            if let Err(e) = store.append_plane_record(envelope.view()) {
+            if let Err(e) = store.append_plane_record(envelope.view()).await {
                 self.forget(scope);
                 return Err(JournalError::Store(e));
             }
@@ -484,27 +488,28 @@ pub(crate) trait NeutralRecord: ChainedRecord + Clone {
 /// this journal's own [`NeutralBody`] OR a legacy serde row from before the cleave — the callback owns
 /// which, so core never decodes a plane type. Boxed as a trait object so the neutral methods take one
 /// uniform argument regardless of the closure's captures (the per-scope framing/digests_scope).
-pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> RecordStoreResult<R> + 'a;
+pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> RecordStoreResult<R> + Send + Sync + 'a;
 
 impl<R: NeutralRecord> Journal<R> {
     /// Resolve a NOT-cached scope's position: before any eviction a miss is a first-seen scope
     /// (fresh chain, no store read); after one, a miss might be an evicted scope whose tail lives in
     /// the store, so it reads the tail back (reframing each body) and resumes from it rather than
     /// forking at seq 1.
-    fn resume_scoped(
+    async fn resume_scoped(
         &self,
         kind: &str,
         scope: &str,
         reframe: &Reframe<'_, R>,
     ) -> Result<Chain<R>, JournalError> {
         self.resume_from_store(kind, scope, |body| reframe(scope, body))
+            .await
     }
 
     /// APPEND one neutral record: chain it to MINT the sequence and link (the SOLE chain authority),
     /// persist the neutral `{seq, prev_hash, hash, content}` envelope under `kind`/`scope`, and advance
     /// the position only once the durable write succeeded, so a failed write does not burn a
     /// sequence.
-    pub(crate) fn append_scoped(
+    pub(crate) async fn append_scoped(
         &self,
         kind: &str,
         scope: &str,
@@ -541,9 +546,10 @@ impl<R: NeutralRecord> Journal<R> {
         self.append_with(
             scope,
             input,
-            || self.resume_scoped(kind, scope, reframe),
+            self.resume_scoped(kind, scope, reframe),
             envelope,
         )
+        .await
     }
 
     /// TEST ONLY: a WHOLE-STORE REHYDRATE: enumerate the
@@ -560,7 +566,8 @@ impl<R: NeutralRecord> Journal<R> {
         store: &dyn PlaneStore,
         reframe: &Reframe<'_, R>,
     ) -> RecordStoreResult<Restored> {
-        let scopes = store.list_plane_record_parents(kind)?;
+        use crate::store::plane_view::wait_for;
+        let scopes = wait_for(store.list_plane_record_parents(kind))?;
         let mut out = Restored::default();
         for scope in &scopes {
             // The scope is claimed, not the position map, while the store answers and the bodies
@@ -573,8 +580,8 @@ impl<R: NeutralRecord> Journal<R> {
             // evidence row is never invisible; `unreadable` still carries the count back for the
             // wrapper's aggregate. This is the one place this "reports, does not judge" journal
             // speaks in a coded word — mirroring a downstream task store's per-row skip report.
-            let raw =
-                store.list_plane_records(kind, &PlaneSelector::Parent(scope.as_str().into()))?;
+            let selector = PlaneSelector::Parent(scope.as_str().into());
+            let raw = wait_for(store.list_plane_records(kind, &selector))?;
             // Whether the store literally returned NOTHING for this scope, decided BEFORE decoding:
             // an enumerated-but-empty scope (a wholesale deletion of one scope's evidence) is a
             // different condition from a scope whose rows were all UNREADABLE, which is already
@@ -629,8 +636,8 @@ impl<R: NeutralRecord> Journal<R> {
         store: &dyn PlaneStore,
         reframe: &Reframe<'_, R>,
     ) -> RecordStoreResult<Vec<R>> {
-        store
-            .list_plane_records(kind, &PlaneSelector::Parent(scope.into()))?
+        let selector = PlaneSelector::Parent(scope.into());
+        crate::store::plane_view::wait_for(store.list_plane_records(kind, &selector))?
             .iter()
             .map(|body| reframe(scope, body))
             .collect()
@@ -658,7 +665,9 @@ impl<R: NeutralRecord> Journal<R> {
     #[cfg(test)]
     pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         match self.sink() {
-            Some(store) => store.purge_plane_records_before(kind, before),
+            Some(store) => {
+                crate::store::plane_view::wait_for(store.purge_plane_records_before(kind, before))
+            }
             None => Ok(0),
         }
     }

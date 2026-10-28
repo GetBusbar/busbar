@@ -258,14 +258,17 @@ impl StreamHandle {
     /// APPEND one record to `scope`: mint the chain fields through the ONE core chain, persist the
     /// neutral body, and report any chain break the resume of an evicted scope found. `decode` turns
     /// a stored body back into a record on that resume.
-    pub(crate) fn append(
+    pub(crate) async fn append(
         &self,
         scope: &str,
         content: Vec<u8>,
         decode: &Reframe<'_, StreamRecord>,
     ) -> Result<StreamRecord, JournalError> {
         let input = StreamInput::new(content, self.framing, self.digests_scope);
-        let appended = self.journal.append_scoped(&self.kind, scope, input, decode);
+        let appended = self
+            .journal
+            .append_scoped(&self.kind, scope, input, decode)
+            .await;
         self.report_resume_breaks();
         appended
     }
@@ -293,7 +296,7 @@ impl StreamHandle {
 /// `(seq, prev_hash, hash)`, with no host handle: the append reads no host state, and a resume
 /// decodes through the stream's in-core decode. `Err` carries the STORE's own error verbatim (a
 /// durable-write failure the caller decides on), or names an unregistered stream or an empty scope.
-pub(crate) fn append_full(
+pub(crate) async fn append_full(
     kind_id: u32,
     scope: &str,
     content: &[u8],
@@ -309,7 +312,7 @@ pub(crate) fn append_full(
         ));
     }
     let decode = |sc: &str, body: &[u8]| h.decode_native(sc, body);
-    match h.append(scope, content.to_vec(), &decode) {
+    match h.append(scope, content.to_vec(), &decode).await {
         Ok(record) => Ok((
             record.seq(),
             record.prev_hash().to_string(),

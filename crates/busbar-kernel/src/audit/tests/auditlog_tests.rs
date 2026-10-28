@@ -5,6 +5,30 @@
 
 use super::*;
 use crate::audit::{digest, frame_prelude, Framing};
+use crate::store::plane_view::{wait_for, SyncPlaneStore};
+use crate::test_support::record_calls::RecordCalls;
+use busbar_contract::records::RecordStore;
+
+/// `store`'s plane records, as the stream's sink sees them.
+fn plane_of(store: &Arc<dyn RecordStore>) -> Arc<dyn PlaneStore> {
+    PlaneStoreView::narrow(RecordCalls::over(store.clone()))
+}
+
+/// [`super::migrate_legacy_table_to_plane_records`] over `store`, awaited on this thread.
+fn migrate_legacy_table_to_plane_records(store: &Arc<dyn RecordStore>) -> RecordStoreResult<usize> {
+    wait_for(super::migrate_legacy_table_to_plane_records(
+        RecordCalls::over(store.clone()).as_ref(),
+    ))
+}
+
+/// [`stream_registry::append_full`], awaited on this thread.
+fn append_full(
+    kind_id: u32,
+    scope: &str,
+    suffix: &[u8],
+) -> RecordStoreResult<(u64, String, String)> {
+    wait_for(stream_registry::append_full(kind_id, scope, suffix))
+}
 
 /// THE BYTE-IDENTITY GATE: the plane's pre-framed suffix, appended RAW after the host prelude
 /// framed with `digests_scope = false`, reproduces the legacy [`AuditEntry`] digest byte-for-byte.
@@ -307,9 +331,8 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     // Process 2 (a "restart"): a FRESH log + fresh host positions over the SAME store, restoring from
     // `plane_records` — the production boot source.
     let h2 = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let restored = h2
-        .log
         .restore_from_store(plane.as_ref())
         .expect("plane_records read");
     assert!(
@@ -428,20 +451,19 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     );
 
     // BOOT MIGRATION: list_audit -> plane_records, preserving the chain exactly.
-    let migrated = migrate_legacy_table_to_plane_records(store.as_ref()).unwrap();
+    let migrated = migrate_legacy_table_to_plane_records(&store).unwrap();
     assert_eq!(migrated, 2, "both legacy rows migrated");
     // IDEMPOTENT: a store already migrated does nothing.
     assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        migrate_legacy_table_to_plane_records(&store).unwrap(),
         0,
         "a second migration is a no-op"
     );
 
     // BOOT RESTORE from plane_records: verifies + seeds the ring, byte-identical to the frozen bytes.
     let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let restored = h
-        .log
         .restore_from_store(plane.as_ref())
         .expect("plane_records read");
     assert!(
@@ -544,14 +566,14 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     // Process 2 (a "restart"): a FRESH log over the SAME store restores from plane_records under a
     // diagnostics-capturing subscriber. The undecodable row must FIRE the coded diagnostic at ERROR.
     let h2 = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let cap = DiagCapture::default();
     {
         let _g = capture_into(&cap);
         // The decodable row seeds the good row and the bad one is REPORTED — the behaviour under
         // test here. (The undecodable sibling no longer aborts the restore; that no-fork guarantee
         // is pinned by `restore_does_not_fork_the_chain_when_one_row_is_undecodable`.)
-        let _ = h2.log.restore_from_store(plane.as_ref());
+        let _ = h2.restore_from_store(plane.as_ref());
     }
 
     // The GOOD row still seeded the read model `GET /audit` serves.
@@ -613,10 +635,10 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
     // Process 2 (a "restart"): a FRESH log over the SAME store restores. The undecodable sibling must
     // NOT abort the restore (before the fix this `?`-aborted and returned Err → the chain forked).
     let h2 = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let restored = {
         let _serial = DIAG_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        h2.log.restore_from_store(plane.as_ref())
+        h2.restore_from_store(plane.as_ref())
     }
     .expect("one undecodable row must NOT abort the whole restore and fork the governance chain");
     assert_eq!(restored.unreadable, 1, "the bad row is counted, not fatal");
@@ -831,10 +853,10 @@ fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
 
     // First drain: the backend is STILL down — nothing recovers, and the record must stay queued.
     let mut recovered: Vec<(String, u64)> = Vec::new();
-    q.drain_with(
-        |_scope, _suffix| Err(()),
+    wait_for(q.drain_with(
+        |_| std::future::ready(Err(())),
         |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
-    );
+    ));
     assert!(
         recovered.is_empty(),
         "nothing recovers while the backend is still down"
@@ -847,10 +869,10 @@ fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
     );
 
     // Second drain: the backend has recovered — the SAME record must now be delivered.
-    q.drain_with(
-        |_scope, _suffix| Ok((7, "prev".to_string(), "hash".to_string())),
+    wait_for(q.drain_with(
+        |_| std::future::ready(Ok((7, "prev".to_string(), "hash".to_string()))),
         |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
-    );
+    ));
     assert_eq!(
         recovered,
         vec![("admin".to_string(), 7)],
@@ -885,10 +907,14 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
         AUDIT_DIGESTS_SCOPE,
         crate::audit::stream_registry::Decode::Native(reframe_audit),
         usize::MAX,
-        Some(PlaneStoreView::narrow(opened.records)),
+        Some(PlaneStoreView::narrow(
+            opened
+                .calls
+                .expect("the store double serves the store's calls"),
+        )),
     );
     let suffix = audit_suffix(1_700_000_000, "hook.register", "hook:x", "applied", "admin");
-    let refused = crate::audit::stream_registry::append_full(kind_id, ADMIN_LOG, &suffix);
+    let refused = append_full(kind_id, ADMIN_LOG, &suffix);
     assert!(
         refused.is_err(),
         "the planted panic answers FAULT at the door and reads back as a store error"
@@ -901,12 +927,10 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
         suffix,
     });
     let mut recovered = 0;
-    q.drain_with(
-        |scope, suffix| {
-            crate::audit::stream_registry::append_full(kind_id, scope, suffix).map_err(|_| ())
-        },
+    wait_for(q.drain_with(
+        |p| std::future::ready(append_full(kind_id, &p.scope, &p.suffix).map_err(|_| ())),
         |_, _, _, _| recovered += 1,
-    );
+    ));
     assert_eq!(
         (recovered, q.len()),
         (0, 1),
@@ -925,14 +949,14 @@ fn pending_audit_queue_drains_in_fifo_order() {
 
     let mut seen: Vec<u8> = Vec::new();
     let next_seq = std::cell::Cell::new(100u64);
-    q.drain_with(
-        |_scope, _suffix| {
+    wait_for(q.drain_with(
+        |_| {
             let s = next_seq.get();
             next_seq.set(s + 1);
-            Ok((s, String::new(), String::new()))
+            std::future::ready(Ok((s, String::new(), String::new())))
         },
         |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
-    );
+    ));
     assert_eq!(seen, vec![1, 2, 3], "drained oldest-failed-first");
     assert_eq!(q.len(), 0);
 }
@@ -947,16 +971,16 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
 
     let mut seen: Vec<u8> = Vec::new();
     // The FIRST row (tag 1) recovers; the SECOND (tag 2) still fails.
-    q.drain_with(
-        |_scope, suffix| {
-            if suffix == [1] {
+    wait_for(q.drain_with(
+        |p| {
+            std::future::ready(if p.suffix == [1] {
                 Ok((1, String::new(), String::new()))
             } else {
                 Err(())
-            }
+            })
         },
         |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
-    );
+    ));
     assert_eq!(seen, vec![1], "the recoverable row was delivered");
     assert_eq!(
         q.len(),
@@ -965,10 +989,10 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
     );
 
     // A later, fully-healthy drain finishes the job.
-    q.drain_with(
-        |_scope, _suffix| Ok((2, String::new(), String::new())),
+    wait_for(q.drain_with(
+        |_| std::future::ready(Ok((2, String::new(), String::new()))),
         |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
-    );
+    ));
     assert_eq!(
         seen,
         vec![1, 2],
@@ -1000,10 +1024,10 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
 
     // The SURVIVING two are the newest two: the oldest (tag 0) was evicted to make room.
     let mut seen: Vec<u8> = Vec::new();
-    q.drain_with(
-        |_s, _suffix| Ok((1, String::new(), String::new())),
+    wait_for(q.drain_with(
+        |_| std::future::ready(Ok((1, String::new(), String::new()))),
         |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
-    );
+    ));
     assert_eq!(
         seen,
         vec![1, 2],
@@ -1027,11 +1051,11 @@ fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let cap = DiagCapture::default();
     {
         let _g = capture_into(&cap);
-        let _ = h.log.restore_from_store(plane.as_ref());
+        let _ = h.restore_from_store(plane.as_ref());
     }
     assert!(
         cap.0.lock().unwrap().iter().all(|d| !d.contains("BUSBAR-2047")),
@@ -1277,7 +1301,7 @@ fn every_served_audit_record_recomputes_by_the_published_recipe() {
 /// A store that answers every read with an error: the boot restore's read failing.
 struct UnreadableStore;
 
-impl PlaneStore for UnreadableStore {
+impl SyncPlaneStore for UnreadableStore {
     fn upsert_plane_record(
         &self,
         _record: busbar_contract::records::PlaneRecordRef<'_>,
@@ -1354,7 +1378,7 @@ fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
     // Process 2: its boot restore cannot read the store.
     let h2 = AuditTestHarness::over(store.clone());
     assert!(
-        h2.log.restore_from_store(&UnreadableStore).is_err(),
+        h2.restore_from_store(&UnreadableStore).is_err(),
         "the restore read failed"
     );
 
@@ -1391,28 +1415,24 @@ fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
 
     // The earlier boot: only seq 1 made it across before the store failed.
     store.append_audit(&ad1).unwrap();
-    assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
-        1
-    );
+    assert_eq!(migrate_legacy_table_to_plane_records(&store).unwrap(), 1);
     store.append_audit(&ad2).unwrap();
 
     // This boot finishes the copy.
     assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        migrate_legacy_table_to_plane_records(&store).unwrap(),
         1,
         "the legacy record past the part-way copy is copied"
     );
     assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        migrate_legacy_table_to_plane_records(&store).unwrap(),
         0,
         "a finished copy is a no-op"
     );
 
     let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let restored = h
-        .log
         .restore_from_store(plane.as_ref())
         .expect("plane_records read");
     assert!(
@@ -1447,7 +1467,7 @@ fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
         .append_audit(&crate::store::plane_view::decode(LEGACY_2).unwrap())
         .unwrap();
     assert!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).is_err(),
+        migrate_legacy_table_to_plane_records(&store).is_err(),
         "a disagreeing chain is reported, not silently skipped or spliced"
     );
     let rows = store
@@ -1534,12 +1554,12 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
     }
 
     assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).expect("migrates"),
+        migrate_legacy_table_to_plane_records(&store).expect("migrates"),
         rows.len(),
         "every 1.5.5 row is carried over"
     );
     let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+    let plane = plane_of(&store);
     let restored = h.restore_from_store(plane.as_ref()).expect("restores");
     assert!(
         restored.chain_breaks.is_empty(),
@@ -1606,5 +1626,188 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
         hash,
         v1_5_5_hash(&tail.hash, seq, ts, act, res, out, pr),
         "the new record's hash is 1.5.5's formula, so a 1.5.5 verifier walks it"
+    );
+}
+
+// ── THE ADMIN AUDIT WRITER: no recorder waits on the store, and a reader reads its writes ──────────
+
+/// A plane store whose appends PEND until the test opens its gate, as a loaded store's do while its
+/// worker runs the op: the first poll answers `Pending`.
+struct GatedStore {
+    gate: tokio::sync::Semaphore,
+    rows: Mutex<Vec<PlaneRecord>>,
+}
+
+impl PlaneStore for GatedStore {
+    fn upsert_plane_record<'a>(
+        &'a self,
+        _record: busbar_contract::records::PlaneRecordRef<'a>,
+    ) -> crate::store::plane_view::PlaneCall<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn get_plane_record<'a>(
+        &'a self,
+        _kind: &'a str,
+        _id: &'a str,
+    ) -> crate::store::plane_view::PlaneCall<'a, Option<Vec<u8>>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+    fn append_plane_record<'a>(
+        &'a self,
+        record: busbar_contract::records::PlaneRecordRef<'a>,
+    ) -> crate::store::plane_view::PlaneCall<'a, ()> {
+        Box::pin(async move {
+            self.gate
+                .acquire()
+                .await
+                .expect("the gate stays open")
+                .forget();
+            self.rows.lock().unwrap().push(record.to_record());
+            Ok(())
+        })
+    }
+    fn list_plane_records<'a>(
+        &'a self,
+        _kind: &'a str,
+        _selector: &'a PlaneSelector<'a>,
+    ) -> crate::store::plane_view::PlaneCall<'a, Vec<Vec<u8>>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+    fn list_plane_record_parents<'a>(
+        &'a self,
+        _kind: &'a str,
+    ) -> crate::store::plane_view::PlaneCall<'a, Vec<String>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+    fn purge_plane_records_before<'a>(
+        &'a self,
+        _kind: &'a str,
+        _before: u64,
+    ) -> crate::store::plane_view::PlaneCall<'a, u64> {
+        Box::pin(std::future::ready(Ok(0)))
+    }
+    fn delete_plane_record<'a>(
+        &'a self,
+        _kind: &'a str,
+        _id: &'a str,
+    ) -> crate::store::plane_view::PlaneCall<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn redeem_plane_token<'a>(
+        &'a self,
+        _kind: &'a str,
+        _token: &'a str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> crate::store::plane_view::PlaneCall<'a, bool> {
+        Box::pin(std::future::ready(Ok(false)))
+    }
+    fn plane_token_live<'a>(
+        &'a self,
+        _kind: &'a str,
+        _token: &'a str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> crate::store::plane_view::PlaneCall<'a, bool> {
+        Box::pin(std::future::ready(Ok(false)))
+    }
+}
+
+fn job(ts: u64, action: &str) -> AuditJob {
+    AuditJob {
+        ts,
+        action: action.to_string(),
+        resource: "key:k".to_string(),
+        outcome: "applied".to_string(),
+        principal: "admin".to_string(),
+    }
+}
+
+/// THE RECORDER IS NEVER PARKED ON THE STORE, AND `GET /audit` READS ITS WRITES. Two admin records
+/// are made while the store holds every append: recording returns at once (RED while the append ran
+/// on the recording thread: it waited on the store and this cell timed out), neither record is in
+/// the read model yet, and a reader waiting for the records queued before it is still waiting. Once
+/// the store answers, both land in recording order (seq 1 then 2, persisted in that order) and the
+/// reader returns with both on its page, newest first.
+#[test]
+fn a_pending_store_write_never_parks_the_recorder_and_the_reader_waits_for_it() {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+    let store = Arc::new(GatedStore {
+        gate: tokio::sync::Semaphore::new(0),
+        rows: Mutex::new(Vec::new()),
+    });
+    let kind_id = fresh_test_kind_id();
+    register_audit_stream_as(kind_id, Some(store.clone() as Arc<dyn PlaneStore>));
+    let log: &'static PlaneAuditLog = Box::leak(Box::new(PlaneAuditLog::with_kind_id(kind_id)));
+    let writer: &'static AuditWriter = Box::leak(Box::new(AuditWriter::new(kind_id, log)));
+
+    let (recorded_tx, recorded_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        writer.record(job(1_700_000_001, "key.create"));
+        writer.record(job(1_700_000_002, "key.delete"));
+        let _ = recorded_tx.send(());
+    });
+    recorded_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("recording returns while the store still holds the write");
+    assert!(
+        log.list_filtered(0, 10, None, None).is_empty(),
+        "neither write has landed while the store holds it"
+    );
+
+    let (page_tx, page_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        wait_for(writer.written());
+        let _ = page_tx.send(log.list_filtered(0, 10, None, None));
+    });
+    assert!(
+        matches!(
+            page_rx.recv_timeout(Duration::from_millis(300)),
+            Err(RecvTimeoutError::Timeout)
+        ),
+        "a reader waits for the records queued before it"
+    );
+
+    store.gate.add_permits(2);
+    let page = page_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the reader returns once both records are written");
+    assert_eq!(
+        page.iter()
+            .map(|e| (e.seq, e.action.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(2, "key.delete"), (1, "key.create")],
+        "both records, in recording order, newest first"
+    );
+    assert_eq!(
+        store
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "persisted in recording order"
+    );
+}
+
+/// A STORE THAT ANSWERS AT ONCE IS WRITTEN ON THE RECORDING THREAD: the record is in the read model
+/// when `record` returns, exactly as when the append ran there.
+#[test]
+fn a_store_that_answers_at_once_is_written_before_record_returns() {
+    let store: Arc<dyn RecordStore> = Arc::new(crate::governance::MemoryStore::new());
+    let kind_id = fresh_test_kind_id();
+    register_audit_stream_as(kind_id, Some(plane_of(&store)));
+    let log: &'static PlaneAuditLog = Box::leak(Box::new(PlaneAuditLog::with_kind_id(kind_id)));
+    let writer: &'static AuditWriter = Box::leak(Box::new(AuditWriter::new(kind_id, log)));
+    writer.record(job(1_700_000_003, "hook.register"));
+    let page = log.list_filtered(0, 10, None, None);
+    assert_eq!(
+        page.iter()
+            .map(|e| (e.seq, e.action.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, "hook.register")]
     );
 }

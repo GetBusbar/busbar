@@ -172,6 +172,9 @@ impl AdminTransport for JsonV1 {
         // on the response.
         #[cfg(test)]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
+        // A MUTATION ANSWERS ONCE ITS AUDIT RECORD IS WRITTEN: the kernel's audit writer writes off
+        // the handler's thread, so the answer waits for every record queued while it ran.
+        let router = router.layer(axum::middleware::from_fn(audit_written));
         // THE KEY MUTATIONS' REPLAY CACHE rides in as a request extension (the composition root
         // inserts the node's one, built for the life of the process). A mount that inserts none
         // gets this router's own, so a replayable mutation is never left without one.
@@ -180,6 +183,18 @@ impl AdminTransport for JsonV1 {
             supply_replay_cache,
         ))
     }
+}
+
+/// Answer once every admin audit record queued while the request ran is written (or queued for
+/// recovery), as when the record was written on the handler's own thread: a mutation's `2xx` means
+/// its record is in the store.
+async fn audit_written(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let answer = next.run(req).await;
+    busbar_kernel::audit::auditlog::audit_written_within(
+        busbar_kernel::audit::auditlog::RECORDER_WAIT,
+    )
+    .await;
+    answer
 }
 
 /// Insert `own` as the request's replay cache unless the mount already supplied the node's.

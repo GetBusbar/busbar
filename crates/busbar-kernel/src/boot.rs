@@ -39,8 +39,8 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // This is NOT a plane and is deliberately NOT a `hydrate` hook: the audit chain's migration reads
     // the FULL `Store` (the legacy `list_audit` table it copies from), the one durable-state block that
     // must hold what every plane hook is narrowed away from.
-    if let Some(gov) = app.governance.as_ref() {
-        crate::audit::auditlog::register_and_migrate(app, &gov.store());
+    if let Some(calls) = app.governance.as_ref().and_then(|gov| gov.store_calls()) {
+        crate::audit::auditlog::register_and_migrate(app, &calls);
     }
     // THE RESIDUAL LOG (MONEY LAW, ARCHITECT ruling 2026-10-02): core's per-principal
     // `usage.residual` chain, registered and REPLAYED from the durable store before a listener binds,
@@ -59,7 +59,8 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     let plane_store = app
         .governance
         .as_ref()
-        .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store()));
+        .and_then(|gov| gov.store_calls())
+        .map(crate::store::plane_view::PlaneStoreView::narrow);
     let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }

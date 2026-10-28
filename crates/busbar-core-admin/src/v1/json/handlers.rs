@@ -1701,7 +1701,13 @@ pub(crate) async fn get_audit(
     // READ FROM THE SEAM read model: the durable journal seam is now the ONE code path (fed by
     // `record_by` through `emit_admin_hostless`, seeded on boot from the durable tail). The legacy
     // `audit::AUDIT` ring stays as a belt-and-suspenders dual-write (BUSBAR-1002), but the seam is the
-    // read source, byte-identical (same fields, same order) to the ring it replaces.
+    // read source, byte-identical (same fields, same order) to the ring it replaces. Every record
+    // queued before this read is written first, so a mutation's record is on the page that follows
+    // it.
+    busbar_kernel::audit::auditlog::audit_written_within(
+        busbar_kernel::audit::auditlog::RECORDER_WAIT,
+    )
+    .await;
     let mut entries =
         busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
     let next_cursor = page_cursor(&mut entries, start, limit);

@@ -8,7 +8,8 @@
 //! U10; BUSBAR-1.6.0.md THE DESIGN, §7):
 //!
 //! 1. the budget and metering write-behind, flushed synchronously;
-//! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
+//! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]), and the admin
+//!    audit writer ([`busbar_kernel::audit::auditlog::audit_written_within`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
 //!    the chain is kept, so a record still queued at exit is a settled unit the store never saw —
@@ -51,6 +52,11 @@ pub async fn tail(
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes.
     if !drain_records(late).await {
         tracing::warn!("plane record writes were still queued at shutdown");
+    }
+    // THE ADMIN AUDIT WRITER, drained the same way: every admin mutation answered before the stop
+    // has its record written (or queued for recovery) before the store closes.
+    if !busbar_kernel::audit::auditlog::audit_written_within(RECORD_DRAIN).await {
+        tracing::warn!("admin audit records were still being written at shutdown");
     }
     // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline — with
     // what the journal holds back after a full lane turned it away: that batch is outside the lane,

@@ -1970,7 +1970,9 @@ impl TestApp {
         // to a caller.
         if let Some(durable) = plane_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
-            let plane_store = crate::store::plane_view::PlaneStoreView::narrow(durable);
+            let plane_store = crate::store::plane_view::PlaneStoreView::narrow(
+                record_calls::RecordCalls::over(durable),
+            );
             app.demotion_record.set_sink(plane_store);
         }
         // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task
@@ -2023,6 +2025,9 @@ pub mod ranking_double;
 /// The store double (R-FIX3): the door that stands in for the root's linked store row in a test
 /// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
 pub mod store_double;
+
+/// A store double's 1.5.5 op set served as the host's one store seam. See [`record_calls`].
+pub mod record_calls;
 
 /// The manifest `needs` a dropped-in hook declares, built from its two axes so a caller names no field
 /// of the value (the value's type is the kernel kit's to change).

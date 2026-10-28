@@ -15,7 +15,7 @@
 
 use super::{Journal, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::store::plane_view::{decode, encode, PlaneStore};
+use crate::store::plane_view::{decode, encode, wait_for, SyncPlaneStore};
 use crate::test_support::warn_capture::DiagCapture;
 use busbar_contract::records::{
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
@@ -55,7 +55,7 @@ impl MockStore {
     }
 }
 
-impl PlaneStore for MockStore {
+impl SyncPlaneStore for MockStore {
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         let record = &record.to_record();
         self.rows.lock().unwrap().push(record.clone());
@@ -213,14 +213,14 @@ fn neutral_reframe(scope: &str, body: &[u8]) -> RecordStoreResult<NeutralRec> {
 }
 
 fn write_neutral(j: &Journal<NeutralRec>, tenant: &str, content: &[u8]) -> NeutralRec {
-    j.append_scoped(
+    wait_for(j.append_scoped(
         KIND_NEUTRAL,
         tenant,
         NeutralInput {
             content: content.to_vec(),
         },
         &neutral_reframe,
-    )
+    ))
     .expect("append_scoped")
 }
 
@@ -389,14 +389,14 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
     assert_eq!(j.next_seq("acme"), 2);
 
     store.set_failing(true);
-    let err = j.append_scoped(
+    let err = wait_for(j.append_scoped(
         KIND_NEUTRAL,
         "acme",
         NeutralInput {
             content: b"|two".to_vec(),
         },
         &neutral_reframe,
-    );
+    ));
     assert!(
         err.is_err(),
         "the durable write failed, so append must surface it"
@@ -534,7 +534,9 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =
         Arc::new(crate::governance::MemoryStore::new());
-    let plane_store = crate::store::plane_view::PlaneStoreView::narrow(store.clone());
+    let plane_store = crate::store::plane_view::PlaneStoreView::narrow(
+        crate::test_support::record_calls::RecordCalls::over(store.clone()),
+    );
     let j: Journal<NeutralRec> = Journal::new(1024);
     j.set_sink(plane_store);
     write_neutral(&j, "acme", b"|fresh");
@@ -616,16 +618,15 @@ fn a_chain_another_node_advanced_is_continued_after_a_refused_write() {
     assert_eq!(write_neutral(&b, "acme", b"|two").seq, 2);
     // Node a's cached position is stale; the store refuses its write as a fork.
     store.set_failing(true);
-    assert!(a
-        .append_scoped(
-            KIND_NEUTRAL,
-            "acme",
-            NeutralInput {
-                content: b"|three".to_vec(),
-            },
-            &neutral_reframe,
-        )
-        .is_err());
+    assert!(wait_for(a.append_scoped(
+        KIND_NEUTRAL,
+        "acme",
+        NeutralInput {
+            content: b"|three".to_vec(),
+        },
+        &neutral_reframe,
+    ))
+    .is_err());
     store.set_failing(false);
     let three = write_neutral(&a, "acme", b"|three");
     assert_eq!(three.seq, 3, "node a continued node b's chain");
