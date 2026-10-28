@@ -936,6 +936,14 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                     reason = %s.reason,
                     "plugin present but NOT loaded (trust policy)"
                 );
+                // AUDITED, in host words: the trust evaluator's category, never its reason text
+                // (which embeds manifest bytes).
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Trust,
+                    "file",
+                    &s.file,
+                    s.code,
+                );
             }
             for p in &loadable {
                 match &p.trust {
@@ -1365,3 +1373,7 @@ mod opened_secrets_tests;
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
 mod store_row_tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_refusal_tests.rs"]
+mod plugin_refusal_tests;
