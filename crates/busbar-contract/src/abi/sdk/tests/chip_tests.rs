@@ -5,10 +5,27 @@ use zeroize::Zeroizing;
 
 use super::digests::{md5, sha1};
 use super::{MysqlAuth, MysqlHandshake};
-use crate::abi::sdk::cred::Cred;
+use crate::abi::sdk::cred::{AuthFloor, Cred, CredUrl, PgAuth, RequireAuth};
 
 fn cred(s: &str) -> Cred {
     Cred::captured(Zeroizing::new(s.as_bytes().to_vec()))
+}
+
+/// A credential whose operator allowed every weaker method (the byte-layout tests).
+fn allowing(s: &str) -> Cred {
+    cred(s).with_floor(AuthFloor::of(
+        "x://h/?require_auth=password,md5,scram-sha-256&enable_cleartext_plugin=true\
+         &secure_auth=false",
+    ))
+}
+
+/// The password the operator's connection string `text` carries, sealed with its floor.
+fn from_url(text: &str) -> Cred {
+    CredUrl::parse(text)
+        .expect("parses")
+        .password()
+        .expect("a password")
+        .clone()
 }
 
 #[test]
@@ -82,9 +99,12 @@ fn scram_refuses_a_wrong_server_signature_a_foreign_nonce_and_a_cheap_iteration_
 
 #[test]
 fn pg_messages_are_whole() {
-    let c = cred("s3cr3t-pw");
-    assert_eq!(c.pg_password_message().wire(), b"p\0\0\0\x0es3cr3t-pw\0");
-    let md5 = c.pg_md5_message("alice", [1, 2, 3, 4]);
+    let c = allowing("s3cr3t-pw");
+    assert_eq!(
+        c.pg_password_message().expect("allowed").wire(),
+        b"p\0\0\0\x0es3cr3t-pw\0"
+    );
+    let md5 = c.pg_md5_message("alice", [1, 2, 3, 4]).expect("allowed");
     let body = b"md544a496913670b4e45995c33c22115d02\0";
     assert_eq!(md5.wire()[0], b'p');
     assert_eq!(&md5.wire()[5..], &body[..]);
@@ -312,6 +332,49 @@ ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
         assert!(cred("pw").mysql_rsa_packet(4, b"n", b"not a key").is_err());
         assert!(cred("pw").mysql_rsa_packet(4, b"", PEM).is_err());
     }
+
+    /// `openssl pkey -pubin -outform der | sha256` of [`PEM`].
+    const PIN: &str = "6ddde6e6398722551e6dd73f2c62f247560990a999022d11fc55198facec8e98";
+
+    /// RULING S5: RSA full authentication goes to a server key the operator pinned, or over a unix
+    /// socket, or only where the host connector reports the connection secured; a key that differs
+    /// from the pin is refused with a sentence and nothing is sent.
+    #[test]
+    fn rsa_full_auth_needs_a_pin_tls_or_a_unix_socket() {
+        let nonce: Vec<u8> = (1..=20).collect();
+        let open = super::from_url("mysql://u:pw@db/app")
+            .mysql_rsa_packet(4, &nonce, PEM)
+            .expect("built");
+        assert!(
+            open.secure_required(),
+            "with no pin and no socket it goes out only on a secured connection"
+        );
+        let pinned = super::from_url(&format!(
+            "mysql://u:pw@db/app?server_public_key_sha256={}",
+            PIN.to_ascii_uppercase()
+        ))
+        .mysql_rsa_packet(4, &nonce, PEM)
+        .expect("the pinned key");
+        assert!(!pinned.secure_required());
+        let socket = super::from_url("mysql://u:pw@localhost/app?socket=/run/mysqld/mysqld.sock")
+            .mysql_rsa_packet(4, &nonce, PEM)
+            .expect("a unix socket");
+        assert!(!socket.secure_required());
+        let other = format!(
+            "mysql://u:pw@db/app?server_public_key_sha256={}",
+            "ab".repeat(32)
+        );
+        let refused = super::from_url(&other)
+            .mysql_rsa_packet(4, &nonce, PEM)
+            .err()
+            .expect("a key that is not the pinned one is refused");
+        assert!(refused.0.contains("server_public_key_sha256"), "{refused}");
+        // A malformed pin pins nothing: the strict rule stands.
+        let malformed = super::from_url("mysql://u:pw@db/app?server_public_key_sha256=zz")
+            .mysql_rsa_packet(4, &nonce, PEM)
+            .expect("built");
+        assert!(malformed.secure_required());
+    }
 }
 
 /// Byte for byte what `mysql_common` 0.37.3 (the 1.5.5 driver's codec) serializes for the same
@@ -319,7 +382,7 @@ ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
 /// 16 MiB)`, and `scramble_323` over the nonce's first 8 bytes.
 #[test]
 fn mysql_messages_match_the_driver_byte_for_byte() {
-    let c = cred("s3cr3t-pw");
+    let c = allowing("s3cr3t-pw");
     let nonce: Vec<u8> = (1..=20).collect();
     let h = MysqlHandshake {
         seq: 1,
@@ -345,7 +408,7 @@ fn mysql_messages_match_the_driver_byte_for_byte() {
         .mysql_auth_switch_response(3, MysqlAuth::Clear, &nonce)
         .expect("clear");
     assert_eq!(&clear.wire()[4..], b"s3cr3t-pw\0");
-    let empty = cred("")
+    let empty = allowing("")
         .mysql_auth_switch_response(3, MysqlAuth::Clear, &nonce)
         .expect("empty");
     assert_eq!(empty.wire(), &[0, 0, 0, 3]);
@@ -387,4 +450,186 @@ fn aws4_matches_the_published_get_vanilla_vector() {
     let token = cred("tok");
     let with = key.aws4_sign(&r, Some(&token)).expect("signs");
     assert_eq!(with.signed_headers, "host;x-amz-date;x-amz-security-token");
+}
+
+/// The floor reads the operator's text: libpq 16's `require_auth` (lists, `!` negation, the
+/// keyword form), the 1.5.5 MySQL driver's switches, the RSA key pin and a unix socket.
+#[test]
+fn the_floor_reads_the_operators_connection_string() {
+    let pg = |t: &str| AuthFloor::of(t).pg();
+    let d = pg("postgres://u@db/app");
+    assert_eq!(d, RequireAuth::DEFAULT);
+    assert!(d.allows(PgAuth::ScramSha256) && d.allows(PgAuth::None));
+    assert!(!d.allows(PgAuth::Password) && !d.allows(PgAuth::Md5));
+    let md5 = pg("postgres://u@db/app?require_auth=md5");
+    assert!(md5.allows(PgAuth::Md5) && !md5.allows(PgAuth::ScramSha256));
+    let list = pg("postgres://u@db/app?sslmode=require&require_auth=scram-sha-256%2Cpassword");
+    assert!(list.allows(PgAuth::Password) && list.allows(PgAuth::ScramSha256));
+    assert!(!list.allows(PgAuth::Md5) && !list.allows(PgAuth::None));
+    let neg = pg("host=db user=u require_auth = '!password,!none'");
+    assert!(neg.allows(PgAuth::Md5) && neg.allows(PgAuth::ScramSha256));
+    assert!(!neg.allows(PgAuth::Password) && !neg.allows(PgAuth::None));
+    for bad in ["md5,!password", "md4", "", "md5,md5"] {
+        assert!(RequireAuth::parse(bad).is_err(), "{bad}");
+        assert_eq!(
+            pg(&format!("postgres://u@db/app?require_auth={bad}")),
+            RequireAuth::DEFAULT,
+            "a value that does not parse allows nothing weaker: {bad}"
+        );
+    }
+    let my = AuthFloor::of("mysql://u@db/app");
+    assert!(!my.mysql_clear() && !my.mysql_old() && !my.local() && my.rsa_pin().is_none());
+    let my = AuthFloor::of(
+        "mysql://u@db/app?enable_cleartext_plugin=true&secure_auth=false&socket=/tmp/m.sock",
+    );
+    assert!(my.mysql_clear() && my.mysql_old() && my.local());
+    assert!(
+        !AuthFloor::of("mysql://u@db/app?enable_cleartext_plugin=false&secure_auth=true")
+            .mysql_clear()
+    );
+    assert!(AuthFloor::of("postgres://u@%2Ftmp/app").local());
+    assert!(AuthFloor::of("unix:/run/x.sock").local());
+    assert_eq!(
+        AuthFloor::of(&format!(
+            "mysql://u@db/?server_public_key_sha256={}",
+            "0f".repeat(32)
+        ))
+        .rsa_pin(),
+        Some([0x0f; 32])
+    );
+    // A credential configured outside a connection string allows nothing weaker.
+    assert_eq!(cred("pw").floor(), AuthFloor::STRICT);
+}
+
+/// RULING S4: a Postgres server that asks for the password in clear or for MD5 gets nothing unless
+/// the operator's `require_auth` allows that method; the refusal names the method and the remedy.
+/// SCRAM is the default, and `require_auth` that leaves it out refuses it too (libpq's rule).
+#[test]
+fn pg_cleartext_and_md5_are_refused_unless_require_auth_allows_them() {
+    let first = "n=,r=abc";
+    let server_first = "r=abcdef,s=QUJD,i=4096";
+    let strict = from_url("postgres://u:pw@db/app");
+    let e = strict
+        .pg_password_message()
+        .err()
+        .expect("cleartext refused");
+    assert!(
+        e.0.contains("clear") && e.0.contains("require_auth=password"),
+        "{e}"
+    );
+    let e = strict
+        .pg_md5_message("u", [1, 2, 3, 4])
+        .err()
+        .expect("md5 refused");
+    assert!(
+        e.0.contains("MD5") && e.0.contains("require_auth=md5"),
+        "{e}"
+    );
+    assert!(strict.pg_scram_sha256(first, server_first, b"n,,").is_ok());
+    // Even over TLS: a cleartext password is the operator's call, not the plugin's.
+    let tls = from_url("postgres://u:pw@db/app?sslmode=verify-full");
+    assert!(tls.pg_password_message().is_err() && tls.pg_md5_message("u", [0; 4]).is_err());
+
+    let md5 = from_url("postgres://u:pw@db/app?require_auth=md5");
+    assert!(md5.pg_md5_message("u", [1, 2, 3, 4]).is_ok());
+    assert!(md5.pg_password_message().is_err());
+    assert!(md5.pg_scram_sha256(first, server_first, b"n,,").is_err());
+    let clear = from_url("host=db user=u password=pw require_auth=password,scram-sha-256");
+    assert!(clear.pg_password_message().is_ok());
+    assert!(clear.pg_md5_message("u", [0; 4]).is_err());
+    assert!(clear.pg_scram_sha256(first, server_first, b"n,,").is_ok());
+
+    // A password with no connection string, or one the plugin captured, is strict.
+    assert!(cred("pw").pg_password_message().is_err());
+    assert!(cred("pw").pg_md5_message("u", [0; 4]).is_err());
+}
+
+/// RULING S4, MySQL: `mysql_clear_password` and `mysql_old_password` are refused unless the
+/// operator allowed them (`enable_cleartext_plugin=true`, `secure_auth=false`, the 1.5.5 driver's
+/// switches, off by default), in a handshake response and an auth switch alike.
+#[test]
+fn mysql_clear_and_old_are_refused_unless_the_operator_allows_them() {
+    let nonce: Vec<u8> = (1..=20).collect();
+    let h = |auth| MysqlHandshake {
+        seq: 1,
+        capabilities: 0x0020_8000,
+        max_packet: 16_777_216,
+        collation: 45,
+        user: b"alice",
+        database: None,
+        auth,
+        nonce: &nonce,
+        attrs: &[],
+    };
+    let strict = from_url("mysql://u:pw@db/app");
+    for auth in [MysqlAuth::Clear, MysqlAuth::Old] {
+        let e = strict
+            .mysql_handshake_response(&h(auth))
+            .err()
+            .expect("refused");
+        let remedy = match auth {
+            MysqlAuth::Clear => "enable_cleartext_plugin=true",
+            _ => "secure_auth=false",
+        };
+        assert!(e.0.contains(remedy), "{e}");
+        assert!(strict.mysql_auth_switch_response(3, auth, &nonce).is_err());
+    }
+    for auth in [MysqlAuth::Native, MysqlAuth::CachingSha2] {
+        assert!(strict.mysql_handshake_response(&h(auth)).is_ok());
+        assert!(strict.mysql_auth_switch_response(3, auth, &nonce).is_ok());
+    }
+    let clear = from_url("mysql://u:pw@db/app?enable_cleartext_plugin=true");
+    assert!(clear
+        .mysql_auth_switch_response(3, MysqlAuth::Clear, &nonce)
+        .is_ok());
+    assert!(clear
+        .mysql_auth_switch_response(3, MysqlAuth::Old, &nonce)
+        .is_err());
+    let old = from_url("mysql://u:pw@db/app?secure_auth=false");
+    assert!(old.mysql_handshake_response(&h(MysqlAuth::Old)).is_ok());
+    assert!(old.mysql_handshake_response(&h(MysqlAuth::Clear)).is_err());
+    // A socket is no allowance for the clear plugin: the operator's switch is.
+    let socket = from_url("mysql://u:pw@localhost/app?socket=/tmp/m.sock");
+    assert!(socket
+        .mysql_auth_switch_response(3, MysqlAuth::Clear, &nonce)
+        .is_err());
+}
+
+/// RULING S5: the password in clear for `caching_sha2_password` full authentication goes out in the
+/// open only over the operator's unix socket (or when the operator enabled the cleartext plugin);
+/// otherwise only where the host connector reports the connection secured.
+#[test]
+fn the_mysql_clear_packet_goes_out_in_the_open_only_on_a_socket() {
+    assert!(from_url("mysql://u:pw@db/app")
+        .mysql_clear_packet(5)
+        .expect("built")
+        .secure_required());
+    assert!(!from_url("mysql://u:pw@localhost/app?socket=/tmp/m.sock")
+        .mysql_clear_packet(5)
+        .expect("built")
+        .secure_required());
+    assert!(
+        !from_url("mysql://u:pw@db/app?enable_cleartext_plugin=true")
+            .mysql_clear_packet(5)
+            .expect("built")
+            .secure_required()
+    );
+}
+
+/// A connection string with no password still carries its floor to the empty credential a store
+/// authenticates with.
+#[test]
+fn an_empty_password_keeps_the_operators_floor() {
+    let url = CredUrl::parse("mysql://u@db/app?enable_cleartext_plugin=true").expect("parses");
+    assert!(url.password().is_none());
+    assert!(url.credential().floor().mysql_clear());
+    assert!(CredUrl::parse("postgres://u@db/app?sslmode=require")
+        .expect("parses")
+        .credential()
+        .secure_required());
+    assert!(!CredUrl::parse("mysql://u@db/app")
+        .expect("parses")
+        .credential()
+        .floor()
+        .mysql_clear());
 }

@@ -585,14 +585,23 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("record get absent", 1, || {
         ans(block(&rt, StoreCalls::record_get(&st, i.schema, b"zz")).map(shown))
     });
-    r.line("record scan", 1, || {
+    let scan = || {
         ans(block(&rt, st.record_scan(i.schema, b"a/", 5)).map(|mut v| {
             v.sort_by(|x, y| x.0.cmp(&y.0));
             v.into_iter()
                 .map(|(k, v)| (text_of(&k), text_of(v.as_slice())))
                 .collect::<Vec<_>>()
         }))
+    };
+    r.line("record scan", 1, scan);
+    // AN EMPTY PUT REMOVES THE ROW (slot 26; ARCHITECT 2026-10-21): the host's strike.
+    r.line("record put a/1 empty", 1, || {
+        ans(block(&rt, st.record_put(i.schema, b"a/1", &rec(b""))))
     });
+    r.line("record get emptied", 1, || {
+        ans(block(&rt, StoreCalls::record_get(&st, i.schema, b"a/1")).map(shown))
+    });
+    r.line("record scan emptied", 1, scan);
     r.line("typed upsert", 1, || {
         ans(block(
             &rt,
@@ -716,6 +725,7 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         "usage batch",
         "metering batch",
         "record put a/1",
+        "record put a/1 empty",
         "typed upsert",
         "typed delete",
         "scope-kind put",
@@ -727,7 +737,12 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         format!("= Some(({:?}, Some({:?})))", i.grouped, i.group),
         "a key put is the key got"
     );
-    for label in ["get absent", "get t1 after", "record get absent"] {
+    for label in [
+        "get absent",
+        "get t1 after",
+        "record get absent",
+        "record get emptied",
+    ] {
         assert_eq!(at(label), "= None", "{label}");
     }
     for label in ["delete absent", "relive plain"] {
@@ -746,6 +761,15 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     assert_eq!(at("redeem"), "= true");
     assert_eq!(at("redeem again"), "= false", "a token is redeemed once");
     assert_eq!(at("record get"), "= Some(\"one\")");
+    assert_eq!(
+        at("record scan"),
+        "= [(\"a/1\", \"one\"), (\"a/2\", \"two\")]"
+    );
+    assert_eq!(
+        at("record scan emptied"),
+        "= [(\"a/2\", \"two\")]",
+        "an empty put removes the row: the scan never returns it"
+    );
     // add_usage 2, then one batch of two cells of 1 applied once (its replay applied nothing).
     assert!(
         tail("usage again").contains("UsageLedger { requests: 2,"),
