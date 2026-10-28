@@ -5,9 +5,9 @@
 //! what a store plugin implements so that it can be served through the store v3 table
 //! (`abi::store`) with no `unsafe` of its own.
 //!
-//! A store implements [`StoreSlots`]: the 1.5.5 op set is [`RecordStore`] (slots 0-32 read and
-//! write exactly those records), and the v3 additions are the methods here (the `op_id`-carrying
-//! writes, the ledger ops, the money slots, `window_caps`). Every argument is typed Rust: the SDK
+//! A store implements [`StoreSlots`]: the 1.5.5 op set reads and writes exactly the 1.5.5 records,
+//! and the v3 additions are the methods here (the `op_id`-carrying count batches, plane records
+//! and the kernel-held records). No slot carries money. Every argument is typed Rust: the SDK
 //! reads the host's `in`, decodes each record blob, calls the method, and writes the answer into
 //! the host's buffers or under a lease.
 //!
@@ -15,8 +15,7 @@
 //!
 //! Every method that takes an [`OpId`] dedupes on it, DURABLY for a durable store: the same
 //! `op_id` with the same value fields applies nothing and answers what the first call answered
-//! (S1: `reserve` answers the ORIGINAL grants, `slice_release` the ORIGINAL released amounts); the
-//! same `op_id` with different value fields is [`OpRefused::Conflict`] and applies nothing (S2,
+//! (S1); the same `op_id` with different value fields is [`OpRefused::Conflict`] and applies nothing (S2,
 //! [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT)); only an answer that APPLIED a
 //! change is recorded. The SDK checks every host capacity BEFORE calling the method, so a
 //! short-buffer answer never reaches the store and is never recorded (the S1 addendum).
@@ -30,7 +29,7 @@ pub mod fork;
 
 use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;
-use crate::kinds::{Head, RecordBytes};
+use crate::kinds::RecordBytes;
 use crate::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
     PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
@@ -49,106 +48,18 @@ pub enum OpRefused {
     /// [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT), nothing applied.
     Conflict,
     /// The write could not be applied (a fork at a used `seq`, a backend error): FAILED with this
-    /// text, nothing applied, nothing recorded under the `op_id`.
+    /// text, nothing applied, nothing recorded under the `op_id`. A host cannot tell this from a
+    /// commit whose answer was lost, so it replays the same `op_id` (S5).
     Failed(String),
+    /// The write was decided before commit and refused (a value its columns cannot hold, a
+    /// constraint, a script error before any write): REFUSED with this text, PROVABLY nothing
+    /// applied and nothing recorded under the `op_id` (S3, S5). A host may split or re-send the
+    /// write under a new `op_id`.
+    Refused(String),
 }
 
 /// An `op_id`-carrying write's answer.
 pub type OpResult<T> = Result<T, OpRefused>;
-
-/// A capped axis, as a cell or a cap names it (`abi::store::DIM_*`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Dimension<'a> {
-    /// Money, in nano-units ([`DIM_NANO_UNITS`](crate::abi::store::DIM_NANO_UNITS)).
-    NanoUnits,
-    /// A count of requests ([`DIM_REQUESTS`](crate::abi::store::DIM_REQUESTS)).
-    Requests,
-    /// A live gauge ([`DIM_CONCURRENCY`](crate::abi::store::DIM_CONCURRENCY)).
-    Concurrency,
-    /// A declared meter class, by key ([`DIM_CLASS`](crate::abi::store::DIM_CLASS)).
-    Class(&'a str),
-}
-
-/// The slot a cell draws from and a cap bounds: `(bucket, pool, dimension, class_key,
-/// window_start)` (`abi::store::UnitCell`, `WindowCap`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CellKey<'a> {
-    /// The bucket id.
-    pub bucket: &'a str,
-    /// The pool scope; `None` = every pool.
-    pub pool: Option<&'a str>,
-    /// The axis.
-    pub dimension: Dimension<'a>,
-    /// The window (ms); `0` = no window.
-    pub window_start: u64,
-}
-
-/// One cell of a `reserve` (`abi::store::UnitCell`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cell<'a> {
-    /// Which slot.
-    pub key: CellKey<'a>,
-    /// How much; above `0`.
-    pub amount: u64,
-}
-
-/// One cell's grant (`abi::store::CellGrant`): always the cell's whole `amount`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grant {
-    /// The slice.
-    pub slice_id: u64,
-    /// How much was granted.
-    pub granted: u64,
-    /// When the node must stop drawing against it (ms).
-    pub valid_until_ms: u64,
-}
-
-/// Why a `reserve` applied nothing (`abi::store::RESERVE_*`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReserveRefused {
-    /// Cell `cell`'s window has no headroom ([`RESERVE_EXHAUSTED`](crate::abi::store::RESERVE_EXHAUSTED)).
-    Exhausted {
-        /// The first cell that could not be granted.
-        cell: u32,
-    },
-    /// The node's epoch is behind the store's ([`RESERVE_STALE_EPOCH`](crate::abi::store::RESERVE_STALE_EPOCH)).
-    StaleEpoch,
-    /// The store could not be reached ([`RESERVE_UNAVAILABLE`](crate::abi::store::RESERVE_UNAVAILABLE)).
-    Unavailable,
-    /// Cell `cell` names a slot no cap was pushed for ([`RESERVE_NO_CAP`](crate::abi::store::RESERVE_NO_CAP)).
-    NoCap {
-        /// The first such cell.
-        cell: u32,
-    },
-    /// The same `op_id` with different value fields.
-    Conflict,
-}
-
-/// One cap (`abi::store::WindowCap`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cap<'a> {
-    /// Which slot.
-    pub key: CellKey<'a>,
-    /// The cap.
-    pub cap: u64,
-    /// The configuration generation it was read from.
-    pub config_gen: u64,
-}
-
-/// Why a `window_caps` push applied nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CapsRefused {
-    /// Cap `index` has the same `config_gen` as the stored cap and a different value:
-    /// REFUSED with [`DIAG_CAP_CONFLICT`](crate::abi::store::DIAG_CAP_CONFLICT).
-    CapConflict {
-        /// The first conflicting cap.
-        index: usize,
-    },
-    /// The same `op_id` with different value fields.
-    Conflict,
-    /// The push could not be applied.
-    Failed(String),
-}
 
 /// What a store states about itself: `ephemeral` as the Statement mark `MARK_EPHEMERAL`, the rest
 /// in its Statement tail (`abi::store::StoreTail`).
@@ -200,38 +111,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         Step::Ready(Ok(()))
     }
 
-    /// `add_usage` (slot 8): [`RecordStore::add_usage`], deduped on `op`.
-    ///
-    /// # Errors
-    /// [`OpRefused`].
-    fn add_usage_op(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        bucket: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> Step<OpResult<()>>;
-
-    /// `add_metering` (slot 9): [`RecordStore::add_metering`], deduped on `op`.
-    ///
-    /// # Errors
-    /// [`OpRefused`].
-    fn add_metering_op(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        delta: &MeteringDelta,
-    ) -> Step<OpResult<()>>;
-
-    /// `append_audit` (slot 19): [`RecordStore::append_audit`], deduped on `op`.
-    ///
-    /// # Errors
-    /// [`OpRefused`]; a different record at a used `seq` is `Failed` (a fork).
-    fn append_audit_op(&self, cx: &mut Op<'_>, op: OpId, entry: &AuditRecord)
-        -> Step<OpResult<()>>;
-
-    /// `append_plane_record` (slot 26): [`RecordStore::append_plane_record`], deduped on `op`.
+    /// `append_plane_record` (slot 19): [`RecordStore::append_plane_record`], deduped on `op`.
     ///
     /// # Errors
     /// [`OpRefused`].
@@ -242,53 +122,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         record: PlaneRecordRef<'_>,
     ) -> Step<OpResult<()>>;
 
-    /// `append_batch` (slot 33): append `records` to `stream`; the head it reached.
-    ///
-    /// # Errors
-    /// [`OpRefused`].
-    fn append_batch(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        stream: &str,
-        records: &[RecordBytes],
-    ) -> Step<OpResult<Head>>;
-
-    /// `heads` (slot 36): where each stream has reached.
-    ///
-    /// # Errors
-    /// A backend text.
-    fn heads(&self, cx: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>>;
-
-    /// `session_put` (slot 37): an upsert on `session`.
-    ///
-    /// # Errors
-    /// A backend text.
-    fn session_put(
-        &self,
-        cx: &mut Op<'_>,
-        session: u64,
-        node: &str,
-        principal: &str,
-    ) -> Step<Result<(), String>>;
-
-    /// `session_remove` (slot 38); absent is `Ok`.
-    ///
-    /// # Errors
-    /// A backend text.
-    fn session_remove(&self, cx: &mut Op<'_>, session: u64) -> Step<Result<(), String>>;
-
-    /// `sessions_for` (slot 39): the sessions `principal` holds, with their nodes.
-    ///
-    /// # Errors
-    /// A backend text.
-    fn sessions_for(
-        &self,
-        cx: &mut Op<'_>,
-        principal: &str,
-    ) -> Step<Result<Vec<(u64, String)>, String>>;
-
-    /// `record_put` (slot 40): an upsert on `(schema, key)`. `value` is the host's bytes, borrowed,
+    /// `record_put` (slot 26): an upsert on `(schema, key)`. `value` is the host's bytes, borrowed,
     /// and at most `MAX_RECORD_BYTES` (the door refuses a longer one before calling).
     ///
     /// AN EMPTY `value` REMOVES THE ROW: after it, [`Self::record_get`] answers `None` for the key
@@ -306,7 +140,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         value: &[u8],
     ) -> Step<Result<(), String>>;
 
-    /// `record_get` (slot 41).
+    /// `record_get` (slot 27).
     ///
     /// # Errors
     /// A backend text.
@@ -317,7 +151,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         key: &[u8],
     ) -> Step<Result<Option<RecordBytes>, String>>;
 
-    /// `record_scan` (slot 42): at most `limit` records under `prefix`, in key order; `limit` 0 is
+    /// `record_scan` (slot 28): at most `limit` records under `prefix`, in key order; `limit` 0 is
     /// nothing.
     ///
     /// # Errors
@@ -330,42 +164,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         limit: u32,
     ) -> Step<Result<Scanned, String>>;
 
-    /// `reserve` (slot 34): all or nothing; on `Ok`, EXACTLY one [`Grant`] per cell, in order,
-    /// into `grants` (else FAULT). `cells` reads the host's array in place (clone it to read it
-    /// again) and `grants` writes into the host's, its room checked first: the request path
-    /// allocates nothing in the SDK (the design's plugin memory rule). Write grants only on `Ok`.
-    /// The epoch and a slice's life follow `abi::store::SLICE_TTL_MS`'s spec: a fleet store fences
-    /// on its persisted epoch and bounds `valid_until_ms`; a single-node store may not.
-    ///
-    /// # Errors
-    /// [`ReserveRefused`] (a stale epoch is `StaleEpoch`); nothing is applied.
-    fn reserve<'c>(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        epoch: u64,
-        cells: impl Iterator<Item = Cell<'c>> + Clone,
-        grants: &mut impl Extend<Grant>,
-    ) -> Step<Result<(), ReserveRefused>>;
-
-    /// `slice_release` (slot 35): per item `(slice_id, unspent)`, the amount taken back after
-    /// clamping, in item order, into `released`. As `reserve`: `items` reads the host's array in
-    /// place and `released` writes into the host's. Exactly one amount per item: any other count
-    /// is FAULT. Write amounts only on `Ok`. It always applies, whatever the epoch, capped at what
-    /// the slice has left: a slice with nothing left returns `0`.
-    ///
-    /// # Errors
-    /// [`OpRefused`]; a slice the store never granted is `Failed`, nothing applied.
-    fn slice_release(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        epoch: u64,
-        items: impl Iterator<Item = (u64, u64)> + Clone,
-        released: &mut impl Extend<u64>,
-    ) -> Step<OpResult<()>>;
-
-    /// `add_usage_batch` (slot 43): the cells in order, atomically.
+    /// `add_usage_batch` (slot 29): the cells in order, atomically.
     ///
     /// # Errors
     /// [`OpRefused`].
@@ -376,7 +175,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         cells: &[(&str, u64, UsageDelta)],
     ) -> Step<OpResult<()>>;
 
-    /// `add_metering_batch` (slot 44): the deltas in order, atomically.
+    /// `add_metering_batch` (slot 30): the deltas in order, atomically.
     ///
     /// # Errors
     /// [`OpRefused`].
@@ -386,28 +185,6 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         op: OpId,
         deltas: &[MeteringDelta],
     ) -> Step<OpResult<()>>;
-
-    /// `append_audit_batch` (slot 45): the records in order, atomically.
-    ///
-    /// # Errors
-    /// [`OpRefused`]; one fork refuses the whole batch.
-    fn append_audit_batch(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        entries: &[AuditRecord],
-    ) -> Step<OpResult<()>>;
-
-    /// `window_caps` (slot 46): upsert each cap by its slot, newest `config_gen` wins; atomic.
-    ///
-    /// # Errors
-    /// [`CapsRefused`]; nothing is applied.
-    fn window_caps(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        caps: &[Cap<'_>],
-    ) -> Step<Result<(), CapsRefused>>;
 
     // ── the 1.5.5 op set (slots 0-32), each one body, served through the table ─────────────────
 
@@ -435,13 +212,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// The store's refusal, as the 1.5.5 op set states it.
     fn delete_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>>;
 
-    /// `scrub_key` (slot 4).
-    ///
-    /// # Errors
-    /// The store's refusal, as the 1.5.5 op set states it.
-    fn scrub_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>>;
-
-    /// `list_keys_since` (slot 5).
+    /// `list_keys_since` (slot 4).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -451,7 +222,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         since: u64,
     ) -> Step<RecordStoreResult<Vec<VirtualKey>>>;
 
-    /// `get_usage` (slot 6).
+    /// `get_usage` (slot 5).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -462,7 +233,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         window_start: u64,
     ) -> Step<RecordStoreResult<UsageLedger>>;
 
-    /// `put_usage` (slot 7).
+    /// `put_usage` (slot 6).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -474,7 +245,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         ledger: &UsageLedger,
     ) -> Step<RecordStoreResult<()>>;
 
-    /// `list_metering` (slot 10).
+    /// `list_metering` (slot 7).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -484,19 +255,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         bucket: u64,
     ) -> Step<RecordStoreResult<Vec<MeteringRow>>>;
 
-    /// `purge_windows_before` (slot 11).
-    ///
-    /// # Errors
-    /// The store's refusal, as the 1.5.5 op set states it.
-    fn purge_windows_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>>;
-
-    /// `purge_metering_before` (slot 12).
-    ///
-    /// # Errors
-    /// The store's refusal, as the 1.5.5 op set states it.
-    fn purge_metering_before(&self, cx: &mut Op<'_>, bucket: &str) -> Step<RecordStoreResult<u64>>;
-
-    /// `put_credential` (slot 13).
+    /// `put_credential` (slot 8).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -506,7 +265,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         secret: &CredentialSecret,
     ) -> Step<RecordStoreResult<()>>;
 
-    /// `put_key_with_credential` (slot 14): both, atomically.
+    /// `put_key_with_credential` (slot 9): both, atomically.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -517,7 +276,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         secret: &CredentialSecret,
     ) -> Step<RecordStoreResult<()>>;
 
-    /// `list_credentials` (slot 15).
+    /// `list_credentials` (slot 10).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -527,18 +286,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         key_id: &str,
     ) -> Step<RecordStoreResult<Vec<CredentialMeta>>>;
 
-    /// `lookup_credential_secret` (slot 16).
-    ///
-    /// # Errors
-    /// The store's refusal, as the 1.5.5 op set states it.
-    fn lookup_credential_secret(
-        &self,
-        cx: &mut Op<'_>,
-        kind: &str,
-        public_id: &str,
-    ) -> Step<RecordStoreResult<Option<CredentialSecret>>>;
-
-    /// `revoke_credential` (slot 17).
+    /// `revoke_credential` (slot 11).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -549,7 +297,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         reason: &str,
     ) -> Step<RecordStoreResult<()>>;
 
-    /// `list_credentials_since` (slot 18).
+    /// `list_credentials_since` (slot 12).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -559,26 +307,26 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         since: u64,
     ) -> Step<RecordStoreResult<Vec<CredentialSecret>>>;
 
-    /// `list_audit` (slot 20).
+    /// `list_audit` (slot 13).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
     fn list_audit(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>>;
 
-    /// `add_denylist` (slot 21).
+    /// `add_denylist` (slot 14).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
     fn add_denylist(&self, cx: &mut Op<'_>, sub: &str, reason: &str)
         -> Step<RecordStoreResult<()>>;
 
-    /// `list_denylist` (slot 22).
+    /// `list_denylist` (slot 15).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
     fn list_denylist(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>>;
 
-    /// `list_audit_tail` (slot 23).
+    /// `list_audit_tail` (slot 16).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -588,7 +336,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         limit: u64,
     ) -> Step<RecordStoreResult<Vec<AuditRecord>>>;
 
-    /// `upsert_plane_record` (slot 24).
+    /// `upsert_plane_record` (slot 17).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -598,7 +346,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         record: PlaneRecordRef<'_>,
     ) -> Step<RecordStoreResult<()>>;
 
-    /// `get_plane_record` (slot 25): the body.
+    /// `get_plane_record` (slot 18): the body.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -609,7 +357,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         id: &str,
     ) -> Step<RecordStoreResult<Option<Vec<u8>>>>;
 
-    /// `list_plane_records` (slot 27): the bodies.
+    /// `list_plane_records` (slot 20): the bodies.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -620,7 +368,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         selector: &PlaneSelector<'_>,
     ) -> Step<RecordStoreResult<Vec<Vec<u8>>>>;
 
-    /// `list_plane_record_parents` (slot 28).
+    /// `list_plane_record_parents` (slot 21).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -630,7 +378,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         kind: &str,
     ) -> Step<RecordStoreResult<Vec<String>>>;
 
-    /// `purge_plane_records_before` (slot 29) under the age rule.
+    /// `purge_plane_records_before` (slot 22) under the age rule.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -641,7 +389,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         before: u64,
     ) -> Step<RecordStoreResult<u64>>;
 
-    /// RETENTION, with the predicate named: slot 29 under the rule its `in` carries
+    /// RETENTION, with the predicate named: slot 22 under the rule its `in` carries
     /// (`KindBeforeIn::retention`); the door calls this, so a store that honours the terminal-only
     /// rule overrides it ([`Retention::drops`]).
     ///
@@ -664,7 +412,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         }
     }
 
-    /// `delete_plane_record` (slot 30); absent is `Ok`.
+    /// `delete_plane_record` (slot 23); absent is `Ok`.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -675,7 +423,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         id: &str,
     ) -> Step<RecordStoreResult<()>>;
 
-    /// `redeem_plane_token` (slot 31): whether this call was the first redemption.
+    /// `redeem_plane_token` (slot 24): whether this call was the first redemption.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -688,7 +436,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         now: u64,
     ) -> Step<RecordStoreResult<bool>>;
 
-    /// `plane_token_live` (slot 32).
+    /// `plane_token_live` (slot 25).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.

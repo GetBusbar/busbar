@@ -713,12 +713,11 @@ macro_rules! lend_kinds_list {
 lend_kinds_list!(lend);
 
 // THE STORE KIND (`abi::store`): the lists a write lends and the host buffers a request-path read
-// fills. A nested host buffer (`store::HostBuf`, `HostBlobs`, `HostSessions`, `HostRecords`) is
+// fills. A nested host buffer (`store::HostBuf`, `HostBlobs`, `HostRecords`) is
 // reached with `field()` first, then through its own row.
 use crate::abi::store::{
-    AddUsageBatchIn, AppendBatchIn, CellGrant, HostBlobs as StoreHostBlobs,
-    HostBuf as StoreHostBuf, HostRecords, HostSessions, OpBlobsIn, RecordEntry, ReleaseItem,
-    ReserveIn, SessionRow, SliceReleaseIn, UnitCell, UsageCell, WindowCap, WindowCapsIn,
+    AddUsageBatchIn, HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostRecords, OpBlobsIn,
+    RecordEntry, UsageCell,
 };
 
 /// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
@@ -729,19 +728,8 @@ macro_rules! lend_store_list {
             $($arg)*
             AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
             OpBlobsIn { list(records, records_len) -> Blob; }
-            AppendBatchIn { list(records, records_len) -> Blob; }
-            ReserveIn {
-                list(cells, cells_len) -> UnitCell;
-                buf(grants, grants_cap) -> CellGrant;
-            }
-            SliceReleaseIn {
-                list(items, items_len) -> ReleaseItem;
-                buf(released, released_cap) -> u64;
-            }
-            WindowCapsIn { list(caps, caps_len) -> WindowCap; }
             StoreHostBuf { buf(ptr, cap) -> u8; }
             StoreHostBlobs { buf(items, items_cap) -> Blob; }
-            HostSessions { buf(items, items_cap) -> SessionRow; }
             HostRecords { buf(items, items_cap) -> RecordEntry; }
         }
     };
@@ -1265,17 +1253,7 @@ macro_rules! lent_field_list {
                 sub head: crate::abi::mechanism::call::InHead;
                 blob settings;
             }
-            crate::abi::store::ledger::AppendBatchIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                str stream;
-                val records_len: usize;
-            }
             crate::abi::store::ledger::HostRecords {
-                val items_cap: usize;
-                sub bytes: crate::abi::store::HostBuf;
-            }
-            crate::abi::store::ledger::HostSessions {
                 val items_cap: usize;
                 sub bytes: crate::abi::store::HostBuf;
             }
@@ -1302,21 +1280,6 @@ macro_rules! lent_field_list {
                 val limit: u32;
                 sub out: crate::abi::store::ledger::HostRecords;
             }
-            crate::abi::store::ledger::SessionPutIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val session: u64;
-                str node;
-                str principal;
-            }
-            crate::abi::store::ledger::SessionRow {
-                val session: u64;
-                str node;
-            }
-            crate::abi::store::ledger::SessionsForIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str principal;
-                sub out: crate::abi::store::ledger::HostSessions;
-            }
             crate::abi::store::HostBlobs {
                 val items_cap: usize;
                 sub bytes: crate::abi::store::HostBuf;
@@ -1329,62 +1292,15 @@ macro_rules! lent_field_list {
                 val op_id: crate::abi::store::OpId;
                 val cells_len: usize;
             }
-            crate::abi::store::money::CellGrant {
-                val slice_id: u64;
-                val granted: u64;
-                val valid_until_ms: u64;
-            }
             crate::abi::store::money::OpBlobsIn {
                 sub head: crate::abi::mechanism::call::InHead;
                 val op_id: crate::abi::store::OpId;
                 val records_len: usize;
             }
-            crate::abi::store::money::ReleaseItem {
-                val slice_id: u64;
-                val unspent: u64;
-            }
-            crate::abi::store::money::ReserveIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                val epoch: u64;
-                val cells_len: usize;
-                val grants_cap: usize;
-            }
-            crate::abi::store::money::SliceReleaseIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                val epoch: u64;
-                val items_len: usize;
-                val released_cap: usize;
-            }
-            crate::abi::store::money::UnitCell {
-                str bucket;
-                str pool;
-                val dimension: u32;
-                val _r: u32;
-                str class_key;
-                val amount: u64;
-                val window_start: u64;
-            }
             crate::abi::store::money::UsageCell {
                 str bucket;
                 val window_start: u64;
                 blob delta;
-            }
-            crate::abi::store::money::WindowCap {
-                str bucket;
-                str pool;
-                val dimension: u32;
-                val _r: u32;
-                str class_key;
-                val window_start: u64;
-                val cap: u64;
-                val config_gen: u64;
-            }
-            crate::abi::store::money::WindowCapsIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                val caps_len: usize;
             }
             crate::abi::store::plane::AppendPlaneRecordIn {
                 sub head: crate::abi::mechanism::call::InHead;
@@ -1429,11 +1345,6 @@ macro_rules! lent_field_list {
                 sub head: crate::abi::mechanism::call::InHead;
                 sub record: crate::abi::store::plane::PlaneRecordRow;
             }
-            crate::abi::store::records::AddUsageIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                sub cell: crate::abi::store::money::UsageCell;
-            }
             crate::abi::store::records::BlobIn {
                 sub head: crate::abi::mechanism::call::InHead;
                 blob record;
@@ -1456,11 +1367,6 @@ macro_rules! lent_field_list {
                 sub head: crate::abi::mechanism::call::InHead;
                 str kind;
                 str id;
-            }
-            crate::abi::store::records::OpBlobIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                blob record;
             }
             crate::abi::store::records::PutUsageIn {
                 sub head: crate::abi::mechanism::call::InHead;

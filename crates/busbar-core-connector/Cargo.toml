@@ -49,3 +49,4 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 serde_json = { workspace = true }
 rcgen = { workspace = true, features = ["pem"] }
 busbar-stub-transport-plugin = { path = "../plugin-loader/stubs/transport/plugin" }
+busbar-test-kit = { path = "../busbar-test-kit" }
