@@ -136,7 +136,9 @@ jobs:
           repository: GetBusbar/busbar
           ref: ${{ steps.pin.outputs.sha }}
           path: busbar
-          sparse-checkout: scripts/fleet
+          sparse-checkout: |
+            scripts/fleet
+            dist/default
       - name: pin-check selftest (every refusal fires before the verdict is trusted)
         run: bash busbar/scripts/fleet/pin-check.sh --selftest
       - name: pin-check

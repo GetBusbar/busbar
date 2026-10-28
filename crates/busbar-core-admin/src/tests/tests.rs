@@ -957,7 +957,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
+            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -1038,7 +1038,6 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -1917,7 +1916,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let (addr, handle, client) = spin_up(router).await;
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
+            "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -8396,7 +8395,6 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),
@@ -9701,7 +9699,6 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
             "test-provider:
   protocol: {}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
 ",
             crate::linked_protocol()
         ),

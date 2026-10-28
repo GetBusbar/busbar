@@ -18,6 +18,11 @@
 //! handed in as the door's `report_of` hands it), onto a bound book.
 
 use super::*;
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, Authenticate, Consumption, Decode, Dial, Encode, Meter,
+    Refusal, SeatVerdict, Verify,
+};
+use busbar_kernel::slice::GroupLeaseSlip;
 
 use std::sync::atomic::AtomicBool;
 
@@ -1963,7 +1968,7 @@ impl DoorUnit {
     }
 }
 
-impl Units for DoorUnit {
+impl busbar_kernel::teller::DoorSeats for DoorUnit {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.reached_arrival.store(true, Ordering::SeqCst);
         SeatVerdict::proceed(
@@ -2030,7 +2035,9 @@ impl Units for DoorUnit {
         // The arrival hold is the hold the exit settles: a door plane's door opens at zero.
         SeatVerdict::proceed(token, Admission::ZeroHold)
     }
+}
 
+impl busbar_kernel::teller::UnitEnds for DoorUnit {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -2172,8 +2179,8 @@ fn late_of(report: Report) -> Late {
     Box::new(move || Some((report.usage, report.fee_count, report.lane)))
 }
 
-/// One door unit's END, as the loop seals it: the unit run through the kernel loop over the
-/// borrowed drive's own wrapper ([`Borrowed`]) in `node`'s table, the end handed back unposted.
+/// One door unit's END, as the loop seals it: the unit run through the kernel loop in `node`'s
+/// table, its record kept on `post` (the borrowed drive's taps), the end handed back unposted.
 /// What `plane_node.rs`'s `drive_to_end` did over the handed unit's wrapper, on the door's.
 async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
     let unit = DoorUnit::served();
@@ -2207,10 +2214,9 @@ async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
         admin_listener: false,
         kernel_verb_only: false,
     };
-    let borrowed = Borrowed { units: &unit, post };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &borrowed,
+        &unit,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -2219,8 +2225,9 @@ async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(post),
         },
-        &borrowed,
+        &unit,
     )
     .await;
     node.inflight.remove(key);
