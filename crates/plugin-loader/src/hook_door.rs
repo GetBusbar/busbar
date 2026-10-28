@@ -120,6 +120,34 @@ enum State {
     Trialing,
 }
 
+/// One acknowledged `configure`: the instance name, the settings and the version.
+type Configured = Arc<(String, Vec<u8>, u64)>;
+
+/// `configure` `plugin` with `pushed` (ticket-less; the SDK's `configure` never pends): `Ok` when
+/// it acknowledged the version.
+fn reconfigure(plugin: &Plugin<Hook>, pushed: &(String, Vec<u8>, u64)) -> Result<(), String> {
+    let (name, settings, version) = pushed;
+    let mut f = Frame::new(
+        ConfigureIn {
+            head: in_head(),
+            version: *version,
+            settings: json(settings),
+            name: lend_or_null(name),
+        },
+        blank_out::<ConfigureOut>(),
+    );
+    let c = plugin.call(slot::CONFIGURE, &mut f);
+    release(plugin, c.lease);
+    if c.outcome == Outcome::Ready && f.out.acked_version == *version {
+        Ok(())
+    } else {
+        Err(c.error.map_or_else(
+            || format!("it did not acknowledge settings version {version} again"),
+            |e| String::from_utf8_lossy(&e).into_owned(),
+        ))
+    }
+}
+
 struct Inner {
     name: String,
     dispatcher: Arc<Dispatcher>,
@@ -128,6 +156,10 @@ struct Inner {
     // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
     // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
     settings: Vec<u8>,
+    /// The last `configure` the hook acknowledged (its name, settings and version): a quarantine's
+    /// trial opens its fresh instance over [`Inner::settings`], then pushes this again, so a commit
+    /// the hook acknowledged outlives the instance that acknowledged it.
+    configured: Mutex<Option<Configured>>,
     state: Mutex<State>,
     next_worker: AtomicU32,
     /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
@@ -203,8 +235,19 @@ impl Inner {
     /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
     /// doubles the window.
     fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
+        let configured = self
+            .configured
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let opened = (self.rebind)().and_then(|p| {
             open(&p, &self.settings)?;
+            if let Some(pushed) = configured {
+                if let Err(e) = reconfigure(&p, &pushed) {
+                    close(&p);
+                    return Err(e);
+                }
+            }
             Ok(p)
         });
         let mut state = self.lock();
@@ -506,6 +549,7 @@ impl HookInstance {
                 dispatcher,
                 rebind: Box::new(rebind),
                 settings: settings.to_vec(),
+                configured: Mutex::new(None),
                 state: Mutex::new(State::Live(Arc::new(plugin))),
                 next_worker: AtomicU32::new(0),
                 orders,
@@ -683,9 +727,10 @@ impl HookCalls for HookInstance {
         budget: Duration,
     ) -> Pending<Result<(), String>> {
         let inner = Arc::clone(&self.inner);
-        let owned = Arc::new((name.to_string(), settings.as_bytes().to_vec()));
+        let owned: Configured = Arc::new((name.to_string(), settings.as_bytes().to_vec(), version));
         Box::pin(async move {
             let lent = Arc::clone(&owned);
+            let acked = Arc::clone(&owned);
             let make = move || {
                 Frame::new(
                     ConfigureIn {
@@ -710,6 +755,11 @@ impl HookCalls for HookInstance {
             {
                 Ok(done) if done.outcome == Outcome::Ready && done.out.acked_version == version => {
                     release(&done.plugin, done.lease);
+                    // Acknowledgements may finish out of order: the newest version is kept.
+                    let mut kept = inner.configured.lock().unwrap_or_else(|p| p.into_inner());
+                    if kept.as_ref().is_none_or(|k| k.2 <= version) {
+                        *kept = Some(acked);
+                    }
                     Ok(())
                 }
                 Ok(done) => {

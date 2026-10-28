@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT LEGACY TABLE, as the kernel reads it (`BUSBAR-1.6.0.md` §2: "Retired names … and
-//! migrations for plugins that are not in the build … live in the root legacy table,
-//! `[package.metadata.busbar.legacy]`, generated from `plugins.yaml`").
+//! THE ROOT MIGRATION TABLE, as the kernel reads it (`BUSBAR-1.6.0.md` §2): retired names, and
+//! migrations for plugins that are not in the build, live in the root's
+//! `[package.metadata.busbar.migration]`, generated from `plugins.yaml`.
 //!
 //! The rows name plugins no crate in the kernel declares, so the kernel spells none of them: the
 //! composition root hands its table in once, before the first configuration is read, exactly as it
@@ -32,14 +32,14 @@ pub type Rows = &'static [(&'static str, &'static str)];
 /// stands.
 static ROWS: std::sync::OnceLock<Rows> = std::sync::OnceLock::new();
 
-/// Install the root legacy table.
+/// Install the root migration table.
 pub fn install(rows: Rows) {
     let _ = ROWS.set(rows);
 }
 
-/// The installed table. Before any hand-in: none in a shipped build (no root linked no legacy
+/// The installed table. Before any hand-in: none in a shipped build (no root linked no migration
 /// table); in a TEST build the frozen 1.5.5 rows the kernel tests pin stand in
-/// (`tests/fixtures/frozen_customer_text.yaml`, `legacy_rows`).
+/// (`tests/fixtures/frozen_customer_text.yaml`, `migration_rows`).
 pub fn rows() -> Rows {
     ROWS.get().copied().unwrap_or_else(stand_in)
 }
@@ -58,9 +58,9 @@ fn stand_in() -> Rows {
                     "../../tests/fixtures/frozen_customer_text.yaml"
                 ))
                 .expect("the frozen-text fixture parses");
-                doc.get("legacy_rows")
+                doc.get("migration_rows")
                     .and_then(Value::as_mapping)
-                    .expect("the frozen-text fixture carries `legacy_rows`")
+                    .expect("the frozen-text fixture carries `migration_rows`")
                     .iter()
                     .filter_map(|(k, v)| Some((k.as_str()?.to_owned(), v.as_str()?.to_owned())))
                     .collect()
@@ -102,7 +102,7 @@ pub fn former_names(alias: &str) -> Vec<String> {
         .collect()
 }
 
-/// THE ONE REWRITE over the legacy table: when the `module:` of the `kind_root` section `section` is
+/// THE ONE REWRITE over the migration table: when the `module:` of the `kind_root` section `section` is
 /// a retired spelling (a `retired.<kind_root>.<word>` row), the spelling and the alias it answers to
 /// now. With `apply` the value is rewritten to the alias in place; without, the section is left as
 /// written (boot and `--validate` refuse with the marker instead).

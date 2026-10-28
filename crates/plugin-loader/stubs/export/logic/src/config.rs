@@ -15,4 +15,8 @@ pub struct FileSettings {
     /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
     #[serde(default)]
     pub rotate_mb: Option<u64>,
+    /// How many archives the host keeps when it rotates the file (the host's `keep`, read beside
+    /// `path`): `0` truncates in place; unset, the manifest's `declares.keep`.
+    #[serde(default)]
+    pub keep: Option<u32>,
 }
