@@ -40,12 +40,12 @@ use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::DeclaredConns;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pending, Probed};
 
 use crate::boot::{Candidate, Origin};
+use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::lifecycle::{
     blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_call,
@@ -321,17 +321,16 @@ impl Inner {
             let plugin = self.live(deadline).await.map_err(Answered::Broken)?;
             let workers = self.dispatcher.workers().max(1);
             let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-            let Some(ticket) = self.dispatcher.mint(worker) else {
+            // THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (`BUSBAR-1.6.0.md` §11.7): the
+            // call's budget rides each op, so a hook slower than the Call class budget but inside
+            // its own `timeout_ms` is never quarantined, as in 1.5.5.
+            let Some(call) = Ticketed::mint(&self.dispatcher, worker) else {
                 return Err(Answered::Broken(format!(
                     "hook '{}' could not be called: no ticket",
                     self.name
                 )));
             };
-            let mut guard = Ticketed {
-                dispatcher: Arc::clone(&self.dispatcher),
-                ticket,
-                answered: false,
-            };
+            let mut call = call.watched(budget);
             let mut slot_wait = SLOT_WAIT_FIRST;
             let mut retried_free = false;
             loop {
@@ -339,29 +338,25 @@ impl Inner {
                 // this op: the call is one made while quarantined, so it waits for the trial window
                 // within its own budget (R2) instead of answering FAULT for a crossing it never made.
                 if plugin.is_faulted() {
-                    guard.answered = true;
                     continue 'route;
                 }
-                // THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (`BUSBAR-1.6.0.md` §11.7): the
-                // call's budget rides the op, so a hook slower than the Call class budget but inside
-                // its own `timeout_ms` is never quarantined, as in 1.5.5.
-                let reply = self.dispatcher.submit_watched(
+                call.submit(
                     &*plugin,
-                    ticket,
                     s,
                     make(),
                     DeadlineClass::Call,
                     deadline_ns,
                     Arc::clone(&lent),
-                    budget,
                 );
                 // THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook that is still inside its slot
                 // when the deadline passes answers the caller `TimedOut` then, never after (1.5.5's
-                // timeout behaviour, frozen); the dropped guard tells the dispatcher no one is
+                // timeout behaviour, frozen); the dropped call tells the dispatcher no one is
                 // waiting.
-                let Ok(done) =
-                    tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), reply)
-                        .await
+                let Ok(done) = tokio::time::timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    &mut call,
+                )
+                .await
                 else {
                     return Err(Answered::TimedOut);
                 };
@@ -380,7 +375,6 @@ impl Inner {
                 // made; like one that met the fault before it was submitted (above), it waits for
                 // the trial window within its own budget (R2), never answering the refusal.
                 if done.outcome == Outcome::Refused && plugin.is_faulted() {
-                    guard.answered = true;
                     continue 'route;
                 }
                 if done.outcome == Outcome::Refused {
@@ -408,7 +402,6 @@ impl Inner {
                         continue;
                     }
                 }
-                guard.answered = true;
                 return match (done.outcome, out) {
                     (Outcome::Ready | Outcome::Failed, _) if done.disposition.is_some() => {
                         Err(Answered::TimedOut)
@@ -471,23 +464,6 @@ struct Submitted<O> {
     lease: u64,
     /// The memory the answering call was lent (the frame whose host buffers it wrote).
     lent: Lent,
-}
-
-/// A submitted op's ticket: recycled when the answer is read, and handed to the client-drop path
-/// first when the caller stopped waiting before it (the lent memory stays with the op).
-struct Ticketed {
-    dispatcher: Arc<Dispatcher>,
-    ticket: Ticket,
-    answered: bool,
-}
-
-impl Drop for Ticketed {
-    fn drop(&mut self) {
-        if !self.answered {
-            self.dispatcher.drop_client(self.ticket);
-        }
-        self.dispatcher.recycle(self.ticket);
-    }
 }
 
 /// ONE OPENED HOOK INSTANCE, called through the hook kind's table on the one dispatcher. Cheap to
