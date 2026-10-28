@@ -599,7 +599,8 @@ fn migrate_config_command(path: Option<String>) -> i32 {
     // Core migrates its own keys; each configured plugin migrates its own settings section,
     // through the root's host (its build here, or its release for this busbar from the release
     // index): `crate::root::config_migrate`.
-    let host = crate::root::config_migrate::RootHost::for_document(&raw);
+    let host =
+        crate::root::config_migrate::RootHost::for_document(&raw, std::path::Path::new(&path));
     match config::migrate::migrate_config_with(&raw, &host) {
         Ok(out) => {
             print!("{}", out.yaml);

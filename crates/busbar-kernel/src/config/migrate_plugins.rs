@@ -63,6 +63,17 @@ pub trait MigrateHost {
     /// # Errors
     /// The release index could not be read.
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String>;
+
+    /// The providers catalog the configuration reads, rewritten without the keys its entries'
+    /// grammar does not read ([`super::migrate_catalog`]): `Ok(None)` when there is no catalog or
+    /// nothing to remove; otherwise the `providers_file:` value that names the rewritten catalog
+    /// and one change line per removed key.
+    ///
+    /// # Errors
+    /// The catalog could not be read or the rewritten one written.
+    fn rewrite_catalog(&self) -> Result<Option<(String, Vec<String>)>, String> {
+        Ok(None)
+    }
 }
 
 /// The host of a migration with no plugins at hand (`migrate_config`): every plugin passes through
@@ -124,6 +135,22 @@ pub(super) fn migrate(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut L
     }
     repin_fetch(root, host, ledger);
     pin_unserved(root, host, &wanted, ledger);
+    match host.rewrite_catalog() {
+        Ok(None) => {}
+        Ok(Some((file, lines))) => {
+            ledger.changes.extend(lines);
+            root.insert(Value::from("providers_file"), Value::from(file.as_str()));
+            ledger.changes.push(format!(
+                "providers_file: '{file}' (the providers catalog without the keys 1.6.0 refuses, \
+                 written beside the old one, which is left as it was; a `--providers` flag still \
+                 names the old catalog, so drop it or point it here)"
+            ));
+        }
+        Err(why) => ledger.todos.push(format!(
+            "the providers catalog could not be checked for keys 1.6.0 refuses ({why}); remove any \
+             key a catalog entry does not read before starting 1.6.0"
+        )),
+    }
 }
 
 /// Every plugin section the configuration selects, in document order: the store, each named

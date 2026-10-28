@@ -127,6 +127,9 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
 pub struct RootHost {
     /// The configuration's `plugins:` block (its directory and trust), when it has one.
     plugins: Option<PluginsCfg>,
+    /// The configuration file being migrated, and its `providers_file:` value.
+    config: PathBuf,
+    providers_file: Option<String>,
     /// The registry of the linked doors and the configured plugins directory.
     local: OnceCell<PluginRegistry>,
     /// The release index, or why it could not be read.
@@ -136,15 +139,24 @@ pub struct RootHost {
 }
 
 impl RootHost {
-    /// The host over the configuration document `raw` (its `plugins:` block, read as boot reads it).
+    /// The host over the configuration document `raw`, read from `config` (its `plugins:` block and
+    /// `providers_file:`, read as boot reads them).
     #[must_use]
-    pub fn for_document(raw: &str) -> Self {
-        let plugins = serde_yaml::from_str::<serde_yaml::Value>(raw)
-            .ok()
+    pub fn for_document(raw: &str, config: &std::path::Path) -> Self {
+        let doc = serde_yaml::from_str::<serde_yaml::Value>(raw).ok();
+        let plugins = doc
+            .as_ref()
             .and_then(|doc| doc.get("plugins").cloned())
             .and_then(|p| serde_yaml::from_value::<PluginsCfg>(p).ok());
+        let providers_file = doc
+            .as_ref()
+            .and_then(|doc| doc.get("providers_file"))
+            .and_then(|f| f.as_str())
+            .map(str::to_string);
         Self {
             plugins,
+            config: config.to_path_buf(),
+            providers_file,
             local: OnceCell::new(),
             index: OnceCell::new(),
             fetched: OnceCell::new(),
@@ -298,6 +310,37 @@ impl MigrateHost for RootHost {
             .by_repo(repo)
             .and_then(IndexPlugin::pin_for_this_core)
             .filter(|pin| pin != github))
+    }
+
+    fn rewrite_catalog(&self) -> Result<Option<(String, Vec<String>)>, String> {
+        let dir = self
+            .config
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        // The catalog boot reads: `--providers` > `providers_file:` (beside the config) > the
+        // `providers.yaml` beside the config.
+        let path = crate::root::cli::providers_override().unwrap_or_else(|| {
+            dir.join(self.providers_file.as_deref().unwrap_or("providers.yaml"))
+        });
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return Ok(None);
+        };
+        let shown = path.display().to_string();
+        let Some(m) = busbar_kernel::config::migrate_catalog::migrate_catalog(&raw, &shown)? else {
+            return Ok(None);
+        };
+        let stem = path
+            .file_stem()
+            .map_or_else(|| "providers".into(), |s| s.to_string_lossy().into_owned());
+        let out = path.with_file_name(format!("{stem}.migrated.yaml"));
+        std::fs::write(&out, &m.yaml).map_err(|e| format!("{}: {e}", out.display()))?;
+        // Named beside the configuration when it sits there, as `providers_file:` resolves.
+        let file = match out.strip_prefix(&dir) {
+            Ok(rel) if !dir.as_os_str().is_empty() => rel.display().to_string(),
+            _ => out.display().to_string(),
+        };
+        Ok(Some((file, m.changes)))
     }
 
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String> {
