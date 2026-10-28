@@ -795,7 +795,6 @@ pub fn compose(
                 queued: crate::root::egress_ports::WalkTelemetry::new(names),
                 reservoirs,
             }),
-            floor: busbar_kernel_egress::WeightedFloor::new(),
             pools: built,
             routes: sealed,
             stream_ceiling_secs,

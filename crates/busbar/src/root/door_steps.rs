@@ -1627,7 +1627,6 @@ pub fn compose_egress(
                 &facts.metric_lanes,
             )),
         ),
-        floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,
         stream_ceiling_secs,

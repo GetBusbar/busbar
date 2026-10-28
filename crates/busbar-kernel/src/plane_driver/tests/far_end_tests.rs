@@ -31,7 +31,7 @@ use busbar_kernel_egress::{
         Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
         Unavailable, UpstreamStatus,
     },
-    Failover, Member, OnExhausted, Pool, WeightedFloor,
+    Failover, Member, OnExhausted, Pool,
 };
 
 use super::*;
@@ -577,6 +577,7 @@ fn rig(
             exclusions: Vec::new(),
         },
         on_exhausted,
+        floor: Default::default(),
     };
     let egress = Egress {
         caller: InstanceId(9),
@@ -586,7 +587,6 @@ fn rig(
         clock: Arc::new(Wall),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
-        floor: WeightedFloor::new(),
         pools: HashMap::from([(POOL.to_string(), pool)]),
         routes,
         stream_ceiling_secs: 600,
@@ -2109,6 +2109,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
             exclusions: Vec::new(),
         },
         on_exhausted: OnExhausted::Status503,
+        floor: Default::default(),
     };
     r.egress.pools.insert("fb".to_string(), fallback);
     let t = token();

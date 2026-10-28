@@ -68,7 +68,7 @@ use busbar_kernel_egress::{
         Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
-    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts,
 };
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
@@ -235,8 +235,6 @@ pub struct Egress {
     pub journal: Arc<dyn Journal>,
     /// The counters.
     pub telemetry: Arc<dyn Telemetry>,
-    /// The weighted floor's credits, per pool.
-    pub floor: WeightedFloor,
     /// The pools, by name.
     pub pools: HashMap<String, Pool>,
     /// Every member's route.
@@ -308,7 +306,6 @@ impl Egress {
             capacity: self.capacity.as_ref(),
             clock: self.clock.as_ref(),
             telemetry: self.telemetry.as_ref(),
-            floor: &self.floor,
             pools: &self.pools,
         }
     }
