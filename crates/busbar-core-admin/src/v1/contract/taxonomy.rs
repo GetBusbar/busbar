@@ -104,10 +104,8 @@ impl ErrKind {
 /// variant WON'T COMPILE until it is classified here — so the taxonomy can never grow a code the doc
 /// dimension doesn't know about. This subsumes and strengthens
 /// `openapi_error_enum_matches_admin_error_codes`.
-// Reached from the taxonomy tag stamp in `err_json_tagged`, present under the same
-// `any(test, feature = "test-support")` surface so the extracted plane crates' admin-verb drivers
-// (a `test-support` build of THIS crate as their dependency) stamp and witness their emissions too.
-#[cfg(any(test, feature = "test-support"))]
+// Reached from the taxonomy tag stamp in `err_json_tagged`, in this crate's tests.
+#[cfg(test)]
 pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
     match e {
         AdminError::NotFound { .. } => Some(ErrKind::NotFound),
@@ -340,7 +338,7 @@ impl MethodTag {
 /// Classify an HTTP method into a `MethodTag`. `None` for a verb the admin surface never routes —
 /// such a request can only be the router's 405 fallback, which is algorithmic, not declarable. Only
 /// reached from the test-only recording layer (`json/mod.rs::record_declared_error`).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
     use axum::http::Method;
     Some(match *m {
@@ -751,17 +749,10 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
         .collect()
 }
 
-/// TEST-ONLY capture of the errors the handlers ACTUALLY emit, so the class-level drift test can
-/// compare the declaration against reality instead of against a human's reading.
-///
-/// Two halves, both hanging off the ONE wire choke point (`json::err_json`) plus the recording layer
-/// the v1 router installs in a test build:
-/// - **under-claim is fatal ON THE SPOT**: the layer PANICS when a response carries a declarable
-///   `ErrKind` the endpoint's `declared_errors` does not list, so EVERY test in the suite is a
-///   driver for that direction — no accumulation, no test-ordering dependency;
-/// - **over-claim** needs a witness, so every observed `(rel, method, kind, cond?)` is accumulated
-///   here and the class test asserts each declared entry was seen at least once.
-#[cfg(any(test, feature = "test-support"))]
+/// TEST-ONLY: the tag the one wire choke point (`json::err_json`) stamps on an error response, so
+/// the v1 router's test layer can fail a test whose handler emits an error `declared_errors` does
+/// not list.
+#[cfg(test)]
 pub mod observed {
     use super::{Cond, ErrKind};
 

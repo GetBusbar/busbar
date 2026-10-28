@@ -19,7 +19,7 @@
 
 pub mod net;
 
-pub use net::{AddressRefusal, Denylist, GuardPolicy, PinnedTarget, Resolver};
+pub use net::{AddressRefusal, Denylist};
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

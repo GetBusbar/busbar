@@ -28,7 +28,7 @@ use busbar_kernel::governance::{
     GovState, MemoryStore, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
     RecordStoreResult,
 };
-use busbar_kernel::proto::PROTO_OPENAI;
+use busbar_kernel::ingress::protocols::PROTO_OPENAI;
 use busbar_kernel::snapshot::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
@@ -639,9 +639,9 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     // Unique labels: the recorder and the park table are process-global.
     let pool = "q-live-pool";
     // The linked plane's own default dialect, read off the registry (this cell names none).
-    let dialect = busbar_kernel::proto::residual_default_dialect()
+    let dialect = busbar_kernel::ingress::protocols::residual_default_dialect()
         .or_else(|| {
-            busbar_kernel::proto::detect_protocol(
+            busbar_kernel::ingress::protocols::detect_protocol(
                 "/v1/chat/completions",
                 &axum::http::HeaderMap::new(),
             )
