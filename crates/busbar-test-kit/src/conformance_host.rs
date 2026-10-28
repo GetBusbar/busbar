@@ -378,7 +378,6 @@ impl FramerDoor for Opened {
             Carry::Write(i, o) => go_inline(p, t, resume, slot::WRITE, i, o),
             Carry::Flush(i, o) => go_inline(p, t, resume, slot::FLUSH, i, o),
             Carry::Shut(i, o) => go_inline(p, t, resume, slot::SHUT, i, o),
-            Carry::Arrival(i, o) => go_inline(p, t, resume, slot::ARRIVAL, i, o),
             // `cancel` is made on no ticket: the ticket it cancels rides its `in`.
             Carry::Cancel(i, o) => go(p, life::CANCEL, i, o),
         }
