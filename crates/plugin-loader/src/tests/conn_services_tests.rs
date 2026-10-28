@@ -1871,19 +1871,35 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
     );
 }
 
-/// Whether THIS thread holds the connector's lock: a lock another thread holds (a test running
-/// beside this one) is let go within the bound; one this thread holds never is.
+/// Whether THIS thread holds the connector's lock (any instance's streams lock): a lock another
+/// thread holds (a test running beside this one) is let go within the bound; one this thread holds
+/// never is.
 fn held_here() -> bool {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < until {
-        match super::held_conns_lock().try_lock() {
-            Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return false,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+    let mut id = 1;
+    while let Some(w) = crate::dispatch::handle::supplier_of(InstanceId(id)) {
+        loop {
+            match w.conn_state.streams.try_lock() {
+                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => break,
+                Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => return true,
             }
         }
+        id += 1;
     }
-    true
+    false
+}
+
+/// The streams the connector holds for instance `id`.
+fn streams_of(
+    id: InstanceId,
+) -> std::sync::MutexGuard<'static, std::collections::HashMap<u64, super::Stream>> {
+    crate::dispatch::handle::supplier_of(id)
+        .expect("a minted instance")
+        .conn_state
+        .streams()
 }
 
 /// A member binding's auth instance that answers one bearer field, recording whether any of its
@@ -2154,16 +2170,14 @@ fn a_stream_closed_while_it_opens_leaves_nothing_open() {
     recorded.slab.declare(id, NeedId(0));
     let conn = recorded.slab.insert(id, NeedId(0), ()).expect("a slot");
     let table: Arc<dyn DeclaredConns> = recorded.clone();
+    let st = super::ConnState::default();
     // The stream is gone (its close ran while the open was being made).
-    super::install(id, stream, &table, super::Conn::Open(conn));
+    super::install(&st, id, stream, &table, super::Conn::Open(conn));
     assert!(
         recorded.slab.get(id, conn).is_err(),
         "the orphaned open is closed on the table"
     );
-    assert!(
-        super::held_conns().get(&(id, stream)).is_none(),
-        "nothing is held"
-    );
+    assert!(st.streams().get(&stream).is_none(), "nothing is held");
 }
 
 /// RED (THE DESIGN §11.12 "on resume the plugin re-issues the SAME handle and receives the stored
@@ -2286,9 +2300,8 @@ fn the_connector_serves_no_random_of_its_own() {
     assert!(CONN_SLOTS.random.is_none());
 }
 
-/// RED (bounded memory): an instance that is dropped takes what it held on the connector's
-/// process-wide maps with it, and a connection one of its held streams had open is closed on the
-/// table.
+/// RED (bounded memory): an instance that is dropped takes what it held on the connector's maps
+/// with it, and a connection one of its held streams had open is closed on the table.
 #[test]
 fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     let table = Arc::new(Scripted {
@@ -2298,14 +2311,14 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     let p = bound_over(&table);
     let id = p.instance();
     let stream = whole_request(&p, 0);
-    let conn = match super::held_conns().get(&(id, stream)).map(|s| &s.conn) {
+    let conn = match streams_of(id).get(&stream).map(|s| &s.conn) {
         Some(super::Conn::Open(c)) => *c,
         other => panic!("the whole request is open on the table: {other:?}"),
     };
     assert!(table.slab.get(id, conn).is_ok());
     drop(p);
     assert!(
-        !super::held_conns().keys().any(|(i, _)| *i == id),
+        streams_of(id).is_empty(),
         "a dropped instance's stream entries stayed on the connector's map"
     );
     assert!(
@@ -2639,7 +2652,7 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     let stream = whole_request(&p, 0);
     assert!(
         matches!(
-            super::held_conns().get(&(id, stream)).map(|s| &s.conn),
+            streams_of(id).get(&stream).map(|s| &s.conn),
             Some(super::Conn::Open(_))
         ),
         "the whole request is open on the table"

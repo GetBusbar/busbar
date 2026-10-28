@@ -95,6 +95,9 @@ pub(crate) struct InstanceWake {
         busbar_contract::conn::InstanceId,
         std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
     )>,
+    /// What the connector slots hold for the instance: its streams, their facts, its dials in
+    /// flight and its kept answers (`super::conn_services`), under locks of its own.
+    pub(crate) conn_state: super::conn_services::ConnState,
     /// The settings keys the instance's manifest declares DESTINATIONS (granted once, by the
     /// opener that read the manifest): `disk.append` serves this instance those only.
     pub(crate) destinations: OnceLock<Vec<String>>,
