@@ -10784,3 +10784,113 @@ fn auth_modules_list_inbound_rows_only() {
         vec!["inbound-row"]
     );
 }
+
+/// Rotate one existing key as a delegated `app-admin` whose role mint ceiling allows only
+/// `pool-ok`: the key is minted straight into the store bound to `bound_pools`, then `POST
+/// /keys/{id}/rotate` runs through the real handler. Returns the HTTP status, the response body,
+/// and whether the key's credential generation moved (the old token died).
+async fn rotate_under_a_pool_ceiling(
+    bound_pools: Option<Vec<String>>,
+) -> (u16, serde_json::Value, bool) {
+    busbar_kernel::snapshot::init();
+    let principal = busbar_kernel::auth::Principal {
+        id: "delegated-admin".to_string(),
+        name: None,
+        roles: vec!["app-admin".to_string()],
+        ttl_secs: None,
+    };
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (key, _token) = gov
+        .create_key(
+            NewKeySpec {
+                name: "svc".to_string(),
+                allowed_pools: bound_pools,
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        busbar_kernel::governance::mint_policy::RoleCeiling {
+            max_ttl_secs: None,
+            allowed_pools: Some(vec!["pool-ok".to_string()]),
+            binding_modes: None,
+        },
+    );
+    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
+        self_mint: None,
+        block_max_ttl_secs: None,
+        block_binding_modes: None,
+        ceilings,
+    };
+    let app = crate::new_test_app()
+        .governance(gov.clone())
+        .mint_policy(policy)
+        .build();
+    let before = gov
+        .store()
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .generation_hash;
+    let resp = super::rotate_key(
+        busbar_kernel::state::CurrentApp(app),
+        axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal))),
+        axum::extract::Path(key.id.clone()),
+        axum::http::HeaderMap::new(),
+        axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
+    )
+    .await;
+    let status = resp.status().as_u16();
+    use http_body_util::BodyExt;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let after = gov
+        .store()
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .generation_hash;
+    (status, body, before != after)
+}
+
+/// THE ROLE MINT CEILING HOLDS ON ROTATION (`auth.policy.mint_ceilings.<role>.allowed_pools`). A
+/// rotate re-mints the key's token, so it hands the caller a working credential for every pool the
+/// key is bound to — a mint, judged by the mint's ceiling. A delegated app-admin limited to
+/// `pool-ok` must not obtain an ALL-pools credential by rotating an all-pools key it could never
+/// have minted.
+///
+/// RED while rotate asked the ceiling about no pools at all (`requested_pools: Some(&[])`): the
+/// over-ceiling rotate answered 200 with a fresh all-pools token, and the key's legitimate holder
+/// lost theirs.
+#[tokio::test]
+async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
+    let (status, body, moved) = rotate_under_a_pool_ceiling(None).await;
+    assert_eq!(
+        status, 400,
+        "rotating an all-pools key past the role's pool ceiling must be refused: {body}"
+    );
+    assert_eq!(body["error"]["code"], "invalid_request", "{body}");
+    assert!(
+        body.get("token").is_none(),
+        "a refused rotate shows no token"
+    );
+    assert!(
+        !moved,
+        "a refused rotate leaves the key's credential as it was"
+    );
+}
+
+/// GREEN twin: a key bound inside the ceiling still rotates for the same delegated admin — a fresh
+/// token, the old generation retired.
+#[tokio::test]
+async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
+    let (status, body, moved) =
+        rotate_under_a_pool_ceiling(Some(vec!["pool-ok".to_string()])).await;
+    assert_eq!(status, 200, "an in-ceiling rotate answers: {body}");
+    assert!(body["token"].is_string(), "{body}");
+    assert!(moved, "the rotate retired the previous generation");
+}
