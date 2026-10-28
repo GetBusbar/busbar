@@ -2300,6 +2300,48 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
     assert!(!p.is_open());
 }
 
+/// RED: a wake of a driver ticket that lands while a `tick` on it is scheduled but not yet crossed
+/// is owed to that tick's end, and runs `drive` then. Before the fix `end` cleared the latch
+/// before reading it, so the wake was dropped: a push delivery whose exchange woke the ticket
+/// behind a tick sat until its 60 s timeout (the a2a door's flaky "no delivery within a second").
+#[test]
+fn red_a_wake_behind_a_scheduled_tick_on_a_driver_ticket_still_drives() {
+    let d = Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            call: Duration::from_secs(30),
+            ..config().budgets
+        },
+        ..config()
+    });
+    let (p, sink) = opened(&d);
+    let (other, _s) = opened(&d);
+    let drv = d.driver(&p, 0).unwrap();
+    // Worker 0 is wedged in a crossing first: its runnable queue is FIFO, so the tick below
+    // cannot start before the wedge is released, and the wake is applied while it is scheduled.
+    let wedge = d.mint(0).unwrap();
+    let wedged = d.submit(
+        &other,
+        wedge,
+        TICK,
+        frame(b"hang:latched-wake"),
+        DeadlineClass::Call,
+        0,
+    );
+    let ticked = d.submit(&p, drv, TICK, frame(answer(1)), DeadlineClass::Call, 0);
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
+    assert_eq!(
+        p.call(TICK, &mut frame(b"unhang:latched-wake")).outcome,
+        Outcome::Ready
+    );
+    assert_eq!(wedged.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    assert_eq!(ticked.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    until("the wake owed behind the tick drives", || {
+        count(&p, &sink).2 >= 1
+    });
+    d.recycle(wedge);
+    d.recycle(drv);
+}
+
 #[test]
 fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
     let d = Dispatcher::new(config());
