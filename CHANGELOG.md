@@ -659,6 +659,15 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   `auth.operator_pub` key is gone and the request's `operator_fingerprint` and `signature` members
   are not read. **Migration:** a config that set `auth.operator_pub` must drop it (it is now an
   unknown key, as it was in 1.5.5); a client stops signing corrections.
+- 1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs an at-rest key (`credentials.at_rest.key`); without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.
+  1.5.5 minted it and stored the secret access key in the clear. 1.6.0 stores it sealed
+  (AES-256-GCM) under `credentials.at_rest.key`, a secret reference that resolves to 32 random
+  bytes; `credentials.at_rest.previous` keeps a rotated-out key opening, and every row is re-sealed
+  under the current key at boot and on reload. A credential minted by 1.5.5 still authenticates and
+  is re-sealed once a key is configured. A bearer-only mint needs no at-rest key. **Migration:**
+  before minting AWS credentials, give every node that shares the store the same
+  `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }` (create the file
+  with `openssl rand -hex 32`).
 
 ### Deprecated env vars still honoured
 
@@ -705,6 +714,26 @@ Busbar no longer lists, builds, tests, bundles or release-notifies it; its repos
 the first write under that `op_id` stands. The same `op_id` with the same fields is answered as the
 original write, never applied twice. **Migration:** none; a store built against the 1.6.0 SDK
 answers it through the SDK's store door.
+
+**The Postgres and MySQL stores no longer answer a weaker auth method than the operator allows**
+(owner rulings S4 and S5). The store's connection URL decides; the store plugin cannot.
+- **Postgres:** with no `require_auth` in the URL, the store answers only SCRAM-SHA-256 (or a server
+  that asks for no password). A server that asks for the password in clear or for MD5 gets nothing:
+  the open is refused with a sentence that names the method, the remedy and the server. 1.5.5
+  answered both for any server. **Migration:** move the role to SCRAM (`password_encryption =
+  scram-sha-256`, then reset its password), or add libpq's `require_auth=md5` (or `password`, or a
+  list such as `md5,scram-sha-256`) to the URL.
+- **MySQL, `caching_sha2_password` full authentication over TCP:** the server sends this when the
+  account is not in its auth cache, for example after a server restart. busbar now sends the
+  password only to an RSA key the operator pinned; 1.5.5 encrypted it to whatever key the server
+  supplied on the unencrypted connection. Without a pin the open is refused with a sentence that
+  says so. Over a unix socket (`socket=`) nothing changes, and neither does fast authentication of a
+  cached account. **Migration:** add
+  `server_public_key_sha256=<SHA-256 of the server's public key DER, 64 hex digits>` to the URL
+  (`openssl pkey -pubin -in public_key.pem -outform der | openssl dgst -sha256`), or connect over the
+  server's unix socket.
+- **MySQL, `mysql_clear_password` and `mysql_old_password`:** still refused unless the URL sets
+  `enable_cleartext_plugin=true` or `secure_auth=false`, as in 1.5.5.
 
 **Every plugin response now carries an observability envelope**, and the `export` kind's payload
 schema moves to v3 because of it. A plugin answers `{ result, metrics[], diagnostics[] }`: `result`
@@ -830,7 +859,7 @@ each dialect translates, field by field, is listed in the generated
   `units:` map with every LLM open class at 0 (0 keeps each free). A rate-card entry with a key busbar does not
   know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
   unitless: a `currency` key is refused, as in 1.5.5.
-- 1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.
+- 1.6.0 Changed: a provider entry (in `config.yaml` and in the `providers.yaml` catalog) takes the provider's own request headers and query parameters under their wire names (`OpenAI-Organization`, `api-version`, `x-goog-user-project`, ...) beside busbar's keys, which include the lane-capability keys `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`; any other key is refused at startup: "providers.<p>: unknown key `x`: it is not a busbar provider key and not an option of the provider's dialect; the <d> dialect accepts ...".
   They set how a request that crosses protocols is written for that upstream's models: the
   output-token cap key an OpenAI-protocol upstream receives, and whether an Anthropic-protocol
   upstream gets adaptive thinking and native structured outputs. Each key is optional, and an

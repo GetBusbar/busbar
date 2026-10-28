@@ -66,7 +66,7 @@ fn rig_over(store: Arc<MemoryStore>, bounds: WorkBounds) -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
+        .with_records(Arc::new(Mem(Arc::clone(&store))))
         .with_pool(Arc::new(Inline))
         .with_work_bounds(bounds)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
@@ -254,6 +254,37 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
     assert_eq!(r.s.work().held(), held, "one swept, one opened");
     assert!(row(&sref).is_empty(), "the swept row is struck");
     assert!(!row(&lref).is_empty(), "a live row is never struck");
+}
+
+/// A SWEEP SHRINKS THE STORE (ARCHITECT 2026-10-21, slot 40: an empty `record_put` removes the
+/// row): the rows of the settled handles a submit sweeps LEAVE the store's `WORK_SCHEMA`, so the
+/// row count falls. A store that kept each strike as an empty row would grow by every handle ever
+/// opened.
+#[test]
+fn a_sweep_removes_the_swept_rows_from_the_store() {
+    let r = rig_over(
+        Arc::new(MemoryStore::new()),
+        WorkBounds {
+            max_live: 16,
+            retain_ms: 1_000,
+        },
+    );
+    let rows = || {
+        r.store
+            .record_scan(WORK_SCHEMA, b"", u32::MAX)
+            .unwrap()
+            .len()
+    };
+    let (a, _) = open(&r, 1, b"a");
+    let (b, _) = open(&r, 1, b"b");
+    let _ = open(&r, 1, b"live");
+    let _ = settle(&r, "inst", Some(1), a, b"done");
+    let _ = settle(&r, "inst", Some(1), b, b"done");
+    assert_eq!(rows(), 3, "three handles, three rows");
+    r.clock.fetch_add(1_000, Ordering::SeqCst);
+    // The submit sweeps both settled handles and opens one.
+    let _ = open(&r, 1, b"c");
+    assert_eq!(rows(), 2, "two swept rows removed, one row opened");
 }
 
 #[test]

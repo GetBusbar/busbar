@@ -135,6 +135,8 @@ pub(super) struct PluginSink {
     /// it serves `/metrics/hooks` for the process's life ([`route_decls`]).
     scrape: bool,
     pub(super) projection: Projection,
+    /// It takes each `traces` line's full span record (`ExportCalls::takes_span_records`).
+    pub(super) span_record: bool,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
 }
@@ -165,14 +167,6 @@ impl Admission {
             live,
             gate: AdmissionGate::new(bound, gate),
         }
-    }
-}
-
-impl PluginSink {
-    /// The admission it stated when started; before then, or when it stated none, the host's.
-    fn admission(&self) -> &Admission {
-        self.admission
-            .get_or_init(|| Admission::of(&self.module, None))
     }
 }
 
@@ -210,9 +204,11 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             false,
             &mut errors,
         );
+        let span_record = sink.takes_span_records();
         opened.push(PluginSink {
             name: name.clone(),
             module: module.to_string(),
+            span_record,
             sink,
             scrape: p.scrape,
             projection,
@@ -236,37 +232,66 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
 }
 
 /// Hand `stream`'s payload — built by `f` to each sink's own projection — to every opened, live
-/// sink subscribed to it. A sink at its in-flight bound sheds it (counted on its gate and on its
-/// declared shed counter); a sink that errors is logged. Neither reaches the caller.
+/// sink subscribed to it ([`deliver_to`]).
 pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
+    deliver_to(stream, op, |projection, _| f(projection));
+}
+
+/// [`deliver`], `f` told also whether the sink takes full span records
+/// ([`PluginSink::span_record`]).
+pub(super) fn deliver_to(
+    stream: ExportStream,
+    op: &str,
+    mut f: impl FnMut(Projection, bool) -> Arc<Value>,
+) {
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
-        let admission = s.admission();
-        if !admission.live {
-            continue;
-        }
-        let Some(permit) = admission.gate.try_enter() else {
-            s.sink.shed();
-            continue;
-        };
-        let payload = f(s.projection);
-        crate::audit::amend::export_read(&s.module, op, &payload);
-        let line = serde_json::to_vec(&*payload).unwrap_or_default();
-        if s.sink.deliver(stream as u8, line, Box::new(permit)) == Delivered::Shed {
-            s.sink.shed();
-        }
+        deliver_one(s, stream, op, &mut f);
+    }
+}
+
+/// Hand `stream`'s payload to ONE sink, under the admission it stated when started ([`start`]). A
+/// sink not yet started has stated nothing, so it is fed nothing: the delivery is shed, never let in
+/// at a default that would then hold for the life of the process. A sink at its in-flight bound, or
+/// whose queue refuses it, sheds it (counted on its gate and on its declared shed counter); a sink
+/// that errors is logged. Neither reaches the caller. The access amendment records what the sink
+/// QUEUED: a shed line never reached it, so it is never audited as read. `f` is told whether the
+/// sink takes full span records ([`PluginSink::span_record`]).
+fn deliver_one(
+    s: &PluginSink,
+    stream: ExportStream,
+    op: &str,
+    f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
+) {
+    let Some(admission) = s.admission.get() else {
+        s.sink.shed();
+        return;
+    };
+    if !admission.live {
+        return;
+    }
+    let Some(permit) = admission.gate.try_enter() else {
+        s.sink.shed();
+        return;
+    };
+    let payload = f(s.projection, s.span_record);
+    let line = serde_json::to_vec(&*payload).unwrap_or_default();
+    match s.sink.deliver(stream as u8, line, Box::new(permit)) {
+        Delivered::Queued => crate::audit::amend::export_read(&s.module, op, &payload),
+        Delivered::Shed => s.sink.shed(),
     }
 }
 
 /// START every opened sink — at the moment the host starts its PUSH sinks: each states its
-/// admission (whether it takes deliveries this run, its in-flight bound, its gate's name), or none,
-/// and is fed at the host's default admission.
+/// admission (whether it takes deliveries this run, its in-flight bound, its gate's name), or none
+/// and is fed at the host's default admission. Set exactly once, here: nothing is delivered before.
 pub fn start() {
-    for s in sinks() {
-        let stated = s.sink.admission();
-        if stated.is_some() {
-            let _ = s.admission.set(Admission::of(&s.module, stated));
-        }
-    }
+    sinks().for_each(start_one);
+}
+
+/// Start one sink: the admission it states, or the host's default when it states none.
+fn start_one(s: &PluginSink) {
+    let stated = s.sink.admission();
+    let _ = s.admission.set(Admission::of(&s.module, stated));
 }
 
 /// Ask every opened sink for its `status` — its envelope folds into this process's recorder —

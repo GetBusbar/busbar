@@ -89,6 +89,7 @@ fn one_unit(went_away: bool) -> Figures {
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
 
     // The reservation, as the books hold it while the unit runs: drawn from the store, spent out of
