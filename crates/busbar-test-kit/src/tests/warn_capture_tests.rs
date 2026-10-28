@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the warn-capture double's interest handling (`testkit/warn_capture.rs`).
+//! Tests for the warn-capture double's interest handling (`warn_capture.rs`).
 
 use super::WarnCapture;
 
