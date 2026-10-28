@@ -75,7 +75,7 @@ fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>)
 /// entry gains `units:` naming every such unit it does not already price, at `0`: exactly what
 /// 1.5.5 charged. The unit names are the plane's own declaration, read off the plane registry.
 fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
-    let open: Vec<&'static str> = crate::plane::registry::plane_decls()
+    let open: Vec<&'static str> = crate::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback)
         .flat_map(|d| {
