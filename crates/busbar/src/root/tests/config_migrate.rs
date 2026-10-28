@@ -8,79 +8,13 @@
 //! prints its report line under its name. Core knows none of the stub's keys. And the release
 //! index picks the release built for this core's ABI.
 
-use busbar_contract::abi::sdk::migrate::{Migrate, MigrateNeed, Migrated};
+use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate::migrate_config_with;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
+use busbar_plugin_loader::root_door_fixtures::migrate_stub as stub;
 
 use super::{Index, IndexPlugin};
 use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
-
-/// The stub's own migration: `signing-secret` became `signing_secret` in 1.6.0, and the host its
-/// `url` names is one it dials.
-struct StubMigration;
-impl Migrate for StubMigration {
-    fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
-        let mut report = Vec::new();
-        let mut needs = Vec::new();
-        if let Some(m) = settings.as_object_mut() {
-            if let Some(v) = m.remove("signing-secret") {
-                m.insert("signing_secret".into(), v);
-                report.push(format!(
-                    "settings.signing-secret -> settings.signing_secret (renamed in 1.6.0; the \
-                     configuration came from {from})"
-                ));
-            }
-            if let Some(host) = m.get("url").and_then(|u| u.as_str()) {
-                needs.push(MigrateNeed::AllowDestination(host.to_string()));
-            }
-        }
-        Migrated {
-            settings,
-            report,
-            needs,
-        }
-    }
-}
-
-mod stub {
-    use busbar_contract::abi::mechanism::call::Outcome;
-    use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-    use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-    use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
-
-    pub struct L;
-    impl Life for L {
-        const CANCEL: u32 = 0;
-        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-            Ok(Self)
-        }
-        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-            Ok(Refreshed::default())
-        }
-    }
-
-    pub struct Resolve;
-    impl SafeSlot for Resolve {
-        type In = ResolveIn;
-        type Out = ResolveOut;
-        type State = Held<L>;
-        fn call(
-            _: Instance<'_, Held<L>>,
-            _: Lent<'_, ResolveIn>,
-            _: Out<'_, ResolveOut>,
-        ) -> Outcome {
-            Outcome::Refused
-        }
-    }
-
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::secret::Ops,
-        statement: busbar_contract::abi::sdk::door::statement("busbar-secret-stub", "1.6.0", 1),
-        lifecycle: life(L),
-        migrate: busbar_contract::abi::sdk::migrate::Migrator<super::StubMigration>,
-        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
-    }
-}
 
 /// A host whose one plugin is the stub's door, called as the root calls every door's `migrate`.
 struct StubHost;

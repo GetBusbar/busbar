@@ -295,11 +295,22 @@ impl RootHost {
         module: &str,
     ) -> Option<(String, busbar_contract::abi::mechanism::door::DoorFn)> {
         match kind {
-            "plane" => crate::LINKED
-                .plane_door_declares
-                .iter()
-                .find(|row| row.0 == module)
-                .map(|row| (row.0.to_string(), row.1)),
+            // A plane is named by its registry key; its linked door is the one whose Statement
+            // declares the plane's section.
+            "plane" => {
+                let section = busbar_kernel::plane::registry::plane_decls()
+                    .iter()
+                    .find(|d| d.key == module)
+                    .map(|d| d.config_section)?;
+                crate::LINKED
+                    .plane_doors
+                    .iter()
+                    .find(|door| {
+                        crate::root::loader::boot::Candidate::linked(**door)
+                            .is_ok_and(|c| c.verbs.iter().any(|v| v == section))
+                    })
+                    .map(|door| (module.to_string(), *door))
+            }
             "hook" => crate::LINKED_HOOK_NAMES
                 .iter()
                 .zip(crate::LINKED.hook_doors.iter())
@@ -364,6 +375,11 @@ impl MigrateHost for RootHost {
         if let Some((name, door)) = Self::linked_door(kind, module) {
             return Ok(migrate_door(raw(door), settings, from)?.map(|m| (name, m)));
         }
+        // A plane the registry holds is served by this build; one with no linked door to ask
+        // migrates nothing here.
+        if kind == "plane" {
+            return Ok(None);
+        }
         let local = self.local();
         if let Some(row) = local.resolve(module).filter(|r| r.manifest.kind == kind) {
             return Ok(row
@@ -427,7 +443,8 @@ impl MigrateHost for RootHost {
     }
 
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String> {
-        if self.served(kind, module) {
+        // A plane's site comes from the plane registry: this build serves it.
+        if kind == "plane" || self.served(kind, module) {
             return Ok(None);
         }
         let index = self.index()?;
