@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE JUDGE IS VERIFIED AGAINST BUSBAR-RELEASE'S TRUSTED RELEASE KEYS: the owner's 2026-10-28 key
-//! (which signs every judge from now on) and the earlier key (kept so what it already signed still
-//! verifies). A `.sig` by a listed key verifies; one by any other key is refused.
+//! THE JUDGE IS VERIFIED AGAINST BUSBAR-RELEASE'S TRUSTED RELEASE KEY: the owner's 2026-10-28 key,
+//! and no other. The earlier key busbar-release-2026-10-09 (private half lived in GitHub) is refused
+//! (owner ruling 2026-10-28). A `.sig` by a listed key verifies; one by any other key is refused.
 //! `bin/oracle release-key-selftest` drives each case.
 
 use std::path::Path;

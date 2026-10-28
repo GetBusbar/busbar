@@ -512,14 +512,12 @@ fi
 ORACLE_RELEASE_API="https://api.github.com/repos/GetBusbar/busbar-release"
 # THE TRUSTED RELEASE KEYS a judge's .sig may verify with (busbar-release-cli update.rs RELEASE_KEYS,
 # same keys, same order): busbar-release-2026-10-28, the owner's key that signs every judge from
-# 2026-10-28 (its private half is ModernCI's BUSBAR_RELEASE_SIGNING_KEY), then busbar-release-2026-10-09,
-# the earlier key, kept so what it already signed still verifies (nobody holds its private half).
+# 2026-10-28 (its private half is ModernCI's BUSBAR_RELEASE_SIGNING_KEY). The earlier key
+# busbar-release-2026-10-09 is NOT trusted (owner ruling 2026-10-28: its private half lived in GitHub;
+# trusted only until the judge and the CLI were republished under the new key).
 ORACLE_RELEASE_KEY_PEMS=(
 '-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs=
------END PUBLIC KEY-----'
-'-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU=
 -----END PUBLIC KEY-----'
 )
 _pin_in() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}'; }
@@ -796,7 +794,7 @@ sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
 fi
 # release-key-selftest: the judge's .sig is checked against busbar-release's TRUSTED release keys
 # (busbar-release-cli update.rs RELEASE_KEYS, same keys, same order): the owner's 2026-10-28 key,
-# which signs, and the earlier key, kept so what it already signed still verifies. A .sig by a listed
+# which signs, and no other: the earlier key is refused (owner ruling 2026-10-28). A .sig by a listed
 # key verifies; one by any other key is refused.
 if [ "${1:-}" = "release-key-selftest" ]; then
   st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT; fail=0
@@ -804,7 +802,8 @@ if [ "${1:-}" = "release-key-selftest" ]; then
   new='MCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs='
   old='MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU='
   case "${ORACLE_RELEASE_KEY_PEMS[0]:-}" in *"$new"*) ok "the owner's 2026-10-28 key is trusted, and first (it signs)" ;; *) bad "the owner's 2026-10-28 key is not the first trusted key" ;; esac
-  case "${ORACLE_RELEASE_KEY_PEMS[*]:-}" in *"$old"*) ok "the earlier key stays trusted (what it signed still verifies)" ;; *) bad "the earlier key is not trusted" ;; esac
+  [ "${#ORACLE_RELEASE_KEY_PEMS[@]}" = 1 ] && ok "the owner's 2026-10-28 key is the only trusted key" || bad "a key other than the owner's 2026-10-28 key is trusted"
+  case "${ORACLE_RELEASE_KEY_PEMS[*]:-}" in *"$old"*) bad "the earlier key busbar-release-2026-10-09 is still trusted" ;; *) ok "the earlier key busbar-release-2026-10-09 is not trusted" ;; esac
   if command -v openssl >/dev/null 2>&1 \
      && openssl genpkey -algorithm ed25519 -out "$st/a.pem" 2>/dev/null && openssl pkey -in "$st/a.pem" -pubout -out "$st/a.pub" 2>/dev/null \
      && openssl genpkey -algorithm ed25519 -out "$st/u.pem" 2>/dev/null && openssl pkey -in "$st/u.pem" -pubout -out "$st/u.pub" 2>/dev/null; then
@@ -823,6 +822,11 @@ if [ "${1:-}" = "release-key-selftest" ]; then
     if verify_judge_sig "$name" "$hex" "$st/u.sig" "${ORACLE_RELEASE_KEY_PEMS[@]}" 2>/dev/null; then
       bad "busbar-release's trusted keys accepted a .sig by an unknown key"
     else ok "busbar-release's trusted keys refuse a .sig by an unknown key"; fi
+    # a .sig by a key that LEFT the list (the earlier key's case, proven with a key held here)
+    if verify_judge_sig "$name" "$hex" "$st/a.sig" "$(cat "$st/u.pub")" "$(cat "$st/a.pub")" 2>/dev/null \
+       && ! verify_judge_sig "$name" "$hex" "$st/a.sig" "$(cat "$st/u.pub")" 2>/dev/null; then
+      ok "a .sig by a key removed from the list is refused"
+    else bad "a .sig by a removed key still verified"; fi
     if verify_judge_sig "$name" "$hex" "$st/a.sig" 2>/dev/null; then
       bad "a .sig verified against no key at all"
     else ok "no trusted key verifies nothing"; fi
