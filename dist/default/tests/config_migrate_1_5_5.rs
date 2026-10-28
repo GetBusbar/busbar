@@ -158,34 +158,6 @@ fn a_1_5_5_metadata_entry_naming_no_host_migrates_away() {
     );
 }
 
-/// A provider key reference that does not resolve: 1.6.0 refuses it as written; the migration
-/// cannot know the key, so it names the provider in a TODO and invents nothing.
-#[test]
-fn a_1_5_5_provider_key_that_does_not_resolve_is_named_in_a_todo() {
-    let raw = validate_as_written("unresolved_api_key.yaml");
-    assert_ne!(
-        raw.status.code(),
-        Some(0),
-        "refused as written; stderr:\n{}",
-        String::from_utf8_lossy(&raw.stderr)
-    );
-    let (migrated, summary) = migrate(&fixture("unresolved_api_key.yaml"));
-    assert!(
-        summary.contains("  * providers.mock.api_key: the reference ")
-            && summary.contains("does not resolve here"),
-        "the TODO names the provider; stderr:\n{summary}"
-    );
-    assert!(
-        !migrated.contains("providers.mock.api_key"),
-        "whether it resolves is a fact about this machine, not the file:\n{migrated}"
-    );
-    assert_eq!(
-        yaml(&migrated)["providers"]["mock"]["api_key"],
-        yaml("{ env: BUSBAR_T_UPGRADE_UNSET_KEY }"),
-        "the reference is left exactly as written"
-    );
-}
-
 /// A data-plane provider with no role bindings: 1.5.5 admitted every principal it identified;
 /// 1.6.0 refuses each one as written (no grant, 401). The migration writes the explicit binding
 /// that admits them again, with a warning, and the migrated configuration grants them on every

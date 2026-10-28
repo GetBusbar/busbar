@@ -620,13 +620,13 @@ WARNINGS ({}) - semantic flips needing review:",
                     eprintln!("  ! {w}");
                 }
             }
-            if !out.todos.is_empty() || !out.unresolved.is_empty() {
+            if !out.todos.is_empty() {
                 eprintln!(
                     "
 TODO ({}) - a human must decide:",
-                    out.todos.len() + out.unresolved.len()
+                    out.todos.len()
                 );
-                for t in out.todos.iter().chain(&out.unresolved) {
+                for t in &out.todos {
                     eprintln!("  * {t}");
                 }
             }

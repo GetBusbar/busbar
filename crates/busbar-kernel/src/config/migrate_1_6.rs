@@ -12,16 +12,10 @@
 use serde_yaml::{Mapping, Value};
 
 /// Run every 1.5.5 -> 1.6.0 step over core's keys, in order.
-pub(super) fn migrate(
-    root: &mut Mapping,
-    changes: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-    unresolved: &mut Vec<String>,
-) {
+pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     drop_hostless_metadata_entries(root, changes);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
-    todo_unresolved_provider_keys(root, unresolved);
 }
 
 /// The mapping at `key` of `m`, when it is one.
@@ -200,46 +194,6 @@ fn bind_ungoverned_principals(
              access: {who} is admitted on every pool with no budget, as 1.5.5 admitted them. \
              Tighten it (allowed_pools, a group with limits) or remove it to refuse them."
         ));
-    }
-}
-
-/// A provider `api_key` reference that does not resolve refuses the boot on 1.6.0 (1.5.5 ran the
-/// lane keyless). The migration cannot know the key, so it names each such provider in a TODO. Only
-/// references to a secret source this build links are judged; any other is the plugin's to name.
-/// Whether a reference resolves is a fact about the machine running the migration, not about the
-/// file, so these TODOs are printed in the summary and never written into the migrated file.
-fn todo_unresolved_provider_keys(root: &Mapping, todos: &mut Vec<String>) {
-    let Some(Value::Mapping(providers)) = root.get(Value::from("providers")) else {
-        return;
-    };
-    for (name, provider) in providers {
-        let (Some(name), Value::Mapping(provider)) = (name.as_str(), provider) else {
-            continue;
-        };
-        let Some(reference) = provider.get(Value::from("api_key")) else {
-            continue;
-        };
-        // An `${VAR}` reference is interpolated at boot, not here.
-        if serde_yaml::to_string(reference).is_ok_and(|s| s.contains("${")) {
-            continue;
-        }
-        let Ok(secret) =
-            serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(reference.clone())
-        else {
-            continue;
-        };
-        if !crate::config::secret::is_linked_secret(&secret.module) {
-            continue;
-        }
-        let scope = busbar_contract::config_time::ConfigScope::config_time();
-        if let Err(why) = crate::config::secret::resolve_linked_string_at_config(&secret, &scope) {
-            todos.push(format!(
-                "providers.{name}.api_key: the reference {} does not resolve here ({why}). 1.5.5 \
-                 ran this provider with no key; 1.6.0 refuses to start until it resolves. Make it \
-                 resolve where busbar runs, or set `api_key: none` to keep running it keyless",
-                secret.describe()
-            ));
-        }
     }
 }
 

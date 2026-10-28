@@ -338,9 +338,6 @@ pub struct MigrateOutput {
     pub changes: Vec<String>,
     pub todos: Vec<String>,
     pub warnings: Vec<String>,
-    /// TODOs about the machine running the migration rather than the file (a secret reference that
-    /// does not resolve here): printed in the summary, never written into the migrated file.
-    pub unresolved: Vec<String>,
 }
 
 /// Mechanically migrate a 1.4.x config document to the 1.5.0 shape. Deterministic changes
@@ -416,8 +413,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // the one 1.5.x ran it on.
     migrate_store_required(&mut root, &mut changes);
     // 1.5.5 -> 1.6.0 over core's own keys: last, so it sees every key in its settled 1.6.0 place.
-    let mut unresolved: Vec<String> = Vec::new();
-    upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings, &mut unresolved);
+    upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -454,7 +450,6 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
         changes,
         todos,
         warnings,
-        unresolved,
     })
 }
 
