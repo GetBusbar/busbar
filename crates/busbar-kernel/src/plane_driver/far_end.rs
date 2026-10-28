@@ -1660,10 +1660,7 @@ impl EgressFarEnd<'_> {
                     retry_after: piece.retry_after_secs,
                 };
                 live.unjudged = Some(Unjudged {
-                    classified: self
-                        .egress
-                        .breaker
-                        .classify(live.member.destination, status),
+                    classified: self.breaker().classify(live.member.destination, status),
                     class: piece.status,
                     code: status.code,
                     retry_after: piece.retry_after_secs,
