@@ -188,11 +188,12 @@ const AUTH_REPLAY: &str = "auth-replay";
 /// THE REPLAY CLAIM (THE DESIGN §6, Inbound verify: "a verified identity may carry a replay_key and
 /// replay_ttl_secs, and the verify caller claims the record ... already TAKEN is 401"): the identity
 /// `provider` verified is admitted only by the call that first claims `<provider>/<key>` in
-/// governance's record store, the claim standing `ttl_secs` from `now`. An empty key asks for no
-/// claim. FAIL-CLOSED: a claim already taken, a store that cannot answer, and no governance to
-/// claim in each refuse — a ledger that cannot say whether the message was seen must not be read
-/// as saying it was not. A sender's retry inside the window is a replay, refused alike.
-fn replay_claimed(
+/// governance's record store, the claim standing `ttl_secs` from `now`, awaited through the store's
+/// v3 calls. An empty key asks for no claim. FAIL-CLOSED: a claim already taken, a store that
+/// cannot answer, and no governance store to claim in each refuse — a ledger that cannot say
+/// whether the message was seen must not be read as saying it was not. A sender's retry inside the
+/// window is a replay, refused alike.
+async fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
     provider: &str,
     replay: &Replay,
@@ -201,13 +202,14 @@ fn replay_claimed(
     if replay.key.is_empty() {
         return true;
     }
-    let Some(gov) = gov else {
+    let Some(calls) = gov.and_then(crate::governance::GovState::store_calls) else {
         return false;
     };
     let token = format!("{provider}/{}", replay.key);
     let expires_at = now.saturating_add(replay.ttl_secs);
-    gov.store()
+    calls
         .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
+        .await
         .unwrap_or(false)
 }
 
@@ -216,15 +218,16 @@ fn replay_claimed(
 /// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
 /// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
 /// identity asks for none, or when this call won the claim.
-fn signed_replay_claimed(
+async fn signed_replay_claimed(
     gov: Option<&crate::governance::GovState>,
     reader: &str,
     id: &busbar_contract::auth_calls::VerifiedIdentity,
     now: u64,
 ) -> bool {
-    id.replay
-        .as_deref()
-        .is_none_or(|replay| replay_claimed(gov, reader, replay, now))
+    match id.replay.as_deref() {
+        None => true,
+        Some(replay) => replay_claimed(gov, reader, replay, now).await,
+    }
 }
 
 /// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
@@ -1079,7 +1082,7 @@ impl AuthMiddleware {
                 AuthVerdict::Identify(principal) => {
                     // The replay claim travels with the verdict and is won here, before admitting.
                     if let Some(replay) = judged.replay.as_deref() {
-                        if !replay_claimed(gov, &entry.provider, replay, now) {
+                        if !replay_claimed(gov, &entry.provider, replay, now).await {
                             return Ok(ChainVerdict::Denied);
                         }
                     }
@@ -1812,17 +1815,45 @@ async fn judge_admin_door(
     claim: bool,
     strips: &mut Vec<Strip>,
 ) -> AdminDoor {
-    let mut carried = AdminCarried::default();
-    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
-    strips.append(&mut carried.strips);
+    let (verdict, cap, replay) =
+        judge_admin_chain(app, method, target, headers, probe, strips).await;
     if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
-        (claim, &verdict, &carried.replay)
+        (claim, &verdict, &replay)
     {
         let now = busbar_kernel::store::now();
-        if !replay_claimed(app.governance.as_deref(), provider, replay, now) {
+        if !replay_claimed(app.governance.as_deref(), provider, replay, now).await {
             return AdminDoor::Denied;
         }
     }
+    admin_door_of(app, verdict, cap)
+}
+
+/// The admin chain's verdict of one request, its scope cap, and the replay claim its identity asks
+/// for (unclaimed). The lines every module named for the transport are added to `strips`.
+async fn judge_admin_chain(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    probe: bool,
+    strips: &mut Vec<Strip>,
+) -> (
+    ChainVerdict,
+    Option<busbar_contract::authz::Scope>,
+    Option<(String, Box<Replay>)>,
+) {
+    let mut carried = AdminCarried::default();
+    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
+    strips.append(&mut carried.strips);
+    (verdict, cap, carried.replay)
+}
+
+/// The admin door a chain verdict opens, under its scope `cap`.
+fn admin_door_of(
+    app: &App,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
     match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
@@ -1863,21 +1894,38 @@ fn probe_admin_door(
 ) -> AdminDoor {
     // The lines a module names are the transport's; a probe hands no request on.
     let mut strips = Vec::new();
-    let judged = std::pin::pin!(judge_admin_door(
+    let judged = std::pin::pin!(judge_admin_chain(
         app,
         method,
         target,
         headers,
         true,
-        claim,
         &mut strips
     ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(judged, &mut cx) {
-        std::task::Poll::Ready(door) => door,
+    let (verdict, cap, replay) = match std::future::Future::poll(judged, &mut cx) {
+        std::task::Poll::Ready(judged) => judged,
         // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
-        std::task::Poll::Pending => AdminDoor::Denied,
+        std::task::Poll::Pending => return AdminDoor::Denied,
+    };
+    if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
+        (claim, &verdict, &replay)
+    {
+        // THE PROBE'S ONE WAIT: the replay claim is a store call, awaited on this caller's own
+        // thread, as the synchronous caller asked by calling synchronously (the root's admin
+        // units answer on the blocking pool, never on a runtime worker or a dispatcher worker).
+        let now = busbar_kernel::store::now();
+        let claimed = futures::executor::block_on(replay_claimed(
+            app.governance.as_deref(),
+            provider,
+            replay,
+            now,
+        ));
+        if !claimed {
+            return AdminDoor::Denied;
+        }
     }
+    admin_door_of(app, verdict, cap)
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
@@ -2514,6 +2562,7 @@ pub(crate) async fn auth_middleware(
                     // this verifier; a claim already taken is the same opaque refusal.
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
+                            .await
                     {
                         return Err(unauthorized_response(&app, &path, door.as_ref()));
                     }
