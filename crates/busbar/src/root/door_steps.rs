@@ -84,7 +84,7 @@ impl DoorPools {
     /// `0`): the tier is core-owned
     /// ([`crate::root::serve::pools_into`] writes each member's declared index), so a bad one is a
     /// core bug, and defaulting it to `0` would route that member at the top tier in silence.
-    pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
+    pub fn of(section: &serde_yaml::Value, _declared: &str) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
             return Ok(Self::default());
         };

@@ -224,7 +224,8 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
         routes["session"], section["session"],
         "the section stays as written"
     );
-    let pools = DoorPools::of(&routes).expect("the pools");
+    let pools =
+        DoorPools::of(&routes, busbar_contract::section::RESERVED_POOLS_KEY).expect("the pools");
     assert_eq!(
         pools.resolve(ROUTE_DIRECT, Some(b"gpt-rt")),
         Some((String::new(), vec!["gpt-rt".to_string()])),
