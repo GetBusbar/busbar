@@ -236,6 +236,7 @@ impl HookEnv {
         crate::config::secret::resolve_settings(
             settings,
             &self.registry.secret_slots(module),
+            &self.registry.reference_slots(module),
             module,
             self.secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),

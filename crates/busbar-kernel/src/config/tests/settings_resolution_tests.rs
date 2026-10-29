@@ -31,6 +31,7 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
     let out = resolve_settings(
         &settings,
         &declared(&["licenseKey"]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -59,6 +60,7 @@ fn leaves_non_ref_object_settings_untouched() {
     let out = resolve_settings(
         &settings,
         &declared(&[]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -82,6 +84,7 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     let err = resolve_settings(
         &settings,
         &declared(&["license"]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -104,6 +107,7 @@ fn unknown_secret_module_in_setting_fails_closed() {
     let err = resolve_settings(
         &settings,
         &declared(&["licenseKey"]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -135,6 +139,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let out = resolve_settings(
         &settings,
         &declared(&["licenseKey"]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -151,6 +156,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let out = resolve_settings(
         &settings,
         &declared(&[]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -169,6 +175,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let out = resolve_settings(
         &settings,
         &declared(&[]),
+        &[],
         "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -233,6 +240,7 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
     let out = resolve_settings(
         &settings,
         &declared(&["licenseKey"]),
+        &[],
         "test-plugin",
         &ConfigTimeOnly,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -276,6 +284,7 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
     let err = resolve_settings(
         &top,
         &declared(&["client_secret"]),
+        &[],
         "busbar-auth-github",
         &resolver,
         &scope,
@@ -295,6 +304,7 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
     let err = resolve_settings(
         &nested,
         &declared(&["servers.*.env.*"]),
+        &[],
         "p",
         &resolver,
         &scope,
@@ -320,6 +330,7 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     let out = resolve_settings(
         &settings,
         &declared(&["client_secret", "servers.*.env.*"]),
+        &[],
         "p",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -354,6 +365,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
         let Err(err) = resolve_settings(
             &settings,
             &declared(&["bind_service_password"]),
+            &[],
             "busbar-auth-ldap",
             &resolver,
             &scope,
@@ -378,6 +390,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
     resolve_settings(
         &unset,
         &declared(&["bind_service_password"]),
+        &[],
         "busbar-auth-ldap",
         &resolver,
         &scope,
@@ -410,6 +423,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
         let Err(err) = resolve_settings(
             &settings,
             &declared(&["servers.*.env.*"]),
+            &[],
             "busbar-plane-x",
             &resolver,
             &scope,
@@ -437,6 +451,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
     resolve_settings(
         &unset,
         &declared(&["servers.*.env.*", "hosts.*.password"]),
+        &[],
         "busbar-plane-x",
         &resolver,
         &scope,
