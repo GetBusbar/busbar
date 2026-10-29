@@ -16,7 +16,8 @@
 //!   serves declares about itself (its contract `PlaneDeclaration`), read off the registry. A plane
 //!   this node does not serve is `404` — the same Law-7 answer its admin paths give.
 //! * `POST /api/v1/admin/plane-record-write` — [`plane_record_write_effect`]: one upsert of a plane
-//!   record, through the plane-facing store seam the planes themselves persist through.
+//!   record into the named plane's own rows (keyed by the plane), through the plane-facing store
+//!   seam; never onto a row the kernel keeps.
 //! * `POST /api/v1/admin/commit-upgrade` — [`commit_upgrade_effect`]: seal, on the node's journal as
 //!   a `Policy` record, that the fleet commits to the release THIS binary is. The body names the
 //!   release; one this binary is not is refused, so a commit can never name a version nobody runs.
@@ -264,6 +265,12 @@ pub(crate) fn plane_facts_effect(
 /// "body": <json> }`. `body` is the record's opaque row, stored as its JSON bytes and never decoded
 /// by the store; `terminal` (default `false`) is the retention disposition. `written_at` is the
 /// arrival second, pinned by the unit.
+///
+/// The record lands in the NAMED PLANE'S OWN ROWS, under the store kind
+/// [`busbar_kernel::store::plane_view::plane_owned_kind`] keys by the plane; the answer names the
+/// kind as written. A kind the kernel keeps its own rows under
+/// ([`busbar_kernel::store::plane_view::KERNEL_RECORD_KINDS`]) is refused `403` even where the plane
+/// declares it, writing nothing (`BUSBAR-7107`).
 pub(crate) fn plane_record_write_effect(
     body: &[u8],
     at: u64,
@@ -331,9 +338,38 @@ pub(crate) fn plane_record_write_effect(
             &format!("plane `{plane}` may not write record kind `{kind}`"),
         ));
     }
+    // THE KERNEL'S OWN ROWS ARE NEVER A PLANE'S, declared or not: plane-mcp declares `demotion`,
+    // and the rows under it are the kernel's durable demotion record, which a write in the plane's
+    // name must not alter (a demoted upstream would re-open). Refused by name, writing nothing; the
+    // unit seals the refusal on the audit ring as `rejected`.
+    if busbar_kernel::store::plane_view::KERNEL_RECORD_KINDS.contains(&kind) {
+        busbar_kernel::diagnostics::diag_warn!(
+            busbar_kernel::diagnostics::PLANE_RECORD_WRITE_KERNEL_KIND,
+            plane = %plane,
+            kind = %kind,
+            "an admin plane record write named a record kind the kernel keeps its own records \
+             under: refused, nothing written"
+        );
+        return Ok(refused(
+            403,
+            "forbidden",
+            &format!(
+                "record kind `{kind}` is kept by the kernel: plane `{plane}` may not write it"
+            ),
+        ));
+    }
+    // THE PLANE'S OWN ROWS, keyed by the plane: two planes declaring one kind never land on (or
+    // read) each other's rows, and no plane's row is a kernel kind's.
+    let Some(owned) = busbar_kernel::store::plane_view::plane_owned_kind(plane, kind) else {
+        return Ok(refused(
+            400,
+            "invalid_request",
+            "plane and kind must not hold a control character",
+        ));
+    };
     let sink = sink.ok_or(GovernanceError::Store)?;
     let record = PlaneRecord {
-        kind: kind.to_string(),
+        kind: owned,
         id: id.to_string(),
         parent,
         seq: 0,
@@ -348,7 +384,7 @@ pub(crate) fn plane_record_write_effect(
     sink(&record).map_err(|_| GovernanceError::Store)?;
     answer(&serde_json::json!({
         "plane": plane,
-        "kind": record.kind,
+        "kind": kind,
         "id": record.id,
         "parent": record.parent,
         "terminal": terminal,
@@ -721,3 +757,7 @@ pub(crate) fn replayable(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/bound_tests.rs"]
+mod bound_tests;
