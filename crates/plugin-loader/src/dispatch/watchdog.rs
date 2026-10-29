@@ -123,10 +123,8 @@ fn ticketless(pool: &Pool) {
             quarantined = breach(pool, &inst);
         }
         if quarantined {
-            // A quarantined instance never crosses again: its connector streams go now.
-            if let Some((id, table)) = inst.wake.conn.get() {
-                super::conn_services::purge(*id, table);
-            }
+            // A quarantined instance never crosses again: what it holds goes now.
+            inst.let_go_held();
         }
     }
 }
@@ -153,11 +151,9 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
             .collect();
         (Worker::fault_all(&mut st), gens, breached, quarantined)
     };
-    // A quarantined instance never crosses again: its connector streams go now, outside the locks.
+    // A quarantined instance never crosses again: what it holds goes now, outside the locks.
     if quarantined {
-        if let Some((id, table)) = breached.wake.conn.get() {
-            super::conn_services::purge(*id, table);
-        }
+        breached.let_go_held();
     }
     pool.env.services.forget_worker(old.index);
     pool.env.services.held.untrack_worker(old.index);
