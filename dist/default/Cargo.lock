@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=a1ab87c9f5e2ad8d07a581b14f55ea88669847e8#a1ab87c9f5e2ad8d07a581b14f55ea88669847e8"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=ce2dbffe2825d36abc92488b7d6f88b1df856219#ce2dbffe2825d36abc92488b7d6f88b1df856219"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -300,7 +300,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=f82441c9db087c6ab68f9c9f3f283cf16c1b4198#f82441c9db087c6ab68f9c9f3f283cf16c1b4198"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=9f1c32c292c5f21b3e568ccc84ec18b65da4b28e#9f1c32c292c5f21b3e568ccc84ec18b65da4b28e"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -769,6 +769,7 @@ dependencies = [
  "tar",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -808,6 +809,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "hex",
  "ring",
