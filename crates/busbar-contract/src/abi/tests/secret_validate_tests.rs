@@ -42,7 +42,15 @@ fn base_out() -> ResolveOut {
         },
         error_kind: ERROR_KIND_UNSET,
         _reserved: 0,
+        needed: 0,
     }
+}
+
+/// The host buffer a call is checked against: its address and capacity.
+const BUF_CAP: u64 = 16;
+
+fn check(out: &ResolveOut, buf: &[u8; 16]) -> Result<(), Fault> {
+    check_resolve(out, buf.as_ptr() as usize, BUF_CAP)
 }
 
 fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
@@ -52,7 +60,7 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
 /// A READY answer with a well-formed absent secret passes.
 #[test]
 fn ready_with_no_secret_passes() {
-    assert!(check_resolve(&base_out()).is_ok());
+    assert!(check(&base_out(), &[0; 16]).is_ok());
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes: those outcomes carry no answer.
@@ -61,7 +69,7 @@ fn zeroed_pending_and_refused_pass() {
     for o in [Outcome::Pending, Outcome::Refused] {
         let mut out = base_out();
         out.head.outcome = RawOutcome(o as u8);
-        assert_eq!(check_resolve(&out), Ok(()), "{o:?}");
+        assert_eq!(check(&out, &[0; 16]), Ok(()), "{o:?}");
     }
 }
 
@@ -71,7 +79,7 @@ fn null_ptr_with_nonzero_len_faults() {
     let mut out = base_out();
     out.secret.len = 4;
     assert_eq!(
-        check_resolve(&out),
+        check(&out, &[0; 16]),
         red(Rule::NullWithCount, "resolve.secret")
     );
 }
@@ -86,7 +94,7 @@ fn oversized_secret_faults() {
     out.secret.flags = BLOB_SECRET;
     out.head.lease = 1;
     assert_eq!(
-        check_resolve(&out),
+        check(&out, &[0; 16]),
         red(Rule::OverMax, "resolve.secret.len")
     );
 }
@@ -101,7 +109,7 @@ fn failed_with_secret_faults() {
     out.secret.ptr = &byte as *const u8;
     out.secret.len = 1;
     assert_eq!(
-        check_resolve(&out),
+        check(&out, &[0; 16]),
         red(Rule::Contradiction, "resolve.secret_on_failed")
     );
 }
@@ -112,7 +120,7 @@ fn failed_with_unset_error_kind_faults() {
     let mut out = base_out();
     out.head.outcome = RawOutcome(Outcome::Failed as u8);
     assert_eq!(
-        check_resolve(&out),
+        check(&out, &[0; 16]),
         red(Rule::Missing, "resolve.error_kind_on_failed")
     );
 }
@@ -125,7 +133,7 @@ fn error_kind_out_of_range_faults() {
     out.head.outcome = RawOutcome(Outcome::Failed as u8);
     out.error_kind = ERROR_KIND_INTERNAL + 1;
     assert_eq!(
-        check_resolve(&out),
+        check(&out, &[0; 16]),
         red(Rule::UnknownCode, "resolve.error_kind")
     );
 }
@@ -136,20 +144,20 @@ fn ready_with_error_kind_faults() {
     let mut out = base_out();
     out.error_kind = ERROR_KIND_UNAVAILABLE;
     assert_eq!(
-        check_resolve(&out),
+        check(&out, &[0; 16]),
         red(Rule::Contradiction, "resolve.error_kind_on_ready")
     );
 }
 
-/// RED: a READY answer with secret material but no lease.
+/// RED: a READY answer naming material and a lease: the material is the host's, never leased.
 #[test]
-fn ready_with_material_without_lease_faults() {
-    let byte = 0u8;
+fn ready_with_material_under_a_lease_faults() {
+    let buf = [0u8; 16];
     let mut out = base_out();
-    out.secret.ptr = &byte as *const u8;
+    out.secret.ptr = buf.as_ptr();
     out.secret.len = 1;
-    out.head.lease = 0;
-    assert_eq!(check_resolve(&out), red(Rule::Missing, "resolve.lease"));
+    out.head.lease = 3;
+    assert_eq!(check(&out, &buf), red(Rule::Contradiction, "resolve.lease"));
 }
 
 /// RED: a READY answer with no secret material that sets a lease.
@@ -158,7 +166,96 @@ fn ready_with_no_material_with_lease_faults() {
     let mut out = base_out();
     out.head.lease = 7;
     assert_eq!(
-        check_resolve(&out),
-        red(Rule::Contradiction, "resolve.lease_without_material")
+        check(&out, &[0; 16]),
+        red(Rule::Contradiction, "resolve.lease")
     );
+}
+
+/// GREEN: READY material written at the start of the host's buffer, within its capacity.
+#[test]
+fn ready_with_material_in_the_host_buffer_passes() {
+    let buf = [0u8; 16];
+    let mut out = base_out();
+    out.secret.ptr = buf.as_ptr();
+    out.secret.len = 16;
+    out.secret.flags = BLOB_SECRET;
+    assert_eq!(check(&out, &buf), Ok(()));
+}
+
+/// RED: READY material at an address the host never lent (plugin memory the host would copy).
+#[test]
+fn ready_with_material_outside_the_host_buffer_faults() {
+    let buf = [0u8; 16];
+    let plugin = [0u8; 4];
+    let mut out = base_out();
+    out.secret.ptr = plugin.as_ptr();
+    out.secret.len = 4;
+    assert_eq!(
+        check(&out, &buf),
+        red(Rule::Foreign, "resolve.secret_outside_buffer")
+    );
+}
+
+/// RED: READY material longer than the buffer the host lent.
+#[test]
+fn ready_with_material_over_the_capacity_faults() {
+    let buf = [0u8; 16];
+    let mut out = base_out();
+    out.secret.ptr = buf.as_ptr();
+    out.secret.len = 17;
+    assert_eq!(check(&out, &buf), red(Rule::OverCap, "resolve.needed"));
+}
+
+/// GREEN: the short-buffer answer: FAILED, `needed` above the capacity, nothing written.
+#[test]
+fn short_answer_passes() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = BUF_CAP + 1;
+    assert_eq!(check(&out, &[0; 16]), Ok(()));
+}
+
+/// RED: a short answer that also names an `error_kind` (one answer, one meaning).
+#[test]
+fn short_answer_with_error_kind_faults() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = BUF_CAP + 1;
+    out.error_kind = ERROR_KIND_UNAVAILABLE;
+    assert_eq!(
+        check(&out, &[0; 16]),
+        red(Rule::Contradiction, "resolve.error_kind_on_short")
+    );
+}
+
+/// RED: a short answer asking for no more than the host gave (a wasted re-call).
+#[test]
+fn short_answer_within_the_capacity_faults() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = BUF_CAP;
+    assert_eq!(
+        check(&out, &[0; 16]),
+        red(Rule::WastedRecall, "resolve.needed")
+    );
+}
+
+/// RED: `needed` on a READY answer.
+#[test]
+fn needed_on_ready_faults() {
+    let mut out = base_out();
+    out.needed = BUF_CAP + 1;
+    assert_eq!(
+        check(&out, &[0; 16]),
+        red(Rule::NeededNotFailed, "resolve.needed")
+    );
+}
+
+/// RED: `needed` past the hard max.
+#[test]
+fn needed_over_the_hard_max_faults() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = HARD_MAX_BYTES + 1;
+    assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
 }

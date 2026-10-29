@@ -56,16 +56,20 @@ pub struct SecretResolver {
 /// The boxed closure a [`SecretResolver`] delegates a non-built-in module to: `(module, settings
 /// JSON) -> secret bytes` (fail-closed on error). Boxed so `config` stays free of a `plugin-loader`
 /// dependency (the engine wires the registry in at `build_app`).
-pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
+pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Held, String> + Send + Sync>;
+
+/// THE KERNEL'S HOLDER OF RESOLVED BYTES (the credential chip, row 6: host-owned secret bytes): the zeroizing
+/// holder the secret plugin wrote the value into, moved here and never copied into a `Vec` or a
+/// `String`; read only under the kernel's seal, wiped when it drops.
+pub type Held = busbar_contract::redacted::Secret<Vec<u8>>;
+
+/// [`Held`]'s text form: the same bytes, moved, their trailing newline trimmed.
+pub type HeldText = busbar_contract::redacted::Secret<String>;
 
 /// [`PluginResolveFn`] handed the config-time proof when the caller holds one (THE DESIGN §11.11
 /// R4): a dropped-in source that reads the disk resolves only with it.
 pub(crate) type ScopedPluginResolveFn = Box<
-    dyn Fn(
-            &str,
-            &str,
-            Option<&busbar_contract::config_time::ConfigScope>,
-        ) -> Result<Vec<u8>, String>
+    dyn Fn(&str, &str, Option<&busbar_contract::config_time::ConfigScope>) -> Result<Held, String>
         + Send
         + Sync,
 >;
@@ -101,7 +105,7 @@ impl SecretResolver {
     /// Resolve a reference to raw bytes. A module the build LINKS (`env` / `file` in the default
     /// build) resolves through the root's secret axis, on its one shared instance; any other module
     /// delegates to the plugin resolver (fail-closed if none is wired or it fails).
-    pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
+    pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Held, String> {
         self.resolve_with(secret, None)
     }
 
@@ -111,7 +115,7 @@ impl SecretResolver {
         &self,
         secret: &SecretRef,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Held, String> {
         self.resolve_with(secret, Some(scope))
     }
 
@@ -120,7 +124,7 @@ impl SecretResolver {
         &self,
         secret: &SecretRef,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<String, String> {
+    ) -> Result<HeldText, String> {
         Self::text_of(secret, self.resolve_at_config(secret, scope)?)
     }
 
@@ -129,7 +133,7 @@ impl SecretResolver {
         &self,
         secret: &SecretRef,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Held, String> {
         let module = secret.module.as_str();
         // `none` declares the ABSENCE of a credential, so it is never looked up as a module: asking
         // for its bytes is a category error, refused rather than resolved to empty.
@@ -143,9 +147,8 @@ impl SecretResolver {
                 Some(scope) => shared.resolve_at_config(settings.as_bytes(), scope),
                 None => shared.resolve(settings.as_bytes()),
             };
-            return material
-                .map(|m| m.expose(&crate::seal::lend()).clone())
-                .map_err(|r| r.text);
+            // The plugin's holder itself, moved: the bytes are never copied out of it.
+            return material.map_err(|r| r.text);
         }
         let Some(f) = &self.plugin else {
             return Err(format!(
@@ -161,7 +164,7 @@ impl SecretResolver {
                 secret.describe()
             )
         })?;
-        if bytes.is_empty() {
+        if bytes.expose(&crate::seal::lend()).is_empty() {
             return Err(format!(
                 "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
                  non-empty (fail-closed)",
@@ -173,28 +176,24 @@ impl SecretResolver {
 
     /// Resolve to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or empty).
     /// The string-secret convenience twin of [`Self::resolve`], mirroring [`resolve_linked_string`].
-    pub(crate) fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
+    pub(crate) fn resolve_string(&self, secret: &SecretRef) -> Result<HeldText, String> {
         Self::text_of(secret, self.resolve(secret)?)
     }
 
-    /// Resolved bytes as the UTF-8 string a text secret is (trailing newline trimmed; fail-closed
-    /// on non-UTF-8 or empty).
-    fn text_of(secret: &SecretRef, bytes: Vec<u8>) -> Result<String, String> {
-        let s = String::from_utf8(bytes).map_err(|_| {
-            format!(
+    /// Resolved bytes as the UTF-8 text a text secret is (trailing newline trimmed; fail-closed
+    /// on non-UTF-8 or empty): the same holder's bytes, moved, never copied into a plain `String`.
+    fn text_of(secret: &SecretRef, bytes: Held) -> Result<HeldText, String> {
+        bytes.into_text().map_err(|e| match e {
+            busbar_contract::redacted::NotText::NotUtf8 => format!(
                 "secret {} resolved to non-UTF-8 bytes where a text secret is required",
                 secret.describe()
-            )
-        })?;
-        let trimmed = s.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            return Err(format!(
+            ),
+            busbar_contract::redacted::NotText::Empty => format!(
                 "secret {} resolved to an empty value after trimming trailing newlines \
                  (fail-closed)",
                 secret.describe()
-            ));
-        }
-        Ok(trimmed.to_string())
+            ),
+        })
     }
 }
 
@@ -309,6 +308,9 @@ pub(crate) fn resolve_settings(
                         "plugin setting '{field}' is a secret reference that did not resolve: {e}"
                     )
                 })?;
+            // OWED (row 7): a reference resolved here reaches the plugin inline, in its settings,
+            // as a plain JSON string (1.5.5's shape), not as host-held secret bytes.
+            let resolved = resolved.expose(&crate::seal::lend()).clone();
             *slot = serde_json::Value::String(resolved);
         }
     }
@@ -346,11 +348,11 @@ pub(crate) fn resolve_settings(
 /// usable as `&dyn busbar_contract::secret::SecretResolve`. An extracted plane names the trait, never this
 /// engine-specific struct. The methods forward verbatim; the error is already a neutral `String`.
 impl busbar_contract::secret::SecretResolve for SecretResolver {
-    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(&self, secret: &SecretRef) -> Result<Held, String> {
         SecretResolver::resolve(self, secret)
     }
 
-    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
+    fn resolve_string(&self, secret: &SecretRef) -> Result<HeldText, String> {
         SecretResolver::resolve_string(self, secret)
     }
 
@@ -358,7 +360,7 @@ impl busbar_contract::secret::SecretResolve for SecretResolver {
         &self,
         secret: &SecretRef,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Held, String> {
         SecretResolver::resolve_at_config(self, secret, scope)
     }
 
@@ -366,7 +368,7 @@ impl busbar_contract::secret::SecretResolve for SecretResolver {
         &self,
         secret: &SecretRef,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<String, String> {
+    ) -> Result<HeldText, String> {
         SecretResolver::resolve_string_at_config(self, secret, scope)
     }
 }
@@ -400,7 +402,7 @@ pub(crate) fn sugars() -> busbar_contract::secret_ref::Sugars {
 /// no cold lane). OWED: a plane still calls this (the mcp stdio child's environment and its
 /// token-exchange subject token) until those sites move to host-held replacements; the
 /// plane-secret-blindness gate lists them.
-pub fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {
+pub fn resolve_linked_string(secret: &SecretRef) -> Result<HeldText, String> {
     SecretResolver::builtins_only().resolve_string(secret)
 }
 
@@ -408,7 +410,7 @@ pub fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {
 pub fn resolve_linked_string_at_config(
     secret: &SecretRef,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<String, String> {
+) -> Result<HeldText, String> {
     SecretResolver::builtins_only().resolve_string_at_config(secret, scope)
 }
 
