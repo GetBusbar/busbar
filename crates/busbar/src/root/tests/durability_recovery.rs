@@ -12,7 +12,7 @@
 //! restored nothing was acknowledged.
 
 use super::*;
-use crate::root::durability::{build_on_store, DurabilityConfig, JournalLane};
+use crate::root::durability::{build_on_store, wait_for, DurabilityConfig, JournalLane};
 use busbar_contract::caps::AdminVerb;
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
@@ -24,8 +24,9 @@ const STORE: &str = "configured";
 /// a host back its id.
 const NODE: u64 = 31;
 
-/// One opened store: the v3 slots of ONE instance.
+/// One opened store: the 1.5.5 op set and the v3 slots of ONE instance.
 struct Opened {
+    records: Arc<dyn busbar_contract::records::RecordStore>,
     calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
 }
 
@@ -60,6 +61,7 @@ fn ephemeral_store() -> Opened {
         )
         .expect("the ephemeral store opens through its door");
     Opened {
+        records: opened.records,
         calls: opened.calls.expect("a door-opened store has its v3 slots"),
     }
 }
