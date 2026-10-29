@@ -1303,7 +1303,12 @@ impl PlaneStore for UnreadableStore {
     fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
         Err(RecordStoreError("store down (test)".to_string()))
     }
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+    fn purge_plane_records(
+        &self,
+        _kind: &str,
+        _before: u64,
+        _retention: busbar_contract::records::Retention,
+    ) -> RecordStoreResult<u64> {
         Err(RecordStoreError("store down (test)".to_string()))
     }
     fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
