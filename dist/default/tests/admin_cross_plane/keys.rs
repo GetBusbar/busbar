@@ -6,7 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::ingress::protocols::PROTO_ANTHROPIC;
+use busbar_kernel::test_support::protocols::PROTO_ANTHROPIC;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -319,13 +319,12 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     let _ = std::fs::remove_file(&overlay);
 }
 
-/// `GET openapi.json` serves the PRE-GZIPPED embedded bytes to a client whose `Accept-Encoding`
-/// allows gzip — `Content-Encoding: gzip`, inflating byte-identical to the identity body — and
-/// the identity body to a client that does not ask. This is what lets the process retain NO
-/// inflated copy of the 366 KB+ document (the old `OnceLock<String>` held it forever after the
-/// first GET); the gzip client costs zero inflation, the identity client a per-request inflate.
+/// `GET openapi.json` answers every client as 1.5.5 did: the identity JSON document, no
+/// `Content-Encoding` and no `Vary`, whatever `Accept-Encoding` the client sends (ORACLE-116
+/// review, F-011c: the gzip negotiation and its `Vary` were never signed). RED: a gzip-accepting
+/// client was sent the pre-compressed bytes and every answer carried `Vary: accept-encoding`.
 #[tokio::test]
-async fn test_admin_v1_openapi_gzip_negotiation() {
+async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -334,66 +333,37 @@ async fn test_admin_v1_openapi_gzip_negotiation() {
     let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/openapi.json");
 
-    // Identity: no Accept-Encoding -> plain JSON, no Content-Encoding (the shape every pre-gzip
-    // client always got). This reqwest client has no gzip feature, so it sends no Accept-Encoding
-    // and performs no transparent decode — the bytes observed here are the wire bytes.
-    let identity = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(identity.status().as_u16(), 200);
+    // This reqwest client has no gzip feature, so it performs no transparent decode: the bytes
+    // observed here are the wire bytes.
+    let mut bodies = Vec::new();
+    for accept in [
+        None,
+        Some("gzip"),
+        Some("gzip;q=0"),
+        Some("br, gzip, deflate"),
+    ] {
+        let mut req = client.get(&url).header("x-admin-token", "admintok");
+        if let Some(a) = accept {
+            req = req.header("accept-encoding", a);
+        }
+        let resp = req.send().await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200, "{accept:?}");
+        assert!(
+            resp.headers().get("content-encoding").is_none(),
+            "{accept:?}: the document is identity-encoded, as 1.5.5 served it"
+        );
+        assert!(
+            resp.headers().get("vary").is_none(),
+            "{accept:?}: no Vary, as 1.5.5 served it"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(body.starts_with('{'), "{accept:?}: the JSON document");
+        bodies.push(body);
+    }
     assert!(
-        identity.headers().get("content-encoding").is_none(),
-        "a client that did not ask for gzip must get an identity body"
+        bodies.windows(2).all(|w| w[0] == w[1]),
+        "every client reads the same document"
     );
-    let identity_body = identity.text().await.unwrap();
-    assert!(
-        identity_body.starts_with('{'),
-        "identity body is the JSON document"
-    );
-
-    // Gzip: Accept-Encoding: gzip -> Content-Encoding: gzip, and the payload inflates to the
-    // EXACT identity bytes (same committed document, lighter wire + no retained inflation).
-    let gz = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .header("accept-encoding", "gzip")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(gz.status().as_u16(), 200);
-    assert_eq!(
-        gz.headers().get("content-encoding").map(|v| v.as_bytes()),
-        Some(b"gzip".as_ref()),
-        "a gzip-accepting client gets the pre-compressed bytes"
-    );
-    let gz_body = gz.bytes().await.unwrap();
-    let mut inflated = String::new();
-    std::io::Read::read_to_string(
-        &mut flate2::read::GzDecoder::new(gz_body.as_ref()),
-        &mut inflated,
-    )
-    .expect("the served gzip payload inflates");
-    assert_eq!(
-        inflated, identity_body,
-        "gzip and identity must be the SAME document, differing only in transfer encoding"
-    );
-
-    // An explicit refusal (`gzip;q=0`) is honored: identity again.
-    let refused = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .header("accept-encoding", "gzip;q=0")
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        refused.headers().get("content-encoding").is_none(),
-        "gzip;q=0 is an explicit refusal — identity body"
-    );
-
     handle.abort();
 }
 
@@ -2631,7 +2601,6 @@ fn write_named_map_fixture(
             "test-provider:
   protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
 "
         ),
     )

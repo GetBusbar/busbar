@@ -153,6 +153,7 @@ impl GovState {
             deployment_caller_ref: RwLock::new(None),
             boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
+            at_rest: RwLock::new(None),
             denylist,
             refresh_lock,
             self_mint_lock: std::sync::Mutex::new(()),
@@ -226,6 +227,18 @@ impl GovState {
                 return None;
             }
         };
+        self.standing_key(&claims, now)
+    }
+
+    /// THE STATE HALF OF A SIGNED-TOKEN VERIFY, over claims whose signature, expiry and audience
+    /// already held: the subject not revoked, its binding enabled, and the token naming the
+    /// binding's current generation. Shared by [`Self::verify_token`] and the ticket gate, so a
+    /// ticket stands exactly when a key minted for its subject would.
+    pub(super) fn standing_key(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
         // Revocation: the ONE state read on the otherwise-stateless path. The set is a bounded-TTL
         // CACHE of the store's denylist, re-read here when stale so a peer's (or an out-of-band)
         // revoke is honoured within `REVOCATION_SYNC_TTL_SECS` instead of never.
@@ -400,6 +413,11 @@ impl GovState {
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
+        // REFUSED, before anything is written, on a node with no at-rest key: the credential could
+        // only be stored in the clear.
+        let Some(keys) = self.at_rest_keys() else {
+            return Err(RecordStoreError(super::at_rest::NO_KEY_REFUSAL.to_string()));
+        };
         let (binding, generation) = signed_binding(spec, now)?;
         let (public_id, secret_value) = super::issue_credential(shape).store()?;
         let secret_value = Secret::new(secret_value);
@@ -410,22 +428,28 @@ impl GovState {
         // The credential is row-looked-up (by its public id), unlike the signed token above (see
         // CredentialMeta's doc). `secret_form: Recoverable`: its verifier re-derives from the
         // plaintext, so it cannot be a one-way digest.
+        let meta = CredentialMeta {
+            id: cred_id,
+            key_id: binding.id.clone(),
+            kind: kind.to_string(),
+            slot: 0,
+            public_id: public_id.clone(),
+            secret_form: SecretForm::Recoverable,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            revoked_at: None,
+            revoke_reason: None,
+            revision: 0,
+        };
+        // Sealed under the at-rest key before the store sees it: no store holds a recoverable
+        // secret in the clear.
+        let sealed = keys
+            .seal(&meta, secret_value.expose(&crate::seal::lend()).as_bytes())
+            .map_err(RecordStoreError)?;
         let secret = CredentialSecret {
-            meta: CredentialMeta {
-                id: cred_id,
-                key_id: binding.id.clone(),
-                kind: kind.to_string(),
-                slot: 0,
-                public_id: public_id.clone(),
-                secret_form: SecretForm::Recoverable,
-                created_at: now,
-                updated_at: now,
-                expires_at: None,
-                revoked_at: None,
-                revoke_reason: None,
-                revision: 0,
-            },
-            secret: format!("v1:plain:{}", secret_value.expose(&crate::seal::lend())),
+            meta,
+            secret: sealed,
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
@@ -509,7 +533,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some(crate::plane_driver::registry::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
-            issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
+            issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
         })
     }
 
@@ -527,7 +551,7 @@ impl GovState {
         let domain = crate::plane_driver::registry::plane_decl_for_config_section("agents")?
             .card_signing_domain?;
         let m = self.signing_material()?;
-        Some(m.signer.sign_with_card_subkey(domain, signing_input))
+        Some(m.signer.sign_with_subkey(domain, signing_input))
     }
 
     /// SIGN `input` with the subkey this node's signing key derives for `domain`: the key id and the
@@ -537,7 +561,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some((
             m.signer.kid().to_string(),
-            m.signer.sign_with_card_subkey(domain, input),
+            m.signer.sign_with_subkey(domain, input),
         ))
     }
 
@@ -1060,9 +1084,149 @@ impl GovState {
         self.refresh_caller_refs();
     }
 
+    /// Install the AT-REST KEYS (`credentials.at_rest`, resolved at boot and on every apply or
+    /// reload that declares them). `true` when they differ from the keys installed before (by
+    /// kid), which is when a reload re-wraps ([`Self::rewrap_credentials`]).
+    pub fn set_at_rest_keys(&self, keys: Option<super::at_rest::AtRestKeys>) -> bool {
+        let kids = |k: Option<&super::at_rest::AtRestKeys>| {
+            k.map(|k| (k.kid().to_string(), k.previous_kid().map(str::to_string)))
+        };
+        let next = keys.map(Arc::new);
+        let mut slot = self.at_rest.write().unwrap_or_else(|e| e.into_inner());
+        let changed = kids(slot.as_deref()) != kids(next.as_deref());
+        *slot = next;
+        changed
+    }
+
+    /// Whether a recoverable credential can be minted (an at-rest key is configured).
+    pub fn at_rest_enabled(&self) -> bool {
+        self.at_rest_keys().is_some()
+    }
+
+    /// The current at-rest keys, as a cheap `Arc` clone.
+    fn at_rest_keys(&self) -> Option<Arc<super::at_rest::AtRestKeys>> {
+        self.at_rest
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// RE-WRAP every stored recoverable credential that is not sealed under the at-rest `key` yet
+    /// but opens: one sealed under `previous`, or a pre-1.6.0 `v1:plain` row. Each is re-sealed
+    /// under `key` and written back through the store, so `previous` can be retired once a pass
+    /// reports none pending. Run at boot, and on a reload that changes the keys.
+    ///
+    /// Idempotent, and safe across nodes sharing the store: see [`Self::rewrap_rows`]. A row that
+    /// opens under neither key is left as it is (it does not authenticate; the read WARNs).
+    ///
+    /// # Errors
+    /// The store could not list the credentials, or refresh the cache afterwards.
+    pub fn rewrap_credentials(&self, now: u64) -> RecordStoreResult<super::at_rest::Rewrap> {
+        if self.at_rest_keys().is_none() {
+            return Ok(super::at_rest::Rewrap::default());
+        }
+        let rows = self.store.list_credentials_since(0)?;
+        self.rewrap_rows(rows, now)
+    }
+
+    /// The re-wrap over `rows` (as listed from the store), at `now`.
+    ///
+    /// ACROSS NODES: each row is CLAIMED first, through the store's single-use test-and-set
+    /// (`redeem_plane_token`, the store side of `records.claim`), under a token naming the new kid,
+    /// the row and a digest of the envelope it was read with. Exactly one node wins a row; a node
+    /// that loses it counts it pending. A claim stands [`super::at_rest::REWRAP_CLAIM_SECS`], so a
+    /// node that won and died before writing leaves the row to the next boot or reload after that.
+    /// A store that keeps no claims answers every claim lost (fail-closed): nothing is re-wrapped,
+    /// every row still opens under `previous`, and the pass reports them pending.
+    ///
+    /// NEVER REVIVES A REVOKED ROW: the store's write is an upsert of the whole row, so just before
+    /// writing, the row's metadata is read again and the write is skipped unless it is still there
+    /// and still unrevoked.
+    ///
+    /// # Errors
+    /// The store could not refresh the cache afterwards.
+    pub fn rewrap_rows(
+        &self,
+        rows: Vec<CredentialSecret>,
+        now: u64,
+    ) -> RecordStoreResult<super::at_rest::Rewrap> {
+        let mut pass = super::at_rest::Rewrap::default();
+        let Some(keys) = self.at_rest_keys() else {
+            return Ok(pass);
+        };
+        for row in rows {
+            if row.meta.revoked_at.is_some() {
+                continue;
+            }
+            let Some(plain) = super::at_rest::stale(&keys, &row.meta, &row.secret) else {
+                continue;
+            };
+            let digest = ring::digest::digest(&ring::digest::SHA256, row.secret.as_bytes());
+            let token = format!(
+                "{}:{}:{}",
+                keys.kid(),
+                row.meta.id,
+                hex::encode(&digest.as_ref()[..16])
+            );
+            let claimed = self
+                .store
+                .redeem_plane_token(
+                    super::at_rest::REWRAP_CLAIM_KIND,
+                    &token,
+                    now.saturating_add(super::at_rest::REWRAP_CLAIM_SECS),
+                    now,
+                )
+                .unwrap_or(false);
+            if !claimed {
+                pass.pending += 1;
+                continue;
+            }
+            let current = self
+                .store
+                .list_credentials(&row.meta.key_id)
+                .ok()
+                .and_then(|metas| metas.into_iter().find(|m| m.id == row.meta.id));
+            // Written with the row's metadata as it stands now, not as it was listed.
+            let Some(meta) = current.filter(|m| m.revoked_at.is_none()) else {
+                continue;
+            };
+            let written = keys.seal(&meta, plain.as_bytes()).and_then(|sealed| {
+                self.store
+                    .put_credential(&CredentialSecret {
+                        meta,
+                        secret: sealed,
+                    })
+                    .map_err(|e| e.to_string())
+            });
+            match written {
+                Ok(()) => pass.resealed += 1,
+                Err(e) => {
+                    pass.pending += 1;
+                    diag_warn!(
+                        crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+                        kind = %row.meta.kind,
+                        error = %e,
+                        "a recoverable credential could not be re-sealed under \
+                         credentials.at_rest.key; it still opens under the key it was sealed under"
+                    );
+                }
+            }
+        }
+        if pass.resealed > 0 {
+            self.refresh()?;
+            crate::audit_ring::AUDIT.record_by(
+                "credential.at_rest.rewrap",
+                &format!("kid:{} rows:{}", keys.kid(), pass.resealed),
+                crate::audit_ring::OUTCOME_APPLIED,
+                "busbar",
+            );
+        }
+        Ok(pass)
+    }
+
     /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
     /// never across the crypto).
-    fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
+    pub(super) fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
         self.signing
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -1663,61 +1827,64 @@ impl GovState {
 
     /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
     /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
-    /// (key and group usage, the `/metrics` money gauges) prices `segments` only after this folds in
-    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or a
-    /// bucket of that key's group chain the correction's pool participates in (Q64/Q67: an unscoped
-    /// bucket always, a pool-scoped one for its own pool; a sealed correction naming no pool reaches
-    /// the unscoped buckets only), whose window holds the unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
-    /// A correction leaving a count fractional or below zero REFUSES (`Overflow`), never clamps.
+    /// (key and group usage, the `/metrics` money gauges) AND the admission check
+    /// ([`Self::try_admit`]) price `segments` only after this folds in Σ (now − was) of each
+    /// correction that lands on the bucket ([`Self::landing_corrections`]). The delta lands on the
+    /// unit's lane in the latest era not after the epoch. A correction leaving a count fractional or
+    /// below zero REFUSES (`Overflow`), never clamps.
     fn corrected(
         &self,
         cost: &crate::cost::CostModel,
-        (bucket_id, period, window): (&str, &str, u64),
+        bucket: (&str, &str, u64),
         segments: &mut Vec<ModelCell>,
     ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
-        use crate::audit::amend::{node_corrections, AmendBody, Subject};
-        for amendment in node_corrections() {
+        let corrections = crate::audit::amend::node_corrections();
+        let landing = self.landing_corrections(cost, bucket, &corrections)?;
+        Ok(fold_corrections(segments, &landing))
+    }
+
+    /// The corrections among `corrections` that land on one bucket's window: its principal's own
+    /// bucket, or a bucket of that key's group chain the correction's pool participates in (Q64/Q67:
+    /// an unscoped bucket always, a pool-scoped one for its own pool; a sealed correction naming no
+    /// pool reaches the unscoped buckets only), whose window holds the unit's card epoch. The
+    /// principal's key is read from the key cache, and from the store only for a key the cache no
+    /// longer holds (a deleted key's row is kept), so a read and an admission resolve it the same way
+    /// and an admission makes no store round-trip for a live key.
+    fn landing_corrections<'c>(
+        &self,
+        cost: &crate::cost::CostModel,
+        (bucket_id, period, window): (&str, &str, u64),
+        corrections: &'c [crate::audit::amend::Amendment],
+    ) -> RecordStoreResult<Vec<&'c crate::audit::amend::Adjust>> {
+        use crate::audit::amend::{AmendBody, Subject};
+        let mut landing = Vec::new();
+        for amendment in corrections {
             let AmendBody::Adjust(adj) = &amendment.body else {
                 continue;
             };
             let Subject::PrincipalId(p) = &adj.subject else {
                 continue;
             };
-            let lands = budget_window(period, adj.card_epoch_ms / 1_000) == window
-                && (p == bucket_id
-                    || self.store.get_key(p)?.is_some_and(|k| {
-                        (cost.chain_for(&k).ok()).is_some_and(|c| {
-                            c.iter()
-                                .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
-                        })
-                    }));
-            if !lands {
+            if budget_window(period, adj.card_epoch_ms / 1_000) != window {
                 continue;
             }
-            let at = adj.card_epoch_ms;
-            let seg = (segments.iter().enumerate())
-                .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
-                .max_by_key(|(_, m)| m.era)
-                .map(|(i, _)| i);
-            let i = seg.unwrap_or_else(|| {
-                segments.push(ModelCell {
-                    model: std::sync::Arc::from(adj.lane.as_str()),
-                    era: crate::rate_apply::effective_from_at(at),
-                    cur: BTreeMap::new(),
-                    flushed: BTreeMap::new(),
-                });
-                segments.len() - 1
-            });
-            for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
-                let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
-                let slot = segments[i].cur.entry(class.clone()).or_insert(0);
-                match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
-                    Some(n) if frac == 0 => *slot = n,
-                    _ => return Ok(Err(busbar_kernel_ledger::cost::MoneyError::Overflow)),
-                }
+            let lands = p == bucket_id || {
+                let key = match self.lookup_by_sub(p) {
+                    Some(key) => Some(key),
+                    None => self.store.get_key(p)?.map(Arc::new),
+                };
+                key.is_some_and(|k| {
+                    (cost.chain_for(&k).ok()).is_some_and(|c| {
+                        c.iter()
+                            .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
+                    })
+                })
+            };
+            if lands {
+                landing.push(adj);
             }
         }
-        Ok(Ok(()))
+        Ok(landing)
     }
 
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
@@ -1770,14 +1937,25 @@ impl GovState {
         let mut out = Vec::with_capacity(chain.len());
         for bucket in chain.iter() {
             let window = budget_window(bucket.window, now);
-            let spend = {
+            let live = {
                 let map = self.budget.read(bucket.bucket_id);
-                match map.get(bucket.bucket_id) {
-                    Some(cell) if cell.window_start == window => {
-                        cell.spend(cost, true).and_then(Money::micros_i64)
+                (map.get(bucket.bucket_id))
+                    .filter(|cell| cell.window_start == window)
+                    .cloned()
+            };
+            // Q51: the counts as corrected, as every other read of the book prices them; a
+            // correction that cannot be resolved reads as a refused figure.
+            let spend = match live {
+                Some(mut cell) => {
+                    let key = (bucket.bucket_id, bucket.window, window);
+                    match self.corrected(cost, key, &mut cell.models) {
+                        Ok(Ok(())) => {
+                            (cell.spend(cost, true).and_then(Money::micros_i64)).map_err(|_| ())
+                        }
+                        Ok(Err(_)) | Err(_) => Err(()),
                     }
-                    _ => Ok(0),
                 }
+                None => Ok(0),
             };
             // A REFUSED figure (#42: the card present and silent about a model or class the bucket
             // holds; item 28: an overflow) is not a figure, and the projection has no error channel
@@ -1871,14 +2049,16 @@ impl GovState {
     ///   in-flight admitted request (as with TPM, a hard token cap would need admit-time
     ///   reservation - out of scope).
     ///
-    /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
-    /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
+    /// SYNCHRONOUS and INFALLIBLE (in-memory cells, no await; the one store read is below). The
+    /// flat fee is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
     /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via
     /// [`GovState::refund_charge`]. This allocates a handful of chain-sized scratch `Vec`s per call
     /// (`chain_for`'s two Vecs, the collected bucket slice, the shard-index/order/guard Vecs sized
     /// to the chain depth, the grant's charged cells) — there are no fixed
-    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
-    /// round-trip and no `await` anywhere on this path.
+    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no `await`
+    /// anywhere on this path, and no store round-trip except one case: a sealed `adjust` whose
+    /// principal's key the key cache no longer holds (a deleted key) is read from the store, before
+    /// any shard lock is taken, to learn whether it lands on a capped bucket (Q51).
     ///
     /// PER-PLANE FEES (#47): a `pool` qualified `"<plane>\u{1f}<pool>"` is a request of THAT plane
     /// — the pool predicate reads the unqualified part — and it charges that plane's own
@@ -1980,6 +2160,26 @@ impl GovState {
             }
             grant.gauges.push(gauge);
         }
+
+        // Q51 AT THE DOOR: a capped bucket is checked on the counts every read of the book prices,
+        // corrected by each sealed `adjust` landing on it ([`Self::landing_corrections`]), so an
+        // upward correction is enforced and a downward one stops refusing. Resolved here, before any
+        // shard lock is taken; a landing that cannot be resolved (`None`) blocks the bucket, fail
+        // closed. No correction sealed on this node: nothing is resolved and nothing allocated.
+        let corrections = crate::audit::amend::node_corrections();
+        let landing: Vec<Option<Vec<&crate::audit::amend::Adjust>>> = (buckets.iter())
+            .map(|b| {
+                let capped = b.requests_cap.is_some()
+                    || b.tokens_cap.is_some()
+                    || !b.class_caps.is_empty()
+                    || b.budget_cap.is_some();
+                if corrections.is_empty() || !capped {
+                    return Some(Vec::new());
+                }
+                let bucket = (b.bucket_id, b.window, budget_window(b.window, now));
+                self.landing_corrections(cost, bucket, &corrections).ok()
+            })
+            .collect();
 
         // 3. WINDOWED limits: acquire every involved shard's write lock in ASCENDING shard order
         // (dedup) - scratch sized by the chain actually resolved. `guard_shards[j]` = the shard
@@ -2084,20 +2284,46 @@ impl GovState {
             // read only for a class that carries a cap — the same best-effort post-paid shape as
             // `tokens_cap`. A class counts only itself: a `tokens_input` cap reads the `input`
             // class, so a cache-read count never counts against it.
-            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
-                Some(cell) if cell.window_start >= window => (
+            let live = match map.get(bucket.bucket_id) {
+                Some(cell) if cell.window_start >= window => Some(cell),
+                // stale or absent cell = fresh window = nothing used
+                _ => None,
+            };
+            // The counts as corrected (Q51): the live cell itself when nothing lands on it; a
+            // corrected copy when something does (a correction landing on a fresh window corrects
+            // an empty one); `Err` when a landing could not be resolved or the fold refused. In the
+            // straddle the live cell already holds a NEWER window, which this window's corrections
+            // do not land on.
+            let fixed: Option<Result<BudgetCell, ()>> = match &landing[bi] {
+                Some(l) if l.is_empty() => None,
+                Some(_) if live.is_some_and(|c| c.window_start > window) => None,
+                Some(l) => {
+                    let mut cell = live.cloned().unwrap_or_else(|| BudgetCell::fresh(window));
+                    Some(
+                        fold_corrections(&mut cell.models, l)
+                            .map(|()| cell)
+                            .map_err(|_| ()),
+                    )
+                }
+                None => Some(Err(())),
+            };
+            let (live, unresolved) = match &fixed {
+                None => (live, false),
+                Some(Ok(cell)) => (Some(cell), false),
+                Some(Err(())) => (live, true),
+            };
+            let (requests, tokens, derived) = match live {
+                Some(cell) => (
                     cell.requests,
                     bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
-                    Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
                         (cell.spend(cost, true)).and_then(Money::minor_i64)
                     }),
                 ),
-                // stale or absent cell = fresh window = nothing used
-                _ => (0, 0, None, Ok(0)),
+                None => (0, 0, Ok(0)),
             };
             let class_blocked = (bucket.class_caps.iter())
-                .find(|c| live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
+                .find(|c| unresolved || live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
                 .map(|c| c.metric.as_str());
             // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
             // silent about a model or class this bucket holds, or an overflow — BLOCKS on the
@@ -2105,7 +2331,7 @@ impl GovState {
             // (`if let Some(rate)`), so a model the card did not name ran uncapped on spend. A
             // refusal is never downgraded: a cheaper pool is no answer to "this cannot be priced".
             let (derived, refused) = match derived {
-                Ok(d) => (d, false),
+                Ok(d) => (d, unresolved),
                 Err(_) => (0, true),
             };
             // `admission: estimate`: this bucket must also hold the unit's estimate; an
@@ -2120,7 +2346,10 @@ impl GovState {
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
             {
                 Some("requests")
-            } else if bucket.tokens_cap.is_some_and(|cap| tokens >= cap) {
+            } else if bucket
+                .tokens_cap
+                .is_some_and(|cap| unresolved || tokens >= cap)
+            {
                 Some("tokens")
             } else if class_blocked.is_some() {
                 class_blocked
@@ -2507,28 +2736,35 @@ impl GovState {
 
     /// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): the secret of `(kind, public_id)` and
     /// whether it may authenticate now (the credential live, its key enabled and not revoked). An
-    /// unknown pair, or a secret in an unrecognized envelope, answers the fixed dummy secret, not
-    /// live, through the SAME steps (the lookup, the copy, the revocation check), so the reply's
-    /// cost does not say whether the pair exists. The one place this rule lives.
+    /// unknown pair, or a secret in an unrecognized envelope, answers an EMPTY secret, not live,
+    /// through the SAME steps (the lookup, the copy, the revocation check), so the reply's cost
+    /// does not say whether the pair exists. The verifying auth swaps in its own dummy secret when
+    /// the answer is not live and runs its full verification over it, so a reject costs what a bad
+    /// signature costs (no identifier-enumeration oracle). The one place this rule lives.
     pub fn credential_secret(
         &self,
         kind: &str,
         public_id: &str,
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
-        let dummy = crate::auth::DUMMY_SECRET;
-        // Owned copies, out of the cache lock before the revocation check takes its own: two
-        // allocations on either path.
+        let keys = self.at_rest_keys();
+        // Owned copies, out of the cache lock before the revocation check takes its own. The
+        // stored envelope is opened here, at the read: the cache holds it sealed.
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
             Some((key, cred)) => {
-                let plain = cred.plaintext().filter(|_| cred.meta.is_live(now));
-                (key.id.clone(), plain.map(str::to_string), key.enabled)
+                let plain = if cred.meta.is_live(now) {
+                    super::at_rest::open(keys.as_deref(), &cred.meta, &cred.secret)
+                        .map(|p| p.to_string())
+                } else {
+                    None
+                };
+                (key.id.clone(), plain, key.enabled)
             }
-            None => (dummy.to_string(), None, false),
+            None => (String::new(), None, false),
         };
         let revoked = self.is_revoked_at(&key, now);
         let live = enabled && plain.is_some() && !revoked;
-        let secret = plain.unwrap_or_else(|| dummy.to_string());
+        let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
     }
 
@@ -2654,6 +2890,41 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     RecordStoreError(format!(
         "the spend of bucket `{bucket_id}` cannot be priced: {e}"
     ))
+}
+
+/// Fold `landing` corrections into a bucket's `segments`: each one's Σ (now − was) per class lands
+/// on its lane in the latest era not after its card epoch (a new segment at the era in force then
+/// when the bucket holds none). A count left fractional or below zero REFUSES (`Overflow`), never
+/// clamps. The one fold behind every read of the book and the admission check.
+fn fold_corrections(
+    segments: &mut Vec<ModelCell>,
+    landing: &[&crate::audit::amend::Adjust],
+) -> Result<(), busbar_kernel_ledger::cost::MoneyError> {
+    for adj in landing {
+        let at = adj.card_epoch_ms;
+        let seg = (segments.iter().enumerate())
+            .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
+            .max_by_key(|(_, m)| m.era)
+            .map(|(i, _)| i);
+        let i = seg.unwrap_or_else(|| {
+            segments.push(ModelCell {
+                model: std::sync::Arc::from(adj.lane.as_str()),
+                era: crate::rate_apply::effective_from_at(at),
+                cur: BTreeMap::new(),
+                flushed: BTreeMap::new(),
+            });
+            segments.len() - 1
+        });
+        for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
+            let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
+            let slot = segments[i].cur.entry(class.clone()).or_insert(0);
+            match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
+                Some(n) if frac == 0 => *slot = n,
+                _ => return Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The durable ledger's per-model rows as undated segments (the row carries no era).

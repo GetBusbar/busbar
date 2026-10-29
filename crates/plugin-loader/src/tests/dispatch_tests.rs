@@ -296,22 +296,27 @@ fn open(d: &Dispatcher, p: &Plugin<TestKind>, worker: u32) -> Outcome {
     done.outcome
 }
 
-/// Run the ignored test `child` of this test binary in a child process, with `CHILD_ENV` set, and
+/// Run the test `test` of this test binary again in a child process, with `CHILD_ENV` set, and
 /// answer how it ended: a range read past its buffer kills the child, never the test run.
-pub(crate) fn run_child(child: &str) -> std::process::Output {
+fn run_child(test: &str) -> std::process::Output {
     std::process::Command::new(std::env::current_exe().expect("the test binary's path"))
-        .args([child, "--ignored", "--test-threads=1", "--nocapture"])
+        .args([test, "--test-threads=1", "--nocapture"])
         .env(CHILD_ENV, "1")
         .output()
         .expect("run the child")
 }
 
-/// Set in a child [`run_child`] runs; an ignored child test run without it refuses to run.
-pub(crate) const CHILD_ENV: &str = "BUSBAR_DISPATCH_CHILD";
+/// Set in a child [`run_child`] runs.
+const CHILD_ENV: &str = "BUSBAR_DISPATCH_CHILD";
 
-/// Assert the child test `child` ran and passed (exit 0), naming how it ended otherwise.
-pub(crate) fn assert_child_passes(child: &str, what: &str) {
-    let out = run_child(child);
+/// In the test `test`'s own process: run `test` again in a child process, which runs `child`, and
+/// assert it passed (exit 0), naming how it ended otherwise. In that child: run `child`.
+pub(crate) fn assert_child_passes(test: &str, what: &str, child: fn()) {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        child();
+        return;
+    }
+    let out = run_child(test);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success() && stdout.contains("1 passed"),
@@ -1621,15 +1626,8 @@ fn the_pack_time_rendering_of_a_library_is_its_door_s() {
     );
 }
 
-/// The child half of the abort test: runs only when its parent sets the variable. Ignored so the
-/// default run never counts it as a pass: alone it proves nothing, and run without the variable it
-/// fails (status row 114).
-#[test]
-#[ignore = "child process of red_a_panic_in_a_hand_written_slot_aborts, which runs it with --ignored"]
-fn panic_child() {
-    let Ok(origin) = std::env::var("BUSBAR_M1_PANIC_CHILD") else {
-        panic!("panic_child is the child half of red_a_panic_in_a_hand_written_slot_aborts");
-    };
+/// The child half of the abort test, in a process of its own: a panic in `origin`'s slot.
+fn panic_child(origin: &str) {
     let p = if origin == "dropped" {
         dropped(quiet())
     } else {
@@ -1645,14 +1643,16 @@ fn panic_child() {
 /// A panic that escapes a hand-written slot ABORTS the process — in both origins.
 #[test]
 fn red_a_panic_in_a_hand_written_slot_aborts() {
+    if let Ok(origin) = std::env::var("BUSBAR_M1_PANIC_CHILD") {
+        panic_child(&origin);
+    }
     // An absent dropped door fails here, naming its build command, not in the child.
     dropped_path();
     for origin in ["linked", "dropped"] {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "dispatch_tests::panic_child",
-                "--ignored",
+                "dispatch_tests::red_a_panic_in_a_hand_written_slot_aborts",
                 "--test-threads=1",
                 "--nocapture",
             ])
@@ -2298,6 +2298,48 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
         p.call(slot::CLOSE, &mut close_frame()).outcome == Outcome::Ready
     });
     assert!(!p.is_open());
+}
+
+/// RED: a wake of a driver ticket that lands while a `tick` on it is scheduled but not yet crossed
+/// is owed to that tick's end, and runs `drive` then. Before the fix `end` cleared the latch
+/// before reading it, so the wake was dropped: a push delivery whose exchange woke the ticket
+/// behind a tick sat until its 60 s timeout (the a2a door's flaky "no delivery within a second").
+#[test]
+fn red_a_wake_behind_a_scheduled_tick_on_a_driver_ticket_still_drives() {
+    let d = Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            call: Duration::from_secs(30),
+            ..config().budgets
+        },
+        ..config()
+    });
+    let (p, sink) = opened(&d);
+    let (other, _s) = opened(&d);
+    let drv = d.driver(&p, 0).unwrap();
+    // Worker 0 is wedged in a crossing first: its runnable queue is FIFO, so the tick below
+    // cannot start before the wedge is released, and the wake is applied while it is scheduled.
+    let wedge = d.mint(0).unwrap();
+    let wedged = d.submit(
+        &other,
+        wedge,
+        TICK,
+        frame(b"hang:latched-wake"),
+        DeadlineClass::Call,
+        0,
+    );
+    let ticked = d.submit(&p, drv, TICK, frame(answer(1)), DeadlineClass::Call, 0);
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
+    assert_eq!(
+        p.call(TICK, &mut frame(b"unhang:latched-wake")).outcome,
+        Outcome::Ready
+    );
+    assert_eq!(wedged.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    assert_eq!(ticked.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    until("the wake owed behind the tick drives", || {
+        count(&p, &sink).2 >= 1
+    });
+    d.recycle(wedge);
+    d.recycle(drv);
 }
 
 #[test]
@@ -3246,6 +3288,51 @@ fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
     );
     assert_eq!((latch.forged(), latch.unattributed()), (2, 0));
     drop(held);
+}
+
+/// RED (THE PLANE `serve` THAT DIALS): an op that must wait on an outbound dial answers PENDING
+/// (Ready|Pending(wake), BUSBAR-1.6.0.md line 1282); the dial's framing crosses the FRAMER on an
+/// inline ticket of its own, nested INSIDE the op's instance's crossing (its connection service
+/// drives the connector on its thread), and the framer's new op starts a new epoch of that ticket's
+/// stored results. That bookkeeping is the host's own: it blames neither instance, so the wake
+/// resumes the op and it answers READY. Before the fix the host resolved the framer's context as if
+/// a plugin had handed it inside the outer crossing: "another instance's handle", a forgery, and
+/// the outer instance was quarantined, so its resumed op answered FAULT.
+#[test]
+fn red_an_op_whose_dial_frames_inside_its_crossing_pends_and_resumes_ready() {
+    let d = Dispatcher::new(config());
+    let (plane, _) = opened(&d);
+    let (framer, _) = opened(&d);
+    let t = d.mint(0).expect("a ticket");
+    let serving = d.submit(
+        &plane,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the op waits on its dial", || d.is_pending(t));
+    // The dial is framed: the framer's `begin` on its own inline ticket, inside the op's crossing.
+    let side = d.inline_ticket().expect("an inline ticket");
+    let begun = crate::dispatch::plugin::with_crossing(Some(&*plane.inner), || {
+        framer.call_inline(side.ticket(), false, TICK, &mut frame(plug::COUNT))
+    });
+    assert_eq!(begun.outcome, Outcome::Ready, "the framing's begin");
+    assert!(
+        !plane.is_faulted(),
+        "the host's own framing of the dial quarantined the instance it was nested in"
+    );
+    assert!(!framer.is_faulted(), "the framer was quarantined");
+    // The dial completes: the wake resumes the op, which answers READY.
+    assert_eq!(
+        plane.call(TICK, &mut frame(plug::KICK)).outcome,
+        Outcome::Ready
+    );
+    let done = serving.wait(WAIT).expect("the op answers");
+    assert_eq!(done.outcome, Outcome::Ready, "the resumed op");
+    drop(side);
+    d.recycle(t);
 }
 
 /// RED (#74, INLINE WRAP AND LATE WAKES): an inline slot whose counter is spent is RETIRED, never

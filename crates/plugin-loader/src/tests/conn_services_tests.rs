@@ -337,6 +337,7 @@ fn establish_as(
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
     let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
     out
@@ -1126,6 +1127,7 @@ fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
 fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let _: RawOutcome =
         f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
     out
@@ -1560,6 +1562,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
@@ -1877,19 +1880,35 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
     );
 }
 
-/// Whether THIS thread holds the connector's lock: a lock another thread holds (a test running
-/// beside this one) is let go within the bound; one this thread holds never is.
+/// Whether THIS thread holds the connector's lock (any instance's streams lock): a lock another
+/// thread holds (a test running beside this one) is let go within the bound; one this thread holds
+/// never is.
 fn held_here() -> bool {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < until {
-        match super::held_conns_lock().try_lock() {
-            Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return false,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+    let mut id = 1;
+    while let Some(w) = crate::dispatch::handle::supplier_of(InstanceId(id)) {
+        loop {
+            match w.conn_state.streams.try_lock() {
+                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => break,
+                Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => return true,
             }
         }
+        id += 1;
     }
-    true
+    false
+}
+
+/// The streams the connector holds for instance `id`.
+fn streams_of(
+    id: InstanceId,
+) -> std::sync::MutexGuard<'static, std::collections::HashMap<u64, super::Stream>> {
+    crate::dispatch::handle::supplier_of(id)
+        .expect("a minted instance")
+        .conn_state
+        .streams()
 }
 
 /// A member binding's auth instance that answers one bearer field, recording whether any of its
@@ -2160,16 +2179,14 @@ fn a_stream_closed_while_it_opens_leaves_nothing_open() {
     recorded.slab.declare(id, NeedId(0));
     let conn = recorded.slab.insert(id, NeedId(0), ()).expect("a slot");
     let table: Arc<dyn DeclaredConns> = recorded.clone();
+    let st = super::ConnState::default();
     // The stream is gone (its close ran while the open was being made).
-    super::install(id, stream, &table, super::Conn::Open(conn));
+    super::install(&st, id, stream, &table, super::Conn::Open(conn));
     assert!(
         recorded.slab.get(id, conn).is_err(),
         "the orphaned open is closed on the table"
     );
-    assert!(
-        super::held_conns().get(&(id, stream)).is_none(),
-        "nothing is held"
-    );
+    assert!(st.streams().get(&stream).is_none(), "nothing is held");
 }
 
 /// RED (THE DESIGN §11.12 "on resume the plugin re-issues the SAME handle and receives the stored
@@ -2293,9 +2310,8 @@ fn the_connector_serves_no_random_of_its_own() {
     assert!(CONN_SLOTS.random.is_none());
 }
 
-/// RED (bounded memory): an instance that is dropped takes what it held on the connector's
-/// process-wide maps with it, and a connection one of its held streams had open is closed on the
-/// table.
+/// RED (bounded memory): an instance that is dropped takes what it held on the connector's maps
+/// with it, and a connection one of its held streams had open is closed on the table.
 #[test]
 fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     let table = Arc::new(Scripted {
@@ -2305,14 +2321,14 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     let p = bound_over(&table);
     let id = p.instance();
     let stream = whole_request(&p, 0);
-    let conn = match super::held_conns().get(&(id, stream)).map(|s| &s.conn) {
+    let conn = match streams_of(id).get(&stream).map(|s| &s.conn) {
         Some(super::Conn::Open(c)) => *c,
         other => panic!("the whole request is open on the table: {other:?}"),
     };
     assert!(table.slab.get(id, conn).is_ok());
     drop(p);
     assert!(
-        !super::held_conns().keys().any(|(i, _)| *i == id),
+        streams_of(id).is_empty(),
         "a dropped instance's stream entries stayed on the connector's map"
     );
     assert!(
@@ -2649,7 +2665,7 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     let stream = whole_request(&p, 0);
     assert!(
         matches!(
-            super::held_conns().get(&(id, stream)).map(|s| &s.conn),
+            streams_of(id).get(&stream).map(|s| &s.conn),
             Some(super::Conn::Open(_))
         ),
         "the whole request is open on the table"
@@ -2686,6 +2702,65 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     );
     let t = minted.expect("a ticket");
     d.recycle(t);
+}
+
+/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
+/// a write past what the caller stated shows.
+#[repr(C, align(8))]
+struct LentOut([u8; 96]);
+
+impl LentOut {
+    fn stating(size: u32) -> Self {
+        let mut b = [0xAA_u8; 96];
+        b[..4].copy_from_slice(&size.to_ne_bytes());
+        Self(b)
+    }
+
+    fn out(&mut self) -> *mut busbar_contract::abi::host::service::ServiceOut {
+        self.0.as_mut_ptr().cast()
+    }
+
+    /// Whether every byte from `from` on is still the caller's.
+    fn untouched_from(&self, from: usize) -> bool {
+        self.0[from..].iter().all(|b| *b == 0xAA)
+    }
+}
+
+/// RED (Q128 kernel-scope MEDIUM, the connector service frame): the host writes a caller's `out` only as far
+/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
+/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
+/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// `ServiceOut` over whatever the caller lent.
+#[test]
+fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_stated() {
+    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
+    let mut lent = LentOut::stating(32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
+    assert!(lent.untouched_from(4), "a short `out` was written");
+    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
+    assert!(
+        lent.untouched_from(SERVICE_OUT_V1),
+        "the host wrote past the `out` stated"
+    );
+    assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
 
 /// THE AUTH CALL SIGNS THE AUTHORITY THE SOCKET DIALS. A member binding is asked for its fields over

@@ -536,8 +536,6 @@ pub struct LaneSpec {
     context_max: Option<usize>,
     path: Option<String>,
     path_base: Option<String>,
-    organization: Option<String>,
-    project: Option<String>,
     auth: Option<String>,
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
@@ -573,8 +571,6 @@ impl LaneSpec {
             context_max: None,
             path: None,
             path_base: None,
-            organization: None,
-            project: None,
             auth: None,
             health: None,
             default_max_tokens: None,
@@ -591,12 +587,6 @@ impl LaneSpec {
             client_fault: 0,
             sem: None,
         }
-    }
-    /// The provider's configured tenant (`organization`, `project`).
-    pub fn tenant(mut self, organization: &str, project: &str) -> Self {
-        self.organization = Some(organization.into());
-        self.project = Some(project.into());
-        self
     }
     pub fn provider(mut self, p: &str) -> Self {
         self.provider = p.into();
@@ -688,9 +678,9 @@ impl LaneSpec {
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
             None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
-            Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
+            Some(style) => {
+                busbar_kernel::plane_driver::route_input::AuthStyleInput::Named(style.to_string())
+            }
         };
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
@@ -705,8 +695,6 @@ impl LaneSpec {
             url_userinfo: busbar_kernel::bound_credential::UrlUserinfo::of(&self.base_url),
             path: self.path.clone(),
             path_base: self.path_base.clone(),
-            organization: self.organization.clone(),
-            project: self.project.clone(),
             upstream_model: self.upstream_model.clone(),
             api_key: self.api_key.clone(),
             auth_style,
@@ -2230,6 +2218,9 @@ pub mod durable_store;
 /// re-exported at the `test_support` root below, so `busbar_kernel::test_support::TestAppSeam`
 /// resolves exactly where the fixture it is a view onto does.
 pub mod seam;
+
+/// A test binary's plane registrations, published as the process plane list.
+pub mod planes;
 pub use seam::{
     build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
 };
@@ -2396,6 +2387,9 @@ pub fn fetch_stand_in(
 /// THE PLUGIN-ROWS DOUBLE a test build reads its registry through, and its registry build
 /// ([`rows::registry_stand_in`], `preflight::RootInstall`'s `registry_build` in a test build).
 pub mod rows;
+
+/// A test binary's protocol registrations, published as the process protocol registry.
+pub mod protocols;
 pub use rows::registry_stand_in;
 
 /// THE STAND-IN STORE AXIS: the store double's door opened in process.
