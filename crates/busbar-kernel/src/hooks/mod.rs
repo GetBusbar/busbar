@@ -335,7 +335,7 @@ impl HookEnv {
 /// ZERO-COST default path: `route: weighted` (the default / absent case) AND the explicit
 /// `route: native, policy.name: weighted` form both resolve to `None`, because `weighted` Abstains
 /// and thus converges with today's inline SWRR — so the hot path constructs no policy object, builds
-/// no projections, and takes the unchanged `select_weighted_in` branch.
+/// no projections, and takes the weighted floor.
 ///
 /// This resolves the BASE only. A pool's GATES are resolved separately (`resolve_pool_gates`) and
 /// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
