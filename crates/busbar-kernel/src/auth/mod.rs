@@ -40,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
@@ -194,11 +188,12 @@ const AUTH_REPLAY: &str = "auth-replay";
 /// THE REPLAY CLAIM (THE DESIGN §6, Inbound verify: "a verified identity may carry a replay_key and
 /// replay_ttl_secs, and the verify caller claims the record ... already TAKEN is 401"): the identity
 /// `provider` verified is admitted only by the call that first claims `<provider>/<key>` in
-/// governance's record store, the claim standing `ttl_secs` from `now`. An empty key asks for no
-/// claim. FAIL-CLOSED: a claim already taken, a store that cannot answer, and no governance to
-/// claim in each refuse — a ledger that cannot say whether the message was seen must not be read
-/// as saying it was not. A sender's retry inside the window is a replay, refused alike.
-fn replay_claimed(
+/// governance's record store, the claim standing `ttl_secs` from `now`, awaited through the store's
+/// v3 calls. An empty key asks for no claim. FAIL-CLOSED: a claim already taken, a store that
+/// cannot answer, and no governance store to claim in each refuse — a ledger that cannot say
+/// whether the message was seen must not be read as saying it was not. A sender's retry inside the
+/// window is a replay, refused alike.
+async fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
     provider: &str,
     replay: &Replay,
@@ -207,13 +202,14 @@ fn replay_claimed(
     if replay.key.is_empty() {
         return true;
     }
-    let Some(gov) = gov else {
+    let Some(calls) = gov.and_then(crate::governance::GovState::store_calls) else {
         return false;
     };
     let token = format!("{provider}/{}", replay.key);
     let expires_at = now.saturating_add(replay.ttl_secs);
-    gov.store()
+    calls
         .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
+        .await
         .unwrap_or(false)
 }
 
@@ -222,15 +218,16 @@ fn replay_claimed(
 /// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
 /// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
 /// identity asks for none, or when this call won the claim.
-fn signed_replay_claimed(
+async fn signed_replay_claimed(
     gov: Option<&crate::governance::GovState>,
     reader: &str,
     id: &busbar_contract::auth_calls::VerifiedIdentity,
     now: u64,
 ) -> bool {
-    id.replay
-        .as_deref()
-        .is_none_or(|replay| replay_claimed(gov, reader, replay, now))
+    match id.replay.as_deref() {
+        None => true,
+        Some(replay) => replay_claimed(gov, reader, replay, now).await,
+    }
 }
 
 /// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
@@ -704,6 +701,8 @@ impl AdminAuthChain {
                     let name = entry.name.as_str();
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -827,6 +826,8 @@ impl AuthMiddleware {
                     // dangling reference.
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -1085,7 +1086,7 @@ impl AuthMiddleware {
                 AuthVerdict::Identify(principal) => {
                     // The replay claim travels with the verdict and is won here, before admitting.
                     if let Some(replay) = judged.replay.as_deref() {
-                        if !replay_claimed(gov, &entry.provider, replay, now) {
+                        if !replay_claimed(gov, &entry.provider, replay, now).await {
                             return Ok(ChainVerdict::Denied);
                         }
                     }
@@ -1341,12 +1342,12 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
 /// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
 /// signals available for shaping a native 401 envelope.
 ///
-/// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
+/// A THIN delegation to the CANONICAL `crate::plane_driver::dispatch::PlaneDispatch::ingress_of`, which is the ONE
 /// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
 /// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
 /// in one dialect and another handler shapes it in a different dialect — or where auth answers a
 /// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
-fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
+fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::dispatch::Ingress {
     app.planes.ingress_of(path)
 }
 
@@ -1361,7 +1362,7 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
 /// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
 /// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
 fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+    crate::ingress::protocols::vendor_auth_failure_message(proto)
 }
 
 /// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
@@ -1381,12 +1382,18 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// Not a disposition/breaker match, so an unknown future proto falls back to the standard
 /// 401 authentication_error, keeping the request path panic-free.
 ///
-/// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
-/// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
-// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
-// historical path are unchanged.
-pub use busbar_kernel::proxy::auth_failure_status_and_kind;
+/// Read from the protocol registry's `ProtocolDecl::auth_failure_status_and_kind`.
+pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
+    crate::ingress::protocols::decl_for(proto)
+        .and_then(|d| {
+            let (status, kind) = d.auth_failure_status_and_kind;
+            Some((StatusCode::from_u16(status).ok()?, kind))
+        })
+        .unwrap_or((
+            StatusCode::UNAUTHORIZED,
+            busbar_contract::protocol::KIND_AUTHENTICATION,
+        ))
+}
 
 /// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
@@ -1812,17 +1819,45 @@ async fn judge_admin_door(
     claim: bool,
     strips: &mut Vec<Strip>,
 ) -> AdminDoor {
-    let mut carried = AdminCarried::default();
-    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
-    strips.append(&mut carried.strips);
+    let (verdict, cap, replay) =
+        judge_admin_chain(app, method, target, headers, probe, strips).await;
     if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
-        (claim, &verdict, &carried.replay)
+        (claim, &verdict, &replay)
     {
         let now = busbar_kernel::store::now();
-        if !replay_claimed(app.governance.as_deref(), provider, replay, now) {
+        if !replay_claimed(app.governance.as_deref(), provider, replay, now).await {
             return AdminDoor::Denied;
         }
     }
+    admin_door_of(app, verdict, cap)
+}
+
+/// The admin chain's verdict of one request, its scope cap, and the replay claim its identity asks
+/// for (unclaimed). The lines every module named for the transport are added to `strips`.
+async fn judge_admin_chain(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    probe: bool,
+    strips: &mut Vec<Strip>,
+) -> (
+    ChainVerdict,
+    Option<busbar_contract::authz::Scope>,
+    Option<(String, Box<Replay>)>,
+) {
+    let mut carried = AdminCarried::default();
+    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
+    strips.append(&mut carried.strips);
+    (verdict, cap, carried.replay)
+}
+
+/// The admin door a chain verdict opens, under its scope `cap`.
+fn admin_door_of(
+    app: &App,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
     match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
@@ -1863,21 +1898,38 @@ fn probe_admin_door(
 ) -> AdminDoor {
     // The lines a module names are the transport's; a probe hands no request on.
     let mut strips = Vec::new();
-    let judged = std::pin::pin!(judge_admin_door(
+    let judged = std::pin::pin!(judge_admin_chain(
         app,
         method,
         target,
         headers,
         true,
-        claim,
         &mut strips
     ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(judged, &mut cx) {
-        std::task::Poll::Ready(door) => door,
+    let (verdict, cap, replay) = match std::future::Future::poll(judged, &mut cx) {
+        std::task::Poll::Ready(judged) => judged,
         // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
-        std::task::Poll::Pending => AdminDoor::Denied,
+        std::task::Poll::Pending => return AdminDoor::Denied,
+    };
+    if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
+        (claim, &verdict, &replay)
+    {
+        // THE PROBE'S ONE WAIT: the replay claim is a store call, awaited on this caller's own
+        // thread, as the synchronous caller asked by calling synchronously (the root's admin
+        // units answer on the blocking pool, never on a runtime worker or a dispatcher worker).
+        let now = busbar_kernel::store::now();
+        let claimed = futures::executor::block_on(replay_claimed(
+            app.governance.as_deref(),
+            provider,
+            replay,
+            now,
+        ));
+        if !claimed {
+            return AdminDoor::Denied;
+        }
     }
+    admin_door_of(app, verdict, cap)
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
@@ -2263,7 +2315,7 @@ pub(crate) async fn auth_middleware(
     // token as a ref. Handed on with the request so the host strips all of them before any plane
     // sees it (`caller_credential`).
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller = client_token.clone().map(CallerCredential);
+    consumed.caller = client_token.as_deref().map(CallerCredential::verified);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE
@@ -2483,8 +2535,11 @@ pub(crate) async fn auth_middleware(
             // reachable from attacker-controlled headers alone, so the cap is enforced here, not
             // assumed of the layer stack.
             let (parts, body) = req.into_parts();
-            let Ok(body_bytes) =
-                axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
+            let Ok(body_bytes) = axum::body::to_bytes(
+                body,
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            )
+            .await
             else {
                 return Err(unauthorized_response(&app, &path, door.as_ref()));
             };
@@ -2511,6 +2566,7 @@ pub(crate) async fn auth_middleware(
                     // this verifier; a claim already taken is the same opaque refusal.
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
+                            .await
                     {
                         return Err(unauthorized_response(&app, &path, door.as_ref()));
                     }
@@ -2535,7 +2591,40 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
+    // THE TICKET ARM (row 132, the ARCHITECT ticket ruling): on a door route that takes tickets,
+    // a credential carrying its plane's declared issued-id prefix is a ticket, which `keys` admits
+    // ONCE as the key it was minted for. The gate spends it here and hands its record on with the
+    // request; any ticket that is not a standing, unspent one of this deployment is the door's
+    // `401`, the same as a bad key. Only where the chain names `keys`: a ticket is a busbar token.
+    let ticketed = match (
+        signed.is_none(),
+        core_routes.door_ticket(&path, req.method()),
+        client_token.as_deref(),
+    ) {
+        (true, Some(prefix), Some(token))
+            if app.auth.keys_in_chain && token.starts_with(prefix) =>
+        {
+            let admitted = app
+                .governance
+                .as_deref()
+                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            match admitted {
+                Some((key, record)) => {
+                    consumed.ticket = Some(record);
+                    Some(ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    })
+                }
+                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+            }
+        }
+        _ => None,
+    };
     let verdict = if let Some(verdict) = signed {
+        verdict
+    } else if let Some(verdict) = ticketed {
         verdict
     } else {
         // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The

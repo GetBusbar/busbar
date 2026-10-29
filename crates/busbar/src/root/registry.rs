@@ -10,7 +10,7 @@
 //! Stated first, because the name "claim overlap check" promises more than this file can keep. The
 //! claims compared here are each plane's DECLARED claims — `PlaneMeta::CLAIMS`, the pure plane
 //! crate's own compile-time words. The paths a request is actually routed on are a different
-//! object: each installed `busbar_kernel::plane::registry::PlaneDecl`'s `claims` hook, evaluated over
+//! object: each installed `busbar_kernel::plane_driver::registry::PlaneDecl`'s `claims` hook, evaluated over
 //! the plane's runtime object at app build, is what `build_dispatch` mounts, and nothing here reads
 //! it. So a clean seal says the declarations do not tie; it does not say two planes' LIVE, configured
 //! routes cannot collide. That second check belongs where the live claims are folded

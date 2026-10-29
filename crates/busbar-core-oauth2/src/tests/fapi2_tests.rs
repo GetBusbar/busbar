@@ -66,8 +66,6 @@ fn now() -> u64 {
         .as_secs()
 }
 
-// ── the client's keys ────────────────────────────────────────────────────────────────────────────
-
 /// One ES256 key: a client's `private_key_jwt` key, or a DPoP key. Signed with `ring`, which the
 /// server under test verifies with as well — but the JOSE framing is assembled here by hand from
 /// the RFCs, so a server that misread RFC 7515 would not be agreeing with itself.
@@ -289,8 +287,6 @@ impl RsaKey {
         )
     }
 }
-
-// ── the subject ──────────────────────────────────────────────────────────────────────────────────
 
 /// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key,
 /// both PROVISIONED BY CONFIG (`oauth_as.clients:`), which is how a deployment gets one: RFC 7591
@@ -520,8 +516,6 @@ async fn metadata(s: &Subject) -> Value {
     assert_eq!(resp.status(), 200);
     resp.json().await.expect("JSON metadata")
 }
-
-// ── the tests ────────────────────────────────────────────────────────────────────────────────────
 
 /// RFC 8414 s2 as the profile reads it: the document names the PAR endpoint and makes it mandatory
 /// (RFC 9126 s5), names the DPoP algorithms (RFC 9449 s5.1), offers `private_key_jwt` with the
@@ -1032,8 +1026,6 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     .await;
 }
 
-// ── the protected resource (RFC 9449 s7) ─────────────────────────────────────────────────────────
-
 /// RFC 9449 s4.2 `ath`: base64url SHA-256 of the access token.
 fn ath(token: &str) -> String {
     B64.encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
@@ -1187,7 +1179,52 @@ async fn the_resource_refuses_what_rfc_9449_forbids() {
     );
 }
 
-// ── PS256: the profile's RSA algorithm (FAPI2 s5.4.1) ────────────────────────────────────────────
+/// RFC 6749 s4.1.2 / RFC 9700 s4.1.1: an authorization code presented twice is an attack, and the
+/// tokens the first redemption minted SHOULD be revoked. `oauth-as` revokes them at the AS; busbar's
+/// OWN resource must then stop admitting them too, rather than judging the token's signature alone
+/// until it expires. The OIDF suite's `attempt-reuse-authorization-code-after-one-second` checks
+/// exactly this (its WARNING `EnsureHttpStatusCodeIs4xx` when the resource still answers 200).
+#[tokio::test]
+async fn a_token_revoked_by_code_reuse_no_longer_reaches_the_resource() {
+    let s = serve(true).await;
+    let dpop = Key::new("dpop");
+    let code = code_for(&s, &dpop).await;
+    // Each redemption is a fresh, valid request (its own client assertion and DPoP proof): only the
+    // code is reused.
+    let token_url = format!("{}/token", s.origin);
+    let (status, first) = post(
+        &s,
+        "/token",
+        &token_form(&s, &code),
+        Some(dpop.proof("POST", &token_url)),
+    )
+    .await;
+    assert_eq!(status, 200, "{first}");
+    let token = first["access_token"]
+        .as_str()
+        .expect("access_token")
+        .to_string();
+    let htu = format!("{}/stats", s.origin);
+    let proof = || dpop.resource_proof("GET", &htu, Some(&ath(&token)), now());
+    assert_eq!(
+        resource(&s, &format!("DPoP {token}"), &[proof()]).await,
+        200,
+        "the first redemption's token is admitted"
+    );
+    let (status, second) = post(
+        &s,
+        "/token",
+        &token_form(&s, &code),
+        Some(dpop.proof("POST", &token_url)),
+    )
+    .await;
+    assert_eq!(status, 400, "a reused code is refused: {second}");
+    assert_eq!(
+        resource(&s, &format!("DPoP {token}"), &[proof()]).await,
+        401,
+        "the token the reused code minted is revoked at busbar's resource too"
+    );
+}
 
 /// A client provisioned with an RSA key runs the whole profile on PS256 — its `private_key_jwt`
 /// assertions at PAR and the token endpoint, and its DPoP proofs at the token endpoint and at

@@ -947,7 +947,7 @@ pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) 
     }
     // Every installed plane's DECLARED billable classes and fee units (`PlaneDeclaration`): the
     // classes a plane may report are the ones it declares, linked or dropped in.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         for class in decl.billable_classes {
             let _ = registration.key(class.class);
         }
@@ -1851,19 +1851,6 @@ impl ProductionUnits {
             Arc::clone(&durability),
             kernel.durability_token(),
         )));
-        // Item 271: an idempotency claim the admin plane's replay cache takes goes on this SAME
-        // journal — on a node with a data directory only. A memory-buffered node keeps the
-        // previous release's shape: nothing extra is shipped to its store.
-        let on_disk = durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .on_disk();
-        if on_disk {
-            units.admin.claims = Some(Arc::new(crate::root::units_admin::RootClaimJournal::new(
-                Arc::clone(&durability),
-                kernel.durability_token(),
-            )));
-        }
         units.admin.audit = Some(Arc::new(crate::root::units_admin::NodeAudit::new(
             durability,
         )));

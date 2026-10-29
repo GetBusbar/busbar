@@ -24,6 +24,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SCOPE_SEPARATOR};
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hooks::TransformOutcome;
 
@@ -31,7 +32,7 @@ use super::super::{DriverSteps, FarEnd, PlaneUnits};
 use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
-use busbar_kernel_audit::record::HookApplied;
+use busbar_kernel_audit::record::{HookApplied, HookHead};
 
 /// The order a plane's request-stage hooks run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -152,6 +153,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().map_or(0, |d| d.route),
             )
         };
+        // A UNIT ROUTED BY SCOPE recorded its plane's candidate list, never an entry: its entry is
+        // the one the kernel's Verify resolved the scope to (`None` = none resolved yet).
+        let scoped = matches!(route, ROUTE_SCOPE | ROUTE_SCOPE_LOCAL);
+        let resolved = if scoped {
+            self.steps.scope_entry()
+        } else {
+            None
+        };
         let mut view: Projection = match first {
             Ok(view) => view,
             // The plane answered FAULT to the unit's first `project`: where the entry the kernel
@@ -162,7 +171,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             Err(Stopped::Unparseable { marked }) => {
                 // The entry the kernel recorded at decode; a unit that recorded none, or one that
                 // is not UTF-8, binds the empty entry, as `bound_entry` reads an unnamed one.
-                let entry = std::str::from_utf8(recorded.as_deref().unwrap_or_default())
+                // A scope's unit binds the entry its scope resolved to (its recorded bytes are the
+                // candidate list, no entry's name).
+                let named = if scoped {
+                    resolved.as_deref()
+                } else {
+                    recorded.as_deref()
+                };
+                let entry = std::str::from_utf8(named.unwrap_or_default())
                     .unwrap_or_default()
                     .to_string();
                 let hooks = binder.bind_gated(&entry, principal.as_deref());
@@ -190,7 +206,12 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
         let holds = |pool: &[u8], member: &str| self.steps.pool_holds(pool, member);
-        let Some(entry) = bound_entry(recorded.as_deref(), route, &view, holds)? else {
+        let bound = if scoped {
+            scoped_entry(recorded.as_deref(), resolved.as_deref(), &view)?
+        } else {
+            bound_entry(recorded.as_deref(), route, &view, holds)?
+        };
+        let Some(entry) = bound else {
             return Ok(());
         };
         let entry = entry.to_string();
@@ -224,20 +245,36 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
                     let next = match self.project(Some(&bytes), true) {
-                        Ok(next) => next,
-                        // A FAULT project: the shared 500, never the hook's `on_error`.
-                        Err(fault @ Stopped::Veto(_)) => return Err(fault),
-                        Err(_) => {
-                            // The plane refused the rewrite: the hook's failure, by its
-                            // `on_error`.
-                            if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
-                                return Err(veto_by(status, message, hook.name()));
+                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,
+                        // The rewrite does not apply to the unit, in the plane's own word (READY,
+                        // no rewritten body, `PROJECT_REWRITE_NOT_APPLICABLE`): its operation has
+                        // no conversation to frame one into. The audited pass-through, held to
+                        // the bound entry like any re-projection: the view and the body stand as
+                        // they were, the hook is on record as a pass.
+                        Ok(next) if next.rewrite_not_applicable => {
+                            if next.pool != entry && !(scoped && next.pool.is_empty()) {
+                                return Err(Stopped::Unreadable);
                             }
+                            rewrite_not_applicable(hook.name(), ran);
+                            tracing::warn!(
+                                hook = hook.name(),
+                                entry = %view.pool,
+                                "rewrite not applicable to this request; forwarded unmodified"
+                            );
                             continue;
                         }
+                        // A FAULT project: the shared 500, never the hook's `on_error`.
+                        Err(fault @ Stopped::Veto(_)) => return Err(fault),
+                        // A rewrite naming messages the plane answered with no rewritten body and
+                        // no word that it does not apply, or refused: not applied, refused.
+                        Ok(_) | Err(_) => {
+                            let (status, message) = refused_rewrite(&**hook, &view.pool, ran);
+                            return Err(veto_by(status, message, hook.name()));
+                        }
                     };
-                    // The re-projection is held to the same bound entry.
-                    if next.pool != entry {
+                    // The re-projection is held to the same bound entry (a scope's unit's
+                    // projection may still name none: its entry is the kernel's resolution).
+                    if next.pool != entry && !(scoped && next.pool.is_empty()) {
                         return Err(Stopped::Unreadable);
                     }
                     if let Some(body) = &next.rewritten {
@@ -353,38 +390,119 @@ fn bound_entry<'v>(
         .map_err(|_| Stopped::Unreadable)
 }
 
-/// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the
-/// rewriting hook's failure, never the unit's, answered by that hook's own `on_error` (coordinator
-/// ruling, row 159). A load-bearing hook (`on_error: reject`) refuses the unit with the refusal a
-/// failed call of the same hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words
-/// (`Some`); any other disposition proceeds with the body and view the unit had before that rewrite
-/// (`None`), as 1.5.5 left a request it could not rewrite unmodified. Never a silent switch to what
-/// the rewrite named.
+/// THE ENTRY A GATE-FIRST UNIT ROUTED BY SCOPE (`ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`) IS BOUND OVER:
+/// the ONE entry the kernel's Verify resolved its scope to (`resolved`), never an entry the
+/// plane's projection names. Its `arrive` recorded no entry: `candidates` is the plane's CANDIDATE
+/// LIST joined by `ROUTE_SCOPE_SEPARATOR` (`None` or empty = every entry is a candidate), and the
+/// plane's `project` cannot know which one the scope resolves to, so it names none. The binding
+/// guarantee of [`bound_entry`] holds the same way:
+///
+/// - the resolved entry must be one the recorded candidate list holds (a whole member, never a
+///   widening of the list); any other refuses the unit;
+/// - a projection may name no entry, or the resolved one; naming any other refuses the unit, so
+///   the plane's later word never trades the resolved entry's gates for another's;
+/// - a scope that resolved no entry (zero or several reach) binds nothing: the door refuses that
+///   unit `no_destination` before anything is admitted (`abi::plane::ROUTE_SCOPE`), so no hop runs
+///   ungated; a projection naming an entry for it is still refused;
+/// - a projection that names no entry and states no body binds nothing, as for any route.
+fn scoped_entry<'v>(
+    candidates: Option<&[u8]>,
+    resolved: Option<&'v [u8]>,
+    view: &Projection,
+) -> Result<Option<&'v str>, Stopped> {
+    if view.pool.is_empty() && view.projected.is_none() {
+        return Ok(None);
+    }
+    let Some(resolved) = resolved else {
+        if view.pool.is_empty() {
+            return Ok(None);
+        }
+        return Err(Stopped::Unreadable);
+    };
+    let entry = std::str::from_utf8(resolved).map_err(|_| Stopped::Unreadable)?;
+    let candidates = candidates.unwrap_or_default();
+    if !candidates.is_empty() {
+        let candidates = std::str::from_utf8(candidates).map_err(|_| Stopped::Unreadable)?;
+        if !candidates.split(ROUTE_SCOPE_SEPARATOR).any(|c| c == entry) {
+            return Err(Stopped::Unreadable);
+        }
+    }
+    if entry.is_empty() || (!view.pool.is_empty() && view.pool != entry) {
+        return Err(Stopped::Unreadable);
+    }
+    Ok(Some(entry))
+}
+
+/// A REWRITE THE PLANE DID NOT APPLY (it refused the rewrite, or answered with no rewritten body
+/// and no [`PROJECT_REWRITE_NOT_APPLICABLE`]: one naming a model other than the routed one, a body
+/// the splice cannot place it in, a rewrite it cannot read): THE REQUEST IS REFUSED, never
+/// forwarded as the caller sent it. A rewrite the plane says does not apply to the unit (the mark
+/// set: a dialect or operation with no conversation to frame it into) is not this: it is the
+/// audited pass-through, [`rewrite_not_applicable`]. A rewrite hook rewrites to redact, compress
+/// or police; relaying the un-rewritten body upstream is the fail-open the hook exists to prevent,
+/// whatever its `on_error` says (that answers the hook's OWN failure to answer, not busbar's
+/// failure to apply what it answered).
+///
+/// A load-bearing hook (`on_error: reject`) is refused with the refusal a failed call of the same
+/// hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words; every other hook with
+/// [`PROJECT_FAULT_STATUS`] and 1.5.5's own words for this case, [`PROJECT_FAULT_MESSAGE`]. The
+/// refusal is logged at error naming the hook and the entry, and the hook's entry in the unit's
+/// record (its "hooks applied") is rewritten to a failed veto ([`mark_unapplied`]).
 ///
 /// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+/// [`PROJECT_FAULT_STATUS`]: busbar_contract::abi::plane::PROJECT_FAULT_STATUS
+/// [`PROJECT_FAULT_MESSAGE`]: busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
 pub(super) fn refused_rewrite(
     hook: &dyn busbar_contract::hooks::RoutingPolicy,
     entry: &str,
-) -> Option<(u16, String)> {
+    ran: &mut [HookApplied],
+) -> (u16, String) {
     use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
-    if hook.refuses_failed_rewrite() {
-        tracing::warn!(
-            hook = hook.name(),
-            entry = %entry,
-            "the plane refused a rewrite hook's rewrite and the hook is declared load-bearing \
-             (on_error: reject); refusing the request"
-        );
-        return Some(rewrite_refusal(
-            REQUIRED_HOOK_UNAVAILABLE_STATUS,
-            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-        ));
-    }
-    tracing::warn!(
+    let load_bearing = hook.refuses_failed_rewrite();
+    tracing::error!(
         hook = hook.name(),
         entry = %entry,
-        "the plane refused a rewrite hook's rewrite; proceeding with the request unmodified"
+        load_bearing,
+        "a rewrite hook's rewrite could not be applied to the request; refusing the request \
+         rather than forwarding the body un-rewritten"
     );
-    None
+    mark_unapplied(hook.name(), ran);
+    if load_bearing {
+        return rewrite_refusal(
+            REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        );
+    }
+    (
+        busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE.to_string(),
+    )
+}
+
+/// A REWRITE THAT DOES NOT APPLY TO THE UNIT, in the plane's own word
+/// ([`PROJECT_REWRITE_NOT_APPLICABLE`] on a READY `project` with no rewritten body: the unit's
+/// operation has no conversation to frame one into): the audited pass-through. The unit goes on
+/// with its view and body as they stood; the hook's entry in the unit's record, pushed as a rewrite
+/// when it answered, is rewritten to what happened: a pass that did not fail. The caller warns
+/// naming the hook and the entry. Never inferred from a missing body: without the mark, an
+/// unapplied rewrite is [`refused_rewrite`].
+///
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+pub(super) fn rewrite_not_applicable(hook: &str, ran: &mut [HookApplied]) {
+    if let Some(last) = ran.iter_mut().rev().find(|h| h.hook == hook) {
+        last.head = HookHead::Pass;
+        last.failed = false;
+    }
+}
+
+/// The hook's entry in the unit's record, pushed as a rewrite when it answered, rewritten to what
+/// happened: a failed veto.
+fn mark_unapplied(hook: &str, ran: &mut [HookApplied]) {
+    if let Some(last) = ran.iter_mut().rev().find(|h| h.hook == hook) {
+        last.head = HookHead::Veto;
+        last.failed = true;
+    }
 }
 
 /// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook

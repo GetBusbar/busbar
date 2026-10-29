@@ -229,7 +229,6 @@ pub mod governance;
 pub mod handlers;
 pub mod hooks;
 pub mod host_chains;
-pub mod host_claims;
 pub mod host_disk;
 pub mod host_records;
 pub mod host_units;
@@ -237,8 +236,8 @@ pub mod host_verify;
 pub mod host_work;
 pub mod ingress;
 pub mod ir;
-// The host's depth-guarded JSON parse/serialize seam (sonic-rs, MAX_JSON_DEPTH = 128). The LLM plane
-// keeps its own copy of the same seam (#83a O6); both are held to one shared fixture of verdicts.
+// The host's depth-guarded JSON parse/serialize seam (sonic-rs; the depth floor is the contract's
+// `spans::exceeds_max_depth`, 128).
 pub mod host_services;
 pub mod json;
 pub mod limits;
@@ -269,7 +268,6 @@ mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
 pub mod plugin_routes;
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
@@ -278,8 +276,6 @@ pub mod plugin_routes;
 // Relocated byte-identically out of `busbar-substrate-values`, whose module is DELETED rather than
 // kept as a re-export: one type, one home.
 pub mod profile;
-pub mod proto;
-pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
@@ -346,9 +342,6 @@ pub use vocabulary::{Registration, MAX_VOCABULARY};
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
-#[cfg(test)]
-#[path = "tests/license_tests.rs"]
-mod license_header_tests;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;

@@ -54,6 +54,34 @@ pub fn double_operator_carriers() -> Vec<String> {
         .to_vec()
 }
 
+/// THE DOUBLE'S DECLARED OUTBOUND STYLES: what a test binary's stand-in axis answers a provider's
+/// `auth:` against (a test binary links no auth plugin), each with the bits the linked plugin
+/// serving it states, ranked as they rank them: the header styles, the jwt-bearer grant (its
+/// endpoint in its credential), the client-credentials grant (its endpoint the entry's
+/// `token_url`), and one unranked word no release named that states the `token_url` bit, as a
+/// dropped-in style would. Test data, never shipped: the shipped words and bits are the plugins'
+/// Statements', proven by the composition root's tests, which link the real plugins.
+#[must_use]
+pub fn double_outbound_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    use busbar_contract::abi::auth::{
+        ranked, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL,
+    };
+    let style = |name: &str, flags: u32| busbar_contract::auth_calls::DeclaredStyle {
+        name: name.to_string(),
+        flags,
+    };
+    busbar_contract::auth_calls::listed_styles([
+        style("bearer", STYLE_CALLER_CREDENTIAL | ranked(1)),
+        style("api-key", STYLE_CALLER_CREDENTIAL | ranked(2)),
+        style("x-double-mint", STYLE_ENDPOINT_TOKEN_URL),
+        style("jwt-bearer", STYLE_ENDPOINT_FROM_CREDENTIAL | ranked(3)),
+        style(
+            "oauth-client-credentials",
+            STYLE_ENDPOINT_TOKEN_URL | ranked(4),
+        ),
+    ])
+}
+
 /// The double's axis: answers no inbound module, serves every outbound style.
 #[must_use]
 pub fn axis() -> Arc<dyn AuthAxis> {
@@ -116,11 +144,11 @@ struct LinkedAuthRow {
 
 impl LinkedAuthRow {
     /// The build's table entry `(key, canonical, door)`: its key, its canonical name and the former
-    /// names the root legacy table gives its key (the loader's `Manifest::answers_to` over a linked
+    /// names the root migration table gives its key (the loader's `Manifest::answers_to` over a linked
     /// row).
     fn of_table(row: &LinkedAuth) -> Self {
         let mut words = vec![row.0.to_string(), row.1.to_string()];
-        words.extend(crate::config::legacy::former_names(row.0));
+        words.extend(crate::config::migration_table::former_names(row.0));
         Self {
             key: row.0.to_string(),
             words,
@@ -305,6 +333,10 @@ impl AuthAxis for StandIn {
     ) -> Result<Option<OutboundServing>, String> {
         DoubleAxis.serving(style, settings)
     }
+
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        double_outbound_styles()
+    }
 }
 
 struct DoubleAxis;
@@ -345,6 +377,10 @@ impl AuthAxis for DoubleAxis {
             flags: busbar_contract::abi::auth::STYLE_CALLER_CREDENTIAL,
             points: busbar_contract::abi::auth::POINT_HEAD,
         }))
+    }
+
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        double_outbound_styles()
     }
 }
 

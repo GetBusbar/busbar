@@ -61,9 +61,6 @@ pub mod test_support;
 pub mod verb;
 pub mod verbs;
 pub mod versions;
-// The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
-#[cfg(any(test, feature = "test-support"))]
-pub mod witness;
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError};
@@ -71,7 +68,7 @@ pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use verb::{
     verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS, READ_ONLY_NEW_VERBS,
+    NEW_VERBS,
 };
 pub use verbs::{required_scope, Verbs};
 
@@ -163,7 +160,7 @@ pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
 #[cfg(test)]
 pub(crate) fn linked_protocol() -> &'static str {
     ensure_seam();
-    busbar_kernel::proto::known_protocols()
+    busbar_kernel::ingress::protocols::known_protocols()
         .first()
         .copied()
         .expect("this test binary registers a codec protocol")

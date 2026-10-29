@@ -175,6 +175,15 @@ fn locate_answers_an_alpn_offer_the_connector_can_trust() {
         Ok(()),
         "short: re-call with 64"
     );
+    // Whether the framer's head states its body's length: a flag, 0 or 1.
+    let mut o: LocateOut = z();
+    o.states_length = 1;
+    assert_eq!(check_locate(Ready, &o, 8, 8, 16, &[], 32), Ok(()));
+    o.states_length = 2;
+    assert_eq!(
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
+        f(Rule::UnknownCode, "locate.states_length")
+    );
     assert_eq!(check_agreed(offer, b"h2"), Ok(()));
     assert_eq!(check_agreed(offer, b"http/1.1"), Ok(()));
     assert_eq!(check_agreed(offer, b""), Ok(()));
@@ -677,11 +686,33 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     t.claim_rows_len = MAX_CLAIMS as usize + 1;
     assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claim_rows"));
     let mut t = tail();
-    t.facts = 4;
+    t.facts = 64;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
+    // RED: the retired signs-nothing-after-auth bit (1) is no fact a tail may state.
+    t.facts = 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
     let mut t = tail();
     t.framing = 2;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.framing"));
+}
+
+/// The ops a transport declares (accept, dial, detach, adopt) are facts its tail states; each is
+/// accepted alone and together, and a tail stating none declares no op (a zero declares nothing).
+#[test]
+fn a_tail_states_the_ops_it_declares() {
+    for op in [FACT_ACCEPTS, FACT_DIALS, FACT_DETACHES, FACT_ADOPTS] {
+        let mut t = tail();
+        t.facts = op;
+        assert_eq!(check_tail(&t), Ok(()), "op fact {op}");
+    }
+    let mut t = tail();
+    t.facts = FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS;
+    assert_eq!(check_tail(&t), Ok(()));
+    assert_eq!(
+        tail().facts & (FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS),
+        0,
+        "a zero declares no op"
+    );
 }
 
 fn claim() -> Claim {
@@ -1059,6 +1090,37 @@ fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
     );
 }
 
+/// THE OPENING BODY'S LENGTH ON AN EMIT: a length rides only with `body_len_known` `1`; a
+/// streamed body (and every other emit) states none; `body_len_known` is `0` or `1`.
+#[test]
+fn an_emit_states_a_body_length_only_when_it_is_known() {
+    let mut i: EmitIn = z();
+    assert_eq!(check_emit_body_len(&i), Ok(()), "no length stated");
+    i.body_len_known = 1;
+    assert_eq!(check_emit_body_len(&i), Ok(()), "an empty body, known");
+    i.body_len = 4096;
+    assert_eq!(check_emit_body_len(&i), Ok(()), "a whole body's length");
+    // RED: a length on an emit that states none (a streamed body).
+    i.body_len_known = 0;
+    assert_eq!(
+        check_emit_body_len(&i),
+        f(Rule::Contradiction, "emit.body_len")
+    );
+    // RED: `body_len_known` is a flag, `0` or `1` and nothing else.
+    i.body_len_known = 2;
+    assert_eq!(
+        check_emit_body_len(&i),
+        f(Rule::UnknownCode, "emit.body_len_known")
+    );
+    // RED: the padding is not a channel.
+    i.body_len_known = 1;
+    i._body_len_reserved = 1;
+    assert_eq!(
+        check_emit_body_len(&i),
+        f(Rule::UnknownCode, "emit._body_len_reserved")
+    );
+}
+
 fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
     FaultRow {
         claim,
@@ -1173,5 +1235,175 @@ fn the_offered_points_record_reads_or_refuses() {
     assert_eq!(
         check_offered_points(&record(&POINT_FRAME.to_le_bytes())),
         Err(fault(Rule::UnknownCode, "offered_points.unknown_flags"))
+    );
+}
+
+fn line(id: u32, points: u32, body_limit: u64) -> LineEntry {
+    LineEntry {
+        line: id,
+        points,
+        auth: crate::abi::host::service::AuthRef { id: 9, mac: 1 },
+        body_limit,
+        route: route(route::METHOD_GET, route::PATH_EXACT, "/v1"),
+    }
+}
+
+fn begin_with(side: u32, lines: &[LineEntry]) -> BeginIn {
+    let mut i: BeginIn = z();
+    i.side = side;
+    i.lines = lines.as_ptr();
+    i.lines_len = lines.len();
+    i
+}
+
+/// RED: a `begin`'s guest list, one break at a time: lines on the dial side, a count behind NULL,
+/// a repeated or `LINE_NONE` id, no handle, a bad point set, a `body_limit` that disagrees with
+/// the body point, a bad route. A `none` line (no points) and a body line with its limit pass.
+#[test]
+fn a_begin_line_table_is_checked() {
+    use crate::abi::host::service::{AuthRef, LINE_NONE};
+    // SAFETY (every `check_lines` below): each table is the test's own slice, live for the call.
+    let check = |i: &BeginIn| unsafe { check_lines(i) };
+    let good = [
+        line(1, 0, 0),
+        line(2, POINT_HEAD, 0),
+        line(3, POINT_HEAD_BODY, 1 << 20),
+        line(4, POINT_PEER, 0),
+    ];
+    assert_eq!(check(&begin_with(SIDE_ACCEPT, &good)), Ok(()));
+    assert_eq!(check(&begin_with(SIDE_ACCEPT_STREAM, &good)), Ok(()));
+    assert_eq!(check(&begin_with(SIDE_DIAL, &[])), Ok(()));
+    assert_eq!(
+        check(&begin_with(SIDE_DIAL, &good)),
+        f(Rule::Contradiction, "begin.lines")
+    );
+    let mut nul = begin_with(SIDE_ACCEPT, &[]);
+    nul.lines = null();
+    nul.lines_len = 1;
+    assert_eq!(check(&nul), f(Rule::NullWithCount, "begin.lines"));
+    let mut many = begin_with(SIDE_ACCEPT, &good);
+    many.lines_len = MAX_LINES as usize + 1;
+    assert_eq!(check(&many), f(Rule::OverMax, "begin.lines"));
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, 0, 0), line(1, 0, 0)])),
+        f(Rule::Contradiction, "line.line")
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(LINE_NONE, 0, 0)])),
+        f(Rule::Missing, "line.line")
+    );
+    let mut anonymous = line(1, POINT_HEAD, 0);
+    anonymous.auth = AuthRef::NONE;
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[anonymous])),
+        f(Rule::Missing, "line.auth")
+    );
+    assert_eq!(
+        check(&begin_with(
+            SIDE_ACCEPT,
+            &[line(1, POINT_HEAD | POINT_HEAD_BODY, 1)]
+        ))
+        .unwrap_err()
+        .rule,
+        Rule::Contradiction
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_FRAME, 0)]))
+            .unwrap_err()
+            .rule,
+        Rule::UnknownCode
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_HEAD_BODY, 0)])),
+        f(Rule::Contradiction, "line.body_limit")
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_HEAD, 64)])),
+        f(Rule::Contradiction, "line.body_limit")
+    );
+    let mut unrouted = line(1, POINT_HEAD, 0);
+    unrouted.route.methods = 0;
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[unrouted])),
+        f(Rule::Missing, "route.methods")
+    );
+}
+
+/// RED: a `begin`'s binding: on the dial side a valid point set with a handle exactly when it is
+/// not empty; on an accepting side neither.
+#[test]
+fn a_begin_binding_is_checked() {
+    use crate::abi::host::service::AuthRef;
+    let bound = AuthRef { id: 3, mac: 1 };
+    let mut i: BeginIn = z();
+    i.side = SIDE_DIAL;
+    assert_eq!(check_binding(&i), Ok(()), "a binding with no auth");
+    i.points = POINT_HEAD;
+    i.auth = bound;
+    assert_eq!(check_binding(&i), Ok(()));
+    i.points = POINT_HEAD_BODY;
+    assert_eq!(check_binding(&i), Ok(()));
+    i.auth = AuthRef::NONE;
+    assert_eq!(check_binding(&i), f(Rule::Contradiction, "begin.auth"));
+    i.points = 0;
+    i.auth = bound;
+    assert_eq!(check_binding(&i), f(Rule::Contradiction, "begin.auth"));
+    i.points = POINT_FRAME;
+    assert_eq!(check_binding(&i).unwrap_err().rule, Rule::UnknownCode);
+    for side in [SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut a: BeginIn = z();
+        a.side = side;
+        assert_eq!(check_binding(&a), Ok(()));
+        a.auth = bound;
+        assert_eq!(check_binding(&a), f(Rule::Contradiction, "begin.auth"));
+        a.auth = AuthRef::NONE;
+        a.points = POINT_HEAD;
+        assert_eq!(check_binding(&a), f(Rule::Contradiction, "begin.auth"));
+    }
+}
+
+/// RED: a `begin`'s scheme, on every side: an undeclared scheme (a zeroed `in`) is refused, never
+/// read as plain; a code above `SCHEME_SECURE` is unknown; plain and secure pass.
+#[test]
+fn a_begin_scheme_is_declared() {
+    use crate::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED};
+    use crate::abi::transport::check::check_begin_scheme;
+    for side in [SIDE_DIAL, SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut i: BeginIn = z();
+        i.side = side;
+        assert_eq!(i.scheme, SCHEME_UNDECLARED, "a zeroed begin declares none");
+        assert_eq!(check_begin_scheme(&i), f(Rule::Missing, "begin.scheme"));
+        i.scheme = SCHEME_SECURE + 1;
+        assert_eq!(check_begin_scheme(&i), f(Rule::UnknownCode, "begin.scheme"));
+        for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+            i.scheme = scheme;
+            assert_eq!(check_begin_scheme(&i), Ok(()));
+        }
+    }
+}
+
+/// /status row 192 B: a framer's stated agreed protocol is a 1-based position in the offer its
+/// listener made: `0` (not stated) always holds, every position in the offer holds, one past it is
+/// refused, and a dialled framing (an offer of none) states none.
+#[test]
+fn an_agreed_protocol_past_the_offer_is_refused() {
+    use crate::abi::transport::check::check_agreed_position;
+    assert_eq!(check_agreed_position(0, 2), Ok(()), "not stated");
+    assert_eq!(check_agreed_position(1, 2), Ok(()));
+    assert_eq!(check_agreed_position(2, 2), Ok(()));
+    assert_eq!(
+        check_agreed_position(3, 2),
+        f(Rule::IndexOutOfRange, "framer.agreed"),
+        "past the offer"
+    );
+    assert_eq!(check_agreed_position(0, 0), Ok(()), "a dial states none");
+    assert_eq!(
+        check_agreed_position(1, 0),
+        f(Rule::IndexOutOfRange, "framer.agreed"),
+        "a dial agrees nothing"
+    );
+    assert_eq!(
+        check_agreed_position(u32::MAX, 2),
+        f(Rule::IndexOutOfRange, "framer.agreed")
     );
 }

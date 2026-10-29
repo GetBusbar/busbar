@@ -45,13 +45,10 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode, Dial, Encode,
-    Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict,
-    VerifiedDestination, Verify,
+    Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Route, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
 use busbar_kernel::plane_driver::PlaneAnswer;
-use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
 };
@@ -493,7 +490,7 @@ impl Node {
                 &self.durability_token,
                 principal,
                 arrived,
-                card_in_force(card, arrived.ms()),
+                card,
                 outcome,
                 lines,
                 0,
@@ -831,10 +828,9 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let borrowed = Borrowed { units, post };
         let ended = busbar_kernel::teller::run_unit_async(
             &self.kernel,
-            &borrowed,
+            units,
             &ctx,
             busbar_kernel::teller::Run {
                 cell: slot.cell(),
@@ -843,8 +839,9 @@ impl Node {
                 gauge: &self.gauge,
                 canary: &self.canary,
                 meter: &meter,
+                taps: Some(post),
             },
-            &borrowed,
+            units,
         )
         .await;
         // How the unit ended, for the caller's close (a framed stream's final status); `None` when
@@ -883,7 +880,7 @@ impl Node {
     /// audit door stated, or under `audit_kind` (the plane's stated audit kind) when that door
     /// handed nothing back.
     #[allow(clippy::too_many_arguments)]
-    pub fn open_borrowed<U: Units>(
+    pub async fn open_borrowed<U: Units>(
         &self,
         key: UnitKey,
         arrived: Arrived,
@@ -936,10 +933,9 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let borrowed = Borrowed { units, post };
         let opened = busbar_kernel::teller::open_unit(
             &self.kernel,
-            &borrowed,
+            units,
             &ctx,
             busbar_kernel::teller::Run {
                 cell: slot.cell(),
@@ -948,8 +944,10 @@ impl Node {
                 gauge: &self.gauge,
                 canary: &self.canary,
                 meter: &meter,
+                taps: Some(post),
             },
-        );
+        )
+        .await;
         // The destination set the open sealed is where the session goes: its record names it.
         if let busbar_kernel::teller::SessionOpen::Admitted { destinations, .. } = &opened {
             post.routed(key, destinations);
@@ -994,7 +992,7 @@ impl Node {
             &self.durability_token,
             &principal,
             arrived,
-            card_in_force(history.as_ref(), arrived.ms()),
+            history.as_ref(),
             outcome,
             lines,
             fee_count,
@@ -1130,7 +1128,6 @@ impl Node {
                 };
                 let driven = Driven {
                     node: self,
-                    units: &*units,
                     route: &*route,
                     op_class,
                     principal: &principal,
@@ -1146,7 +1143,7 @@ impl Node {
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
-                    &driven,
+                    &*units,
                     &ctx,
                     busbar_kernel::teller::Run {
                         cell: slot.cell(),
@@ -1155,6 +1152,7 @@ impl Node {
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
+                        taps: Some(&driven),
                     },
                     &driven,
                 )
@@ -1531,7 +1529,6 @@ impl LateAccrual {
             seal,
         } = self;
         let book = crate::root::durability::SharedBook::over(Arc::clone(&held));
-        let card = card_in_force(Some(&history), arrived.ms());
         // A unit that did not complete and whose reading counts nothing at all (no class, no
         // billable request: a unit a gate hook refused before its dial) leaves no line of counts on
         // the book: the exit's posting closes its hold, as when no reading arrived.
@@ -1559,7 +1556,7 @@ impl LateAccrual {
                         &durability_token,
                         &principal,
                         arrived,
-                        card,
+                        Some(&history),
                         outcome,
                         lines,
                         0,
@@ -1591,7 +1588,7 @@ impl LateAccrual {
                 &durability_token,
                 &principal,
                 arrived,
-                card,
+                Some(&history),
                 outcome,
                 report_lines(&report),
                 report.fee_count,
@@ -1926,7 +1923,7 @@ impl Drop for Occupied<'_> {
 /// What a node whose journal cannot reach its store answers a new unit with, in the caller's own
 /// dialect: 503 and the reason. A state the previous release never reached (it kept no journal).
 fn journal_unavailable(proto: &str, why: &str) -> Response {
-    busbar_kernel::proxy::ingress_error(
+    busbar_kernel::ingress::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
@@ -1936,7 +1933,7 @@ fn journal_unavailable(proto: &str, why: &str) -> Response {
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
-    busbar_kernel::proxy::ingress_error(
+    busbar_kernel::ingress::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
@@ -1960,7 +1957,6 @@ fn unavailable(proto: &str) -> Response {
 /// [`PlaneDispatch`]: crate::root::transports::PlaneDispatch
 struct Driven<'n> {
     node: &'n Node,
-    units: &'n (dyn Units + Send + Sync),
     route: &'n (dyn RouteAwait + Send + Sync),
     op_class: OpClassId,
     /// Whose unit this is — the principal the balance it settles onto is keyed by.
@@ -1995,102 +1991,17 @@ impl Driven<'_> {
     }
 }
 
-impl Units for Driven<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        self.units.arrival(token, ctx)
-    }
-
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        self.units.decode(token, ctx)
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        self.units.authenticate(token, ctx)
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        self.units.verify(token, trust, ctx, principal)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        self.units.approve(token, ctx, principal, destinations)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        self.units
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        self.units.route(token, ctx, destinations)
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        provisional: &Outcome,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        self.units
-            .meter(token, usage, ctx, provisional, destinations)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        self.units.audit(token, ctx, outcome)
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> SeatVerdict<Audit> {
-        self.units.audit_refused(token, ctx, refusal)
-    }
-
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> SeatVerdict<Encode> {
-        self.units.encode(token, ctx, outcome)
-    }
-
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        self.units.evidence(ctx)
-    }
-
+/// THE HANDED UNIT'S TAPS: its audit door's pass and facts held on its record-to-be until its one
+/// line is written (where its record is sealed with them). Where Route was lent to go is noted by
+/// its route leg below; how it ended is read off the posting.
+impl busbar_kernel::teller::UnitTaps for Driven<'_> {
     fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
         self.accruing().get_or_insert_with(Accruing::default).door = Some((facts, pass));
     }
+
+    fn ended_as(&self, _ctx: &UnitCtx, _outcome: Outcome) {}
+
+    fn routed(&self, _ctx: &UnitCtx, _destinations: &[VerifiedDestination]) {}
 }
 
 impl RouteAwait for Driven<'_> {
@@ -2139,146 +2050,6 @@ impl RouteAwait for Driven<'_> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The borrowed unit
-// ---------------------------------------------------------------------------------------------
-
-/// A BORROWED UNIT, as the loop drives it ([`Node::drive_borrowed`]): every seat the unit's own,
-/// and its audit door's facts and pass held on the posting site with the unit's other facts, so its
-/// one record is sealed where its one line is written, whichever way it ends.
-struct Borrowed<'b, U> {
-    units: &'b U,
-    post: &'b NodeEndPost,
-}
-
-impl<U: Units> Units for Borrowed<'_, U> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        self.units.arrival(token, ctx)
-    }
-
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        self.units.decode(token, ctx)
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        self.units.authenticate(token, ctx)
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        self.units.verify(token, trust, ctx, principal)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        self.units.approve(token, ctx, principal, destinations)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        self.units
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        self.units.route(token, ctx, destinations)
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        provisional: &Outcome,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        self.units
-            .meter(token, usage, ctx, provisional, destinations)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        self.units.audit(token, ctx, outcome)
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> SeatVerdict<Audit> {
-        self.units.audit_refused(token, ctx, refusal)
-    }
-
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> SeatVerdict<Encode> {
-        self.post.ended_as(ctx.key, *outcome);
-        self.units.encode(token, ctx, outcome)
-    }
-
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        self.units.evidence(ctx)
-    }
-
-    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
-        self.post.audited(ctx.key, facts, pass);
-    }
-
-    fn at_parent_exit(
-        &self,
-        ctx: &UnitCtx,
-        accrual: &busbar_contract::caps::HoldAccrual,
-    ) -> Result<u64, Refusal> {
-        self.units.at_parent_exit(ctx, accrual)
-    }
-}
-
-impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
-    fn route_leg<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-        ctx: &'a UnitCtx,
-        destinations: &'a [VerifiedDestination],
-    ) -> RouteLeg<'a> {
-        self.post.routed(ctx.key, destinations);
-        self.units.route_leg(token, ctx, destinations)
-    }
-
-    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
-        self.units.abandoned(ctx, ended);
-    }
-
-    /// The borrowed units' own screen before the door, forwarded (SEAM-4j).
-    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
-        self.units.screen(ctx)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // The driven plane's abandoned end
 // ---------------------------------------------------------------------------------------------
 
@@ -2302,15 +2073,34 @@ struct OpenUnit {
 /// and it is posted here onto the same book, balance and window a returned end settles on
 /// ([`Node::settle_end`], the node's one posting site; no second seal). The root opens each unit's
 /// facts at admission (its principal, its pinned arrival, the card history it was admitted under)
-/// and closes them when the unit returns; an end posts at most once.
+/// and closes them when the unit returns; an end posts at most once. The facts are split across
+/// the in-flight table's shards by unit key, so a unit takes one shard's lock, never a
+/// process-wide one.
 pub struct NodeEndPost {
     node: Arc<Node>,
-    open: Mutex<OpenUnits>,
+    open: Vec<Mutex<OpenUnits>>,
 }
 
 impl std::fmt::Debug for NodeEndPost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeEndPost").finish_non_exhaustive()
+    }
+}
+
+/// THE BORROWED UNIT'S TAPS: its audit door's facts and pass, how it ended and where Route was lent
+/// to go, kept on its open facts here, so its one record is sealed where its one line is written,
+/// whichever way it ends.
+impl busbar_kernel::teller::UnitTaps for NodeEndPost {
+    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
+        NodeEndPost::audited(self, ctx.key, facts, pass);
+    }
+
+    fn ended_as(&self, ctx: &UnitCtx, outcome: Outcome) {
+        NodeEndPost::ended_as(self, ctx.key, outcome);
+    }
+
+    fn routed(&self, ctx: &UnitCtx, destinations: &[VerifiedDestination]) {
+        NodeEndPost::routed(self, ctx.key, destinations);
     }
 }
 
@@ -2320,12 +2110,14 @@ impl NodeEndPost {
     pub fn new(node: Arc<Node>) -> Self {
         NodeEndPost {
             node,
-            open: Mutex::new(HashMap::new()),
+            open: (0..busbar_kernel::inflight::SHARDS)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OpenUnits> {
-        self.open
+    fn lock(&self, key: UnitKey) -> std::sync::MutexGuard<'_, OpenUnits> {
+        self.open[(key.get() as usize) & (busbar_kernel::inflight::SHARDS - 1)]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -2344,7 +2136,7 @@ impl NodeEndPost {
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
     ) {
-        self.lock().insert(
+        self.lock(key).insert(
             key,
             OpenUnit {
                 principal,
@@ -2357,14 +2149,14 @@ impl NodeEndPost {
 
     /// Unit `key`'s hold landed on the chain at `seq`.
     fn held(&self, key: UnitKey, seq: Option<u64>) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.ran.hold = seq;
         }
     }
 
     /// Unit `key`'s Route leg was lent the sealed `destinations`.
     fn routed(&self, key: UnitKey, destinations: &[VerifiedDestination]) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.ran.verified = lanes_of(destinations);
         }
     }
@@ -2378,14 +2170,14 @@ impl NodeEndPost {
         facts: busbar_contract::caps::AuditFacts,
         pass: Pass<Audit>,
     ) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.door = Some((facts, pass));
         }
     }
 
     /// The operation class unit `key`'s audit door stated, once that door handed its facts back.
     fn door_class(&self, key: UnitKey) -> Option<OpClassId> {
-        self.lock()
+        self.lock(key)
             .get(&key)
             .and_then(|open| open.sealing.door.as_ref().map(|(facts, _)| facts.op_class))
     }
@@ -2393,7 +2185,7 @@ impl NodeEndPost {
     /// Unit `key`'s encode door was told how it ended: the outcome a session's record carries
     /// ([`Node::seal_session`]).
     fn ended_as(&self, key: UnitKey, outcome: Outcome) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(outcome);
         }
     }
@@ -2401,7 +2193,7 @@ impl NodeEndPost {
     /// Session `key`'s open hook stage stopped it for `reason` after its door passed: its record
     /// says it was refused there, at the head of its route leg where the hook stage runs.
     pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(Outcome::Refused(
                 busbar_contract::caps::StepName::Route,
                 reason,
@@ -2412,7 +2204,7 @@ impl NodeEndPost {
     /// What session `key` consumed, as its plane reported it at its end: the amount its record
     /// carries. `None` for a session whose money never opened.
     pub fn reported(&self, key: UnitKey, report: Option<Reported>) {
-        if let Some(open) = self.lock().get_mut(&key) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.report = report.map(Report::of);
         }
     }
@@ -2420,18 +2212,26 @@ impl NodeEndPost {
     /// Unit `key` returned: its facts close and come out for the record its one line seals
     /// ([`Node::drive_borrowed`]).
     fn take(&self, key: UnitKey) -> Option<OpenUnit> {
-        self.lock().remove(&key)
+        self.lock(key).remove(&key)
     }
 
     /// Unit `key` returned: its end is the node's exit arm's to post, never this site's.
     pub fn close(&self, key: UnitKey) {
-        self.lock().remove(&key);
+        self.lock(key).remove(&key);
     }
 
     /// How many units' facts are open (a witness: every unit closes).
     #[must_use]
     pub fn open_units(&self) -> usize {
-        self.lock().len()
+        self.open
+            .iter()
+            .map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+            })
+            .sum()
     }
 }
 
@@ -2447,7 +2247,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
         // The member of the verified set this attempt dials is where the unit goes: the last
         // attempt's is the one its record names.
-        let facts = self.lock().get_mut(&record.unit).map(|open| {
+        let facts = self.lock(record.unit).get_mut(&record.unit).map(|open| {
             open.sealing.ran.dialled = record.lane;
             (open.principal.clone(), open.arrived)
         });
@@ -2470,7 +2270,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
 /// is. A unit with no open facts keeps nothing.
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
     fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
-        if let Some(open) = self.lock().get_mut(&record.unit) {
+        if let Some(open) = self.lock(record.unit).get_mut(&record.unit) {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
     }
@@ -2484,7 +2284,7 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
 impl busbar_kernel::plane_driver::Checkpointer for NodeEndPost {
     fn checkpoint(&self, key: UnitKey, accrued: &busbar_kernel::plane_driver::Accrued) {
         let facts = self
-            .lock()
+            .lock(key)
             .get(&key)
             .map(|open| (open.principal.clone(), open.arrived));
         let Some((principal, arrived)) = facts else {
@@ -2503,7 +2303,7 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
-        let facts = self.lock().remove(&ctx.key);
+        let facts = self.lock(ctx.key).remove(&ctx.key);
         if let Some(open) = facts {
             // The unit's one audit record is sealed with its one line, as a returned end's is.
             let parent = match ctx.origin {
@@ -2670,7 +2470,8 @@ impl Ran {
 
 impl Sealing {
     /// Seal the record beside the line just written: its outcome is how the unit ended, its amount
-    /// is the line's counts (none for a refused unit), and the book stamps this boot's incarnation.
+    /// is the line's counts (none for a refused unit) at the card in force when it arrived, off the
+    /// history `card` pinned at its door, and the book stamps this boot's incarnation.
     #[allow(clippy::too_many_arguments)]
     fn seal(
         self,
@@ -2678,7 +2479,7 @@ impl Sealing {
         token: &Grant<busbar_contract::caps::DurableWrite>,
         principal: &PrincipalId,
         arrived: Arrived,
-        rate_card_version: u64,
+        card: Option<&crate::root::kernel::PinnedHistory>,
         outcome: Outcome,
         lines: Vec<RecordLine>,
         fee_count: u32,
@@ -2690,11 +2491,14 @@ impl Sealing {
         // applied"): the hold its admission opened on the chain and the settlement its one line
         // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
         // running, in order, with its head; a hook that failed is recorded failed, never dropped.
+        // And the policy generation it ran under: the configuration whose card was in force at its
+        // arrival, off the same pin at the same instant its card version is read.
         let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
         let destination = ran.destination(line.served);
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
             settle_ref: line.settled_at.map(|seq| seq.to_string()),
+            policy_epoch: policy_in_force(card, arrived.ms()),
             hooks_applied: ran.hooks,
             ..Controls::default()
         };
@@ -2724,7 +2528,7 @@ impl Sealing {
                 lines: if refused { Vec::new() } else { lines },
                 tier_bp: 10_000,
                 fee_count: if refused { 0 } else { fee_count },
-                rate_card_version,
+                rate_card_version: card_in_force(card, arrived.ms()),
                 bucket_chain_ref: String::new(),
             },
             controls,
@@ -2891,6 +2695,36 @@ pub(crate) fn card_in_force(
 ) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
         .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
+}
+
+/// THE POLICY GENERATION a unit ran under (THE DESIGN §1, `BUSBAR-1.6.0.md` l.190-193: the fixed
+/// record's "controls"): the policy epoch of the configuration whose card was in force when the unit
+/// ARRIVED, off the same pinned history at the same instant [`card_in_force`] resolves its card at —
+/// so a configuration applied after the door, or effective after the arrival, is not the one named.
+///
+/// The root counts its configuration resolutions, and every configured entry records the one that
+/// produced it (`RootHistory::resolutions`, `Author::Config`). An amendment corrects a price and is
+/// no configuration, so it is passed over for the configured entry beneath it. Where no configured
+/// entry covers the instant — no history pinned, or only the opening entry — there is no generation
+/// to name, and the record carries 0, the journal's own "no epoch to report" (`Entry::new`).
+pub(crate) fn policy_in_force(
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    arrived_ms: u64,
+) -> u64 {
+    card.and_then(|pinned| {
+        pinned
+            .view()
+            .entries()
+            .iter()
+            .rev()
+            .filter(|entry| entry.covers(arrived_ms))
+            .find_map(|entry| match entry.author() {
+                busbar_kernel_ledger::cost::Author::Config { policy_epoch } => Some(*policy_epoch),
+                busbar_kernel_ledger::cost::Author::Opening
+                | busbar_kernel_ledger::cost::Author::Amend { .. } => None,
+            })
+    })
+    .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -66,6 +66,7 @@ pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
+pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
 pub mod dispatch;
@@ -74,17 +75,15 @@ pub mod doors;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
-#[cfg(any(test, feature = "test-harness"))]
-pub mod harness;
 pub mod hooks;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
-pub mod legacy;
 pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
 pub mod migration;
+pub mod migration_table;
 pub mod model_egress;
 pub mod observe;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven
@@ -94,6 +93,7 @@ pub mod plugin_fetch;
 pub mod policy;
 pub mod registry;
 pub mod serve;
+pub mod settings_public;
 pub mod shutdown;
 pub mod transports;
 #[cfg(feature = "root-admin")]
