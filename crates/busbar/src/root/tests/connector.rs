@@ -218,6 +218,56 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
 }
 
+/// security.md: `advanced.allow_destinations` is read at boot and a change needs a restart. The
+/// metadata lists are re-read at each config commit (the test above), the allowlist is not: a
+/// reload that REMOVES an entry leaves the process's guard admitting what the boot config admitted,
+/// and a reload that ADDS one admits nothing new. Both directions are held, so neither a silent
+/// loosening nor a silent tightening can happen without a restart.
+#[test]
+fn a_reload_that_changes_the_allowlist_changes_nothing() {
+    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
+        busbar_kernel::test_support::neutral_fallback_plane(),
+    ]);
+    let private_a = vec!["10.0.0.5".parse().unwrap()];
+    let private_b = vec!["10.0.0.9".parse().unwrap()];
+    let verdict = |judge: &dyn DestJudge, host: &str, answer: &[std::net::IpAddr]| {
+        judge
+            .judge_answer(host, answer, EGRESS_PROVIDER)
+            .err()
+            .map(|r| r.verdict)
+    };
+
+    // Boot names one host; the reload drops it and names another.
+    let boot = deployment(&[], "advanced:\n  allow_destinations: [model-a.internal]\n");
+    let judge = dest_judge(&boot);
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(
+        crate::root::door_steps::Rules::hearing(judge.clone() as Arc<dyn DestJudge>),
+    );
+    assert_eq!(
+        verdict(judge.as_ref(), "model-a.internal", &private_a),
+        None
+    );
+    assert_eq!(
+        verdict(judge.as_ref(), "model-b.internal", &private_b),
+        Some(DEST_INTERNAL),
+        "the host the boot did not name is refused"
+    );
+    let reloaded = deployment(&[], "advanced:\n  allow_destinations: [model-b.internal]\n");
+    busbar_kernel::test_support::build_once_under(reloaded, None, &rules)
+        .expect("the reload builds");
+    assert_eq!(
+        verdict(judge.as_ref(), "model-a.internal", &private_a),
+        None,
+        "the entry the reload removed still admits: the allowlist is read at boot"
+    );
+    assert_eq!(
+        verdict(judge.as_ref(), "model-b.internal", &private_b),
+        Some(DEST_INTERNAL),
+        "the entry the reload added admits nothing until a restart"
+    );
+}
+
 /// RED: a deployment
 /// whose provider has no `advanced.allow_destinations` entry is refused the private address its
 /// name answers with on a provider dial (its own configured host included); once the allowlist

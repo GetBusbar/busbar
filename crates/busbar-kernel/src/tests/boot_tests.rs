@@ -27,6 +27,7 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
         item: None,
         approved: Some("sha256:pinned".to_string()),
         declared: None,
+        demoted: false,
     };
     app.demotion_record
         .keep_decision(&decision, 1)
