@@ -199,17 +199,18 @@ fn print_metadata_blocklist_prints_builtin_plus_blocked() {
             "168.63.129.16",
             "192.0.0.192",
             "fd00:ec2::254",
-            "fd00:ec2::23",
-            "fe80::/10",
             "metadata.google.internal",
             "metadata.internal",
             "metadata.tencentyun.com",
             "metadata.platformequinix.com",
             "instance-data",
             "instance-data.ec2.internal",
+            "fd00:ec2::23",
+            "fe80::/10",
             "internal-metadata.example",
         ],
-        "every enforced entry, then the operator's additions; stderr={stderr}"
+        "1.5.5's eleven lines in their order, the two enforced entries it never listed, then the \
+         operator's additions; stderr={stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
