@@ -1322,16 +1322,42 @@ fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
     );
 }
 
-/// Q51 (item 404, OWNER RULING Q9): a sealed `adjust` moves EVERY read of the budget book, not only
-/// `GET /admin/usage`. 1,000,000 input units at 2.5 micro-units each are 250 cents; corrected to
-/// 800,000 they are 200 — on the key's usage (`/keys`), its group's bucket (`/groups`) and the
-/// per-model token gauge (`/metrics`). Before the fix all three still read 250 / 1,000,000.
+/// The era `record_usage` dates a count with at this instant: the segment an adjustment names.
+fn era_now() -> u64 {
+    crate::rate_apply::effective_from_at(crate::store::now_ms())
+}
+
+/// The day's metering row of `n` input units for `key_id` on `model`, as the metering flush lands
+/// it: an adjustment is refused unless the metered view carries the counts it moves.
+fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
+    g.store
+        .add_metering(&busbar_contract::records::MeteringDelta {
+            key_id: key_id.to_string(),
+            bucket: crate::governance::metering_bucket(now),
+            model: model.to_string(),
+            provider: String::new(),
+            tokens_input: n,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
+            priced_from_ms: era_now(),
+            usage_units: Default::default(),
+        })
+        .expect("the memory store accepts a metering delta");
+}
+
+/// Q51 (item 404, OWNER RULING Q9): an `adjust` moves EVERY read of the budget book, not only
+/// `GET /admin/usage`. 1,000,000 input units at 2.5 micro-units each are 250 cents; corrected by
+/// -200,000 they are 200 — on the key's usage (`/keys`), its group's bucket (`/groups`) and the
+/// per-model token gauge (`/metrics`). The correction is a signed delta on the one ledger's counts
+/// (MONEY-DESIGN §4, PR-C), applied to the live cell at once.
 #[test]
 fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
-    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
-    use busbar_contract::authz::Scope;
     use busbar_contract::records::UNIT_INPUT;
-    use busbar_kernel_ledger::cost::whole;
     let g = gov();
     let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
     let cm = model_with_card(
@@ -1343,10 +1369,11 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
     g.store.put_key(&k).expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(1_000_000, 0), now);
+    metered(&g, &k.id, "m", 1_000_000, now);
     let read = |g: &GovState| {
         let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
         let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
-        let gauge = g.bucket_model_tokens(&cm, &k.id, super::WINDOW_TOTAL, now);
+        let gauge = g.bucket_model_tokens(&k.id, super::WINDOW_TOTAL, now);
         (
             key.spend_cents,
             key.tokens,
@@ -1355,29 +1382,100 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         )
     };
     assert_eq!(read(&g), (250, 1_000_000, 250, 1_000_000), "as recorded");
-    let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
-    let correction = CountCorrection {
-        amends: "q51-adjust-reads-the-budget-book",
-        principal: Some(&k.id),
-        lane: "m",
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
+    let adjustment = super::Adjustment {
+        key_id: &k.id,
+        pool: "",
+        model: "m",
+        entry_era: era_now(),
         card_epoch_ms: now * 1_000,
-        now: counts(800_000),
-        authorised_by: "root",
-        reason: "duplicate charge on a retried request",
-        pool: None,
+        delta: &delta,
+        now,
     };
-    correct_counts(Scope::Full, &counts(1_000_000), correction).expect("root correction seals");
+    g.adjust_usage(&cm, &adjustment)
+        .expect("the store reads")
+        .expect("the correction applies");
     assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
+}
+
+/// An adjustment larger than its segment's count is REFUSED, and nothing is applied: not to the
+/// key, not to its group (MONEY-DESIGN §4, PR-C; MONEY-REVIEW review 17, NB5). A store that floors
+/// a row while RAM goes negative is the drift this refusal exists to make impossible.
+#[test]
+fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
+    use busbar_contract::records::UNIT_INPUT;
+    let g = gov();
+    let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
+    let cm = model_with_card(
+        &[("g", group_cfg(None, true, vec![day]))],
+        0,
+        &[("m", 2.5, 0.0)],
+    );
+    let k = key("vk_adjust_exceeds", Some("g"));
+    g.store.put_key(&k).expect("key persists");
+    let now = crate::store::now();
+    g.record_usage(&cm, &k, "", "m", &toks(1_000, 0), now);
+    metered(&g, &k.id, "m", 1_000, now);
+    let read = |g: &GovState| {
+        let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
+        let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
+        (key.tokens, group.tokens)
+    };
+    assert_eq!(read(&g), (1_000, 1_000));
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1_001i64)]);
+    let adjustment = super::Adjustment {
+        key_id: &k.id,
+        pool: "",
+        model: "m",
+        entry_era: era_now(),
+        card_epoch_ms: now * 1_000,
+        delta: &delta,
+        now,
+    };
+    match g.adjust_usage(&cm, &adjustment).expect("the store reads") {
+        Err(super::AdjustRefused::Exceeds { count, delta, .. }) => {
+            assert_eq!((count, delta), (1_000, -1_001));
+        }
+        other => panic!("a correction past the count is refused, got {other:?}"),
+    }
+    assert_eq!(read(&g), (1_000, 1_000), "nothing was applied anywhere");
+    // A lane the key never earned counts on has no metered row: refused before anything moves.
+    let other_lane = super::Adjustment {
+        model: "never-served",
+        delta: &BTreeMap::from([(UNIT_INPUT.to_string(), -1i64)]),
+        ..adjustment
+    };
+    assert!(matches!(
+        g.adjust_usage(&cm, &other_lane).expect("the store reads"),
+        Err(super::AdjustRefused::NotMetered { .. })
+    ));
+    // An unknown key and an empty correction are refused by name.
+    let unknown = super::Adjustment {
+        key_id: "vk_nobody",
+        ..adjustment.clone()
+    };
+    assert_eq!(
+        g.adjust_usage(&cm, &unknown).expect("the store reads"),
+        Err(super::AdjustRefused::UnknownKey)
+    );
+    let empty = BTreeMap::from([(UNIT_INPUT.to_string(), 0i64)]);
+    let nothing = super::Adjustment {
+        delta: &empty,
+        ..adjustment
+    };
+    assert_eq!(
+        g.adjust_usage(&cm, &nothing).expect("the store reads"),
+        Err(super::AdjustRefused::Empty)
+    );
 }
 
 /// Q51 AT THE DOOR (Q128 arch u32 #18): admission prices the same corrected counts every read of
 /// the book prices. A group day budget of 300 cents over input at 2.5 micro-units: `recorded` input
-/// units are served, then an `adjust` corrects them to `corrected`. Returns what `try_admit`
-/// answers after the adjust and the group bucket's read spend.
+/// units are served, then an `adjust` corrects them to `corrected` (a signed delta on the one
+/// ledger's counts, applied to the live cell at once). Returns what `try_admit` answers after the
+/// adjust and the group bucket's read spend.
 fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool, i64) {
-    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
     use busbar_contract::records::UNIT_INPUT;
-    use busbar_kernel_ledger::cost::whole;
     let g = gov();
     let day = limit(LimitMetric::Budget, 300, Some(LimitWindow::Day));
     let group = id.trim_start_matches("vk_");
@@ -1390,23 +1488,21 @@ fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool,
     g.store.put_key(&k).expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(recorded, 0), now);
-    let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
-    let correction = CountCorrection {
-        amends: id,
-        principal: Some(id),
-        lane: "m",
+    metered(&g, &k.id, "m", recorded, now);
+    let signed = |n: u64| i64::try_from(n).expect("the fixture's counts fit i64");
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), signed(corrected) - signed(recorded))]);
+    let adjustment = super::Adjustment {
+        key_id: &k.id,
+        pool: "",
+        model: "m",
+        entry_era: era_now(),
         card_epoch_ms: now * 1_000,
-        now: counts(corrected),
-        authorised_by: "root",
-        reason: "the recorded count was wrong",
-        pool: None,
+        delta: &delta,
+        now,
     };
-    correct_counts(
-        busbar_contract::authz::Scope::Full,
-        &counts(recorded),
-        correction,
-    )
-    .expect("root correction seals");
+    g.adjust_usage(&cm, &adjustment)
+        .expect("the store reads")
+        .expect("the correction applies");
     let bucket = format!("group:{group}@day");
     let read = (g.derived_bucket_usage(&cm, &bucket, "day", true, now))
         .expect("the read derives")
@@ -1440,14 +1536,8 @@ fn a_downward_adjust_under_the_cap_admits_at_admission() {
 
 /// Q64/Q67 fixture: group `group` with a group-wide day budget and a day budget scoped to each of
 /// `pool-a` and `pool-b`; key `id` served 1,000,000 input units through EACH pool at 2.5 micro-units
-/// (250 cents a pool, 500 group-wide). `adjust(pool)` corrects the pool-a unit to 800,000.
-fn q64_two_pools(
-    id: &'static str,
-    group: &'static str,
-) -> (GovState, CostModel, VirtualKey, u64, impl Fn(Option<&str>)) {
-    use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
-    use busbar_contract::records::UNIT_INPUT;
-    use busbar_kernel_ledger::cost::whole;
+/// (250 cents a pool, 500 group-wide). [`q64_adjust`] corrects the pool-a unit to 800,000.
+fn q64_two_pools(id: &'static str, group: &'static str) -> (GovState, CostModel, VirtualKey, u64) {
     let g = gov();
     let limits = vec![
         limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day)),
@@ -1464,23 +1554,26 @@ fn q64_two_pools(
     let now = crate::store::now();
     g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
     g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
-    let adjust = move |pool: Option<&str>| {
-        let counts = |n: u64| ClassCounts::from([(UNIT_INPUT.to_string(), whole(n))]);
-        let correction = CountCorrection {
-            amends: id,
-            principal: Some(id),
-            lane: "m",
-            card_epoch_ms: now * 1_000,
-            now: counts(800_000),
-            authorised_by: "root",
-            reason: "duplicate charge on a retried request",
-            pool,
-        };
-        let recorded = counts(1_000_000);
-        correct_counts(busbar_contract::authz::Scope::Full, &recorded, correction)
-            .expect("root correction seals");
+    metered(&g, &k.id, "m", 2_000_000, now);
+    (g, cm, k, now)
+}
+
+/// A root adjust of -200,000 input units on `id`'s unit, through `pool` (none: no pool named).
+fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&str>) {
+    use busbar_contract::records::UNIT_INPUT;
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
+    let adjustment = super::Adjustment {
+        key_id: id,
+        pool: pool.unwrap_or(""),
+        model: "m",
+        entry_era: era_now(),
+        card_epoch_ms: now * 1_000,
+        delta: &delta,
+        now,
     };
-    (g, cm, k, now, adjust)
+    g.adjust_usage(cm, &adjustment)
+        .expect("the store reads")
+        .expect("the correction applies");
 }
 
 /// The usage read: the key's usage (what `GET /admin/usage` agrees with) and, per bucket
@@ -1498,7 +1591,7 @@ fn q64_read(
         let spend = (g.derived_bucket_usage(cm, &id, "day", true, now))
             .unwrap()
             .spend_cents;
-        let gauge = g.bucket_model_tokens(cm, &id, "day", now);
+        let gauge = g.bucket_model_tokens(&id, "day", now);
         (spend, gauge[0].1[busbar_contract::records::UNIT_INPUT])
     };
     [
@@ -1517,7 +1610,7 @@ fn q64_read(
 /// Before the fix the pool-a bucket still read 250 / 1,000,000 after the adjust.
 #[test]
 fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
-    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_pooled", "q64p");
+    let (g, cm, k, now) = q64_two_pools("vk_q64_pooled", "q64p");
     let read = || q64_read(&g, &cm, &k, "q64p", now);
     let recorded = [
         (500, 2_000_000),
@@ -1526,7 +1619,7 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
         (250, 1_000_000),
     ];
     assert_eq!(read(), recorded, "as recorded");
-    adjust(Some("pool-a"));
+    q64_adjust(&g, &cm, "vk_q64_pooled", now, Some("pool-a"));
     assert_eq!(
         read(),
         [
@@ -1539,12 +1632,12 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
     );
 }
 
-/// Q64/Q67: an adjust SEALED BEFORE the pool was recorded names none, and it reads exactly as it
-/// did: the key and the group-wide bucket take it, and neither pool-scoped bucket does.
+/// Q64/Q67: an adjust that names no pool lands on the key and the group-wide bucket, and on
+/// neither pool-scoped bucket.
 #[test]
-fn an_unscoped_sealed_adjust_reads_as_it_always_did() {
-    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_unscoped", "q64u");
-    adjust(None);
+fn an_adjust_naming_no_pool_moves_no_pool_bucket() {
+    let (g, cm, k, now) = q64_two_pools("vk_q64_unscoped", "q64u");
+    q64_adjust(&g, &cm, "vk_q64_unscoped", now, None);
     assert_eq!(
         q64_read(&g, &cm, &k, "q64u", now),
         [
