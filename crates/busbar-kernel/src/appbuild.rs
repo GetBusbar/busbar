@@ -1656,7 +1656,8 @@ pub fn build_app_from_config(
                             reference,
                             &busbar_contract::config_time::ConfigScope::config_time(),
                         )
-                        .map(|value| (path.clone(), value))
+                        // OWED (row 7): the authorization-server plane's seam takes plain text.
+                        .map(|value| (path.clone(), value.expose(&crate::seal::lend()).clone()))
                         .map_err(|e| format!("{path}: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
