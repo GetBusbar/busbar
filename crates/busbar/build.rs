@@ -344,7 +344,7 @@ fn test_operator_auth_source(manifest: &str) -> String {
 /// crate served through its memory-ABI door: `extern crate` per listed crate, and `static
 /// TEST_LINKED_DOORS`, each row's `(<crate>, <module>::door)` in list order, `<module>` the
 /// `[package.metadata.busbar.linked-entry]` module in that crate (the plane door row's own entry),
-/// else `<crate>::plane_door`.
+/// else `<crate>::plane_door`. A row whose entry is the crate name itself is a crate-root door.
 fn test_linked_source(manifest: &str) -> String {
     let doors: Vec<String> = test_linked_list(manifest, "planes")
         .iter()
@@ -364,7 +364,7 @@ fn test_linked_source(manifest: &str) -> String {
         let module = entries
             .iter()
             .map(|(_, module)| module)
-            .find(|module| module.starts_with(&format!("{id}::")))
+            .find(|module| *module == id || module.starts_with(&format!("{id}::")))
             .cloned()
             .unwrap_or_else(|| format!("{id}::plane_door"));
         out.push_str(&format!("    ({id:?}, {module}::door),\n"));

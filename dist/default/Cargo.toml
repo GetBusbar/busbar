@@ -278,7 +278,7 @@ plane-decisions = ["dep:busbar-plane-decisions"]
 plane-llm-door = ["dep:busbar-plane-llm"]
 # THE MCP PLANE'S DOOR ROW, carried by `plane-mcp` and never set on its own (the mcp fold's switch
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
-# memory-ABI door (`busbar_plane_mcp::plane_door::door`) is a `plane-door` row, bound through the
+# memory-ABI door (`busbar_plane_mcp::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
 # (`busbar-plane-mcp-plugin`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
 # plane's key stands beside it.
@@ -459,7 +459,8 @@ busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions = "busbar_plane_decisions::plane_door"
 plane-llm-door = "busbar_plane_llm::plane_door"
-plane-mcp-door = "busbar_plane_mcp::plane_door"
+# The mcp plane's door is its crate root's one public item (`pub use tool_door::door`).
+plane-mcp-door = "busbar_plane_mcp"
 plane-a2a-door = "busbar_plane_a2a::agent_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
@@ -476,7 +477,6 @@ plane-streaming = "busbar_plane_streaming::door"
 # holds it. A door row with no row here declares nothing.
 [package.metadata.busbar.linked-declares]
 plane-llm-door = "busbar_plane_llm::DECLARES"
-plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
 # The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
 # disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
@@ -924,7 +924,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # On it, fe9c618's 31-slot store table (#1667).
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "dfce32ebc3b9c705183a055c33e409bd7290eb68" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
-# door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
+# door row (`plane-mcp-door`, `busbar_plane_mcp::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
 busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "db0200e59de3a5564dd1eabced9e2ef67399ddc2" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
