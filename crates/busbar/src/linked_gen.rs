@@ -637,7 +637,7 @@ pub(crate) fn test_linked_source(manifest: &str) -> String {
         let module = entries
             .iter()
             .map(|(_, module)| module)
-            .find(|module| *module == id || module.starts_with(&format!("{id}::")))
+            .find(|module| module.as_str() == id.as_str() || module.starts_with(&format!("{id}::")))
             .cloned()
             .unwrap_or_else(|| format!("{id}::plane_door"));
         out.push_str(&format!("    ({id:?}, {module}::door),\n"));
@@ -653,7 +653,7 @@ pub(crate) fn test_linked_source(manifest: &str) -> String {
     for id in &doors {
         let row = entries
             .iter()
-            .find(|(_, module)| *module == id || module.starts_with(&format!("{id}::")));
+            .find(|(_, module)| module.as_str() == id.as_str() || module.starts_with(&format!("{id}::")));
         if let Some((key, module)) = row {
             let fills = axes
                 .iter()
