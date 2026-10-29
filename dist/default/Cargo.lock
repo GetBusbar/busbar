@@ -733,10 +733,10 @@ source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=db0200e59de3a556
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
- "bytes",
  "indexmap",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
