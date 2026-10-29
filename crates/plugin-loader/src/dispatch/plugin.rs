@@ -857,26 +857,37 @@ impl Instance {
     }
 
     /// AUDITED ON THE PLUGIN'S BEHALF: each diagnostic its Statement declares that an `open` or
-    /// `refresh` answered at warn or error. A log line (`DIAG_LOG`) is a log, not a declaration: it
-    /// goes to the plugin's own file alone.
-    fn open_flagged(&self, head: &OutHead) {
+    /// `refresh` answered at warn or error ([`BindRefusal::Open`]), and that any other op answered
+    /// at ERROR ([`BindRefusal::Op`]: a refusal the plugin met serving, such as an IdP destination
+    /// it refused; a warning an op raises on every retry is a log, not a record). A log line
+    /// (`DIAG_LOG`) is a log, not a declaration: it goes to the plugin's own file alone.
+    ///
+    /// [`BindRefusal::Open`]: crate::observe::BindRefusal::Open
+    /// [`BindRefusal::Op`]: crate::observe::BindRefusal::Op
+    fn flagged(&self, head: &OutHead, lifecycle: bool) {
         let env = head.envelope;
         // SAFETY: as `ingest`, which read the same arrays on this crossing.
         let Some(diags) = (unsafe { array(env.diags, env.diags_len) }) else {
             return;
         };
         for d in diags {
-            if !matches!(
-                d.severity,
-                busbar_contract::abi::mechanism::call::SEVERITY_WARN | SEVERITY_ERROR
-            ) {
+            let flags = match d.severity {
+                SEVERITY_ERROR => true,
+                busbar_contract::abi::mechanism::call::SEVERITY_WARN => lifecycle,
+                _ => false,
+            };
+            if !flags {
                 continue;
             }
             let Some(code) = self.diag_ids.name(d.id_idx) else {
                 continue;
             };
             let code = String::from_utf8_lossy(code);
-            self.refused(crate::observe::BindRefusal::Open { code: &code });
+            self.refused(if lifecycle {
+                crate::observe::BindRefusal::Open { code: &code }
+            } else {
+                crate::observe::BindRefusal::Op { code: &code }
+            });
         }
     }
 
@@ -1291,9 +1302,7 @@ impl Instance {
             None
         };
         self.ingest(&head);
-        if s == slot::OPEN || s == slot::REFRESH {
-            self.open_flagged(&head);
-        }
+        self.flagged(&head, s == slot::OPEN || s == slot::REFRESH);
         let error = match outcome {
             Outcome::Failed | Outcome::Refused => reason.or_else(|| copy_str(head.error)),
             _ => None,
