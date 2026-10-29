@@ -974,6 +974,9 @@ async fn opened(c: &mut Connection) {
     .await;
 }
 
+/// An opening as a test writes it: its fields and its body.
+type Asked<'a> = (Vec<(&'a str, &'a [u8])>, &'a [u8]);
+
 /// RED: A LOCATED OPENING CARRIES THE HEAD THE FRAMER SAID IT WOULD NOT ADD (THE DESIGN section 6,
 /// step 5). A framer that states its own head lines at `locate` and leaves the body's length to the
 /// host (`LocateOut::states_length`, transport-http #45) renders exactly the head it is handed and
@@ -1000,7 +1003,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
         TestDoor::new("silent", &["silent"], &[], Knobs::default())
             .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
     );
-    let located = |door: &Arc<TestDoor>, opening: Option<(Vec<(&str, &[u8])>, &[u8])>| {
+    let located = |door: &Arc<TestDoor>, opening: Option<Asked<'_>>| {
         let mut d = dial("127.0.0.1:9");
         d.opening = opening.map(|(fields, body)| {
             (

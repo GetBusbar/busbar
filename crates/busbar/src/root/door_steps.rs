@@ -2791,6 +2791,18 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         self.inner.hold_authority(owner);
     }
 
+    /// The head the open's target completes, as [`PresentingConns::open`] dials it (any userinfo
+    /// taken out).
+    fn request_head(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+    ) -> busbar_contract::conn::HeadDefaults {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(target);
+        self.inner.request_head(owner, need, &target)
+    }
+
     fn bind_auth(
         &self,
         owner: busbar_contract::conn::InstanceId,
