@@ -1,16 +1,12 @@
-//! THE ONE COUNTING ALLOCATOR a plugin's allocation gates read (superseding the `cfg_attr(not(test), forbid)` pair: plugin crate roots keep the literal
-//! `#![forbid(unsafe_code)]`, BUSBAR-1.6.0.md l.273, so the `GlobalAlloc` impl a gate needs lives
-//! here instead of in the plugin).
-//!
-//! TEST ONLY. Compiled for this crate's own tests and, through the dev-only, EMPTY `alloc-counter`
-//! feature, for a plugin's `[dev-dependencies]` edge. `tests/test_seal_is_dev_only.rs` refuses any
-//! `[dependencies]`, `[build-dependencies]`, `[target.*]` or `default` that turns the feature on,
-//! so no shipped artifact carries it. Even when compiled, nothing here is installed: the allocator
-//! only counts where a test binary declares it its own `#[global_allocator]`:
+//! THE ONE COUNTING ALLOCATOR a plugin's allocation gates read: plugin crate roots keep the literal
+//! `#![forbid(unsafe_code)]` (BUSBAR-1.6.0.md l.273), so the `GlobalAlloc` impl a gate needs lives
+//! in the test kit, a dev-dependency only (busbar-contract's own tests mount this file). Nothing
+//! here is installed: the allocator only counts where a test binary declares it its own
+//! `#[global_allocator]`:
 //!
 //! ```ignore
 //! #[global_allocator]
-//! static A: busbar_contract::alloc_counter::Counting = busbar_contract::alloc_counter::Counting::new();
+//! static A: busbar_test_kit::alloc_counter::Counting = busbar_test_kit::alloc_counter::Counting::new();
 //! ```
 //!
 //! PER-THREAD, not process-global: `cargo test` runs tests concurrently, so a shared atomic would let
@@ -27,7 +23,7 @@
 //! they sit. Unarmed (every binary that never calls [`marked_key`] or [`watch`]) it costs one
 //! atomic load per free.
 //!
-//! The crate's `#![deny(unsafe_code)]` holds over this whole module except the one
+//! The crate's `deny(unsafe_code)` holds over this whole module except the one
 //! `unsafe impl GlobalAlloc` block, which carries the module's only `#[allow(unsafe_code)]`.
 
 use std::alloc::{GlobalAlloc, Layout, System};

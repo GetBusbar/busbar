@@ -56,6 +56,3 @@ test-seal = []
 
 # Test-only; named only in [dev-dependencies], absent from release builds.
 services-double = []
-
-# Test-only; named only in [dev-dependencies], absent from release builds.
-alloc-counter = []

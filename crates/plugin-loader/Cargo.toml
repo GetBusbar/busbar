@@ -10,8 +10,6 @@ license = "Apache-2.0"
 [features]
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
-# Test seams for busbar-test-kit and dependents' [dev-dependencies]; never in a shipped build.
-test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"

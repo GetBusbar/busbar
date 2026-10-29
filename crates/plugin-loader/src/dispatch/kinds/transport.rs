@@ -26,10 +26,11 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
-    check_accept, check_arrival, check_cancel, check_claim_facts, check_claims,
-    check_composes_over, check_fault_cover, check_fault_rows, check_framer, check_framer_fields,
-    check_head_slots, check_io, check_listen, check_locate, check_offered_points, check_settings,
-    check_status_rows, check_tail, check_upgrades_to,
+    check_accept, check_arrival, check_begin_scheme, check_binding, check_cancel,
+    check_claim_facts, check_claims, check_composes_over, check_emit_body_len, check_fault_cover,
+    check_fault_rows, check_framer, check_framer_fields, check_head_slots, check_io, check_listen,
+    check_locate, check_offered_points, check_settings, check_status_rows, check_tail,
+    check_upgrades_to,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -314,6 +315,16 @@ impl Kind for Transport {
         Ok(Some(Box::new(tail_facts(st)?)))
     }
 
+    /// The class the op's contract states ([`transport::CONTRACTS`]): a carrier's I/O runs under
+    /// the connection's deadline, a framer's ticketed op (`begin`, `ingest`, `emit`) under the
+    /// stream's, so an auth call it makes that pends is held to the stream's deadline.
+    fn ticketed_class(s: u32) -> busbar_contract::abi::mechanism::call::DeadlineClass {
+        transport::CONTRACTS.iter().find(|c| c.slot == s).map_or(
+            busbar_contract::abi::mechanism::call::DeadlineClass::Connection,
+            |c| c.deadline,
+        )
+    }
+
     fn op_name(s: u32) -> &'static str {
         match s {
             slot::LISTEN => "listen",
@@ -336,6 +347,45 @@ impl Kind for Transport {
             slot::TIMER => "timer",
             _ => lifecycle_name(s),
         }
+    }
+
+    /// A `begin` is admitted only with a declared scheme ([`check_begin_scheme`]: a zero never
+    /// grants), a well-formed binding ([`check_binding`]) and, on the dial
+    /// side, the binding's auth handle verified for THIS framer at the published generation
+    /// (`super::super::auth_handle`): a handle of another owner, of another generation or forged
+    /// is REFUSED before the crossing. An `emit` whose opening body length breaks
+    /// [`check_emit_body_len`] is the host's own fault, and never crosses.
+    fn admit(
+        s: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+        owner: u64,
+    ) -> Option<Outcome> {
+        if s == slot::EMIT && in_size >= size_of::<EmitIn>() && !input.is_null() {
+            // SAFETY: the host's own frame of `in_size >= size_of::<EmitIn>()` bytes, leading
+            // with its head.
+            let i = unsafe { input.cast::<EmitIn>().read_unaligned() };
+            return check_emit_body_len(&i).is_err().then_some(Outcome::Fault);
+        }
+        if s != slot::BEGIN || in_size < size_of::<BeginIn>() || input.is_null() {
+            return None;
+        }
+        // SAFETY: the host's own frame of `in_size >= size_of::<BeginIn>()` bytes, leading with
+        // its head.
+        let i = unsafe { input.cast::<BeginIn>().read_unaligned() };
+        if check_begin_scheme(&i).is_err() || check_binding(&i).is_err() {
+            return Some(Outcome::Refused);
+        }
+        if i.auth.is_none() {
+            return None;
+        }
+        crate::dispatch::auth_handle::verify_auth_ref(
+            owner,
+            crate::dispatch::auth_handle::generation(),
+            &i.auth,
+        )
+        .is_err()
+        .then_some(Outcome::Refused)
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
