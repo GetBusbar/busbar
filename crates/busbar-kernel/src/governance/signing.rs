@@ -37,6 +37,11 @@ use serde::{Deserialize, Serialize};
 /// structural pre-check can reject an obviously-non-busbar credential before any crypto.
 pub const TOKEN_PREFIX: &str = "bbk_";
 
+/// THE TICKET AUDIENCE: the audience claim every host-minted TICKET carries (row 132, the ARCHITECT
+/// ticket ruling). A ticket verifies only where the gate expects exactly this audience, on a route
+/// that takes a ticket; the plain data plane, which expects none, refuses it.
+pub const TICKET_AUDIENCE: &str = "busbar:ticket";
+
 /// The DER prefix of an Ed25519 SubjectPublicKeyInfo, RFC 8410 section 4: `SEQUENCE { SEQUENCE {
 /// OID 1.3.101.112 }, BIT STRING }`. Fixed-length and fully determined; prefixed to the 32 raw key
 /// bytes to render busbar's PUBLIC card-issuer key in the ONE spelling the verifier accepts.
@@ -90,6 +95,10 @@ pub struct TokenClaims {
     /// classes is tolerable here and would not be in an authorization decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cid: Option<String>,
+    /// The TICKET id (wire name `t`), 1.6.0: present only on a host-minted ticket, naming the record
+    /// stored beside it and the single-use claim its admission spends. `None` on every key.
+    #[serde(default, rename = "t", skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
 }
 
 /// A verify failure. Every arm rejects fail-closed; the distinctions exist for the AUDIT log /
@@ -180,18 +189,18 @@ impl TokenSigner {
 
     /// A DOMAIN-SEPARATED SUBKEY SEED derived from this signer's secret.
     ///
-    /// busbar holds one long-lived ed25519 secret and other planes need a signing key of their own
-    /// (the A2A plane signs the agent cards it serves, so an external caller has something to pin
-    /// busbar by). Handing them THIS key would put the credential-minting secret on a path that
+    /// busbar holds one long-lived ed25519 secret and a plane may need a signing key of its own
+    /// (to sign a document it serves, so an external caller has something to pin busbar by).
+    /// Handing it THIS key would put the credential-minting secret on a path that
     /// signs documents somebody else largely authored. Handing them a second CONFIGURED key would
     /// be a second secret an operator can fail to generate, hold or rotate — and a zero-config
     /// first boot would then serve unsigned cards.
     ///
     /// A one-way derivation is the answer to both: the subkey is not this key, and compromise of a
     /// subkey does not walk back to this one, while a deployment still holds exactly one secret and
-    /// a rotation of it rotates every subkey with it. `domain` MUST be a versioned constant — see
-    /// [`crate::a2a::sign::CARD_SIGNING_DOMAIN`] — so that changing a derivation is a new key
-    /// rather than a silently different one under the same name.
+    /// a rotation of it rotates every subkey with it. `domain` MUST be a versioned constant (the
+    /// plane declares it) so that changing a derivation is a new key rather than a silently
+    /// different one under the same name.
     ///
     /// The secret NEVER leaves this method: callers get 32 derived bytes, not
     /// [`Self::secret_bytes`].
@@ -199,20 +208,20 @@ impl TokenSigner {
         subkey_seed(&self.key.to_bytes(), domain)
     }
 
-    /// SIGN `input` with this signer's DOMAIN-DERIVED card subkey — the host-owned card-signing
-    /// primitive behind the plane host `card_sign` seam. Deterministic Ed25519 over the plane-framed
+    /// SIGN `input` with this signer's DOMAIN-DERIVED subkey — the host-owned signing primitive
+    /// behind the neutral `sign_in_domain` host service. Deterministic Ed25519 over the plane-framed
     /// signing input; the subkey is expanded from [`Self::derived_subkey_seed`] and the secret NEVER
     /// leaves this method — the plane receives only the 64 signature bytes.
-    pub fn sign_with_card_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
+    pub fn sign_with_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         key.sign(input).to_bytes()
     }
 
-    /// BUSBAR'S PUBLISHED CARD-ISSUER KEY for `domain`, as base64 SubjectPublicKeyInfo — the string a
-    /// counterparty pins busbar by. The PUBLIC half of the same domain-derived card subkey
-    /// [`Self::sign_with_card_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
+    /// BUSBAR'S PUBLISHED KEY for `domain`, as base64 SubjectPublicKeyInfo — the string a
+    /// counterparty pins busbar by. The PUBLIC half of the same domain-derived subkey
+    /// [`Self::sign_with_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
     /// verifier accepts, so a value emitted here and a value that verifier reads back cannot drift.
-    pub fn card_subkey_key_info_base64(&self, domain: &str) -> String {
+    pub fn subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
         der.extend_from_slice(&ED25519_KEY_INFO_PREFIX);
@@ -231,6 +240,7 @@ impl TokenSigner {
             generation: generation.map(str::to_string),
             aud: None,
             cid: None,
+            ticket: None,
         })
     }
 
@@ -261,16 +271,44 @@ impl TokenSigner {
             generation: generation.map(str::to_string),
             aud: Some(aud.to_string()),
             cid: cid.map(str::to_string),
+            ticket: None,
+        })
+    }
+
+    /// Mint a TICKET's signed BODY (row 132): `<b64url(payload)>.<b64url(sig)>`, the claims bound to
+    /// [`TICKET_AUDIENCE`] and naming `ticket`, with no prefix. The host prepends the issued-id
+    /// prefix the minting plane declares; the gate strips it and verifies the body with
+    /// [`TokenVerifier::verify_body`].
+    pub fn mint_ticket_body(
+        &self,
+        sub: &str,
+        exp: u64,
+        generation: Option<&str>,
+        ticket: &str,
+    ) -> String {
+        self.sign_body(&TokenClaims {
+            sub: sub.to_string(),
+            exp,
+            kid: self.kid.clone(),
+            generation: generation.map(str::to_string),
+            aud: Some(TICKET_AUDIENCE.to_string()),
+            cid: None,
+            ticket: Some(ticket.to_string()),
         })
     }
 
     /// Serialize + sign a claims payload into the two-segment token form. The ONE signing site,
     /// so every mint variant produces the identical wire shape.
     fn sign_claims(&self, claims: TokenClaims) -> String {
-        let payload = serde_json::to_vec(&claims).expect("TokenClaims serializes");
+        format!("{TOKEN_PREFIX}{}", self.sign_body(&claims))
+    }
+
+    /// The two signed segments of a claims payload, `<b64url(payload)>.<b64url(sig)>`.
+    fn sign_body(&self, claims: &TokenClaims) -> String {
+        let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
         let sig: Signature = self.key.sign(&payload);
         format!(
-            "{TOKEN_PREFIX}{}.{}",
+            "{}.{}",
             URL_SAFE_NO_PAD.encode(&payload),
             URL_SAFE_NO_PAD.encode(sig.to_bytes())
         )
@@ -316,6 +354,21 @@ impl TokenVerifier {
         let body = token
             .strip_prefix(TOKEN_PREFIX)
             .ok_or(VerifyError::Malformed)?;
+        self.verify_body(body, now, expected_aud)
+    }
+
+    /// [`Self::verify`] over the two signed segments alone, the prefix already stripped by the
+    /// caller: a ticket's body, whose prefix is the minting plane's declared one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify`].
+    pub fn verify_body(
+        &self,
+        body: &str,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> Result<TokenClaims, VerifyError> {
         let (payload_b64, sig_b64) = body.split_once('.').ok_or(VerifyError::Malformed)?;
         let payload = URL_SAFE_NO_PAD
             .decode(payload_b64)

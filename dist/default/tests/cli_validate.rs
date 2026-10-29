@@ -61,7 +61,6 @@ fn write_configs(dir: &Path, extra: &str) {
         r#"mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#,
     )
     .unwrap();
@@ -1162,7 +1161,6 @@ fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
         r#"mock:
   protocol: definitely-not-a-protocol
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#,
     )
     .unwrap();
@@ -1271,7 +1269,7 @@ fn providers_flag_overrides_providers_file_and_default() {
     let real_catalog = dir.join("real-providers.yaml");
     std::fs::write(
         &real_catalog,
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
 
@@ -1367,7 +1365,6 @@ fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
         r#"mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#,
     )
     .unwrap();
@@ -1498,7 +1495,6 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
             r#"mock:
   protocol: {protocol}
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 "#
         ),
     )
@@ -1917,7 +1913,6 @@ fn validate_refuses_an_http_token_url_on_a_public_host() {
             r#"entra:
   protocol: openai
   base_url: "https://res.example.com"
-  api_key_env: MOCK_KEY
 "#,
         )
         .unwrap();
@@ -2057,4 +2052,89 @@ fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
             && out.contains(") is invalid: could not read service-account key file"),
         "the unreadable key file is refused in 1.5.5's words: {out}"
     );
+}
+
+/// THE UNDECLARED-REFERENCE REFUSAL, through the REAL binary (OWNER RULING, CHIP-REVIEW-v4 change
+/// 2; overturns Q123): a secret reference in a PLUGIN's settings at a field the plugin did not
+/// declare secret is refused by `--validate` AND by boot, in the same sentence, naming the field and
+/// the plugin and saying to write the value itself. Boot refuses before it serves: a boot that did
+/// not refuse would still be running at the deadline, which fails the test.
+///
+/// The memory store declares every TOP-LEVEL setting (`secret_refs: *`, the surface 1.5.5 resolved),
+/// so the reference sits one level down, at `pool.path`, which no declared path names.
+#[test]
+fn validate_and_boot_refuse_a_reference_at_an_undeclared_plugin_field() {
+    let dir = fixture_dir("undeclared-secret-ref");
+    write_configs(
+        &dir,
+        "store:\n  module: memory\n  settings:\n    pool:\n      path: { env: MOCK_KEY }\n",
+    );
+    let refused = |all: &str| {
+        all.contains("store.settings.pool.path")
+            && all.contains("'memory'")
+            && all.contains("did not declare it as a secret")
+            && all.contains("write the value itself")
+            && !all.contains("test-key-value")
+    };
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let all = format!("{stdout}{stderr}");
+    assert_eq!(code, 1, "--validate must refuse: {all}");
+    assert!(refused(&all), "--validate's sentence: {all}");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn busbar");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().expect("poll").is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("boot did not refuse the undeclared reference: it is still running");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().expect("boot output");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "boot must refuse: {all}");
+    assert!(refused(&all), "boot's sentence: {all}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A reference at a position a plane DECLARES with a wildcard is accepted: plane-mcp declares a
+/// stdio child's environment values (`settings.*.env.*`, i.e. `tools.<server>.env.<VAR>`), so a
+/// stdio server whose `API_KEY` is `{ env: … }` still validates.
+#[cfg(linked_section_tools)]
+#[test]
+fn validate_accepts_a_reference_at_a_planes_declared_wildcard_path() {
+    let dir = fixture_dir("declared-wildcard-env");
+    write_tools_only_configs(
+        &dir,
+        r#"tools:
+  s:
+    pin: { mechanism: unpinned }
+    transport: stdio
+    command: /usr/bin/true
+    env:
+      API_KEY: { env: MOCK_KEY }
+      LOG_LEVEL: debug
+"#,
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "a reference at a declared wildcard path validates: {stdout}{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
