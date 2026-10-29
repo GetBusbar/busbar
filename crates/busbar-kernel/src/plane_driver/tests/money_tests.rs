@@ -607,6 +607,7 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
         UnitEnd {
             caller_status: 200,
             cut: true,
+            refused_unspent: false,
         },
     );
     let rows = metering_rows(&r);

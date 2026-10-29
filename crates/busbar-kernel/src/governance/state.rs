@@ -2342,6 +2342,37 @@ impl GovState {
         }
     }
 
+    /// RELEASE THE REQUEST COUNT an admission took, for a unit refused with nothing spent (R10 grant
+    /// ruling): its plane's first answer was an audited refusal, nothing was dialled and no units
+    /// were reported ([`crate::plane_driver::UnitEnd::refused_unspent`]). The one exception to the
+    /// rule that a failed request keeps its `requests` slot ([`refund_in_place`]): such a refusal
+    /// was the plane's judgement of the caller's own request before any work, as a kernel refusal
+    /// before admission counts nothing. It reads only the admission's own [`FeeCharge`]: EXACTLY
+    /// the cells it counted, each in the window it reached; a cell rolled on since has the count
+    /// taken back from the window it was counted in (parked, as [`GovState::refund_charge`] does),
+    /// never from the newer window. The fee is not touched here. Floored at 0.
+    pub fn release_request(&self, charge: &FeeCharge) {
+        for (bucket_id, window) in &charge.cells {
+            let mut map = self.budget.write(bucket_id);
+            let Some(cell) = map.get_mut(bucket_id) else {
+                continue; // swept: nothing in memory holds the count any more
+            };
+            if cell.window_start == *window {
+                cell.requests = cell.requests.saturating_sub(1);
+                cell.dirty = true;
+            } else if cell.window_start > *window {
+                cell.park(
+                    *window,
+                    UsageDelta {
+                        requests: -1,
+                        ..UsageDelta::default()
+                    },
+                );
+                cell.dirty = true;
+            }
+        }
+    }
+
     /// GIVE BACK ONE FEE UNIT COUNTED THROUGH ACCRUAL rather than charged by an admission (a session
     /// account's open count: an admission's fee comes back through [`GovState::refund_charge`]):
     /// one `fee_unit` count (`PER_SESSION`) off the fee lane of the plane `pool` is qualified with,

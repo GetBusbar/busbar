@@ -68,6 +68,12 @@ pub struct UnitEnd {
     /// bill: what the plane ledgered for the unit is final, cut or not (owner ruling 2026-10-20:
     /// "spend is what it is. if spend occurred it occurred").
     pub cut: bool,
+    /// THE UNIT WAS REFUSED WITH NOTHING SPENT (R10 grant ruling): the plane's first answer to it
+    /// was a refusal it audited (an `AUDIT_REJECTED` `RECORD_AUDIT` row written with the answer that
+    /// carried the caller's head), and nothing was dialled for it before that answer
+    /// ([`super::PlaneUnits::refused_unspent`]). With no units reported, its end releases the
+    /// request count admission took ([`crate::governance::GovState::release_request`]).
+    pub refused_unspent: bool,
 }
 
 /// One unit's money facts, as the composition root knows them when it admits the unit.
@@ -228,6 +234,7 @@ impl PlaneMoney {
             UnitEnd {
                 caller_status,
                 cut: false,
+                refused_unspent: false,
             },
         );
     }
@@ -239,11 +246,19 @@ impl PlaneMoney {
     /// plane that reported nothing bills nothing. The flat fee stays as the unit's [`FeeRefund`]
     /// rule decides it.
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
-        let UnitEnd { caller_status, .. } = end;
+        let UnitEnd {
+            caller_status,
+            refused_unspent,
+            ..
+        } = end;
         let Some(open) = self.shard(key).remove(&key) else {
             return;
         };
         let m = &open.money;
+        // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
+        if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
+            self.gov.release_request(&m.charge);
+        }
         if !open.ledgered {
             // A DELIVERED end meters one request against the serving member, tokens or none
             // (v1.5.5 proxy/usage.rs:31-40 and :99-106). A stream its far end cut is metered too:

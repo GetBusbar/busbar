@@ -27,9 +27,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span}
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalCode, UnitCount,
-    CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
+    AUDIT_REJECTED, CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -1321,6 +1321,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
+            run.lock().dialled = true;
             let sent = {
                 use tracing::Instrument as _;
                 self.far
@@ -1564,6 +1565,21 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 match std::str::from_utf8(lane) {
                     Ok(lane) => self.driver.money.laned(run.ctx, lane),
                     Err(_) => return Step::End(End::Failed(ReasonCode::PlanePanic)),
+                }
+            }
+            // THE PLANE'S FIRST ANSWER (the one carrying the caller's head): whether it was a
+            // refusal the plane audited, with nothing dialled before it and nothing sent on.
+            if out.reply_status != 0 {
+                let rejected = {
+                    let n = (out.records_written as usize).min(run.bufs.records.len());
+                    run.bufs.records[..n]
+                        .iter()
+                        .any(|w| w.op == RECORD_AUDIT && w.kind == AUDIT_REJECTED)
+                };
+                let mut st = run.lock();
+                if st.first_answer_refused.is_none() {
+                    st.first_answer_refused =
+                        Some(rejected && !st.dialled && out.flags & EMIT_TO_FAR_END == 0);
                 }
             }
             if let Err(end) = run.write_records(out.records_written).await {
