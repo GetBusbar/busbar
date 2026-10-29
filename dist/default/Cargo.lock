@@ -685,7 +685,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=26d7a653bc1dc47e5ed6568fddb83394ea3480b8#26d7a653bc1dc47e5ed6568fddb83394ea3480b8"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=57546f7d183e705df60606e86e7619ddd25b9522#57546f7d183e705df60606e86e7619ddd25b9522"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -699,16 +699,19 @@ dependencies = [
  "serde_json",
  "tracing",
  "url",
+ "zeroize",
 ]
 
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b1eca3619e9fd09ed92c109c46f46ea1be45ae66#b1eca3619e9fd09ed92c109c46f46ea1be45ae66"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=ab6db8a7d874427d3daa6f7c2a9f491a93e525f7#ab6db8a7d874427d3daa6f7c2a9f491a93e525f7"
 dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
+ "sonic-number",
+ "tracing",
 ]
 
 [[package]]
@@ -729,26 +732,28 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=efab87b0a8124551bd08675f729a1070470ec72d#efab87b0a8124551bd08675f729a1070470ec72d"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=7c4e4f98b6afdf23c9a8485ef4a06107f6113bdd#7c4e4f98b6afdf23c9a8485ef4a06107f6113bdd"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
- "bytes",
  "indexmap",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d#73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=4d9a524a17f66998d8c1453e60127dc038e1e468#4d9a524a17f66998d8c1453e60127dc038e1e468"
 dependencies = [
  "busbar-contract",
  "bytes",
  "serde",
  "serde_json",
+ "tracing",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -2083,16 +2088,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prettyplease"
-version = "0.2.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
-dependencies = [
- "proc-macro2",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2122,11 +2117,9 @@ dependencies = [
  "log",
  "multimap",
  "petgraph",
- "prettyplease",
  "prost",
  "prost-types",
  "regex",
- "syn 2.0.117",
  "tempfile",
 ]
 

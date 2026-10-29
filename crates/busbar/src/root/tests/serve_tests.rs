@@ -41,7 +41,7 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SE
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 #[cfg(feature = "plane-decisions")]
-use busbar_plane_decisions::plane_door::door as decisions_door;
+use busbar_plane_decisions::door as decisions_door;
 #[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

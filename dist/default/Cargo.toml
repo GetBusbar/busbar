@@ -88,7 +88,7 @@ busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit" }
 # one load like every dropped-in plane door (FLIP-STREAMING).
 busbar-plane-streaming = { workspace = true, optional = true }
 # THE DECISIONS PLANE (jev), #48's fifth: the edge the `plane-decisions` switch's `plane-door` row
-# names. The plane is served through its memory-ABI door (`busbar_plane_decisions::plane_door::door`),
+# names. The plane is served through its memory-ABI door (`busbar_plane_decisions::door`),
 # loaded through the loader's one load like every dropped-in plane door (FLIP-DECISIONS), so its
 # registry row is the door's own Statement folded by the kernel and the composition root writes no
 # declaration of its own. Optional, so `--no-default-features` installs no plane at all, which is the
@@ -244,7 +244,7 @@ plane-a2a = ["plane-a2a-door", "busbar-kernel/plane-a2a"]
 # THE STREAMING PLANE, through its memory-ABI door (FLIP-STREAMING; BUSBAR-1.6.0.md Part 3 section 12,
 # "The switch": the fold's development-only switch is deleted when the fold completes, and the
 # plane's one switch carries its door). IN `default`; `--no-default-features` compiles it out. On, the
-# plane's door (`busbar_plane_streaming::door::door`) is a `plane-door` row: the root hands it to the
+# plane's door (`busbar_plane_streaming::door`) is a `plane-door` row: the root hands it to the
 # loader beside every dropped-in plane door and binds it through the one load on the one dispatcher,
 # so the compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE
 # DESIGN section 11.4), and the serve row hands it its arrivals. It carries the ws wire its live
@@ -264,7 +264,7 @@ transport-tcp = []
 # THE DECISIONS PLANE, through its memory-ABI door (FLIP-DECISIONS; BUSBAR-1.6.0.md Part 3 section 12,
 # "The switch": the fold's development-only switch is deleted when the fold completes, and the plane's
 # one switch carries its door; #17: one feature per plane). IN `default`; `--no-default-features`
-# compiles it out. On, the plane's door (`busbar_plane_decisions::plane_door::door`) is a `plane-door`
+# compiles it out. On, the plane's door (`busbar_plane_decisions::door`) is a `plane-door`
 # row: the root hands it to the loader beside every dropped-in plane door and binds it through the one
 # load on the one dispatcher, so the compiled-in plane is called through the same table as its
 # dropped-in cdylib (`busbar-plane-decisions-plugin`; #2, #30; THE DESIGN section 11.4), its Statement folds into the
@@ -278,14 +278,14 @@ plane-decisions = ["dep:busbar-plane-decisions"]
 plane-llm-door = ["dep:busbar-plane-llm"]
 # THE MCP PLANE'S DOOR ROW, carried by `plane-mcp` and never set on its own (the mcp fold's switch
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
-# memory-ABI door (`busbar_plane_mcp::plane_door::door`) is a `plane-door` row, bound through the
+# memory-ABI door (`busbar_plane_mcp::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
 # (`busbar-plane-mcp-plugin`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
 # plane's key stands beside it.
 plane-mcp-door = ["dep:busbar-plane-mcp"]
 # THE A2A PLANE'S DOOR ROW, carried by `plane-a2a` and never set on its own (the a2a fold's switch
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
-# memory-ABI door (`busbar_plane_a2a::agent_door::door`) is a `plane-door` row, bound through the
+# memory-ABI door (`busbar_plane_a2a::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
 # (`busbar-plane-a2a-plugin`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
 # plane's key stands beside it.
@@ -456,11 +456,12 @@ busbar-auth-header = "busbar_auth_header::compiled_in"
 busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
 busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
 busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in"
-# A plane door row's entry is the module that exports its `door`.
-plane-decisions = "busbar_plane_decisions::plane_door"
+# A plane door row's entry is the module that exports its `door`: the crate root for a plane whose
+# door is its crate's one public item.
+plane-decisions = "busbar_plane_decisions"
 plane-llm-door = "busbar_plane_llm::plane_door"
-plane-mcp-door = "busbar_plane_mcp::plane_door"
-plane-a2a-door = "busbar_plane_a2a::agent_door"
+plane-mcp-door = "busbar_plane_mcp"
+plane-a2a-door = "busbar_plane_a2a"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
@@ -470,14 +471,14 @@ busbar-export-webhook = "busbar_export_webhook"
 # A transport whose door is its crate root's one public item: the row reads `door` and everything
 # else off its Statement (`linked_transport!`).
 busbar-transport-grpc = "busbar_transport_grpc"
-plane-streaming = "busbar_plane_streaming::door"
+plane-streaming = "busbar_plane_streaming"
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
-# holds it. A door row with no row here declares nothing.
+# holds it. A plane door row with no row here declares what its door's own Statement states under
+# `EXT_DECLARES` (ARCHITECT ruling 2026-10-21: the declaration rides the Statement), and nothing when
+# it states none.
 [package.metadata.busbar.linked-declares]
 plane-llm-door = "busbar_plane_llm::DECLARES"
-plane-mcp-door = "busbar_plane_mcp::DECLARES"
-plane-a2a-door = "busbar_plane_a2a::DECLARES"
 # The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
 # disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
 secret-file = "busbar_secret_file::DECLARES"
@@ -904,29 +905,34 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # On it, fe9c618's 31-slot store table (#1667).
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "dfce32ebc3b9c705183a055c33e409bd7290eb68" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
-# door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
+# door row (`plane-mcp-door`, `busbar_plane_mcp::door`, its crate's one public item) and installs in
+# every build's tests. The pin is the plane repo's dev head, so what its conformance suite judges is
+# what ships.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "efab87b0a8124551bd08675f729a1070470ec72d" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "7c4e4f98b6afdf23c9a8485ef4a06107f6113bdd" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
-# decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
+# decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`; the plane repo's dev
+# head). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "b1eca3619e9fd09ed92c109c46f46ea1be45ae66" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "ab6db8a7d874427d3daa6f7c2a9f491a93e525f7" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
-# plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
+# plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`; the plane repo's dev head), whose own
+# root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "26d7a653bc1dc47e5ed6568fddb83394ea3480b8" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "57546f7d183e705df60606e86e7619ddd25b9522" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
-# streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
+# streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door`; the plane repo's dev
+# head), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "4d9a524a17f66998d8c1453e60127dc038e1e468" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "4d9a524a17f66998d8c1453e60127dc038e1e468" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
