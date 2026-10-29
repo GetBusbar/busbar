@@ -949,7 +949,7 @@ pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, prin
 // [`register_and_migrate`] has restored the chain's tail ([`open_plugin_refusals`]). Holding is not a
 // failure: nothing is logged for it.
 
-/// What the host refused, or flagged, while a plugin started or bound.
+/// What the host refused, or flagged, while a plugin started, bound or served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRefusal {
     /// The trust policy left a plugin in the plugins directory unloaded.
@@ -959,6 +959,9 @@ pub enum PluginRefusal {
     /// The instance's `open` or `refresh` answered with a diagnostic its Statement declares, at
     /// warn or error: it loaded, flagged.
     Open,
+    /// Another op of the instance answered with a diagnostic its Statement declares, at error: a
+    /// refusal it met while serving (an IdP destination it refused, say).
+    Op,
 }
 
 impl PluginRefusal {
@@ -969,6 +972,7 @@ impl PluginRefusal {
             Self::Trust => "plugin.trust",
             Self::Need => "plugin.need",
             Self::Open => "plugin.open",
+            Self::Op => "plugin.op",
         }
     }
 
@@ -976,7 +980,7 @@ impl PluginRefusal {
     #[must_use]
     pub const fn outcome(self) -> &'static str {
         match self {
-            Self::Trust | Self::Need => busbar_contract::vocab::OUTCOME_REJECTED,
+            Self::Trust | Self::Need | Self::Op => busbar_contract::vocab::OUTCOME_REJECTED,
             Self::Open => busbar_contract::vocab::OUTCOME_DEGRADED,
         }
     }
