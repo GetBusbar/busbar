@@ -20,7 +20,7 @@
 //! card charges is looked up every time, so a signed back-dated correction still reaches it.
 //!
 //! **Era zero is "not dated".** A count accrued where no history is installed, or hydrated from a
-//! durable row that carries no era, is era zero: the opening entry's own `effective_from`, the card
+//! durable row no card-era row dates, is era zero: the opening entry's own `effective_from`, the card
 //! a deployment that never edited a price has always priced at. A cell that is never edited holds
 //! nothing but era zero, and prices exactly as the undated derivation did.
 
@@ -63,6 +63,22 @@ impl FeeEras {
         if let Some((_, n)) = self.0.iter_mut().find(|(e, n)| *e == era && *n > 0) {
             *n -= 1;
         }
+    }
+
+    /// The dated eras and their request counts, as recorded.
+    pub fn dated(&self) -> &[(u64, u64)] {
+        &self.0
+    }
+
+    /// A split read back from its dated eras and counts; era zero, the remainder, is dropped.
+    #[must_use]
+    pub fn of(dated: impl IntoIterator<Item = (u64, u64)>) -> Self {
+        Self(
+            dated
+                .into_iter()
+                .filter(|(e, n)| *e != 0 && *n != 0)
+                .collect(),
+        )
     }
 
     /// The fee base per era, given the bucket's billable total: every dated era, then the undated

@@ -3153,7 +3153,7 @@ struct bb_transport_FramerYield {
     uint32_t flags;
     uint64_t next_deadline_ns;
     uint32_t heads_len;
-    uint32_t _reserved;
+    uint32_t agreed;
 };
 
 /* `listen`'s `in`. */
@@ -5683,7 +5683,7 @@ BB_ASSERT(offsetof(bb_transport_FramerYield, pieces_len) == 16, "bb_transport_Fr
 BB_ASSERT(offsetof(bb_transport_FramerYield, flags) == 20, "bb_transport_FramerYield.flags: offset");
 BB_ASSERT(offsetof(bb_transport_FramerYield, next_deadline_ns) == 24, "bb_transport_FramerYield.next_deadline_ns: offset");
 BB_ASSERT(offsetof(bb_transport_FramerYield, heads_len) == 32, "bb_transport_FramerYield.heads_len: offset");
-BB_ASSERT(offsetof(bb_transport_FramerYield, _reserved) == 36, "bb_transport_FramerYield._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FramerYield, agreed) == 36, "bb_transport_FramerYield.agreed: offset");
 BB_ASSERT(sizeof(bb_transport_ListenIn) == 120, "bb_transport_ListenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_ListenIn) == 8, "bb_transport_ListenIn: alignment");
 BB_ASSERT(offsetof(bb_transport_ListenIn, head) == 0, "bb_transport_ListenIn.head: offset");

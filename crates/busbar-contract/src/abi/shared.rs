@@ -138,39 +138,8 @@ pub struct WireField {
 /// value is optional; these are the encodings, each with its inverse (an unknown byte is `None`).
 pub mod code {
     use crate::grammar::SelectorForm;
-    use crate::transport::wire::{CloseReason, Framing, StatusAt, Unit0Trigger, WireStatusClass};
+    use crate::transport::wire::{Framing, StatusAt, Unit0Trigger, WireStatusClass};
     use crate::transport::Side;
-
-    /// A close reason, `0..=7` in [`CloseReason`]'s order.
-    #[must_use]
-    pub const fn close_reason(r: CloseReason) -> u8 {
-        match r {
-            CloseReason::Normal => 0,
-            CloseReason::PeerClosed => 1,
-            CloseReason::Drain => 2,
-            CloseReason::Poisoned => 3,
-            CloseReason::Revoked => 4,
-            CloseReason::Timeout => 5,
-            CloseReason::TransportFailed => 6,
-            CloseReason::CapacityExhausted => 7,
-        }
-    }
-
-    /// The inverse of [`close_reason`].
-    #[must_use]
-    pub const fn close_reason_of(b: u8) -> Option<CloseReason> {
-        Some(match b {
-            0 => CloseReason::Normal,
-            1 => CloseReason::PeerClosed,
-            2 => CloseReason::Drain,
-            3 => CloseReason::Poisoned,
-            4 => CloseReason::Revoked,
-            5 => CloseReason::Timeout,
-            6 => CloseReason::TransportFailed,
-            7 => CloseReason::CapacityExhausted,
-            _ => return None,
-        })
-    }
 
     /// A status class, `1..=4`; `0` = none.
     #[must_use]
@@ -206,31 +175,12 @@ pub mod code {
         }
     }
 
-    /// The inverse of [`status_at`]; `Err` for an unknown byte.
-    pub const fn status_at_of(b: u8) -> Result<Option<StatusAt>, u8> {
-        Ok(match b {
-            0 => None,
-            1 => Some(StatusAt::FirstFrame),
-            2 => Some(StatusAt::Terminal),
-            other => return Err(other),
-        })
-    }
-
     /// How arrivals are delimited, `0..=1`.
     #[must_use]
     pub const fn framing(f: Framing) -> u8 {
         match f {
             Framing::Stream => 0,
             Framing::Datagram => 1,
-        }
-    }
-
-    /// The inverse of [`framing`]; `Err` for an unknown byte.
-    pub const fn framing_of(b: u8) -> Result<Framing, u8> {
-        match b {
-            0 => Ok(Framing::Stream),
-            1 => Ok(Framing::Datagram),
-            other => Err(other),
         }
     }
 
@@ -246,20 +196,6 @@ pub mod code {
             Some(Unit0Trigger::Upgrade) => 5,
             Some(Unit0Trigger::Handshake) => 6,
         }
-    }
-
-    /// The inverse of [`unit0_trigger`]; `Err` for an unknown byte.
-    pub const fn unit0_trigger_of(b: u8) -> Result<Option<Unit0Trigger>, u8> {
-        Ok(match b {
-            0 => None,
-            1 => Some(Unit0Trigger::FirstBytes),
-            2 => Some(Unit0Trigger::FirstLine),
-            3 => Some(Unit0Trigger::FirstMessage),
-            4 => Some(Unit0Trigger::FirstDatagram),
-            5 => Some(Unit0Trigger::Upgrade),
-            6 => Some(Unit0Trigger::Handshake),
-            other => return Err(other),
-        })
     }
 
     /// Every selector form, in code order: a form's code is its index here plus one.
@@ -290,15 +226,6 @@ pub mod code {
             i += 1;
         }
         0
-    }
-
-    /// The inverse of [`selector_form`].
-    #[must_use]
-    pub const fn selector_form_of(b: u8) -> Option<SelectorForm> {
-        match b {
-            1..=13 => Some(SELECTOR_FORMS[b as usize - 1]),
-            _ => None,
-        }
     }
 
     /// Which end of a connection, `0..=1`.
