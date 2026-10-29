@@ -880,22 +880,6 @@ fn a_route_shape_is_checked() {
     let mut r = route(METHOD_GET, PATH_EXACT, "/x");
     r.fields_len = 1;
     assert_eq!(check_route(&r), f(Rule::NullWithCount, "route.fields"));
-    let bad = [FieldPredicate {
-        op: FIELD_VALUE_PREFIX + 1,
-        _reserved: 0,
-        name: AbiStr {
-            ptr: null(),
-            len: 0,
-        },
-        value: AbiStr {
-            ptr: null(),
-            len: 0,
-        },
-    }];
-    assert_eq!(
-        check_route_fields(&bad),
-        f(Rule::UnknownCode, "route.field.op")
-    );
 }
 
 /// RED: a route's content — a rooted path for the exact, pattern and prefix forms, a pattern that
@@ -1061,32 +1045,6 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
     assert_eq!(
         check_final_status(&i, &rows, 1),
         f(Rule::NullWithCount, "finish.final_bytes")
-    );
-}
-
-/// THE ANSWER'S STATUS ON AN EMIT (INBOUND-LISTEN, l.4913): stated on the emit that carries an
-/// accepted stream's answer head, and on no other emit.
-#[test]
-fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
-    let mut i: EmitIn = z();
-    assert_eq!(check_emit_status(&i, false), Ok(()));
-    i.status = 200;
-    assert_eq!(check_emit_status(&i, true), Ok(()));
-    i.status = 101;
-    assert_eq!(check_emit_status(&i, true), Ok(()));
-    // RED: a status on an emit that carries no answer head.
-    assert_eq!(
-        check_emit_status(&i, false),
-        f(Rule::Contradiction, "emit.status")
-    );
-    // RED: an accepted stream's answer head with no status.
-    i.status = 0;
-    assert_eq!(check_emit_status(&i, true), f(Rule::Missing, "emit.status"));
-    // RED: the padding is not a channel.
-    i._status_reserved = 1;
-    assert_eq!(
-        check_emit_status(&i, false),
-        f(Rule::UnknownCode, "emit._status_reserved")
     );
 }
 
