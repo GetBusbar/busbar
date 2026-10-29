@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! [`exchange`] through a scripted connector host: every service pends once
+//! [`exchange`] and [`send_and_ack`] through a scripted connector host: every service pends once
 //! and completes on the host's side, the op's re-entry re-issues each handle and reads the stored
 //! result, and no service ever runs twice. The host records what the framer was handed.
 
@@ -58,6 +58,8 @@ struct Script {
     unframed: bool,
     /// The registration each ESTABLISH named, in order (`None` = an absent member).
     members: Vec<Option<Vec<u8>>>,
+    /// Streams established and not closed: the host's held streams.
+    held: i64,
     /// Every service the host ran (a replay runs none), in order.
     ops: Vec<u32>,
 }
@@ -152,6 +154,7 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         service::ESTABLISH => {
             // SAFETY: an `EstablishIn` (the SDK states its whole size).
             let i = unsafe { *input.cast::<crate::abi::host::conn::connector::EstablishIn>() };
+            s.held += 1;
             s.members.push((!i.member.ptr.is_null()).then(|| {
                 // SAFETY: the SDK's own string, live for the call.
                 unsafe { std::slice::from_raw_parts(i.member.ptr, i.member.len) }.to_vec()
@@ -182,6 +185,10 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
                 return answer(out, Outcome::Pending, 0, 0);
             }
             (0, play(io, piece))
+        }
+        service::CLOSE => {
+            s.held -= 1;
+            (0, 0)
         }
         _ => (0, 0),
     };
@@ -305,6 +312,8 @@ struct Run<T> {
     members: Vec<Option<Vec<u8>>>,
     /// The exchange's state once it completed.
     state: Exchange,
+    /// Streams the host still holds when the op answered.
+    held: i64,
     /// Every service the host ran, in order.
     ops: Vec<u32>,
 }
@@ -344,6 +353,7 @@ fn run<T>(
         framed: s.framed,
         members: s.members,
         state,
+        held: s.held,
         ops: s.ops,
     }
 }
@@ -501,6 +511,52 @@ fn a_pseudo_field_in_a_request_is_refused() {
         Exchange::request(split),
         Err(ConnFailure::Refused(t)) if t.contains("line break")
     ));
+}
+
+/// RED: a pure-send transport's ack FAILURE (a code and the peer's text) reaches the plugin
+/// verbatim, as an answer, never as a lost request.
+#[test]
+fn a_pure_send_acks_its_failure_with_a_code_and_the_peers_text() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reply = vec![piece(REPLY_ACK, 550, b"mailbox unavailable", b"", b"")];
+    let r = run(
+        reply,
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered,
+        Ok(Ack {
+            code: 550,
+            reason: b"mailbox unavailable".to_vec()
+        })
+    );
+    assert!(r.runs.values().all(|&n| n == 1));
+}
+
+/// RED: a transport that answers a read with no reply piece breaks the every-request-is-acked
+/// rule: the plugin is told so, never left without an answer.
+#[test]
+fn a_transport_that_never_acks_is_a_conformance_failure() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        vec![piece(0, 0, b"", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert!(
+        matches!(&r.answered, Err(ConnFailure::Failed(t)) if t.contains("every request is acked")),
+        "{:?}",
+        r.answered
+    );
 }
 
 /// THE TRANSPORT PIN, PLUGIN SIDE (the transport pin, ARCHITECT 2026-10-03): an exchange that asks reads its stream's facts
@@ -758,6 +814,16 @@ fn a_completed_exchange_closes_its_stream_once() {
     assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
     assert_eq!(r.ops.last(), Some(&service::CLOSE));
     assert_eq!(r.state.stream(), None);
+    let acked = run(
+        vec![piece(REPLY_ACK, 250, b"ok", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert_eq!(acked.answered.as_ref().expect("acked").code, 250);
+    assert_eq!(ran(&acked, service::CLOSE), 1, "{:?}", acked.ops);
+    assert_eq!(acked.ops.last(), Some(&service::CLOSE));
 }
 
 /// RED: a limit above `REPLY_MAX` clamps to it, and an exchange that sets none holds `REPLY_MAX`.
@@ -768,6 +834,46 @@ fn a_limit_above_reply_max_clamps() {
     assert_eq!(req().reply_limit(REPLY_MAX + 1).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(usize::MAX).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(7).reply_ceiling, 7);
+}
+
+/// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
+/// closes the stream before it answers, as a whole one does, so a caller that sends once and moves
+/// on holds nothing per failed delivery. The far end answers no reply piece; a stream that is not
+/// framed refuses the request. Each answers its failure with the host holding no stream. RED
+/// before: the failed exchange answered with its stream still held.
+#[test]
+fn a_failed_exchange_closes_its_stream_before_it_answers() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let no_piece = run(
+        vec![piece(0, 0, b"", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert!(no_piece.answered.is_err(), "{:?}", no_piece.answered);
+    assert_eq!(no_piece.held, 0, "a failed exchange left its stream held");
+    let refused = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(refused.answered.is_err(), "{:?}", refused.answered);
+    assert_eq!(refused.held, 0, "a refused request left its stream held");
+    // A whole exchange closes its stream too.
+    let whole = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(whole.answered.is_ok(), "{:?}", whole.answered);
+    assert_eq!(whole.held, 0);
 }
 
 /// A buffer whose TYPE wipes it on drop: the bound is the proof, checked at compile time.
@@ -783,7 +889,7 @@ fn wipeable<T: Zeroize>() {}
 fn every_buffer_an_exchange_holds_wipes_on_drop() {
     wipeable::<Request>();
     wipeable::<ExchangeResponse>();
-
+    wipeable::<Ack>();
     let framed = Exchange::request(post()).expect("a request");
     let Sending::Framed { head, body, .. } = &framed.sending else {
         panic!("a request is framed");
@@ -866,6 +972,12 @@ fn a_request_a_reply_and_an_ack_wipe_to_empty() {
     };
     reply.zeroize();
     assert_eq!(reply, ExchangeResponse::default());
+    let mut ack = Ack {
+        code: 250,
+        reason: b"queued".to_vec(),
+    };
+    ack.zeroize();
+    assert_eq!(ack, Ack::default());
 }
 
 /// RED: a reply whose stream resets after its head fails, and the exchange says the head was

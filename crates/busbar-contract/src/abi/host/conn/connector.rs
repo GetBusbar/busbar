@@ -318,6 +318,15 @@ pub const CAUSE_DEADLINE: u64 = 4;
 pub const CAUSE_FRAMER: u64 = 5;
 /// `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent.
 pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
+/// `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent.
+///
+/// An auth outcome, never the destination failing: the host records nothing against the
+/// destination for it.
+pub const CAUSE_AUTH_REFUSED: u64 = 7;
+/// `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent.
+///
+/// An auth outcome, never the destination failing, as [`CAUSE_AUTH_REFUSED`].
+pub const CAUSE_AUTH_FAILED: u64 = 8;
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
 /// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.

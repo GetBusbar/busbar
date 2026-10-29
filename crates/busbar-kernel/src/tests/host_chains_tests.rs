@@ -294,7 +294,7 @@ fn an_empty_append_drops_the_chain_whole() {
     );
 }
 
-/// A DROPPED CHAIN SCANS EMPTY IN THE STORE (ARCHITECT 2026-10-21, slot 40: an empty `record_put`
+/// A DROPPED CHAIN SCANS EMPTY IN THE STORE (ARCHITECT 2026-10-21, slot 26: an empty `record_put`
 /// removes the row): the drop's strikes remove its rows, so a raw scan of the kind finds none of
 /// them, not one empty row per record the chain ever held.
 #[test]
@@ -312,7 +312,7 @@ fn a_dropped_chain_scans_empty_in_the_store() {
 }
 
 /// A CHAIN DROPPED AND BEGUN AGAIN NEVER MEETS ITS OLD CLAIMS (the fleet's one writer per
-/// position, kept with slot 40's rule): the drop's strikes remove its rows, so the plane's kind has
+/// position, kept with slot 26's rule): the drop's strikes remove its rows, so the plane's kind has
 /// nothing left to count, and the chain's LIFE is the host's own row instead. The re-begun chain's
 /// first record takes the very position the old first record did, whose claim is still held, and
 /// it is stored all the same, in the next life; the life lives in the store, under the host's kind,

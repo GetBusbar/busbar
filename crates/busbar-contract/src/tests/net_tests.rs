@@ -332,6 +332,114 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
     }
 }
 
+/// A SOCKET LITERAL is exactly what the standard parser accepts: every row agrees with
+/// `SocketAddr`'s own answer, and states it.
+#[test]
+fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
+    for (s, want) in [
+        ("127.0.0.1:8080", true),
+        ("0.0.0.0:0", true),
+        ("10.1.2.3:65535", true),
+        ("[::1]:443", true),
+        ("[2001:db8::1]:80", true),
+        ("[::ffff:127.0.0.1]:80", true),
+        ("[fe80::1%eth0]:80", false),
+        // A numeric scope id is the standard grammar's; a named zone is not.
+        ("[fe80::1%2]:80", true),
+        ("0x7f.1:80", false),
+        ("127.1:80", false),
+        ("2130706433:80", false),
+        ("127.0.0.1", false),
+        ("127.0.0.1:", false),
+        ("127.0.0.1:65536", false),
+        ("127.0.0.1:-1", false),
+        ("127.0.0.1:80 ", false),
+        (" 127.0.0.1:80", false),
+        ("localhost:80", false),
+        ("example.test:443", false),
+        ("::1:443", false),
+        ("[::1]", false),
+        ("::1", false),
+        ("[::1]:", false),
+        ("", false),
+    ] {
+        assert_eq!(is_socket_literal(s), want, "{s:?}");
+        assert_eq!(
+            is_socket_literal(s),
+            s.parse::<std::net::SocketAddr>().is_ok(),
+            "{s:?} disagrees with the standard parser"
+        );
+    }
+}
+
+/// AN IP LITERAL (v4 or v6) is exactly what the standard parser accepts: every row agrees with
+/// `IpAddr`'s own answer, and states it.
+#[test]
+fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
+    for (s, want) in [
+        ("127.0.0.1", true),
+        ("0.0.0.0", true),
+        ("255.255.255.255", true),
+        ("256.0.0.1", false),
+        ("127.0.0.01", false),
+        ("127.1", false),
+        ("0x7f.0.0.1", false),
+        ("2130706433", false),
+        ("127.0.0.1:80", false),
+        (" 127.0.0.1", false),
+        ("127.0.0.1 ", false),
+        ("::1", true),
+        ("::", true),
+        ("2001:db8::1", true),
+        ("::ffff:127.0.0.1", true),
+        ("[::1]", false),
+        ("[::1]:443", false),
+        ("fe80::1%2", false),
+        ("fe80::1%eth0", false),
+        ("2001:db8:::1", false),
+        ("localhost", false),
+        ("", false),
+    ] {
+        assert_eq!(is_ip_literal(s), want, "{s:?}");
+        assert_eq!(
+            is_ip_literal(s),
+            s.parse::<std::net::IpAddr>().is_ok(),
+            "{s:?} disagrees with the standard parser"
+        );
+    }
+}
+
+/// THE VERBATIM HOST READER keeps what the shared reader normalises: a trailing root dot stays
+/// (`example.com.` is not `example.com`), a percent-encoded host is not decoded, and an IPv6
+/// literal is unbracketed as `Ipv6Addr` displays it; the authority is read exactly as
+/// `parse_url` reads it. RED against `url_host`, which drops the dot.
+#[test]
+fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
+    use crate::net::{url_host, url_host_verbatim};
+    assert_eq!(
+        url_host_verbatim("http://example.com./x").as_deref(),
+        Some("example.com.")
+    );
+    assert_eq!(
+        url_host("http://example.com./x").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("https://user@example.com:8443/p?q").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("foo://ex%41mple/").as_deref(),
+        Some("ex%41mple")
+    );
+    assert_eq!(
+        url_host_verbatim("http://[::ffff:a9fe:a9fe]/").as_deref(),
+        Some("::ffff:169.254.169.254")
+    );
+    assert_eq!(url_host_verbatim("file:///etc/passwd"), None);
+    assert_eq!(url_host_verbatim("mailto:a@b"), None);
+}
+
 /// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
 /// web scheme) `\`; the userinfo runs to the authority's last `@`; a generic scheme keeps its `\`.
 #[test]
