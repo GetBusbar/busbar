@@ -1249,9 +1249,10 @@ fn host_lends<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>
 /// `settings` (one JSON object) AS THE KERNEL RESOLVES THEM before they cross to `p`
 /// (`busbar_contract::secret_fields::resolve_declared`): a secret reference at a position `p`'s
 /// Statement does not declare secret is refused in the kernel's sentence; each one at a declared
-/// position is replaced by the string `resolve` answers for it. A plugin's suite proves its
-/// declared fields with it: `{env: VAR}` at a declared field resolves; anywhere else, it is
-/// refused.
+/// position is replaced by the string `resolve` answers for it. At a position `p`'s Statement names
+/// REFERENCE-CAPABLE (its extensions' `reference_fields`, lead ruling item 7a) a reference resolves
+/// the same way and a literal passes as written. A plugin's suite proves its declared fields with
+/// it: `{env: VAR}` at a declared field resolves; anywhere else, it is refused.
 ///
 /// # Errors
 /// The settings are not a JSON document, the refusal, or `resolve`'s error.
@@ -1262,9 +1263,10 @@ pub fn settings_as_the_kernel_resolves<K: Kind>(
 ) -> Result<Vec<u8>, String> {
     let mut tree: serde_json::Value = serde_json::from_slice(settings)
         .map_err(|e| format!("the settings are not a JSON document: {e}"))?;
-    busbar_contract::secret_fields::resolve_declared(
+    busbar_contract::secret_fields::resolve_declared_fields(
         &mut tree,
         p.secret_refs(),
+        p.reference_fields(),
         p.name(),
         resolve,
     )?;

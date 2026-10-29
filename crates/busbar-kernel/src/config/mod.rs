@@ -1840,7 +1840,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         let module = def.module.trim();
         // The module is asked of the export axis: the streams its sink declares (so the projection
         // is resolved against them now) and its own verdict on the settings.
-        let axis = crate::export::plugin::probe(name, module, &settings);
+        let axis = crate::export::plugin::probe(name, module, &def.settings);
         let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,

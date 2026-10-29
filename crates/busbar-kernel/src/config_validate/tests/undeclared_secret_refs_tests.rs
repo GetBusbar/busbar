@@ -113,3 +113,62 @@ fn core_fields_are_not_plugin_settings() {
         Ok(())
     );
 }
+
+/// REFERENCE-CAPABLE FIELDS (lead ruling item 7a): a 1.5.5 config writing a store's, a hook's or an
+/// exporter's `url` as `{env: VAR}` is NOT refused as undeclared when the plugin names `url` in its
+/// Statement's reference-capable list: the postgres, valkey and mysql stores, the webrequest hook,
+/// and the otlp and request-log-webhook exporters. A reference elsewhere in the same block still is.
+#[test]
+fn a_reference_at_a_reference_capable_url_is_accepted_and_elsewhere_refused() {
+    let rows = || {
+        let mut rows = crate::test_support::rows::Rows::new();
+        for (name, alias, kind) in [
+            ("busbar-store-postgres", "postgres", "store"),
+            ("busbar-store-valkey", "valkey", "store"),
+            ("busbar-store-mysql", "mysql", "store"),
+            ("busbar-hook-webrequest", "webrequest", "hook"),
+            ("busbar-export-otlp", "otlp", "export"),
+            ("busbar-export-webhook", "request-log-webhook", "export"),
+        ] {
+            rows = rows
+                .with_dropped_reference_slots(crate::tests::dropped(name, alias, kind), &["url"]);
+        }
+        rows.into_rows()
+    };
+    for store in ["postgres", "valkey", "mysql"] {
+        let mut cfg = store_with(json!({"url": {"env": "STORE_URL"}}));
+        if let Some(s) = cfg.store.as_mut() {
+            s.module = store.into();
+        }
+        assert_eq!(
+            undeclared_secret_refs(rows().as_ref(), &cfg),
+            Ok(()),
+            "{store}"
+        );
+        let mut cfg = store_with(json!({"url": "postgres://x", "pool": {"env": "POOL"}}));
+        if let Some(s) = cfg.store.as_mut() {
+            s.module = store.into();
+        }
+        let e = undeclared_secret_refs(rows().as_ref(), &cfg).expect_err("refused");
+        assert!(e.contains("store.settings.pool"), "{store}: {e}");
+    }
+
+    let mut cfg = store_with(json!({}));
+    cfg.store = None;
+    let hook: crate::config::HookCfg = serde_json::from_value(json!({
+        "kind": "gate",
+        "module": "webrequest",
+        "settings": {"url": {"env": "HOOK_URL"}},
+    }))
+    .expect("a hook");
+    cfg.hooks.insert("gate".into(), hook);
+    for (name, module) in [("traces", "otlp"), ("wh", "request-log-webhook")] {
+        let def: crate::config::ExportDefCfg = serde_json::from_value(json!({
+            "module": module,
+            "settings": {"url": {"env": "EXPORT_URL"}},
+        }))
+        .expect("an export");
+        cfg.export_defs.insert(name.into(), def);
+    }
+    assert_eq!(undeclared_secret_refs(rows().as_ref(), &cfg), Ok(()));
+}

@@ -357,6 +357,18 @@ pub struct Read {
     pub claims: Vec<String>,
 }
 
+impl Read {
+    /// Its reference-capable, not-secret settings paths: what its extensions state under
+    /// [`super::extensions::EXT_REFERENCE_FIELDS`] (lead ruling item 7a).
+    ///
+    /// # Errors
+    ///
+    /// The extensions state a value that is not a JSON list of settings paths.
+    pub fn reference_fields(&self) -> Result<Vec<String>, String> {
+        super::extensions::reference_fields(&self.extensions.bytes)
+    }
+}
+
 /// Why a rendering could not be read back: the byte offset and what was expected there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreadable {

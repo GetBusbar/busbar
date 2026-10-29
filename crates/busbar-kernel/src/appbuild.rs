@@ -1105,6 +1105,7 @@ pub fn build_app_from_config(
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
             &plugin_registry.secret_slots(&store_cfg.module),
+            &plugin_registry.reference_slots(&store_cfg.module),
             &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1269,6 +1270,7 @@ pub fn build_app_from_config(
             false => config::secret::resolve_settings(
                 &g.settings,
                 &plugin_registry.secret_slots(&g.module),
+                &plugin_registry.reference_slots(&g.module),
                 &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
