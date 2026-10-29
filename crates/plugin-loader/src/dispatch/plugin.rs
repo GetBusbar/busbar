@@ -377,9 +377,7 @@ pub(crate) fn quarantine_crossing() -> bool {
     // instance for the whole span.
     let inst = unsafe { &*p };
     inst.revoke();
-    if let Some((id, table)) = inst.wake.conn.get() {
-        super::conn_services::purge(*id, table);
-    }
+    inst.let_go_held();
     tracing::warn!(
         plugin = %inst.name,
         "a plugin handed the host a context the host did not mint; the instance is quarantined"
@@ -399,6 +397,25 @@ impl Drop for Unbound {
 }
 
 impl Instance {
+    /// WHAT THE INSTANCE HOLDS ON THE HOST GOES, once it can never cross again (quarantined,
+    /// faulted or let go): its connector streams ([`super::conn_services::purge`]) and every host
+    /// I/O handle it still owns ([`IoHost::reap`](busbar_contract::io_host::IoHost::reap)), so a
+    /// listener or socket it never closed is closed for it.
+    pub(crate) fn let_go_held(&self) {
+        if let Some((id, table)) = self.wake.conn.get() {
+            super::conn_services::purge(*id, table);
+        }
+        let io = self
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.io());
+        if let Some(io) = io {
+            io.reap(self.ctx().handle);
+        }
+    }
+
     /// FAULT AND REVOKE (#74): the instance is never called again on any worker, and its handle
     /// names nothing any more. The watchdog's fault and the forged-context quarantine both land
     /// here.
@@ -427,9 +444,7 @@ pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
         return;
     };
     inst.revoke();
-    if let Some((id, table)) = inst.wake.conn.get() {
-        super::conn_services::purge(*id, table);
-    }
+    inst.let_go_held();
     tracing::warn!(plugin = %inst.name, "{why}");
 }
 
@@ -539,9 +554,7 @@ impl Drop for Instance {
     fn drop(&mut self) {
         // Let go: its handle names nothing any more (#74).
         self.wake.revoked.store(true, Ordering::Release);
-        if let Some((id, table)) = self.wake.conn.get() {
-            super::conn_services::purge(*id, table);
-        }
+        self.let_go_held();
     }
 }
 
@@ -857,26 +870,37 @@ impl Instance {
     }
 
     /// AUDITED ON THE PLUGIN'S BEHALF: each diagnostic its Statement declares that an `open` or
-    /// `refresh` answered at warn or error. A log line (`DIAG_LOG`) is a log, not a declaration: it
-    /// goes to the plugin's own file alone.
-    fn open_flagged(&self, head: &OutHead) {
+    /// `refresh` answered at warn or error ([`BindRefusal::Open`]), and that any other op answered
+    /// at ERROR ([`BindRefusal::Op`]: a refusal the plugin met serving, such as an IdP destination
+    /// it refused; a warning an op raises on every retry is a log, not a record). A log line
+    /// (`DIAG_LOG`) is a log, not a declaration: it goes to the plugin's own file alone.
+    ///
+    /// [`BindRefusal::Open`]: crate::observe::BindRefusal::Open
+    /// [`BindRefusal::Op`]: crate::observe::BindRefusal::Op
+    fn flagged(&self, head: &OutHead, lifecycle: bool) {
         let env = head.envelope;
         // SAFETY: as `ingest`, which read the same arrays on this crossing.
         let Some(diags) = (unsafe { array(env.diags, env.diags_len) }) else {
             return;
         };
         for d in diags {
-            if !matches!(
-                d.severity,
-                busbar_contract::abi::mechanism::call::SEVERITY_WARN | SEVERITY_ERROR
-            ) {
+            let flags = match d.severity {
+                SEVERITY_ERROR => true,
+                busbar_contract::abi::mechanism::call::SEVERITY_WARN => lifecycle,
+                _ => false,
+            };
+            if !flags {
                 continue;
             }
             let Some(code) = self.diag_ids.name(d.id_idx) else {
                 continue;
             };
             let code = String::from_utf8_lossy(code);
-            self.refused(crate::observe::BindRefusal::Open { code: &code });
+            self.refused(if lifecycle {
+                crate::observe::BindRefusal::Open { code: &code }
+            } else {
+                crate::observe::BindRefusal::Op { code: &code }
+            });
         }
     }
 
@@ -1291,9 +1315,7 @@ impl Instance {
             None
         };
         self.ingest(&head);
-        if s == slot::OPEN || s == slot::REFRESH {
-            self.open_flagged(&head);
-        }
+        self.flagged(&head, s == slot::OPEN || s == slot::REFRESH);
         let error = match outcome {
             Outcome::Failed | Outcome::Refused => reason.or_else(|| copy_str(head.error)),
             _ => None,
