@@ -7159,3 +7159,88 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
         "a public host"
     );
 }
+
+/// Validate one provider's `base_url` as the boot path does.
+fn base_url_verdict(base: &str) -> Result<(), Vec<String>> {
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
+    validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+}
+
+/// security.md: plain `http://` is permitted only for a private literal, `localhost` or
+/// `*.localhost`. A single-label name such as a container-network hostname (`ollama`, a compose
+/// service) is not any of those: it is a name resolution decides, so it is refused with the https
+/// diagnostic, never taken for local.
+#[test]
+fn test_http_container_name_base_url_is_rejected() {
+    crate::test_support::register_neutral_test_plane();
+    for base in [
+        "http://ollama:11434",
+        "http://ollama",
+        "http://vllm-server:8000/v1",
+        "http://host.docker.internal:11434",
+        "http://localhost.example.com:11434", // `localhost` as a label, not the TLD
+        "http://notlocalhost:11434",
+    ] {
+        let errs = base_url_verdict(base).expect_err(&format!(
+            "'{base}' names no private literal and must be refused"
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("must use https for a public host")),
+            "'{base}': expected the https-for-public-host diagnostic; got: {errs:?}"
+        );
+    }
+    // The same name over https is fine (the rule is the scheme).
+    assert!(base_url_verdict("https://ollama:11434").is_ok());
+}
+
+/// security.md: `localhost` and every `*.localhost` name is local, so it may use plain `http://`.
+#[test]
+fn test_http_localhost_subdomain_base_url_is_accepted() {
+    crate::test_support::register_neutral_test_plane();
+    for base in [
+        "http://localhost:11434",
+        "http://ollama.localhost:11434",
+        "http://api.ollama.localhost/v1",
+        "http://LOCALHOST:11434",
+        "http://Ollama.LocalHost:11434",
+    ] {
+        assert!(
+            base_url_verdict(base).is_ok(),
+            "'{base}' is a localhost name and may use http; got: {:?}",
+            base_url_verdict(base)
+        );
+    }
+}
+
+/// FINDING (undocumented): a `base_url` that is an unresolved env placeholder skips the scheme check.
+/// A Lenient (`--validate` / admin dry-run) load splices an unset `${VAR}` in as the bare name `VAR`,
+/// and `validate_with_unset` then treats a scheme-less value naming an unset variable as a
+/// placeholder. So under `--validate` the value is exempt from the https rule, where the boot path
+/// (`validate`, no unset list) refuses the same bare value, and a value with a `://` scheme is
+/// checked either way, even when it names the unset variable.
+#[test]
+fn an_env_placeholder_base_url_skips_the_scheme_check_under_validate_only() {
+    crate::test_support::register_neutral_test_plane();
+    let unset = vec!["OLLAMA_BASE".to_string()];
+    let with_unset = |base: &str| {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
+        validate_with_unset(
+            &make_root_cfg(providers, HashMap::new(), HashMap::new()),
+            &unset,
+        )
+    };
+    // A bare placeholder (what an unset ${OLLAMA_BASE} leaves) is exempt under --validate...
+    assert!(
+        with_unset("OLLAMA_BASE").is_ok(),
+        "an unset-var placeholder skips the scheme check: {:?}",
+        with_unset("OLLAMA_BASE")
+    );
+    // ...is refused on the boot path, which has no unset list...
+    assert!(base_url_verdict("OLLAMA_BASE").is_err());
+    // ...and a real http:// URL to a public host is refused even when it names the unset variable.
+    assert!(with_unset("http://OLLAMA_BASE.example.com").is_err());
+    assert!(with_unset("http://api.example.com").is_err());
+}

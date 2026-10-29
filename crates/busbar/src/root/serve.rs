@@ -4970,9 +4970,10 @@ mod door_tests;
 
 // THE DOOR CELLS' RIG: the one surface the door planes' own root cells reach the composition root
 // through (no struct literal of a root type, no installer by its path), so a root refactor keeps
-// its signatures and leaves a pinned plane's cells compiling. Compiled iff an enabled door's
-// cells name it (`build.rs`, `door_rig`).
-#[cfg(all(test, linked_section_pools, door_rig))]
+// its signatures and leaves a pinned plane's cells compiling. Compiled in every test build that
+// serves the `pools` section, so a root change that breaks the rig fails here, on the change, and
+// not at the next plane repin (`build.rs` sets `door_rig` when an enabled door's cells name it).
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/door_rig.rs"]
 pub(crate) mod door_rig;
 

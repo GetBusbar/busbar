@@ -96,9 +96,13 @@ pub fn binding_generation(generation_hash: &str) -> Option<&str> {
 /// Whether a presented token's generation claim matches the binding row's CURRENT generation —
 /// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
 /// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
-/// rotation can never be defeated by simply omitting the claim.
+/// rotation can never be defeated by simply omitting the claim. The two generations are compared
+/// with the contract's timing-safe primitive: it is stored key material on the bearer path.
 pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
-    binding_generation(generation_hash) == presented
+    match (binding_generation(generation_hash), presented) {
+        (Some(held), Some(claimed)) => busbar_contract::redacted::constant_time_eq(held, claimed),
+        (held, claimed) => held.is_none() && claimed.is_none(),
+    }
 }
 
 /// THE ONE 128-bit random hex draw: 128 bits of OS CSPRNG as 32 lowercase hex chars. Fails closed on
