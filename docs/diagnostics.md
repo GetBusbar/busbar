@@ -1767,6 +1767,17 @@ RETIRED. Nothing emits this code: the engine keeps no plane task store.
 
 **What to do:** Nothing emits this code.
 
+<a id="plane-record-kind-reserved"></a>
+### BUSBAR-7106 — A plane declares a record kind the kernel keeps its own records under (the plane is refused)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-record-kind-reserved`
+
+A plane's Statement declares a record kind that the kernel keeps its own records under (`ticket`, where a minted ticket's record is kept). A plane's declared kind names the store rows the admin record write lands under and the rows its retention rule governs, so admitting it would let that plane write beside, and purge under its own rule, the kernel's records. busbar refuses the plane instance at its admit, so the boot (or the reload) that would open it fails, naming the instance and the kind. Nothing of the instance is registered.
+
+**What to do:** Use a plane build that does not declare a kernel record kind: rename the plane's record kind (it is the plugin author's word, in its Statement's record kinds) and rebuild. There is no configuration override; the kernel's kinds are never shared.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>
