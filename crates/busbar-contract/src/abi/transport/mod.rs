@@ -245,7 +245,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(FrameSpan => offset, len),
     crate::layout_shape!(HeadSlots => stream, method, target, authority, reason),
     crate::layout_shape!(FramerYield =>
-        wire_len, frame_len, pieces_len, flags, next_deadline_ns, heads_len, _reserved
+        wire_len, frame_len, pieces_len, flags, next_deadline_ns, heads_len, agreed
     ),
     crate::layout_shape!(ListenIn => head, bind, addr_buf, addr_cap),
     crate::layout_shape!(ListenOut => head, listener, addr_written),
@@ -1159,9 +1159,21 @@ pub struct FramerYield {
     pub next_deadline_ns: u64,
     /// Head slots written to `heads`.
     pub heads_len: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// THE PROTOCOL AGREED on an accepted connection, as the framer states it: the 1-based
+    /// position, in the framer's own ACCEPTING offer (what `locate` answers with
+    /// [`LocateIn::accept`]), of the protocol the connection speaks; `0` = not stated. An opaque
+    /// position, never a protocol's name: the host resolves it against the offer the listener
+    /// made ([`check::check_agreed_position`]: past the offer is refused, and a dial states
+    /// none). Carved from what was alignment padding (pre-tag, R9 as clarified 2026-09-28: the
+    /// layout golden regenerated, no version bump); the size, alignment and every offset are
+    /// unchanged.
+    pub agreed: u32,
 }
+
+// The carve keeps the layout: size, alignment and the field's offset are the padding's.
+const _: () = assert!(core::mem::size_of::<FramerYield>() == 40);
+const _: () = assert!(core::mem::align_of::<FramerYield>() == 8);
+const _: () = assert!(core::mem::offset_of!(FramerYield, agreed) == 36);
 
 // ── carrier ins and outs ─────────────────────────────────────────────────────────────────────────
 
@@ -1563,8 +1575,7 @@ pub struct EmitIn {
     /// emit, the one carrying the answer's head (its bytes `encode` rendered), the status the answer
     /// carries, in the numbering of the claim the stream arrived on; a status that asks the far end
     /// to switch protocols hands the connection to the claimed upgrade framer ([`slot::DETACH`]).
-    /// `0` on every other emit, where a stated status is refused
-    /// ([`check::check_emit_status`]). Never a `:status` field. A tail addition (pre-tag v1).
+    /// `0` on every other emit, where a stated status is refused. Never a `:status` field. A tail addition (pre-tag v1).
     pub status: u32,
     /// Alignment padding.
     pub _status_reserved: u32,

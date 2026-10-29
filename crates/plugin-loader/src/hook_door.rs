@@ -808,7 +808,7 @@ fn claims(c: &Candidate, word: &str) -> bool {
 /// Statement alias, the manifest alias, a former name) or one of the hook words its Statement claims.
 /// The ONE rule [`HookRows`] finds a row by.
 fn answers(c: &Candidate, module: &str) -> bool {
-    c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
+    c.answers(module) || claims(c, module)
 }
 
 /// Whether a DROPPED-IN `kind: hook` row of `registry` answers `module` by the rule the hook axis
@@ -817,16 +817,9 @@ fn answers(c: &Candidate, module: &str) -> bool {
 /// linked half is the root's hook axis.
 #[must_use]
 pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
-    registry.dropped_hooks().any(|p| {
-        let Ok(Some(stated)) = p.manifest.stated_rendering() else {
-            return false;
-        };
-        let origin = Origin::Dropped {
-            file: p.file.clone(),
-            bytes: Arc::new(Vec::new()),
-        };
-        Candidate::from_manifest(stated, &p.manifest, origin).is_ok_and(|c| answers(&c, module))
-    })
+    registry
+        .dropped_hooks()
+        .any(|p| matches!(p.candidate(), Ok(Some(c)) if answers(&c, module)))
 }
 
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
@@ -885,19 +878,9 @@ impl HookRows {
             candidates.push(c);
         }
         for p in registry.into_iter().flat_map(PluginRegistry::dropped_hooks) {
-            let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
-            let Some(stated) = p.manifest.stated_rendering().map_err(named)? else {
-                return Err(named(JSON_HOOK_REFUSED.to_string()));
+            let Some(c) = p.candidate()? else {
+                return Err(format!("plugin '{}': {JSON_HOOK_REFUSED}", p.manifest.name));
             };
-            let c = Candidate::from_manifest(
-                stated,
-                &p.manifest,
-                Origin::Dropped {
-                    file: p.file.clone(),
-                    bytes: Arc::new(p.lib_bytes.clone()),
-                },
-            )
-            .map_err(named)?;
             if p.first_party() {
                 first_party.push(c.name.clone());
             }
@@ -925,11 +908,7 @@ impl HookRows {
     ) -> Result<Self, String> {
         for c in &mut self.candidates {
             if matches!(c.origin, Origin::Linked(_)) {
-                let words: Vec<String> = std::iter::once(c.name.clone())
-                    .chain(c.aliases.iter().cloned())
-                    .flat_map(|w| former_of(&w))
-                    .collect();
-                *c = c.clone().answering(words);
+                *c = c.clone().answering_former(&former_of);
             }
         }
         crate::boot::one_owner(&self.candidates)?;
