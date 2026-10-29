@@ -75,8 +75,6 @@ pub mod doors;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
-#[cfg(any(test, feature = "test-harness"))]
-pub mod harness;
 pub mod hooks;
 pub mod kernel;
 pub mod keyset;
