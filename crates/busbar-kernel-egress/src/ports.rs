@@ -34,8 +34,6 @@ pub use busbar_contract::DestinationId;
 /// box its future, and one box per port call is the price of the seam being a trait at all.
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-// ── the breaker seam ────────────────────────────────────────────────────────────────────────────
-
 /// Why a member cannot take a request right now.
 ///
 /// This is the taxonomy every consumer in this crate speaks: selection excludes on it, the
@@ -84,14 +82,14 @@ pub use busbar_kernel_breaker::{Admit, Outcome};
 
 /// What the upstream said, as the classifier reads it.
 ///
-/// The transport's own class of the frame (the fee leg, which also tells a success from a
-/// failure), its fault reading of the answer for the breaker, the upstream's numbered status in the
-/// numbering that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE
-/// FAULT READING ALONE and never reads `code` (row 66: the kernel names no protocol); what a given
-/// code means to the breaker is the transport's own declared table, read on the transport's side of
-/// the frame. `code` crosses for the composition root's model egress, which runs the previous
-/// release's 429 rate-limit ladder and 4xx client-fault count on the number (the transport ABI carries the number beside the class, `FrameMeta`'s
-/// `status_code`, BUSBAR-1.6.0.md l.4036-4053).
+/// The transport's own class of the frame (the fee leg, which also tells a success from a failure),
+/// its fault reading of the answer for the breaker, the upstream's numbered status in the numbering
+/// that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE FAULT
+/// READING ALONE and never reads `code` (the kernel names no protocol); what a given code means to
+/// the breaker is the transport's own declared table, read on the transport's side of the frame.
+/// `code` crosses for the composition root's model egress, which runs the previous release's 429
+/// rate-limit ladder and 4xx client-fault count on the number (the transport ABI carries the number
+/// beside the class, `FrameMeta`'s `status_code`, BUSBAR-1.6.0.md l.4036-4053).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own class of the frame, where it carries one.
@@ -246,8 +244,6 @@ pub trait Breaker: Send + Sync {
     fn refund_budget(&self, destination: DestinationId);
 }
 
-// ── the pool's own concurrency ──────────────────────────────────────────────────────────────────
-
 /// A held concurrency slot on one member.
 ///
 /// Dropping it frees the slot. It is held for the whole life of a streamed answer and dropped on
@@ -298,8 +294,6 @@ pub trait Capacity: Send + Sync {
     ) -> BoxFut<'a, Option<(DestinationId, Permit)>>;
 }
 
-// ── the journal seam ────────────────────────────────────────────────────────────────────────────
-
 /// One dispatch, as the journal records it before the dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dispatched {
@@ -348,8 +342,6 @@ impl std::fmt::Display for DurabilityUnavailable {
 
 impl std::error::Error for DurabilityUnavailable {}
 
-// ── the clock ───────────────────────────────────────────────────────────────────────────────────
-
 /// `// contract:` the node's clock and its only sleep.
 ///
 /// Time is an input, not an ambient fact. Every deadline in this unit is computed from `now_secs`
@@ -377,8 +369,6 @@ pub trait Clock: Send + Sync {
     /// A future that completes no earlier than `ms` milliseconds from now.
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()>;
 }
-
-// ── telemetry ───────────────────────────────────────────────────────────────────────────────────
 
 /// THE LABELS A PLANE STATED for one attempt's counters (`OnPieceOut::metric_pool` /
 /// `metric_lane`): each `None` where it stated none. Words, never trusted: the counters take a

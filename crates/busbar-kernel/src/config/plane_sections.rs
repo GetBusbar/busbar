@@ -35,22 +35,6 @@
 //! than being folded silently into a nearby arm, which is how two refusals become one wording that
 //! is wrong for one of them.
 //!
-//! ## THIS IS NOT THE OTHER CROSS-PLANE REFUSAL, and the two must not be merged
-//!
-//! [`crate::plane_driver::dispatch::PlaneSections::resolve`] also refuses a cross-plane reference, with
-//! [`crate::plane_driver::dispatch::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
-//! one. They answer different questions at different moments:
-//!
-//!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses a
-//!     dotted reference like `sectionname.entryname` written where a bare name belongs — a SHAPE
-//!     that names a plane, whether or not any entry by that name exists anywhere.
-//!   * [`crate::plane_driver::dispatch::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
-//!     bare name that resolves on a sibling plane — a name whose shape is legal and whose
-//!     BINDING crosses the boundary.
-//!
-//! Neither subsumes the other: this one fires on a name nothing defines, and that one fires on a
-//! name with no dot in it. Collapsing them would not deduplicate a check, it would delete one.
-//!
 //! ## THE SECTION SPLIT lives in the contract
 //!
 //! The section-map split a plane reads its own section with ([`busbar_contract::section`]: the

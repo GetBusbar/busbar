@@ -256,7 +256,7 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
     assert!(!row(&lref).is_empty(), "a live row is never struck");
 }
 
-/// A SWEEP SHRINKS THE STORE (ARCHITECT 2026-10-21, slot 40: an empty `record_put` removes the
+/// A SWEEP SHRINKS THE STORE (ARCHITECT 2026-10-21, slot 26: an empty `record_put` removes the
 /// row): the rows of the settled handles a submit sweeps LEAVE the store's `WORK_SCHEMA`, so the
 /// row count falls. A store that kept each strike as an empty row would grow by every handle ever
 /// opened.
