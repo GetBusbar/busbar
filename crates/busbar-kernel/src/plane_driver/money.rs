@@ -322,14 +322,13 @@ impl PlaneMoney {
         };
         let m = &open.money;
         if !open.ledgered {
-            let counts = reported(&open.last);
-            self.ledger(m, &counts);
             // A DELIVERED end meters one request against the serving member, tokens or none
             // (v1.5.5 proxy/usage.rs:31-40 and :99-106). A stream its far end cut is metered too:
             // the plane's ledger, not the cut, says what it spent.
-            if (200..=299).contains(&caller_status) {
-                self.meter(m, open.provider.as_deref(), &counts);
-            }
+            let delivered = (200..=299).contains(&caller_status);
+            self.bill(m, open.provider.as_deref(), &reported(&open.last), |_| {
+                delivered
+            });
         }
         if m.fee.refunds(caller_status, &open.last) {
             match &m.fee {
@@ -380,29 +379,44 @@ impl PlaneMoney {
     /// Ledger `counts` (class index, amount) under the unit's lane, pool and arrival window. A sum
     /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
     /// the plane check refuses a class counted twice, so a validated report never gets here.
-    fn ledger(&self, m: &UnitMoney, counts: &[(u32, u64)]) {
-        let counts = &usage_only(m, counts);
-        let units = named(&m.classes, counts, u64::checked_add)
-            .or_else(|| named(&m.classes, counts, |a, b| Some(a.saturating_add(b))))
-            .unwrap_or_default();
-        self.gov
-            .record_usage(&m.cost, &m.key, &m.pool, &m.lane, &units, m.arrived);
-    }
-
-    /// THE METERING ROW for a delivered (or reported-billed) unit: one request against the serving
-    /// member, with the unit's counts by class name — v1.5.5 `crates/busbar/src/proxy/usage.rs`
-    /// `ledger_and_meter` (:99-106: "even a zero-token delivered response counts its request") and
-    /// `record_resp_usage` (:31-40: "A delivered response with NO token usage ... still METERS as
-    /// one request against the serving model").
+    /// `provider` is the serving member's (once an attempt committed): the metering row the classes
+    /// mirror onto is the one the unit's request meters on, so spend is always attributed.
     ///
+    /// Then, when `metered` holds of the usage counts, THE METERING ROW: one request against the
+    /// serving member, with the unit's counts by class name (none when they do not add up) —
+    /// v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter` (:99-106: "even a zero-token
+    /// delivered response counts its request") and `record_resp_usage` (:31-40: "A delivered
+    /// response with NO token usage ... still METERS as one request against the serving model").
     /// The kernel hands the counts over as opaque class names; which of them the row's own columns
     /// hold is the metering row's fact ([`GovState::record_lane_metering`]), never this step's. The
     /// row is the one `GovState::record_usage`'s class mirror keys the same lane by, so nothing
-    /// splits across two rows.
-    fn meter(&self, m: &UnitMoney, provider: Option<&str>, counts: &[(u32, u64)]) {
-        let units = named(&m.classes, &usage_only(m, counts), u64::checked_add).unwrap_or_default();
-        self.gov
-            .record_lane_metering(&m.key.id, &m.lane, provider, &units, m.arrived);
+    /// splits across two rows. The counts are named once for both.
+    fn bill(
+        &self,
+        m: &UnitMoney,
+        provider: Option<&str>,
+        counts: &[(u32, u64)],
+        metered: impl FnOnce(&[(u32, u64)]) -> bool,
+    ) {
+        let counts = &usage_only(m, counts);
+        let checked = named(&m.classes, counts, u64::checked_add);
+        let saturated;
+        let units = match &checked {
+            Some(units) => units,
+            None => {
+                saturated =
+                    named(&m.classes, counts, |a, b| Some(a.saturating_add(b))).unwrap_or_default();
+                &saturated
+            }
+        };
+        self.gov.record_usage_served(
+            &m.cost, &m.key, &m.pool, &m.lane, provider, units, m.arrived,
+        );
+        if metered(counts) {
+            let units = checked.unwrap_or_default();
+            self.gov
+                .record_lane_metering(&m.key.id, &m.lane, provider, &units, m.arrived);
+        }
     }
 
     /// Whether `counts`, priced at the card in force, reach what the unit's tightest applicable
@@ -558,12 +572,9 @@ impl MoneySeam for PlaneMoney {
             }
             money
         };
-        self.ledger(&money, &bill.billed);
         // A cancelled stream meters only when it bills a reported count (1.5.5's drop path billed
         // the usage the far end had reported through the same ledger_and_meter; none, no row).
-        if bills(&money, &bill.billed) {
-            self.meter(&money, provider.as_deref(), &bill.billed);
-        }
+        self.bill(&money, provider.as_deref(), &bill.billed, bills);
     }
 
     /// The caller went away: the loop's sealed end goes to the root's posting site, and the unit's
@@ -600,10 +611,7 @@ impl MoneySeam for PlaneMoney {
             // (the bucket cells and the metering row are write-behind; the durable write is the
             // flusher's, never a store call on this thread), and it neither awaits nor crosses a
             // plugin. record_metering is the same in-memory, sharded accumulator.
-            self.ledger(&money, &counts);
-            if bills(&money, &counts) {
-                self.meter(&money, provider.as_deref(), &counts);
-            }
+            self.bill(&money, provider.as_deref(), &counts, bills);
         }
         self.post.post(ctx, ended);
     }
@@ -654,10 +662,7 @@ impl MoneySeam for PlaneMoney {
             owed
         };
         let (money, provider, counts) = owed;
-        self.ledger(&money, &counts);
-        if bills(&money, &counts) {
-            self.meter(&money, provider.as_deref(), &counts);
-        }
+        self.bill(&money, provider.as_deref(), &counts, bills);
     }
 
     /// The member that served the unit: from here every ledgering, metering and cut-stream pricing
@@ -702,9 +707,10 @@ fn locked(shard: &Mutex<Shard>) -> std::sync::MutexGuard<'_, Shard> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Whether `counts` bill anything once the fee units are set aside: a reported count above zero.
-fn bills(m: &UnitMoney, counts: &[(u32, u64)]) -> bool {
-    usage_only(m, counts).iter().any(|(_, n)| *n > 0)
+/// Whether `usage` (the counts with the fee units set aside, [`usage_only`]) bills anything: a
+/// reported count above zero.
+fn bills(usage: &[(u32, u64)]) -> bool {
+    usage.iter().any(|(_, n)| *n > 0)
 }
 
 #[cfg(test)]

@@ -69,6 +69,63 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
+/// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the auth table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x00c89280c6692621;
+
+/// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/auth/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops =>
+        head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target
+    ),
+    crate::layout_shape!(StyleDecl => name, flags, points),
+    crate::layout_shape!(AuthTail =>
+        head, caps, facts, login_kind, inbound_points, styles, styles_len, operator_principal,
+        credential_kinds, credential_kinds_len
+    ),
+    crate::layout_shape!(NamedValue => name, value),
+    crate::layout_shape!(RequestFacts => method, authority, canonical_path, query, timestamp),
+    crate::layout_shape!(IdentityBuf => buf, buf_cap, groups, groups_cap, _reserved),
+    crate::layout_shape!(IdentityOut =>
+        subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
+        groups_len, _reserved, replay_key, replay_ttl_secs, credential
+    ),
+    crate::layout_shape!(StripName => name, place, _reserved),
+    crate::layout_shape!(VerifyIn =>
+        head, credential, lines, lines_len, request, out_buf, point, _reserved, conn, unit, peer,
+        body, strip, strip_cap, _reserved2
+    ),
+    crate::layout_shape!(IdentifyOut =>
+        head, verdict, needed_groups, needed_bytes, identity, decision, strip_len, needed_strip,
+        _reserved
+    ),
+    crate::layout_shape!(BeginLoginIn =>
+        head, redirect_uri, state, nonce, code_challenge, scopes, scopes_len
+    ),
+    crate::layout_shape!(LoginField => name, label, kind, required),
+    crate::layout_shape!(BeginLoginOut => head, shape, _reserved, authorize_url, form, form_len),
+    crate::layout_shape!(CompleteLoginIn =>
+        head, code, state, redirect_uri, code_verifier, submitted, submitted_len, out_buf, nonce
+    ),
+    crate::layout_shape!(OpenOutboundIn => head, style, credential, settings),
+    crate::layout_shape!(OpenOutboundOut => head, handle),
+    crate::layout_shape!(OutboundReadyIn => head, handle),
+    crate::layout_shape!(OutboundReadyOut => head, ready, _reserved),
+    crate::layout_shape!(FieldSpan => name, value, flags, _reserved),
+    crate::layout_shape!(FieldsIn =>
+        head, handle, mode, point, request, caller_credential, field_buf, field_buf_cap, fields,
+        fields_cap, _reserved, headers, headers_len, conn, unit, body
+    ),
+    crate::layout_shape!(FieldsOut => head, fields_len, needed_fields, needed_bytes),
+    crate::layout_shape!(TargetIn => head, style, credential, settings, buf, buf_cap),
+    crate::layout_shape!(TargetOut => head, target),
+];
+
 /// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot
 /// [`LIFECYCLE_SLOTS`]` + k`, contiguous, in [`Ops`] field order.
 ///
@@ -238,6 +295,45 @@ pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
 /// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
+/// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
+///
+/// The binding's settings carry it as `token_url`, which the HOST judges as a destination before
+/// any binding is opened (its scheme and the cloud-metadata denylist, in the previous release's
+/// words; ARCHITECT ruling 2026-09-28 Q2 (a): a need's target is the kernel's to judge), with the
+/// entry's `scope` it is exchanged under. The credential is the `client_id:client_secret` pair the
+/// exchange mints FROM, so an entry declaring none is refused. A style that does not state it has
+/// any `token_url` left unjudged and unread, as the previous release ignored one on such a style.
+pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
+/// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
+///
+/// The credential is a document that names the endpoint (`token_uri`), inline or in the key file
+/// the credential names, and the HOST reads it out and judges it as a destination before the
+/// binding is opened (ARCHITECT ruling 2026-09-28 Q2 (a)), handing the plugin its judged copy as
+/// the `token_uri` setting. The style signs its assertion WITH the credential, so an entry
+/// declaring none is refused. A style takes its endpoint from one place: it never states this
+/// beside [`STYLE_ENDPOINT_TOKEN_URL`].
+pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
+/// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
+pub const STYLE_RANK_SHIFT: u32 = 16;
+/// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
+///
+/// Where the style stands when the host lists the outbound styles a provider's `auth:` may name
+/// (the refusal of an unknown one renders the list): ranked styles first, by rank, then the
+/// unranked ones in plugin registration order. A rank orders a list and grants nothing; two
+/// styles of one rank keep registration order. [`ranked`] spells one; [`style_rank`] reads it.
+pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
+
+/// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn ranked(rank: u8) -> u32 {
+    (rank as u32) << STYLE_RANK_SHIFT
+}
+
+/// The list rank a [`StyleDecl::flags`] states (`0` = unranked; [`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn style_rank(flags: u32) -> u32 {
+    (flags & STYLE_RANK_MASK) >> STYLE_RANK_SHIFT
+}
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
@@ -245,7 +341,8 @@ pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
+    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] |
+    /// [`STYLE_ENDPOINT_FROM_CREDENTIAL`], and a list rank ([`STYLE_RANK_MASK`]).
     pub flags: u32,
     /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
     /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over
@@ -464,7 +561,7 @@ pub const FIELD_SENSITIVE: u32 = 1;
 /// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
 /// after any query the target already has, in the order written) and never sends it as a header.
 /// The plane never sees it, and every target the host logs, reports in an error or labels a metric
-/// with has its value redacted (the egress seam's `query_auth`). Optional: a style that presents
+/// with has its value redacted. Optional: a style that presents
 /// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
 pub const FIELD_QUERY: u32 = 2;
 

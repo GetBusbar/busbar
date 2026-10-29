@@ -43,6 +43,9 @@ provider credentials at the boundary, preserves supported native SDK
 workflows, and puts policy, budgets, routing, resilience, and execution
 evidence in one enforcement point.
 
+> **Upgrading from 1.5.5?** Read [What's new in 1.6.0](docs/whats-new-1.6.md): your config, keys
+> and data carry over, one command converts the config, and every change you might notice is listed.
+
 > **What this README demonstrates today:** Busbar's model execution
 > plane—native provider protocols, credential boundary, routing,
 > budgets, resilience, and audit evidence. MCP tool governance and A2A

@@ -32,6 +32,7 @@
 //! Every op holds one unit from submission to completion (driver tickets hold none); over the cap
 //! the op answers REFUSED and the plugin is never called.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::raw::c_void;
@@ -134,6 +135,11 @@ pub trait EnvelopeSink: Send + Sync {
     fn diag(&self, d: Diagnostic<'_>);
     /// An entry the host dropped.
     fn dropped(&self, why: Dropped);
+    /// A refusal the host made while the instance labelled `instance` bound
+    /// ([`crate::observe::BindRefusal`]). The observer that stands before every door's sink
+    /// ([`crate::observe::EnvelopeObserver`]) hands it to the host's audit; a binder's own sink,
+    /// behind it, has nothing to do with it.
+    fn refused(&self, _instance: &str, _refusal: crate::observe::BindRefusal<'_>) {}
 }
 
 /// The sink that discards everything.
@@ -489,8 +495,8 @@ pub struct Instance {
     /// the op pends.
     #[doc(hidden)]
     pub resumes: AtomicU64,
-    /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
-    pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
+    /// The ticket-less crossings in progress, for the watchdog: `id -> (started, slot)`.
+    pub(crate) calls: Mutex<HashMap<u64, (Instant, u32)>>,
     next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
@@ -717,8 +723,17 @@ impl Instance {
         }
     }
 
-    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<(u64, Instant, u32)>> {
+    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, HashMap<u64, (Instant, u32)>> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `cross`, a ticket-less crossing of `s`, listed in [`Instance::calls`] while it runs.
+    fn watched<R>(&self, s: u32, cross: impl FnOnce() -> R) -> R {
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.lock_calls().insert(id, (Instant::now(), s));
+        let crossed = cross();
+        self.lock_calls().remove(&id);
+        crossed
     }
 
     /// Whether `close` answered READY or FAULT.
@@ -772,7 +787,8 @@ impl Instance {
             // program per member, and a re-declaration retires a member that changed or is gone.
             if busbar_contract::section::member_program(&need.target_from) {
                 let programs = doc.as_ref().map(member_programs).unwrap_or_default();
-                let _ = table.declare_member_programs(*instance, id, need, &programs);
+                let answer = table.declare_member_programs(*instance, id, need, &programs);
+                self.need_refused(id, answer.map_err(crate::observe::conn_reason));
                 continue;
             }
             // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
@@ -780,10 +796,15 @@ impl Instance {
             // with no target, which the table refuses.
             let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
             if let Some(value) = at.filter(|v| v.is_object()) {
-                let _ = match busbar_contract::conn::Program::from_settings(value) {
-                    Ok(program) => table.declare_program(*instance, id, need, &program),
-                    Err(_) => table.declare(*instance, id, need, None, None),
+                let answer = match busbar_contract::conn::Program::from_settings(value) {
+                    Ok(program) => table
+                        .declare_program(*instance, id, need, &program)
+                        .map_err(crate::observe::conn_reason),
+                    Err(_) => table
+                        .declare(*instance, id, need, None, None)
+                        .map_err(|_| "program_malformed"),
                 };
+                self.need_refused(id, answer);
                 continue;
             }
             let target = doc
@@ -795,7 +816,67 @@ impl Instance {
                     .as_ref()
                     .and_then(|d| resolve_setting(d, &need.trust_from)),
             };
-            let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
+            // A target its path does not resolve to is refused for that, whatever else holds.
+            let unresolved = target.is_none()
+                && !need.target_from.is_empty()
+                && busbar_contract::section::member_target(&need.target_from).is_none();
+            let answer = table
+                .declare(*instance, id, need, target.as_deref(), trust.as_deref())
+                .map_err(|e| {
+                    if unresolved {
+                        "target_unresolved"
+                    } else {
+                        crate::observe::conn_reason(e)
+                    }
+                });
+            self.need_refused(id, answer);
+        }
+    }
+
+    /// AUDITED ON THE PLUGIN'S BEHALF: the table's refusal of `need`, declared at `open` or
+    /// `refresh`, handed to the host's audit under the instance's label. The verdict itself is the
+    /// table's to keep (`need.admit` reads it); the plugin still learns it there.
+    fn need_refused(&self, need: NeedId, answer: Result<(), &'static str>) {
+        if let Err(reason) = answer {
+            self.refused(crate::observe::BindRefusal::Need {
+                need: need.0,
+                reason,
+            });
+        }
+    }
+
+    /// A refusal the host made while this instance bound, handed to its sink under the label the
+    /// host bound it as (its plugin name before a label is set).
+    fn refused(&self, refusal: crate::observe::BindRefusal<'_>) {
+        let label = self
+            .wake
+            .caller
+            .get()
+            .map_or(self.name.as_str(), |c| &*c.instance);
+        self.sink.refused(label, refusal);
+    }
+
+    /// AUDITED ON THE PLUGIN'S BEHALF: each diagnostic its Statement declares that an `open` or
+    /// `refresh` answered at warn or error. A log line (`DIAG_LOG`) is a log, not a declaration: it
+    /// goes to the plugin's own file alone.
+    fn open_flagged(&self, head: &OutHead) {
+        let env = head.envelope;
+        // SAFETY: as `ingest`, which read the same arrays on this crossing.
+        let Some(diags) = (unsafe { array(env.diags, env.diags_len) }) else {
+            return;
+        };
+        for d in diags {
+            if !matches!(
+                d.severity,
+                busbar_contract::abi::mechanism::call::SEVERITY_WARN | SEVERITY_ERROR
+            ) {
+                continue;
+            }
+            let Some(code) = self.diag_ids.name(d.id_idx) else {
+                continue;
+            };
+            let code = String::from_utf8_lossy(code);
+            self.refused(crate::observe::BindRefusal::Open { code: &code });
         }
     }
 
@@ -967,13 +1048,12 @@ impl Instance {
         let mut frame = (self.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
-        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
-        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
-        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
-            self.cross(slot::CANCEL, input, out, out_size)
+        let crossed = self.watched(slot::CANCEL, || {
+            // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+            crate::ffi_thread::on_plugin_thread(|| unsafe {
+                self.cross(slot::CANCEL, input, out, out_size)
+            })
         });
-        self.lock_calls().retain(|c| c.0 != id);
         crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
@@ -1211,6 +1291,9 @@ impl Instance {
             None
         };
         self.ingest(&head);
+        if s == slot::OPEN || s == slot::REFRESH {
+            self.open_flagged(&head);
+        }
         let error = match outcome {
             Outcome::Failed | Outcome::Refused => reason.or_else(|| copy_str(head.error)),
             _ => None,
@@ -1668,7 +1751,7 @@ impl<K: Kind> Plugin<K> {
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
                 resumes: AtomicU64::new(0),
-                calls: Mutex::new(Vec::new()),
+                calls: Mutex::new(HashMap::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
@@ -1799,7 +1882,7 @@ impl<K: Kind> Plugin<K> {
     /// crossing is recorded for the watchdog of the dispatcher that adopted the instance: past its
     /// budget the instance is faulted (the caller's thread cannot be replaced).
     pub fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
-        self.call_once(s, frame, false)
+        self.call_on(s, frame, Ticket::NONE, false)
     }
 
     /// THE ONE RE-CALL of a SHORT answer, spending its [`Recall`] token, with the caller's bigger
@@ -1814,7 +1897,11 @@ impl<K: Kind> Plugin<K> {
         if token.instance != self.instance_id() || token.slot != s {
             return Called::from(Crossed::host(Outcome::Refused));
         }
-        self.call_once(s, frame, true)
+        let called = self.call_on(s, frame, Ticket::NONE, false);
+        if called.recall.is_some() {
+            return Called::from(Crossed::host(Outcome::Fault));
+        }
+        called
     }
 
     /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
@@ -1842,7 +1929,7 @@ impl<K: Kind> Plugin<K> {
         if let Some(tickets) = &inline {
             tickets.starting(ticket, self.inner.instance, s, resume);
         }
-        let called = self.call_ticketed(s, frame, ticket, resume);
+        let called = self.call_on(s, frame, ticket, resume);
         if let Some(tickets) = &inline {
             tickets.ended(ticket, s, called.recall.is_some());
         }
@@ -1853,20 +1940,9 @@ impl<K: Kind> Plugin<K> {
         Arc::as_ptr(&self.inner) as usize
     }
 
-    fn call_once<I: InFrame, O: OutFrame>(
-        &self,
-        s: u32,
-        frame: &mut Frame<I, O>,
-        recall: bool,
-    ) -> Called {
-        let called = self.call_ticketed(s, frame, Ticket::NONE, false);
-        if recall && called.recall.is_some() {
-            return Called::from(Crossed::host(Outcome::Fault));
-        }
-        called
-    }
-
-    fn call_ticketed<I: InFrame, O: OutFrame>(
+    /// The one call on the caller's thread ([`Plugin::call`], [`Plugin::recall`],
+    /// [`Plugin::call_inline`]): `ticket` NONE for a ticket-less call.
+    fn call_on<I: InFrame, O: OutFrame>(
         &self,
         s: u32,
         frame: &mut Frame<I, O>,
@@ -1875,6 +1951,12 @@ impl<K: Kind> Plugin<K> {
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
+            return Called::from(Crossed::host(o));
+        }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance)
+        // before anything is acquired or crossed.
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(s, frame.heads().0.cast_const(), size_of::<I>(), owner) {
             return Called::from(Crossed::host(o));
         }
         let lifecycle = is_lifecycle(s);
@@ -1887,25 +1969,23 @@ impl<K: Kind> Plugin<K> {
             }
             return Called::from(Crossed::host(Outcome::Refused));
         };
+        // A new op on a real ticket starts a new epoch of its stored service results; a resume
+        // re-reads them (`super::services::new_op`).
+        if !ticket.is_none() && !resume {
+            super::services::new_op(inst.wake, ticket);
+        }
         let (i, o, out_size) = frame.heads();
-        let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
-        inst.lock_calls().push((id, Instant::now(), s));
         // SAFETY: the frame is ours for the call; its heads lead the structs.
-        let crossed = unsafe {
+        let crossed = inst.watched(s, || unsafe {
             let head = &mut *i;
             head.size = size_of::<I>() as u32;
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
             head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
-            head.deadline_class = if ticket.is_none() {
-                DeadlineClass::Call as u8
-            } else {
-                DeadlineClass::Connection as u8
-            };
+            head.deadline_class = stamped_class::<K>(s, ticket) as u8;
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
-        };
-        inst.lock_calls().retain(|c| c.0 != id);
+        });
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
@@ -1918,6 +1998,17 @@ impl<K: Kind> Plugin<K> {
             recall: token,
             ..Called::from(crossed)
         }
+    }
+}
+
+/// THE DEADLINE CLASS a crossing of `s` on `ticket` is stamped with: `Call` ticket-less (it may
+/// not pend); on a real ticket, the class the kind's contract states for the op
+/// ([`Kind::ticketed_class`]).
+pub(crate) fn stamped_class<K: Kind>(s: u32, ticket: Ticket) -> DeadlineClass {
+    if ticket.is_none() {
+        DeadlineClass::Call
+    } else {
+        K::ticketed_class(s)
     }
 }
 
