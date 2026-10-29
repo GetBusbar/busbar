@@ -1795,10 +1795,13 @@ fn a_built_driver_admits_its_instance_to_the_host_services() {
     );
 }
 
-/// THE KERNEL TICK MARKS DUE BEFORE THE INSTANCE TICKS (ARCHITECT S7-TICK scope c): a registration
-/// never verified is listed by `trust.due` once a tick ran, not before.
+/// NO BACKGROUND TIMER RE-VERIFIES AN IDLE UPSTREAM (tool-and-agent-trust.md:61-62): a
+/// counterparty is re-fetched when a unit uses it, never because time passed. The kernel's tick
+/// marks nothing, so `trust.due` invites no plane to fetch an upstream nobody called, however many
+/// ticks run past its declared cadence. RED before: the tick marked every counterparty past its
+/// cadence due (`TrustBook::mark_due`), marks nothing acted on.
 #[tokio::test]
-async fn a_due_subject_shows_in_trust_due_after_a_tick() {
+async fn an_uncalled_upstream_is_never_fetched_over_time() {
     let services = stored();
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
@@ -1807,7 +1810,10 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
         .await
         .expect("one tick");
-    assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
+    assert!(
+        due(&services).is_empty(),
+        "an upstream nobody called is not due after the tick"
+    );
 }
 
 // ── the kernel's Approve over the trust facts a plane states ────────────────────────────────────
