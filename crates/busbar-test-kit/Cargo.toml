@@ -22,6 +22,9 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-contract = { path = "../busbar-contract" }
 # The suite's host connector (`conformance_host`): busbar's connector and its TLS test kit.
 busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
+# The guarded host's deployment default (`conformance_host::guarded_host`): the destination guard's
+# inputs as a default deployment states them.
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 base64 = { workspace = true }
 hex = { workspace = true }
 ring = { workspace = true }

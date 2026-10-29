@@ -9185,6 +9185,13 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
                 "listen": "127.0.0.1:0",
                 "store": {"module": migrated_store_module()},
                 "store": { "module": migrated_store_module() },
+                "tls": { "cert": { "file": "/etc/busbar/tls/cert.pem" }, "key": { "file": "/etc/busbar/tls/key.pem" } },
+                "admin_listen": "127.0.0.1:0",
+                "admin_tls": {
+                    "cert": { "file": "/etc/busbar/tls/admin-cert.pem" },
+                    "key": { "file": "/etc/busbar/tls/admin-key.pem" },
+                    "client_ca": { "file": "/etc/busbar/tls/admin-ca.pem" }
+                },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -9204,6 +9211,14 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         flagged.contains(&"listen") && flagged.contains(&"store"),
         "process-level binds flagged reload-to-apply: {flagged:?}"
     );
+    // Rotation is a restart (security.md): the TLS material of both listeners is read once at
+    // boot, so a PUT touching `tls` / `admin_tls` / `admin_listen` is stored but flagged too.
+    for field in ["tls", "admin_tls", "admin_listen"] {
+        assert!(
+            flagged.contains(&field),
+            "{field} is read at boot, so a change to it is flagged reload-to-apply: {flagged:?}"
+        );
+    }
     assert!(
         !flagged.contains(&"per_request_fee"),
         "a live-swappable field is NOT flagged: {flagged:?}"
@@ -9218,6 +9233,14 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         doc.root.unwrap().listen.as_deref(),
         Some("127.0.0.1:0"),
         "the reload-to-apply field is still durably persisted"
+    );
+    let root = busbar_kernel::config::overlay::read(&overlay)
+        .expect("overlay written")
+        .root
+        .unwrap();
+    assert!(
+        root.tls.is_some() && root.admin_tls.is_some(),
+        "the tls / admin_tls changes are durably stored too, for the next boot"
     );
 
     handle.abort();

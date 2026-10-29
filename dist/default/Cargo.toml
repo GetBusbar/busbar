@@ -728,6 +728,13 @@ name = "law7_direct_model_route"
 path = "tests/law7_direct_model_route.rs"
 required-features = ["auth-admin-tokens"]
 
+# Boots the real binary on a config that names an admin token and one decisions model: it needs the
+# operator credential's linked row and the decisions plane's door.
+[[test]]
+name = "decisions_served"
+path = "tests/decisions_served.rs"
+required-features = ["auth-admin-tokens", "plane-decisions"]
+
 [[test]]
 name = "law7_unloaded_plane_apply"
 path = "tests/law7_unloaded_plane_apply.rs"
@@ -751,15 +758,27 @@ path = "tests/admin_bound_before_healthz.rs"
 required-features = ["auth-admin-tokens"]
 
 [[test]]
+name = "admin_mtls_refuses_certless_client"
+path = "tests/admin_mtls_refuses_certless_client.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
 name = "metrics_routes_across_export_reload"
 path = "tests/metrics_routes_across_export_reload.rs"
 required-features = ["auth-admin-tokens"]
+
+# Boots the real binary with an admin token and a Prometheus scrape, and reads both.
+[[test]]
+name = "provider_key_never_surfaces"
+path = "tests/provider_key_never_surfaces.rs"
+required-features = ["auth-admin-tokens", "export-prometheus"]
 
 # Boots the image's shipped default, which names the operator credential (`admin-tokens`).
 [[test]]
 name = "default_config_no_outbound"
 path = "tests/default_config_no_outbound.rs"
 required-features = ["auth-admin-tokens"]
+
 [package.metadata.busbar.migration]
 # THE ROOT MIGRATION TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`migration:` and each
 # entry's `retired:` and `former_names:`); src/root/tests/migration_table.rs is red on an edit and prints the

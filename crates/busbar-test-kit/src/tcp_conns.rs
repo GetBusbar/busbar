@@ -50,6 +50,18 @@ pub trait SecureDial: Send + Sync {
     ) -> std::io::Result<Box<dyn SecuredSock>>;
 }
 
+/// THE DESTINATION JUDGE a table dials through ([`TcpConns::judged`]), handed to it by a test: the
+/// connector's (its production guard), never this crate's. A table with none judges nothing.
+pub trait DialGuard: Send + Sync {
+    /// Judge `target` (`host:port`) under the dialling need's egress class `class`: the one
+    /// address to dial, or the refusal ([`ConnError::Refused`] for the guard's, [`ConnError::Fault`]
+    /// for a name that did not resolve, as the connector answers them).
+    ///
+    /// # Errors
+    /// The destination is refused, or does not resolve.
+    fn judge(&self, target: &str, class: u32) -> Result<std::net::SocketAddr, ConnError>;
+}
+
 /// A stream [`SecureDial::secure`] secured: its bytes, the socket under it, and its close.
 pub trait SecuredSock: Read + Write + Send {
     /// The socket under the session.
@@ -106,7 +118,10 @@ impl Write for Sock {
 
 struct Conn {
     sock: Sock,
+    /// The target as the plugin named it (a secured stream's server name).
     target: String,
+    /// What is dialled: the target, or the one address the table's judge pinned for it.
+    at: String,
 }
 
 /// THE TEST CONNECTION TABLE.
@@ -121,6 +136,8 @@ pub struct TcpConns {
     classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), u32>>,
     /// An open answers with its dial still to make ([`TcpConns::dialling_late`]).
     late: bool,
+    /// The destination judge every dial meets first ([`TcpConns::judged`]).
+    guard: Option<Arc<dyn DialGuard>>,
 }
 
 impl std::fmt::Debug for TcpConns {
@@ -167,6 +184,7 @@ impl TcpConns {
             timeouts: Mutex::new(Vec::new()),
             classes: Mutex::new(std::collections::HashMap::new()),
             late: false,
+            guard: None,
         }
     }
 
@@ -179,6 +197,17 @@ impl TcpConns {
         Self {
             late: true,
             ..Self::new(wake)
+        }
+    }
+
+    /// This table, every network dial judged first by `guard` under the need's declared egress
+    /// class (the default class where none was declared), the address it pinned dialled exactly;
+    /// a refused destination is never dialled. A local-socket target is not a network dial.
+    #[must_use]
+    pub fn judged(self, guard: Arc<dyn DialGuard>) -> Self {
+        Self {
+            guard: Some(guard),
+            ..self
         }
     }
 
@@ -250,7 +279,7 @@ fn land(c: &mut Conn) -> Result<(), ConnError> {
         prefix, timeout_ms, ..
     } = &c.sock
     {
-        let dialled = dial(&c.target, prefix, *timeout_ms);
+        let dialled = dial(&c.at, prefix, *timeout_ms);
         c.sock = match dialled {
             Ok(sock) => sock,
             Err(e) => {
@@ -274,6 +303,21 @@ impl Conns for TcpConns {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(desc.timeout_ms);
+        let local = !self.facts.local_prefix.is_empty()
+            && desc.target.starts_with(&self.facts.local_prefix);
+        let at = match &self.guard {
+            Some(guard) if !local => {
+                let class = self
+                    .classes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&(caller, need))
+                    .copied()
+                    .unwrap_or(0);
+                guard.judge(desc.target, class)?.to_string()
+            }
+            _ => desc.target.to_owned(),
+        };
         let sock = if self.late {
             Sock::Late {
                 prefix: self.facts.local_prefix.clone(),
@@ -281,7 +325,7 @@ impl Conns for TcpConns {
                 asked: false,
             }
         } else {
-            dial(desc.target, &self.facts.local_prefix, desc.timeout_ms)?
+            dial(&at, &self.facts.local_prefix, desc.timeout_ms)?
         };
         self.slab.insert(
             caller,
@@ -289,6 +333,7 @@ impl Conns for TcpConns {
             Mutex::new(Conn {
                 sock,
                 target: desc.target.to_owned(),
+                at,
             }),
         )
     }

@@ -33,8 +33,16 @@
 //! }
 //! ```
 //!
-//! which gives it `FAR_END`, `host`, `anchors`, `far_end(answer)`, `tls_front(preamble, upstream)`
-//! and the host's own proof as its tests (`http_need: true` adds the http framer's).
+//! which gives it `FAR_END`, `host`, `guarded_host`, `anchors`, `far_end(answer)`,
+//! `tls_front(preamble, upstream)` and the host's own proof as its tests (`http_need: true` adds
+//! the http framer's).
+//!
+//! `guarded_host` is THE GUARDED MODE: the same host, every dial judged by the production
+//! destination guard (`busbar_core_connector::process::dest_judge`) at the deployment default
+//! (`advanced.block_private_addresses: true`, nothing allowed), so a plugin's refusal cell proves
+//! its outbound need is judged as a running busbar judges it. The suite's own runs keep `host`,
+//! whose judge admits loopback only, because they dial the real local endpoints their settings
+//! name.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -59,7 +67,9 @@ use busbar_core_connector::registry::{Entry, Transports};
 use busbar_core_connector::test_support::{
     private_ca, ClientTls, ServerTls, StdClientSession, StdServerSession, TestCa,
 };
-use busbar_core_connector::{Connector, Judged, Verdict};
+use busbar_core_connector::{Connector, DialJudge, Judged, Verdict};
+use busbar_kernel::config::sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES;
+use busbar_kernel::config::Destinations;
 use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
 use busbar_plugin_loader::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
@@ -96,6 +106,16 @@ pub fn host(
     wake: busbar_contract::conn::ConnWake,
     anchors: Option<&str>,
 ) -> Arc<dyn DeclaredConns> {
+    judged_host(doors, wake, anchors, Arc::new(loopback))
+}
+
+/// The host connector over `doors`, every dial judged by `judge`.
+fn judged_host(
+    doors: Doors,
+    wake: busbar_contract::conn::ConnWake,
+    anchors: Option<&str>,
+    judge: Arc<dyn DialJudge>,
+) -> Arc<dyn DeclaredConns> {
     // The reactor a socket a plugin opens from a dispatcher worker registers on, as the root
     // installs it (`root::connector::io_reactor`): the connector's own I/O thread.
     busbar_core_connector::io::install_process_reactor(io_reactor());
@@ -107,12 +127,71 @@ pub fn host(
         .unwrap_or_else(|e| panic!("the host's connection security does not build: {e}"));
     let view = Transports::new(entries(doors))
         .unwrap_or_else(|e| panic!("the host's transport doors do not compose: {e}"));
-    Arc::new(Connector::serving(
-        view,
-        Arc::new(loopback),
-        Some(Arc::new(tls)),
-        wake,
-    ))
+    Arc::new(Connector::serving(view, judge, Some(Arc::new(tls)), wake))
+}
+
+/// THE GUARDED HOST CONNECTOR over `doors`: [`host`], every dial judged by the production
+/// destination guard at the deployment default (`busbar_core_connector::process`), so a plugin's
+/// outbound need meets exactly the judgement it meets in a running busbar. A refusal cell opens a
+/// plugin on it and names a destination the guard refuses.
+#[must_use]
+pub fn guarded_host(
+    doors: Doors,
+    wake: busbar_contract::conn::ConnWake,
+    anchors: Option<&str>,
+) -> Arc<dyn DeclaredConns> {
+    judged_host(doors, wake, anchors, production_judge())
+}
+
+/// THE GUARDED STREAM HOST: [`stream_host`], every dial judged by the production destination
+/// guard at the deployment default, the address it pinned dialled exactly.
+#[must_use]
+pub fn guarded_stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
+    Arc::new(stream_table(wake, anchors).judged(Arc::new(StreamGuard(production_judge()))))
+}
+
+/// THE PRODUCTION DIAL JUDGE: the deployment's one destination guard
+/// ([`process::dest_judge`](busbar_core_connector::process::dest_judge)) at the default
+/// configuration (`advanced.block_private_addresses` at its owner-signed default, nothing allowed,
+/// no metadata carve-out), joined to a dial as the process's connector joins it
+/// ([`process::judge`](busbar_core_connector::process::judge)), the system resolver answering names.
+fn production_judge() -> Arc<dyn DialJudge> {
+    let d = Destinations {
+        block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+        ..Destinations::default()
+    };
+    let dest = busbar_core_connector::process::dest_judge(&d)
+        .unwrap_or_else(|e| panic!("the deployment default guard does not build: {e}"));
+    busbar_core_connector::process::judge(dest, &[])
+}
+
+/// The production judge as the stream table's ([`crate::tcp_conns::DialGuard`]): a pended
+/// judgement waited for, and its verdict answered as the connector answers it (a name that did not
+/// resolve FAILS, every other verdict is the guard's REFUSAL).
+struct StreamGuard(Arc<dyn DialJudge>);
+
+impl crate::tcp_conns::DialGuard for StreamGuard {
+    fn judge(&self, target: &str, class: u32) -> Result<SocketAddr, ConnError> {
+        use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
+        let (tx, rx) = std::sync::mpsc::channel();
+        let answered = self.0.judge_dial(
+            target,
+            class,
+            Box::new(move |v| {
+                let _ = tx.send(v);
+            }),
+        );
+        let verdict = match answered {
+            Some(v) => v,
+            None => rx
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|_| ConnError::Timeout)?,
+        };
+        verdict.map_err(|v| match v {
+            DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => ConnError::Fault,
+            _ => ConnError::Refused,
+        })
+    }
 }
 
 /// THE STREAM HOST (`conformance::Host`, for plain stream needs): the test kit's stream table,
@@ -122,16 +201,19 @@ pub fn host(
 /// The anchors do not parse, or the connector's client TLS does not build.
 #[must_use]
 pub fn stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
+    Arc::new(stream_table(wake, anchors))
+}
+
+/// The stream table [`stream_host`] and [`guarded_stream_host`] serve: each connection upgraded
+/// with the connector's client TLS.
+fn stream_table(wake: ConnWake, anchors: Option<&str>) -> crate::tcp_conns::TcpConns {
     let trust = EgressTrust {
         extra_anchors: anchors.map(pem_certs).unwrap_or_default(),
         ..EgressTrust::default()
     };
     let tls = ClientTls::new(&trust)
         .unwrap_or_else(|e| panic!("the host's connection security does not build: {e}"));
-    Arc::new(crate::tcp_conns::TcpConns::with_tls(
-        wake,
-        Arc::new(StreamTls(tls)),
-    ))
+    crate::tcp_conns::TcpConns::with_tls(wake, Arc::new(StreamTls(tls)))
 }
 
 /// The connector's client TLS as the stream table's dial: the handshake runs to completion on the
@@ -717,6 +799,71 @@ pub fn an_http_need_reaches_a_local_http_listener_through_the_hosts_framer(host:
     c.close(OWNER, id).expect("closed");
 }
 
+/// THE GUARDED HOST JUDGES AS PRODUCTION DOES (website security.md: "one guard judges every
+/// outbound connection"): on `guarded` (the macro's `guarded_host`), a private address and loopback
+/// are refused under the default class, cloud metadata is refused even under operator
+/// infrastructure (where private reach is allowed), and nothing refused is dialled; the control,
+/// loopback under operator infrastructure, reaches the same listener.
+///
+/// # Panics
+/// When it does not.
+pub fn the_conformance_host_guard_refuses_a_private_destination(guarded: Host) {
+    use busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a local listener");
+    listener.set_nonblocking(true).expect("a polled listener");
+    let at = listener.local_addr().expect("its address").to_string();
+    let c = guarded(Arc::new(|_, _| {}), Some(anchors()));
+    let mut n = 0;
+    let mut open = |class: u32, target: &str| -> Result<ConnId, ConnError> {
+        n += 1;
+        c.declare(OWNER, NeedId(n), &need("tcp", class), None, None)?;
+        settle(|| {
+            c.open(
+                OWNER,
+                NeedId(n),
+                &OpenDesc {
+                    target,
+                    timeout_ms: 2_000,
+                    ..OpenDesc::default()
+                },
+            )
+        })
+    };
+    let refused = Err(ConnError::Refused);
+    assert_eq!(
+        open(EGRESS_DEFAULT, "10.0.0.1:443").map(|_| ()),
+        refused,
+        "a private address under the default class"
+    );
+    assert_eq!(
+        open(EGRESS_DEFAULT, &at).map(|_| ()),
+        refused,
+        "loopback under the default class"
+    );
+    assert_eq!(
+        open(EGRESS_OPERATOR_INFRASTRUCTURE, "169.254.169.254:80").map(|_| ()),
+        refused,
+        "cloud metadata under operator infrastructure"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "a destination the guard refuses was dialled"
+    );
+    // CONTROL: operator infrastructure admits loopback, so the refusals above are the guard's.
+    let id =
+        open(EGRESS_OPERATOR_INFRASTRUCTURE, &at).expect("loopback under operator infrastructure");
+    let until = Instant::now() + Duration::from_secs(5);
+    while listener.accept().is_err() {
+        assert!(
+            Instant::now() < until,
+            "the admitted dial never reached the listener"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let _ = c.close(OWNER, id);
+}
+
 /// A plugin repo's suite host, stated once: its far end, and its transport doors where its needs
 /// are framed. Expands to `FAR_END`, `host` (the suite's `host:`), `anchors` (its `tls:`),
 /// `far_end`, `tls_front`, and the host's own proof as `#[test]`s. With no `doors` the host is
@@ -736,6 +883,17 @@ macro_rules! conformance_host {
             $crate::conformance_host::stream_host(wake, anchors)
         }
 
+        /// THE GUARDED HOST: [`host`], every dial judged by the production destination guard at
+        /// the deployment default. One per refusal cell.
+        #[allow(dead_code)]
+        #[must_use]
+        pub fn guarded_host(
+            wake: $crate::conformance_host::ConnWake,
+            anchors: Option<&str>,
+        ) -> std::sync::Arc<dyn $crate::conformance_host::DeclaredConns> {
+            $crate::conformance_host::guarded_stream_host(wake, anchors)
+        }
+
         $crate::conformance_host!(@common $at);
     };
     (far_end: $at:expr, doors: [$(($claim:expr, $door:expr)),+ $(,)?] $(,)?) => {
@@ -753,6 +911,17 @@ macro_rules! conformance_host {
             anchors: Option<&str>,
         ) -> std::sync::Arc<dyn $crate::conformance_host::DeclaredConns> {
             $crate::conformance_host::host(DOORS, wake, anchors)
+        }
+
+        /// THE GUARDED HOST over [`DOORS`]: [`host`], every dial judged by the production
+        /// destination guard at the deployment default. One per refusal cell.
+        #[allow(dead_code)]
+        #[must_use]
+        pub fn guarded_host(
+            wake: $crate::conformance_host::ConnWake,
+            anchors: Option<&str>,
+        ) -> std::sync::Arc<dyn $crate::conformance_host::DeclaredConns> {
+            $crate::conformance_host::guarded_host(DOORS, wake, anchors)
         }
 
         $crate::conformance_host!(@common $at);
@@ -785,6 +954,11 @@ macro_rules! conformance_host {
         #[test]
         fn red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused() {
             $crate::conformance_host::red_with_the_anchors_withheld_the_hosts_tls_upgrade_is_refused(host);
+        }
+
+        #[test]
+        fn the_conformance_host_guard_refuses_a_private_destination() {
+            $crate::conformance_host::the_conformance_host_guard_refuses_a_private_destination(guarded_host);
         }
     };
     (@http true) => {
