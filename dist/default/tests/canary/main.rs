@@ -246,9 +246,12 @@ fn self_test_the_shim_records_a_planted_crossing() {
         passthrough: Canary::new("self-test-unused-5", Expect::Leaks),
     });
     let hits = canary::search(&c, &sinks);
+    // Which `secrets[i]` slot it rides is the wrapped door's declared order (webhook-signature's dev
+    // declares its secret fields, so the planted reference is no longer the first): the proof is
+    // that it is recorded crossing into `open` as a secret at all.
     assert!(
         hits.iter()
-            .any(|h| h.sink == "abi:host->plugin:op:open.secrets[0]"),
+            .any(|h| h.sink.starts_with("abi:host->plugin:op:open.secrets[")),
         "the shim records the planted secret crossing into `open`: {hits:?}"
     );
 }

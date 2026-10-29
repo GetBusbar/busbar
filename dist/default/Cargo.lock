@@ -231,16 +231,17 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=ea92a077b0b43038196261fc78b5cd26569def07#ea92a077b0b43038196261fc78b5cd26569def07"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=3eac304858f83fc40bb0272055c26a6904f03873#3eac304858f83fc40bb0272055c26a6904f03873"
 dependencies = [
  "busbar-contract",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=ea92a077b0b43038196261fc78b5cd26569def07#ea92a077b0b43038196261fc78b5cd26569def07"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=3eac304858f83fc40bb0272055c26a6904f03873#3eac304858f83fc40bb0272055c26a6904f03873"
 dependencies = [
  "busbar-auth-admin-tokens",
  "busbar-contract",
@@ -249,7 +250,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=ecf860b2d68cd8b4a5232e9090b74925e38d277a#ecf860b2d68cd8b4a5232e9090b74925e38d277a"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=4d4c308f9371c172b2437dc6c043fab59d59399a#4d4c308f9371c172b2437dc6c043fab59d59399a"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -260,7 +261,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=ce2dbffe2825d36abc92488b7d6f88b1df856219#ce2dbffe2825d36abc92488b7d6f88b1df856219"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=ed5650e27f9529bdcfdcc6fa643d11a19d0127ac#ed5650e27f9529bdcfdcc6fa643d11a19d0127ac"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -314,13 +315,14 @@ dependencies = [
 [[package]]
 name = "busbar-auth-webhook-signature"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=4829b62c48fb9f6da79cad59bf42cb1d5dfce7c2#4829b62c48fb9f6da79cad59bf42cb1d5dfce7c2"
+source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=2c1c992bf8813256ff1804ad3ac0b7c657615bda#2c1c992bf8813256ff1804ad3ac0b7c657615bda"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "ring",
  "serde",
  "serde_json",
+ "tracing",
  "zeroize",
 ]
 
@@ -582,10 +584,11 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=10e49c1fa56b186d0f6aac7d1cce12f52359fbbc#10e49c1fa56b186d0f6aac7d1cce12f52359fbbc"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=100608520d95c3a7be3064bc15cb9977fd140c5f#100608520d95c3a7be3064bc15cb9977fd140c5f"
 dependencies = [
  "busbar-contract",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -775,7 +778,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=af636cef65a5dc66d50e268367cf3608f429b1a9#af636cef65a5dc66d50e268367cf3608f429b1a9"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=85e1119250abec7e8cc7292196a977f9e49a4e83#85e1119250abec7e8cc7292196a977f9e49a4e83"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -784,7 +787,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=d0964c6ce5f6f6c322bbb34c07c1da7d4bf05338#d0964c6ce5f6f6c322bbb34c07c1da7d4bf05338"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=3cf58cf9e75e12ebe97ebae3718b5e3318ac0814#3cf58cf9e75e12ebe97ebae3718b5e3318ac0814"
 dependencies = [
  "busbar-contract",
  "libc",
@@ -795,7 +798,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dfce32ebc3b9c705183a055c33e409bd7290eb68#dfce32ebc3b9c705183a055c33e409bd7290eb68"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=8e0cae2bf6d9440ef3a72786da3af2687c6cc609#8e0cae2bf6d9440ef3a72786da3af2687c6cc609"
 dependencies = [
  "busbar-contract",
  "serde_json",
