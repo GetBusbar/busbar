@@ -1120,3 +1120,132 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
     );
     let _ = tx.send(());
 }
+
+// ── THE HANDSHAKE BOUND AND ITS LOG LINE (security.md: `limits.tls_handshake_timeout_secs` caps the
+// handshake; "a refused handshake is logged at debug; the server stays up") ───────────────────
+
+/// A client that connects to a TLS listener and never speaks is dropped when
+/// `limits.tls_handshake_timeout_secs` elapses: not before it, and well before the 10 s default
+/// (which is what would hold if the configured value were ignored). The limit is installed
+/// process-wide through the guard, as `body_read_timeout_trips_on_stalled_body` does, and the
+/// listener meets the configured value per accepted connection.
+#[tokio::test]
+async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
+    use tokio::io::AsyncReadExt;
+    let _guard = LIMITS_TEST_LOCK.lock().await;
+    let limits = busbar_kernel::config::LimitsResolved {
+        tls_handshake_timeout_secs: 2,
+        ..busbar_kernel::config::LimitsResolved::default()
+    };
+    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(&limits);
+
+    let (cert_pem, key_pem) = gen_self_signed();
+    let tls = busbar_kernel::config::sections::TlsCfg {
+        cert: file(&temp_pem("stall-cert", &cert_pem)),
+        key: file(&temp_pem("stall-key", &key_pem)),
+        client_ca: None,
+    };
+    let (addr, stop) = spawn_tls_server(&tls).await;
+
+    // Connect and send nothing; the server's `wrap` waits for a ClientHello.
+    let mut stalled = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let at = Instant::now();
+    let mut buf = [0_u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(8), stalled.read(&mut buf)).await;
+    let took = at.elapsed();
+    match read {
+        Ok(Ok(0)) | Ok(Err(_)) => {}
+        Ok(Ok(n)) => panic!("{n} bytes answered a client that never spoke"),
+        Err(_) => {
+            panic!("the stalled handshake was still held after {took:?}: the limit is not enforced")
+        }
+    }
+    assert!(
+        took >= Duration::from_millis(1800),
+        "dropped before the 2 s limit, after {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(6),
+        "dropped long after the 2 s limit, after {took:?}"
+    );
+
+    // The listener stays up: a trusted client still completes a handshake and is served.
+    let resp = client_with(&cert_pem, None)
+        .get(format!("https://localhost:{}/healthz", addr.port()))
+        .send()
+        .await
+        .expect("the listener serves after dropping a stalled handshake");
+    assert_eq!(resp.status(), 200);
+    let _ = stop.send(());
+}
+
+/// A refused TLS handshake (a client that speaks plaintext to a TLS port, a client with no
+/// certificate to an mTLS one) is logged at DEBUG and at no louder level, carries no key or
+/// certificate bytes, and leaves the server serving. Two captures sit on the one subscriber: the
+/// default one admits WARN and ERROR only, the other admits DEBUG and above, so the line is found
+/// in the second and absent from the first.
+#[test]
+fn a_refused_handshake_logs_at_debug_only() {
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let loud = WarnCapture::default();
+    let debug = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry()
+        .with(loud.clone())
+        .with(debug.clone());
+    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
+    let (ca_pem, _leaf_pem, _leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
+    let tls = mutual(&srv_cert_pem, &srv_key_pem, &ca_pem);
+
+    // The listener's tasks and the clients all run on this thread, inside the thread-local
+    // subscriber, which is what `WarnCapture` requires.
+    tracing::subscriber::with_default(subscriber, || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (addr, stop) = spawn_tls_server(&tls).await;
+            // (a) plaintext HTTP to the TLS port: not a ClientHello.
+            let mut plain = tokio::net::TcpStream::connect(addr).await.unwrap();
+            plain
+                .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+                .await
+                .unwrap();
+            let mut sink = Vec::new();
+            let _ =
+                tokio::time::timeout(Duration::from_secs(5), plain.read_to_end(&mut sink)).await;
+            // (b) a TLS client that offers no certificate to the mutual listener.
+            let certless = client_with(&srv_cert_pem, None)
+                .get(format!("https://localhost:{}/healthz", addr.port()))
+                .send()
+                .await;
+            assert!(certless.is_err(), "a certless client is refused");
+            // Let the server side log both refusals before reading the captures.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = stop.send(());
+        });
+    });
+
+    assert!(
+        debug.contains("handshake failed"),
+        "the refusal is logged at debug: {:?}",
+        debug.messages()
+    );
+    assert!(
+        !loud.contains("handshake failed") && !loud.contains("handshake timed out"),
+        "a refused handshake is never logged at warn or error: {:?}",
+        loud.messages()
+    );
+    // And it names no key or certificate material.
+    let key_body: String = srv_key_pem
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect();
+    assert!(
+        !debug.messages().iter().any(|m| m.contains(&key_body)),
+        "a log line echoed the server key"
+    );
+}
