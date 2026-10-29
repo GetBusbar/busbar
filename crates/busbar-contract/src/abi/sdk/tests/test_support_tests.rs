@@ -297,6 +297,8 @@ const PLANE_TAIL: crate::abi::plane::PlaneTail = crate::abi::plane::PlaneTail {
     stream_ceiling_secs: 0,
     metric_lanes: ptr::null(),
     metric_lanes_len: 0,
+    record_retentions: ptr::null(),
+    record_retentions_len: 0,
 };
 
 /// A plane door, laid out as `plugin_door!` lays one (its Statement stamped, every slot absent):
@@ -629,23 +631,24 @@ fn ready_head(lease: u64) -> OutHead {
 
 fn resolved(secret: Blob) -> ResolveOut {
     let mut out: ResolveOut = zeroed();
-    out.head = ready_head(7);
+    // No lease: a resolved value is written into the host's buffer (the credential chip, row 6: host-owned secret bytes).
+    out.head = ready_head(0);
     out.secret = secret;
     out
 }
 
 #[test]
-fn a_secret_is_copied_into_wiped_memory_before_release() {
+fn a_secret_is_copied_into_wiped_memory_before_the_buffer_is_wiped() {
     let mut material = b"s3cret".to_vec();
     let mut t = resolved(bytes_of(&material));
     let got = answered(&mut t);
-    material.fill(0); // the plugin's release wipes what it leased
+    material.fill(0); // the host wipes its buffer once its consumer is done
     assert_eq!(got.outcome, Outcome::Ready);
     assert_eq!(got.owned.material(), b"s3cret");
-    assert_eq!(got.out.head.lease, 7, "the scalars stay");
+    assert_eq!(got.out.head.lease, 0, "the scalars stay: no lease");
     assert!(
         got.out.secret.ptr.is_null(),
-        "no pointer into the lease survives"
+        "no pointer into the host buffer survives"
     );
     assert!(
         !format!("{:?}", got.owned).contains("s3cret"),

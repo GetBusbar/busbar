@@ -11,7 +11,7 @@
 use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate::migrate_config_with;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
-use busbar_plugin_loader::root_door_fixtures::migrate_stub as stub;
+use busbar_test_kit::root_door_fixtures::migrate_stub as stub;
 
 use super::{Index, IndexPlugin};
 use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};

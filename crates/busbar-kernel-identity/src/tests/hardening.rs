@@ -12,9 +12,7 @@ use super::{entry, Canned};
 use crate::chain::AuthChain;
 use crate::module::AuthOutcome;
 
-// ---------------------------------------------------------------------------------------------
 // The chain's own accessors and its cacheability gate.
-// ---------------------------------------------------------------------------------------------
 
 /// The two chain-shape accessors answer about the chain they were built over, in BOTH directions.
 ///

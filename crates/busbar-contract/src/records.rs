@@ -973,6 +973,17 @@ impl Retention {
             _ => None,
         }
     }
+
+    /// Whether a purge under this rule drops a row of `disposition` written at `ts`, against the
+    /// cutoff `before`: a row at or after the cutoff is always kept.
+    #[must_use]
+    pub fn drops(self, ts: u64, before: u64, disposition: PlaneDisposition) -> bool {
+        ts < before
+            && match self {
+                Retention::Age => true,
+                Retention::TerminalOnly => disposition == PlaneDisposition::Terminal,
+            }
+    }
 }
 
 /// One durable PLANE RECORD — the neutral envelope the eight kind-tagged verbs read and write. Only
