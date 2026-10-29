@@ -60,41 +60,14 @@ fn a_proof_from_one_call_is_rejected_in_another() {
 }
 
 #[test]
-fn a_holds_debug_shows_the_four_figures_a_reader_has_to_reconcile() {
+fn a_holds_debug_shows_whose_it_is_and_nothing_else() {
+    // A hold carries no money any more (MONEY-DESIGN §2b): whose admission it is, and its call.
     let k = seal();
     let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
-    let mut hold = Hold::open(&admit, PrincipalId::new("acct-77"), 1_000);
-    hold.spend(1_500, 200);
-
+    let hold = Hold::open(&admit, PrincipalId::new("acct-77"));
     let printed = format!("{hold:?}");
     assert!(printed.starts_with("Hold"), "{printed}");
-    // Whose it is, and the reservation INCLUDING the top-up: a reader reconciling a posting against
-    // a hold needs the figure the accrual was actually measured against, not the door's first guess.
     assert!(printed.contains("acct-77"), "{printed}");
-    assert!(printed.contains("1200"), "reserved plus top-up: {printed}");
-    assert!(printed.contains("1500"), "accrued: {printed}");
-    assert!(printed.contains("300"), "overdraft: {printed}");
-    assert!(printed.contains("false"), "not recovered: {printed}");
-}
-
-#[test]
-fn a_recovered_holds_debug_says_it_came_back_from_a_journal_record() {
-    // The one hold that exists without passing the door. A reader who cannot tell it apart from an
-    // admitted one cannot tell which postings the crash is responsible for.
-    let k = seal();
-    let hold = Hold::materialize(
-        &Grant::<Recover>::mint(&k),
-        PrincipalId::new("acct-9"),
-        500,
-        120,
-    );
-    let printed = format!("{hold:?}");
-    assert!(printed.contains("recovered"), "{printed}");
-    assert!(printed.contains("true"), "{printed}");
-    assert!(
-        printed.contains("120"),
-        "the checkpointed accrual: {printed}"
-    );
 }
 
 #[test]
@@ -143,10 +116,6 @@ fn a_token_prints_the_capability_it_seals_and_nothing_else() {
     assert_eq!(format!("{:?}", Grant::<Dial>::mint(&k)), "Grant<dial>");
     assert_eq!(format!("{:?}", Grant::<Exit>::mint(&k)), "Grant<exit>");
     assert_eq!(
-        format!("{:?}", Grant::<Recover>::mint(&k)),
-        "Grant<recover>"
-    );
-    assert_eq!(
         format!("{:?}", Grant::<AdminVerb>::mint(&k)),
         "Grant<admin-verb>"
     );
@@ -182,7 +151,6 @@ fn every_token_names_itself_as_the_contract_seal_it_satisfies() {
         Grant::<Dial>::mint(&k).seal_origin().to_string(),
         Grant::<Exit>::mint(&k).seal_origin().to_string(),
         Grant::<AdminVerb>::mint(&k).seal_origin().to_string(),
-        Grant::<Recover>::mint(&k).seal_origin().to_string(),
         Grant::<DurableWrite>::mint(&k).seal_origin().to_string(),
         Grant::<Sign>::mint(&k).seal_origin().to_string(),
         Grant::<KeyHandle>::mint(&k).seal_origin().to_string(),

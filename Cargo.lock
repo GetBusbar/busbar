@@ -502,10 +502,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-seams",
- "ring",
  "serde",
- "sha2",
 ]
 
 [[package]]

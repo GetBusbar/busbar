@@ -674,8 +674,6 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-seams",
- "ring",
  "serde",
 ]
 
@@ -697,7 +695,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=254cddb5b7c9783f7697ac07a08cc72024761703#254cddb5b7c9783f7697ac07a08cc72024761703"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=26d7a653bc1dc47e5ed6568fddb83394ea3480b8#26d7a653bc1dc47e5ed6568fddb83394ea3480b8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the node owes after a crash, and what the clock does when nothing arrives.
+//! What the clock does when nothing arrives: the sweep of a lost unit, and the drain and fleet
+//! answers. (Crash recovery of open holds went with the second ledger, MONEY-DESIGN §4: the one
+//! ledger is the store's usage counts, which a restart reads back as they are.)
 
 mod common;
 
@@ -10,159 +12,11 @@ use busbar_contract::caps::{
 };
 use busbar_kernel::canary::Canary;
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
-use busbar_kernel::recovery::{
-    frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
-    TailVerdict, RECORD_HEADER_BYTES,
-};
-use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch};
+use busbar_kernel::slice::{bucket_all, ConcurrencyGauge};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{sweep, sweep_settle, Sweep};
 
 use common::{principal, TestDoor};
-
-fn record(dispatched: bool, checkpointed: u64) -> HoldRecord {
-    HoldRecord {
-        unit: UnitKey::new(1),
-        principal: principal(),
-        reserved: 10_000,
-        checkpointed,
-        dispatched,
-        lease_epoch: Epoch(1),
-    }
-}
-
-#[test]
-fn a_hold_from_a_dead_incarnation_comes_back_and_settles() {
-    let kernel = Kernel::new();
-    let canary = Canary::new();
-    let postings = recover_all(
-        &kernel,
-        &[record(true, 640), record(false, 640)],
-        Epoch(2),
-        &canary,
-    );
-    assert_eq!(postings.len(), 2);
-    assert_eq!(postings[0].settled(), 640);
-    assert!(postings[0].flags().contains(PostingFlags::RECOVERED));
-    assert_eq!(postings[1].settled(), 0);
-    assert!(postings[1].flags().contains(PostingFlags::VOIDED));
-    assert_eq!(canary.counts().settlements, 2);
-}
-
-#[test]
-fn a_hold_of_the_current_incarnation_is_left_alone() {
-    let kernel = Kernel::new();
-    let canary = Canary::new();
-    let postings = recover_all(&kernel, &[record(true, 100)], Epoch(1), &canary);
-    assert!(
-        postings.is_empty(),
-        "the live node still owns its own holds"
-    );
-}
-
-/// One row per kill point: what the node owes after dying there, and whether the claim is voided.
-///
-/// Read forwards, from the point to the answer. Matching on the ANSWER and asserting which points
-/// could have produced it leaves the other direction unsaid: a `MidWrite` that answered `Nothing`
-/// satisfied the `Owed::Nothing` arm, so a torn tail would never have been truncated and nothing
-/// here would have said so. The match on `point` is exhaustive with no catch-all, so a kill point
-/// added to the enum stops this file compiling until it has an answer.
-#[test]
-fn every_kill_point_has_an_answer_and_none_of_them_guesses_upward() {
-    let points = [
-        KillPoint::BeforeDecode,
-        KillPoint::BetweenPreDoorSteps,
-        KillPoint::BetweenClaimAndHold,
-        KillPoint::AfterHoldBeforeDispatch,
-        KillPoint::BetweenLegs,
-        KillPoint::AfterRelayBeforeSettle,
-        KillPoint::MidWrite,
-    ];
-    for point in points {
-        let (owed, voids) = match point {
-            // Nothing was dispatched, so there is nothing to pay for — and everything before the
-            // hold was durable voids the claim, because a key with no hold behind it would answer a
-            // retry with a unit that never ran.
-            KillPoint::BeforeDecode => (Owed::Nothing, true),
-            KillPoint::BetweenPreDoorSteps => (Owed::Nothing, true),
-            KillPoint::BetweenClaimAndHold => (Owed::Nothing, true),
-            // The hold IS durable here, so the claim stands.
-            KillPoint::AfterHoldBeforeDispatch => (Owed::Nothing, false),
-            // Something was dispatched: post the last checkpoint, never more.
-            KillPoint::BetweenLegs => (Owed::LastCheckpoint, false),
-            KillPoint::AfterRelayBeforeSettle => (Owed::LastCheckpoint, false),
-            // The tail is torn: truncate first, then decide as above.
-            KillPoint::MidWrite => (Owed::TruncateThenDecide, false),
-        };
-        assert_eq!(owed_after(point), owed, "what {point:?} owes");
-        assert_eq!(
-            voids_claim(point),
-            voids,
-            "whether {point:?} voids the claim"
-        );
-    }
-}
-
-#[test]
-fn a_torn_tail_is_truncated_and_a_whole_journal_is_not() {
-    let mut journal = Vec::new();
-    journal.extend_from_slice(&frame(b"one"));
-    let good_one = journal.len();
-    journal.extend_from_slice(&frame(b"two"));
-    let clean = truncate_torn_tail(&journal);
-    assert_eq!(clean.records, 2);
-    assert_eq!(clean.verdict, TailVerdict::Clean);
-    assert_eq!(clean.valid_bytes, journal.len());
-
-    // The machine died halfway through the third record.
-    let good = journal.len();
-    let mut torn = journal.clone();
-    torn.extend_from_slice(&frame(b"three")[..6]);
-    let verdict = truncate_torn_tail(&torn);
-    assert_eq!(verdict.records, 2);
-    assert_eq!(verdict.verdict, TailVerdict::Torn);
-    assert_eq!(verdict.valid_bytes, good);
-
-    // And a record whose bytes were corrupted rather than cut short is a different answer: the
-    // record is all there, so nothing about it says "died mid-write".
-    let mut corrupt = journal.clone();
-    let last = corrupt.len() - 1;
-    corrupt[last] ^= 0xFF;
-    let verdict = truncate_torn_tail(&corrupt);
-    assert_eq!(verdict.records, 1);
-    assert_eq!(verdict.verdict, TailVerdict::Corrupt { at: good_one });
-}
-
-#[test]
-fn a_checksum_failure_in_the_middle_is_not_the_answer_a_cut_off_tail_gets() {
-    let mut journal = Vec::new();
-    journal.extend_from_slice(&frame(b"one"));
-    let second = journal.len();
-    journal.extend_from_slice(&frame(b"two"));
-    journal.extend_from_slice(&frame(b"three"));
-
-    // The middle record's payload was rewritten by something that was not this node. Every record
-    // after it is whole and readable, and truncating here would throw all of them away for a fault
-    // that says nothing about them.
-    let mut corrupt = journal.clone();
-    corrupt[second + RECORD_HEADER_BYTES] ^= 0xFF;
-    let verdict = truncate_torn_tail(&corrupt);
-    assert_eq!(verdict.records, 1);
-    assert_eq!(verdict.valid_bytes, second);
-    assert_eq!(verdict.verdict, TailVerdict::Corrupt { at: second });
-    assert!(
-        !verdict.verdict.truncates(),
-        "a corrupt record is raised, never quietly cut away"
-    );
-
-    // The cut-off tail keeps the answer it always had, and that one does truncate.
-    let mut torn = journal.clone();
-    torn.truncate(journal.len() - 2);
-    let verdict = truncate_torn_tail(&torn);
-    assert_eq!(verdict.records, 2);
-    assert_eq!(verdict.verdict, TailVerdict::Torn);
-    assert!(verdict.verdict.truncates());
-}
 
 #[test]
 fn a_lost_task_is_settled_within_one_tick() {
@@ -218,7 +72,7 @@ fn a_lost_task_is_settled_within_one_tick() {
         end.outcome(),
         busbar_contract::caps::Outcome::Failed(StepName::Route, ReasonCode::TaskLost)
     );
-    assert_eq!(end.posted().map(|p| p.settled()), Ok(42));
+    assert_eq!(end.posted().map(|p| p.quantity()), Ok(42));
     assert_eq!(canary.counts().settlements, 1);
 
     // And there is no third settlement: a second sweep of the same slot does nothing, and gives
@@ -290,7 +144,7 @@ fn a_swept_unit_hands_back_its_line_under_its_reported_class_and_its_audit_pass(
         "the line is written under the class the unit reported, never the kernel's own"
     );
     assert_eq!(
-        swept.end.posted().map(|p| p.settled()),
+        swept.end.posted().map(|p| p.quantity()),
         Ok(swept.line.quantity),
         "the money the posting settled is the line handed back"
     );
@@ -799,7 +653,7 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
         busbar_contract::caps::Outcome::Failed(StepName::Route, ReasonCode::Stalled)
     );
     assert_eq!(
-        end.posted().map(|p| p.settled()),
+        end.posted().map(|p| p.quantity()),
         Ok(0),
         "a unit that stopped with nothing reported is billed nothing: the kernel adds no floor"
     );
