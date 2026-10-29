@@ -63,7 +63,7 @@ use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::caps::IdempotencyKey;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::RecordStore;
+use busbar_contract::records::{RecordStore, RecordStoreResult, Retention};
 use busbar_contract::services::{
     merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
     Stored,
@@ -407,25 +407,6 @@ fn nested_answer(reply: NestReply) -> Stored {
     s
 }
 
-/// A claim's owed answer. Dropped unanswered (the pool refused its job) it answers Taken.
-struct OwedClaim(Option<crate::host_claims::ClaimLater>);
-
-impl OwedClaim {
-    fn answer(mut self, claim: crate::host_claims::Claim) {
-        if let Some(later) = self.0.take() {
-            later(claim);
-        }
-    }
-}
-
-impl Drop for OwedClaim {
-    fn drop(&mut self) {
-        if let Some(later) = self.0.take() {
-            later(crate::host_claims::Claim::Taken { until_ns: 0 });
-        }
-    }
-}
-
 /// A settle the book has marked and the store has not yet taken. Dropped unwritten (the pool
 /// refused its job and dropped it unrun, or the store refused the write) it puts the handle back as
 /// it stood, so the book never says settled while the store says live.
@@ -496,7 +477,52 @@ pub struct InstanceFacts {
     /// chain, framed and sealed by the host and verified when read (`crate::host_chains`), never
     /// put.
     pub record_chains: Vec<busbar_contract::abi::plane::RecordChain>,
+    /// Its record kinds' retention rules, as its tail declares them
+    /// (`PlaneTail::record_retentions`, each `kind` an index into [`InstanceFacts::record_kinds`]):
+    /// every purge of a listed kind passes its rule ([`KernelServices::record_retention`]); every
+    /// other kind is purged by age.
+    pub record_retentions: Vec<busbar_contract::abi::plane::RecordRetention>,
+    /// The issued-id prefix its Statement declares (`MARK_WORD_ISSUED_ID_PREFIX`): what leads every
+    /// ticket minted for it. `None` = it mints no ticket, and `ticket.mint` is refused.
+    pub ticket_prefix: Option<String>,
 }
+
+/// THE TICKET PRESS behind `ticket.mint` (row 132, the ARCHITECT ticket ruling): mints a ticket for
+/// the key `key_id` through the deployment's own token stamp, under its live mint ceiling, prefixed
+/// with `prefix`, with `record` stored beside it; answers the ticket and its expiry (Unix seconds),
+/// or the refusal's reason.
+pub trait TicketPress: Send + Sync {
+    /// Mint.
+    ///
+    /// # Errors
+    ///
+    /// The refusal's reason, never secret material.
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str>;
+}
+
+/// `ticket.mint`'s refusal for a crossing that serves no unit, or a unit with no principal.
+pub const TICKET_NO_PRINCIPAL: &str = "no ticket is minted outside a unit with a principal";
+/// `ticket.mint`'s refusal for an instance whose Statement declares no issued-id prefix.
+pub const TICKET_NO_PREFIX: &str = "no ticket is minted for an instance that declares no prefix";
+/// `ticket.mint`'s refusal on a host that mints no tickets (no press attached).
+pub const TICKET_NO_PRESS: &str = "this host mints no tickets";
+/// `ticket.take`'s refusal for a crossing that serves no unit, or a second take for one unit.
+pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
+
+/// THE RECORD KINDS THE KERNEL KEEPS ITS OWN RECORDS UNDER, which no instance may declare: a minted
+/// ticket's record ([`crate::governance::TICKET_RECORD_KIND`]). An instance's declared kind names
+/// the rows its retention rule governs, so an instance declaring one of these would purge the
+/// kernel's own rows under its own rule. [`KernelServices::admit`] refuses it
+/// ([`AdmitRefused::KindReserved`]). (The admin record write never reaches a kernel kind's rows,
+/// declared or not: see [`crate::store::plane_view::KERNEL_RECORD_KINDS`].)
+pub const RESERVED_RECORD_KINDS: &[&str] = &[crate::governance::TICKET_RECORD_KIND];
 
 /// Why an instance was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,6 +554,14 @@ pub enum AdmitRefused {
     /// The store could not be read for the demotions and the operator's trust decisions this
     /// instance's trust stands on.
     TrustUnread(String),
+    /// The instance declares a record kind the kernel keeps its own records under
+    /// ([`RESERVED_RECORD_KINDS`]): its retention rule would govern the kernel's own rows.
+    KindReserved {
+        /// The instance refused.
+        instance: String,
+        /// The reserved kind it declares.
+        kind: String,
+    },
 }
 
 impl std::fmt::Display for AdmitRefused {
@@ -556,6 +590,12 @@ impl std::fmt::Display for AdmitRefused {
                 f,
                 "{why}; the instance is not admitted over trust it cannot read"
             ),
+            Self::KindReserved { instance, kind } => write!(
+                f,
+                "instance `{instance}` declares the record kind `{kind}`, which the kernel keeps \
+                 its own records under: no instance keeps records under a kernel kind, so the \
+                 instance is not admitted"
+            ),
         }
     }
 }
@@ -573,10 +613,9 @@ fn trust_unread(why: String) -> AdmitRefused {
     AdmitRefused::TrustUnread(why)
 }
 
-/// The stores the records services reach.
+/// The store the records services reach: its typed records and its single-use redemption.
 struct Records {
     reads: Arc<dyn RecordRows>,
-    claims: Arc<dyn RecordStore>,
 }
 
 /// The wall clock, in milliseconds since the Unix epoch.
@@ -645,6 +684,8 @@ pub struct KernelServices {
     sessions: Mutex<HashMap<u64, CarrierSession>>,
     /// The verify cache behind `verify.*`.
     verify: crate::host_verify::VerifyBook,
+    /// The ticket press behind `ticket.mint`, attached late; unattached, every mint is refused.
+    tickets: OnceLock<Arc<dyn TicketPress>>,
 }
 
 /// ONE OPEN CARRIER SESSION: a carrier the root holds open for one caller (a process's own
@@ -722,7 +763,23 @@ impl KernelServices {
             disk: Arc::default(),
             sessions: Mutex::default(),
             verify: crate::host_verify::VerifyBook::default(),
+            tickets: OnceLock::new(),
         }
+    }
+
+    /// Mint `ticket.mint`'s tickets through `press` (once; a second attach is refused, `false`).
+    pub fn attach_tickets(&self, press: Arc<dyn TicketPress>) -> bool {
+        self.tickets.set(press).is_ok()
+    }
+
+    /// The issued-id prefix the instance labelled `instance` declared: what leads its tickets, and
+    /// what the gate strips from one presented on its routes. `None` = it declared none, or it is
+    /// not admitted.
+    #[must_use]
+    pub fn ticket_prefix_of(&self, instance: &str) -> Option<String> {
+        self.lock_instances()
+            .get(instance)
+            .and_then(|f| f.ticket_prefix.clone())
     }
 
     /// OPEN A CARRIER SESSION for `instance` (the label of the instance whose claim it is served
@@ -826,19 +883,19 @@ impl KernelServices {
         self
     }
 
-    /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
-    /// single-use redemption). Without them they are REFUSED.
+    /// Serve the records services over `reads` (the store's typed record reads and its single-use
+    /// redemption). Without them they are REFUSED.
     #[must_use]
-    pub fn with_records(self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> Self {
-        self.attach_records(reads, claims);
+    pub fn with_records(self, reads: Arc<dyn RecordRows>) -> Self {
+        self.attach_records(reads);
         self
     }
 
-    /// Serve the records services over `reads` and `claims` (see [`Self::with_records`]), attached
-    /// late, once: the configured store is opened after the services are installed (the composition
-    /// root's late attach). `false` when a record store was already bound.
-    pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
-        self.records.set(Records { reads, claims }).is_ok()
+    /// Serve the records services over `reads` (see [`Self::with_records`]), attached late, once:
+    /// the configured store is opened after the services are installed (the composition root's
+    /// late attach). `false` when a record store was already bound.
+    pub fn attach_records(&self, reads: Arc<dyn RecordRows>) -> bool {
+        self.records.set(Records { reads }).is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -928,12 +985,34 @@ impl KernelServices {
     /// # Errors
     ///
     /// [`AdmitRefused::LabelUnfit`] for a label longer than 65535 bytes or holding a control
-    /// character; [`AdmitRefused::DomainHeld`] when another instance holds the signing domain it declares:
-    /// no instance signs as another. Nothing is registered then.
+    /// character; [`AdmitRefused::KindReserved`] (reported as `PLANE_RECORD_KIND_RESERVED`) for a
+    /// declared record kind of [`RESERVED_RECORD_KINDS`]; [`AdmitRefused::DomainHeld`] when another
+    /// instance holds the signing domain it declares: no instance signs as another. Nothing is
+    /// registered then.
     pub fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
         if instance.len() > usize::from(u16::MAX) || instance.chars().any(char::is_control) {
             return Err(AdmitRefused::LabelUnfit {
                 len: instance.len(),
+            });
+        }
+        // NO INSTANCE KEEPS RECORDS UNDER A KERNEL KIND, judged before anything is registered: its
+        // rows and its retention rule would land on the kernel's own.
+        if let Some(kind) = facts
+            .record_kinds
+            .iter()
+            .find(|k| RESERVED_RECORD_KINDS.contains(&k.as_str()))
+        {
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_RECORD_KIND_RESERVED,
+                instance = %instance,
+                kind = %kind.as_str(),
+                "a plane instance declares a record kind the kernel keeps its own records under: \
+                 the instance is refused rather than write beside, or purge under its own rule, \
+                 the kernel's records"
+            );
+            return Err(AdmitRefused::KindReserved {
+                instance: instance.to_string(),
+                kind: kind.as_str().to_string(),
             });
         }
         // EVERY DECLARED CHAIN IS ONE THIS HOST CAN KEEP, judged before anything is registered: a
@@ -1248,59 +1327,41 @@ impl KernelServices {
         facts.record_kinds.get(index as usize).copied()
     }
 
-    /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend
-    /// the epoch it won. The kernel calls it on the instance's behalf (the inbound-auth replay claim
-    /// is one: `held` is always `None`, so a second sighting inside the window is Taken and nothing
-    /// extends it). The claim lives under the label the kernel derives from the instance's own
-    /// ([`crate::host_claims::reserved_label`]), so an instance only contends with itself; the rule
-    /// is [`crate::host_claims::decide`], run on the pool, answered through `later`. An answer
-    /// that arrives after `deadline_ns` (the kernel's clock) is Taken for this caller, never a
-    /// late Won. An instance never admitted, a zero `ttl_ms`, an empty `key`, or a host with no
-    /// store or pool is Taken at once.
-    #[allow(clippy::too_many_arguments)]
-    pub fn claim_own(
-        &self,
-        instance: &str,
-        op: &str,
-        key: &[u8],
-        ttl_ms: u64,
-        held: Option<u64>,
-        deadline_ns: u64,
-        later: crate::host_claims::ClaimLater,
-    ) -> crate::host_claims::Answer<crate::host_claims::Claim> {
-        use crate::host_claims::{decide, reserved_label, Answer, Ask, Claim};
-        let refused = Answer::Now(Claim::Taken { until_ns: 0 });
-        if ttl_ms == 0 || key.is_empty() || !self.lock_instances().contains_key(instance) {
-            return refused;
-        }
-        let (Some(records), Some(pool)) = (self.records.get(), self.pool()) else {
-            return refused;
+    /// The retention rule the instance labelled `instance` declared for its record kind `kind`
+    /// (`PlaneTail::record_retentions`): [`Retention::Age`] for a kind it lists no rule for, a kind
+    /// it does not keep, or an instance never admitted.
+    #[must_use]
+    pub fn record_retention(&self, instance: &str, kind: &str) -> Retention {
+        let Some(facts) = self.lock_instances().get(instance).cloned() else {
+            return Retention::Age;
         };
-        let rows = Arc::clone(&records.reads);
-        let tokens = Arc::clone(&records.claims);
-        let wall_ms = Arc::clone(&self.wall_ms);
-        let label = reserved_label(instance);
-        let (op, key) = (op.to_string(), key.to_vec());
-        let ttl_ns = ttl_ms.saturating_mul(1_000_000);
-        let owed = OwedClaim(Some(later));
-        pool.run(Box::new(move || {
-            let now_ns = wall_ms().saturating_mul(1_000_000);
-            let ask = Ask {
-                label: &label,
-                op: &op,
-                key: &key,
-                ttl_ns,
-                held,
-                now_ns,
-            };
-            let claim = decide(&*rows, &*tokens, &ask);
-            let late = wall_ms().saturating_mul(1_000_000) > deadline_ns;
-            owed.answer(match claim {
-                Claim::Won { until_ns, .. } if late => Claim::Taken { until_ns },
-                c => c,
-            });
-        }));
-        Answer::Later
+        let Some(index) = facts.record_kinds.iter().position(|k| k.as_str() == kind) else {
+            return Retention::Age;
+        };
+        facts
+            .record_retentions
+            .iter()
+            .find(|r| r.kind as usize == index)
+            .and_then(|r| Retention::from_code(r.rule))
+            .unwrap_or_default()
+    }
+
+    /// THE RETENTION PURGE of one instance's record kind: drop the `kind` rows older than `before`
+    /// from `store` under the rule the instance declared for the kind ([`Self::record_retention`]),
+    /// answering how many went. The rule is the owner's declaration, never read off the kind's
+    /// name. It runs on the calling thread, so a sweep calls it off the request path.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal.
+    pub fn purge_records_before(
+        &self,
+        store: &dyn RecordStore,
+        instance: &str,
+        kind: &str,
+        before: u64,
+    ) -> RecordStoreResult<u64> {
+        store.purge_plane_records(kind, before, self.record_retention(instance, kind))
     }
 
     /// Run one flush of the record write queue on `pool`.
@@ -1755,10 +1816,10 @@ impl HostServices for KernelServices {
         let now = now_ms / 1000;
         let expires_at = expires_ms.div_ceil(1000);
         let token = claim_token(&caller.instance, kind, key);
-        let claims = Arc::clone(&records.claims);
+        let rows = Arc::clone(&records.reads);
         let kind = kind.to_string();
         submit(pool, later, move || {
-            match claims.redeem_plane_token(&kind, &token, expires_at, now) {
+            match rows.claim(&kind, &token, expires_at, now) {
                 Ok(true) => Stored::ready(svc::CLAIM_WON),
                 Ok(false) => Stored::ready(svc::CLAIM_TAKEN),
                 Err(_) => failed(STORE_FAILED),
@@ -1872,6 +1933,46 @@ impl HostServices for KernelServices {
             &principal,
         );
         Stored::ready(0)
+    }
+
+    fn ticket_mint(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+    ) -> Stored {
+        let Some(key) = unit
+            .and_then(|u| self.units.get(u))
+            .and_then(|r| r.principal.clone())
+        else {
+            return Stored::refused(TICKET_NO_PRINCIPAL);
+        };
+        let Some(prefix) = self.facts(caller).and_then(|f| f.ticket_prefix.clone()) else {
+            return Stored::refused(TICKET_NO_PREFIX);
+        };
+        let Some(press) = self.tickets.get() else {
+            return Stored::refused(TICKET_NO_PRESS);
+        };
+        let now = (self.wall_ms)() / 1000;
+        match press.mint(&key.id, &prefix, ttl_secs, record, now) {
+            Ok((ticket, expires_at)) => Stored {
+                bytes: ticket.into_bytes(),
+                ..Stored::ready(expires_at)
+            },
+            Err(why) => Stored::refused(why),
+        }
+    }
+
+    fn ticket_take(&self, _caller: &Caller, unit: Option<u64>) -> Stored {
+        match unit.and_then(|u| self.units.take_ticket(u)) {
+            Some(Some(record)) => Stored {
+                bytes: record,
+                ..Stored::ready(svc::TICKET_TAKEN)
+            },
+            Some(None) => Stored::ready(svc::TICKET_NONE),
+            None => Stored::refused(TICKET_NOT_HELD),
+        }
     }
 
     fn random_fill(&self, len: u64) -> Stored {

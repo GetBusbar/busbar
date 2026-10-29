@@ -16,7 +16,9 @@ pub mod filled;
 pub mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
+pub mod migrate_catalog;
 pub mod migrate_export;
+pub mod migrate_plugins;
 /// The root migration table the composition root hands in, and the one rewrite over it.
 pub mod migration_table;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
@@ -38,6 +40,8 @@ pub mod patch;
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
 pub mod secret;
+/// The settings each plugin declares public; every other plugin setting is sensitive.
+pub mod settings_public;
 /// The ONE config-mutation choke point (`config_transaction`), relocated out of
 /// `admin::v1::json::txn` (1.6.0 de-alias, stage 2a): core config-apply infrastructure that
 /// `auth::self_keys` (core) now calls directly instead of reaching into `admin::`. See the module
@@ -46,6 +50,7 @@ pub mod transaction;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
+pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
@@ -448,6 +453,9 @@ pub struct RootCfg {
     /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
     /// secret references the owner listed in it.
     pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
+    /// The `credentials:` block, carried through `resolve` verbatim: the at-rest key references,
+    /// resolved at boot and at reload ([`CredentialsCfg`]).
+    pub credentials: CredentialsCfg,
     /// EVERY REGISTERED PLANE'S DECLARED SECTION this document writes, by config section, carried
     /// through `resolve` VERBATIM.
     ///
@@ -1196,6 +1204,11 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub oauth_as: Option<serde_yaml::Value>,
+    /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
+    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens. A lifted
+    /// CARRIER, exactly as `oauth_as:` above is: 1.5.5 refuses the key as unknown.
+    #[serde(skip)]
+    pub credentials: CredentialsCfg,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
     /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
@@ -1224,7 +1237,9 @@ pub struct DeployCfg {
     /// `providers:` and `models:` are REQUIRED only when a registered plane declares it requires
     /// them (`PlaneDeclaration::required_config_sections`); the pre-pass refuses such a document
     /// with serde's own missing-field message. No such plane: an omitted section reads empty.
-    #[serde(default)]
+    /// Each entry's keys beyond busbar's own are its options, read aside
+    /// ([`providers::deployments`]) for the plane that speaks its dialect to judge.
+    #[serde(default, deserialize_with = "providers::deployments")]
     pub providers: HashMap<String, ProviderDeploy>,
     #[serde(default)]
     pub models: HashMap<String, ModelCfg>,
@@ -2009,6 +2024,16 @@ pub fn resolve(
     )
     .and_then(|d| d.resolve_provider);
 
+    // Every catalog entry, deployed or not, is judged: its keys beyond busbar's are options of its
+    // dialect (owner ruling 2026-10-27, the `config.yaml` rule), refused in the plane's words.
+    let mut catalog_names: Vec<&String> = defs.keys().collect();
+    catalog_names.sort();
+    for name in catalog_names {
+        if let Err(refusal) = providers::judge_catalog_entry(name, &defs[name]) {
+            errors.push(format!("providers.yaml: {refusal}"));
+        }
+    }
+
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
         let Some(def) = defs.get(deploy_name) else {
@@ -2424,6 +2449,7 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,
+            credentials: deploy.credentials.clone(),
             plane_defs: deploy
                 .declared
                 .0
@@ -2523,6 +2549,7 @@ mod provider_debug_redaction_tests;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 pub mod auth;
+pub mod credentials;
 pub mod hooks;
 pub mod limits;
 pub mod plane_sections;

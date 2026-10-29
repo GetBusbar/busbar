@@ -13,7 +13,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::rendering;
 use busbar_contract::records::{
-    AuditRecord, PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore, UsageDelta, VirtualKey,
+    PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore, UsageDelta, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_kernel::test_support::store_double;
@@ -53,19 +53,6 @@ fn open(door: DoorFn, label: &str) -> Arc<dyn RecordStore> {
         .records
 }
 
-fn audit(seq: u64, hash: &str) -> AuditRecord {
-    AuditRecord {
-        seq,
-        ts: 5,
-        action: "key.create".into(),
-        resource: "key:k1".into(),
-        outcome: "applied".into(),
-        principal: "root".into(),
-        prev_hash: String::new(),
-        hash: hash.into(),
-    }
-}
-
 fn plane(kind: &str, id: &str, parent: Option<&str>, seq: u64) -> PlaneRecord {
     PlaneRecord {
         kind: kind.into(),
@@ -78,8 +65,8 @@ fn plane(kind: &str, id: &str, parent: Option<&str>, seq: u64) -> PlaneRecord {
     }
 }
 
-/// One verb script, every answer written down: keys (the tombstone and scrub refusals), usage, the
-/// audit chain (its fork refusal), plane records (upsert, appended chain, parent listing), the
+/// One verb script, every answer written down: keys (the tombstone refusals), usage, the 1.5.5
+/// audit rows (read), plane records (upsert, appended chain, parent listing), the
 /// spent-token test-and-set, the live-token read and the denylist. No answer reads the wall clock.
 fn transcript(s: &dyn RecordStore) -> Vec<String> {
     let mut t = Vec::new();
@@ -109,12 +96,8 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
         "delete_key unknown {:?}",
         s.delete_key("nope").map_err(|e| e.0)
     ));
-    t.push(format!(
-        "scrub_key live {:?}",
-        s.scrub_key("k1").map_err(|e| e.0)
-    ));
-    // The tombstone: written (its instant is the wall clock's, so only its presence is read), never
-    // cleared by a live-shaped write, and scrubbable once it stands.
+    // The tombstone: written (its instant is the wall clock's, so only its presence is read), and
+    // never cleared by a live-shaped write.
     t.push(format!(
         "delete_key {:?}",
         s.delete_key("k1").map_err(|e| e.0)
@@ -127,10 +110,6 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
         .get_key("k1")
         .map(|k| k.map(|k| (k.enabled, k.deleted_at.is_some(), k.revision)));
     t.push(format!("get_key tombstoned {:?}", dead.map_err(|e| e.0)));
-    t.push(format!(
-        "scrub_key tombstoned {:?}",
-        s.scrub_key("k1").map_err(|e| e.0)
-    ));
 
     let delta = UsageDelta {
         requests: 2,
@@ -150,18 +129,6 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
         s.get_usage("b", 60).map_err(|e| e.0)
     ));
 
-    t.push(format!(
-        "append_audit {:?}",
-        s.append_audit(&audit(1, "hash-a")).map_err(|e| e.0)
-    ));
-    t.push(format!(
-        "append_audit same {:?}",
-        s.append_audit(&audit(1, "hash-a")).map_err(|e| e.0)
-    ));
-    t.push(format!(
-        "append_audit fork {:?}",
-        s.append_audit(&audit(1, "hash-b")).map_err(|e| e.0)
-    ));
     t.push(format!("list_audit {:?}", s.list_audit().map_err(|e| e.0)));
 
     let head = plane("probe", "t1", None, 0);
@@ -235,6 +202,10 @@ async fn the_kernel_store_double_states_what_the_linked_store_door_states() {
     assert_eq!(double.mark_words, real.mark_words, "every word mark");
     assert_eq!(double.needs, real.needs, "the needs");
     assert_eq!(double.kind_tail_size, real.kind_tail_size, "the tail");
+    assert_eq!(
+        double.secret_refs, real.secret_refs,
+        "the settings paths declared secret (the undeclared-reference refusal reads them)"
+    );
     assert_eq!(store_double::STORE.1, row.1, "the ephemeral flag");
 
     let (real_door, double_door) = (row.2, store_double::door);
