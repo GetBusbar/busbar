@@ -80,7 +80,8 @@ pub mod auth_door;
 // THE AUTH KIND'S OUTBOUND DOOR over the safe layer (`auth_outbound_door!`, and
 // `auth_door!(verify_and_outbound: ..)` for a plugin that does both).
 pub mod auth_outbound;
-
+// THE AUTH KIND'S SHARED PLUGIN PIECES: the withheld decode error and a completed login's identity.
+pub mod auth_kit;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 // THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the

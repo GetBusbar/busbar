@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROXY ENVIRONMENT, AS EVERY CONNECTOR DIAL HONOURS IT (status row 130 E5a; ARCHITECT ruling
-//! 2026-10-12: the engine's proxy behaviour moves into the connector UNCHANGED, so every dial
-//! through the connector honours `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` exactly
-//! as 1.5.5's reqwest clients did).
+//! THE PROXY ENVIRONMENT, AS EVERY CONNECTOR DIAL HONOURS IT (the engine's proxy behaviour moves
+//! into the connector UNCHANGED, so every dial through the connector honours `HTTPS_PROXY` /
+//! `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` exactly as 1.5.5's reqwest clients did).
 //!
-//! This is the ONE place the proxy environment is read (ARCHITECT ruling 2026-10-12, a move, not a
-//! copy): the parser is the kernel engine's former one (`busbar-kernel` `egress/engine/mod.rs`,
-//! `mod tunnel`, deleted with that engine, u30), moved verbatim into here, and it fills the choice
+//! This is the ONE place the proxy environment is read (a move, not a copy): the parser is the
+//! kernel engine's former one (`busbar-kernel` `egress/engine/mod.rs`, `mod tunnel`, deleted with
+//! that engine), moved verbatim into here, and it fills the choice
 //! ([`crate::proxy_route`]) every dial of this connector honours; the kernel dials nothing
 //! and reads no environment of its own. The rules: scheme-scoped slots (https targets use
 //! `HTTPS_PROXY`, everything else `HTTP_PROXY`, each falling back to `ALL_PROXY`, uppercase read

@@ -28,7 +28,9 @@ use super::{
     VIEW_HAS_PROMPT,
 };
 use crate::abi::mechanism::call::{OutHead, Outcome};
-use crate::abi::mechanism::check::{blob, fault, lease, results, Dim, HARD_MAX_BYTES};
+use crate::abi::mechanism::check::{
+    blob, failed_error, fault, leased_blob, results, served, Dim, HARD_MAX_BYTES,
+};
 
 /// The most `order_buf` slots (`u32` entries, not bytes) one answer may state.
 pub const HARD_MAX_ORDER_SLOTS: u64 = 65536;
@@ -191,10 +193,7 @@ pub fn check_transform(
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_notify(out: &OutHead) -> Result<(), Fault> {
-    if out.outcome.0 == (Outcome::Failed as u8) && out.error.len > 0 && out.error.ptr.is_null() {
-        return Err(fault(Rule::NullWithCount, "notify.error"));
-    }
-    Ok(())
+    failed_error(out, "notify.error")
 }
 
 /// Validates `configure`'s `out`: a READY answer acks the version the host pushed.
@@ -213,14 +212,7 @@ pub fn check_configure(out: &ConfigureOut, pushed_version: u64) -> Result<(), Fa
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
-    blob(&out.status, "status.status", "status.status.len")?;
-    lease(
-        out.head.outcome,
-        out.head.lease,
-        out.status.len > 0,
-        "status.lease",
-        "status.lease_without_material",
-    )
+    leased_blob!(out, "status", status)
 }
 
 /// Validates `describe`'s `out`.
@@ -228,14 +220,7 @@ pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_describe(out: &DescribeOut) -> Result<(), Fault> {
-    blob(&out.describe, "describe.describe", "describe.describe.len")?;
-    lease(
-        out.head.outcome,
-        out.head.lease,
-        out.describe.len > 0,
-        "describe.lease",
-        "describe.lease_without_material",
-    )
+    leased_blob!(out, "describe", describe)
 }
 
 /// Validates `serve`'s `out`.
@@ -243,20 +228,8 @@ pub fn check_describe(out: &DescribeOut) -> Result<(), Fault> {
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
-    if out.headers_out_len > 0 && out.headers_out.is_null() {
-        return Err(fault(Rule::NullWithCount, "serve.headers_out"));
-    }
-    if out.headers_out_len as u64 > HARD_MAX_HEADERS_OUT_LEN {
-        return Err(fault(Rule::OverMax, "serve.headers_out_len"));
-    }
-    blob(&out.body, "serve.body", "serve.body.len")?;
-    lease(
-        out.head.outcome,
-        out.head.lease,
-        out.headers_out_len > 0 || out.body.len > 0,
-        "serve.lease",
-        "serve.lease_without_material",
-    )
+    let (h, n) = (out.headers_out, out.headers_out_len);
+    served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
 }
 
 /// The most messages one [`PromptView`] may carry (a FAULT ceiling far above any real request).

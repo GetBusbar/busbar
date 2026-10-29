@@ -257,10 +257,10 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
     Ok(lines)
 }
 
-/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): the carrier hands the host's
-/// `io.spawn` the program's WRITTEN environment only; the admitted program's references were
-/// resolved at config time and are held, so the value exists in the host's records and the child's
-/// environment and nowhere the carrier reaches. A reference that did not resolve spawns nothing.
+/// THE HELD ENVIRONMENT: the carrier hands the host's `io.spawn` the program's WRITTEN environment
+/// only; the admitted program's references were resolved at config time and are held, so the value
+/// exists in the host's records and the child's environment and nowhere the carrier reaches. A
+/// reference that did not resolve spawns nothing.
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
@@ -320,10 +320,10 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-13, row 166): A SPAWN RESOLVES NOTHING. A spawn serves a request
-/// (a member's first lease, a respawn, a program need's every open), so the program's references
-/// resolve ONCE, at the load, and every spawn after it loads what is held: two spawns, still one
-/// resolution. RED before: `io.spawn` resolved every reference at every spawn.
+/// A SPAWN RESOLVES NOTHING. A spawn serves a request (a member's first lease, a respawn, a program
+/// need's every open), so the program's references resolve ONCE, at the load, and every spawn after
+/// it loads what is held: two spawns, still one resolution. RED before: `io.spawn` resolved every
+/// reference at every spawn.
 ///
 /// And A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH: the variable changed,
 /// the next spawn still hands the value the load resolved; after the refresher's pass the next
@@ -382,6 +382,30 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             }
             other => panic!("a reference gone at the refresh spawned: {other:?}"),
         }
+        assert_eq!(io.held(), 0);
+    });
+}
+
+/// RED (transport ABI defect 2): `reap` releases every handle its owner still holds, as `close`
+/// releases one: the listener it bound stops listening. Another owner's handles stay.
+#[test]
+fn reap_releases_every_handle_of_its_owner_and_no_other() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        io.admit(ticket(30), Admission::Bind("127.0.0.1:0".into()));
+        let (_, at) = io.listen(OWNER, ticket(30), "127.0.0.1:0").unwrap();
+        io.admit(ticket(31), Admission::Bind("127.0.0.1:0".into()));
+        let (other, _) = io.listen(OWNER + 1, ticket(31), "127.0.0.1:0").unwrap();
+        assert_eq!(io.held(), 2);
+        io.reap(OWNER);
+        assert_eq!(io.held(), 1, "the owner's listener is released");
+        assert!(
+            tokio::net::TcpStream::connect(&at).await.is_err(),
+            "the reaped listener still accepts at {at}"
+        );
+        assert!(matches!(io.close(OWNER, other), Err(IoRefusal::Refused(_))));
+        io.close(OWNER + 1, other)
+            .expect("another owner's handle stays");
         assert_eq!(io.held(), 0);
     });
 }

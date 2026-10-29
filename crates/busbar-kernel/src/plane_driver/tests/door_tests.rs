@@ -130,15 +130,75 @@ fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
         decl.caller_credential_refusal,
         Some("forwarding a caller credential is refused here")
     );
-    assert_eq!((decl.wire_format_names)(), &["first", "second"]);
+    assert_eq!((decl.wire_format_names)(decl), &["first", "second"]);
     assert!(decl.parse_section.is_some());
     assert!(
         decl.named_def_list.is_none() && decl.config_validate.is_none(),
         "a section that is no 1.5.3 named-definition map answers no named-map CRUD"
     );
-    // Folding the same key again answers the first row.
-    let again = fold(registration("door-fold-row", "door_fold_row")).expect("folds");
-    assert!(std::ptr::eq(decl, again));
+    assert!(is_door(decl), "the row carries the door it was folded from");
+}
+
+/// EVERY FOLD IS ITS OWN ROW, AND EACH ROW'S HOOKS READ THE DOOR IT CARRIES: the kernel holds no
+/// table of folded doors, so a second fold under one key is not answered with the first's row. Two
+/// folds under one key from two registrations that state different dialects are two rows, each
+/// answering its own registration's words. While the folded doors lived in one process-wide table
+/// keyed by plane, the second fold answered the first's row and its dialects were never read.
+#[test]
+fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
+    let first = fold(registration("door-fold-twice", NAMED)).expect("folds");
+    let second = fold(PlaneRegistration {
+        dialects: vec!["third"],
+        dialect_flags: vec![busbar_contract::abi::plane::DIALECT_PROVIDER],
+        ..registration("door-fold-twice", NAMED)
+    })
+    .expect("folds");
+    assert!(!std::ptr::eq(first, second), "two folds, two rows");
+    let (a, b) = (
+        first.door.expect("the first row carries its door"),
+        second.door.expect("the second row carries its door"),
+    );
+    assert!(!std::ptr::eq(a, b), "each row carries its own door");
+    assert_eq!((first.wire_format_names)(first), &["first", "second"]);
+    assert!((first.provider_dialects)(first).is_empty());
+    assert_eq!((second.wire_format_names)(second), &["third"]);
+    assert_eq!((second.provider_dialects)(second), &["third"]);
+    for decl in [first, second] {
+        assert!(is_door(decl));
+        assert_eq!((decl.key, decl.config_section), ("door-fold-twice", NAMED));
+        let validate = decl.config_validate.expect("a write judge");
+        assert_eq!(
+            validate(decl, "zed", &serde_json::json!({"pin": {}})).unwrap_err(),
+            format!("`{NAMED}.zed`: `url:` must name the endpoint"),
+        );
+    }
+    // A door's hook over a row that carries no door answers nothing, not another row's door.
+    let doorless = PlaneDecl::assemble(
+        declaration_of(&registration("door-fold-twice", NAMED)),
+        door_hooks(true, false, false),
+    );
+    assert!(!is_door(&doorless));
+    assert!((first.wire_format_names)(&doorless).is_empty());
+}
+
+/// NO CAP ON THE DOORS ONE PROCESS FOLDS: with no per-index hook table there is no sixteen-door
+/// cap; a seventeenth door folds, carrying its own door, and answers its own registration's words.
+#[test]
+fn a_seventeenth_door_folds() {
+    let rows: Vec<&'static PlaneDecl> = (0..17)
+        .map(|i| {
+            let key: &'static str = format!("door-cap-{i:02}").leak();
+            let section: &'static str = format!("door_cap_{i:02}").leak();
+            fold(registration(key, section)).expect("every door folds")
+        })
+        .collect();
+    let last = rows[16];
+    assert!(is_door(last), "the seventeenth row carries its door");
+    assert_eq!(
+        (last.key, last.config_section),
+        ("door-cap-16", "door_cap_16")
+    );
+    assert_eq!((last.wire_format_names)(last), &["first", "second"]);
 }
 
 /// THE PROVIDER-KEY DESCRIPTOR A DOOR STATES is kept by the fold and read back whole through the
@@ -147,7 +207,7 @@ fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
 #[test]
 fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     use busbar_contract::provider_keys::{Key, ProviderKeys, Shape, Table};
-    let _ = fold(registration("door-keyless-row", "door_keyless_row")).expect("folds");
+    let keyless = fold(registration("door-keyless-row", "door_keyless_row")).expect("folds");
     let keys = ProviderKeys {
         catalog: Table {
             deny_unknown: false,
@@ -173,7 +233,12 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     })
     .expect("folds");
     assert!(is_door(decl));
-    assert_eq!(provider_keys(), Some(&keys));
+    assert_eq!(provider_keys(&[keyless, decl]), Some(&keys));
+    assert_eq!(
+        provider_keys(&[keyless]),
+        None,
+        "a door that states none adds none"
+    );
 }
 
 /// CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): the sections a door's Statement marks required
@@ -208,7 +273,7 @@ fn the_section_is_judged_by_the_door_and_carried_as_written() {
     let parse = decl.parse_section.expect("a section parser");
     let bad: serde_yaml::Value = serde_yaml::from_str("zed: {pin: {mechanism: unpinned}}").unwrap();
     assert_eq!(
-        parse(&bad).unwrap_err(),
+        parse(decl, &bad).unwrap_err(),
         format!("`{NAMED}.zed`: `url:` must name the endpoint"),
         "the door's refusal, in its words"
     );
@@ -216,7 +281,7 @@ fn the_section_is_judged_by_the_door_and_carried_as_written() {
         "hooks: [audit]\nzed: {url: 'https://z', hooks: [gate]}\nalpha: {url: 'https://a'}\n",
     )
     .unwrap();
-    let cfg = parse(&good).expect("the door accepts it");
+    let cfg = parse(decl, &good).expect("the door accepts it");
     assert!(cfg.is_present());
     assert_eq!(
         cfg.def_names(),
@@ -233,7 +298,7 @@ fn the_section_is_judged_by_the_door_and_carried_as_written() {
             ("alpha".to_string(), Vec::new())
         ]
     );
-    assert!(!(decl.default_section.expect("a default"))().is_present());
+    assert!(!(decl.default_section.expect("a default"))(decl).is_present());
 }
 
 #[test]
@@ -270,20 +335,20 @@ fn an_admin_write_is_judged_by_the_door_in_the_named_map_wording() {
     let decl = fold(registration("door-fold-write", NAMED)).expect("folds");
     let validate = decl.config_validate.expect("a write judge");
     assert_eq!(
-        validate("zed", &serde_json::json!({"url": "https://z"})),
+        validate(decl, "zed", &serde_json::json!({"url": "https://z"})),
         Ok(())
     );
     assert_eq!(
-        validate("zed", &serde_json::json!({"pin": {}})).unwrap_err(),
+        validate(decl, "zed", &serde_json::json!({"pin": {}})).unwrap_err(),
         format!("`{NAMED}.zed`: `url:` must name the endpoint"),
         "a value rule names its registration itself"
     );
     assert_eq!(
-        validate("zed", &serde_json::json!("nope")).unwrap_err(),
+        validate(decl, "zed", &serde_json::json!("nope")).unwrap_err(),
         format!("invalid `{NAMED}.zed` definition: invalid type: expected struct Member"),
         "a shape refusal reads as the 1.5.3 named-map sentence"
     );
-    let mut cfg = (decl.default_section.expect("a default"))();
+    let mut cfg = (decl.default_section.expect("a default"))(decl);
     cfg.insert_def("zed", &serde_json::json!({"url": "https://z"}))
         .expect("inserts");
     assert_eq!(cfg.def_names(), vec!["zed"]);
@@ -299,6 +364,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
     let reg = registration("door-fold-facing", NAMED);
     let slot = DoorSlot {
         section: DoorSection::new(
+            decl.door,
             NAMED,
             serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
         ),
@@ -385,10 +451,12 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let decl = fold(reg).expect("folds");
     assert_eq!(decl.owned_config_sections, &[owned_key]);
     let block: serde_yaml::Value = serde_yaml::from_str("uri: 'https://gw.example/x'").unwrap();
-    let parsed = (decl.parse_endpoint.expect("its endpoint parses"))(&block).expect("carried");
+    let parsed =
+        (decl.parse_endpoint.expect("its endpoint parses"))(decl, &block).expect("carried");
     assert!(parsed.is_present());
     let lowered = (decl.lower_endpoint.expect("and lowers"))(&*parsed).expect("as written");
     let section = DoorSection::new(
+        decl.door,
         NAMED,
         serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
     );
@@ -400,7 +468,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
         prior: None,
         providers: None,
     };
-    let slot = (decl.build)(&ctx).expect("a slot");
+    let slot = (decl.build)(decl, &ctx).expect("a slot");
     let adm = (decl.admission)(&*slot).expect("an audience from its owned block");
     assert_eq!(adm.audience, "https://gw.example/x");
 
@@ -427,17 +495,21 @@ fn lane_less_healthz(
     let mut fixture = crate::test_support::TestApp::new().plane_sections(sections);
     if let Some(decl) = door {
         let section = DoorSection::new(
+            decl.door,
             decl.config_section,
             serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
         );
         let section_defs = section.as_defs();
-        let slot = (decl.build)(&BuildCtx {
-            endpoint_slot: None,
-            plane_defs: &section_defs,
-            public_url: None,
-            prior: None,
-            providers: None,
-        })
+        let slot = (decl.build)(
+            decl,
+            &BuildCtx {
+                endpoint_slot: None,
+                plane_defs: &section_defs,
+                public_url: None,
+                prior: None,
+                providers: None,
+            },
+        )
         .expect("a configured door builds its generation's slot");
         fixture.install_plane_runtime(decl.key, slot);
     }
@@ -520,8 +592,9 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
     );
     let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("folds");
+    let doorless_facing = facing.clone();
     let slot = DoorSlot {
-        section: DoorSection::new(NAMED, serde_yaml::Value::Null),
+        section: DoorSection::new(decl.door, NAMED, serde_yaml::Value::Null),
         facing,
         opened: true,
     };
@@ -555,6 +628,21 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     > = std::collections::BTreeMap::new();
     assert!(listed(&empty, None).is_empty());
+    // A slot no door built (its section carries no door) lists nothing.
+    let doorless: std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    > = [(
+        decl.key,
+        std::sync::Arc::new(DoorSlot {
+            section: DoorSection::new(None, NAMED, serde_yaml::Value::Null),
+            facing: doorless_facing,
+            opened: true,
+        }) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )]
+    .into_iter()
+    .collect();
+    assert!(listed(&doorless, None).is_empty());
 }
 
 /// RED, THE PROBE IS HANDED ITS PROVIDERS' DIALECT FACTS (THE DESIGN section 4): a door's build
@@ -605,6 +693,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     .into_iter()
     .collect();
     let section = DoorSection::new(
+        decl.door,
         NAMED,
         serde_yaml::from_str(
             "models: {m1: {provider: eng-a}, m2: {provider: eng-b}, m3: {provider: eng-a}}",
@@ -619,7 +708,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         prior: None,
         providers,
     };
-    let slot = (decl.build)(&ctx(Some(&providers))).expect("a slot");
+    let slot = (decl.build)(decl, &ctx(Some(&providers))).expect("a slot");
     let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");
     let claimed: Vec<&str> = slot.facing.claims.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(
@@ -627,7 +716,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         [r#"/eng-a/one/{"429":"rate_limited"}"#, "/eng-b/two/-"],
         "referenced, once each, in order, with their dialect fields"
     );
-    let slot = (decl.build)(&ctx(None)).expect("a slot");
+    let slot = (decl.build)(decl, &ctx(None)).expect("a slot");
     let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");
     assert!(
         slot.facing.claims.is_empty(),

@@ -3896,7 +3896,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // pass, which looks each path up by the key inserted here.
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(openapi) = decl.openapi {
-            if let Some(obj) = openapi().as_object() {
+            if let Some(obj) = openapi(decl).as_object() {
                 for (path, item) in obj {
                     paths.insert(path.clone(), item.clone());
                 }
@@ -4649,7 +4649,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // those calls had.
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {
-            schemas(&mut gen, &mut req_gen, &mut paths);
+            schemas(decl, &mut gen, &mut req_gen, &mut paths);
         }
     }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
