@@ -11,6 +11,7 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::lifecycle::CancelOut;
 use crate::abi::store::ledger::{HostRecords, RecordEntry};
+use crate::abi::store::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::abi::store::{
     CountOut, HostBlobs, HostBuf, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut,
     LeasedStrListOut, VerdictOut, ABSENT, FOUND,
@@ -616,4 +617,49 @@ fn every_store_fault_names_its_own_store_field() {
         assert!(seen.insert(f.field), "{} is named by two arms", f.field);
     }
     assert_eq!(seen.len(), ALL.len());
+}
+
+fn kind_before(retention: u32) -> KindBeforeIn {
+    // SAFETY: `KindBeforeIn` is `#[repr(C)]` integers and pointers; all-zero is a valid value.
+    let mut i: KindBeforeIn = unsafe { std::mem::zeroed() };
+    i.before = 100;
+    i.retention = retention;
+    i
+}
+
+/// GREEN: each rule a purge may carry passes, and the zero an older host's shorter `in` reads as
+/// is the age rule.
+#[test]
+fn green_a_purge_carries_a_known_retention() {
+    assert_eq!(check_kind_before(&kind_before(RETENTION_AGE)), Ok(()));
+    assert_eq!(
+        check_kind_before(&kind_before(RETENTION_TERMINAL_ONLY)),
+        Ok(())
+    );
+    assert_eq!(RETENTION_AGE, 0);
+    assert_eq!(
+        crate::records::Retention::from_code(0),
+        Some(crate::records::Retention::Age)
+    );
+}
+
+/// RED: a purge whose retention names no rule is refused.
+#[test]
+fn red_a_purge_with_an_unknown_retention_is_refused() {
+    for code in [RETENTION_TERMINAL_ONLY + 1, u32::MAX] {
+        assert_eq!(
+            check_kind_before(&kind_before(code)),
+            Err(KIND_BEFORE_RETENTION)
+        );
+    }
+}
+
+/// The contract rule and its code map both ways.
+#[test]
+fn a_retention_and_its_code_map_both_ways() {
+    use crate::records::Retention;
+    for r in [Retention::Age, Retention::TerminalOnly] {
+        assert_eq!(Retention::from_code(r.code()), Some(r));
+    }
+    assert_eq!(Retention::default(), Retention::Age);
 }

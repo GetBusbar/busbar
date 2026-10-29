@@ -63,8 +63,8 @@ pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{
-    CredentialSecret, Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed,
-    StaticServices, StaticWake, TrustItem, TrustItems, Wake,
+    CredentialSecret, Judged, Minted, Names, Pend, Records, ServiceError, Services, Signature,
+    Signed, StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
