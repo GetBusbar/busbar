@@ -1377,11 +1377,6 @@ impl KernelServices {
         }));
     }
 
-    /// The kernel tick's re-verification mark, at the wall clock.
-    pub fn mark_due(&self) {
-        self.trust.mark_due((self.wall_ms)());
-    }
-
     /// The kernel's flush tick, run by [`Self::flushes`] every [`crate::host_records::FLUSH_INTERVAL`]:
     /// start a flush of the queued record writes when none runs, so writes a refused flush left
     /// queued still reach the store.

@@ -278,25 +278,16 @@ fn a_readmit_keeps_state_unless_the_declared_pin_changed() {
     );
 }
 
+/// NO BACKGROUND TIMER (tool-and-agent-trust.md:61-62): whatever the declared cadence, and however
+/// long since the last sighting, no counterparty is ever due; one never admitted has no answer.
 #[test]
-fn the_tick_marks_by_the_declared_cadence_and_a_sighting_clears_the_mark() {
+fn no_counterparty_is_ever_due_by_the_clock() {
     let (b, _) = book(entry(None, 100, 0));
-    b.mark_due(0);
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]));
-    // Answering the marks does not spend them.
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]));
+    assert_eq!(b.due("inst"), Some(vec![]));
     b.sight("inst", "cp", "h", 10).unwrap();
     assert_eq!(b.due("inst"), Some(vec![]));
-    b.mark_due(50);
-    assert_eq!(b.due("inst"), Some(vec![]));
-    b.mark_due(110);
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]));
-}
-
-#[test]
-fn a_zero_cadence_is_never_marked_by_the_timer() {
+    assert_eq!(b.due("nowhere"), None);
     let (b, _) = book(entry(None, 0, 0));
-    b.mark_due(1_000_000);
     assert_eq!(b.due("inst"), Some(vec![]));
 }
 
@@ -538,9 +529,11 @@ fn an_unreachable_sighting_answers_the_last_verdict_and_changes_nothing() {
     // A declared fingerprint never approved is pending, reached or not (coordinator 2026-10-07,
     // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::New));
-    b.mark_due(0);
-    assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::New));
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]), "still due");
+    assert_eq!(
+        b.last_verdict(&i, "cp"),
+        Ok(Sight::New),
+        "answering changes nothing"
+    );
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::Same), "approved");
     b.sight(&i, "cp", "h2", 1).unwrap();

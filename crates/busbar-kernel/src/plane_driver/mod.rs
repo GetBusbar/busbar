@@ -45,8 +45,7 @@
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
 //! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
-//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
-//! plane's `trust.due` sees the marks.
+//! answer.
 //!
 //! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
 //! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
@@ -455,7 +454,6 @@ impl PlaneDriver {
         let mut at = 0;
         let mut cause = Cause::Timer;
         loop {
-            self.services.mark_due();
             let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
                 return;
             };
