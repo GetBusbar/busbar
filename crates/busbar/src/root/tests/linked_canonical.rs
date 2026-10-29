@@ -197,7 +197,7 @@ fn a_row_registered_under_its_alias_is_drift() {
         .stores
         .first()
         .expect("the build links a store");
-    let old = Row::of(&LinkedPlugin::store(key, door, ephemeral));
+    let old = Row::of(&LinkedPlugin::store_named(key, key, door, ephemeral));
     let (_, mismatches, _) = drift(&[old], &entries);
     assert_eq!(mismatches.len(), 1, "the alias-named row is drift");
     assert!(
