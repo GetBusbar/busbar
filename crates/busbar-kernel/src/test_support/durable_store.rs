@@ -33,7 +33,7 @@
 use crate::governance::MemoryStore;
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore,
-    RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
+    RecordStoreError, RecordStoreResult, Retention, UsageLedger, VirtualKey,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 enum Write {
     Upsert(PlaneRecord),
     Append(PlaneRecord),
-    Purge(String, u64),
+    Purge(String, u64, u32),
     Delete(String, String),
     Redeem(String, String, u64, u64),
 }
@@ -56,7 +56,11 @@ impl Write {
         Ok(match self {
             Write::Upsert(r) => json!(s.upsert_plane_record(r.view())?),
             Write::Append(r) => json!(s.append_plane_record(r.view())?),
-            Write::Purge(kind, before) => json!(s.purge_plane_records_before(kind, *before)?),
+            Write::Purge(kind, before, code) => {
+                let retention = Retention::from_code(*code)
+                    .ok_or_else(|| RecordStoreError(format!("retention {code} is no rule")))?;
+                json!(s.purge_plane_records(kind, *before, retention)?)
+            }
             Write::Delete(kind, id) => json!(s.delete_plane_record(kind, id)?),
             Write::Redeem(k, token, exp, now) => json!(s.redeem_plane_token(k, token, *exp, *now)?),
         })
@@ -187,7 +191,15 @@ impl RecordStore for DurableStore {
         self.write(Write::Append(record.clone()))
     }
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.write(Write::Purge(kind.into(), before))
+        self.purge_plane_records(kind, before, Retention::Age)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        self.write(Write::Purge(kind.into(), before, retention.code()))
     }
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
         self.write(Write::Delete(kind.into(), id.into()))
