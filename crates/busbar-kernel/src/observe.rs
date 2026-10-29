@@ -209,9 +209,13 @@ pub(crate) fn forget_cardinality(plugin: &str) {
 /// The kernel's observer: validates what a plugin reported, bounds it, and folds it into THIS
 /// process's recorder and diagnostics path.
 ///
-/// Zero-sized. It holds no state because it owns none: the recorder it writes to is the
-/// process-global one ([`crate::snapshot`]) and the catalogue it resolves against is static.
-pub struct KernelPluginObserver;
+/// It holds one thing, lent: the catalogue a reported code resolves against, the composition root's
+/// fold ([`crate::diagnostics::Catalogue`]). The recorder it writes to is the process-global one
+/// ([`crate::snapshot`]).
+#[derive(Clone, Copy, Debug)]
+pub struct KernelPluginObserver {
+    catalogue: crate::diagnostics::Catalogue,
+}
 
 /// WHAT THE LOADER GRANTED AT OPEN, as the kernel's observer asks it: whether a plugin was opened
 /// first-party, and which of its declared series it was granted. The composition root hands the
@@ -225,6 +229,12 @@ pub trait Grants: Send + Sync {
 }
 
 impl KernelPluginObserver {
+    /// The observer that resolves a plugin's reported codes against `catalogue`, the root's fold.
+    #[must_use]
+    pub const fn lent(catalogue: crate::diagnostics::Catalogue) -> KernelPluginObserver {
+        KernelPluginObserver { catalogue }
+    }
+
     /// Count `observations` plugin back-channels the loader's bounded intake dropped
     /// ([`crate::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL`]).
     pub fn dropped(&self, observations: u64) {
@@ -260,7 +270,7 @@ impl KernelPluginObserver {
         // path — `hooks::scrape` knows no diagnostic, and a 1.5.5 hook had no way to raise one — so
         // silencing them here would not preserve any frozen behaviour, it would only drop the one
         // banner the host promises to look up and emit. They are folded for every kind, first.
-        fold_diagnostics(grants, plugin, diagnostics);
+        fold_diagnostics(grants, self.catalogue, plugin, diagnostics);
         if kind == busbar_contract::abi::mechanism::kind::HOOK {
             return;
         }
@@ -382,7 +392,12 @@ fn labels_for(
 /// A plugin NAMES a code; the host is what looks it up and emits it. A code the catalogue does not
 /// hold is dropped: a `BUSBAR-NNNN` banner is a promise that pasting it into the docs lands on an
 /// entry, and a plugin cannot be allowed to mint that promise.
-fn fold_diagnostics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
+fn fold_diagnostics(
+    grants: &dyn Grants,
+    catalogue: crate::diagnostics::Catalogue,
+    plugin: &str,
+    raw: &[serde_json::Value],
+) {
     if raw.is_empty() {
         return;
     }
@@ -394,7 +409,7 @@ fn fold_diagnostics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]
         >(entry.clone()) else {
             continue;
         };
-        let Some(diag) = resolve_code(&d.code) else {
+        let Some(diag) = resolve_code(catalogue, &d.code) else {
             continue;
         };
         // The message and every field value are plugin-controlled strings headed for an operator's
@@ -463,11 +478,14 @@ const MAX_DIAG_FIELD_CHARS: usize = 64;
 /// Per-diagnostic cap on structured fields.
 const MAX_DIAG_FIELDS: usize = 8;
 
-/// Resolve a reported `BUSBAR-NNNN` code against the catalogue. `None` for anything that is not a
-/// well-formed banner or is not registered.
-fn resolve_code(code: &str) -> Option<&'static crate::diagnostics::Diagnostic> {
+/// Resolve a reported `BUSBAR-NNNN` code against `catalogue`, the one the root lent. `None` for
+/// anything that is not a well-formed banner or is not registered.
+fn resolve_code(
+    catalogue: crate::diagnostics::Catalogue,
+    code: &str,
+) -> Option<&'static crate::diagnostics::Diagnostic> {
     let n: u16 = code.strip_prefix("BUSBAR-")?.parse().ok()?;
-    crate::diagnostics::by_code(n)
+    catalogue.by_code(n)
 }
 
 /// Clamp a plugin's claimed level to what the catalogue says the condition is worth.

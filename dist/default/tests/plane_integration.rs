@@ -101,7 +101,7 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
                 prior: None,
                 providers: None,
             };
-            (decl.build)(&ctx).map(|obj| (decl, obj))
+            (decl.build)(decl, &ctx).map(|obj| (decl, obj))
         })
         .collect()
 }
