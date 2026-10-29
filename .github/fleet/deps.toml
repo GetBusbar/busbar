@@ -102,6 +102,11 @@ version = "3"
 repos = ["busbar-plane-a2a"]
 reason = "BUILD ONLY: the protoc the a2a plane's `build.rs` drives, vendored so the build needs no system protoc (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106)."
 
+[plugin-deps.sonic-number]
+version = "=0.1.3"
+repos = ["busbar-plane-decisions"]
+reason = "the JSON number reader sonic-rs uses. The decisions plane reads a number with it exactly as ingress does: exponent capped at 1000, 19 significant digits kept. It replaces the plane's vendored port of 0.1.2 (coordinator ruling, new-planes Lane D). Pinned to 0.1.3, the version busbar's lock already carries through sonic-rs, so this adds no second version. The plane's `tests/number_reader.rs` holds 0.1.3 to the port's frozen verdicts. Its only dependency is cfg-if, so nothing new reaches a pure plane."
+
 [plugin-deps.httparse]
 version = "1"
 default-features = false
