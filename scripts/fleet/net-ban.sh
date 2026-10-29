@@ -46,10 +46,50 @@ imports_of() {  # imports_of <cdylib>: every undefined (imported) symbol, unvers
 }
 
 check() {  # check <plugin-root> <crate> <cdylib> <deps.toml>
-  # RED: the policy is read (as busbar-release reads its shape) and enforced nowhere.
-  local deps="$4"
-  policy "$deps" crates >/dev/null && policy "$deps" features >/dev/null && policy "$deps" imports >/dev/null
-  echo "net-ban: ok — $2"
+  local root="$1" crate="$2" lib="$3" deps="$4" fail=0 repo
+  repo="${NET_BAN_REPO:-$(basename "$(cd "$root" && pwd)")}"
+  err() { echo "::error::net-ban: $*" >&2; fail=1; }
+  [ -f "$deps" ] || { err "no policy at $deps"; return 1; }
+  [ -f "$lib" ] || { err "no built cdylib at $lib"; return 1; }
+  local banned_crates banned_features banned_imports carriers
+  banned_crates="$(policy "$deps" crates)"
+  banned_features="$(policy "$deps" features)"
+  banned_imports="$(policy "$deps" imports)"
+  carriers="$(policy "$deps" carriers)"
+
+  # The shipped closure: normal + build edges, every target, each package with its features.
+  local tree
+  tree="$(cd "$root" && cargo tree --locked --offline -p "$crate" -e normal,build --target all \
+    --prefix none --no-dedupe -f '{p}|{f}' 2>&1)" || { err "cargo tree failed for $crate: $tree"; return 1; }
+  local line name feats b c f
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%% *}"
+    feats="${line#*|}"
+    while IFS= read -r b; do
+      [ -n "$b" ] && [ "$name" = "$b" ] && err "$crate ships banned crate '$b' ($line)"
+    done <<< "$banned_crates"
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      c="${b%%/*}"; f="${b#*/}"
+      if [ "$name" = "$c" ] && printf ',%s,' "$feats" | grep -qF ",$f,"; then
+        err "$crate ships banned feature '$b' ($line)"
+      fi
+    done <<< "$banned_features"
+  done < <(printf '%s\n' "$tree" | sort -u)
+
+  # The built cdylib: what it imports.
+  local imported sym
+  imported="$(imports_of "$lib" | sort -u)"
+  if printf '%s\n' "$carriers" | grep -qxF "$repo"; then
+    echo "net-ban: $repo is a listed carrier: the socket half of the import scan is not applied"
+  else
+    while IFS= read -r sym; do
+      [ -n "$sym" ] && printf '%s\n' "$imported" | grep -qxF "$sym" && err "$(basename "$lib") imports banned symbol '$sym' (a socket, a dial or TLS of its own)"
+    done <<< "$banned_imports"
+  fi
+  [ "$fail" = 0 ] && echo "net-ban: ok — $crate ships no socket, dial or TLS of its own ($(basename "$lib"))"
+  return "$fail"
 }
 
 selftest() {
