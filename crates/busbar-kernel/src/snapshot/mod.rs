@@ -340,21 +340,6 @@ pub fn refresh_scrape_gauges(app: &App) {
         let avail = app.store.classify("", lane_idx, now);
         emit_lane_gauges(model, &lane_model, snap, &avail, now);
     }
-
-    // Every OTHER plane's destinations: the plane-neutral breaker cells secondary planes dispatch
-    // through, read from the one shared handle. The `pool` label is the cell's key exactly as the
-    // plane keyed it (a registered target id or a pool name, already qualified by the plane so it
-    // cannot collide with a bare pool name above); the `lane` label is the member's position in
-    // that pool (`0` for a single registered target). Only cells a dispatch has materialized
-    // exist, so the label space is bounded by the configured targets and pools.
-    for (key, member, state, cooldown) in app.plane_breakers.cell_readings(now) {
-        metrics::gauge!(
-            LANE_STATE,
-            "pool" => key.to_string(),
-            "lane" => member.to_string()
-        )
-        .set(lane_state_value(state, cooldown, now));
-    }
 }
 
 /// `busbar_lane_state` for ONE breaker cell, read from that cell alone — never folded with any

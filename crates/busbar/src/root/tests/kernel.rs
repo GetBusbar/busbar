@@ -324,7 +324,6 @@ fn the_units_assemble_from_values_configuration_decided() {
     let units = ProductionUnits::new(
         &kernel,
         durability,
-        crate::root::adapters::BreakerPolicy::new(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),

@@ -302,12 +302,11 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     let egress = Egress {
         caller: InstanceId(9),
         conns: Arc::new(BadGateway::default()),
-        breaker: book.clone(),
+        breaker: busbar_kernel::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        floor: WeightedFloor::new(),
         pools: HashMap::from([(
             pool_name.clone(),
             Pool {
@@ -319,6 +318,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
                     exclusions: Vec::new(),
                 },
                 on_exhausted: OnExhausted::Status503,
+                floor: WeightedFloor::new(),
             },
         )]),
         routes: HashMap::from([(

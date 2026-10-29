@@ -62,9 +62,8 @@ pub enum Unavailable {
     AtCapacity { drain_hint_ms: Option<u64> },
     /// Inbound backpressure shed this request before lane selection (`limits.max_inbound_concurrent`).
     //
-    // Constructed by `PlaneBreakers::try_admit`'s fail-closed arm (a planeless table) and by the
-    // breaker host-call's `reconstruct_unavailable`. Both are dead when their planes are compiled
-    // out, so the lint is silenced outside tests only.
+    // Constructed by the breaker host-call's `reconstruct_unavailable`, dead when its planes are
+    // compiled out, so the lint is silenced outside tests only.
     #[cfg_attr(not(test), allow(dead_code))]
     Shedding,
 }
