@@ -21,17 +21,22 @@ on:
     - test
     - deny
     - oracle
-    # The conformance suites (testing/conformance/suites.tsv): every move and every landing, never
-    # blocking (owner 2026-10-26: a suite not run or not passed in dev is a gap in our CI).
-    - checks: [conformance]
-      blocks: false
+  # The conformance suites (testing/conformance/suites.tsv) report the truth and never block (owner
+  # 2026-10-26: a suite not run or not passed in dev is a gap in our CI): the check is red when a
+  # suite did not pass. It runs after every landing (dev's commit), daily at dev's tip and on
+  # request (on a change's head: `measure --check conformance`). It is off `move` because the live
+  # engine (0.9.7.12) gates a move on every move entry's red, `blocks: false` included; when the
+  # engine honours `blocks: false` on a move (ModernCI #2539: `branch_file_check` labels it
+  # `move (does not block)`), add `- {checks: [conformance], blocks: false}` back under `move`.
   landed: [conformance]
   # CodeQL (off GitHub code scanning default setup, 2026-10-26): daily at dev's tip and on request;
   # it reports, never gates.
   schedule:
   - cron: "0 7 * * *"
     checks: [codeql]
-  manual: [codeql]
+  - cron: "30 6 * * *"
+    checks: [conformance]
+  manual: [codeql, conformance]
 # Step 5: dist/default is its own workspace and embeds core's source, so a change to it or to
 # crates/busbar runs every scoped check whole (the dist half carries no -p to narrow by).
 affected:
@@ -492,14 +497,6 @@ checks:
     priority: low
     requires: [cc, git, curl, docker]
     run: |
-      if [ ! -f testing/conformance/run.sh ]; then echo "no testing/conformance/run.sh on this head yet"; exit 0; fi
-      # Non-blocking by ruling (owner 2026-10-26): a suite that did not pass is reported in its verdict
-      # (target/conformance/verdicts/), not as this check's exit. Only a driver failure (exit 2: no
-      # busbar, no tools, no verdicts written) fails the check. ModernCI's `blocks: false` on a move
-      # entry still dooms the move on a red, so the exit carries the ruling here.
-      # WORKAROUND: exit 0 on a suite non-pass is a workaround for ModernCI not honouring
-      # blocks:false; restore `exec bash testing/conformance/run.sh` when fixed. It is NOT a pass:
-      # the verdict file records the fail/not-run, and the manifest and site show it.
-      rc=0; bash testing/conformance/run.sh || rc=$?
-      [ "$rc" -le 1 ] || exit "$rc"
+      # The check exits as the driver does: red when any suite did not pass (its verdict says why).
+      exec bash testing/conformance/run.sh
     outputs: [target/conformance/]
