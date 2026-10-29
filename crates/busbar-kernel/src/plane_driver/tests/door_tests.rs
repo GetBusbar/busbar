@@ -249,12 +249,16 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
 fn the_sections_a_door_requires_are_the_folded_rows_required_sections() {
     let decl = fold(PlaneRegistration {
         requires: vec!["catalog_a", "catalog_b"],
+        consumes: vec!["catalog_b"],
         ..registration("door-requiring-row", "door_requiring_row")
     })
     .expect("folds");
     assert_eq!(decl.required_config_sections, ["catalog_a", "catalog_b"]);
+    // The sections it consumes are read off the same fold (a plane's migration is handed them).
+    assert_eq!(consumed_sections(decl), ["catalog_b"]);
     let none = fold(registration("door-requiring-none", "door_requiring_none")).expect("folds");
     assert!(none.required_config_sections.is_empty());
+    assert!(consumed_sections(none).is_empty());
 }
 
 #[test]

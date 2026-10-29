@@ -17,6 +17,17 @@ nothing noticed until a daily poll went red. It had two independent breaks, and 
 the second — config validation stops at the first error, so fixing the reported problem only moved
 the failure. A corpus finds every era's break at once, before a release, not after.
 
+## Hand-written cases no tag shipped
+
+`private-destinations/` is a 1.5.5-shaped `config.yaml` and the `providers.yaml` beside it whose
+providers reach private upstreams. It covers an address literal, `localhost`, a private name, a
+private entry only the catalog states, and a private `token_url`. No release shipped one, and every
+config in `from-tags/` names only public `https://` upstreams. 1.5.5 dialled such upstreams with no
+allowlist; 1.6.0 refuses them unless `advanced.allow_destinations` names them. The kernel's plugin
+migration test (`crates/busbar-kernel/src/config/tests/migrate_plugins_tests.rs`) migrates it
+through a plane that raises `AllowDestinationIfPrivate` for every host it dials. It answers names
+through a resolver seam, never real DNS. `refresh.sh` leaves this directory alone.
+
 ## Adding a release
 
 ```
