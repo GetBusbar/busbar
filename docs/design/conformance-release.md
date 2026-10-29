@@ -89,8 +89,12 @@ re-run is possible". G-C then refuses it.
 When ModernCI ships a core override, the hook calls it. The re-run's verdict is then used only if its
 stamp names `T`.
 
-Owner question: plugins pin `.busbar-ref` to the released test-kit commit (G-12), not to `T`. Under
-this rule every plugin verdict needs that re-run.
+Ruling (conformance lead, per KICKOFF "plugins test against a released core test kit"; it answers
+the owner question above it): plugins pin `.busbar-ref` to the released test-kit commit `K` (G-12),
+not to `T`. When the release names `K` (`--testkit K` on `manifest` and `gate`), a plugin verdict
+counts when `core_pin == K`, and a stored verdict on any other core is re-run against `K` or refused.
+Core's own suites still need `core_pin == T`. Without `--testkit`, the `core_pin == T` rule above
+holds for plugins too.
 
 ## 3. Stamp validation
 
@@ -103,7 +107,8 @@ the failing check as the reason.
 - `repo` equals the registry's `repo` for the suite, and equals the receipt's `repo`.
 - `commit` equals the receipt's `head`. The receipt's `head` equals the expected commit: `T` for core,
   `P` for a plugin.
-- `core_pin == T`.
+- `core_pin == T` for core's suites; for a plugin's, `core_pin == K` when the release names the
+  test-kit commit `K`, else `T`.
 - `run_id == "modernci:<repo>@<commit>:conformance"`.
 - `evidence` is a ModernCI move URL for that repo with `head=<commit>`.
 - Each verdict file sits under a receipt with no `missing`.
@@ -186,6 +191,7 @@ tree and the asset agree. `sync.py --release ... --write` writes it there.
 - `a_verdict_stamped_for_another_commit_is_not_used`
 - `a_hand_placed_verdict_is_ignored`
 - `a_plugin_verdict_judged_against_another_core_pin_is_rerun_or_refused`
+- `a_plugin_verdict_on_the_released_test_kit_counts`
 - `a_stale_plugin_pin_is_refused`
 - exceptions:
   - a signed exception lets a not-run suite through, and records it as not-run;

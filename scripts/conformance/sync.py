@@ -233,6 +233,14 @@ def load_fetched(directory):
     return out
 
 
+def core_for(repo, commit, testkit=None):
+    """The core a suite's verdict must be judged on: core's own suites on the release commit; a
+    plugin's on the released test-kit commit the plugins pin (.busbar-ref) when the release names
+    one (lead's ruling per KICKOFF: plugins test against a released core test kit), else on the
+    release commit."""
+    return commit if repo == CORE_REPO or not testkit else testkit
+
+
 def stamp_problem(v, repo, head, core):
     """Why a schema-valid verdict is not the run.sh judge's stamp for `repo` at `head` on core `core`."""
     if v.get("repo") != repo:
@@ -240,7 +248,7 @@ def stamp_problem(v, repo, head, core):
     if v.get("commit") != head:
         return f"stamped for commit {str(v.get('commit'))[:12]}, not the shipped {head[:12]}"
     if v.get("core_pin") != core:
-        return f"judged against core {str(v.get('core_pin'))[:12]}, not the release commit {core[:12]}"
+        return f"judged against core {str(v.get('core_pin'))[:12]}, not the expected core {core[:12]}"
     if v.get("run_id") != f"modernci:{repo}@{head}:conformance":
         return f"run_id {v.get('run_id')!r} is not ModernCI's conformance run of {repo}@{head[:12]}"
     ev = urlsplit(str(v.get("evidence", "")))
@@ -250,7 +258,7 @@ def stamp_problem(v, repo, head, core):
     return None
 
 
-def render_release(registry_path, fetched_dir, *, release, commit, pins, exceptions):
+def render_release(registry_path, fetched_dir, *, release, commit, pins, exceptions, testkit=None):
     suites = read_registry(registry_path)
     fetched = load_fetched(fetched_dir)
     entries, stamps = [], []
@@ -275,10 +283,11 @@ def render_release(registry_path, fetched_dir, *, release, commit, pins, excepti
                 e["reason"] = f"{repo}@{head[:12]}'s conformance check wrote no verdict for {sid}"
             else:
                 raw = rec["verdicts"][sid]
-                why = verdict_problem(raw, sid) or stamp_problem(raw, repo, head, commit)
+                core = core_for(repo, commit, testkit)
+                why = verdict_problem(raw, sid) or stamp_problem(raw, repo, head, core)
                 rerun = rec["receipt"].get("rerun") or {}
                 if why and rerun.get("refused"):
-                    why += f"; no re-run against {commit[:12]} was possible: {rerun['refused']}"
+                    why += f"; no re-run against {core[:12]} was possible: {rerun['refused']}"
                 if why:
                     e["reason"] = f"the verdict is not used: {why}"
                 else:

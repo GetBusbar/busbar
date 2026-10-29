@@ -142,8 +142,10 @@ def verdicts_in(data: bytes) -> dict:
     return out
 
 
-def fetch(client: ModernCI, root: Path, commit: str, out: Path) -> None:
-    """Writes out/conformance/<owner>/<name>/ for every repo that owns a registered suite."""
+def fetch(client: ModernCI, root: Path, commit: str, out: Path, testkit: str = None) -> None:
+    """Writes out/conformance/<owner>/<name>/ for every repo that owns a registered suite. A plugin's
+    verdict is wanted on `testkit` (the released core test kit the plugins pin in .busbar-ref) when
+    the release names one, else on `commit`; core's always on `commit`."""
     suites = sync.read_registry(root / "conformance" / "registry.toml")
     pins = sync.shipped_pins(root)
     base = out / "conformance"
@@ -163,14 +165,15 @@ def fetch(client: ModernCI, root: Path, commit: str, out: Path) -> None:
         rec.update({"from": meta.get("from"), "head": meta.get("head"), "state": meta.get("state"),
                     "sha": hashlib.sha256(data).hexdigest()})
         verdicts = verdicts_in(data)
-        stale = [sid for sid, v in verdicts.items() if isinstance(v, dict) and v.get("core_pin") != commit]
+        core = sync.core_for(repo, commit, testkit)
+        stale = [sid for sid, v in verdicts.items() if isinstance(v, dict) and v.get("core_pin") != core]
         if repo != sync.CORE_REPO and stale:
             try:
-                meta2, data2 = client.rerun(repo, head, commit)
+                meta2, data2 = client.rerun(repo, head, core)
                 verdicts = verdicts_in(data2)
-                rec["rerun"] = {"core": commit, "head": meta2.get("head"), "sha": hashlib.sha256(data2).hexdigest()}
+                rec["rerun"] = {"core": core, "head": meta2.get("head"), "sha": hashlib.sha256(data2).hexdigest()}
             except CannotRerun as e:
-                rec["rerun"] = {"core": commit, "refused": str(e)}
+                rec["rerun"] = {"core": core, "refused": str(e)}
         (d / "verdicts").mkdir(exist_ok=True)
         for sid, v in sorted(verdicts.items()):
             body = v if isinstance(v, dict) else {"unreadable": v}
@@ -178,16 +181,16 @@ def fetch(client: ModernCI, root: Path, commit: str, out: Path) -> None:
         (d / "receipt.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n")
 
 
-def render(root: Path, cand: Path, commit: str, release: str) -> str:
+def render(root: Path, cand: Path, commit: str, release: str, testkit: str = None) -> str:
     return sync.render_release(root / "conformance" / "registry.toml", cand / "conformance", release=release,
                                commit=commit, pins=sync.shipped_pins(root),
-                               exceptions=sync.read_exceptions(root, release))
+                               exceptions=sync.read_exceptions(root, release), testkit=testkit)
 
 
-def build_manifest(client: ModernCI, root: Path, *, commit: str, release: str, out: Path) -> str:
+def build_manifest(client: ModernCI, root: Path, *, commit: str, release: str, out: Path, testkit: str = None) -> str:
     out.mkdir(parents=True, exist_ok=True)
-    fetch(client, root, commit, out)
-    text = render(root, out, commit, release)
+    fetch(client, root, commit, out, testkit)
+    text = render(root, out, commit, release, testkit)
     (out / "conformance-manifest.json").write_text(text)
     return text
 
@@ -247,7 +250,8 @@ def verify_exceptions(root: Path, release: str, allowed_signers: list, refuse) -
     return suites, pins
 
 
-def gate_c(root: Path, cand: Path, *, commit: str, release: str, allowed_signers: list, client: ModernCI) -> list:
+def gate_c(root: Path, cand: Path, *, commit: str, release: str, allowed_signers: list, client: ModernCI,
+           testkit: str = None) -> list:
     refusals: list = []
 
     def refuse(subject, expected, found, todo):
@@ -259,7 +263,7 @@ def gate_c(root: Path, cand: Path, *, commit: str, release: str, allowed_signers
     try:
         suites = sync.read_registry(root / "conformance" / "registry.toml")
         pins = sync.shipped_pins(root)
-        mine = render(root, cand, commit, release)
+        mine = render(root, cand, commit, release, testkit)
     except (sync.Refused, ValueError, KeyError) as e:
         refuse("conformance", "a registry and shipped pins that render", str(e), "Fix the tree at the release commit.")
         return refusals
@@ -281,12 +285,12 @@ def gate_c(root: Path, cand: Path, *, commit: str, release: str, allowed_signers
         want = commit if repo == sync.CORE_REPO else pins.get(repo)
         e = entries.get(sid, {})
         if (e.get("status") == "pass" and e.get("repo") == repo and want and e.get("commit") == want
-                and e.get("core_pin") == commit):
+                and e.get("core_pin") == sync.core_for(repo, commit, testkit)):
             continue
         x = suite_exc.get(sid)
         if x and e.get("status") != "pass" and x.get("status") == e.get("status"):
             continue
-        refuse(f"suite {sid}", f"pass for {repo}@{(want or 'no shipped pin')[:12]} on core {commit[:12]}",
+        refuse(f"suite {sid}", f"pass for {repo}@{(want or 'no shipped pin')[:12]} on core {sync.core_for(repo, commit, testkit)[:12]}",
                f"{e.get('status', 'absent')}: {e.get('reason', '')}",
                "Green means green: fix it red-first and re-judge, or the owner signs an exception that records it as it is.")
     # Each shipped pin is the commit whose verdict was used, and is its repo's dev head.
@@ -325,8 +329,10 @@ def evidence(root: Path, cand: Path, release: str) -> dict:
 # ── CLI ──────────────────────────────────────────────────────────────────────────────────────────
 
 USAGE = """usage:
-  conformance_gate.py manifest --release V --commit T --out DIR
-  conformance_gate.py gate     --candidate DIR --release V --commit T --allowed-signers FILE"""
+  conformance_gate.py manifest --release V --commit T --out DIR [--testkit K]
+  conformance_gate.py gate     --candidate DIR --release V --commit T --allowed-signers FILE [--testkit K]
+  K: the released core test-kit commit the plugins pin (.busbar-ref); plugin verdicts must be on K.
+     Without it, plugin verdicts must be on T."""
 
 
 def main(argv: list) -> int:
@@ -340,19 +346,22 @@ def main(argv: list) -> int:
             return EXIT_USAGE
         opts[a[2:]] = next(it, None)
     need = {"manifest": {"release", "commit", "out"}, "gate": {"candidate", "release", "commit", "allowed-signers"}}[cmd]
-    if set(opts) != need or not all(opts.values()) or not sync.SHA_RE.fullmatch(opts["commit"]):
+    testkit = opts.pop("testkit", None)
+    if set(opts) != need or not all(opts.values()) or not sync.SHA_RE.fullmatch(opts["commit"]) \
+            or (testkit is not None and not sync.SHA_RE.fullmatch(testkit)):
         print(USAGE)
         return EXIT_USAGE
     root = HERE.parents[1]
     try:
         if cmd == "manifest":
-            build_manifest(ModernCI(), root, commit=opts["commit"], release=opts["release"], out=Path(opts["out"]))
+            build_manifest(ModernCI(), root, commit=opts["commit"], release=opts["release"], out=Path(opts["out"]),
+                           testkit=testkit)
             print(f"conformance-gate: wrote {Path(opts['out']) / 'conformance-manifest.json'}")
             return EXIT_OK
         signers = [l.strip() for l in Path(opts["allowed-signers"]).read_text().splitlines()
                    if l.strip() and not l.startswith("#")]
         refusals = gate_c(root, Path(opts["candidate"]), commit=opts["commit"], release=opts["release"],
-                          allowed_signers=signers, client=ModernCI())
+                          allowed_signers=signers, client=ModernCI(), testkit=testkit)
     except CannotRun as e:
         print(f"CANNOT RUN: {e}\nconformance-gate: a rule could not run; this is never a pass.")
         return EXIT_CANNOT_RUN
