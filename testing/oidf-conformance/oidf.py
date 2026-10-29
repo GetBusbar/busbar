@@ -51,7 +51,7 @@ subject config here and changes no product default.
 THE PROTECTED RESOURCE the suite calls with the issued token is busbar's own `GET /stats`
 (`RouteAuth::Key`): the kernel's DPoP door verifies the proof through the AS plane, and the data
 chain verifies the token with busbar's real OIDC module (GetBusbar/busbar-auth-oidc at the rev
-busbar's lock pins, its busbar-contract patched to THIS checkout, packed unsigned) trusting the AS's
+busbar ships, dist/default/Cargo.lock, its busbar-contract patched to THIS checkout, packed unsigned) trusting the AS's
 JWKS, which a loopback stub serves on its own port (a node's own ports are off-limits to its
 connector).
 
@@ -77,6 +77,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import urllib.request
 import zipfile
 
@@ -396,6 +397,38 @@ def cargo_env(target):
     return env
 
 
+def oidc_pin(checkout):
+    """{url, rev, version} of busbar's OIDC module AS SHIPPED: the `busbar-auth-oidc-plugin` row of the
+    distribution workspace's lock (dist/default/Cargo.lock; the root workspace is core and names no
+    plugin). When release/plugin-pins.tsv (`<repo>\\t<tag>\\t<commit>`) names busbar-auth-oidc, its
+    commit must be the lock's rev: the rig never judges a module other than the one released."""
+    lock_path = os.path.join(checkout, "dist", "default", "Cargo.lock")
+    try:
+        with open(lock_path, "rb") as f:
+            lock = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise Refused(f"dist/default/Cargo.lock could not be read: {e}")
+    pkg = next((p for p in lock.get("package", []) if p.get("name") == "busbar-auth-oidc-plugin"), None)
+    if not pkg:
+        raise Refused("dist/default/Cargo.lock pins no busbar-auth-oidc-plugin")
+    m = re.fullmatch(r"git\+(https://[^?#]+)\?rev=([0-9a-f]{40})#([0-9a-f]{40})", pkg.get("source", ""))
+    if not m or m.group(2) != m.group(3):
+        raise Refused(f"dist/default/Cargo.lock pins busbar-auth-oidc-plugin from {pkg.get('source')!r}, "
+                      "not a git rev")
+    url, rev = m.group(1), m.group(3)
+    pins_path = os.path.join(checkout, "release", "plugin-pins.tsv")
+    if os.path.isfile(pins_path):
+        with open(pins_path) as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t")
+                if line.startswith("#") or len(cols) < 3:
+                    continue
+                if cols[0].rsplit("/", 1)[-1] == "busbar-auth-oidc" and cols[2] != rev:
+                    raise Refused(f"release/plugin-pins.tsv ships busbar-auth-oidc {cols[1]} at {cols[2]}, "
+                                  f"but dist/default/Cargo.lock pins {rev}")
+    return {"url": url, "rev": rev, "version": pkg["version"]}
+
+
 def build_subject(checkout, target, work, log):
     env = cargo_env(target)
     for argv in (["cargo", "build", "--locked", "-p", "busbar", "--bin", "busbar"],
@@ -407,21 +440,24 @@ def build_subject(checkout, target, work, log):
     debug = os.path.join(target, "debug")
     busbar, pack = os.path.join(debug, "busbar"), os.path.join(debug, "busbar-plugin-pack")
 
-    # busbar's OIDC module, from its own repo at the rev busbar's lock pins, its busbar-contract
-    # patched to THIS checkout (what busbar's own workspace does for its dev edge), so the module
+    # busbar's OIDC module, from its own repo at the rev busbar SHIPS (oidc_pin), its busbar-contract
+    # patched to THIS checkout (what the distribution workspace does for its dev edge), so the module
     # and the subject speak one plugin ABI.
-    rc, out, err = capture(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=checkout, env=env)
-    if rc != 0:
-        raise Refused(f"`cargo metadata --locked` exited {rc}: {err.strip()[-400:]}")
-    meta = json.loads(out)
-    pkg = next((p for p in meta["packages"] if p["name"] == "busbar-auth-oidc-plugin"), None)
-    if not pkg:
-        raise Refused("busbar's lock pins no busbar-auth-oidc-plugin")
-    manifest, version = pkg["manifest_path"], pkg["version"]
-    repo = os.path.dirname(os.path.dirname(manifest))
+    pin = oidc_pin(checkout)
+    version = pin["version"]
     src = os.path.join(work, "busbar-auth-oidc")
     shutil.rmtree(src, ignore_errors=True)
-    shutil.copytree(repo, src, ignore=shutil.ignore_patterns("target", ".git"))
+    os.makedirs(src)
+    for argv in (["git", "-C", src, "init", "-q"],
+                 ["git", "-C", src, "fetch", "-q", "--depth", "1", pin["url"], pin["rev"]],
+                 ["git", "-C", src, "checkout", "-q", "--detach", "FETCH_HEAD"]):
+        rc = run(argv, log, env=env)
+        if rc != 0:
+            raise Refused(f"the OIDC module source {pin['url']}@{pin['rev']} could not be fetched "
+                          f"(git {argv[3]} exit {rc}): {tail(log, 3)}", instrument=True)
+    _, head, _ = capture(["git", "-C", src, "rev-parse", "HEAD"])
+    if head.strip() != pin["rev"]:
+        raise Refused(f"the OIDC module source is at {head.strip()}, pinned {pin['rev']}", instrument=True)
     contract = os.path.join(checkout, "crates", "busbar-contract")
     patch = f'patch."https://github.com/GetBusbar/busbar".busbar-contract.path="{contract}"'
     plugin_target = os.path.join(target, "oidf-oidc-plugin")
