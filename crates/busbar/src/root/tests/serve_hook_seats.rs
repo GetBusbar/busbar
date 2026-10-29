@@ -36,7 +36,7 @@ use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::planes_tests::{composed_services, Published, PUBLISHING};
+use super::planes_tests::{composed_services, PUBLISHING};
 use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -1171,6 +1171,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools.clone(),
@@ -1218,6 +1219,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         Some(&stage),
         &clock,
         &busbar_contract::config_time::ConfigScope::config_time(),
+        &app.serve_tables,
     );
     let _ = std::fs::remove_file(&key_file);
     for file in &member_key_files {
@@ -1330,7 +1332,6 @@ impl DoorRig {
 async fn migrated_request_hook_seats_after_admit_before_candidate() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-reject";
-    let _published = Published(instance);
     let ran = run(instance, true).await;
     assert_eq!(
         ran.status, 451,
@@ -1388,7 +1389,6 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
 async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-serve";
-    let _published = Published(instance);
     let ran = run(instance, false).await;
     assert_eq!(ran.status, 200, "the live lane serves the request");
     assert!(
@@ -1545,7 +1545,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
         ("serve-hook-seats-one-posting-buffered", false),
         ("serve-hook-seats-one-posting-streamed", true),
     ] {
-        let _published = Published(instance);
         let far = if streamed {
             far_end_with_the_split_streamed().await
         } else {
@@ -1607,7 +1606,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 async fn a_served_units_usage_is_accrued_exactly_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-accrued-once";
-    let _published = Published(instance);
     let far = far_end_answering(200, SPLIT_ANSWER).await;
     let rig = rig(
         instance,
@@ -1723,7 +1721,6 @@ async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() 
         ("serve-hook-seats-rerank-rewrite", false),
         ("serve-hook-seats-rerank-bare", true),
     ] {
-        let _published = Published(instance);
         // An answer billing no search units: the rig's card prices none, and this cell is about the
         // request, not its price.
         let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_unbilled")).await;

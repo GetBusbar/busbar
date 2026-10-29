@@ -275,7 +275,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=a19d1133275dde33ac49f16801865c1bfe406d5a#a19d1133275dde33ac49f16801865c1bfe406d5a"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -291,7 +291,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=a19d1133275dde33ac49f16801865c1bfe406d5a#a19d1133275dde33ac49f16801865c1bfe406d5a"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -300,13 +300,14 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=aaf683a69f866c5f251a1aaa17e17bc69ad22a71#aaf683a69f866c5f251a1aaa17e17bc69ad22a71"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=9f1c32c292c5f21b3e568ccc84ec18b65da4b28e#9f1c32c292c5f21b3e568ccc84ec18b65da4b28e"
 dependencies = [
  "busbar-contract",
  "hex",
  "ring",
  "serde",
  "serde_json",
+ "tracing",
  "zeroize",
 ]
 
@@ -686,7 +687,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=26d7a653bc1dc47e5ed6568fddb83394ea3480b8#26d7a653bc1dc47e5ed6568fddb83394ea3480b8"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=29d9bcbe4c267318f5e71a3768c65b1a14791313#29d9bcbe4c267318f5e71a3768c65b1a14791313"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
