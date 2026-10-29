@@ -4018,7 +4018,8 @@ mod tools_door {
     /// through on its own. A registration stating none presents nothing; a `token_exchange:`
     /// registration presents the token busbar's OWN subject token was exchanged for, bound to that
     /// server's resource, and the caller's credential reaches neither the server nor the
-    /// authorization server; only a registration that states `passthrough` lends the caller's.
+    /// authorization server. No registration lends the caller's: `passthrough` is refused at load
+    /// (security item 5; `door_steps::tests::tool_door::a_passthrough_registration_is_refused_and_one_with_no_mode_presents_no_credential`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_member_presents_only_the_credential_its_registration_plans() {
         let _one = PUBLISHING.lock().await;
@@ -4026,21 +4027,17 @@ mod tools_door {
         let instance = "serve-door-tools-egress";
         let _published = Published(instance);
         let (plain, mut plain_heard) = tool_server().await;
-        let (lent, mut lent_heard) = tool_server().await;
         let (exchanged, mut exchanged_heard) = tool_server().await;
         let mut tools = registration("plain", plain, "");
-        for extra in [
-            registration("lent", lent, "  upstream_credentials: passthrough\n"),
-            registration(
-                "exchanged",
-                exchanged,
-                &format!(
-                    "  allow_private: true\n  aud: \"http://127.0.0.1:{exchanged}\"\n  \
+        for extra in [registration(
+            "exchanged",
+            exchanged,
+            &format!(
+                "  allow_private: true\n  aud: \"http://127.0.0.1:{exchanged}\"\n  \
                      token_exchange:\n    token_url: \"https://as.example/token\"\n    \
                      subject_token: {{ env: {SUBJECT} }}\n"
-                ),
             ),
-        ] {
+        )] {
             tools
                 .as_mapping_mut()
                 .expect("a mapping")
@@ -4056,7 +4053,7 @@ mod tools_door {
                 .expect("the server heard the call")
         };
 
-        for tool in ["plain_read_file", "lent_read_file", "exchanged_read_file"] {
+        for tool in ["plain_read_file", "exchanged_read_file"] {
             let (status, answer) = call(&rig, &rig.token, tool, serde_json::json!({})).await;
             assert_eq!(status, StatusCode::OK, "{tool}: {answer}");
         }
@@ -4065,10 +4062,9 @@ mod tools_door {
             !plain.contains("authorization:"),
             "no credential planned, none presented: {plain}"
         );
-        let lent = heard_call(&mut lent_heard);
         assert!(
-            lent.contains(&format!("authorization: {caller}")),
-            "passthrough lends the caller's: {lent}"
+            !plain.contains(&caller),
+            "the caller's credential is never lent: {plain}"
         );
         let swapped = heard_call(&mut exchanged_heard);
         assert!(
