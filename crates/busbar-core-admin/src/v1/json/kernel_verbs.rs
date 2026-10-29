@@ -8,8 +8,10 @@
 //! the five ledger views ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
-//! audit reads render from the node's own book and chain, `adjust` and `amend_rate_history` land on
-//! the node's amendment journal, and the two disaster-recovery verbs land on the store.
+//! audit reads render from the one ledger (the store's usage counts x the rate card) and the
+//! node's audit chain, `adjust` lands on the usage counts as a signed adjustment,
+//! `amend_rate_history` lands on the node's amendment journal, and the two disaster-recovery verbs
+//! land on the store.
 //!
 //! They used to be described nowhere, or in a side-car document kept beside the served one so the
 //! served bytes need not move. This module is what put them in the one generated document instead:
@@ -380,18 +382,26 @@ pub(crate) struct AuditChainKeyView {
     public_key: String,
 }
 
-/// `POST /adjust`: a correction to a recorded unit's COUNTS, never to a money figure. The
-/// principal, lane, card epoch and what the counts WERE are read from the book, by the digest of
-/// the journal record `amends` names — never from this body.
+/// `POST /adjust`: a SIGNED correction to a key's COUNTS on the one ledger, never to a money
+/// figure. It names the key, the lane the counts were earned on, the rate-card history entry they
+/// were priced with, and the pool the unit was dispatched through.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct AdjustReq {
-    /// The chain digest of the journal record being corrected (64 hex characters).
-    amends: String,
-    /// The corrected count per billable class, each an exact non-negative decimal integer as TEXT.
-    /// At least one class.
-    now: BTreeMap<String, String>,
+    /// The key whose counts are corrected.
+    key: String,
+    /// The lane (model) the counts were earned on.
+    lane: String,
+    /// The rate-card history entry the counts were priced with, by its position (the
+    /// `rate_card_version` `GET /admin/usage` names).
+    entry: u64,
+    /// The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction
+    /// lands in the budget windows, the card entry and the metering day holding it, never in those
+    /// current when it is made, and `entry` must be the entry in force at it.
+    card_epoch_ms: u64,
+    /// The signed delta per billable class: whole counts, never a money figure. At least one class.
+    delta: BTreeMap<String, i64>,
     /// Why. Required and non-blank.
     reason: String,
     /// The pool the corrected unit was dispatched through. Required, and it must name a pool this
@@ -400,27 +410,25 @@ pub(crate) struct AdjustReq {
     pool: String,
 }
 
-/// `POST /adjust`'s answer: the sealed amendment's position and digest and the counts the unit now
-/// stands at.
+/// `POST /adjust`'s answer: the correction as applied.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct AdjustView {
-    /// The amendment's position on the node amendment journal.
-    seq: u64,
-    /// The amendment's digest.
-    hash: String,
-    /// The digest of the record it corrects.
-    amends: String,
-    /// The lane the counts were recorded on (read from the book).
+    /// Always true: a refused correction is a `400`, and nothing of it is applied.
+    applied: bool,
+    /// The key corrected.
+    key: String,
+    /// The lane corrected.
     lane: String,
-    /// The instant, in milliseconds, whose rate card the counts price at (read from the book;
-    /// a correction never moves it).
+    /// The history entry the counts were priced with.
+    entry: u64,
+    /// The corrected unit's card epoch, unix milliseconds: where the correction landed.
     card_epoch_ms: u64,
     /// The pool the correction names.
     pool: String,
-    /// The corrected counts per class, as decimal TEXT.
-    now: BTreeMap<String, String>,
+    /// The signed delta applied, per class.
+    delta: BTreeMap<String, i64>,
 }
 
 /// `POST /ledger/amend-rate-history`: a back-dated correction to the dated rate-card
@@ -1031,20 +1039,21 @@ fn doc_for(
                 ),
             ],
         },
-        // ── the two money verbs whose effect is the node's amendment journal ──
+        // ── the two money verbs: a signed count correction, and a dated card correction ──
         KernelVerb::Adjust => VerbDoc {
-            summary: "Correct a recorded unit's COUNTS, never a money figure",
-            description: "Takes counts, never a money figure: what a recorded unit costs stays a \
-                          read-time view of its counts at its own card epoch. The principal, lane, \
-                          card epoch and what the counts WERE are read from the book by the digest \
-                          `amends` names, never from the body. The body names the pool the unit \
-                          was dispatched through, so a pool-scoped group budget for that pool \
-                          takes the correction too. The correction is sealed on the node \
-                          amendment journal."
+            summary: "Correct a key's COUNTS by a signed delta, never a money figure",
+            description: "Money is the one ledger's counts x the rate card, so a correction moves \
+                          counts: a signed delta per class on the key's counts for one lane and \
+                          one history entry, applied at once, all or nothing, to the key's own \
+                          budget bucket and each group bucket the named pool takes part in, and \
+                          kept beside the day's metering rows so `GET /admin/usage` serves the \
+                          counts as adjusted. A delta that would take any count below zero, or \
+                          names counts the day's metering does not hold, is refused and nothing \
+                          is applied."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<AdjustView>()),
-                "The sealed amendment and the counts the unit now stands at",
+                "The correction as applied",
             ),
             request: Some(schema_of(req_gen.subschema_for::<AdjustReq>())),
             query: Vec::new(),
@@ -1052,20 +1061,24 @@ fn doc_for(
                 (
                     "400",
                     format!(
-                        "`invalid_request`: malformed body, a blank `amends` or `reason`, an \
-                         empty `now`, a count that is not an exact decimal, a count below zero, \
-                         a missing or blank `pool` or one naming no configured pool (the message \
-                         says which), a scope below `full`, or {BODY_UNREADABLE}"
+                        "`invalid_request`: malformed body, a blank `key`, `lane` or `reason`, \
+                         an empty `delta` or a delta that is not a whole number, an `entry` the \
+                         history does not hold, a missing `card_epoch_ms` or one no history \
+                         entry covers or at which `entry` is not in force, a delta that would \
+                         take a count below zero or that the epoch's metering day or budget \
+                         window does not hold, a missing or blank `pool` or one \
+                         naming no configured pool (the message says which), a scope below \
+                         `full`, or {BODY_UNREADABLE}"
                     ),
                 ),
                 gated_403(),
                 (
                     "404",
-                    "`not_found`: the book holds no counts-bearing entry under `amends`"
-                        .to_string(),
+                    "`not_found`: no key by that id".to_string(),
                 ),
                 unavailable_503(
-                    "the node could not take the unit, or could not seal the amendment",
+                    "the node could not take the unit, or the store could not take the \
+                     correction",
                 ),
             ],
         },
@@ -1104,32 +1117,34 @@ fn doc_for(
 
         // ── the five ledger views ──
         KernelVerb::GetLedgerTotals => ledger_read(
-            "What the ledger's lines come to, per bucket, day, lane and provider",
-            "Each line is priced against the rate card in force at its own arrival instant, and \
-             the row's micro-unit figure is one divide over its summed nano-units. A row whose \
-             balance holds counts the rate card refused to price is withheld and named under \
-             `refused`; every other row is served.",
+            "What the one ledger's counts come to, per key",
+            "Each key's usage counts priced by the one function against the rate card each era \
+             was earned under — the figure `GET /keys/{id}/usage` derives. A key whose counts \
+             the rate card refused to price is withheld and named under `refused`; every other \
+             key with anything counted is served.",
             schema_of(gen.subschema_for::<LedgerTotals>()),
             "The rows, in bucket, day, lane and provider order",
         ),
         KernelVerb::GetLedgerCheckpoints => ledger_read(
             "The sealed checkpoint figures",
-            "`body_hash` is what an auditor re-derives; `body_hash_verifies` is this node's own \
-             answer. A signature's presence is reported, its bytes are not.",
+            "Money is the one ledger's counts x the rate card, recomputed on every read, so no \
+             balance checkpoint is sealed and the list is empty. The shape is kept for clients \
+             that read it.",
             schema_of(gen.subschema_for::<LedgerCheckpoints>()),
             "The sealed checkpoints, oldest first",
         ),
         KernelVerb::GetLedgerReconciliation => ledger_read(
-            "The residual of the ledger's postings against the previous release's rows",
-            "An empty `discrepancies` list with `holds: true` is the good answer; a residual names \
-             its row and the amount it is out by, and a row whose balance holds counts the rate \
-             card refused to price is withheld from the identity and named under `refused`.",
+            "Whether the one ledger prices whole",
+            "There is one ledger, so there is no second set of figures to be out by: \
+             `discrepancies` is always empty, and `holds` is true unless a key's counts the rate \
+             card refused to price are named under `refused`.",
             schema_of(gen.subschema_for::<LedgerReconciliation>()),
             "Whether the identity holds, and every row on which it does not",
         ),
         KernelVerb::GetLedgerMigration => ledger_read(
             "The marker the first boot after the upgrade sealed",
-            "`migrated` is a field of its own rather than inferred from a null marker.",
+            "The previous release's rows ARE the one ledger's counts, read as they are, so no \
+             migration is sealed: `migrated` is false and `marker` null.",
             schema_of(gen.subschema_for::<LedgerMigration>()),
             "Whether this deployment has migrated, and the marker if it has",
         ),
