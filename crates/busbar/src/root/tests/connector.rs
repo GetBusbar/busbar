@@ -263,15 +263,26 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     );
 }
 
-/// RED against the pinned mint plugin's revisions b7d15c7137 and 2a776bd, which declared
-/// EGRESS_LOOPBACK_ALLOWED for its two mint needs (lib.rs:137): every outbound need a linked auth
-/// plugin's Statement declares is operator infrastructure, so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
-/// non-loopback. Read off every linked auth row's own Statement, never a plugin's name. It rides
-/// EVERY linked auth row (`linked_every_auth`, build.rs), so the mint plugin's needs are among them
-/// and the cell always proves one; a build missing an auth row does not run it.
+/// RED against the pinned mint plugin before busbar-auth-oauth#43, whose mint needs were
+/// operator infrastructure (security item 3; security.md:158/169: provider upstreams, "their
+/// `base_url` and `token_url` included", are refused a private address unless allowlisted, which
+/// BUSBAR-3025 warns of at `--validate`): every outbound need a linked auth plugin's Statement
+/// declares, judged in the class the connector judges it in (`guard::judged_class`: a need whose
+/// config names its target is lifted out of the default class only), is REFUSED a private address
+/// by the strict guard, ADMITTED once `advanced.allow_destinations` names the host, and refused
+/// cloud metadata. Its class keeps 1.5.5's plaintext to a private token endpoint (neither `open-web`
+/// nor `loopback-allowed`, which refuse it). Read off every linked auth row's own Statement, never a
+/// plugin's name. It rides EVERY linked auth row (`linked_every_auth`, build.rs), so the mint
+/// plugin's needs are among them and the cell always proves one; a build missing an auth row does
+/// not run it. Superseded: `every_linked_auth_plugins_outbound_needs_are_operator_infrastructure`.
 #[cfg(linked_every_auth)]
 #[test]
-fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
+fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_allowlisted() {
+    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    let private = vec!["10.0.0.5".parse().unwrap()];
+    let strict = guard_for(&Destinations::default()).expect("the strict guard");
+    let listed = deployment(&[], "advanced:\n  allow_destinations: [token.internal]\n");
+    let listed = guard_for(&listed.destinations()).expect("a guard");
     let mut outbound = 0usize;
     for &(key, _, door) in crate::LINKED.auths {
         let row = crate::root::loader::dispatch::LinkedRow::of(door)
@@ -283,11 +294,34 @@ fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
                 continue;
             }
             outbound += 1;
+            let class = busbar_core_connector::guard::judged_class(
+                need.egress_class,
+                !need.target_from.is_empty(),
+            );
             assert_eq!(
-                need.egress_class, EGRESS_OPERATOR_INFRASTRUCTURE,
-                "`{key}`'s outbound need {n} must be operator-infrastructure (BUSBAR-1.6.0.md \
-                 l.609): 1.5.5 minted over plaintext to a private or loopback token endpoint, which \
-                 loopback-allowed refuses"
+                strict
+                    .judge_answer("token.internal", &private, class)
+                    .err()
+                    .map(|r| r.verdict),
+                Some(DEST_INTERNAL),
+                "`{key}`'s outbound need {n} (class {}, judged {class}) must refuse a private \
+                 token endpoint with no allow entry",
+                need.egress_class
+            );
+            assert_eq!(
+                listed.judge_answer("token.internal", &private, class),
+                Ok(()),
+                "`{key}`'s outbound need {n}: an allow entry admits it"
+            );
+            assert_eq!(
+                metadata_verdict(strict.as_ref(), "token.internal", class),
+                Some(DEST_METADATA),
+                "`{key}`'s outbound need {n}: metadata is refused"
+            );
+            assert!(
+                ![EGRESS_OPEN_WEB, EGRESS_LOOPBACK_ALLOWED].contains(&need.egress_class),
+                "`{key}`'s outbound need {n}: 1.5.5 minted over plaintext to a private token \
+                 endpoint, which open-web and loopback-allowed refuse"
             );
         }
     }
