@@ -862,6 +862,7 @@ impl RejectKind {
             Self::Tampered => "tampered",
             Self::UnknownPublisher => "unknown_publisher",
             Self::EgressGrant => "egress_grant",
+            Self::Revoked => "revoked",
         }
     }
 }
