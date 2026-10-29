@@ -963,9 +963,6 @@ pub struct Served {
     /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
     /// one connector's.
     pub framers: Option<StreamFramers>,
-    /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
-    /// checkpoint flush tick ([`Served::spawn_ticks`]).
-    pub epoch: busbar_kernel::plane_driver::FlushEpoch,
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
     pub claim_doors: serve_datagram::ClaimDoors,
@@ -1030,47 +1027,35 @@ impl Served {
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.drives().await });
         }
-        // THE CHECKPOINT FLUSH TICK (THE DESIGN §7: "a checkpoint is a durability `unit.accrued`
-        // record"), on the kernel's flush interval: the piece path only marks a running unit, and
-        // this tick journals each marked unit's counts, once per epoch, off the runtime's workers.
+        // THE FLUSH TICK, on the kernel's flush interval. A running unit's checkpoints stay in RAM
+        // (MONEY-DESIGN §3c, "Long units"), so nothing is journaled here; what the tick still does
+        // is refresh this node's lease on its host name (Q128, MONEY-REVIEW review 12 N4).
         if let Some(post) = &self.post {
-            let checkpoints = Checkpoints {
-                epoch: self.epoch.clone(),
-                money: self.planes.iter().map(|p| Arc::clone(&p.money)).collect(),
-                post: Arc::clone(post),
+            let lease = LeaseTick {
+                node: Arc::clone(post.node()),
             };
-            tokio::spawn(checkpoints.ticks());
+            tokio::spawn(lease.ticks());
         }
     }
 }
 
-/// What the checkpoint flush tick runs over: the flush epoch, every served plane's money steps,
-/// and the node's posting site their checkpoints are journaled through.
-struct Checkpoints {
-    epoch: busbar_kernel::plane_driver::FlushEpoch,
-    money: Vec<Arc<PlaneMoney>>,
-    post: Arc<crate::root::plane_node::NodeEndPost>,
+/// What the flush tick runs over: the process's node, whose journal lane holds the lease.
+struct LeaseTick {
+    node: Arc<crate::root::plane_node::Node>,
 }
 
-impl Checkpoints {
-    /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
-    /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
-    fn tick(&self) -> usize {
-        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
-        // directory keeps journaling under its host's id only while it holds it. It is held on the
-        // lane of the book the node settles onto.
-        if let Some(lane) = self.post.node().book_lane() {
+impl LeaseTick {
+    /// One tick: refresh THE NODE'S LEASE ON ITS HOST NAME (Q128). A node with no data directory
+    /// journals under its host's id only while it holds it, and it is held on the journal's lane to
+    /// the configured store, read directly: no lock is taken.
+    fn tick(&self) {
+        if let Some(lane) = self.node.journal_lane() {
             lane.refresh_held_lease();
         }
-        self.epoch.bump();
-        self.money
-            .iter()
-            .map(|m| m.flush_checkpoints(&*self.post))
-            .sum()
     }
 
     /// Every [`busbar_kernel::host_records::FLUSH_INTERVAL`], for the process's life; each tick's
-    /// journal writes run on the blocking pool, never on a runtime worker.
+    /// lease refresh (a store round trip) runs on the blocking pool, never on a runtime worker.
     async fn ticks(self) {
         let every = busbar_kernel::host_records::FLUSH_INTERVAL;
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
@@ -1079,7 +1064,7 @@ impl Checkpoints {
         loop {
             at.tick().await;
             let tick = Arc::clone(&this);
-            let _journaled = tokio::task::spawn_blocking(move || tick.tick()).await;
+            let _refreshed = tokio::task::spawn_blocking(move || tick.tick()).await;
         }
     }
 }
@@ -1119,18 +1104,11 @@ pub fn compose_served(
         journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     });
     let site = Arc::clone(&post);
-    // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
-    // checkpoint flush tick (`Served::spawn_ticks`).
-    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
-    let paced = epoch.clone();
     let money = move || {
-        Arc::new(
-            PlaneMoney::new(
-                Arc::clone(&gov),
-                Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
-            )
-            .with_epoch(paced.clone()),
-        )
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        ))
     };
     let egress = DoorEgress {
         reach,
@@ -1147,7 +1125,6 @@ pub fn compose_served(
         stage.as_ref(),
     )?;
     served.post = Some(post);
-    served.epoch = epoch;
     // THE CLAIM DOORS (row 132, ARCHITECT seam ruling (d)): each served plane's inbound need whose
     // settings block states a `listen` binds there, and the ones a datagram framer answers become
     // claim doors (`serve_datagram::ClaimDoors::bind`). The connector is read only when something
