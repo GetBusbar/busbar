@@ -153,47 +153,29 @@ fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     ))
 }
 
-/// A node whose book this cell holds the other half of.
-///
-/// The book is built HERE rather than inside `ProductionUnits::admin_only` so that the rows the
-/// ledger dual-writes onto are rows this cell can read back. Same value, two holders.
+/// A node whose journal this cell holds.
 #[cfg(feature = "root-admin")]
 struct ANodeWhoseChainThisCellReads {
     router: axum::Router,
-    rows: busbar_kernel_ledger::legacy::RecordingRows,
     surface: Arc<SurfaceLog>,
 }
 
-#[cfg(feature = "root-admin")]
-impl ANodeWhoseChainThisCellReads {
-    /// Every money posting the node's book has taken, which for an administrative walk must be none.
-    ///
-    /// Read off the write half the node was built over, which is the half the ledger dual-writes
-    /// onto. A count taken anywhere else would be a count of something the walk does not touch.
-    fn postings(&self) -> usize {
-        self.rows.written().len()
-    }
-}
-
 /// The root's mount over `inner`, as `main.rs` composes it for `admin_listen`: a memory-buffered
-/// book whose ledger writes onto `rows`, `door` in front, the directory that minted the operator's
-/// credential behind it, and `tweak` applied to the units last.
+/// journal, `door` in front, the directory that minted the operator's credential behind it, and
+/// `tweak` applied to the units last.
 #[cfg(feature = "root-admin")]
 fn mounted_over(
     inner: axum::Router,
     request_body_max_bytes: usize,
     door: busbar_kernel_identity::AuthChain,
-    rows: busbar_kernel_ledger::legacy::RecordingRows,
     tweak: impl FnOnce(&mut crate::root::kernel::ProductionUnits),
 ) -> axum::Router {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     mount(
         inner,
         crate::root::kernel::new_kernel(),
@@ -203,7 +185,6 @@ fn mounted_over(
                 dispatch,
                 crate::root::units_admin::door_of_chain(door),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
@@ -219,21 +200,15 @@ fn mounted_over(
 #[cfg(feature = "root-admin")]
 fn a_node() -> ANodeWhoseChainThisCellReads {
     let surface = Arc::new(SurfaceLog::default());
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
     // configured rather than one this cell invented.
     let router = mounted_over(
         a_recording_surface(Arc::clone(&surface)),
         64 * 1024,
         a_door_that_identifies_the_operator(),
-        rows.clone(),
         |_| {},
     );
-    ANodeWhoseChainThisCellReads {
-        router,
-        rows,
-        surface,
-    }
+    ANodeWhoseChainThisCellReads { router, surface }
 }
 
 /// The REAL administrative surface, twice: bare (the leg a node without the root serves, which
@@ -269,7 +244,6 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         bare.clone(),
         1 << 20,
         a_door_that_identifies_the_operator(),
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
         |_| {},
     );
     (bare, mounted)
@@ -588,7 +562,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         bare,
         1 << 20,
         a_door_that_identifies_the_operator(),
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
         |units| units.store = Some(Arc::new(AnApplyingStore)),
     );
 
@@ -759,13 +732,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let mounted = mounted_over(
-        bare,
-        1 << 20,
-        a_door_that_identifies_the_operator(),
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
-        |_| {},
-    );
+    let mounted = mounted_over(bare, 1 << 20, a_door_that_identifies_the_operator(), |_| {});
     let (unmounted_status, unmounted, _) = over(
         &mounted,
         "POST",
@@ -829,21 +796,15 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
 /// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.
 ///
 /// The admin surface declares NO meter classes, so the honest report is the empty one — and the
-/// empty report is a report, not an absence. Two things are observable about it from here and both
-/// are asserted, because either alone is satisfiable by a walk that is wrong:
-///
-/// * the unit COMPLETED. The meter step refuses with `Unpriced` when the usage grant will not take
-///   its report, and a refusal there renders as an error answer rather than the surface's bytes. A
-///   200 carrying the surface's own body is the walk having passed Meter;
-/// * NOTHING WAS POSTED. The node's book has taken no row for an administrative walk — which is the
-///   design's own statement that an admin verb's `requests` draw and its flat fee are both zero
-///   under a configured non-zero fee. A walk that started charging the operator for reading their
-///   own audit page would move this number, and nothing else in this file would notice.
+/// empty report is a report, not an absence. The unit COMPLETED: the meter step refuses with
+/// `Unpriced` when the usage grant will not take its report, and a refusal there renders as an
+/// error answer rather than the surface's bytes. A 200 carrying the surface's own body is the walk
+/// having passed Meter. (The node's second book, whose rows this also counted, is gone: the one
+/// ledger is governance's usage counts, which an admin-only node does not hold.)
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     let node = a_node();
-    assert_eq!(node.postings(), 0, "a fresh book has taken no rows");
 
     let (status, body, _headers) =
         over_the_listener(&node, "GET", "/api/v1/admin/audit", b"").await;
@@ -861,12 +822,6 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     )
     .await;
     assert_eq!(status, 200, "and so did the mutation");
-
-    assert_eq!(
-        node.postings(),
-        0,
-        "an administrative walk posts no money, on either side of the read/write split"
-    );
 }
 
 /// A PATH THE CLOSED TABLE DOES NOT DECLARE NEVER ENTERS THE LOOP AT ALL.
@@ -972,23 +927,17 @@ fn a_q71_node_trusting(
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&kept);
-    let mounted = mounted_over(
-        bare,
-        1 << 20,
-        door,
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
-        move |units| {
-            units.admin.planes =
-                Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
-            units.admin.records = Some(Arc::new(
-                move |record: &busbar_contract::records::PlaneRecord| {
-                    sink.lock().expect("the sink").push(record.clone());
-                    Ok(())
-                },
-            ));
-            units.admin.trust = trust;
-        },
-    );
+    let mounted = mounted_over(bare, 1 << 20, door, move |units| {
+        units.admin.planes =
+            Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
+        units.admin.records = Some(Arc::new(
+            move |record: &busbar_contract::records::PlaneRecord| {
+                sink.lock().expect("the sink").push(record.clone());
+                Ok(())
+            },
+        ));
+        units.admin.trust = trust;
+    });
     (mounted, kept)
 }
 

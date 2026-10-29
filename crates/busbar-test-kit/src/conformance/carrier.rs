@@ -53,11 +53,12 @@ use busbar_contract::abi::transport::{
 };
 
 use super::host_io::{Admit, SuiteIo};
+use super::transport::{facts_line, loaded, lossy};
 use super::{
-    bind, close, crossings, dispatcher, input, load, open, output, ready_step, validate, Fold, Leg,
-    Recorder, Subject,
+    abi_bytes as abi, asis, bind, closed, crossings, dispatcher, input, opened, output, Fold, Leg,
+    Script, Subject, Want,
 };
-use crate::dispatch::kinds::transport::{Transport, TransportFacts};
+use crate::dispatch::kinds::transport::Transport;
 use crate::dispatch::{Called, Frame, InFrame, InlineTicket, OutFrame, Plugin};
 
 /// What the script's waker saw: whether the host woke the ticket it was registered on.
@@ -104,10 +105,6 @@ fn err(c: &Called) -> String {
         .map(String::from_utf8_lossy)
         .unwrap_or_default()
         .into_owned()
-}
-
-fn lossy(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
 }
 
 /// An address with its port blanked: the two legs bind and dial different ports.
@@ -162,13 +159,6 @@ struct Dest {
     kind: u32,
 }
 
-fn abi(t: &str) -> AbiStr {
-    AbiStr {
-        ptr: t.as_ptr(),
-        len: t.len(),
-    }
-}
-
 impl Dest {
     fn authority(a: &str) -> Box<Self> {
         Box::new(Self {
@@ -206,7 +196,7 @@ impl Dest {
             env_fields: Vec::new(),
             kind: DEST_PROGRAM,
         });
-        d.arg_strs = d.args.iter().map(|a| abi(a)).collect();
+        d.arg_strs = d.args.iter().map(abi).collect();
         d.env_fields = d
             .env
             .iter()
@@ -336,48 +326,24 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         d.install_io(Arc::clone(&host) as _),
         "the suite's host I/O installs"
     );
-    let p = load::<Transport>(s, leg, bind(&d, "transport")).expect("the transport door loads");
-    let facts = p
-        .context::<TransportFacts>()
-        .cloned()
-        .expect("a transport states its tail");
-    let mut want: Vec<(String, Want)> = Vec::new();
-    let mut r = Recorder::new(crossings(&p));
+    let (p, facts) = loaded(s, leg, bind(&d, "transport"));
+    let mut sc = Script::new(crossings(&p));
     let (rd, wr) = (Side::new(&d), Side::new(&d));
+    let is = |line: &str| Want::Is(line.into());
 
-    r.line("facts", 0, || {
-        format!(
-            "{:?} {} max_inflight={} role={} claims={:?} composes_over={:?}",
-            p.kind(),
-            p.name(),
-            p.max_inflight(),
-            facts.role,
-            facts.claims,
-            facts.composes_over
-        )
-    });
+    sc.line("facts", 0, || facts_line(&p, &facts));
     // 0: the dispatcher refuses an op on an instance that is not open, without a crossing.
-    r.line("dial unopened", 0, || {
+    sc.judged("dial unopened", 0, Want::Starts("Refused "), || {
         dial(&p, &wr, &Dest::authority("127.0.0.1:1")).0
     });
-    want.push(("dial unopened".into(), Want::Starts("Refused ")));
-    r.line("validate", 1, || super::called(&validate(&p, &settings)));
-    r.line("open", 1, || super::called(&open(&p, &settings)));
-    for l in ["validate", "open"] {
-        want.push((l.into(), Want::Starts("Ready ")));
-    }
-    ready_step(&mut r, s, &p, &d);
+    opened(&mut sc, (s, &p, &d), &settings, &asis);
 
     // ── the role it does not play ──
-    r.line("framer ops", 10, || framer_ops(&p, &wr));
-    want.push((
-        "framer ops".into(),
-        Want::Is(
-            "locate=Refused begin=Refused ingest=Refused emit=Refused encode=Refused \
-             refuse=Refused finish=Refused detach=Refused adopt=Refused timer=Refused"
-                .into(),
-        ),
-    ));
+    let want = is(
+        "locate=Refused begin=Refused ingest=Refused emit=Refused encode=Refused \
+                   refuse=Refused finish=Refused detach=Refused adopt=Refused timer=Refused",
+    );
+    sc.judged("framer ops", 10, want, || framer_ops(&p, &wr));
 
     // ── listen, accept, and the accepted connection both ways ──
     let listens = k["listen"].as_bool().unwrap_or(false);
@@ -385,7 +351,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let bind_at = "127.0.0.1:0";
     host.admit(ls.ticket.ticket(), Admit::Bind(bind_at.into()));
     let mut addr = vec![0_u8; MAX_ADDR as usize];
-    let (listener, bound) = r.step("listen", 1, || {
+    let want = if listens {
+        is("Ready addr=127.0.0.1:*")
+    } else {
+        Want::Starts("Refused")
+    };
+    let (listener, bound) = sc.step_judged("listen", 1, want, || {
         let mut i: ListenIn = input();
         i.bind = abi(bind_at);
         i.addr_buf = addr.as_mut_ptr();
@@ -399,12 +370,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         (line, (o.listener, bound))
     });
     if listens {
-        want.push(("listen".into(), Want::Is("Ready addr=127.0.0.1:*".into())));
         let mut far = TcpStream::connect(&bound).expect("the script reaches the listener");
         let _ = far.set_read_timeout(Some(Duration::from_secs(5)));
         // The connection is in the backlog once `connect` answered: the accept answers at once.
         let mut peer = vec![0_u8; MAX_ADDR as usize];
-        let accepted = r.step("accept", 1, || {
+        let accepted = sc.step_judged("accept", 1, is("Ready peer=127.0.0.1:*"), || {
             let mut i: AcceptIn = input();
             i.listener = listener;
             i.peer_buf = peer.as_mut_ptr();
@@ -413,8 +383,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             let at = lossy(&peer[..(o.peer_written as usize).min(peer.len())]);
             (format!("{:?} peer={}", c.outcome, unported(&at)), o.conn)
         });
-        want.push(("accept".into(), Want::Is("Ready peer=127.0.0.1:*".into())));
-        r.line("arrival", 1, || {
+        let want = is("Ready peer=127.0.0.1:* local_port_is_bound=true");
+        sc.judged("arrival", 1, want, || {
             let mut peer = vec![0_u8; MAX_ADDR as usize];
             let mut i: ArrivalIn = input();
             i.conn = accepted;
@@ -429,35 +399,22 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 unported(&at)
             )
         });
-        want.push((
-            "arrival".into(),
-            Want::Is("Ready peer=127.0.0.1:* local_port_is_bound=true".into()),
-        ));
         far.write_all(b"from the far end")
             .expect("the far end writes");
         // Loopback: the bytes are at the accepted socket well inside this.
         std::thread::sleep(Duration::from_millis(100));
-        r.line("accepted read", 1, || read(&p, &rd, accepted, false));
-        want.push((
-            "accepted read".into(),
-            Want::Is("Ready bytes=\"from the far end\" end_of_frame=true".into()),
-        ));
-        r.line("accepted write", 1, || {
+        let want = is("Ready bytes=\"from the far end\" end_of_frame=true");
+        sc.judged("accepted read", 1, want, || read(&p, &rd, accepted, false));
+        sc.judged("accepted write", 1, is("Ready len=14"), || {
             write(&p, &wr, accepted, b"to the far end")
         });
-        want.push(("accepted write".into(), Want::Is("Ready len=14".into())));
         let mut got = [0_u8; 14];
         let ok = far.read_exact(&mut got).is_ok() && &got == b"to the far end";
-        r.line("far end read", 0, || format!("{ok}"));
-        want.push(("far end read".into(), Want::Is("true".into())));
-        r.line("accepted shut", 1, || shut(&p, &wr, accepted));
-        want.push(("accepted shut".into(), Want::Is("Ready".into())));
+        sc.judged("far end read", 0, is("true"), || format!("{ok}"));
+        sc.judged("accepted shut", 1, is("Ready"), || shut(&p, &wr, accepted));
         let mut rest = Vec::new();
         let ended = far.read_to_end(&mut rest).is_ok() && rest.is_empty();
-        r.line("far end saw the end", 0, || format!("{ended}"));
-        want.push(("far end saw the end".into(), Want::Is("true".into())));
-    } else {
-        want.push(("listen".into(), Want::Starts("Refused")));
+        sc.judged("far end saw the end", 0, is("true"), || format!("{ended}"));
     }
 
     // ── the dial, its exchange, a pending read resumed by the host's wake ──
@@ -476,10 +433,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             (d, Dest::authority("127.0.0.1:1"))
         }
     };
-    let conn = r.step("dial", 1, || dial(&p, &wr, &dest));
-    want.push(("dial".into(), Want::Is("Ready".into())));
-    r.line("flush", 1, || flush(&p, &wr, conn));
-    want.push(("flush".into(), Want::Starts("Ready ")));
+    let conn = sc.step_judged("dial", 1, is("Ready"), || dial(&p, &wr, &dest));
+    sc.judged("flush", 1, Want::Starts("Ready "), || flush(&p, &wr, conn));
     let made = host.made(wr.ticket.ticket());
     for (n, x) in k["exchange"]
         .as_array()
@@ -488,23 +443,26 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .enumerate()
     {
         let frame = text(&x["write"], "exchange.write");
-        let label = format!("write #{n}");
-        r.line(&label, 1, || write(&p, &wr, conn, frame.as_bytes()));
-        if x["refused"].as_bool().unwrap_or(false) {
-            want.push((label, Want::Starts("Failed ")));
+        let refused = x["refused"].as_bool().unwrap_or(false);
+        let want = if refused {
+            Want::Starts("Failed ")
+        } else {
+            Want::Is(format!("Ready len={}", frame.len()))
+        };
+        sc.judged(&format!("write #{n}"), 1, want, || {
+            write(&p, &wr, conn, frame.as_bytes())
+        });
+        if refused {
             continue;
         }
-        want.push((label, Want::Is(format!("Ready len={}", frame.len()))));
         if let Some(h) = made {
             host.wait_readable(h);
         }
         let answer = text(&x["read"], "exchange.read");
-        let label = format!("read #{n}");
-        r.line(&label, 1, || read(&p, &rd, conn, false));
-        want.push((
-            label,
-            Want::Is(format!("Ready bytes={answer:?} end_of_frame=true")),
-        ));
+        let want = Want::Is(format!("Ready bytes={answer:?} end_of_frame=true"));
+        sc.judged(&format!("read #{n}"), 1, want, || {
+            read(&p, &rd, conn, false)
+        });
     }
     let pend = &k["pending"];
     let (frame, answer) = (
@@ -512,31 +470,23 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         text(&pend["read"], "pending.read"),
     );
     rd.woken.0.store(false, Ordering::SeqCst);
-    r.line("read pending", 1, || read(&p, &rd, conn, false));
-    want.push(("read pending".into(), Want::Starts("Pending ")));
-    r.line("write while a read pends", 1, || {
+    sc.judged("read pending", 1, Want::Starts("Pending "), || {
+        read(&p, &rd, conn, false)
+    });
+    let want = Want::Is(format!("Ready len={}", frame.len()));
+    sc.judged("write while a read pends", 1, want, || {
         write(&p, &wr, conn, frame.as_bytes())
     });
-    want.push((
-        "write while a read pends".into(),
-        Want::Is(format!("Ready len={}", frame.len())),
-    ));
-    r.line("the host woke the read", 0, || {
+    sc.judged("the host woke the read", 0, is("true"), || {
         format!("{}", woken(&host, &rd))
     });
-    want.push(("the host woke the read".into(), Want::Is("true".into())));
     // The pending read's RESUME on its ticket: the op's one first invocation was "read pending", so
     // this re-invocation is counted apart and reported, never pinned (Q-P4-5: one op, one crossing,
     // however often it pends).
-    r.line("read resumed", 0, || read(&p, &rd, conn, true));
-    want.push((
-        "read resumed".into(),
-        Want::Is(format!("Ready bytes={answer:?} end_of_frame=true")),
-    ));
-    r.line("shut", 1, || shut(&p, &wr, conn));
-    want.push(("shut".into(), Want::Is("Ready".into())));
-    r.line("shut again", 1, || shut(&p, &wr, conn));
-    want.push(("shut again".into(), Want::Is("Ready".into())));
+    let want = Want::Is(format!("Ready bytes={answer:?} end_of_frame=true"));
+    sc.judged("read resumed", 0, want, || read(&p, &rd, conn, true));
+    sc.judged("shut", 1, is("Ready"), || shut(&p, &wr, conn));
+    sc.judged("shut again", 1, is("Ready"), || shut(&p, &wr, conn));
 
     // ── THE HOST'S GUARD (RED arm): nothing the host did not admit is reached ──
     let guarded = Side::new(&d);
@@ -544,38 +494,35 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         DEST_AUTHORITY => Dest::authority("127.0.0.1:9"),
         _ => Dest::program(&serde_json::json!({ "program": "/bin/false" })),
     };
-    r.line("dial not admitted", 1, || dial(&p, &guarded, &unadmitted).0);
-    want.push(("dial not admitted".into(), Want::Starts("Refused ")));
-    r.line("dial the other kind", 1, || dial(&p, &guarded, &other).0);
-    want.push(("dial the other kind".into(), Want::Starts("Refused ")));
+    sc.judged("dial not admitted", 1, Want::Starts("Refused "), || {
+        dial(&p, &guarded, &unadmitted).0
+    });
+    sc.judged("dial the other kind", 1, Want::Starts("Refused "), || {
+        dial(&p, &guarded, &other).0
+    });
     drop(guarded);
 
     // ── THE HOST'S END OF A PROGRAM (`io.ends`' `exited`): a program that exits while a
     // descendant still holds its output is answered as exited, its code with it, while its pipe
     // stays open; the carrier reads the program's end there, never from the pipe. Host-side: no
     // crossing. ──
-    r.line("a program's own exit", 0, || program_exit(&host));
-    want.push((
-        "a program's own exit".into(),
-        Want::Is("exited code=3 pipe=open".into()),
-    ));
+    sc.judged(
+        "a program's own exit",
+        0,
+        is("exited code=3 pipe=open"),
+        || program_exit(&host),
+    );
 
-    r.line("close", 1, || super::called(&close(&p)));
-    want.push(("close".into(), Want::Starts("Ready ")));
+    closed(&mut sc, &p, &asis);
     // 0: a closed instance answers FAULT without a crossing.
-    r.line("dial after close", 0, || {
+    sc.judged("dial after close", 0, Want::Starts("Fault "), || {
         dial(&p, &wr, &Dest::authority("127.0.0.1:1")).0
     });
-    want.push(("dial after close".into(), Want::Starts("Fault ")));
-    r.line("handles held after close", 0, || {
-        // What the carrier did not close itself is the host's to reap: the script's own listener.
+    // What the carrier did not close itself is the host's to reap: the script's own listener.
+    sc.judged("handles held after close", 0, is("true"), || {
         format!("{}", host.held() <= 1)
     });
-    want.push(("handles held after close".into(), Want::Is("true".into())));
-
-    let fold = r.fold();
-    contract(&fold, &want);
-    fold
+    sc.fold()
 }
 
 /// The suite's host spawns `sh`, which exits with code 3 and leaves a `sleep` holding its output,
@@ -619,29 +566,5 @@ fn program_exit(host: &SuiteIo) -> String {
             if open { "open" } else { "ended" }
         ),
         None => "running".into(),
-    }
-}
-
-/// What the contract requires of one step's answer.
-enum Want {
-    /// Exactly this line.
-    Is(String),
-    /// A line that starts so.
-    Starts(&'static str),
-}
-
-/// THE CARRIER'S CONTRACT over the fold: every step's answer is the one the inputs and the ABI
-/// require, so two equal folds of failures prove nothing.
-fn contract(fold: &Fold, want: &[(String, Want)]) {
-    for (label, w) in want {
-        let got = fold
-            .iter()
-            .find(|s| &s.label == label)
-            .map(|s| s.answer.as_str())
-            .unwrap_or_else(|| panic!("the script ran no step '{label}'"));
-        match w {
-            Want::Is(line) => assert_eq!(got, line.as_str(), "{label}"),
-            Want::Starts(prefix) => assert!(got.starts_with(prefix), "{label}: {got}"),
-        }
     }
 }
