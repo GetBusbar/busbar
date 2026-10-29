@@ -1006,7 +1006,10 @@ fn a_callers_unpresentable_credential_logs_on_its_request() {
 #[test]
 fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
-    let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    let sink = crate::root::door_steps::MainLogSink(
+        Arc::new(NoSink),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
+    );
     let got = main_log(|| {
         sink.diag(Diagnostic {
             id: 2,
@@ -1042,9 +1045,13 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
     use busbar_contract::diagnostic::Severity;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    let sink = crate::root::door_steps::MainLogSink(
+        Arc::new(NoSink),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
+    );
     for code in [4013u16, 4014, 4015, 4016, 7087] {
-        let entry = busbar_kernel::diagnostics::by_code(code)
+        let entry = busbar_kernel::diagnostics::Catalogue::NEUTRAL
+            .by_code(code)
             .unwrap_or_else(|| panic!("BUSBAR-{code:04} is in the catalogue"));
         assert!(
             !entry.retired,
@@ -1313,6 +1320,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
                 crate::LINKED.auths,
                 None,
                 crate::root::loader::dispatch::ConnTable::NoNeeds,
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns: Arc::new(busbar_core_connector::Connector::new()),
             stream_ceiling_secs: 1,

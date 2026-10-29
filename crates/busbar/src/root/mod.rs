@@ -106,9 +106,10 @@ pub mod userinfo;
 #[path = "tests/admin_plugin_admission.rs"]
 mod admin_plugin_admission;
 
-/// THE PROCESS-WIDE ADMIN SURFACES' ONE TEST LOCK: the admin route table and the operator audit
-/// ring are the process's one each, so a test that publishes a plane's admin routes, or that
-/// counts the audit rows its own admin writes sealed, holds this for as long as either is in play.
+/// THE PROCESS-WIDE ADMIN SURFACE'S ONE TEST LOCK: the operator audit ring is the process's one, so
+/// a test that publishes a plane's admin routes (whose served requests seal rows on it), or that
+/// counts the audit rows its own admin writes sealed, holds this for as long as it is in play. The
+/// admin route table is each generation's own (`App::serve_tables`).
 #[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

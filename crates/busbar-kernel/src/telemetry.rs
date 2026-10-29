@@ -481,7 +481,7 @@ pub fn translation(from: &str, to: &str) {
 /// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
 /// no plane registers declares none.
 fn declared_dialects(plane: &str) -> &'static [&'static str] {
-    crate::plane_driver::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
+    crate::plane_driver::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)(d))
 }
 
 #[cfg(test)]

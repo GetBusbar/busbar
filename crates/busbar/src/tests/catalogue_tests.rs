@@ -16,11 +16,9 @@ use super::*;
 use busbar_contract::diagnostic::Diagnostic;
 
 /// The runtime catalogue — the host registry and every linked plane's own — as the composition root
-/// installs it, installed ONCE for this test binary (a second `install_diagnostics` panics by design).
+/// folds and lends it.
 fn installed() -> Vec<&'static Diagnostic> {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(register_diagnostics);
-    busbar_kernel::diagnostics::all()
+    register_diagnostics().all()
 }
 
 /// The codes the linked first-party plugins DECLARE (K9a S3), read off each linked row's `declares`
