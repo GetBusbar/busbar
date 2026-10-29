@@ -44,6 +44,9 @@ use busbar_contract::records::{PlaneRecordRef, RecordStoreError, RecordStoreResu
 /// The administrative AUDIT chain record kind — the neutral store tag the administrative mutation
 /// log's durable journal seam persists its hash-chained records under.
 pub const KIND_AUDIT: &str = "audit";
+/// The retired `usage.residual` row kind. Nothing writes it any more, but it stays a kernel kind
+/// ([`KERNEL_RECORD_KINDS`]) so no plane declaration or operator write ever lands rows under it.
+pub const KIND_RESIDUAL: &str = "usage_residual";
 /// The trust demotion record kind.
 pub const KIND_DEMOTION: &str = "demotion";
 /// The operator's trust decisions (the core-admin `/admin/trust` approve and revoke), one row per
