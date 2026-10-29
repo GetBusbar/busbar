@@ -2937,6 +2937,54 @@ fn a_declared_open_warning_is_audited_once() {
     );
 }
 
+/// `tick` with `mode` as its extensions, ticket-less.
+fn tick_with(p: &Plugin<TestKind>, mode: &'static [u8]) -> Outcome {
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: mode.as_ptr(),
+        len: mode.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        busbar_contract::abi::mechanism::lifecycle::TickIn {
+            head,
+            now_ns: crate::dispatch::now_ns(),
+        },
+        busbar_contract::abi::mechanism::lifecycle::TickOut {
+            head: out_head(),
+            next_tick_ns: 0,
+        },
+    );
+    p.call(slot::TICK, &mut f).outcome
+}
+
+/// RED (security item 3, owner rule: every refusal audited): an op other than `open` or `refresh`
+/// that answers with a diagnostic its Statement declares, at ERROR, is handed to the host's audit,
+/// by that declared id, as an op's refusal. A declared id at warn (a retrying op's warning), a log
+/// line at error and an id the Statement does not declare are not; an op's ordinary envelope (its
+/// declared id at warn) hands the audit nothing.
+#[test]
+fn a_declared_error_an_op_raises_is_audited() {
+    let label = "op-audit-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert_eq!(tick_with(&p, b"answer:1"), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "a declared warning at an op is a log, not a record"
+    );
+    assert_eq!(tick_with(&p, plug::FLAG_OP), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Op { code: "m1.note" }
+        )]
+    );
+}
+
 /// An `open` with nothing to flag hands the host's audit nothing.
 #[test]
 fn a_quiet_open_is_not_audited() {
