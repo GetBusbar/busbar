@@ -430,11 +430,21 @@ def oidc_pin(checkout):
     return {"url": url, "rev": rev, "version": pkg["version"]}
 
 
+def subject_builds(checkout):
+    """The two builds the subject needs: the binary busbar SHIPS (the distribution workspace,
+    dist/default: core plus its compiled-in transports and planes; the root workspace's `busbar` is
+    core alone, which has no listener), and the plugin packer from the root workspace."""
+    return [
+        ["cargo", "build", "--locked", "--manifest-path", os.path.join(checkout, "dist", "default", "Cargo.toml"),
+         "--bin", "busbar"],
+        ["cargo", "build", "--locked", "-p", "busbar-plugin-loader", "--features", "pack",
+         "--bin", "busbar-plugin-pack"],
+    ]
+
+
 def build_subject(checkout, target, work, log):
     env = cargo_env(target)
-    for argv in (["cargo", "build", "--locked", "-p", "busbar", "--bin", "busbar"],
-                 ["cargo", "build", "--locked", "-p", "busbar-plugin-loader", "--features", "pack",
-                  "--bin", "busbar-plugin-pack"]):
+    for argv in subject_builds(checkout):
         rc = run(argv, log, cwd=checkout, env=env)
         if rc != 0:
             raise Refused(f"`{' '.join(argv)}` exited {rc}: {tail(log, 6)}")
@@ -980,7 +990,7 @@ def run_all(work):
         try:
             busbar, plugins = build_subject(checkout, target, work, os.path.join(work, "build.log"))
         except Refused as e:
-            record["subject_error"] = str(e)
+            record["build_error"] = str(e)
             return record
 
         for name, fapi2, modules in (("subject", True, None), ("negative", False, NEGATIVE_MUST_FAIL)):
@@ -1024,8 +1034,8 @@ def decide(record, signoff=None):
     if not control.get("ok"):
         return "not-run", False, "the control (the suite's own RP-against-OP self-test) did not pass: " + \
             (control.get("why") or "no result")
-    if "subject_error" in record:
-        return "fail", True, "the subject could not be built: " + record["subject_error"]
+    if "build_error" in record:
+        return "fail", True, "the subject could not be built: " + record["build_error"]
     sub = record.get("subject")
     if not sub:
         return "fail", True, "the subject did not run: " + record.get("subject_error", "no result")
