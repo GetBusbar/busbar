@@ -76,18 +76,35 @@
         "type": "object"
       },
       "AdjustReq": {
-        "description": "`POST /adjust`: a correction to a recorded unit's COUNTS, never to a money figure. The\nprincipal, lane, card epoch and what the counts WERE are read from the book, by the digest of\nthe journal record `amends` names — never from this body.",
+        "description": "`POST /adjust`: a SIGNED correction to a key's COUNTS on the one ledger, never to a money\nfigure. It names the key, the lane the counts were earned on, the rate-card history entry they\nwere priced with, and the pool the unit was dispatched through.",
         "properties": {
-          "amends": {
-            "description": "The chain digest of the journal record being corrected (64 hex characters).",
+          "card_epoch_ms": {
+            "description": "The corrected unit's card epoch: its arrival instant, unix milliseconds. The correction\nlands in the budget windows, the card entry and the metering day holding it, never in those\ncurrent when it is made, and `entry` must be the entry in force at it.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delta": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "description": "The signed delta per billable class: whole counts, never a money figure. At least one class.",
+            "type": "object"
+          },
+          "entry": {
+            "description": "The rate-card history entry the counts were priced with, by its position (the\n`rate_card_version` `GET /admin/usage` names).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "description": "The key whose counts are corrected.",
             "type": "string"
           },
-          "now": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "The corrected count per billable class, each an exact non-negative decimal integer as TEXT.\nAt least one class.",
-            "type": "object"
+          "lane": {
+            "description": "The lane (model) the counts were earned on.",
+            "type": "string"
           },
           "pool": {
             "description": "The pool the corrected unit was dispatched through. Required, and it must name a pool this\nnode has configured: a pool-scoped group budget for that pool takes the correction as well\nas the group-wide budgets do.",
@@ -99,60 +116,64 @@
           }
         },
         "required": [
-          "amends",
-          "now",
+          "key",
+          "lane",
+          "entry",
+          "card_epoch_ms",
+          "delta",
           "reason",
           "pool"
         ],
         "type": "object"
       },
       "AdjustView": {
-        "description": "`POST /adjust`'s answer: the sealed amendment's position and digest and the counts the unit now\nstands at.",
+        "description": "`POST /adjust`'s answer: the correction as applied.",
         "properties": {
-          "amends": {
-            "description": "The digest of the record it corrects.",
-            "type": "string"
+          "applied": {
+            "description": "Always true: a refused correction is a `400`, and nothing of it is applied.",
+            "type": "boolean"
           },
           "card_epoch_ms": {
-            "description": "The instant, in milliseconds, whose rate card the counts price at (read from the book;\na correction never moves it).",
+            "description": "The corrected unit's card epoch, unix milliseconds: where the correction landed.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
-          "hash": {
-            "description": "The amendment's digest.",
+          "delta": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "description": "The signed delta applied, per class.",
+            "type": "object"
+          },
+          "entry": {
+            "description": "The history entry the counts were priced with.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "description": "The key corrected.",
             "type": "string"
           },
           "lane": {
-            "description": "The lane the counts were recorded on (read from the book).",
+            "description": "The lane corrected.",
             "type": "string"
-          },
-          "now": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "The corrected counts per class, as decimal TEXT.",
-            "type": "object"
           },
           "pool": {
             "description": "The pool the correction names.",
             "type": "string"
-          },
-          "seq": {
-            "description": "The amendment's position on the node amendment journal.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
-          "seq",
-          "hash",
-          "amends",
+          "applied",
+          "key",
           "lane",
+          "entry",
           "card_epoch_ms",
           "pool",
-          "now"
+          "delta"
         ],
         "type": "object"
       },
@@ -4425,7 +4446,7 @@
   "paths": {
     "/api/v1/admin/adjust": {
       "post": {
-        "description": "Takes counts, never a money figure: what a recorded unit costs stays a read-time view of its counts at its own card epoch. The principal, lane, card epoch and what the counts WERE are read from the book by the digest `amends` names, never from the body. The body names the pool the unit was dispatched through, so a pool-scoped group budget for that pool takes the correction too. The correction is sealed on the node amendment journal.",
+        "description": "Money is the one ledger's counts x the rate card, so a correction moves counts: a signed delta per class on the key's counts for one lane and one history entry, applied at once, all or nothing, to the key's own budget bucket and each group bucket the named pool takes part in, and kept beside the day's metering rows so `GET /admin/usage` serves the counts as adjusted. A delta that would take any count below zero, or names counts the day's metering does not hold, is refused and nothing is applied.",
         "operationId": "PostAdjust",
         "requestBody": {
           "content": {
@@ -4446,7 +4467,7 @@
                 }
               }
             },
-            "description": "The sealed amendment and the counts the unit now stands at"
+            "description": "The correction as applied"
           },
           "400": {
             "content": {
@@ -4456,7 +4477,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, a blank `amends` or `reason`, an empty `now`, a count that is not an exact decimal, a count below zero, a missing or blank `pool` or one naming no configured pool (the message says which), a scope below `full`, or a request body that could not be read to the operator's size cap"
+            "description": "`invalid_request`: malformed body, a blank `key`, `lane` or `reason`, an empty `delta` or a delta that is not a whole number, an `entry` the history does not hold, a missing `card_epoch_ms` or one no history entry covers or at which `entry` is not in force, a delta that would take a count below zero or that the epoch's metering day or budget window does not hold, a missing or blank `pool` or one naming no configured pool (the message says which), a scope below `full`, or a request body that could not be read to the operator's size cap"
           },
           "401": {
             "content": {
@@ -4486,7 +4507,7 @@
                 }
               }
             },
-            "description": "`not_found`: the book holds no counts-bearing entry under `amends`"
+            "description": "`not_found`: no key by that id"
           },
           "503": {
             "content": {
@@ -4496,7 +4517,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or could not seal the amendment. The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or the store could not take the correction. The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -4507,7 +4528,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Correct a recorded unit's COUNTS, never a money figure",
+        "summary": "Correct a key's COUNTS by a signed delta, never a money figure",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -10960,7 +10981,7 @@
     },
     "/api/v1/admin/ledger/checkpoints": {
       "get": {
-        "description": "`body_hash` is what an auditor re-derives; `body_hash_verifies` is this node's own answer. A signature's presence is reported, its bytes are not. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "Money is the one ledger's counts x the rate card, recomputed on every read, so no balance checkpoint is sealed and the list is empty. The shape is kept for clients that read it. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerCheckpoints",
         "responses": {
           "200": {
@@ -11009,7 +11030,7 @@
     },
     "/api/v1/admin/ledger/migration": {
       "get": {
-        "description": "`migrated` is a field of its own rather than inferred from a null marker. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "The previous release's rows ARE the one ledger's counts, read as they are, so no migration is sealed: `migrated` is false and `marker` null. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerMigration",
         "responses": {
           "200": {
@@ -11108,7 +11129,7 @@
     },
     "/api/v1/admin/ledger/reconciliation": {
       "get": {
-        "description": "An empty `discrepancies` list with `holds: true` is the good answer; a residual names its row and the amount it is out by, and a row whose balance holds counts the rate card refused to price is withheld from the identity and named under `refused`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "There is one ledger, so there is no second set of figures to be out by: `discrepancies` is always empty, and `holds` is true unless a key's counts the rate card refused to price are named under `refused`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerReconciliation",
         "responses": {
           "200": {
@@ -11150,14 +11171,14 @@
             "bearerAuth": []
           }
         ],
-        "summary": "The residual of the ledger's postings against the previous release's rows",
+        "summary": "Whether the one ledger prices whole",
         "x-busbar-required-scope": "read-only",
         "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/ledger/totals": {
       "get": {
-        "description": "Each line is priced against the rate card in force at its own arrival instant, and the row's micro-unit figure is one divide over its summed nano-units. A row whose balance holds counts the rate card refused to price is withheld and named under `refused`; every other row is served. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "Each key's usage counts priced by the one function against the rate card each era was earned under — the figure `GET /keys/{id}/usage` derives. A key whose counts the rate card refused to price is withheld and named under `refused`; every other key with anything counted is served. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerTotals",
         "responses": {
           "200": {
@@ -11199,7 +11220,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "What the ledger's lines come to, per bucket, day, lane and provider",
+        "summary": "What the one ledger's counts come to, per key",
         "x-busbar-required-scope": "read-only",
         "x-busbar-since": "1.6.0"
       }
