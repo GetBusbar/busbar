@@ -715,6 +715,21 @@ pub enum RejectKind {
     Superseded,
 }
 
+impl RejectKind {
+    /// The category as one host word: what the audit chain records for a skipped plugin.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::AntiDowngrade => "anti_downgrade",
+            Self::UntrustedFloored => "untrusted_floored",
+            Self::Unsigned => "unsigned",
+            Self::Tampered => "tampered",
+            Self::UnknownPublisher => "unknown_publisher",
+            Self::EgressGrant => "egress_grant",
+        }
+    }
+}
+
 /// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
 /// provider's allow-list and metadata hosts (a plane's upstreams). The connector's default class
 /// and the open web are any trusted plugin's (ARCHITECT ruling EGRESS-GRANT 2026-10-03; the cold
