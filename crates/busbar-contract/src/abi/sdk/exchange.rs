@@ -148,6 +148,10 @@ pub struct Exchange {
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
+    /// The handle of the read whose piece the exchange refused, and why: a replay of that read
+    /// refuses again, so the entry that re-issues the close a failure pended on answers the same
+    /// failure (a replayed piece is not applied again, so it cannot refuse on its own).
+    refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
     /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
@@ -220,6 +224,7 @@ impl Exchange {
             head_seen: false,
             applied: 0,
             ended: None,
+            refused_at: None,
             within: String::new(),
             member: None,
             observe: false,
@@ -572,6 +577,34 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
+    // sends once and moves on never leaves a held stream (and its connection) behind per failure.
+    match exchange_once(c, state, need, target) {
+        Poll::Ready(Err(e)) => match state.stream {
+            Some(stream) => match c.close(stream) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => {
+                    state.stream = None;
+                    Poll::Ready(Err(e))
+                }
+            },
+            None => Poll::Ready(Err(e)),
+        },
+        Poll::Ready(Ok(())) => {
+            state.stream = None;
+            Poll::Ready(Ok(()))
+        }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
+fn exchange_once(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<()> {
     // A framed request is made whole when its stream opens, so its security is its target's: a
     // sealed value that must go out secured is refused before the open when the target names a
     // scheme that is not secure. A need's own target (`None`) is the operator's, as written.
@@ -623,7 +656,10 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
             state.applied = this + 1;
         }
         let p = got.piece;
-        let applied = apply(state, p, got.len, fresh);
+        let applied = match state.refused_at {
+            Some((at, text)) if at == this => Err(text),
+            _ => apply(state, p, got.len, fresh),
+        };
         // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
         // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
         // the read this entry has yet to apply (the one that pended on the last entry).
