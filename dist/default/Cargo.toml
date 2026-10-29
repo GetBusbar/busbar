@@ -848,12 +848,12 @@ busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-a
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
 busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "a19d1133275dde33ac49f16801865c1bfe406d5a" }
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "a19d1133275dde33ac49f16801865c1bfe406d5a" }
-busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "51e744af4a46222e7bb5ecb8d5c86b97a450f929" }
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "51e744af4a46222e7bb5ecb8d5c86b97a450f929" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "6e7c9327103382e5ee9e5b223c5306eea82ef51f" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "6e7c9327103382e5ee9e5b223c5306eea82ef51f" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "8535098ecf2723bf73dc6e4b1a3174c63b0d8500" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "8535098ecf2723bf73dc6e4b1a3174c63b0d8500" }
+busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "edf728488f7f7be8e2e4df5bbb46c82998439cb7" }
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "edf728488f7f7be8e2e4df5bbb46c82998439cb7" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "3e1726f336a3f94bc120117100e72f033b992748" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "3e1726f336a3f94bc120117100e72f033b992748" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "c573115bd3e17df2cf4753d9d941ba8327170734" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "c573115bd3e17df2cf4753d9d941ba8327170734" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; the kernel's test build answers the axis with its own in-crate
 # double (`busbar_kernel::test_support::secrets`), naming neither. One rev each.
@@ -872,10 +872,10 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webh
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "2399f89e628faeb7644beb2373c9fa33550d356e" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "7789b68211cfb6bf480f09f23c507f7ddeb4b9c5" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "6287c350d026988965ed88dea9fa0e67cd27b04d" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "72a7f4102734e47e1c2ac997a597b1b5453ef8e7" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2a0e6b9e092677306d560b4a3c5774e0905eb669" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "b5240b33d1da15007fac3f74a1ead87f06289fe4" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
@@ -917,13 +917,13 @@ busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking"
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "70c6ce925e45022cc7bdbc5f2b011f009189c2ae" }
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "bfdfbd76eea2b3b49f523237cd8b846efc0d7124" }
 # THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
 # pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
 # repo's plugin CI; busbar's gates read the pinned crate through the base layer. Its media stack (str0m,
 # aes) is pinned in that repo's own manifest: no member here inherits it.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "ba08e0e0185742b3946fcf08c0967749c52c9c27" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "6d6bf95f200af51f7f2a4304301dd232ec3722b5" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
