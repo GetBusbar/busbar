@@ -48,60 +48,66 @@ mod catalog_tests;
 pub use busbar_contract::diagnostic::{Banner, Class, Diagnostic, Severity};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE PLANE-CONTRIBUTED CATALOG SEAM. The neutral [`REGISTRY`] carries only the plane-AGNOSTIC
-// built-in diagnostics; each extracted plane crate OWNS its own `Diagnostic` consts and hands them
-// to [`install_diagnostics`] at the composition root, exactly as a plane hands its `&PlaneDecl` to
-// `install_planes`. The runtime catalog an operator sees is [`all`] — `REGISTRY ∪ installed` — so a
-// plane's codes resolve through [`by_code`] once registered, and a build with a plane compiled out
-// never sees (or renders) that plane's diagnostics. Everything crosses the ABI: the host names no
-// plane const; a plane never edits this file. Numbering/identity is preserved on the move — a plane
-// const keeps its `BUSBAR-NNNN`, so an operator's old logs stay resolvable — codes are REGISTERED,
-// never renumbered.
+// THE PLANE-CONTRIBUTED CATALOG. The neutral [`REGISTRY`] carries only the plane-AGNOSTIC built-in
+// diagnostics; each extracted plane crate OWNS its own `Diagnostic` consts, and the composition
+// root folds them (with every first-party plugin's declared codes) ONCE into a [`Catalogue`] it
+// lends by value to every reader. The runtime catalog an operator sees is [`Catalogue::all`] —
+// `REGISTRY ∪ the root's fold` — so a plane's codes resolve through [`Catalogue::by_code`] on the
+// catalogue the root lent, and a build with a plane compiled out never sees (or renders) that
+// plane's diagnostics. The kernel holds no catalogue of its own: everything crosses the ABI, the
+// host names no plane const, and a plane never edits this file. Numbering/identity is preserved on
+// the move — a plane const keeps its `BUSBAR-NNNN`, so an operator's old logs stay resolvable —
+// codes are REGISTERED, never renumbered.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Plane-contributed diagnostics installed by the COMPOSITION ROOT before the catalog is first read.
-static INSTALLED: std::sync::OnceLock<&'static [&'static Diagnostic]> = std::sync::OnceLock::new();
-
-/// INSTALL PLANE-CONTRIBUTED DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis, and the seam an extracted plane crate registers its owned consts through. Exactly
-/// `install_planes`' shape and contract on the diagnostics axis. `pub`, not `pub(crate)`: the
-/// `busbar` binary is the composition root and calls this from `main` (`register_diagnostics`),
-/// folding each linked plane's `DIAGNOSTICS` slice in before anything reads the catalog.
-///
-/// # Panics
-/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
-pub fn install_diagnostics(diags: &'static [&'static Diagnostic]) {
-    assert!(
-        INSTALLED.set(diags).is_ok(),
-        "install_diagnostics called twice: there is one composition root, and it registers once"
-    );
+/// ONE RUNTIME CATALOGUE: the neutral built-ins ([`REGISTRY`]) and the plane-contributed and
+/// plugin-declared entries the composition root folded, lent by value. `Copy`: the root folds once
+/// and leaks the fold, and every reader (the plugin observer, the main log's declared-diagnostic
+/// line, a rendered page) holds the same rows by pointer.
+#[derive(Clone, Copy, Debug)]
+pub struct Catalogue {
+    installed: &'static [&'static Diagnostic],
 }
 
-/// The plane-contributed diagnostics registered at the composition root, or an empty slice when no
-/// plane registered any (a no-planes build, or before `install_diagnostics` ran).
-pub fn installed_diagnostics() -> &'static [&'static Diagnostic] {
-    INSTALLED.get().copied().unwrap_or(&[])
-}
+impl Catalogue {
+    /// The neutral built-ins alone: a no-planes build, or a reader no root lent a fold to.
+    pub const NEUTRAL: Catalogue = Catalogue { installed: &[] };
 
-/// THE FULL RUNTIME CATALOG: neutral built-ins ([`REGISTRY`]) followed by every plane-contributed
-/// diagnostic the composition root installed. This is what a `GET /diagnostics`, a CLI `explain`, or
-/// a rendered docs page reads — never the bare [`REGISTRY`], which is only the neutral half.
-pub fn all() -> Vec<&'static Diagnostic> {
-    REGISTRY
-        .iter()
-        .copied()
-        .chain(installed_diagnostics().iter().copied())
-        .collect()
-}
+    /// The catalogue over `installed`, the root's fold of every linked plane's owned diagnostics and
+    /// every first-party plugin's declared ones.
+    #[must_use]
+    pub const fn lent(installed: &'static [&'static Diagnostic]) -> Catalogue {
+        Catalogue { installed }
+    }
 
-/// Look a code up across the FULL catalog (neutral built-ins ∪ installed plane diagnostics), e.g.
-/// for a future `GET /diagnostics` or a CLI `busbar explain 1001`.
-pub fn by_code(code: u16) -> Option<&'static Diagnostic> {
-    REGISTRY
-        .iter()
-        .copied()
-        .chain(installed_diagnostics().iter().copied())
-        .find(|d| d.code == code)
+    /// The plane-contributed and plugin-declared entries the root folded, without the built-ins.
+    #[must_use]
+    pub fn installed(self) -> &'static [&'static Diagnostic] {
+        self.installed
+    }
+
+    /// THE FULL RUNTIME CATALOG: neutral built-ins ([`REGISTRY`]) followed by the root's fold. This
+    /// is what a `GET /diagnostics`, a CLI `explain`, or a rendered docs page reads — never the bare
+    /// [`REGISTRY`], which is only the neutral half.
+    #[must_use]
+    pub fn all(self) -> Vec<&'static Diagnostic> {
+        REGISTRY
+            .iter()
+            .copied()
+            .chain(self.installed.iter().copied())
+            .collect()
+    }
+
+    /// Look a code up across the FULL catalog (neutral built-ins ∪ the root's fold), e.g. for a
+    /// plugin's reported banner or a CLI `busbar explain 1001`.
+    #[must_use]
+    pub fn by_code(self, code: u16) -> Option<&'static Diagnostic> {
+        REGISTRY
+            .iter()
+            .copied()
+            .chain(self.installed.iter().copied())
+            .find(|d| d.code == code)
+    }
 }
 
 // The emit macros a PLUGIN crate reaches are `busbar_contract`'s (#83a O3: the diagnostic shapes and
