@@ -247,7 +247,7 @@ impl Resolve for Asked {
     }
 }
 
-/// RED (P0, an IDN 1.5.5 dialled): a bare non-ASCII name the guard admitted is resolved as its
+/// An IDN name 1.5.5 dialled: a bare non-ASCII name the guard admitted is resolved as its
 /// UTS #46 punycode name, the name the guard judged and the one 1.5.5's client resolved, and the
 /// dial is pinned to what that name answered. The judge asked the resolver for the name as written,
 /// which a resolver does not know (`NXDOMAIN` here, as from `getaddrinfo`), and refused the dial

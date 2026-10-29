@@ -1433,3 +1433,92 @@ fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
         }
     }
 }
+
+/// **AN OLD BUILD BESIDE ITS SUCCESSOR WARNS, IT DOES NOT REFUSE THE BOOT** (owner ruling
+/// 2026-10-27, the 1.5.5 upgrade). A 1.5.5-era build of a plugin (its kind's earlier contract) left
+/// in the plugins directory beside the newer build of the same plugin (whose manifest names the old
+/// one's name as a former name, at a later version) is skipped with a reason naming the newer build,
+/// and the old name resolves to the newer build. Read off the manifests: no name list.
+///
+/// RED ARMS, in the same test: the old build alone still refuses the scan naming the rebuild, and a
+/// newer plugin that does not answer the old name supersedes nothing.
+#[test]
+fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
+    let release = key(1);
+    let old_lib = b"old store lib".as_slice();
+    let new_lib = b"new store lib".as_slice();
+    let old = || {
+        let mut m = manifest("busbar-store-alpha-plugin", "alpha", "busbar");
+        m.abi_version = busbar_contract::abi::store::ABI_VERSION - 1;
+        m.version = "1.0.6".into();
+        sign(&release, m, old_lib)
+    };
+    let new = |former: &[&str]| {
+        let mut m = renamed("store", "busbar-store-alpha", "alpha", former);
+        m.version = "1.6.0".into();
+        sign(&release, m, new_lib)
+    };
+
+    let dir = tmpdir("supersede");
+    write_tarball(
+        &dir,
+        "busbar-store-alpha-plugin-1.0.6.tar.gz",
+        &old(),
+        old_lib,
+    );
+    write_tarball(
+        &dir,
+        "busbar-store-alpha.tar.gz",
+        &new(&["busbar-store-alpha-plugin"]),
+        new_lib,
+    );
+    let reg = scan_and_validate(&dir, &policy(&release))
+        .unwrap_or_else(|e| panic!("the newer build boots beside the old one: {e:?}"));
+    let skipped: Vec<_> = reg
+        .skipped()
+        .iter()
+        .filter(|s| s.file == "busbar-store-alpha-plugin-1.0.6.tar.gz")
+        .collect();
+    assert_eq!(skipped.len(), 1, "the old build is skipped once");
+    assert_eq!(skipped[0].kind, crate::sign::RejectKind::Superseded);
+    assert!(
+        skipped[0]
+            .reason
+            .starts_with("superseded by busbar-store-alpha 1.6.0 (busbar-store-alpha.tar.gz)"),
+        "the warning names the build that replaces it: {}",
+        skipped[0].reason
+    );
+    let p = reg
+        .resolve("busbar-store-alpha-plugin")
+        .expect("the old name resolves");
+    assert_eq!(p.manifest.version, "1.6.0", "to the newer build");
+    let rows = inventory(&dir, &policy(&release));
+    assert!(
+        rows.iter()
+            .any(|r| r.file == "busbar-store-alpha-plugin-1.0.6.tar.gz"
+                && r.signature == "superseded"
+                && r.status
+                    .starts_with("SKIPPED: superseded by busbar-store-alpha 1.6.0")),
+        "--list-plugins shows it skipped, not invalid"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // RED ARM: a newer plugin that does not answer the old name supersedes nothing.
+    let dir = tmpdir("supersede-unrelated");
+    write_tarball(
+        &dir,
+        "busbar-store-alpha-plugin-1.0.6.tar.gz",
+        &old(),
+        old_lib,
+    );
+    write_tarball(&dir, "busbar-store-alpha.tar.gz", &new(&[]), new_lib);
+    let errs = scan_and_validate(&dir, &policy(&release))
+        .expect_err("an old build no newer build answers for still refuses the scan");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("busbar-store-alpha-plugin-1.0.6.tar.gz")
+                && e.contains("rebuild the plugin against the 1.6.0 SDK")),
+        "{errs:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

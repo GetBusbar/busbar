@@ -7,6 +7,9 @@
 //! the loader's observer calls the kernel's fold, and the kernel's fold asks the loader's grants
 //! (first-party, granted series), handed in on every call: the kernel holds no installed seam.
 //!
+//! The kernel's fold resolves a reported code against the catalogue the root folded, lent to the
+//! observer when it is installed.
+//!
 //! Installed once, before the first plugin loads: a plugin's own constructor is exactly where it
 //! has something worth reporting. Unconditional: the `metrics` facade is a no-op without a
 //! recorder, and the diagnostics half has to work whether or not an exporter is configured.
@@ -17,8 +20,9 @@ use busbar_kernel::audit::auditlog::{record_plugin_refusal, PluginRefusal};
 
 use crate::root::loader::observe::{first_party, first_party_series, BindRefusal, PluginObserver};
 
-/// The loader's observer: every plugin response's back-channel, into the kernel's fold.
-struct Observer;
+/// The loader's observer: every plugin response's back-channel, into the kernel's fold (lent the
+/// root's catalogue).
+struct Observer(KernelPluginObserver);
 
 impl PluginObserver for Observer {
     fn observe(
@@ -28,11 +32,12 @@ impl PluginObserver for Observer {
         metrics: &[serde_json::Value],
         diagnostics: &[serde_json::Value],
     ) {
-        KernelPluginObserver.observe(&LoaderGrants, plugin, kind, metrics, diagnostics);
+        self.0
+            .observe(&LoaderGrants, plugin, kind, metrics, diagnostics);
     }
 
     fn dropped(&self, observations: u64) {
-        KernelPluginObserver.dropped(observations);
+        self.0.dropped(observations);
     }
 
     /// A refusal made while a plugin bound, onto the kernel's audit chain (BIND-AUDIT).
@@ -46,6 +51,9 @@ impl PluginObserver for Observer {
             ),
             BindRefusal::Open { code } => {
                 record_plugin_refusal(PluginRefusal::Open, kind, instance, code);
+            }
+            BindRefusal::Op { code } => {
+                record_plugin_refusal(PluginRefusal::Op, kind, instance, code);
             }
         }
     }
@@ -63,11 +71,13 @@ impl Grants for LoaderGrants {
     }
 }
 
-/// Join the loader's observer to the kernel's fold, on the process's one dispatcher (every door
-/// binds on it, so every door's envelope folds through it). The first install wins; a second boot
-/// inside one test binary installs nothing, which is not an error.
-pub fn install() {
+/// Join the loader's observer to the kernel's fold lent `catalogue`, on the process's one dispatcher
+/// (every door binds on it, so every door's envelope folds through it). The first install wins; a
+/// second boot inside one test binary installs nothing, which is not an error.
+pub fn install(catalogue: busbar_kernel::diagnostics::Catalogue) {
+    let observer: &'static Observer =
+        Box::leak(Box::new(Observer(KernelPluginObserver::lent(catalogue))));
     let _ = crate::root::dispatch::dispatcher()
         .observing()
-        .install_observer(&Observer);
+        .install_observer(observer);
 }
