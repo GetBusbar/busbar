@@ -339,6 +339,25 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(addr))
 }
 
+/// Whether `s` is a SOCKET LITERAL: `v4:port` or `[v6]:port`, exactly the grammar
+/// `std::net::SocketAddr`'s parser accepts (no named zone, no alternate v4 spelling, a port in
+/// `0..=65535`, never a bare host). A plugin whose source may not name the system's network module
+/// tells a pinned literal from a name here, and accepts exactly what the parser accepts.
+#[must_use]
+pub fn is_socket_literal(s: &str) -> bool {
+    s.parse::<std::net::SocketAddr>().is_ok()
+}
+
+/// Whether `s` is a bare IP LITERAL, v4 or v6: exactly the grammar `std::net::IpAddr`'s parser
+/// accepts (a dotted quad with no leading zeros or alternate spelling, or an IPv6 address with no
+/// brackets, no zone and no port). An IP literal is not a name: a plugin whose source may not name
+/// the system's network module tells one from a name here, and accepts exactly what the parser
+/// accepts.
+#[must_use]
+pub fn is_ip_literal(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok()
+}
+
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
 /// canonical v4 or v6 literal (a v6 zone suffix `%…` is ignored), or an alternate IPv4 spelling
 /// ([`expand_alternate_ipv4`]). `None` for a DNS name.
@@ -1125,6 +1144,24 @@ fn url_ipv6(addr: &Ipv6Addr) -> String {
 #[must_use]
 pub fn url_host(url: &str) -> Option<String> {
     parse_url(url).ok().map(|p| p.host)
+}
+
+/// The host of a URL of any scheme as SPELLED, read as [`parse_url`] reads the authority but not
+/// normalised: an IPv6 literal unbracketed (as [`Ipv6Addr`] displays it), any other host exactly
+/// as written, a trailing root dot KEPT (`example.com.` is not `example.com` here). For a caller
+/// whose rule compares the host a URL reader serialised, byte for byte; `None` when it reads no
+/// host.
+#[must_use]
+pub fn url_host_verbatim(url: &str) -> Option<String> {
+    // The spelling [`parse_url_raw`] keeps beside the host it serialised; only a bracketed literal
+    // parses as an IPv6 address here (an unbracketed host holds no `:`), and it is shown as
+    // `Ipv6Addr` displays it.
+    let (_, spelled) = parse_url_raw(url).ok()?;
+    Some(
+        spelled
+            .parse::<Ipv6Addr>()
+            .map_or(spelled, |addr| addr.to_string()),
+    )
 }
 
 /// The host of a DIAL TARGET, which may be spelled as a URL or as a bare `host`, `host:port`,

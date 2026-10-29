@@ -14,6 +14,9 @@ config, the same requests and the same plugins were run through the published 1.
 through 1.6.0, and every difference is either listed below as an improvement, a breaking change, or
 does not exist.
 
+**Upgrading from 1.5.5:** start with [What's new in 1.6.0](docs/whats-new-1.6.md), the one-page
+summary of the upgrade, the security changes and everything you might notice.
+
 ### Additive planes
 
 - **MCP.** Busbar is an MCP server (`mcp:`) and a governed gateway in front of your MCP tool estate
@@ -55,10 +58,13 @@ Measured by the shadow oracle — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
 config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
-named next. Two owner-signed changes need action: a `store:` block is now required, and a plugin
-built for 1.5.5 no longer loads (see [Owner-signed changes from
-1.5.5](#owner-signed-changes-from-155)); the published store plugins in the oracle ran as 1.5.5
-builds against the 1.5.5 binary.
+named next. `busbar --migrate-config` takes a working 1.5.5 configuration to one 1.6.0 boots and
+serves the same way, and reports every change it makes; each plugin migrates its own settings
+through its own `migrate`. It cannot rebuild a third-party plugin built for 1.5.5, invent a provider
+key whose reference does not resolve (it names each one in a TODO), make a `file:` secret that is not
+a regular file into one, or repoint an identity provider whose discovery redirects to a private
+address (see [Owner-signed changes from 1.5.5](#owner-signed-changes-from-155)); the published store
+plugins in the oracle ran as 1.5.5 builds against the 1.5.5 binary.
 
 A request whose upstream is down is counted and billed nothing, as in 1.5.5. The published 1.5.5
 binary books it as one request with 0 cents of spend and 0 tokens (shadow-oracle cell
@@ -71,6 +77,15 @@ Everything else in this release is identical to 1.5.5, apart from the improvemen
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
+- **A request that asks for a stream gets a stream.**
+  1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.
+  1.5.5 relayed such an answer as one `application/json` body to a caller that asked for
+  `stream: true`. busbar answers in the caller's dialect and mode (owner, 2026-10-27).
+- **A stream cut mid-flight ends on the error its spec names.**
+  1.6.0 Changed: an Anthropic-dialect stream cut mid-flight ends on an error event whose `error.type` is a published type (`api_error`), with the text in `error.message`, as the Anthropic spec says.
+  1.6.0 Changed: a Bedrock ConverseStream cut mid-flight ends on an exception frame whose `:exception-type` is the spec's union member name `internalServerException`.
+  1.5.5 wrote the message text into Anthropic's error type and `InternalServerException` on the
+  Bedrock frame (owner, 2026-10-26).
 - **A key refresh link rotates only from busbar's own page.** `GET /auth/token?method=<m>&refresh=1`
   rotates the caller's key only when the browser reports a same-origin navigation (the key page's
   "Refresh key" link). From any other site, a typed URL or a non-browser client it re-shows the
@@ -109,10 +124,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 ### Security
 
 - **A metadata host-list entry is read the way the destination it guards is read.**
-  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.
+  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.
   On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
   `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
-  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries that warn are a `%`
+  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries refused at startup are a `%`
   outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
   non-ASCII that UTS #46 cannot map. Every other ASCII host gets 1.5.5's verdicts and texts, and a CIDR
   entry is still refused with 1.5.5's text (owner-approved 2026-10-21).
@@ -485,13 +500,6 @@ as an improvement or does not exist: a config written for 1.5.5 boots, validates
 identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
 minted secret carries over.
 
-- 1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an
-  error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only
-  InvokeModel declares. The message, the `Retry-After` header and the charge (none) are unchanged,
-  and the five other dialects already answered an exhausted budget with 429. **Migration:** a
-  Bedrock client that matched `ServiceQuotaExceededException` on Converse must match
-  `ThrottlingException`; the AWS SDKs retry it under their standard retry mode, as they retry the
-  other dialects' 429.
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
   fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the
@@ -697,9 +705,11 @@ for the others; GitHub redirects every old URL). A plugin RELEASED from here on 
 as its manifest name (`busbar-store-valkey`, not `busbar-store-valkey-plugin`) and publishes
 `busbar-<kind>-<name>-<version>-<target>.tar.gz`. **Migration:** a config that selects a plugin by
 its alias (`store.module: valkey`, `module: webrequest`) needs nothing; one that names a
-plugin by its old manifest name must use the alias or the new name once the new release is
-installed, and a `plugins.fetch` that downloads by asset name must use the new prefix. Tarballs
-already published keep the names they were published with and keep loading. `busbar --migrate-config`
+plugin by its old manifest name keeps working: the 1.6.0 release answers to its former names. A
+`plugins.fetch` pin to a 1.5.5-era release is rewritten by `busbar --migrate-config` to the release
+built for 1.6.0, and a GitHub pin downloads the release's per-target asset. Tarballs
+already published keep the names they were published with; a 1.5.5-era build left in `plugins.dir`
+beside its 1.6.0 build is skipped with one warning naming the build that replaces it. `busbar --migrate-config`
 now names the Valkey store's manifest as `busbar-store-valkey`.
 
 **A plugin Busbar links also answers to its canonical repo name** (`store.module: busbar-store-memory`, `module: busbar-auth-admin-tokens`), exactly as it answers to its short name.

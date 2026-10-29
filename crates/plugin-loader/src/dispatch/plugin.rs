@@ -1879,6 +1879,12 @@ impl<K: Kind> Plugin<K> {
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Called::from(Crossed::host(o));
         }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance)
+        // before anything is acquired or crossed.
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(s, frame.heads().0.cast_const(), size_of::<I>(), owner) {
+            return Called::from(Crossed::host(o));
+        }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));
@@ -1889,6 +1895,11 @@ impl<K: Kind> Plugin<K> {
             }
             return Called::from(Crossed::host(Outcome::Refused));
         };
+        // A new op on a real ticket starts a new epoch of its stored service results; a resume
+        // re-reads them (`super::services::new_op`).
+        if !ticket.is_none() && !resume {
+            super::services::new_op(inst.wake, ticket);
+        }
         let (i, o, out_size) = frame.heads();
         // SAFETY: the frame is ours for the call; its heads lead the structs.
         let crossed = inst.watched(s, || unsafe {
@@ -1897,11 +1908,7 @@ impl<K: Kind> Plugin<K> {
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
             head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
-            head.deadline_class = if ticket.is_none() {
-                DeadlineClass::Call as u8
-            } else {
-                DeadlineClass::Connection as u8
-            };
+            head.deadline_class = stamped_class::<K>(s, ticket) as u8;
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         });
@@ -1917,6 +1924,17 @@ impl<K: Kind> Plugin<K> {
             recall: token,
             ..Called::from(crossed)
         }
+    }
+}
+
+/// THE DEADLINE CLASS a crossing of `s` on `ticket` is stamped with: `Call` ticket-less (it may
+/// not pend); on a real ticket, the class the kind's contract states for the op
+/// ([`Kind::ticketed_class`]).
+pub(crate) fn stamped_class<K: Kind>(s: u32, ticket: Ticket) -> DeadlineClass {
+    if ticket.is_none() {
+        DeadlineClass::Call
+    } else {
+        K::ticketed_class(s)
     }
 }
 
