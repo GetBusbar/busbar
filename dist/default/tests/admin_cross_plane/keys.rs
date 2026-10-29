@@ -3653,7 +3653,9 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let client = reqwest::Client::new();
     let health = |addr: std::net::SocketAddr| {
         client
-            .get(format!("http://{addr}/api/v1/admin/tools/base-tools/health"))
+            .get(format!(
+                "http://{addr}/api/v1/admin/tools/base-tools/health"
+            ))
             .header("x-admin-token", "admintok")
             .send()
     };
