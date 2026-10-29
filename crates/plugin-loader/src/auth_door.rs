@@ -558,7 +558,8 @@ pub struct AuthInstance {
     // opened over, re-sent on `refresh`. No `Serialize`; the hand-written `Debug` below prints the
     // plugin and the label only (`an_instance_debug_never_shows_its_settings_or_secrets`).
     settings: Vec<u8>,
-    secrets: Vec<Vec<u8>>,
+    /// The service credentials `refresh` re-lends, in the holder that wipes them on drop.
+    secrets: KeptSecrets,
     generation: AtomicU64,
     label: String,
     lifecycle: Mutex<()>,
@@ -607,17 +608,38 @@ pub fn split_secrets(
     (settings, secrets)
 }
 
-/// The secrets list the host lends `open`/`refresh`.
-fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
-    secrets
-        .iter()
-        .map(|s| Blob {
-            ptr: s.as_ptr(),
-            len: s.len(),
-            fmt: BLOB_OCTETS,
-            flags: BLOB_SECRET,
-        })
-        .collect()
+/// THE SECRETS AN AUTH INSTANCE KEEPS: the one copy of its resolved service credentials busbar
+/// must hold past `open`, because `refresh` re-lends them (security.md:318). Each is a zeroising
+/// buffer, overwritten with zeroes (its whole allocation) when the instance drops; `Debug` shows
+/// how many there are and no byte of any.
+pub(crate) struct KeptSecrets(Vec<zeroize::Zeroizing<Vec<u8>>>);
+
+impl KeptSecrets {
+    /// Take `secrets` into the holder (moved: no copy of a byte is made).
+    fn new(secrets: Vec<Vec<u8>>) -> Self {
+        Self(secrets.into_iter().map(zeroize::Zeroizing::new).collect())
+    }
+
+    /// The secrets list the host lends `open`/`refresh`, over the bytes held here.
+    fn blobs(&self) -> Vec<Blob> {
+        self.0
+            .iter()
+            .map(|s| Blob {
+                ptr: s.as_ptr(),
+                len: s.len(),
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            })
+            .collect()
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for KeptSecrets {}
+
+impl std::fmt::Debug for KeptSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KeptSecrets([REDACTED; {}])", self.0.len())
+    }
 }
 
 impl AuthInstance {
@@ -634,13 +656,15 @@ impl AuthInstance {
         settings: &[u8],
         secrets: Vec<Vec<u8>>,
     ) -> Result<Self, String> {
+        // Held from the first line, so a refusal below wipes them too.
+        let secrets = KeptSecrets::new(secrets);
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
-        let blobs = secret_blobs(&secrets);
+        let blobs = secrets.blobs();
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         if !blobs.is_empty() {
             f.input.secrets = blobs.as_ptr();
@@ -696,6 +720,12 @@ impl AuthInstance {
             .is_none_or(tokio::task::JoinHandle::is_finished)
     }
 
+    /// The secrets this instance keeps for `refresh`, as a test reads their holder.
+    #[cfg(test)]
+    pub(crate) fn kept_secrets(&self) -> &KeptSecrets {
+        &self.secrets
+    }
+
     /// The dispatcher instance this auth instance serves on, held weakly: a test reads whether
     /// anything still keeps it once this instance is dropped.
     #[cfg(test)]
@@ -709,9 +739,7 @@ impl Drop for AuthInstance {
         if let Some(schedule) = self.schedule.take() {
             schedule.abort();
         }
-        for s in &mut self.secrets {
-            zero(s);
-        }
+        // `secrets` wipes itself as it drops (`KeptSecrets`).
     }
 }
 
@@ -824,7 +852,7 @@ impl AuthCalls for AuthInstance {
         };
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.sink.0.flushed.store(0, Ordering::Release);
-        let blobs = secret_blobs(&self.secrets);
+        let blobs = self.secrets.blobs();
         let mut f = Frame::new(
             RefreshIn {
                 head: in_head(),

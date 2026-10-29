@@ -48,7 +48,7 @@ use crate::boot::{Candidate, Origin};
 use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::lifecycle::{
-    blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_call,
+    blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_json,
 };
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
@@ -83,11 +83,7 @@ fn json(b: &[u8]) -> Blob {
 /// # Errors
 /// The plugin's refusal, verbatim.
 pub fn validate(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
-    let c = validate_call(plugin, json(settings));
-    match c.outcome {
-        Outcome::Ready => Ok(()),
-        o => Err(text(c.error).unwrap_or_else(|| format!("{o:?}"))),
-    }
+    validate_json(plugin, settings)
 }
 
 /// `open` `plugin` over `settings` (ticket-less; it never pends).
