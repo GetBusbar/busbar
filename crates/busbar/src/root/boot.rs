@@ -1090,9 +1090,9 @@ pub fn book(
     };
     let token = super::kernel::new_kernel().durability_token();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
-    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the store's epoch floor, read back through
-    // `record_get`, fences a node below it out; the chain's operator breaks are read as deliberate.
-    super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
+    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the chain's operator breaks, read as
+    // deliberate.
+    super::durability::report_operator_breaks(&durability);
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
     // an empty reference and two principals never share one. A node with neither keeps this
@@ -1145,9 +1145,7 @@ pub fn book(
     let verb_store = super::durability::node_verb_store(
         Arc::clone(&durability),
         super::kernel::new_kernel().durability_token(),
-        calls,
         store,
-        &adapter,
     );
     Ok(super::durability::NodeBook {
         durability,
