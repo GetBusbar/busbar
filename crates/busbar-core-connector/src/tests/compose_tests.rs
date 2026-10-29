@@ -79,7 +79,7 @@ fn bytes_go_through_the_framer_both_ways_byte_exact() {
         let far = echo().await;
         let door = Arc::new(TestDoor::identity("bytes"));
         let mut d = dial(&far);
-        d.opening = Some((Vec::new(), b"hello ".to_vec()));
+        d.opening = Some((Vec::new(), b"hello ".to_vec().into()));
         let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
         let waker = std::task::Waker::noop();
         let sent: Vec<u8> = (0..=255_u8).cycle().take(100_000).collect();
@@ -275,7 +275,7 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),
         ));
         d.alpn = vec![b"h2".to_vec()];
-        d.opening = Some((Vec::new(), b"hello".to_vec()));
+        d.opening = Some((Vec::new(), b"hello".to_vec().into()));
         let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
         assert_eq!(c.established().agreed_protocol.as_deref(), Some(&b"h2"[..]));
@@ -343,7 +343,7 @@ fn the_handshake_offers_what_the_framer_located() {
                 crate::tls::client::build_client_config(&trust).expect("a usable client config"),
             ));
             d.alpn = registered;
-            d.opening = Some((Vec::new(), b"hello".to_vec()));
+            d.opening = Some((Vec::new(), b"hello".to_vec().into()));
             let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
             assert_eq!(gather(&mut c, 5).await, b"hello");
             assert_eq!(
@@ -738,6 +738,55 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
     });
 }
 
+/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, on one connection): two streams on one
+/// dialled connection. The first stream's head emit calls the auth, which pends; the second
+/// stream's request goes out and its answer comes back while the first waits; then the auth
+/// answers, the first stream's request goes out, and its answer comes back, with exactly one auth
+/// call. Each head emit states the length of the body it opens with.
+#[test]
+fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
+    worker().block_on(async {
+        let far = echo().await;
+        let door = Arc::new(crate::support::PendingDoor::new(
+            TestDoor::identity("bytes"),
+            EXCHANGE_STREAM,
+        ));
+        let mut d = dial(&far);
+        d.opening = Some((Vec::new(), b"first ".to_vec().into()));
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
+        let waker = std::task::Waker::noop();
+        c.open_exchange(
+            3,
+            Some((Vec::new(), b"second".to_vec().into())),
+            HeadWords::default(),
+            &mut std::task::Context::from_waker(waker),
+        )
+        .unwrap();
+        assert_eq!(
+            gather(&mut c, 6).await,
+            b"second",
+            "the second stream's request completes while the first waits on its auth"
+        );
+        assert_eq!(door.host.calls(), 1, "the first stream's auth is running");
+        door.host.complete(1);
+        assert_eq!(
+            gather(&mut c, 6).await,
+            b"first ",
+            "the first stream goes once its auth answered"
+        );
+        assert_eq!(
+            door.host.calls(),
+            1,
+            "exactly one auth call across the not-ready"
+        );
+        assert_eq!(
+            door.emitted.lock().unwrap().as_slice(),
+            &[(EXCHANGE_STREAM, 6, 1), (3, 6, 1)],
+            "each head emit states its opening body's length"
+        );
+    });
+}
+
 /// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
 /// taken up to `WRITE_BUFFER_BYTES`): one write larger than the TLS library's default send buffer
 /// (64 KiB) crosses whole, encrypted, in order. Handed to the TLS writer in one piece past that
@@ -785,7 +834,7 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
         d.tls = Some(Arc::new(
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),
         ));
-        d.opening = Some((Vec::new(), b"hello".to_vec()));
+        d.opening = Some((Vec::new(), b"hello".to_vec().into()));
         let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello", "the handshake completed");
         let sent: Vec<u8> = (0..=255_u8).cycle().take(SENT).collect();

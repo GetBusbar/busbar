@@ -1,0 +1,357 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The plane lifecycle through the real trampoline: one plane door built with
+//! `lifecycle: plane_life(P)`. `open` publishes the first generation's snapshot and holds the state,
+//! `refresh` publishes the next with its value, `retire` drops one generation, a refused
+//! `validate`/`open`/`refresh` answers the plane's text, `tick`/`drive` answer their defaults,
+//! `cancel` is the plane's own, and `release`/`close` answer READY.
+
+use std::ffi::c_void;
+use std::mem::size_of;
+use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::abi::mechanism::call::{
+    AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
+};
+use crate::abi::mechanism::lifecycle::{
+    slot, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+};
+use crate::abi::mechanism::ticket::{HostCtx, Ticket};
+use crate::abi::plane::{
+    Ops, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
+    PlaneRefreshOut, PlaneSnapshot, CANCEL_ABORTED,
+};
+use crate::abi::sdk::publish::Generations;
+
+use super::*;
+
+/// Generations whose `published` hook ran, summed; and those retired.
+static PUBLISHED: AtomicU64 = AtomicU64::new(0);
+static RETIRED: AtomicU64 = AtomicU64::new(0);
+
+/// The test plane: its settings are its held value per generation.
+#[derive(Default)]
+struct Echo {
+    generations: Generations<PlaneSnapshot, Vec<u8>>,
+}
+
+impl PlaneLife for Echo {
+    type Held = Vec<u8>;
+
+    fn generations(&self) -> &Generations<PlaneSnapshot, Vec<u8>> {
+        &self.generations
+    }
+
+    fn open(input: &Lent<'_, PlaneOpenIn>) -> Result<Opened<Self>, Refusal> {
+        let settings = input.open().settings().bytes().to_vec();
+        if settings == b"refuse" {
+            return Err(Refusal::refused("the echo plane refuses"));
+        }
+        Ok(Opened {
+            plane: Echo::default(),
+            first: Published {
+                spec: SnapshotSpec::default(),
+                held: settings,
+            },
+        })
+    }
+
+    fn refresh(&self, settings: &[u8], _: u64) -> Result<Published<Vec<u8>>, Refusal> {
+        if settings == b"fail" {
+            return Err(Refusal::failed(format!("refresh failed: {}", 7)));
+        }
+        Ok(Published {
+            spec: SnapshotSpec::default(),
+            held: settings.to_vec(),
+        })
+    }
+
+    /// THE APPLIED OWNED SECTIONS (`EXT_OWNED`): a refresh whose document writes an owned section
+    /// the echo plane cannot read is refused, as `open` refuses it; otherwise the settings path.
+    fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Vec<u8>>, Refusal> {
+        let owned = crate::abi::mechanism::extensions::get(
+            input.head().extensions().bytes(),
+            crate::abi::plane::EXT_OWNED,
+        )
+        .unwrap_or_default();
+        if owned == b"{\"agent_push\":\"malformed\"}" {
+            return Err(Refusal::refused(
+                "agent_push: not a section this plane reads",
+            ));
+        }
+        self.refresh(input.settings().bytes(), input.generation())
+    }
+
+    fn published(&self, generation: u64) {
+        PUBLISHED.fetch_add(generation, Ordering::SeqCst);
+    }
+
+    fn retire(&self, generation: u64) {
+        RETIRED.fetch_add(generation, Ordering::SeqCst);
+    }
+
+    fn cancel(
+        _: Instance<'_, Self>,
+        _: Lent<'_, PlaneCancelIn>,
+        mut out: Out<'_, PlaneCancelOut>,
+    ) -> Outcome {
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
+        Outcome::Ready
+    }
+}
+
+mod plugin {
+    use super::*;
+    crate::plugin_door! {
+        ops: crate::abi::plane::Ops,
+        statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
+        lifecycle: plane_life(Echo),
+    }
+}
+
+fn table() -> &'static Ops {
+    // SAFETY: the macro's `'static` door and its plane table.
+    unsafe { &*plugin::door().ops.cast::<Ops>() }
+}
+
+fn in_head<T>(op: u32) -> InHead {
+    InHead {
+        size: size_of::<T>() as u32,
+        op,
+        flags: 0,
+        deadline_class: 0,
+        _reserved: [0; 3],
+        host: HostCtx::NONE,
+        ticket: Ticket::NONE,
+        deadline_ns: 0,
+        trace_id: [0; 16],
+        parent_span_id: 0,
+        extensions: blob(b""),
+    }
+}
+
+fn blob(b: &[u8]) -> Blob {
+    Blob {
+        ptr: if b.is_empty() {
+            ptr::null()
+        } else {
+            b.as_ptr()
+        },
+        len: b.len(),
+        fmt: BLOB_ABSENT,
+        flags: 0,
+    }
+}
+
+fn zeroed<T>() -> T {
+    // SAFETY: every `in`/`out` here is plain data; all-zero is valid.
+    unsafe { std::mem::zeroed() }
+}
+
+fn out_head<T>() -> OutHead {
+    let mut h: OutHead = zeroed();
+    h.size = size_of::<T>() as u32;
+    h.outcome = RawOutcome::of(Outcome::Fault);
+    h
+}
+
+fn call<I, O>(op: Option<Op>, instance: *mut c_void, input: &I, out: &mut O) -> Outcome {
+    op.expect("every slot is filled")(
+        instance,
+        ptr::from_ref(input).cast(),
+        ptr::from_mut(out).cast(),
+    )
+    .outcome()
+}
+
+fn text(s: AbiStr) -> String {
+    if s.ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the plugin's error text, held by its instance or the lent buffer.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+}
+
+/// `open` with `settings` at generation `1`: the outcome, the instance, the published snapshot's
+/// generation (`0` = none), and the error text.
+fn open(settings: &[u8]) -> (Outcome, *mut c_void, u64, String) {
+    let mut input: PlaneOpenIn = zeroed();
+    input.open.head = in_head::<PlaneOpenIn>(slot::OPEN);
+    input.open.settings = blob(settings);
+    input.open.generation = 1;
+    let mut out: PlaneOpenOut = zeroed();
+    out.open.head = out_head::<PlaneOpenOut>();
+    let o = call(table().head.open, ptr::null_mut(), &input, &mut out);
+    let generation = if out.snapshot.is_null() {
+        0
+    } else {
+        // SAFETY: the snapshot the SDK holds until its generation retires.
+        unsafe { (*out.snapshot).generation }
+    };
+    (o, out.open.instance, generation, text(out.open.head.error))
+}
+
+fn refresh(inst: *mut c_void, settings: &[u8], generation: u64) -> (Outcome, u64, String) {
+    refresh_with(inst, settings, generation, b"")
+}
+
+/// [`refresh`] with `extensions` lent on the head, as the host lends the applied owned sections.
+fn refresh_with(
+    inst: *mut c_void,
+    settings: &[u8],
+    generation: u64,
+    extensions: &[u8],
+) -> (Outcome, u64, String) {
+    let mut input: RefreshIn = zeroed();
+    input.head = in_head::<RefreshIn>(slot::REFRESH);
+    input.head.extensions = blob(extensions);
+    input.settings = blob(settings);
+    input.generation = generation;
+    let mut out: PlaneRefreshOut = zeroed();
+    out.head = out_head::<PlaneRefreshOut>();
+    let o = call(table().head.refresh, inst, &input, &mut out);
+    let published = if out.snapshot.is_null() {
+        0
+    } else {
+        // SAFETY: as in `open`.
+        unsafe { (*out.snapshot).generation }
+    };
+    (o, published, text(out.head.error))
+}
+
+fn close(inst: *mut c_void) -> Outcome {
+    let input = in_head::<InHead>(slot::CLOSE);
+    let mut out = out_head::<OutHead>();
+    call(table().head.close, inst, &input, &mut out)
+}
+
+#[test]
+fn open_publishes_the_first_generation_and_a_refusal_answers_the_planes_text() {
+    let before = PUBLISHED.load(Ordering::SeqCst);
+    let (o, inst, generation, _) = open(b"{}");
+    assert_eq!(o, Outcome::Ready);
+    assert!(!inst.is_null());
+    assert_eq!(generation, 1, "the first generation's snapshot");
+    assert!(
+        PUBLISHED.load(Ordering::SeqCst) - before >= 1,
+        "published ran"
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+    let (o, inst, generation, why) = open(b"refuse");
+    assert_eq!(o, Outcome::Refused);
+    assert!(inst.is_null());
+    assert_eq!(generation, 0, "nothing published");
+    assert_eq!(why, "the echo plane refuses");
+}
+
+#[test]
+fn refresh_publishes_its_generation_or_answers_its_text_and_retire_drops_one() {
+    let (_, inst, _, _) = open(b"{}");
+    let (o, published, _) = refresh(inst, b"{\"n\":2}", 2);
+    assert_eq!((o, published), (Outcome::Ready, 2));
+    let (o, published, why) = refresh(inst, b"fail", 3);
+    assert_eq!((o, published), (Outcome::Failed, 0));
+    assert_eq!(why, "refresh failed: 7");
+    // retire: the plane's hook runs after the snapshot is dropped
+    let mut gi: GenIn = zeroed();
+    gi.head = in_head::<GenIn>(slot::RETIRE);
+    gi.generation = 5;
+    let before = RETIRED.load(Ordering::SeqCst);
+    let mut go = out_head::<OutHead>();
+    assert_eq!(
+        call(table().head.retire, inst, &gi, &mut go),
+        Outcome::Ready
+    );
+    assert_eq!(RETIRED.load(Ordering::SeqCst) - before, 5);
+    assert_eq!(close(inst), Outcome::Ready);
+    // RED: a refresh with no instance is FAILED, never a publish
+    let (o, published, _) = refresh(ptr::null_mut(), b"{}", 4);
+    assert_eq!((o, published), (Outcome::Failed, 0));
+}
+
+#[test]
+fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_cancel() {
+    let mut vi: ValidateIn = zeroed();
+    vi.head = in_head::<ValidateIn>(slot::VALIDATE);
+    vi.settings = blob(b"[1]");
+    let mut vo = out_head::<OutHead>();
+    assert_eq!(
+        call(table().head.validate, ptr::null_mut(), &vi, &mut vo),
+        Outcome::Failed
+    );
+    assert_eq!(text(vo.error), "settings: must be a JSON object");
+    let (_, inst, _, _) = open(b"{}");
+    let mut ti: TickIn = zeroed();
+    ti.head = in_head::<TickIn>(slot::TICK);
+    ti.now_ns = 100;
+    let mut to: TickOut = zeroed();
+    to.head = out_head::<TickOut>();
+    to.next_tick_ns = 9;
+    assert_eq!(call(table().head.tick, inst, &ti, &mut to), Outcome::Ready);
+    assert_eq!(to.next_tick_ns, 0, "no tick wanted");
+    let mut di: PlaneDriveIn = zeroed();
+    di.drive.head = in_head::<PlaneDriveIn>(slot::DRIVE);
+    let mut dout: PlaneDriveOut = zeroed();
+    dout.head = out_head::<PlaneDriveOut>();
+    assert_eq!(
+        call(table().head.drive, inst, &di, &mut dout),
+        Outcome::Ready
+    );
+    let mut ci: PlaneCancelIn = zeroed();
+    ci.cancel.head = in_head::<PlaneCancelIn>(slot::CANCEL);
+    let mut co: PlaneCancelOut = zeroed();
+    co.cancel.head = out_head::<PlaneCancelOut>();
+    assert_eq!(
+        call(table().head.cancel, inst, &ci, &mut co),
+        Outcome::Ready
+    );
+    assert_eq!(co.cancel.disposition, CANCEL_ABORTED);
+    let mut ri: ReleaseIn = zeroed();
+    ri.head = in_head::<ReleaseIn>(slot::RELEASE);
+    ri.lease = 3;
+    let mut ro = out_head::<OutHead>();
+    assert_eq!(
+        call(table().head.release, inst, &ri, &mut ro),
+        Outcome::Ready
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// RED (a2a's PlaneLife adoption, ruled 2026-10-29): a PlaneLife plane sees the applied owned
+/// sections (`EXT_OWNED`) at `refresh`, so a malformed `agent_push:` an apply carries is still
+/// refused there, as `open` refuses it; an apply that writes none takes the settings path. RED
+/// before: `refresh` got the settings and the generation only, so the apply was accepted.
+#[test]
+fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_refused() {
+    let (_, inst, _, _) = open(b"{}");
+    let malformed = crate::abi::mechanism::extensions::encode(&[(
+        crate::abi::plane::EXT_OWNED,
+        br#"{"agent_push":"malformed"}"#,
+    )]);
+    let (o, published, why) = refresh_with(inst, b"{}", 2, &malformed);
+    assert_eq!(
+        (o, published),
+        (Outcome::Refused, 0),
+        "a malformed owned section is refused"
+    );
+    assert_eq!(why, "agent_push: not a section this plane reads");
+    let readable = crate::abi::mechanism::extensions::encode(&[(
+        crate::abi::plane::EXT_OWNED,
+        br#"{"agent_push":{}}"#,
+    )]);
+    let (o, published, _) = refresh_with(inst, b"{}", 3, &readable);
+    assert_eq!(
+        (o, published),
+        (Outcome::Ready, 3),
+        "a readable one publishes"
+    );
+    let (o, published, _) = refresh(inst, b"{}", 4);
+    assert_eq!(
+        (o, published),
+        (Outcome::Ready, 4),
+        "none: the settings path"
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+}
