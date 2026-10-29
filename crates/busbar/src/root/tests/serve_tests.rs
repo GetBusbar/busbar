@@ -5127,7 +5127,6 @@ async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
     const FAILOVER_KEY: &str = "sk-failover-0d94e3";
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-failover-credential";
-    let _published = Withdrawn(instance);
     let primary = seat_far_end(
         500,
         r#"{"error":{"message":"upstream down","type":"server_error"}}"#,
@@ -5494,7 +5493,6 @@ async fn hook_payload_never_carries_auth_headers() {
     const COOKIE: &str = "session=cookie-secret-3a7f";
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-tap-no-auth";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
@@ -11310,7 +11308,6 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
 async fn an_expired_virtual_key_is_refused() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-key-token-expired";
-    let _published = Withdrawn(instance);
     let far = seat_far_end(200, door_word("messages_answer")).await;
     let rig = rig(
         instance,
