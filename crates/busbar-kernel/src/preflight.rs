@@ -959,14 +959,24 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                         first_party,
                         "plugin validated"
                     ),
-                    busbar_contract::plugin_rows::Trust::Allowed { reason } => diag_warn!(
-                        PLUGIN_LOADED_UNVERIFIED,
-                        plugin = %p.name,
-                        alias = %p.alias,
-                        kind = %p.kind,
-                        reason = %reason,
-                        "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
-                    ),
+                    busbar_contract::plugin_rows::Trust::Allowed { reason } => {
+                        diag_warn!(
+                            PLUGIN_LOADED_UNVERIFIED,
+                            plugin = %p.name,
+                            alias = %p.alias,
+                            kind = %p.kind,
+                            reason = %reason,
+                            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
+                        );
+                        // AUDITED (item 1): the host's category, never the evaluator's reason
+                        // text (it carries manifest bytes); the warning above names the reason.
+                        crate::audit::auditlog::record_plugin_refusal(
+                            crate::audit::auditlog::PluginRefusal::Unverified,
+                            "file",
+                            &p.file,
+                            "unverified",
+                        );
+                    }
                 }
             }
         }
