@@ -24,9 +24,22 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 policy() {  # policy <deps.toml> <crates|features|imports|carriers>: one entry per line
   python3 - "$1" "$2" <<'PY'
-import sys, tomllib
-with open(sys.argv[1], "rb") as f:
-    d = tomllib.load(f)
+import re, sys
+try:
+    import tomllib
+    with open(sys.argv[1], "rb") as f:
+        d = tomllib.load(f)
+except ImportError:
+    # A python before 3.11: the [net-ban] table's string lists, read directly.
+    text = open(sys.argv[1], encoding="utf-8").read()
+    m = re.search(r"^\[net-ban\][^\n]*\n(.*?)(?=^\[[A-Za-z]|\Z)", text, re.M | re.S)
+    d = {}
+    if m:
+        body = re.sub(r"#[^\n]*", "", m.group(1))
+        d["net-ban"] = {
+            k: re.findall(r'"([^"]*)"', v)
+            for k, v in re.findall(r"^([A-Za-z-]+)\s*=\s*\[(.*?)\]", body, re.M | re.S)
+        }
 nb = d.get("net-ban")
 if not isinstance(nb, dict):
     sys.exit(f"net-ban: {sys.argv[1]} states no [net-ban] table")
