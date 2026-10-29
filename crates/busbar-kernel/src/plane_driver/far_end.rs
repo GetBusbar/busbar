@@ -74,8 +74,8 @@ use busbar_kernel_egress::{
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
-/// The line a framer that states its body's length has the host add (`HeadDefaults::states_length`).
-const CONTENT_LENGTH: &[u8] = b"content-length";
+// The line a framer that states its body's length has the host state (`HeadDefaults::states_length`).
+use busbar_contract::conn::CONTENT_LENGTH;
 
 /// The bytes one read of the far end takes: the size of a unit's one read buffer ([`Scratch`]).
 const READ_BYTES: usize = 16 * 1024;
@@ -1333,32 +1333,20 @@ impl EgressFarEnd<'_> {
         // the request does not carry is part of the head the auth signs and goes out after the
         // plane's fields, where 1.5.5's client wrote its defaults; then, where the framer states
         // it, the opening body's length, last, for a non-empty body whose head carries none. The
-        // framer adds nothing at encode.
+        // framer adds nothing at encode. The length line is the host's: the connector states it at
+        // the open from the same located head (no opener's field may state a length), so here it
+        // is handed to the auth and not written into the head.
         let located = e.conns.head_defaults(e.caller, need, &url);
-        let carried = |name: &[u8]| {
-            request
-                .fields
-                .iter()
-                .any(|(n, _)| n.eq_ignore_ascii_case(name))
-        };
-        let mut defaults: Vec<(Vec<u8>, Vec<u8>)> = located
-            .lines
-            .into_iter()
-            .filter(|(name, _)| !carried(name))
-            .collect();
         let opening: &[u8] = if request.text { &[] } else { &request.body };
-        if located.states_length
-            && !opening.is_empty()
-            && !carried(CONTENT_LENGTH)
-            && !defaults
-                .iter()
-                .any(|(n, _)| n.eq_ignore_ascii_case(CONTENT_LENGTH))
-        {
-            defaults.push((
-                CONTENT_LENGTH.to_vec(),
-                opening.len().to_string().into_bytes(),
-            ));
-        }
+        let defaults = located.completing(
+            |name| {
+                request
+                    .fields
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case(name))
+            },
+            opening.len(),
+        );
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
@@ -1416,11 +1404,15 @@ impl EgressFarEnd<'_> {
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         // The framer's own lines last, as 1.5.5's client added its defaults after every field the
-        // request carried; one the auth wrote is the auth's.
+        // request carried; one the auth wrote is the auth's. The length line the connector states,
+        // after them, at the open.
         head.0.extend(
             defaults
                 .iter()
-                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
+                .filter(|(n, _)| {
+                    !n.eq_ignore_ascii_case(CONTENT_LENGTH)
+                        && !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n))
+                })
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         drop(auth);
