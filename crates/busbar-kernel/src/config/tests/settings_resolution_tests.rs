@@ -332,3 +332,55 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     );
     std::env::remove_var(&var);
 }
+
+/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL (security.md:316), for a plugin's declared secret
+/// fields too: a plain value written at a path the plugin declares secret refuses the boot, in the
+/// same non-echoing words a core secret field answers, naming the setting's position and never a
+/// byte of the value. A scalar of any type and a `{ literal: … }` wrapper are both literals there.
+#[test]
+fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
+    let resolver = SecretResolver::builtins_only();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    for (value, shown) in [
+        (serde_json::json!("hunter2-bind-pw"), "hunter2-bind-pw"),
+        (serde_json::json!(483_920_175_534_u64), "483920175534"),
+        (serde_json::json!({ "literal": "wrapped-pw" }), "wrapped-pw"),
+    ] {
+        let settings = obj(&[
+            ("bind_service_password", value),
+            ("url", serde_json::json!("ldaps://ldap.example")),
+        ]);
+        // Matched, not `expect_err`: that would print the resolved settings (the literal).
+        let Err(err) = resolve_settings(
+            &settings,
+            &declared(&["bind_service_password"]),
+            "busbar-auth-ldap",
+            &resolver,
+            &scope,
+        ) else {
+            panic!("a literal at a declared secret path refuses");
+        };
+        assert!(
+            err.contains("settings.bind_service_password"),
+            "names the config position: {err}"
+        );
+        assert!(
+            err.contains(
+                "a secret value must be a REFERENCE, never an inline literal (the value is not \
+                 echoed)"
+            ),
+            "the core secret fields' own non-echoing words: {err}"
+        );
+        assert!(!err.contains(shown), "the value is echoed: {err}");
+    }
+    // An UNSET declared field is not a literal: there is nothing to refuse.
+    let unset = obj(&[("url", serde_json::json!("ldaps://ldap.example"))]);
+    resolve_settings(
+        &unset,
+        &declared(&["bind_service_password"]),
+        "busbar-auth-ldap",
+        &resolver,
+        &scope,
+    )
+    .expect("an unset declared field is not a literal");
+}
