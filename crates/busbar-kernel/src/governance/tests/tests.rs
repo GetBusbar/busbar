@@ -6236,3 +6236,37 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
         );
     }
 }
+
+/// CONSTANT-TIME TOKEN COMPARISON (website: "constant-time token comparison"). A virtual key is
+/// checked by its ed25519 signature, which compares no secret. The one byte comparison of stored
+/// key material on that path is the binding's rotation generation against the token's claim
+/// ([`super::generation_matches`]), and it goes through the contract's timing-safe primitive, never
+/// `==`. Pinned at the function's source, since timing is not observable from a unit test; its
+/// verdicts are pinned beside it.
+/// RED: the generation is compared with `==`.
+#[test]
+fn a_virtual_keys_generation_is_compared_in_constant_time() {
+    let src = include_str!("../mod.rs");
+    let body = src
+        .split("pub fn generation_matches(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("generation_matches is in governance/mod.rs");
+    assert!(
+        body.contains("constant_time_eq"),
+        "the generation compare goes through the timing-safe primitive: {body}"
+    );
+    assert!(
+        !body.contains("=="),
+        "no plain equality on key material: {body}"
+    );
+
+    let marker = super::binding_marker("vk_1", "g7");
+    assert!(super::generation_matches(&marker, Some("g7")));
+    assert!(!super::generation_matches(&marker, Some("g8")));
+    assert!(!super::generation_matches(&marker, Some("g")));
+    assert!(!super::generation_matches(&marker, None));
+    let legacy = "not-a-binding-marker";
+    assert!(super::generation_matches(legacy, None));
+    assert!(!super::generation_matches(legacy, Some("g7")));
+}
