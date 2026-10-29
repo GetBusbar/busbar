@@ -1511,6 +1511,45 @@ models: {}
     assert!(msg.contains("missing field `api_key`"), "{msg}");
 }
 
+/// security.md: pasting a secret inline is refused with ONE message that names the rule and the
+/// config position, and never echoes the value. Driven through the loader boot uses
+/// (`deploy_from_yaml_str`) on a document whose literal sits on a known line, as a bare string, an
+/// unquoted number and a boolean (each a spelling an operator pastes), so the refusal is the
+/// operator's to act on: it points at the line and the key, and carries none of the value.
+#[test]
+fn an_inline_literal_refusal_names_its_config_position() {
+    for (literal, line) in [
+        ("sk-live-0123456789abcdef", 5),
+        ("\"sk-live-0123456789abcdef\"", 5),
+        ("483920175534", 5),
+        ("true", 5),
+    ] {
+        let yaml = format!(
+            "store: {{module: memory}}\nmodels: {{}}\nproviders:\n  myprov:\n    api_key: {literal}\n"
+        );
+        let err = deploy_from_yaml_str(&yaml)
+            .expect_err("an inline literal secret is refused")
+            .to_string();
+        let value = literal.trim_matches('"');
+        assert!(
+            !err.contains(value),
+            "the refusal must not echo the value `{value}`: {err}"
+        );
+        assert!(
+            err.contains("REFERENCE") && err.contains("inline literal"),
+            "the refusal names the rule: {err}"
+        );
+        assert!(
+            err.contains("providers.myprov.api_key"),
+            "the refusal names the key path: {err}"
+        );
+        assert!(
+            err.contains(&format!("at line {line} ")),
+            "the refusal names the line: {err}"
+        );
+    }
+}
+
 #[test]
 fn test_resolve_unknown_provider_error() {
     // config.yaml references nope not in providers.yaml -> resolve returns error naming nope
@@ -3689,6 +3728,40 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     let err = crate::config::deploy_from_yaml_str(&ceiling_typo)
         .expect_err("a typo'd ceiling key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
+}
+
+/// The `auth:` block's refusals, byte for byte, through the boot parser: the frozen five-key list
+/// (with or without the lifted `policy:` beside it), a lifted key's own refusal at its own path and
+/// position, and a value that is not a section. An empty `auth:` is no block at all.
+#[test]
+fn the_auth_block_refusals_are_pinned() {
+    let refusal = |auth: &str| {
+        crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{auth}"))
+            .expect_err("refused")
+            .to_string()
+    };
+    let frozen = "unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
+                  `admin_auth`, `role_bindings`, `key_ttl`";
+    assert_eq!(
+        refusal("auth:\n  bogus_key: 1\n"),
+        format!("auth: {frozen} at line 4 column 3")
+    );
+    assert_eq!(
+        refusal("auth:\n  policy: {}\n  bogus_key: 1\n"),
+        format!("auth: {frozen} at line 5 column 3")
+    );
+    assert_eq!(
+        refusal("auth:\n  policy:\n    slef_mint: true\n"),
+        "auth.policy: unknown field `slef_mint`, expected one of `self_mint`, `binding_modes`, \
+         `default_ttl`, `max_ttl`, `mint_ceilings` at line 5 column 5"
+    );
+    assert_eq!(
+        refusal("auth: 5\n"),
+        "auth: invalid type: integer `5`, expected a configuration section at line 3 column 7"
+    );
+    let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
+        .expect("an empty auth block parses");
+    assert!(empty.auth.is_none());
 }
 
 /// The top-level section [`NEUTRAL_SECTION_PLANE`] declares and owns.
