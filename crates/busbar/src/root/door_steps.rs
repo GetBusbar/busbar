@@ -65,7 +65,7 @@ pub struct DoorPools {
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
     /// Each entry's reserved `timeout:`, in milliseconds (`busbar_contract::section::ENTRY_TIMEOUT_KEY`),
-    /// a registration that writes none at the core's default: its member's attempt bound.
+    /// a tool-server registration that writes none at the core's default: its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
@@ -79,12 +79,13 @@ pub struct DoorPools {
 pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
-    /// The pools `section` states. REFUSED where a member written `{name, tier}` carries a tier
+    /// The pools `section` states, `declared` the section key its plane's Statement declares (whose
+    /// registrations the core's default `timeout:` bounds). REFUSED where a member written `{name, tier}` carries a tier
     /// that is no unsigned integer that fits `u32` (a member that writes no tier states none, tier
     /// `0`): the tier is core-owned
     /// ([`crate::root::serve::pools_into`] writes each member's declared index), so a bad one is a
     /// core bug, and defaulting it to `0` would route that member at the top tier in silence.
-    pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
+    pub fn of(section: &serde_yaml::Value, declared: &str) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
             return Ok(Self::default());
         };
@@ -172,8 +173,10 @@ impl DoorPools {
             .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
-        // A REGISTRATION that writes none is held to the core's default; a model entry that writes
-        // none keeps the walk's budget (1.5.5's bound on a model).
+        // A TOOL-SERVER REGISTRATION that writes none is held to the core's default (the section its
+        // plane declares, `default_entry_timeout_ms`); any other entry that writes none, a model or
+        // another plane's registration, keeps the walk's budget (1.5.5's bound).
+        let registration_default = busbar_contract::section::default_entry_timeout_ms(declared);
         let timeouts = entries
             .iter()
             .filter_map(|entry| {
@@ -185,7 +188,7 @@ impl DoorPools {
                     .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok());
                 let ms = match (written, models) {
                     (Some(ms), _) => ms,
-                    (None, None) => busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS,
+                    (None, None) => registration_default?,
                     (None, Some(_)) => return None,
                 };
                 Some((entry.clone(), ms))
@@ -209,8 +212,9 @@ impl DoorPools {
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`, else, for a
-    /// registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = a model entry that
-    /// writes none, which the walk's own budget bounds.
+    /// tool-server registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = any other
+    /// entry that writes none (a model, another plane's registration), which the walk's own budget
+    /// bounds.
     #[must_use]
     pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
         self.timeouts.get(entry).copied()

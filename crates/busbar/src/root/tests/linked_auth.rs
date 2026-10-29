@@ -1062,6 +1062,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
              [rekey-model]\n  gpool-b:\n    members: [rekey-model]",
         )
         .expect("the section"),
+        busbar_contract::section::RESERVED_POOLS_KEY,
     )
     .expect("the pools");
     // What the caller reads: the identity refusal's 401, the grant's 403, else served.

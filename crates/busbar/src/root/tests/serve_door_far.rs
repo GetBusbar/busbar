@@ -263,7 +263,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     // A routed unit of plane `p`: its one entry `e`, named directly, performed at most once.
     let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
     let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
-    let pools = DoorPools::of(&section).expect("the pools");
+    let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
+        .expect("the pools");
     let steps = DoorSteps::new(
         &facts,
         &pools,
