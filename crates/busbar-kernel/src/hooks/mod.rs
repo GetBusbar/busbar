@@ -214,8 +214,12 @@ impl HookEnv {
             .axis
             .as_ref()
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
-        let settings = serde_json::Value::Object(settings.clone());
-        let calls = axis.open(module, name, &settings, policy_timeout(timeout_ms))?;
+        let calls = axis.open(
+            module,
+            name,
+            settings.as_value(),
+            policy_timeout(timeout_ms),
+        )?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
             calls, name,
         ))
@@ -228,7 +232,7 @@ impl HookEnv {
         &self,
         module: &str,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    ) -> Result<ResolvedSettings, String> {
         crate::config::secret::resolve_settings(
             settings,
             &self.registry.secret_slots(module),
@@ -331,7 +335,7 @@ impl HookEnv {
 /// ZERO-COST default path: `route: weighted` (the default / absent case) AND the explicit
 /// `route: native, policy.name: weighted` form both resolve to `None`, because `weighted` Abstains
 /// and thus converges with today's inline SWRR — so the hot path constructs no policy object, builds
-/// no projections, and takes the unchanged `select_weighted_in` branch.
+/// no projections, and takes the weighted floor.
 ///
 /// This resolves the BASE only. A pool's GATES are resolved separately (`resolve_pool_gates`) and
 /// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
@@ -890,8 +894,9 @@ fn gate_transport_uncached(
 
 /// A hook's `settings:` map with every `SecretRef` already substituted for its resolved value —
 /// i.e. the bag that crosses the ABI. Produced ONLY by [`gate_transport_named`] (and its offloaded
-/// wrapper), so a caller cannot obtain one without having gone through the offload.
-type ResolvedSettings = serde_json::Map<String, serde_json::Value>;
+/// wrapper), so a caller cannot obtain one without having gone through the offload. Kept beside the
+/// transport for its `configure` re-pushes, in the holder that wipes it when the last copy drops.
+type ResolvedSettings = crate::config::secret::ResolvedSettings;
 
 /// A resolved hook transport together with the settings bag it was opened against.
 type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);

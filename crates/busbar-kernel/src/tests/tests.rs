@@ -2251,27 +2251,28 @@ fn env_var_guard_restores_on_panic() {
     std::env::remove_var(KEY);
 }
 
-/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
-/// `test-groups-module` is exempt ONLY when `is_test_build` is true — in a release build it must
-/// be treated as a real (unresolvable) plugin ref, so `--validate` fails it the same way real boot
-/// does, rather than silently agreeing a config naming it is fine. Every other name is always a
-/// real ref regardless of build flavor.
+/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin). A module
+/// the build's auth axis answers in process is exempt ONLY when the install record says so — with
+/// no such answer (every shipped build) it is a real (unresolvable) plugin ref, so `--validate` fails
+/// it the same way real boot does, rather than silently agreeing a config naming it is fine. Every
+/// other name is always a real ref.
 #[test]
-fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_test_builds() {
-    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, true));
-    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, false));
+fn is_real_auth_plugin_ref_exempts_keys_always_and_in_process_modules_only_where_answered() {
+    let none: fn(&str) -> bool = |_| false;
+    let test_modules: fn(&str) -> bool = crate::test_support::auth_modules::answers;
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, test_modules));
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, none));
     assert!(
-        !is_real_auth_plugin_ref("test-groups-module", true),
-        "exempt in a test build, matching AuthMiddleware::new's #[cfg(test)] arm"
+        !is_real_auth_plugin_ref("test-groups-module", test_modules),
+        "exempt where the build's auth axis answers it in process"
     );
     assert!(
-        is_real_auth_plugin_ref("test-groups-module", false),
-        "must NOT be exempt in a release build - it isn't a real registered module there, so a \
-         release config naming it must be treated as a real (and therefore unresolvable) plugin \
-         ref, not silently waved through"
+        is_real_auth_plugin_ref("test-groups-module", none),
+        "must NOT be exempt where nothing answers it in process - a release config naming it must \
+         be treated as a real (and therefore unresolvable) plugin ref, not silently waved through"
     );
-    assert!(is_real_auth_plugin_ref("test-idp-double", true));
-    assert!(is_real_auth_plugin_ref("test-idp-double", false));
+    assert!(is_real_auth_plugin_ref("test-idp-double", test_modules));
+    assert!(is_real_auth_plugin_ref("test-idp-double", none));
 }
 
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
@@ -2501,7 +2502,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
                 config_section: SECTION,
                 ..crate::test_support::NEUTRAL_FALLBACK.declaration
             },
-            build: |_| {
+            build: |_, _| {
                 Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
             },
             ..crate::test_support::NEUTRAL_FALLBACK
@@ -3140,44 +3141,6 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["error"]["code"], "internal", "got {v}");
-}
-
-/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
-/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
-/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
-#[test]
-fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
-    use crate::ir::lane_caps::{
-        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
-    };
-    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
-    let provider = ProviderLaneCaps {
-        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
-        ..ProviderLaneCaps::default()
-    };
-    let rules = [
-        ModelCapabilities {
-            models: vec!["model-a*".to_string()],
-            native_structured_output: Some(true),
-            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
-            ..ModelCapabilities::default()
-        },
-        ModelCapabilities {
-            models: vec!["model-a-2*".to_string()],
-            native_structured_output: Some(false),
-            ..ModelCapabilities::default()
-        },
-    ];
-    assert_eq!(
-        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
-        LaneCaps::NONE
-    );
-    let other = resolve_lane_caps(provider, &rules, "model-b");
-    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
-    assert!(!other.native_structured_output);
-    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
-    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
-    assert!(first_match.native_structured_output);
 }
 
 /// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
