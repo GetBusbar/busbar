@@ -85,6 +85,18 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
     /// Why the refresh did not apply.
     fn refresh(&self, settings: &[u8], generation: u64) -> Result<Published<Self::Held>, Refusal>;
 
+    /// `refresh` from the whole lent `in`: what the slot calls. By default [`PlaneLife::refresh`]
+    /// with the settings and the generation alone. A plane that judges the applied owned sections
+    /// (`abi::plane::EXT_OWNED` on the head's extensions, the refresh-time twin of
+    /// `PlaneOpenIn::owned`) or the re-resolved secrets overrides this, as `open` reads the whole
+    /// `PlaneOpenIn`.
+    ///
+    /// # Errors
+    /// Why the refresh did not apply.
+    fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Self::Held>, Refusal> {
+        self.refresh(input.settings().bytes(), input.generation())
+    }
+
     /// After `generation` was published, by `open` or `refresh`. Nothing by default.
     fn published(&self, generation: u64) {
         let _ = generation;
@@ -177,13 +189,13 @@ plane_slot!(
 );
 
 plane_slot!(
-    /// `refresh`: [`PlaneLife::refresh`]; its generation is published. FAILED with no instance.
+    /// `refresh`: [`PlaneLife::refresh_in`]; its generation is published. FAILED with no instance.
     Refresh(RefreshIn => PlaneRefreshOut) |instance, input, out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
         let generation = input.generation();
-        match plane.refresh(input.settings().bytes(), generation) {
+        match plane.refresh_in(&input) {
             Ok(next) => {
                 out.publish_with(|o| &o.snapshot, plane.generations(), generation, &next.spec, next.held);
                 plane.published(generation);

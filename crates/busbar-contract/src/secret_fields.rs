@@ -131,19 +131,20 @@ pub fn resolve_declared(
 /// LEND the declared secrets out of `block` (see the module docs). `keep_exact`: an exact path's
 /// value stays in the settings (the secret kind's host leaves it), otherwise it is taken out. `exact(path, taken)` turns an
 /// exact path's taken-out value (`None` = unset) into its bytes; `wild(at, value)` turns one
-/// wildcard match (a string or a reference) at `at` into its bytes. On an error every byte lent
-/// so far is wiped.
+/// wildcard match (a string or a reference) at `at` into its bytes. The bytes are the caller's
+/// holder `T`: plain `Vec<u8>`, or a host-held `Secret` the resolver wrote into, which moves here
+/// and is never copied. On an error every byte lent so far is wiped.
 ///
 /// # Errors
 /// The first error a callback answers.
-pub fn lend<E>(
+pub fn lend<T: Zeroize, E>(
     block: &mut Value,
     paths: &[String],
     keep_exact: bool,
-    mut exact: impl FnMut(&str, Option<Value>) -> Result<Vec<u8>, E>,
-    mut wild: impl FnMut(&str, Value) -> Result<Vec<u8>, E>,
-) -> Result<Vec<Vec<u8>>, E> {
-    let mut out: Vec<Vec<u8>> = Vec::new();
+    mut exact: impl FnMut(&str, Option<Value>) -> Result<T, E>,
+    mut wild: impl FnMut(&str, Value) -> Result<T, E>,
+) -> Result<Vec<T>, E> {
+    let mut out: Vec<T> = Vec::new();
     let mut run = || -> Result<(), E> {
         for path in paths.iter().filter(|p| !is_wildcard(p)) {
             let taken = if keep_exact {
