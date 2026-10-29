@@ -364,3 +364,207 @@ fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
         );
     }
 }
+
+// ══ THE ENVELOPE WRITERS ══════════════════════════════════════════════════════════════════════════
+//
+// Each case is a plane's own envelope site, over that plane's own test vector: the writer's bytes
+// equal what the site writes today, `serde_json::to_vec(&json!({ "jsonrpc": "2.0", ... }))`.
+
+use serde_json::json;
+
+fn bytes(v: &serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(v).expect("JSON")
+}
+
+#[test]
+fn a_result_is_the_bytes_the_planes_json_sites_write() {
+    // plane-mcp ask.rs `relayed_result` (tests/ask.rs `the_relayed_result_keeps_...`).
+    let result = json!({
+        "resultType": "input_required",
+        "inputRequests": { "s": { "method": "sampling/createMessage", "params": { "x": [1, 2] } } },
+        "requestState": "ours",
+    });
+    // plane-mcp tool_tasks.rs `task_result` (tests/tasks.rs), a2a relay.rs `relayed`, a string
+    // id, the empty result, and the `null` a far end's absent result is answered as.
+    for (id, result) in [
+        (json!(7), result),
+        (
+            json!(4),
+            json!({ "resultType": "task", "status": "working", "content": [] }),
+        ),
+        (
+            json!("busbar-ask-3"),
+            json!({ "taskId": "far", "kind": "status-update" }),
+        ),
+        (json!(1), json!({})),
+        (json!(0), serde_json::Value::Null),
+    ] {
+        let want = bytes(&json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+        assert_eq!(
+            result_bytes(&bytes(&id), &bytes(&result)),
+            want,
+            "{}",
+            String::from_utf8_lossy(&want)
+        );
+    }
+    assert_eq!(
+        result_bytes(b"1", b"{}"),
+        br#"{"id":1,"jsonrpc":"2.0","result":{}}"#.to_vec()
+    );
+}
+
+#[test]
+fn a_result_carries_the_far_ends_bytes_verbatim() {
+    // plane-a2a answer_bytes.rs: the far end's own `result` bytes, never re-serialised.
+    let far = br#"{"z":1,"a":123456789012345678901234567890,"big":1e400}"#;
+    assert_eq!(
+        result_bytes(b"7", far),
+        br#"{"id":7,"jsonrpc":"2.0","result":{"z":1,"a":123456789012345678901234567890,"big":1e400}}"#
+            .to_vec()
+    );
+}
+
+#[test]
+fn an_error_is_the_bytes_the_planes_json_sites_write() {
+    // plane-a2a relay.rs `grpc_error`, agent_arrival.rs `envelope` (with and without the
+    // `ErrorInfo` data), and a message that needs escaping.
+    let info = json!([{
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "domain": "a2a-protocol.org",
+        "reason": "TASK_NOT_FOUND",
+    }]);
+    for (id, code, message, data) in [
+        (json!(11), -32603, "grpc-status 13", None),
+        (json!(1), -32601, "no such method", None),
+        (json!("r-1"), -32001, "no task {x}%", Some(info)),
+        (
+            serde_json::Value::Null,
+            INVALID_REQUEST,
+            "authentication failed",
+            None,
+        ),
+        (
+            json!(2),
+            -32000,
+            "a \"quoted\"\\ line\n\t\u{1}\u{7f} é /",
+            None,
+        ),
+    ] {
+        let mut error = json!({ "code": code, "message": message });
+        if let Some(d) = &data {
+            error["data"] = d.clone();
+        }
+        let want = bytes(&json!({ "jsonrpc": "2.0", "id": id, "error": error }));
+        let data = data.as_ref().map(bytes);
+        assert_eq!(
+            error_bytes(&bytes(&id), code, message, data.as_deref()),
+            want,
+            "{}",
+            String::from_utf8_lossy(&want)
+        );
+        // The one Value builder and the byte writer are one envelope.
+        assert_eq!(
+            want,
+            bytes(&error_body(
+                id,
+                code,
+                message,
+                data.map(|d| { serde_json::from_slice(&d).expect("JSON") })
+            ))
+        );
+    }
+    // The v1.5.5 unit-less refusal, as the plane's own audit pins it (key order aside, it is the
+    // same envelope).
+    let written = error_bytes(b"null", INVALID_REQUEST, "authentication failed", None);
+    let pinned: serde_json::Value = serde_json::from_slice(UNITLESS_UNAUTHENTICATED).expect("JSON");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&written).expect("JSON"),
+        pinned
+    );
+}
+
+#[test]
+fn a_request_is_the_bytes_the_planes_json_sites_write() {
+    // plane-mcp client/jsonrpc.rs `tools_list`, door_tasks.rs (id 0), line.rs `issue` (a string
+    // id), client/compat.rs `initialize_request`, door_line.rs `ping` (no params), a2a rest.rs.
+    let meta = json!({
+        "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        },
+    });
+    let init = json!({
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": { "name": "busbar", "version": "1.6.0" },
+    });
+    for (id, method, params) in [
+        (json!(1), "tools/list", Some(meta)),
+        (
+            json!(0),
+            "tools/call",
+            Some(json!({ "name": "fs_read", "arguments": { "path": "/a" } })),
+        ),
+        (json!("busbar-ask-1"), "roots/list", Some(json!({}))),
+        (json!(1), "initialize", Some(init)),
+        (json!("busbar-ask-2"), "ping", None),
+        (
+            json!("busbar-rest"),
+            "GetExtendedAgentCard",
+            Some(json!({})),
+        ),
+    ] {
+        let want = match &params {
+            Some(p) => bytes(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": p })),
+            None => bytes(&json!({ "jsonrpc": "2.0", "id": id, "method": method })),
+        };
+        let params = params.as_ref().map(bytes);
+        assert_eq!(
+            request_bytes(&bytes(&id), method, params.as_deref()),
+            want,
+            "{}",
+            String::from_utf8_lossy(&want)
+        );
+    }
+    assert_eq!(
+        request_bytes(b"2", "tools/list", None),
+        br#"{"id":2,"jsonrpc":"2.0","method":"tools/list"}"#.to_vec()
+    );
+}
+
+#[test]
+fn a_notification_is_the_bytes_the_planes_json_sites_write() {
+    // plane-mcp door_sessions.rs (resources/updated), framing.rs (notifications/message),
+    // client/compat.rs `initialized_notification` (no params).
+    for (method, params) in [
+        (
+            "notifications/resources/updated",
+            Some(json!({ "uri": "file:///readme" })),
+        ),
+        (
+            "notifications/message",
+            Some(json!({
+                "level": "info",
+                "logger": "busbar.mcp.dispatch",
+                "data": { "message": "MCP method completed", "httpStatus": 200, "method": "tools/call" },
+            })),
+        ),
+        ("notifications/initialized", None),
+    ] {
+        let want = match &params {
+            Some(p) => bytes(&json!({ "jsonrpc": "2.0", "method": method, "params": p })),
+            None => bytes(&json!({ "jsonrpc": "2.0", "method": method })),
+        };
+        let params = params.as_ref().map(bytes);
+        assert_eq!(
+            notification_bytes(method, params.as_deref()),
+            want,
+            "{}",
+            String::from_utf8_lossy(&want)
+        );
+    }
+    assert_eq!(
+        notification_bytes("notifications/initialized", None),
+        br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec()
+    );
+}
