@@ -5,9 +5,8 @@
 //!
 //! Three things are proven here.
 //!
-//! 1. **Every seam method answers.** One test per method across the seams the composition root
-//!    binds — the kernel's slices and the verbs unit's sealed replay cache —
-//!    with the answer's CONTENT asserted, not merely its `Ok`-ness. A seam that returned a
+//! 1. **Every seam method answers.** One test per method of the seam the composition root binds —
+//!    the verbs unit's sealed replay cache — with the answer's CONTENT asserted, not merely its `Ok`-ness. A seam that returned a
 //!    plausible-looking nothing would pass an errors-only check.
 //! 2. **What the adapter answers from node memory answers quietly.** No error, and no log line —
 //!    proven with a `tracing` capture on the calling thread, the thread the adapter and the loaded
@@ -25,7 +24,6 @@
 
 use super::*;
 use crate::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
-use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use std::sync::Arc;
 
 /// The build's store fixture (reached by kind), as the published operations' backing.
@@ -37,76 +35,6 @@ fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> StoreAdapter {
     StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA)
-}
-
-/// A slice draw for one bucket's request axis.
-fn slice_request(wanted: u64, epoch: u64) -> SliceRequest {
-    SliceRequest {
-        bucket: bucket_all("team-a"),
-        dimension: CapDimension::Requests,
-        wanted,
-        epoch: Epoch(epoch),
-    }
-}
-
-/// `reserve` grants what was asked for, at the shim's own epoch, and the grant is outstanding until
-/// it is released.
-#[test]
-fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
-    let adapter = adapter_over_published_schema();
-    let grant = adapter
-        .reserve(&slice_request(250, 0))
-        .expect("a slice draw on a published store must not fail");
-    assert_eq!(
-        grant.granted, 250,
-        "the shim grants what was wanted, in full"
-    );
-    assert_eq!(grant.epoch, adapter.epoch(), "granted at the shim's epoch");
-    assert_eq!(
-        grant.valid_until,
-        busbar_contract::Millis::MAX,
-        "nothing expires a lease no other node can take"
-    );
-    let state = adapter.shim_state();
-    assert_eq!(state.slices_outstanding, 1);
-    assert_eq!(state.slices_granted, 250);
-    assert_eq!(
-        adapter.reserve(&slice_request(1, 0)).unwrap().id.0,
-        grant.id.0 + 1,
-        "a second draw is a distinct slice"
-    );
-}
-
-/// A draw carrying an epoch the shim never issued is STAMPED with the shim's, not refused: a
-/// stale-epoch refusal is an error, and there is no fleet for the node to be stale against.
-#[test]
-fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
-    let adapter = adapter_over_published_schema();
-    let grant = adapter
-        .reserve(&slice_request(10, 9_999))
-        .expect("a draw at a foreign epoch must not fail");
-    assert_eq!(grant.epoch, Epoch(0), "stamped with the shim's epoch");
-    assert_eq!(grant.granted, 10);
-}
-
-/// `release` gives back the unspent part, and an id the shim never granted is accepted rather than
-/// refused.
-#[test]
-fn the_slice_seam_releases_and_forgives_an_unknown_id() {
-    let adapter = adapter_over_published_schema();
-    let grant = adapter.reserve(&slice_request(100, 0)).expect("reserve");
-    adapter.release(grant.id, 40).expect("release");
-    let state = adapter.shim_state();
-    assert_eq!(state.slices_outstanding, 0, "the slice is given back");
-    assert_eq!(state.slices_granted, 60, "the unspent 40 came back");
-    adapter
-        .release(SliceId(u64::MAX), 5)
-        .expect("an id the shim never granted is forgiven, not refused");
-    assert_eq!(
-        adapter.shim_state().slices_granted,
-        60,
-        "and changes nothing"
-    );
 }
 
 /// The sealed cache: a first sighting is `None` and RESERVES the slot, a commit fixes the bytes,

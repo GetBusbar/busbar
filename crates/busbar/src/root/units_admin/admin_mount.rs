@@ -1,6 +1,6 @@
 //! The admin mount: one HTTP surface, one loop, one answer.
 //!
-//! Split out of `units_admin/mod.rs` so that file measures the twelve steps and nothing else.
+//! Split out of `units_admin/mod.rs` so that file measures the steps and nothing else.
 //! A child module, not a sibling: it reads its parent's items directly through `use super::*`,
 //! so nothing had to be re-typed or re-plumbed to move it here.
 
@@ -10,19 +10,13 @@ use super::*;
 
 /// The node an admin request is answered by.
 ///
-/// Everything a request needs and nothing it does not: the kernel that mints its tokens, the units
-/// its steps run against, and the in-flight table its hold lives in. Built once at boot and shared
-/// by every request, which is what makes the counts the canary balances node-wide rather than
-/// per-request.
+/// The kernel that seals its records and the units its steps read. Built once at boot and shared by
+/// every request.
 #[cfg(feature = "root-admin")]
 pub struct AdminNode {
-    // `pub(super)` and no wider: these stay readable to `units_admin` and its test module,
-    // which is exactly who read them when this type lived in that file.
+    // `pub(super)` and no wider: these stay readable to `units_admin` and its test module.
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
-    pub(super) inflight: busbar_kernel::inflight::InFlight,
-    pub(super) gauge: busbar_kernel::slice::ConcurrencyGauge,
-    pub(super) canary: busbar_contract::caps::Canary,
     pub(super) next_key: std::sync::atomic::AtomicU64,
 }
 
@@ -37,143 +31,60 @@ impl AdminNode {
         AdminNode {
             kernel,
             units,
-            // The administrative listener is outside the in-flight cap entirely — the design says
-            // so, and for the reason the exemption exists: the surface an operator reaches to find
-            // out why the node is shedding has to answer while it is shedding. The table is still
-            // real, because a hold still has to live somewhere.
-            inflight: busbar_kernel::inflight::InFlight::new(0),
-            gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_contract::caps::Canary::new(),
             next_key: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
-    /// Draw the key of the next unit this node will walk.
+    /// Draw the key of the next unit this node will answer.
     ///
-    /// Drawn by the caller rather than inside the walk because the key is what names this unit on
-    /// BOTH sides of the walk: the steps read it, and the exit path releases against it whatever the
-    /// unit asked to outlive its response.
+    /// Drawn by the caller rather than inside the answer because the key is what names this unit on
+    /// BOTH sides of it: the steps read it, and the exit path releases against it whatever the unit
+    /// asked to outlive its response.
     pub fn next_unit(&self) -> u64 {
         self.next_key
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Walk one admin request through the loop and answer with what it produced.
-    ///
-    /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used
-    /// to reach its handler directly. What comes back is what the operation's own surface answered:
-    /// this function chooses the PATH, never the bytes.
+    /// Answer one admin request: its steps in order ([`decide`]), its one audit record, and the
+    /// answer the operation's own surface produced — or, for a unit that never reached it, the
+    /// refusal its ending earned. This function chooses the PATH, never the bytes.
     pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        // The key the caller already drew for this request. It is drawn OUTSIDE this walk because
-        // the caller has to name the same unit on the way out — the exit path releases what this
-        // unit asked to outlive its response, and a key invented in here would be a key the exit
-        // path could not name.
         let key = UnitKey::new(request.unit);
-        // The arrival clock, read ONCE and read where the request arrived. Every step that asks what
-        // time it is for this unit — the auth unit's expiry and revocation window, the verbs unit's
-        // rate class, the nonce the one-time secrets bind to — is handed this same number, so a
-        // second reading here would put the in-flight table's idea of when the unit arrived after
-        // the one every other step works from. The gap is small and the disagreement is not: a
-        // credential can expire between two readings, and then the unit is authenticated against one
-        // clock and aged against another.
+        // The arrival clock, read ONCE where the request arrived: every step that asks what time it
+        // is for this unit is handed this same number.
         let arrived_at = request.at;
-        self.units.admin.units.open(key, request);
-        // From here the unit occupies two tables, and every way out of this function gives both
-        // back — including the way a panicking step takes.
-        let occupied = Occupied {
-            inflight: &self.inflight,
-            units: &self.units.admin.units,
-            key,
-        };
-
-        let call = self.kernel.next_call();
-        let arrival = busbar_kernel::inflight::arrival_hold(
-            &self.kernel,
-            &self.units.arrival_door,
-            PrincipalId::new("admin"),
-            call,
-        );
-        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            admin_listener: true,
-            zero_hold_tick: false,
-            arrival,
-            now: arrived_at,
-        });
-
-        let answer = match entered {
-            // The table is uncapped for this listener, so this arm is the table declining for a
-            // reason that is not capacity. It is still an answer rather than a panic.
-            Err(_refused) => unavailable_answer(),
-            Ok(slot) => {
-                let ctx = UnitCtx {
-                    call,
-                    key,
-                    origin: busbar_contract::caps::OriginKind::Client,
-                    session: None,
-                    generation: busbar_kernel::registry::Generation::FIRST,
-                    admin_listener: true,
-                    // An admin unit's whole verified set is a kernel verb, which is what exempts it
-                    // from the concurrency gauge — and what makes the admin API answer at a
-                    // saturated cap.
-                    kernel_verb_only: true,
-                };
-                let meter = busbar_kernel::teller::AccrualMeter::new();
-                let ended = busbar_kernel::teller::run_unit(
-                    &self.kernel,
-                    &self.units,
-                    &ctx,
-                    busbar_kernel::teller::Run {
-                        cell: slot.cell(),
-                        parent: None,
-                        leases: slot.leases(),
-                        gauge: &self.gauge,
-                        canary: &self.canary,
-                        meter: &meter,
-                    },
-                );
-                // The loop ran; the answer is whatever Route put there. A unit refused before Route
-                // has none, and the refusal it ended on is what the surface renders. Read BEFORE
-                // the guard below hands the entry back, because the entry is where the answer is.
-                self.units.admin.units.answer(key).unwrap_or_else(|| {
-                    // The request is read back for the one refusal whose message names a
-                    // property of the endpoint rather than of the ending. It is still open here:
-                    // the guard below is what closes it.
-                    refused_answer(&ended, self.units.admin.units.request(key).as_ref())
-                })
-            }
-        };
-
+        let mut walk = AdminWalk::new(request);
+        let ended = decide(&self.units, &mut walk);
+        let facts = audit(&walk, &ended);
+        let answer = walk
+            .answer
+            .take()
+            .unwrap_or_else(|| refused_answer(ended, &walk.request));
         // THE UNIT'S ONE RECORD (THE DESIGN §1: "The audit step writes one fixed record, for every
         // plane"; U14: one record per unit, and a refused unit gets one too), sealed on the node's
-        // book once the unit's answer is in hand, as a request unit's is beside its line.
-        if let Some(sealing) = self.units.admin.units.take_sealing(key) {
-            self.seal(key, arrived_at, sealing);
-        }
-
-        // The guard closes last, whatever happened — including a step that panicked, which the two
-        // statements this replaces walked straight past. An entry or a slot that outlived its unit
-        // is the leak per request this root may not have.
-        drop(occupied);
+        // book once the unit's answer is in hand.
+        self.seal(key, arrived_at, walk.principal.as_ref(), facts, ended);
         answer
     }
 
     /// Seal admin unit `key`'s record on the node's book: who the auth step resolved (or the
-    /// arrival, for a unit refused before anybody was), the operation class its audit door stated,
-    /// how it ended, and no amount: an admin unit counts nothing.
-    fn seal(&self, key: UnitKey, arrived_at: u64, sealing: AdminSealing) {
+    /// arrival, for a unit refused before anybody was), the operation class its audit stated, how it
+    /// ended, and no amount: an admin unit counts nothing. Its card version and the policy
+    /// generation it ran under are read off one pin of the process's history, at its arrival.
+    fn seal(
+        &self,
+        key: UnitKey,
+        arrived_at: u64,
+        principal: Option<&PrincipalId>,
+        facts: busbar_contract::AuditFacts,
+        ended: Outcome,
+    ) {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
-        let (facts, ended) = (sealing.facts, sealing.ended);
-        let subject = self
-            .units
-            .admin
-            .units
-            .principal(key)
-            .map_or(Subject::Arrival, |p| {
-                Subject::PrincipalId(p.as_str().to_string())
-            });
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        let arrived_ms = arrived_at.saturating_mul(1_000);
+        let subject = principal.map_or(Subject::Arrival, |p| {
+            Subject::PrincipalId(p.as_str().to_string())
+        });
         let inputs = AuditInputs {
             subject,
             what: What {
@@ -204,12 +115,15 @@ impl AdminNode {
                 tier_bp: 10_000,
                 fee_count: 0,
                 rate_card_version: crate::root::plane_node::card_in_force(
-                    crate::root::kernel::ROOT_CARD.pin().as_ref(),
-                    arrived_at.saturating_mul(1_000),
+                    card.as_ref(),
+                    arrived_ms,
                 ),
                 bucket_chain_ref: String::new(),
             },
-            controls: Controls::default(),
+            controls: Controls {
+                policy_epoch: crate::root::plane_node::policy_in_force(card.as_ref(), arrived_ms),
+                ..Controls::default()
+            },
             correlation_label: None,
         };
         let token = self.kernel.durability_token();
@@ -218,7 +132,11 @@ impl AdminNode {
             .durability
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal_unit(inputs, sealing.pass, &token);
+            .seal_unit(
+                inputs,
+                busbar_kernel::teller::verb_audit_pass(&self.kernel),
+                &token,
+            );
         if let Err(lost) = sealed {
             tracing::error!(
                 step = lost.step().as_str(),
@@ -253,32 +171,6 @@ impl Drop for ExitPath {
     }
 }
 
-/// THE TWO TABLES A UNIT OCCUPIES, for the length of one unit.
-///
-/// The in-flight table bounds how many units this node has open and the units table holds the
-/// request its steps read, so both have to come back on every way out of one unit — the answer, and
-/// the one this guard exists for: a step that panics, which takes the rest of the function with it.
-/// A removal and a close written as the last statements of that function come back on the first of
-/// those and not on the second, and what they leave behind is per request and resident for the life
-/// of the node.
-///
-/// Dropped explicitly at the end of the answering path rather than at the closing brace, because
-/// the answer is read OUT of the entry this guard gives back.
-#[cfg(feature = "root-admin")]
-pub(crate) struct Occupied<'n> {
-    inflight: &'n busbar_kernel::inflight::InFlight,
-    units: &'n AdminUnits,
-    key: UnitKey,
-}
-
-#[cfg(feature = "root-admin")]
-impl Drop for Occupied<'_> {
-    fn drop(&mut self) {
-        self.inflight.remove(self.key);
-        let _ = self.units.close(self.key);
-    }
-}
-
 /// What a unit that never reached Route answers with.
 ///
 /// The plane's own error envelope, which is the previous release's: the caller is the same caller
@@ -286,28 +178,20 @@ impl Drop for Occupied<'_> {
 /// them and the loop knows which one this unit earned, so the ending is read rather than replaced
 /// by a single word.
 #[cfg(feature = "root-admin")]
-pub(crate) fn refused_answer(
-    ended: &busbar_kernel::teller::Ended,
-    request: Option<&AdminRequest>,
-) -> AdminAnswer {
-    match ended {
-        busbar_kernel::teller::Ended::Settled { end, .. } => {
-            if is_credential_refusal(end.outcome()) {
-                return door_answer();
-            }
-            if let (true, Some(request)) = (is_scope_refusal(end.outcome()), request) {
-                return scope_answer(request);
-            }
-            if is_rate_refusal(end.outcome()) {
-                return rate_limited_answer();
-            }
-            answer_for(end.outcome())
-        }
-        // The node's own sweep took the hold first, which means this unit is not going to produce an
-        // answer at all. That is the node being unable to serve the request, not the caller being
-        // told no.
-        busbar_kernel::teller::Ended::AlreadySettled => unavailable_answer(),
+pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAnswer {
+    if is_credential_refusal(ended) {
+        return door_answer();
     }
+    if is_scope_refusal(ended) {
+        return scope_answer(request);
+    }
+    if is_rate_refusal(ended) {
+        return rate_limited_answer();
+    }
+    if let Some(explained) = explained_answer(request, ended) {
+        return explained;
+    }
+    answer_for(ended)
 }
 
 /// Whether this ending is one about WHO is calling.
@@ -378,7 +262,7 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 /// rather than from a recording, and the oracle cannot confirm them.
 #[cfg(feature = "root-admin")]
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
     error_answer_with_message(
         403,
         "forbidden",
@@ -486,6 +370,31 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
     }
 }
 
+/// The path of the one verb whose unreadable body is answered with what the body must carry.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_PATH: &str = "/api/v1/admin/ledger/amend-rate-history";
+
+/// What `amend-rate-history` says when it cannot read the correction it was sent (OWNER
+/// 2026-10-27: every refusal explains itself). A bare `invalid_request` told an operator holding
+/// a pre-1.6.0 body nothing about why it was refused.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_SHAPE: &str = "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape";
+
+/// The refusal that names what was wrong, where the answer can say more than its code: an
+/// `amend-rate-history` body the verb could not read. `None` for every other ending.
+#[cfg(feature = "root-admin")]
+pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Option<AdminAnswer> {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    let unreadable = matches!(
+        outcome,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
+            if class_of(reason) == RefusalClass::Unreadable
+    );
+    let path = request.path.split('?').next().unwrap_or("");
+    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+        .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
+}
+
 /// What a node that cannot take the unit at all answers with.
 #[cfg(feature = "root-admin")]
 pub(crate) fn unavailable_answer() -> AdminAnswer {
@@ -511,37 +420,8 @@ pub struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
-/// The node's claim journal (item 271), read by the node's key replay cache ([`CellJournal`]) and set at
-/// most once, right after `AdminNode`'s own `units.admin.claims` is known (see [`mount`]) — before
-/// the router this dispatch drives is reachable by any real request. A `OnceLock` rather than a
-/// plain field because the replay cache is built BEFORE `AdminBinding::claims` is resolved (the
-/// binding is built from the very `dispatch` this type becomes), so there is one moment between
-/// construction and first use where the answer is not yet known — never a moment where it is asked
-/// twice.
-#[cfg(feature = "root-admin")]
-pub(crate) type ClaimJournalCell =
-    std::sync::Arc<std::sync::OnceLock<Option<std::sync::Arc<dyn ClaimJournal>>>>;
-
-#[cfg(feature = "root-admin")]
-use busbar_core_admin::idempotency::ClaimJournal;
 #[cfg(feature = "root-admin")]
 use busbar_core_admin::keys::KeyReplayCache;
-
-/// The node's claim journal as the replay cache sees it: the cell, read at the moment a claim is
-/// taken. The cache is built before the journal is known (see [`ClaimJournalCell`]); every claim it
-/// takes comes from a real request, which cannot arrive until the cell is set, so a claim is never
-/// dropped for a cell that was merely early.
-#[cfg(feature = "root-admin")]
-struct CellJournal(ClaimJournalCell);
-
-#[cfg(feature = "root-admin")]
-impl ClaimJournal for CellJournal {
-    fn journal_claim(&self, key: &(String, String), now: u64) {
-        if let Some(journal) = self.0.get().and_then(Option::as_ref) {
-            journal.journal_claim(key, now);
-        }
-    }
-}
 
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
@@ -761,29 +641,13 @@ pub fn mount(
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
     busbar_core_admin::restart::drain_released_at_exit();
-    // Item 271: the claim journal `build_units` binds onto `units.admin.claims` (root/kernel.rs,
-    // `ProductionUnits::admin_only_sharing`) is not known until `build_units` runs — and
-    // `build_units` needs `dispatch`, which needs the router `RouterDispatch` drives, before either
-    // exists. The cell breaks the cycle: `RouterDispatch` is handed an empty one now and reads it on
-    // every call after, and it is filled exactly once, below, the instant the answer is known — long
-    // before the router this dispatch drives can see a real request.
-    let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
     // THE NODE'S KEY REPLAY CACHE, built here once: this function runs once per process, so the
     // cache lives as long as the node does and a mint's in-flight sentinel outlives every config
-    // reload. Its journal is the cell.
-    let replays = Arc::new(KeyReplayCache::with_journal(Arc::new(CellJournal(
-        Arc::clone(&claims),
-    ))));
+    // reload. What outlives the process is the key's claim in the store.
+    let replays = Arc::new(KeyReplayCache::new());
     let dispatch: Arc<dyn AdminDispatch> =
         Arc::new(RouterDispatch::new(inner.clone(), &runtime, replays));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
-    let _ = claims.set(
-        node.units
-            .admin
-            .claims
-            .clone()
-            .map(|j| j as std::sync::Arc<dyn ClaimJournal>),
-    );
 
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
@@ -887,8 +751,8 @@ pub fn mount(
 /// admin-only composition sharing the node's one `book`, bound to this node's live snapshot
 /// (`app`): the configured pools an `adjust` may
 /// name, the planes and their record sink, the kernel's trust book the three trust verbs read and
-/// decide over (ARCHITECT 2026-10-06, through `late`), the kernel's own breaker (`breaker`), and
-/// the governance directory the authenticate step gates an identification with.
+/// decide over (ARCHITECT 2026-10-06, through `late`), and the governance directory the
+/// authenticate step gates an identification with.
 ///
 /// ONE function, called by the boot path and by a root cell that builds its own admin router, so
 /// the surface a cell drives is the one production serves (ruling (d), coordinator 2026-10-07: the
@@ -900,7 +764,9 @@ pub fn mount(
 /// `set_operator_key` does not exist). Nothing reads it. It stays in the call shape because the
 /// root cells a pinned door plugin carries (its `tests/root/mod.rs`) drive this one function
 /// with it, the way the v3 amendment record keeps its `operator_fingerprint` slot written empty so
-/// no stored shape moves; it leaves with the repin that drops it from that call.
+/// no stored shape moves; it leaves with the repin that drops it from that call. `retired_breaker`
+/// is the same: the admin surface holds no breaker (the walks' breakers are the egresses'), and
+/// nothing reads it.
 #[cfg(feature = "root-admin")]
 pub fn mount_node(
     admin_router: axum::Router,
@@ -909,9 +775,9 @@ pub fn mount_node(
     book: &crate::root::durability::NodeBook,
     retired_operator_key: Option<[u8; 32]>,
     late: &Arc<crate::root::serve::LateServices>,
-    breaker: crate::root::adapters::BreakerPolicy,
+    retired_breaker: crate::root::adapters::BreakerPolicy,
 ) -> axum::Router {
-    let _ = retired_operator_key;
+    let _ = (retired_operator_key, retired_breaker);
     mount(
         admin_router,
         crate::root::kernel::new_kernel(),
@@ -935,18 +801,20 @@ pub fn mount_node(
             units.admin.pools = Arc::new(move |pool: &str| {
                 busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
             });
+            // THE ONE LEDGER (MONEY-DESIGN §3): the ledger views and `adjust` read and correct the
+            // live governance state's usage counts, priced by the card in core.
+            units.admin.ledger = Arc::new(super::CountsLedger::new(Arc::clone(app)));
+            units.admin.adjuster = super::live_adjuster(Arc::clone(app));
             // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
             // live snapshot (Law 7) and write through the configured store's plane-facing seam.
             units.admin.planes = live_planes(Arc::clone(app));
             units.admin.records = Some(live_records(Arc::clone(app)));
+            // An `Idempotency-Key` is claimed in the same configured store.
+            units.admin.replay_store = Some(live_replay_store(Arc::clone(app)));
             // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
             // book — the composed services, reached through the late install.
             let late = Arc::clone(late);
             units.admin.trust = Arc::new(move || late.kernel());
-            // The root breaker is the kernel's own: one cell set on the node, read through the
-            // live snapshot so an apply's rebuilt store is the one it observes into.
-            units.breaker =
-                crate::root::adapters::BreakerAdapter::over_kernel(Arc::clone(app), breaker);
             // THE REVOCATION SET the authenticate step gates an identification with: the same
             // governance state's directory, so the revocation set is the one this node keeps. No
             // governance state is no directory, left as the assembly built it.

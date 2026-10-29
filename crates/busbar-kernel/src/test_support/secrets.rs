@@ -224,7 +224,7 @@ impl SecretAxis for SecretsStandIn {
         &self,
         module: &str,
         _: &serde_json::Value,
-        _: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        _: &dyn Fn(&SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         self.shared(module)
     }

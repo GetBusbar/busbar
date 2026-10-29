@@ -26,9 +26,10 @@ use busbar_contract::abi::plane::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};
 
 use super::HOTPATH_LEVEL;
 
-/// The target every arrival span is recorded under: the kernel's, as the previous release's ingress
-/// entry spans were the binary's own.
-const TARGET: &str = "busbar";
+/// The target every arrival span is recorded under: the previous release's, whose ingress entry
+/// spans were each a `#[tracing::instrument]` in its `ingress` module (v1.5.5 `ingress/mod.rs:788`,
+/// `:1043`, `:1070`, `:1161`, `:1292`), so an exporter states the same `target` (status row 173).
+const TARGET: &str = "busbar::ingress";
 
 /// The most distinct arrival span callsites one process builds. A plane states a handful; a name
 /// past the last site opens no span (and says so once), never an allocation per request.

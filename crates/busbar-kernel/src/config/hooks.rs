@@ -330,7 +330,7 @@ pub fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 /// (not a subset) so that adding a word here fails a test that points back at this comment.
 ///
 /// ONE FROZEN WORD IS NOT HERE: the operator credential's provider, the built-in auth module the
-/// 1.5.3 word space reserves. It is the root legacy table's word, handed in with the linked auth
+/// 1.5.3 word space reserves. It is the root migration table's word, handed in with the linked auth
 /// rows (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2), so the kernel reserves it through
 /// [`is_reserved_hook_name`] without spelling it. Every write path asks that function.
 pub const RESERVED_HOOK_NAMES: &[&str] = &[
@@ -363,7 +363,7 @@ pub fn is_reserved_hook_name(name: &str) -> bool {
 /// Kept as its own constant, rather than derived, so the freeze is a VALUE a test can pin literally:
 /// `hook_name_word_space_is_frozen` asserts both that this equals the runtime union AND that its
 /// contents are exactly these words. The operator credential's provider completes the space; it is
-/// the root legacy table's word, and the root's tests pin the whole space with it.
+/// the root migration table's word, and the root's tests pin the whole space with it.
 // Consumed by the freeze test (`reserved_hook_names_are_frozen`) rather than by runtime code — that
 // is the POINT: it is the declared, reviewable VALUE of the freeze, and the test proves it equals
 // the runtime union.

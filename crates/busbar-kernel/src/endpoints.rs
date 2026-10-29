@@ -258,7 +258,7 @@ fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
 /// Whether any configured non-model plane's generation opened: its runtime slot was built for this
 /// generation and, for a door plane, its open answered ([`crate::plane_driver::door::opened`]).
 fn a_plane_opened(app: &crate::state::App) -> bool {
-    crate::plane::registry::plane_decls()
+    crate::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| !d.fallback && app.plane_configured(d))
         .filter_map(|d| app.plane_slot(d.key))

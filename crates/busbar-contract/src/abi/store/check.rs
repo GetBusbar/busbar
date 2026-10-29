@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE ANSWER VALIDATORS: answer validators live with the shape, for every kind. Each is a PURE function over an op's `out`, the capacities the host
-//! handed in, and the host's own view of what it handed (the cells, the items). It uses `u64`
+//! THE STORE ANSWER VALIDATORS: answer validators live with the shape, for every kind. Each is a
+//! PURE function over an op's `out`, the capacities the host handed in, and the host's own view of
+//! what it handed. It uses `u64`
 //! math, holds no state and dereferences no pointer: a pointer is compared as an address only.
 //! The dispatcher calls it on every answer, whatever its outcome, and any `Err` makes the answer
 //! FAULT. No host re-implements them.
 //!
 //! Each validator decides per outcome which fields matter. The host zeroes the `out` before every
 //! call, so a PENDING or REFUSED answer that states nothing beyond its head passes; the only rules
-//! that bind those outcomes are about them: a `needed_*` on anything but FAILED, and a REFUSED
-//! `window_caps` push naming its first conflicting cap.
+//! that binds those outcomes is about them: a `needed_*` on anything but FAILED.
 
-use super::ledger::HeadOut;
-use super::ledger::{HostRecords, HostSessions, RecordEntry, SessionRow, StreamHead};
-use super::money::{
-    CellGrant, ReleaseItem, ReserveOut, SliceReleaseOut, UnitCell, RESERVE_NO_CAP,
-    RESERVE_NO_FAILED_CELL, RESERVE_OK,
-};
+use super::ledger::{HostRecords, RecordEntry};
+use super::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use super::{
     CountOut, HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
     VerdictOut, ABSENT, CANCEL_APPLIED, FOUND, VERDICT_YES,
@@ -38,76 +34,8 @@ pub const NEEDED_BYTES_HARD_MAX: u64 = u32::MAX as u64;
 
 // WHY AN ANSWER IS FAULT: the shared `Fault`, one `Rule` and one distinct `store.<op>.<arm>` field per arm
 // (the design: every answer validator gives a distinct message per arm). `ALL` lists every one so a test can hold them distinct.
-/// A reserve of more cells than `failed_cell` can index (S6).
-pub const RESERVE_CELLS_OVER_MAX: Fault = fault(Rule::OverCap, "store.reserve.cells_over_max");
-/// A READY reserve that states a reason.
-pub const RESERVE_READY_REASON: Fault = fault(Rule::UnknownCode, "store.reserve.ready_reason");
-/// A READY reserve that names a failed cell.
-pub const RESERVE_READY_FAILED_CELL: Fault =
-    fault(Rule::IndexOutOfRange, "store.reserve.ready_failed_cell");
-/// A READY reserve with `grants_len` above the grants capacity.
-pub const RESERVE_GRANTS_OVER_CAP: Fault = fault(Rule::OverCap, "store.reserve.grants_over_cap");
-/// A READY reserve without exactly one grant per cell.
-pub const RESERVE_GRANTS_MISMATCH: Fault =
-    fault(Rule::Contradiction, "store.reserve.grants_mismatch");
-/// A READY grant other than the cell's whole `amount`: `0`, partial, or above it (a cell is granted whole or not at all).
-pub const RESERVE_GRANT_NOT_WHOLE: Fault =
-    fault(Rule::Contradiction, "store.reserve.grant_not_whole");
-/// A FAILED reserve that wrote grants.
-pub const RESERVE_FAILED_GRANTS_WRITTEN: Fault =
-    fault(Rule::WrittenOnShort, "store.reserve.failed_grants_written");
-/// A short-buffer reserve answer that states a reason.
-pub const RESERVE_SHORT_REASON: Fault = fault(Rule::UnknownCode, "store.reserve.short_reason");
-/// A short-buffer reserve answer that names a failed cell.
-pub const RESERVE_SHORT_FAILED_CELL: Fault =
-    fault(Rule::IndexOutOfRange, "store.reserve.short_failed_cell");
-/// A reserve `needed_grants` above the most cells a reserve holds.
-pub const RESERVE_NEEDED_TOO_LARGE: Fault = fault(Rule::OverMax, "store.reserve.needed_too_large");
-/// A reserve `needed_grants` the grants capacity already covers.
-pub const RESERVE_NEEDED_WITHIN_CAP: Fault =
-    fault(Rule::WastedRecall, "store.reserve.needed_within_cap");
-/// A short-buffer reserve answer needing other than one grant per cell.
-pub const RESERVE_NEEDED_MISMATCH: Fault =
-    fault(Rule::Contradiction, "store.reserve.needed_mismatch");
-/// A FAILED reserve whose reason is `OK` or past the vocabulary.
-pub const RESERVE_FAILED_REASON: Fault = fault(Rule::UnknownCode, "store.reserve.failed_reason");
-/// A FAILED reserve whose `failed_cell` names no cell.
-pub const RESERVE_FAILED_CELL: Fault = fault(Rule::IndexOutOfRange, "store.reserve.failed_cell");
-/// A READY slice release with `released_len` above the capacity.
-pub const SLICE_RELEASED_OVER_CAP: Fault =
-    fault(Rule::OverCap, "store.slice_release.released_over_cap");
-/// A READY slice release without exactly one amount per item.
-pub const SLICE_RELEASED_MISMATCH: Fault =
-    fault(Rule::Contradiction, "store.slice_release.released_mismatch");
-/// A release above the item's `unspent` (the store clamps; it never returns more).
-pub const SLICE_RELEASE_OVER_UNSPENT: Fault = fault(
-    Rule::Contradiction,
-    "store.slice_release.release_over_unspent",
-);
-/// A FAILED slice release that wrote amounts.
-pub const SLICE_FAILED_WRITTEN: Fault =
-    fault(Rule::WrittenOnShort, "store.slice_release.failed_written");
-/// A slice release `needed_released` above the list maximum.
-pub const SLICE_NEEDED_TOO_LARGE: Fault =
-    fault(Rule::OverMax, "store.slice_release.needed_too_large");
-/// A slice release `needed_released` the capacity already covers.
-pub const SLICE_NEEDED_WITHIN_CAP: Fault =
-    fault(Rule::WastedRecall, "store.slice_release.needed_within_cap");
-/// A short slice release needing other than one amount per item.
-pub const SLICE_NEEDED_MISMATCH: Fault =
-    fault(Rule::Contradiction, "store.slice_release.needed_mismatch");
 /// A non-zero `needed_*` with an outcome other than FAILED (M-SB, on [`OutHead`](crate::abi::mechanism::call::OutHead)). Every op shares this one arm: it is one check.
 pub const NEEDED_NOT_FAILED: Fault = fault(Rule::NeededNotFailed, "store.needed_not_failed");
-/// A `window_caps` push of more caps than the list maximum.
-pub const WINDOW_CAPS_OVER_MAX: Fault = fault(Rule::OverCap, "store.window_caps.caps_over_max");
-/// A REFUSED `window_caps` with no `error` text.
-pub const WINDOW_ERROR_MISSING: Fault = fault(Rule::Missing, "store.window_caps.error_missing");
-/// A REFUSED `window_caps` whose `error` does not begin with a cap index.
-pub const WINDOW_ERROR_INDEX_MISSING: Fault =
-    fault(Rule::Missing, "store.window_caps.error_index_missing");
-/// A REFUSED `window_caps` naming a cap index outside the push.
-pub const WINDOW_ERROR_INDEX_OVER: Fault =
-    fault(Rule::OverCap, "store.window_caps.error_index_over");
 /// A single-value read whose `found` is neither FOUND nor ABSENT.
 pub const BYTES_FOUND: Fault = fault(Rule::UnknownCode, "store.bytes.found");
 /// A single-value read that wrote above the capacity or the value ceiling.
@@ -165,39 +93,14 @@ pub const LEASED_BLOB_FOUND: Fault = fault(Rule::UnknownCode, "store.leased_blob
 pub const VERDICT_VOCABULARY: Fault = fault(Rule::UnknownCode, "store.verdict.verdict");
 /// A FAILED purge that states a removed count.
 pub const COUNT_FAILED_WRITTEN: Fault = fault(Rule::WrittenOnShort, "store.count.failed_written");
-/// A FAILED `append_batch` that states a stream head.
-pub const APPEND_FAILED_HEAD: Fault = fault(Rule::WrittenOnShort, "store.append_batch.failed_head");
 /// A `cancel` disposition past APPLIED.
 pub const CANCEL_DISPOSITION: Fault = fault(Rule::UnknownCode, "store.cancel.disposition");
+/// A purge `in` whose `retention` names no rule.
+pub const KIND_BEFORE_RETENTION: Fault = fault(Rule::UnknownCode, "store.kind_before.retention");
 
 /// Every fault this module can answer with.
 pub const ALL: &[Fault] = &[
-    RESERVE_CELLS_OVER_MAX,
-    RESERVE_READY_REASON,
-    RESERVE_READY_FAILED_CELL,
-    RESERVE_GRANTS_OVER_CAP,
-    RESERVE_GRANTS_MISMATCH,
-    RESERVE_GRANT_NOT_WHOLE,
-    RESERVE_FAILED_GRANTS_WRITTEN,
-    RESERVE_SHORT_REASON,
-    RESERVE_SHORT_FAILED_CELL,
-    RESERVE_NEEDED_TOO_LARGE,
-    RESERVE_NEEDED_WITHIN_CAP,
-    RESERVE_NEEDED_MISMATCH,
-    RESERVE_FAILED_REASON,
-    RESERVE_FAILED_CELL,
-    SLICE_RELEASED_OVER_CAP,
-    SLICE_RELEASED_MISMATCH,
-    SLICE_RELEASE_OVER_UNSPENT,
-    SLICE_FAILED_WRITTEN,
-    SLICE_NEEDED_TOO_LARGE,
-    SLICE_NEEDED_WITHIN_CAP,
-    SLICE_NEEDED_MISMATCH,
     NEEDED_NOT_FAILED,
-    WINDOW_CAPS_OVER_MAX,
-    WINDOW_ERROR_MISSING,
-    WINDOW_ERROR_INDEX_MISSING,
-    WINDOW_ERROR_INDEX_OVER,
     BYTES_FOUND,
     BYTES_WRITTEN_OVER_CAP,
     BYTES_ABSENT_WRITTEN,
@@ -225,136 +128,12 @@ pub const ALL: &[Fault] = &[
     LEASED_BLOB_FOUND,
     VERDICT_VOCABULARY,
     COUNT_FAILED_WRITTEN,
-    APPEND_FAILED_HEAD,
     CANCEL_DISPOSITION,
+    KIND_BEFORE_RETENTION,
 ];
 
 fn u(n: usize) -> u64 {
     n as u64
-}
-
-/// S6: `failed_cell` indexes a cell or is `u32::MAX`, so a reserve holds at most `u32::MAX - 1`
-/// cells.
-pub fn check_cells_len(cells_len: u64) -> Result<(), Fault> {
-    if cells_len > u64::from(u32::MAX - 1) {
-        return Err(RESERVE_CELLS_OVER_MAX);
-    }
-    Ok(())
-}
-
-/// `reserve`'s answer: whole grants on READY, a reason and an optional `failed_cell` on FAILED,
-/// or the short-buffer answer. `cells` are the cells the host sent, `grants_cap` its array's capacity, and
-/// `grants` the first `min(grants_len, grants_cap)` entries of that array.
-pub fn check_reserve(
-    outcome: Outcome,
-    out: &ReserveOut,
-    cells: &[UnitCell],
-    grants_cap: u64,
-    grants: &[CellGrant],
-) -> Result<(), Fault> {
-    let cells_len = u(cells.len());
-    check_cells_len(cells_len)?;
-    needed_only_on_failed(outcome, out.needed_grants != 0)?;
-    match outcome {
-        Outcome::Ready => {
-            if out.reason != RESERVE_OK {
-                return Err(RESERVE_READY_REASON);
-            }
-            if out.failed_cell != RESERVE_NO_FAILED_CELL {
-                return Err(RESERVE_READY_FAILED_CELL);
-            }
-            if u(out.grants_len) > grants_cap {
-                return Err(RESERVE_GRANTS_OVER_CAP);
-            }
-            if u(out.grants_len) != cells_len || u(grants.len()) != cells_len {
-                return Err(RESERVE_GRANTS_MISMATCH);
-            }
-            for (cell, grant) in cells.iter().zip(grants) {
-                // S5: 1.5.5 is whole-or-nothing, so a READY grant is the cell's whole amount.
-                if grant.granted != cell.amount {
-                    return Err(RESERVE_GRANT_NOT_WHOLE);
-                }
-            }
-            Ok(())
-        }
-        Outcome::Failed => {
-            if out.grants_len != 0 {
-                return Err(RESERVE_FAILED_GRANTS_WRITTEN);
-            }
-            if out.needed_grants != 0 {
-                // The short-buffer answer (M-SB): no reason, no cell, one grant per cell needed.
-                if out.reason != RESERVE_OK {
-                    return Err(RESERVE_SHORT_REASON);
-                }
-                if out.failed_cell != RESERVE_NO_FAILED_CELL {
-                    return Err(RESERVE_SHORT_FAILED_CELL);
-                }
-                short(
-                    out.needed_grants,
-                    grants_cap,
-                    u64::from(u32::MAX - 1),
-                    (RESERVE_NEEDED_TOO_LARGE, RESERVE_NEEDED_WITHIN_CAP),
-                )?;
-                if out.needed_grants != cells_len {
-                    return Err(RESERVE_NEEDED_MISMATCH);
-                }
-                return Ok(());
-            }
-            if out.reason == RESERVE_OK || out.reason > RESERVE_NO_CAP {
-                return Err(RESERVE_FAILED_REASON);
-            }
-            if out.failed_cell != RESERVE_NO_FAILED_CELL && u64::from(out.failed_cell) >= cells_len
-            {
-                return Err(RESERVE_FAILED_CELL);
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-/// `slice_release`'s answer: clamped, never more than granted. `items` are the items the host sent, `released_cap` its array's capacity,
-/// and `released` the first `min(released_len, released_cap)` entries of that array.
-pub fn check_slice_release(
-    outcome: Outcome,
-    out: &SliceReleaseOut,
-    items: &[ReleaseItem],
-    released_cap: u64,
-    released: &[u64],
-) -> Result<(), Fault> {
-    needed_only_on_failed(outcome, out.needed_released != 0)?;
-    match outcome {
-        Outcome::Ready => {
-            if u(out.released_len) > released_cap {
-                return Err(SLICE_RELEASED_OVER_CAP);
-            }
-            if u(out.released_len) != u(items.len()) || released.len() != items.len() {
-                return Err(SLICE_RELEASED_MISMATCH);
-            }
-            if items.iter().zip(released).any(|(i, r)| *r > i.unspent) {
-                return Err(SLICE_RELEASE_OVER_UNSPENT);
-            }
-            Ok(())
-        }
-        Outcome::Failed => {
-            if out.released_len != 0 {
-                return Err(SLICE_FAILED_WRITTEN);
-            }
-            if out.needed_released != 0 {
-                short(
-                    out.needed_released,
-                    released_cap,
-                    LIST_ITEMS_HARD_MAX,
-                    (SLICE_NEEDED_TOO_LARGE, SLICE_NEEDED_WITHIN_CAP),
-                )?;
-                if out.needed_released != u(items.len()) {
-                    return Err(SLICE_NEEDED_MISMATCH);
-                }
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
 }
 
 /// M-SB: a non-zero `needed_*` with any outcome other than FAILED is FAULT.
@@ -365,45 +144,10 @@ fn needed_only_on_failed(outcome: Outcome, any_needed: bool) -> Result<(), Fault
     Ok(())
 }
 
-/// `window_caps`' answer: the push is atomic, so READY and FAILED carry nothing beyond the count
-/// check; a REFUSED push names the first conflicting cap. `caps_len`
-/// is how many caps the host pushed, and `error` the bytes of `out.error` as the host copied them
-/// (`None` when the plugin left it absent). A REFUSED `error` must BEGIN with the decimal index of
-/// a cap in the push, or with [`super::DIAG_OPID_CONFLICT`] (the push's `op_id` was used before).
-pub fn check_window_caps(
-    outcome: Outcome,
-    caps_len: u64,
-    error: Option<&[u8]>,
-) -> Result<(), Fault> {
-    if caps_len > LIST_ITEMS_HARD_MAX {
-        return Err(WINDOW_CAPS_OVER_MAX);
-    }
-    if outcome != Outcome::Refused {
-        return Ok(());
-    }
-    let text = error.ok_or(WINDOW_ERROR_MISSING)?;
-    // An `op_id` replayed with a different push is REFUSED as every store op's is (DEDUPE): its
-    // text names the conflict, not a cap.
-    if text.starts_with(super::DIAG_OPID_CONFLICT.as_bytes()) {
-        return Ok(());
-    }
-    let digits = text.iter().take_while(|b| b.is_ascii_digit()).count();
-    if digits == 0 || digits > 10 {
-        return Err(WINDOW_ERROR_INDEX_MISSING);
-    }
-    let index = text[..digits]
-        .iter()
-        .fold(0u64, |n, d| n * 10 + u64::from(d - b'0'));
-    if index >= caps_len {
-        return Err(WINDOW_ERROR_INDEX_OVER);
-    }
-    Ok(())
-}
-
 /// A short FAILED's `needed_*`: within the hard maxima, and `0` or above the capacity given. `faults` is
 /// the caller's own `(too large, within capacity)` pair.
 /// NOT `mechanism::check::result`: a store FAILED writes nothing even when not short, which the
-/// shared rule allows, and that stricter rule guards `reserve`/`slice_release` (ARCHITECT 2026-09-30).
+/// shared rule allows.
 fn short(needed: u64, cap: u64, hard: u64, faults: (Fault, Fault)) -> Result<(), Fault> {
     let (too_large, within_cap) = faults;
     if needed > hard {
@@ -564,24 +308,6 @@ pub fn check_list_plane_records(
     check_list(outcome, out, bufs, items.len(), spans)
 }
 
-/// `sessions_for`'s answer. `host` is the [`HostSessions`] the host handed in, `rows` the first
-/// `min(items_written, items_cap)` rows of its array.
-pub fn check_sessions_for(
-    outcome: Outcome,
-    out: &HostListOut,
-    host: &HostSessions,
-    rows: &[SessionRow],
-) -> Result<(), Fault> {
-    let bufs = ListBufs {
-        items_null: host.items.is_null(),
-        items_cap: u(host.items_cap),
-        bytes_base: host.bytes.ptr as usize as u64,
-        bytes_cap: u(host.bytes.cap),
-    };
-    let spans = rows.iter().map(|r| (r.node.ptr as usize, u(r.node.len)));
-    check_list(outcome, out, bufs, rows.len(), spans)
-}
-
 /// `record_scan`'s answer. `host` is the [`HostRecords`] the host handed in, `entries` the first
 /// `min(items_written, items_cap)` entries of its array, `limit` the scan's own limit (READY with
 /// more than `limit` entries is FAULT; `limit` 0 means nothing).
@@ -641,7 +367,7 @@ fn leased_count(null: bool, len: usize, seen: usize) -> Result<(), Fault> {
     Ok(())
 }
 
-/// An off-path single record under a lease (`get_key`, `get_usage`, `lookup_credential_secret`).
+/// An off-path single record under a lease (`get_key`, `get_usage`).
 pub fn check_leased_blob(outcome: Outcome, out: &LeasedBlobOut) -> Result<(), Fault> {
     if outcome != Outcome::Ready {
         return Ok(());
@@ -689,21 +415,6 @@ pub fn check_leased_strs(
     items.iter().try_for_each(|s| owned(s.ptr.is_null(), s.len))
 }
 
-/// `heads`' answer under a lease.
-pub fn check_heads(
-    outcome: Outcome,
-    out: &super::ledger::HeadsOut,
-    items: &[StreamHead],
-) -> Result<(), Fault> {
-    if outcome != Outcome::Ready {
-        return Ok(());
-    }
-    leased_count(out.items.is_null(), out.items_len, items.len())?;
-    items
-        .iter()
-        .try_for_each(|h| owned(h.stream.ptr.is_null(), h.stream.len))
-}
-
 /// `redeem_plane_token`'s and `plane_token_live`'s answer: YES or NO only.
 pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
     if outcome == Outcome::Ready && out.verdict > VERDICT_YES {
@@ -712,8 +423,7 @@ pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
     Ok(())
 }
 
-/// A purge's answer (`purge_windows_before`, `purge_metering_before`,
-/// `purge_plane_records_before`): the rows removed. The host reads `count` on READY only, where
+/// A purge's answer (`purge_plane_records_before`): the rows removed. The host reads `count` on READY only, where
 /// any value is the store's to state (the host sizes no buffer for it, so there is no cap); a
 /// FAILED purge removed nothing, so a count on FAILED is FAULT. PENDING and REFUSED state nothing.
 pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
@@ -723,13 +433,12 @@ pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
     Ok(())
 }
 
-/// `append_batch`'s answer: where the stream has reached. The host reads `seq` and `epoch` on
-/// READY only, the store's own position (no host-side bound); a FAILED append is not the shipping
-/// ack and states no head, so a `seq` or `epoch` on FAILED is FAULT. PENDING and REFUSED state
-/// nothing.
-pub fn check_append_batch(outcome: Outcome, out: &HeadOut) -> Result<(), Fault> {
-    if outcome == Outcome::Failed && (out.seq != 0 || out.epoch != 0) {
-        return Err(APPEND_FAILED_HEAD);
+/// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`] or
+/// [`RETENTION_TERMINAL_ONLY`]. The host writes only those; a store refuses any other code rather
+/// than guess which rows it may drop.
+pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {
+    if input.retention != RETENTION_AGE && input.retention != RETENTION_TERMINAL_ONLY {
+        return Err(KIND_BEFORE_RETENTION);
     }
     Ok(())
 }

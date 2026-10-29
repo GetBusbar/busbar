@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DEPLOYMENT KEYSET: where the one ed25519 key that signs the audit chain AND the ledger's
-//! checkpoints comes from (spec #82(a); OWNER Q71(3) one keyset; BUSBAR-1.6.0.md THE DESIGN, §2 and PB-13;
+//! THE DEPLOYMENT KEYSET: where the one ed25519 key that signs the audit chain comes from (spec
+//! #82(a); OWNER Q71(3) one keyset; BUSBAR-1.6.0.md THE DESIGN, §2 and PB-13;
 //! architect ruling 2026-09-26 "#82(a) key source", flagged to the owner as Q78).
 //!
 //! ## The rule, as ruled
@@ -45,7 +45,7 @@ pub const KEYSET_FILE: &str = "deployment-keyset";
 #[must_use]
 pub fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
     let raw = hex::decode(key.public_key_hex()).unwrap_or_default();
-    busbar_kernel_ledger::digest::sha256(&raw)
+    busbar_contract::abi::sdk::digest::sha256(&raw)
 }
 
 /// [`fingerprint_of`] a signing key's public half.
@@ -228,10 +228,9 @@ fn sign_with(durability: &mut Durability, key: AuditSigningKey) {
     durability.record = std::mem::take(&mut durability.record).signing_with(key);
 }
 
-/// BIND THE DEPLOYMENT KEYSET to this node's audit chain, so every record it seals and every
-/// checkpoint the ledger seals from here on is signed with it (#82(a): at seal time, in-process).
+/// BIND THE DEPLOYMENT KEYSET to this node's audit chain, so every record it seals from here on is
+/// signed with it (#82(a): at seal time, in-process).
 ///
-/// Called by the boot BEFORE the opening is sealed, so the migration's checkpoint 0 is signed too.
 /// `data_dir` is the directory the journal was opened in, or `None` for a memory-buffered node.
 ///
 /// # Errors

@@ -42,8 +42,6 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const SCOPE: &str = "read";
 const CLIENT_ID: &str = "flow-test-client";
 
-// ── the cookie jar ───────────────────────────────────────────────────────────────────────────────
-
 /// One stored cookie: the three attributes that decide whether it is sent, and the value.
 #[derive(Clone, Debug)]
 struct Cookie {
@@ -159,8 +157,6 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
     cookie_path.ends_with('/') || request_path[cookie_path.len()..].starts_with('/')
 }
 
-// ── the wire ─────────────────────────────────────────────────────────────────────────────────────
-
 /// One request through the jar: cookies in, `Set-Cookie`s out, redirects NOT followed.
 ///
 /// Redirects are followed by hand below so every hop's status, `Location` and cookie header can be
@@ -232,8 +228,6 @@ pub(crate) fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> St
     }
 }
 
-// ── the fixture ──────────────────────────────────────────────────────────────────────────────────
-
 /// A served deployment: an authorization server on a real socket, with one registered client and an
 /// OPEN admin posture so the consent screen is reachable without a credential.
 ///
@@ -298,8 +292,6 @@ async fn serve_with_admin_chain(
     });
     (origin, app)
 }
-
-// ── the tests ────────────────────────────────────────────────────────────────────────────────────
 
 /// THE JAR'S OWN PROOF, and the reason the test below means anything.
 ///
@@ -604,8 +596,8 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     );
 }
 
-/// THE APPROVAL IS SPENT UNDER THE REQUEST IT WAS GIVEN FOR, whatever the scope text says (Q128
-/// core-oauth2). The screen used to stake the raw `scope` text while `/authorize` spent under
+/// THE APPROVAL IS SPENT UNDER THE REQUEST IT WAS GIVEN FOR, whatever the scope text says.
+/// The screen used to stake the raw `scope` text while `/authorize` spent under
 /// `oauth-as`'s normalised set (sorted, deduplicated, the registered default when absent), so a
 /// request naming two scopes out of order, a scope twice, or no scope at all was sent back to the
 /// consent screen forever. Each request here must reach a code on its first approval.
@@ -686,8 +678,6 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
     }
 }
 
-// ── what the consent screen says it is asking for ───────────────────────────────────────────────
-//
 // A request that names no scope is granted the client's registered default (RFC 6749 §3.3). The
 // screen is where the operator decides, so it must name THAT scope: the one the token will carry.
 
@@ -853,9 +843,7 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
     assert_eq!(shown, "no scopes", "and the screen says so");
 }
 
-// ── all three registration mechanisms, end to end ───────────────────────────────────────────────
-//
-// The ruling this plane ships under is ALL THREE ON, NO TOGGLES, and a mounted endpoint is not an
+// This plane ships with ALL THREE ON, NO TOGGLES, and a mounted endpoint is not an
 // admitted client. So each mechanism is driven over the same real socket to the same end state — an
 // access token the server introspects for that client — with the flow itself shared, because three
 // hand-rolled copies of the hops would let one mechanism's proof drift from another's.
@@ -1149,8 +1137,6 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8(out).expect("the server produced UTF-8")
 }
 
-// ── the consent screen itself ────────────────────────────────────────────────────────────────────
-//
 // The flow tests above prove the screen is REACHABLE and that approving it mints a code. These two
 // prove what it SAYS and who it says it to, which is a different claim and the one the screen exists
 // for: it is this plane's only anti-phishing control, and a screen that renders for anyone or that

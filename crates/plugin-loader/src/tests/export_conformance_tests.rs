@@ -486,8 +486,8 @@ impl Conns for Far {
                 "head_target": String::from_utf8_lossy(desc.head_target),
                 "fields": fields,
                 // Text as text; any other body (the collector's protobuf) as hex.
-                "body": std::str::from_utf8(desc.body)
-                    .map_or_else(|_| hex::encode(desc.body), str::to_owned),
+                "body": std::str::from_utf8(&desc.body)
+                    .map_or_else(|_| hex::encode(&desc.body), str::to_owned),
             }));
         Ok(id)
     }
@@ -2086,4 +2086,36 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         "{linked}"
     );
     assert_eq!(linked, dropped, "both doors carry the same request");
+}
+
+/// THE OPERATOR'S `keep` OUTRANKS THE MANIFEST'S (owner signed 2026-10-27, "Keep N, default 9"):
+/// the file sink's manifest declares no `keep` (the host's default, 1.5.5's truncation), and the
+/// operator's `keep: 2` beside `path` has the host rotate the file by rename, keeping its archive.
+/// RED before the host read the operator's key: the file was truncated and no archive kept.
+#[test]
+fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
+    let dir = scratch("keep-setting");
+    let path = dir.join("requests.jsonl");
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            stating(manifest("keep-fixture", file_declares()), FILE_DOOR),
+            FILE_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    let mut settings = file_settings(&path);
+    settings["keep"] = serde_json::json!(2);
+    let sink = ExportRows::new(&registry, dispatcher())
+        .open("keep-fixture", "export.tail", &settings)
+        .expect("opens");
+    for n in 1..=4 {
+        deliver(sink.as_ref(), &line(n, 600_000));
+    }
+    until("the four lines landed", || ns(&path) == Some(vec![3, 4]));
+    drop(sink);
+    assert_eq!(
+        ns_settled(&archive(&path, 1)),
+        Some(vec![1, 2]),
+        "the rotated lines are kept in the first archive"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

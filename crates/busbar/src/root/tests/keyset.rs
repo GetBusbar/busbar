@@ -6,8 +6,8 @@
 //! refusal in its exact words.
 
 use super::*;
-use crate::root::durability::{build_priced, keyset_of, DurabilityConfig, KeySetVerifier, Scratch};
-use busbar_kernel_ledger::legacy::RecordingRows;
+use crate::root::durability::{build_with_cards, keyset_of, DurabilityConfig, Scratch};
+use busbar_kernel_audit::{AuditChain, AuditRecord};
 use busbar_kernel_wal::NullShipper;
 
 const NOW: u64 = 1_700_000_000;
@@ -17,14 +17,13 @@ fn token() -> Grant<DurableWrite> {
 }
 
 fn node(data_dir: Option<&Path>) -> Durability {
-    build_priced(
+    build_with_cards(
         &DurabilityConfig {
             data_dir: data_dir.map(Path::to_path_buf),
         },
         0,
         Box::new(NullShipper::new()),
-        Box::new(RecordingRows::new()),
-        Box::new(|| None),
+        None,
     )
     .expect("the book opens")
 }
@@ -36,17 +35,71 @@ fn boot(dir: &Path) -> (Durability, Result<KeysetSource, KeysetError>) {
     (durability, bound)
 }
 
-/// A fixed checkpoint seal, signed by the chain when it has a key.
-fn seal(durability: &mut Durability) -> busbar_kernel_ledger::checkpoint::Checkpoint {
+/// One unit's audit record, sealed on the chain: signed when the chain has a key.
+fn seal(durability: &mut Durability) -> AuditRecord {
+    use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
+    use busbar_kernel_audit::{
+        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
+    };
+    let inputs = AuditInputs {
+        subject: Subject::PrincipalId("pseudonym-1".to_string()),
+        what: What {
+            unit_key: UnitKey::new(1),
+            incarnation: 0,
+            op_class: OpClassId::new("chat.completion"),
+            destination: None,
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: NOW + 1,
+        mono: 1,
+        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+        outcome: OutcomeFacts {
+            unit_end: Outcome::Completed,
+            step: None,
+            finish: FinishClass::Complete,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        usage: Usage {
+            lines: Vec::new(),
+            tier_bp: 10_000,
+            fee_count: 0,
+            rate_card_version: 1,
+            bucket_chain_ref: String::new(),
+        },
+        controls: Controls::default(),
+        correlation_label: None,
+    };
     durability
-        .seal_checkpoint(&token(), StepName::Meter, NOW + 1)
-        .expect("the node seals")
+        .seal_unit(
+            inputs,
+            busbar_kernel::test_support::tokens::pass(),
+            &token(),
+        )
+        .expect("the node seals");
+    durability
+        .audit_records
+        .last()
+        .cloned()
+        .expect("the record is cached")
+}
+
+/// Whether `keys` vouches for `record`'s signature.
+fn verifies(record: &AuditRecord, keys: &busbar_kernel_audit::AuditKeySet) -> bool {
+    record
+        .key_id
+        .as_deref()
+        .and_then(|id| keys.get(id))
+        .is_some_and(|key| AuditChain::verify_signature(record, key).is_ok())
 }
 
 /// AN EPHEMERAL NODE VERIFIES ITS OWN BOOT'S SIGNATURES (PB-13): no data directory, a key minted
-/// for this process, the chain and the checkpoints signed with it, and the node's own keyset
-/// verifies both. RED arm: a second ephemeral boot mints a DIFFERENT key, and the first boot's seal
-/// does not verify against it — nothing survives the process, which is what ephemeral means.
+/// for this process, the chain's records signed with it, and the node's own keyset verifies them.
+/// RED arm: a second ephemeral boot mints a DIFFERENT key, and the first boot's record does not
+/// verify against it — nothing survives the process, which is what ephemeral means.
 #[test]
 fn an_ephemeral_node_verifies_its_own_boots_signatures() {
     let mut first = node(None);
@@ -63,11 +116,12 @@ fn an_ephemeral_node_verifies_its_own_boots_signatures() {
         .signing_key_id()
         .expect("the chain now signs")
         .to_string();
-    let checkpoint = seal(&mut first);
-    assert!(checkpoint.signature.is_some(), "the checkpoint is signed");
-    checkpoint
-        .verify_seal(&KeySetVerifier::new(keyset_of(&first.record)))
-        .expect("the node's own keyset verifies its own boot's seal");
+    let record = seal(&mut first);
+    assert!(record.signature.is_some(), "the record is signed");
+    assert!(
+        verifies(&record, &keyset_of(&first.record)),
+        "the node's own keyset verifies its own boot's record"
+    );
 
     let mut second = node(None);
     bind_ephemeral(&mut second).expect("an ephemeral keyset mints");
@@ -76,13 +130,9 @@ fn an_ephemeral_node_verifies_its_own_boots_signatures() {
         Some(key_id.as_str()),
         "every ephemeral boot mints its own key"
     );
-    assert_eq!(
-        checkpoint
-            .verify_seal(&KeySetVerifier::new(keyset_of(&second.record)))
-            .expect_err("another boot's keyset cannot vouch for this seal")
-            .to_string(),
-        "checkpoint 1's signature does not verify against the keyset: the signature does not \
-         verify against this key"
+    assert!(
+        !verifies(&record, &keyset_of(&second.record)),
+        "another boot's keyset cannot vouch for this record"
     );
 }
 

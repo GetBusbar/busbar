@@ -10,13 +10,13 @@
 //! field and the transport adds `host` after it, the bytes 1.5.5's `Client::new().get()` sent
 //! (oracle cell `egress.fetch|plugins|url`).
 //!
-//! THE URL IS THE OPERATOR'S OWN DESTINATION: every download declares its need pinned to the URL
-//! it fetches, in the egress default class, so the one guard judges its address as operator
-//! infrastructure (`crate::guard::judged_class`; THE DESIGN §5 egress-class table, Q128 ruling 14):
-//! a loopback or private registry, plaintext included, is reached as 1.5.5's downloader reached it,
-//! cloud metadata and the operator's extra refusals are refused, and the dial is held to the URL's
-//! host. The provider class's refuse-unless-allowlisted default is a
-//! provider's and an IdP's, never the download's.
+//! THE URL IS THE OPERATOR'S OWN DESTINATION: every download declares its need pinned to the URL it
+//! fetches, in the egress default class, so the one guard judges its address as operator
+//! infrastructure (`crate::guard::judged_class`; THE DESIGN §5 egress-class table): a loopback or
+//! private registry, plaintext included, is reached as 1.5.5's downloader reached it, cloud
+//! metadata and the operator's extra refusals are refused, and the dial is held to the URL's host.
+//! The provider class's refuse-unless-allowlisted default is a provider's and an IdP's, never the
+//! download's.
 //!
 //! The download's own rules are the kernel's deleted `preflight::plugin_fetch_downloader`'s,
 //! verbatim: the pre-check before any dial and the verdict on the answer's status are the kernel's
@@ -196,7 +196,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
                 }
                 // A declared Content-Length over the cap is rejected BEFORE reading a single body
                 // byte; a dishonest or absent header falls through to the counted cap below. The
-                // length is the head piece's `declared_len`, as the framer stated it (#1032): the
+                // length is the head piece's `declared_len`, as the framer stated it: the
                 // field block never carries the wire's `content-length` (`abi::transport::fields`).
                 if let Some(len) = piece.declared_len {
                     let over = match usize::try_from(len) {

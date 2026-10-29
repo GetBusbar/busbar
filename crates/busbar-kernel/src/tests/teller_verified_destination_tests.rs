@@ -23,7 +23,7 @@ use busbar_contract::caps::{
 
 use crate::registry::Generation;
 use crate::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
-use crate::teller::{run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx, Units};
+use crate::teller::{run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx};
 
 fn principal() -> PrincipalId {
     PrincipalId::new("acct:teller-fixture")
@@ -87,7 +87,7 @@ struct Fixture {
     audited_seen: Mutex<Vec<busbar_contract::caps::AuditFacts>>,
 }
 
-impl Units for Fixture {
+impl crate::teller::DoorSeats for Fixture {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         SeatVerdict::proceed(token, arrival_record())
     }
@@ -137,12 +137,11 @@ impl Units for Fixture {
         _destinations: &[VerifiedDestination],
         _leases: &GroupLeaseSlip,
     ) -> SeatVerdict<Admit> {
-        SeatVerdict::proceed(
-            token,
-            Admission::Own(Hold::open(admit, principal.clone(), 1_000)),
-        )
+        SeatVerdict::proceed(token, Admission::Own(Hold::open(admit, principal.clone())))
     }
+}
 
+impl crate::teller::UnitEnds for Fixture {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -222,8 +221,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
     let canary = busbar_contract::caps::Canary::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
-    let cell =
-        busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal(), 0));
+    let cell = busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal()));
 
     let run = Run {
         cell: &cell,
@@ -232,6 +230,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
 
     // RED before the fix: `Units::route`/`Units::meter` had no `destinations` parameter to record

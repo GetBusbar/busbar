@@ -46,29 +46,60 @@ fn resolve(outcome: Outcome, secret: Blob, error_kind: u32) -> ResolveOut {
         secret,
         error_kind,
         _reserved: 0,
+        needed: 0,
     }
 }
 
 #[test]
 fn secret_resolve_is_checked() {
+    // The host's buffer the value is written into (the credential chip, row 6: host-owned secret bytes).
+    let mut buf = [b'k'; 4];
     let input = ResolveIn {
         head: in_head(),
         settings: NO_BLOB,
+        secret_buf: buf.as_mut_ptr(),
+        secret_cap: buf.len(),
     };
-    let key = b"k";
     let material = Blob {
-        ptr: key.as_ptr(),
+        ptr: buf.as_ptr(),
         len: 1,
         fmt: BLOB_ABSENT,
         flags: BLOB_SECRET,
     };
     let s = secret::slot::RESOLVE;
-    let mut ok = resolve(Outcome::Ready, material, 0);
-    ok.head.lease = 7;
+    let ok = resolve(Outcome::Ready, material, 0);
     assert_eq!(
         Secret::check(&answer(s, Outcome::Ready, &input, &ok)),
         Ok(())
     );
+    // RED: the same answer under a lease (plugin memory the host would have to release).
+    let mut leased = ok;
+    leased.head.lease = 7;
+    assert_eq!(
+        Secret::check(&answer(s, Outcome::Ready, &input, &leased)),
+        Err(fault(Rule::Contradiction, "resolve.lease"))
+    );
+    // RED: material at an address the host did not lend: judged against the call's own `in`.
+    let plugin = *b"k";
+    let foreign = resolve(
+        Outcome::Ready,
+        Blob {
+            ptr: plugin.as_ptr(),
+            ..material
+        },
+        0,
+    );
+    assert_eq!(
+        Secret::check(&answer(s, Outcome::Ready, &input, &foreign)),
+        Err(fault(Rule::Foreign, "resolve.secret_outside_buffer"))
+    );
+    // The short-buffer answer passes and is SHORT (the one re-call's).
+    let mut short = resolve(Outcome::Failed, NO_BLOB, 0);
+    short.needed = 5;
+    let a = answer(s, Outcome::Failed, &input, &short);
+    assert_eq!(Secret::check(&a), Ok(()));
+    assert!(Secret::short(&a));
+    assert!(!Secret::short(&answer(s, Outcome::Ready, &input, &ok)));
     let failed = resolve(Outcome::Failed, NO_BLOB, ERROR_KIND_NOT_FOUND);
     assert_eq!(
         Secret::check(&answer(s, Outcome::Failed, &input, &failed)),
@@ -169,6 +200,8 @@ fn zeroed_pending_and_refused_pass_every_op() {
     let resolve_in = ResolveIn {
         head: in_head(),
         settings: NO_BLOB,
+        secret_buf: std::ptr::null_mut(),
+        secret_cap: 0,
     };
     let h: InHead = in_head();
     for o in [Outcome::Pending, Outcome::Refused] {

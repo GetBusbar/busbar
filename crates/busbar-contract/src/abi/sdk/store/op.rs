@@ -44,6 +44,16 @@ pub enum Step<T> {
     },
 }
 
+impl<T> Step<T> {
+    /// The result mapped by `f`; PENDING as it is.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Step<U> {
+        match self {
+            Step::Ready(t) => Step::Ready(f(t)),
+            Step::Pending { wake_at_ns } => Step::Pending { wake_at_ns },
+        }
+    }
+}
+
 /// The op's ONE connection: the need and target it was established for, and the stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkout {

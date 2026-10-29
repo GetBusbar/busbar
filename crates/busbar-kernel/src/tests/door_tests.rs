@@ -45,7 +45,6 @@ fn an_exact_admission_carries_a_zero_hold() {
     let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
     match admitted_at_zero(&admit, PrincipalId::new("vk_exact")) {
         Admission::Own(hold) => {
-            assert_eq!(hold.reserved(), 0, "an exact admission reserves nothing");
             assert_eq!(hold.principal().as_str(), "vk_exact");
         }
         _ => panic!("an exact admission opens the unit's own hold"),

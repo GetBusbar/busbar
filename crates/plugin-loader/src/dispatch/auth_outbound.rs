@@ -31,6 +31,7 @@ use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, Ou
 use busbar_contract::redacted::Secret;
 
 use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
+use super::lifecycle::{open_frame, validate_call};
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
@@ -83,43 +84,18 @@ impl OutboundInstance {
         worker: u32,
         settings: &[u8],
     ) -> Result<Self, String> {
-        use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
+        use busbar_contract::abi::mechanism::lifecycle::slot as lc;
         let named = |what: &str, outcome: Outcome| {
             format!(
                 "`{}` did not {what} for its outbound styles: {outcome:?}",
                 plugin.name()
             )
         };
-        let mut v = Frame::new(
-            ValidateIn {
-                head: in_head(),
-                settings: blob(settings, BLOB_JSON, 0),
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            out_head(),
-        );
-        let called = plugin.call(lc::VALIDATE, &mut v);
+        let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
         if called.outcome != Outcome::Ready {
             return Err(named("validate", called.outcome));
         }
-        let mut f = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings, BLOB_JSON, 0),
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         let called = plugin.call(lc::OPEN, &mut f);
         if called.outcome != Outcome::Ready {
             return Err(named("open", called.outcome));

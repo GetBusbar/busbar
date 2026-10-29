@@ -1,0 +1,18 @@
+{
+  "settings": {},
+  "store": {
+    "credential_kind": "conformance",
+    "node": 1,
+    "usage": {
+      "bucket": "k",
+      "window": 60
+    },
+    "schema": "sch",
+    "keys": {
+      "grouped": "a",
+      "group": "g",
+      "plain": "b",
+      "absent": "zz"
+    }
+  }
+}

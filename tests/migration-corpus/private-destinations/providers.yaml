@@ -1,0 +1,22 @@
+# The providers catalog beside `config.yaml`, as a 1.5.5 operator extended it: the public entries
+# a release shipped, one the deployment overrides to a private `base_url` (`lab-vllm`), one private
+# entry only this catalog states (`in-rack`) and one whose OAuth `token_url` is private
+# (`corp-gateway`).
+openai:
+  protocol: openai
+  base_url: https://api.openai.com
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+lab-vllm:
+  protocol: openai
+  base_url: https://vllm.example.com
+
+in-rack:
+  protocol: openai
+  base_url: http://192.168.40.12:8000/v1
+
+corp-gateway:
+  protocol: openai
+  base_url: https://gateway.example.com/v1
+  token_url: http://10.9.8.7/oauth2/token

@@ -29,7 +29,7 @@ use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 use crate::root::door_steps::tests::tool_door::{
     send_headed, surface, three_tools, tool_digest, tool_server_listing, try_rig_tools, Rig, CALL,
 };
-use crate::root::serve::planes_tests::{Published, PUBLISHING};
+use crate::root::serve::planes_tests::PUBLISHING;
 
 /// The words a secret source's own refusal is phrased in (the linked `env` and `file` sources',
 /// the OS's), matched without case. The file source's phrase is built from its module name
@@ -265,7 +265,6 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
         ),
     ];
     for (instance, secret) in cases {
-        let _published = Published(instance);
         refused_naming_its_source(&secret);
         let rig = try_rig_tools(instance, 0, program_section(&secret)).unwrap_or_else(|e| {
             panic!("{instance}: a member's env that did not resolve refuses its spawns, never the compose: {e}")
@@ -287,7 +286,6 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
     let instance = "tools-program-apply";
-    let _published = Published(instance);
     let var = unset("TOOLS_PROGRAM_APPLY");
     std::env::set_var(&var, "busbar-own-program-token");
     let secret = SecretRef::env(&var);
@@ -317,7 +315,6 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
 async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_source() {
     let _one = PUBLISHING.lock().await;
     let instance = "tools-exchange-compose";
-    let _published = Published(instance);
     let secret = SecretRef::env(unset("TOOLS_EXCHANGE_COMPOSE"));
     refused_naming_its_source(&secret);
     let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
@@ -338,7 +335,6 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
 async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
     let instance = "tools-exchange-apply";
-    let _published = Published(instance);
     let var = unset("TOOLS_EXCHANGE_APPLY");
     std::env::set_var(&var, "busbar-own-subject-token");
     let secret = SecretRef::env(&var);
@@ -372,7 +368,6 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
 async fn decisions_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
     let _one = PUBLISHING.lock().await;
     let instance = "decisions-key-compose";
-    let _published = Published(instance);
     let path = missing(instance);
     let secret = SecretRef::file(path.clone());
     refused_naming_its_source(&secret);
@@ -402,7 +397,6 @@ async fn decisions_an_unresolved_provider_key_refuses_the_boot_naming_its_source
 async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
     let instance = "decisions-key-apply";
-    let _published = Published(instance);
     let path = missing(instance);
     std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
     let secret = SecretRef::file(path.clone());
@@ -518,7 +512,6 @@ async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sourc
     use super::hook_seat_tests::{far_end_answering, try_rig, RigOpts, ANSWER};
     let _one = PUBLISHING.lock().await;
     let instance = "pools-key-compose";
-    let _published = Published(instance);
     let path = missing(instance);
     let secret = SecretRef::file(path.clone());
     refused_naming_its_source(&secret);
@@ -557,7 +550,6 @@ async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_i
     use super::hook_seat_tests::{far_end_answering, rig, RigOpts, ANSWER};
     let _one = PUBLISHING.lock().await;
     let instance = "pools-key-apply";
-    let _published = Published(instance);
     let path = missing(instance);
     std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
     let secret = SecretRef::file(path.clone());

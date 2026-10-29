@@ -3,24 +3,13 @@
 
 //! THE KERNEL'S SEAT ON THE NODE AMENDMENT JOURNAL (item 404). The audit unit's `amend` module
 //! holds the journal; this is where the kernel's own authority mints the audit step's token for it.
-//!
-//! - an ACCESS: the hook seam records one per hook it hands content to, the export dispatch one
-//!   per sink it hands a record to. Field NAMES only, never values.
-//! - an ADJUSTMENT: [`correct_counts`], the kernel half of the root correction verb. It amends a
-//!   recorded unit's COUNTS (owner ruling Q9, #71) and never a money figure; money stays what the
-//!   ledger's one function (`cost::Tally`) derives from the corrected counts ([`counts_now`]) at
-//!   the card epoch the correction names.
+//! An ACCESS is the one class written: the hook seam records one per hook it hands content to, the
+//! export dispatch one per sink it hands a record to. Field NAMES only, never values.
 
-use busbar_contract::{
-    authz::Scope,
-    caps::{Audit, Pass},
-};
+use busbar_contract::caps::{Audit, Pass};
 pub use busbar_kernel_audit::{
-    amend::{
-        self as journal, counts_now, node_corrections, node_recent, AmendBody, Amendment,
-        ClassCounts, CorrectionError, CorrectionRefused, CountCorrection, Reader,
-    },
-    Access, Adjust, Subject,
+    amend::{self as journal, node_recent, AmendBody, Amendment, Reader},
+    Access, Subject,
 };
 
 /// The audit step's pass for a journal record, minted where it is used from the kernel's seal
@@ -45,20 +34,3 @@ pub(crate) fn export_read(module: &str, op: &str, payload: &serde_json::Value) {
     let (fields, now) = (fields.unwrap_or_default(), busbar_kernel::store::now());
     journal::record_read(&pass(), Reader::Export, module, None, op, fields, now);
 }
-
-/// THE CORRECTION VERB'S KERNEL HALF — see [`journal::correct_counts`].
-///
-/// # Errors
-///
-/// Below the root scope, or a correction that would take a count below zero or gives no reason.
-pub fn correct_counts(
-    scope: Scope,
-    recorded: &ClassCounts,
-    c: CountCorrection<'_>,
-) -> Result<Amendment, CorrectionError> {
-    journal::correct_counts(&pass(), scope, recorded, c, busbar_kernel::store::now())
-}
-
-#[cfg(test)]
-#[path = "tests/amend_tests.rs"]
-mod amend_tests;

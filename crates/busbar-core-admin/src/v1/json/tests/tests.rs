@@ -672,14 +672,6 @@ async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
     (ran_during.load(std::sync::atomic::Ordering::SeqCst), resp)
 }
 
-fn openapi_headers(accept_encoding: Option<&str>) -> axum::http::HeaderMap {
-    let mut headers = axum::http::HeaderMap::new();
-    if let Some(v) = accept_encoding {
-        headers.insert(axum::http::header::ACCEPT_ENCODING, v.parse().unwrap());
-    }
-    headers
-}
-
 /// RED (a read blocks an async worker): `GET /openapi.json` inflates the embedded ~500 KB document,
 /// parses it, walks it for the operations of planes this node does not configure and re-renders
 /// it — per request, on a node that runs a 1.5.5 config. That work runs off the async worker. RED
@@ -688,25 +680,19 @@ fn openapi_headers(accept_encoding: Option<&str>) -> axum::http::HeaderMap {
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_builds_the_served_document_off_the_async_worker() {
     let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    for accept in [Some("gzip"), None] {
-        let (free, resp) = worker_was_free_during(super::handlers::openapi(
-            State(Arc::clone(&handle)),
-            openapi_headers(accept),
-        ))
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert!(
-            free,
-            "GET openapi.json (accept-encoding {accept:?}) built the document on the async worker"
-        );
-    }
+    let (free, resp) =
+        worker_was_free_during(super::handlers::openapi(State(Arc::clone(&handle)))).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        free,
+        "GET openapi.json built the document on the async worker"
+    );
 }
 
 /// GREEN twin: the served document is still the committed one less the operations of every plane
-/// this node does not configure — for a gzip-accepting client and an identity-only one alike. This
-/// test binary links no plane, so every plane the committed document marks is unconfigured here:
-/// both answers are exactly `openapi_for_configured_planes` with nothing configured, as JSON, and
-/// every unmarked admin path is kept.
+/// this node does not configure. This test binary links no plane, so every plane the committed
+/// document marks is unconfigured here: the answer is exactly `openapi_for_configured_planes` with
+/// nothing configured, as JSON, and every unmarked admin path is kept.
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
     let expected =
@@ -715,20 +701,28 @@ async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
     let doc: serde_json::Value = serde_json::from_str(&expected).unwrap();
     assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
     let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    for accept in [Some("gzip"), None] {
-        let resp =
-            super::handlers::openapi(State(Arc::clone(&handle)), openapi_headers(accept)).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert!(
-            resp.headers()
-                .get(axum::http::header::CONTENT_ENCODING)
-                .is_none(),
-            "a filtered document is served as JSON (accept-encoding {accept:?})"
-        );
-        use http_body_util::BodyExt;
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(std::str::from_utf8(&bytes).unwrap(), expected.as_str());
-    }
+    let resp = super::handlers::openapi(State(Arc::clone(&handle))).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    use http_body_util::BodyExt;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(std::str::from_utf8(&bytes).unwrap(), expected.as_str());
+}
+
+/// 1.5.5'S HEAD (ORACLE-116 review, F-011c): `openapi.json` is answered as identity-encoded
+/// `application/json` with no `Vary`, the head 1.5.5 recorded on `crosscut.traps|openapi-info-version`
+/// and `neutrality|routes|admin-openapi-paths`. RED: 1.6.0 added a gzip negotiation and
+/// `Vary: accept-encoding` nobody signed.
+#[tokio::test(flavor = "current_thread")]
+async fn openapi_is_answered_with_1_5_5s_head() {
+    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
+    let resp = super::handlers::openapi(State(Arc::clone(&handle))).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let names: Vec<&str> = resp.headers().keys().map(|k| k.as_str()).collect();
+    assert_eq!(names, ["content-type"], "{:?}", resp.headers());
+    assert_eq!(
+        resp.headers()[axum::http::header::CONTENT_TYPE],
+        busbar_contract::protocol::APPLICATION_JSON
+    );
 }
 
 thread_local! {

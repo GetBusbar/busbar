@@ -29,8 +29,8 @@
 use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
-use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::PlaneDeclaration;
+use busbar_kernel::plane_driver::registry::PlaneDecl;
+use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -73,7 +73,8 @@ pub struct Linked {
         &'static str,
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
+    pub protocols:
+        &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -88,15 +89,10 @@ pub struct Linked {
     /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
-    /// [`LinkedDoorExport`]), built on first read (a door-root row's facts are its Statement's,
-    /// `crate::root::door_root::export_row`); a reference to it is the slice every reader takes.
+    /// [`LinkedDoorExport`]), built on first read; a reference to it is the slice every reader takes.
     pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
-    /// The store axis: each linked store's `(key, ephemeral, door, canonical)`, built on first read
-    /// (a door-root row's facts are its Statement's, `crate::root::door_root::store_row`).
+    /// The store axis: each linked store's `(key, ephemeral, door, canonical)`, built on first read.
     pub stores: &'static std::sync::LazyLock<Vec<LinkedStore>>,
-    /// Every DOOR-ROOT row (`[package.metadata.busbar.door-root]`), checked against its door's
-    /// Statement before anything registers (`crate::root::door_root::check`).
-    pub door_roots: &'static [crate::root::door_root::DoorRoot],
     /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
     /// root's hook axis (`crate::root::hooks`).
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
@@ -130,7 +126,7 @@ pub mod node {
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
     use busbar_kernel::plane_driver::PlaneAnswer;
-    use busbar_kernel::teller::{RouteAwait, Units};
+    use busbar_kernel::teller::RouteAwait;
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
@@ -147,7 +143,7 @@ pub mod node {
     pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
     /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
     pub type Built = (
-        Arc<dyn Units + Send + Sync>,
+        Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync>,
         Arc<dyn RouteAwait + Send + Sync>,
         Finish,
     );
@@ -327,10 +323,10 @@ pub fn linked_exports(
                 .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // In 1.5.5's order (the root migration table's `export_modules`, the order 1.5.5 listed its
     // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
     // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
-    let order = crate::root::legacy::export_order();
+    let order = crate::root::migration_table::export_order();
     rows.sort_by_key(|p| {
         order
             .iter()
@@ -378,12 +374,12 @@ pub struct BookCtx<'a> {
 /// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
 /// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
+    let installed: Vec<&'static busbar_kernel::ingress::protocols::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    busbar_kernel::proto::install_protocols(installed);
+    busbar_kernel::ingress::protocols::install_protocols(installed);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -408,17 +404,7 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
 /// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    let declared: Vec<(busbar_contract::abi::mechanism::door::DoorFn, &str)> = linked
-        .secret_declares
-        .iter()
-        .copied()
-        .chain(
-            crate::root::door_root::declared(linked.door_roots, "secret-doors")
-                .into_iter()
-                .map(|(_, door, json)| (door, json)),
-        )
-        .collect();
-    match link_secrets(linked.secrets, &declared) {
+    match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry_rows),
@@ -441,6 +427,8 @@ pub fn register_stores(linked: &Linked) {
             auth_chain_module: Some(crate::root::admission::auth_chain_module),
             dispatch_latched: Some(crate::root::admission::dispatch_latched),
             auth_axis: Some(crate::root::dispatch::auth_axis),
+            // Every non-built-in auth module is a plugin the registry answers.
+            in_process_auth: None,
             config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
@@ -497,7 +485,7 @@ pub fn link_secrets(
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
+    rows.with_former_names(busbar_kernel::config::migration_table::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
@@ -537,7 +525,7 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 /// whichever door it came in by, before any listener binds.
 pub fn register_planes(linked: &Linked) {
     match plane_rows(linked) {
-        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Ok(rows) => busbar_kernel::plane_driver::registry::install_planes(rows.leak()),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
@@ -735,9 +723,8 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
     DROPPED.get().copied()
 }
 
-/// EVERY LINKED PLANE DOOR'S `declares`, `(row, door, declares)`: a transitional row's off its
-/// `linked-declares` row ([`Linked::plane_door_declares`]), a door-root row's off its door's
-/// Statement (`EXT_DECLARES`; status row 195).
+/// EVERY LINKED PLANE DOOR'S `declares`, `(row, door, declares)`, off its `linked-declares` row
+/// ([`Linked::plane_door_declares`]).
 pub fn plane_door_declares(
     linked: &Linked,
 ) -> Vec<(
@@ -745,15 +732,7 @@ pub fn plane_door_declares(
     busbar_contract::abi::mechanism::door::DoorFn,
     &'static str,
 )> {
-    linked
-        .plane_door_declares
-        .iter()
-        .copied()
-        .chain(crate::root::door_root::declared(
-            linked.door_roots,
-            "plane-door",
-        ))
-        .collect()
+    linked.plane_door_declares.to_vec()
 }
 
 /// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
@@ -870,9 +849,26 @@ pub fn host_series(name: &str) -> bool {
 static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
+/// The catalogue [`register_diagnostics`] folded, for the root's own process-wide readers that a
+/// kernel seam reaches without a value to hand in (the process's outbound auth set,
+/// `root::door_steps::process_auths`, opened behind the kernel's auth-axis opener). The neutral
+/// built-ins until the fold.
+static CATALOGUE: std::sync::OnceLock<busbar_kernel::diagnostics::Catalogue> =
+    std::sync::OnceLock::new();
+
+/// The catalogue this process's root folded ([`register_diagnostics`]), or the neutral built-ins
+/// before it has.
+pub fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
+    CATALOGUE
+        .get()
+        .copied()
+        .unwrap_or(busbar_kernel::diagnostics::Catalogue::NEUTRAL)
+}
+
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
-/// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
-pub fn register_diagnostics(linked: &Linked) {
+/// ones (K9a S3), folded once into the catalogue the root lends to every reader. A declaration the
+/// catalogue refuses refuses the boot.
+pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Catalogue {
     let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
@@ -894,7 +890,9 @@ pub fn register_diagnostics(linked: &Linked) {
             }
         }
     }
-    busbar_kernel::diagnostics::install_diagnostics(installed.leak());
+    let catalogue = busbar_kernel::diagnostics::Catalogue::lent(installed.leak());
+    let _ = CATALOGUE.set(catalogue);
+    catalogue
 }
 
 /// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE

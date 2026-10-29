@@ -18,7 +18,7 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
 
-use super::planes_tests::{bound, composed_services, Published, PUBLISHING};
+use super::planes_tests::{bound, composed_services, PUBLISHING};
 use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
@@ -26,7 +26,6 @@ use crate::root::plane_node::{Node, NodeEndPost};
 /// A governed composition of the test plane: a signing book with one minted key, the plane's
 /// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 pub(super) struct Governed {
-    _published: Published,
     pub(super) router: axum::Router,
     /// The test plane's driver, for a test that reloads its generation while a unit is in flight.
     pub(super) driver: Arc<busbar_kernel::plane_driver::PlaneDriver>,
@@ -240,7 +239,6 @@ fn governed_full(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_kernel_wal::NullShipper::new()),
-                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
             )
             .expect("a memory-buffered journal opens"),
         ));
@@ -285,6 +283,7 @@ fn governed_full(
         &move || Arc::clone(&one),
         None,
         Some(&hooks),
+        &app.serve_tables,
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
@@ -297,7 +296,6 @@ fn governed_full(
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Governed {
-        _published: Published(instance),
         router,
         driver,
         post,
@@ -665,11 +663,19 @@ const NODE_HOOKS_ARM: &str = "BUSBAR_TEST_NODE_HOOKS_ARM";
 #[test]
 fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
     if std::env::var_os(NODE_HOOKS_ARM).is_some() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(node_boot_hooks_arm());
         return;
     }
     let run = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::serve::money_tests::node_boot_hooks_arm"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .args([
+            "--exact",
+            "root::serve::money_tests::the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build",
+        ])
+        .args(["--test-threads", "1", "--nocapture"])
         .env(NODE_HOOKS_ARM, "1")
         .output()
         .expect("the test binary runs");
@@ -687,18 +693,7 @@ fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
 /// the real boot book; then a keyed door unit of the test plane, dropped in, is driven on the
 /// process's one node. Its line and its audit record are on that book, and the record names the
 /// card the unit was pinned to at its door: a second apply's entry, so not the opening's `0`.
-///
-/// Ignored so the default run never counts it as a pass: alone it proves nothing, and run without
-/// its parent's variable it fails (status row 114).
-#[tokio::test]
-#[ignore = "child process of the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build, \
-            which runs it with --ignored"]
 async fn node_boot_hooks_arm() {
-    assert!(
-        std::env::var_os(NODE_HOOKS_ARM).is_some(),
-        "node_boot_hooks_arm is the child half of \
-         the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build: run that, not this"
-    );
     // THE TABLE: the node's root unit is keyed to the node itself, never to a plane feature.
     assert!(
         include_str!(concat!(env!("OUT_DIR"), "/linked.rs"))
@@ -823,7 +818,6 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
-    let _published = Published(instance);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
@@ -852,6 +846,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
         models: None,
@@ -870,6 +865,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         None,
         &reach,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("every build composes a configured door plane");
     assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");

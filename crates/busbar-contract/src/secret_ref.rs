@@ -239,6 +239,15 @@ impl SecretRef {
     }
 }
 
+/// THE REFUSAL OF A SECRET WRITTEN INLINE, the one sentence every secret field answers a literal
+/// with: a core secret field (this type's `Deserialize`) and a plugin's declared secret setting
+/// (the kernel's settings resolution) alike. Names the accepted shapes and NEVER echoes what it was
+/// handed: the value it was handed is the secret.
+pub const INLINE_LITERAL_REFUSAL: &str = "a secret value must be a REFERENCE, never an inline \
+     literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, \
+     { module: <secret-module>, settings: {…} }, or the bare scalar `none` to declare an upstream \
+     that takes NO credential";
+
 impl<'de> Deserialize<'de> for SecretRef {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -250,12 +259,7 @@ impl<'de> Deserialize<'de> for SecretRef {
             /// The one refusal message every inline-scalar spelling shares. Names the accepted
             /// shapes and NEVER echoes what it was handed — the value it was handed is the secret.
             fn inline_literal<E: de::Error>() -> E {
-                E::custom(
-                    "a secret value must be a REFERENCE, never an inline literal (the value is \
-                     not echoed): use { env: <VAR> }, { file: <path> }, \
-                     { module: <secret-module>, settings: {…} }, or the bare scalar `none` to \
-                     declare an upstream that takes NO credential",
-                )
+                E::custom(INLINE_LITERAL_REFUSAL)
             }
         }
 

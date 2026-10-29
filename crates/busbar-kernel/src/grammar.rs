@@ -126,18 +126,3 @@ pub fn specificity(selector: &Selector) -> u32 {
     };
     class * SPECIFICITY_BAND + within.min(SPECIFICITY_BAND - 1)
 }
-
-/// How far into a body the kernel has to read before a unit can open.
-///
-/// The unit opens when the deepest declared pointer has resolved or the declared length ends. No
-/// pointer is ever evaluated over a truncated prefix, which is the whole reason this is a value
-/// the pump can compare rather than a rule someone remembers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DeepestPointer {
-    /// Nothing needs the body.
-    None,
-    /// A byte offset the scanner reached.
-    Offset(usize),
-    /// The end of the body, whatever that turns out to be.
-    EndOfBody,
-}

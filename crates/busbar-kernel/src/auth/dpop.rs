@@ -22,9 +22,9 @@
 //! Reading `cnf` off an unverified payload is sound for the reason `auth::audience` gives: here it
 //! only ever REFUSES. A proven presentation still has to pass the chain's real signature check.
 
+use super::audience::Bearer;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderName, Method};
-use base64::Engine as _;
 
 /// RFC 9449 s4.1: the proof header.
 pub(crate) const DPOP_HEADER: HeaderName = HeaderName::from_static("dpop");
@@ -51,13 +51,15 @@ fn dpop_credential(headers: &HeaderMap) -> Option<String> {
 
 /// Judge a request's sender constraint from its method, path and headers (the parts, not the
 /// request: the body is not `Sync`, and this is awaited). `bearer` is the credential the bearer
-/// carriers yielded.
+/// carriers yielded; `read` its payload, read here where its binding is asked and kept for the
+/// request's other reader (the audience pre-filter).
 pub(crate) async fn judge(
     app: &crate::state::App,
     method: &Method,
     path: &str,
     headers: &HeaderMap,
     bearer: Option<&str>,
+    read: &mut Option<Bearer>,
 ) -> SenderConstraint {
     if let Some(token) = dpop_credential(headers) {
         let (Some(plane), Some(seam)) = (app.oauth_as.as_ref(), crate::oauth_as::seam::seam())
@@ -91,7 +93,9 @@ pub(crate) async fn judge(
     // carrying `cnf.jkt` is a bearer like any other, as 1.5.5 judged it (v1.5.5
     // `crates/busbar/src/auth/mod.rs`:1504-1515: every non-signed request went straight to the
     // chain, and 1.5.5 had no DPoP code at all).
-    if app.oauth_as.is_some() && bearer.is_some_and(is_dpop_bound) {
+    if app.oauth_as.is_some()
+        && bearer.is_some_and(|t| read.get_or_insert_with(|| Bearer::read(t)).dpop_bound())
+    {
         return SenderConstraint::Refused;
     }
     SenderConstraint::Unconstrained
@@ -100,20 +104,7 @@ pub(crate) async fn judge(
 /// Whether `token` is bound to a DPoP key (RFC 9449 s6: a string `cnf.jkt`). busbar's own signed
 /// keys and anything that is not a three-segment JWS are never bound, and are not parsed.
 pub fn is_dpop_bound(token: &str) -> bool {
-    if token.starts_with(crate::governance::signing::TOKEN_PREFIX) {
-        return false;
-    }
-    let mut parts = token.split('.');
-    let (Some(_), Some(payload), Some(_), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|claims| claims["cnf"]["jkt"].is_string())
+    Bearer::read(token).dpop_bound()
 }
 
 #[cfg(test)]

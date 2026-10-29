@@ -120,7 +120,7 @@ fn write_configs(dir: &Path, extra: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
         if provider_lanes {
-            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n"
+            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n"
         } else {
             "{}\n"
         },

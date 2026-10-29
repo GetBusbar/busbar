@@ -64,6 +64,10 @@ pub enum ConnOutcome {
     Unarmed = 8,
     /// [`ConnError::CredentialUnavailable`].
     CredentialUnavailable = 9,
+    /// [`ConnError::AuthRefused`].
+    AuthRefused = 10,
+    /// [`ConnError::AuthFailed`].
+    AuthFailed = 11,
 }
 
 impl RawConnOutcome {
@@ -81,6 +85,8 @@ impl RawConnOutcome {
             Err(ConnError::Fault) => ConnOutcome::Fault,
             Err(ConnError::Unarmed) => ConnOutcome::Unarmed,
             Err(ConnError::CredentialUnavailable) => ConnOutcome::CredentialUnavailable,
+            Err(ConnError::AuthRefused) => ConnOutcome::AuthRefused,
+            Err(ConnError::AuthFailed) => ConnOutcome::AuthFailed,
         } as u8)
     }
 
@@ -100,6 +106,8 @@ impl RawConnOutcome {
             6 => Err(ConnError::Refused),
             8 => Err(ConnError::Unarmed),
             9 => Err(ConnError::CredentialUnavailable),
+            10 => Err(ConnError::AuthRefused),
+            11 => Err(ConnError::AuthFailed),
             _ => Err(ConnError::Fault),
         }
     }
@@ -429,7 +437,7 @@ extern "C" fn host_open(
                 &OpenDesc {
                     target: text(d.target)?.unwrap_or(""),
                     fields: &fields,
-                    body: bytes(d.body, d.body_len)?,
+                    body: crate::conn::Bytes::copy_from_slice(bytes(d.body, d.body_len)?),
                     timeout_ms: d.timeout_ms,
                     method: bytes(d.method.ptr, d.method.len)?,
                     head_target: bytes(d.head_target.ptr, d.head_target.len)?,

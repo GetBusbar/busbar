@@ -60,18 +60,16 @@ impl AuthAxis for Recording {
 #[test]
 fn a_token_endpoints_userinfo_reaches_the_axis_beside_the_settings_never_inside_them() {
     use base64::Engine as _;
-    let (plane_visible, endpoint) = crate::appbuild::lane_token_endpoint(Some(
-        "https://svcuser:hunter2-P4ss@login.example.com/tenant/token",
-    ));
+    let written = "https://svcuser:hunter2-P4ss@login.example.com/tenant/token";
+    let plane_visible = busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned();
     assert_eq!(
-        plane_visible.as_deref(),
-        Some("https://login.example.com/tenant/token"),
+        plane_visible, "https://login.example.com/tenant/token",
         "the endpoint a plane is handed carries no userinfo"
     );
-    let endpoint = endpoint.expect("the userinfo is held, opaque");
+    let endpoint =
+        crate::bound_credential::UrlUserinfo::of(written).expect("the userinfo is held, opaque");
     assert!(
-        crate::appbuild::lane_token_endpoint(Some("https://login.example.com/tenant/token"))
-            .1
+        crate::bound_credential::UrlUserinfo::of("https://login.example.com/tenant/token")
             .is_none(),
         "an endpoint with no userinfo holds none"
     );

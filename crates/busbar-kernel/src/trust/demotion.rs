@@ -69,20 +69,25 @@ pub struct DemotionRow {
     pub recorded_at: u64,
 }
 
-impl DemotionRow {
-    /// Serialize this row into the opaque `demotion` [`PlaneRecord`] envelope, keyed by its upstream.
-    /// Demotions are never purged by age, so the disposition is immaterial and left `Active`.
-    fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
-        Ok(PlaneRecord {
-            kind: KIND_DEMOTION.to_string(),
-            id: self.upstream.clone(),
-            parent: None,
-            seq: 0,
-            ts: self.recorded_at,
-            disposition: PlaneDisposition::Active,
-            body: encode(self)?,
-        })
-    }
+/// Upsert `body` as the one point-read record `(kind, id)` at `ts`. Neither record kind here is
+/// purged by age, so the disposition is immaterial and left `Active`.
+fn upsert<T: serde::Serialize>(
+    store: &dyn PlaneStore,
+    kind: &str,
+    id: String,
+    ts: u64,
+    body: &T,
+) -> RecordStoreResult<()> {
+    let record = PlaneRecord {
+        kind: kind.to_string(),
+        id,
+        parent: None,
+        seq: 0,
+        ts,
+        disposition: PlaneDisposition::Active,
+        body: encode(body)?,
+    };
+    store.upsert_plane_record(record.view())
 }
 
 /// The durable demotion record's write side. No `Debug`: `dyn Store` is not `Debug`, deliberately —
@@ -132,10 +137,7 @@ impl DemotionRecord {
             reason: reason.to_string(),
             recorded_at: now,
         };
-        if let Err(e) = row
-            .to_plane_record()
-            .and_then(|rec| store.upsert_plane_record(rec.view()))
-        {
+        if let Err(e) = upsert(&*store, KIND_DEMOTION, row.upstream.clone(), now, &row) {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
                 server = %upstream,
@@ -175,13 +177,18 @@ impl DemotionRecord {
     /// The store could not be read. The caller refuses rather than re-open an upstream this
     /// deployment demoted.
     pub fn read(&self) -> Result<Vec<DemotionRow>, String> {
+        self.list_kind(KIND_DEMOTION)
+            .map_err(|e| format!("the durable demotion records could not be read: {e}"))
+    }
+
+    /// Every record of `kind`, decoded; empty when no store is attached.
+    fn list_kind<T: serde::de::DeserializeOwned>(&self, kind: &str) -> RecordStoreResult<Vec<T>> {
         let Some(store) = self.sink() else {
             return Ok(Vec::new());
         };
         store
-            .list_plane_records(KIND_DEMOTION, &PlaneSelector::All)
+            .list_plane_records(kind, &PlaneSelector::All)
             .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
-            .map_err(|e| format!("the durable demotion records could not be read: {e}"))
     }
 
     /// [`Self::read`], for a test that holds a store which answers.
@@ -189,9 +196,7 @@ impl DemotionRecord {
     pub fn list(&self) -> Vec<DemotionRow> {
         self.read().expect("the test store answers")
     }
-}
 
-impl DemotionRecord {
     /// KEEP the operator's trust decision about one key, upserted under it (the instance label,
     /// the counterparty and any item, joined by the unit separator). Unlike a demotion this is the
     /// answer to an operator's write, so a failure is RETURNED, in the store's own words, for the
@@ -210,18 +215,7 @@ impl DemotionRecord {
             id.push(sep);
             id.push_str(item);
         }
-        let record = PlaneRecord {
-            kind: KIND_TRUST_DECISION.to_string(),
-            id,
-            parent: None,
-            seq: 0,
-            ts: now,
-            disposition: PlaneDisposition::Active,
-            body: encode(row).map_err(|e| e.to_string())?,
-        };
-        store
-            .upsert_plane_record(record.view())
-            .map_err(|e| e.to_string())
+        upsert(&*store, KIND_TRUST_DECISION, id, now, row).map_err(|e| e.to_string())
     }
 
     /// EVERY kept trust decision; empty when no store is attached or none was kept.
@@ -231,12 +225,7 @@ impl DemotionRecord {
     /// The store could not be read. The caller refuses rather than let the configured trust stand
     /// over an operator's revoke it cannot see.
     pub fn decisions(&self) -> Result<Vec<RulingRow>, String> {
-        let Some(store) = self.sink() else {
-            return Ok(Vec::new());
-        };
-        store
-            .list_plane_records(KIND_TRUST_DECISION, &PlaneSelector::All)
-            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
+        self.list_kind(KIND_TRUST_DECISION)
             .map_err(|e| format!("the durable trust decisions could not be read: {e}"))
     }
 }

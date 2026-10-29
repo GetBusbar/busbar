@@ -94,7 +94,7 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
 fn the_metric_label_surface_is_exactly_these_thirteen() {
     let mut labels: Vec<&str> = OpVerb::ALL
         .iter()
-        .chain(crate::proto::registry::declared_verbs())
+        .chain(crate::test_support::protocols::declared_verbs())
         .map(|o| o.name())
         .collect();
     labels.sort_unstable();
@@ -140,7 +140,7 @@ fn no_verb_name_carries_a_protocol_identity() {
     // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
     // the real roster are checked against the same verbs in
     // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
-    let identities: Vec<&str> = crate::proto::registry::registry()
+    let identities: Vec<&str> = crate::ingress::protocols::registry()
         .decls()
         .iter()
         .map(|d| d.name)

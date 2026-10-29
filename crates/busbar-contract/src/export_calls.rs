@@ -261,6 +261,14 @@ pub trait ExportCalls: Send + Sync {
     /// class. `hold` is dropped when the line's batch has answered (or the line was shed).
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered;
 
+    /// Whether this instance takes each `traces` line's full span record as its reserved `span`
+    /// member (status row 173; K9e-2: everything the previous release's exporter sent for a span,
+    /// whatever `fields:` selected). An instance that takes none is handed the projected line
+    /// alone, byte for byte as before.
+    fn takes_span_records(&self) -> bool {
+        false
+    }
+
     /// Render `families` as this instance's exposition text, through `scrape`, on the calling
     /// thread (request path). `Err` names why the instance did not render.
     ///
@@ -364,6 +372,23 @@ pub trait ExportAxis: Send + Sync {
     /// The `module:` words of the export rows this build LINKS, in the order the composition root
     /// registered them: what an unknown-exporter refusal lists. None by default.
     fn linked_modules(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The settings paths `module`'s Statement declares secret (its `secret_refs`, `.`-separated,
+    /// `*` = any key or index; [`crate::secret_fields`]). The export host lends nothing: a reference
+    /// written at one of these paths is resolved IN PLACE before the settings reach the sink's
+    /// probe, check or open. None by default.
+    fn secret_refs(&self, module: &str) -> Vec<String> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// The REFERENCE-CAPABLE, NOT-SECRET settings paths `module`'s Statement states (its
+    /// extensions' `reference_fields`, lead ruling item 7a): a reference there is resolved in
+    /// place to its string, a literal passes as written. None by default.
+    fn reference_fields(&self, module: &str) -> Vec<String> {
+        let _ = module;
         Vec::new()
     }
 }

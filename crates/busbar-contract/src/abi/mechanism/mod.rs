@@ -46,6 +46,7 @@ pub mod check;
 pub mod door;
 pub mod endpoint;
 pub mod extensions;
+pub mod layout;
 pub mod lifecycle;
 pub mod observe;
 pub mod rendering;
@@ -144,12 +145,6 @@ impl KindCode {
         }
     }
 
-    /// The kind a manifest's `kind` word names, or `None` for a word no kind has.
-    #[must_use]
-    pub fn from_word(word: &str) -> Option<KindCode> {
-        KindCode::ALL.into_iter().find(|k| k.word() == word)
-    }
-
     /// The ONE version of this kind's ABI the host accepts (no legacy loading: older and newer are
     /// both refused).
     #[must_use]
@@ -162,6 +157,21 @@ impl KindCode {
             KindCode::Export => super::export::ABI_VERSION,
             KindCode::Plane => super::plane::ABI_VERSION,
             KindCode::Transport => super::transport::ABI_VERSION,
+        }
+    }
+
+    /// The ONE layout fingerprint of this kind's ABI the host accepts ([`layout`]): a door stating
+    /// another ([`door::Door::layout`]) was built against other shapes and is refused.
+    #[must_use]
+    pub const fn layout_fingerprint(self) -> u64 {
+        match self {
+            KindCode::Store => super::store::LAYOUT_FINGERPRINT,
+            KindCode::Secret => super::secret::LAYOUT_FINGERPRINT,
+            KindCode::Auth => super::auth::LAYOUT_FINGERPRINT,
+            KindCode::Hook => super::hook::LAYOUT_FINGERPRINT,
+            KindCode::Export => super::export::LAYOUT_FINGERPRINT,
+            KindCode::Plane => super::plane::LAYOUT_FINGERPRINT,
+            KindCode::Transport => super::transport::LAYOUT_FINGERPRINT,
         }
     }
 }

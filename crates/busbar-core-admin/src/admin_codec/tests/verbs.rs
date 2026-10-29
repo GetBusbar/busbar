@@ -9,16 +9,14 @@ use super::*;
 #[test]
 fn the_public_table_is_the_same_table_the_lookup_runs_against() {
     let public = table();
-    assert_eq!(public.len(), VERB_COUNT);
-    for (row, entry) in public.iter().zip(all_verbs().iter()) {
-        assert_eq!(row.verb, entry.verb);
+    assert_eq!(public.len(), admin_rows().count());
+    for (row, entry) in public.iter().zip(admin_rows()) {
+        let read_only = entry.scope == VerbScope::ReadOnly;
+        assert_eq!(row.verb, entry.name);
         assert_eq!(row.method, entry.method);
         assert_eq!(row.template, entry.path);
-        assert_eq!(row.read_only, entry.read_only);
-        assert_eq!(
-            row.op_class(),
-            if entry.read_only { OP_READ } else { OP_WRITE }
-        );
+        assert_eq!(row.read_only, read_only);
+        assert_eq!(row.op_class(), if read_only { OP_READ } else { OP_WRITE });
     }
 }
 
@@ -74,7 +72,7 @@ fn an_empty_segment_never_normalises_onto_a_row() {
 #[test]
 fn find_verb_resolves_a_concrete_request() {
     let (entry, params) = find_verb("GET", "/api/v1/admin/keys/xyz").expect("matches");
-    assert_eq!(entry.verb, "get_keys_id");
+    assert_eq!(entry.name, "get_keys_id");
     assert_eq!(params, vec![("id", "xyz")]);
 }
 
@@ -144,11 +142,12 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
                 panic!("no table row matches fixture operation {method} {path}")
             });
             assert_eq!(
-                entry.verb, expected_verb,
+                entry.name, expected_verb,
                 "{method} {path}: table verb does not match the fixture's operationId"
             );
             assert_eq!(
-                entry.read_only, expected_read_only,
+                entry.scope == VerbScope::ReadOnly,
+                expected_read_only,
                 "{method} {path}: table scope does not match the fixture's pinned x-busbar-required-scope"
             );
             checked += 1;
@@ -174,39 +173,27 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
 /// demanded `full` of a verb the unit answers `read-only` for, refusing a read-only operator.
 #[test]
 fn the_live_gate_and_the_verb_table_agree_on_every_admin_route() {
-    use crate::verb::{verb_name, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
-    let kernel_verb = |entry: &VerbEntry| {
-        LEGACY_VERBS
-            .iter()
-            .find(|r| r.method == entry.method && r.path == entry.path)
-            .map(|r| r.verb)
-            .or_else(|| {
-                NEW_VERBS
-                    .iter()
-                    .chain(LEDGER_VERBS)
-                    .chain(AUDIT_VERBS)
-                    .copied()
-                    .find(|v| verb_name(*v) == Some(entry.verb))
-            })
-            .unwrap_or_else(|| panic!("{} {}: no kernel verb", entry.method, entry.path))
-    };
     let mut checked = 0usize;
     let mut disagreements = Vec::new();
-    for entry in all_verbs() {
+    for entry in admin_rows() {
         let method = axum::http::Method::from_bytes(entry.method.as_bytes()).expect("a method");
         let gate = crate::v1::contract::required_scope(&method, entry.path);
         let gate_read_only = gate == crate::v1::contract::Scope::ReadOnly;
-        let unit_read_only =
-            crate::verbs::required_scope(kernel_verb(entry)) == crate::verb::VerbScope::ReadOnly;
-        if gate_read_only != entry.read_only || gate_read_only != unit_read_only {
+        let table_read_only = entry.scope == VerbScope::ReadOnly;
+        let unit_read_only = crate::verbs::required_scope(entry.verb) == VerbScope::ReadOnly;
+        if gate_read_only != table_read_only || gate_read_only != unit_read_only {
             disagreements.push(format!(
-                "{} {}: gate read_only={gate_read_only}, table read_only={}, verbs unit read_only={unit_read_only}",
-                entry.method, entry.path, entry.read_only
+                "{} {}: gate read_only={gate_read_only}, table read_only={table_read_only}, verbs unit read_only={unit_read_only}",
+                entry.method, entry.path
             ));
         }
         checked += 1;
     }
-    assert_eq!(checked, VERB_COUNT, "every declared admin route is checked");
+    assert_eq!(
+        checked,
+        admin_rows().count(),
+        "every declared admin route is checked"
+    );
     assert!(
         disagreements.is_empty(),
         "the live admin gate and the verb table disagree:\n{}",

@@ -1,71 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Shared props: tokens, keys, and a small deterministic source of pseudo-random numbers.
+//! Shared props: a small deterministic source of pseudo-random numbers.
 //!
 //! The generator is a plain linear congruential one, written out rather than pulled in, for two
 //! reasons. A random test that cannot be replayed from its seed is a test that fails once and is
 //! then muted; and a crate whose entire dependency list is the capability crate should not grow a
 //! second one to shuffle some integers.
-
-use busbar_contract::caps::{
-    Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId, Usage, UsageLine,
-    WriteMoney,
-};
-
-use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-
-/// An admission token.
-pub fn admit_token() -> Grant<Admittance> {
-    Grant::<Admittance>::mint(&KernelSeal::acquire_for_kernel())
-}
-
-/// A ledger token.
-pub fn ledger_token() -> Grant<WriteMoney> {
-    Grant::<WriteMoney>::mint(&KernelSeal::acquire_for_kernel())
-}
-
-/// A usage token.
-pub fn usage_token() -> Grant<Consumption> {
-    Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel())
-}
-
-/// A hold for `who`, reserving `reserved`.
-pub fn hold(who: &str, reserved: u64) -> Hold {
-    Hold::open(&admit_token(), PrincipalId::new(who), reserved)
-}
-
-/// A usage report of one line.
-pub fn usage(class: &'static str, quantity: u64) -> Usage {
-    Usage::report(
-        &usage_token(),
-        vec![UsageLine {
-            class: MeterClassId::new(class),
-            quantity,
-            source: busbar_contract::caps::QuantitySource::Count,
-            estimated: false,
-        }],
-    )
-    .unwrap()
-}
-
-/// The ordinary key: a bucket, counted in money, over everything.
-pub fn key(bucket: &str) -> TotalsKey {
-    TotalsKey::new(
-        BucketId::new(bucket),
-        CapDimension::NanoUnits,
-        BucketScope::All,
-    )
-}
-
-/// A key narrowed to a pool.
-pub fn pool_key(bucket: &str, pool: &str) -> TotalsKey {
-    TotalsKey::new(
-        BucketId::new(bucket),
-        CapDimension::NanoUnits,
-        BucketScope::Pool(pool.to_string()),
-    )
-}
 
 /// A replayable pseudo-random source.
 pub struct Rng(u64);

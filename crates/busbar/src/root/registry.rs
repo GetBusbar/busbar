@@ -10,7 +10,7 @@
 //! Stated first, because the name "claim overlap check" promises more than this file can keep. The
 //! claims compared here are each plane's DECLARED claims — `PlaneMeta::CLAIMS`, the pure plane
 //! crate's own compile-time words. The paths a request is actually routed on are a different
-//! object: each installed `busbar_kernel::plane::registry::PlaneDecl`'s `claims` hook, evaluated over
+//! object: each installed `busbar_kernel::plane_driver::registry::PlaneDecl`'s `claims` hook, evaluated over
 //! the plane's runtime object at app build, is what `build_dispatch` mounts, and nothing here reads
 //! it. So a clean seal says the declarations do not tie; it does not say two planes' LIVE, configured
 //! routes cannot collide. That second check belongs where the live claims are folded
@@ -136,9 +136,6 @@ pub enum BootRefusal {
     },
     /// The registry itself refused an entry.
     Registry(busbar_kernel::registry::RegistryError),
-    /// The breaker and egress units' hand-kept metric label banks disagree on a label both carry,
-    /// so one breaker disposition would reach the scrape under two label values.
-    LabelDrift(crate::root::adapters::LabelDrift),
 }
 
 impl std::fmt::Display for BootRefusal {
@@ -156,7 +153,6 @@ impl std::fmt::Display for BootRefusal {
                 "plane `{plane}` claims on transport `{transport}`, which no crate provides"
             ),
             Self::Registry(err) => write!(f, "{err:?}"),
-            Self::LabelDrift(drift) => write!(f, "{drift}"),
         }
     }
 }
@@ -395,11 +391,6 @@ pub fn seal(
 
     check_composition(&registered).map_err(BootRefusal::Composition)?;
     check_claim_transports(&claims, &registered)?;
-    // The two units' metric label banks are duplicate literals kept in step by hand; this is the
-    // one boot check that compares them, and it runs here because this is the check every boot
-    // passes through. A drift refuses the boot naming both spellings, rather than splitting one
-    // breaker disposition into two label values on the scrape.
-    crate::root::adapters::check_label_banks().map_err(BootRefusal::LabelDrift)?;
 
     Ok(BootRegistry {
         registry,

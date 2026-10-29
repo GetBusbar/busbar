@@ -3,11 +3,11 @@
 
 //! The store adapter: the unit-side store seams over ONE loaded store plugin.
 //!
-//! Two crates bind to a store and neither may name one — `busbar-kernel` (slices) and the admin
-//! verb-execution unit (the sealed new-verb replay cache, which the composition root's
-//! `busbar_contract::verb_store::Store` answers through this adapter). The composition root binds
-//! both to a single adapter over the store this crate loaded, so there is exactly one store handle
-//! in the process and one place that says what this adapter answers itself.
+//! The admin verb-execution unit binds to a store without naming one: the sealed new-verb replay
+//! cache, which the composition root's `busbar_contract::verb_store::Store` answers through this
+//! adapter. The composition root binds it to a single adapter over the store this crate loaded, so
+//! there is exactly one store handle in the process and one place that says what this adapter
+//! answers itself.
 //!
 //! The disaster-recovery verbs are not here (status row 187). They act on the node's journal and on
 //! the store's record slots, both of which the composition root holds (`durability::recovery`), and
@@ -30,19 +30,11 @@
 //!   this module touches their wire; the oracle's store-persist cell is what proves it
 //!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
 //!   store, read the money back).
-//! - **Slices and the sealed replay cache are answered from this node's
-//!   memory.** The store v3 table carries slots for the ledger operations behind them (`reserve`,
-//!   `slice_release`, `heads`, `append_batch`), and every store this binary loads speaks store ABI
-//!   v3, which has no table without them; routing these seams to those slots is separate work, and
-//!   until it lands what is said below is what they answer.
+//! - **The sealed replay cache is answered from this node's memory.** No money is held here:
+//!   money is counts x the rate card, derived in core.
 //!
 //! # Those answers, stated rather than implied
 //!
-//! - **Slices.** A node whose slices are answered here has exactly one generation of leases and
-//!   nothing that can advance it, so [`epoch`](busbar_contract::slice::SliceStore::epoch) is
-//!   constant and a reservation is granted in full, stamped with that epoch — a request carrying
-//!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
-//!   there is no fleet for it to be stale against. The grant never expires for the same reason.
 //! - **The sealed replay cache.** Node-local. Nothing but its TTL clears it — no restore and no
 //!   other verb: dropping a committed replay slot is precisely how a credential-minting verb
 //!   re-mints, which is the one thing the sealed cache exists to prevent. It is not
@@ -64,14 +56,13 @@
 //! database is the previous release's supported shape and must keep booting.
 
 use busbar_contract::migration::{
-    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyHead, LegacyLedgerRows,
-    LegacyMigrationSource,
+    MigrationCapDimension, MigrationFamily, MigrationFigure, MigrationFigures, MigrationHead,
+    MigrationLedgerRows, MigrationSource,
 };
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
-use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::StoreError as VerbStoreError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -83,12 +74,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// than an absence of errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ShimState {
-    /// Slices reserved and not yet released.
-    pub slices_outstanding: usize,
-    /// Units granted and NOT given back — granted minus the unspent part every `release` returned.
-    /// A net figure, not a running total: it describes what the outstanding reservations above are
-    /// holding.
-    pub slices_granted: u64,
     /// Keys the sealed replay cache is holding, reserved or committed.
     pub replay_slots: usize,
     /// Of those, the ones with a committed response.
@@ -150,27 +135,12 @@ fn system_clock() -> ShimClock {
 ///
 /// # The lock order, stated once
 ///
-/// The three mutexes below are independent, and every one of them is on the request path: a slice
-/// draw takes `slices` on every reserve and release. No thread holds two at once: every reader and
-/// writer — the diagnostics read included — takes one lock, copies what it wants out, drops it,
-/// and only then takes the next. A thread that ever needs more than one takes them in the order
-/// they are declared here — slices, then replay — and in no other order.
+/// The one mutex below, `replay`, is taken by every reader and writer — the diagnostics read
+/// included — which copies what it wants out and drops it before doing anything else.
 #[derive(Default)]
 struct Shim {
-    slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
 }
-
-#[derive(Default)]
-struct Slices {
-    next_id: u64,
-    granted_total: u64,
-    outstanding: HashMap<u64, u64>,
-}
-
-/// The one epoch a node-local shim has. There is no fleet to advance it and nothing that could
-/// observe it advancing, so it is a constant and the code says which one.
-const SHIM_EPOCH: Epoch = Epoch(0);
 
 impl StoreAdapter {
     /// Bind the seams to `store`, whose signed manifest declares payload schema `abi_version`.
@@ -221,18 +191,8 @@ impl StoreAdapter {
     /// What the node-local shim is holding.
     ///
     /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
-    /// on [`Shim`]. This is a diagnostics read on a path every slice draw also walks.
-    ///
-    /// What that costs is that the two groups below are read at two instants rather than one, so a
-    /// caller reading while the shim is being written can see one group's figures beside a slightly
-    /// older other group's. Each group is still internally whole — the two slice figures come out
-    /// under one guard, and so do the two replay ones — which is what the figures actually have to
-    /// promise.
+    /// on [`Shim`].
     pub fn shim_state(&self) -> ShimState {
-        let (slices_outstanding, slices_granted) = {
-            let slices = self.inner.shim.slices();
-            (slices.outstanding.len(), slices.granted_total)
-        };
         let (replay_slots, replay_committed) = {
             let replay = self.inner.shim.replay();
             (
@@ -241,8 +201,6 @@ impl StoreAdapter {
             )
         };
         ShimState {
-            slices_outstanding,
-            slices_granted,
             replay_slots,
             replay_committed,
         }
@@ -261,16 +219,16 @@ impl StoreAdapter {
     /// node whose store is briefly unreachable must still boot, but the reason travels with the
     /// answer and is said out loud: a migration that seals a zero opening balance over a chain that
     /// was really there has broken the chain, and the one thing it may not do is break it quietly.
-    pub fn legacy_audit_head(&self) -> LegacyAuditHead {
+    pub fn migration_audit_head(&self) -> MigrationAuditHead {
         match self.store().list_audit_tail(1) {
-            Ok(tail) => LegacyAuditHead {
+            Ok(tail) => MigrationAuditHead {
                 head: match tail.last() {
-                    Some(entry) => LegacyHead {
+                    Some(entry) => MigrationHead {
                         seq: Some(entry.seq),
                         hash: Some(entry.hash.clone()),
-                        ..LegacyHead::empty()
+                        ..MigrationHead::empty()
                     },
-                    None => LegacyHead::empty(),
+                    None => MigrationHead::empty(),
                 },
                 unreadable: None,
             },
@@ -281,8 +239,8 @@ impl StoreAdapter {
                      migration seals a zero opening balance over a chain whose head is unknown. \
                      If that store held audit rows, this node's chain starts again from nothing."
                 );
-                LegacyAuditHead {
-                    head: LegacyHead::empty(),
+                MigrationAuditHead {
+                    head: MigrationHead::empty(),
                     unreadable: Some(format!("the previous release's audit tail: {e}")),
                 }
             }
@@ -293,11 +251,11 @@ impl StoreAdapter {
     /// metering rows for each named day.
     ///
     /// Reads only. A row the store would not answer for is NAMED in
-    /// [`LegacyCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
+    /// [`MigrationCells::unreadable`] rather than raised, because one unreadable bucket must not stop a
     /// node booting and must not vanish either.
-    pub fn legacy_cells_read(&self, plan: &LegacyReadPlan) -> LegacyCells {
+    pub fn migration_cells_read(&self, plan: &MigrationReadPlan) -> MigrationCells {
         let store = self.store();
-        let mut cells = LegacyCells::default();
+        let mut cells = MigrationCells::default();
         // Where each bucket's balance already sits in `cells.balances`. The vector's ORDER is the
         // plan's order and stays that way — this index only replaces the scan that found the slot,
         // which grew with the square of a deployment's virtual-key count on the one read that runs
@@ -318,10 +276,10 @@ impl StoreAdapter {
                         continue;
                     }
                     cells.cells_read += 1;
-                    let mut push = |lane: &str, dimension: LegacyCapDimension, amount: u64| {
+                    let mut push = |lane: &str, dimension: MigrationCapDimension, amount: u64| {
                         if amount != 0 {
-                            cells.figures.push(LegacyFigure {
-                                family: LegacyFamily::Window,
+                            cells.figures.push(MigrationFigure {
+                                family: MigrationFamily::Window,
                                 bucket: bucket.clone(),
                                 window: *window,
                                 lane: lane.to_string(),
@@ -331,17 +289,17 @@ impl StoreAdapter {
                             });
                         }
                     };
-                    push("", LegacyCapDimension::Requests, ledger.requests);
+                    push("", MigrationCapDimension::Requests, ledger.requests);
                     push(
                         "",
-                        LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                        MigrationCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                         ledger.billable_requests,
                     );
                     for model in &ledger.models {
                         for (unit, count) in &model.usage_units {
                             push(
                                 &model.model,
-                                LegacyCapDimension::Class(unit.clone()),
+                                MigrationCapDimension::Class(unit.clone()),
                                 *count,
                             );
                         }
@@ -368,10 +326,10 @@ impl StoreAdapter {
                 Ok(rows) => {
                     for row in rows {
                         cells.cells_read += 1;
-                        let mut push = |dimension: LegacyCapDimension, amount: u64| {
+                        let mut push = |dimension: MigrationCapDimension, amount: u64| {
                             if amount != 0 {
-                                cells.figures.push(LegacyFigure {
-                                    family: LegacyFamily::Meter,
+                                cells.figures.push(MigrationFigure {
+                                    family: MigrationFamily::Meter,
                                     bucket: row.key_id.clone(),
                                     window: *day,
                                     lane: row.model.clone(),
@@ -381,9 +339,9 @@ impl StoreAdapter {
                                 });
                             }
                         };
-                        push(LegacyCapDimension::Requests, row.requests);
+                        push(MigrationCapDimension::Requests, row.requests);
                         push(
-                            LegacyCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                            MigrationCapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
                             row.billable_requests,
                         );
                         for (unit, amount) in [
@@ -392,7 +350,7 @@ impl StoreAdapter {
                             (UNIT_CACHE_READ, row.tokens_cache_read),
                             (UNIT_CACHE_WRITE, row.tokens_cache_write),
                         ] {
-                            push(LegacyCapDimension::Class(unit.to_string()), amount);
+                            push(MigrationCapDimension::Class(unit.to_string()), amount);
                         }
                     }
                 }
@@ -417,7 +375,7 @@ impl StoreAdapter {
         window: u64,
         group_buckets: &[(String, u64)],
         days: &[u64],
-    ) -> Result<LegacyReadPlan, RecordStoreError> {
+    ) -> Result<MigrationReadPlan, RecordStoreError> {
         let mut windows: Vec<(String, u64)> = self
             .store()
             .list_keys()?
@@ -425,15 +383,15 @@ impl StoreAdapter {
             .map(|key| (key.id, window))
             .collect();
         windows.extend(group_buckets.iter().cloned());
-        Ok(LegacyReadPlan {
+        Ok(MigrationReadPlan {
             windows,
             days: days.to_vec(),
         })
     }
 
     /// The migration's source over this adapter's store, reading exactly `plan`.
-    pub fn legacy_ledger_rows(&self, plan: LegacyReadPlan) -> LegacyStoreRows {
-        LegacyStoreRows {
+    pub fn migration_ledger_rows(&self, plan: MigrationReadPlan) -> MigrationStoreRows {
+        MigrationStoreRows {
             adapter: self.clone(),
             plan,
             cells: std::sync::OnceLock::new(),
@@ -456,17 +414,17 @@ pub const BILLABLE_REQUESTS_CLASS: &str = "billable_requests";
 /// enumerable across that seam. Naming what will be read also means the read is bounded and
 /// reviewable, which a full-store walk at boot would not be.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyReadPlan {
+pub struct MigrationReadPlan {
     /// The (bucket, window) pairs whose token ledger to read.
     pub windows: Vec<(String, u64)>,
     /// The metering day buckets to read.
     pub days: Vec<u64>,
 }
 
-impl LegacyReadPlan {
+impl MigrationReadPlan {
     /// A plan naming nothing. Reading it produces no figures, which seals a zero opening balance.
     pub fn nothing() -> Self {
-        LegacyReadPlan::default()
+        MigrationReadPlan::default()
     }
 
     /// Whether this plan names anything at all.
@@ -479,21 +437,21 @@ impl LegacyReadPlan {
 ///
 /// The two travel together because the empty head has two very different meanings — "there was
 /// nothing there" and "the store would not say" — and a caller handed only the head cannot tell
-/// them apart. The reason joins the same named-reason channel [`LegacyCells::unreadable`] carries,
+/// them apart. The reason joins the same named-reason channel [`MigrationCells::unreadable`] carries,
 /// so one unanswered read is reported rather than either stopping a boot or vanishing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyAuditHead {
+pub struct MigrationAuditHead {
     /// The head itself. Empty when the store had nothing to say AND when it would not say.
-    pub head: LegacyHead,
+    pub head: MigrationHead,
     /// Why the head is empty, when it is empty because the store would not answer.
     pub unreadable: Option<String>,
 }
 
 /// What the previous release's cells held.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyCells {
+pub struct MigrationCells {
     /// One figure per bucket, day, lane, provider and dimension that held anything.
-    pub figures: Vec<LegacyFigure>,
+    pub figures: Vec<MigrationFigure>,
     /// The opening balance per bucket, from the enforcement ledger.
     pub balances: Vec<(String, i128)>,
     /// How many rows were read to arrive at those figures.
@@ -512,38 +470,39 @@ pub struct LegacyCells {
 /// and — on a store being written by something else — could answer the two questions from two
 /// different moments.
 #[derive(Debug, Clone)]
-pub struct LegacyStoreRows {
+pub struct MigrationStoreRows {
     adapter: StoreAdapter,
-    plan: LegacyReadPlan,
-    cells: std::sync::OnceLock<LegacyCells>,
-    audit: std::sync::OnceLock<LegacyAuditHead>,
+    plan: MigrationReadPlan,
+    cells: std::sync::OnceLock<MigrationCells>,
+    audit: std::sync::OnceLock<MigrationAuditHead>,
 }
 
-impl LegacyStoreRows {
+impl MigrationStoreRows {
     /// What this source will read.
-    pub fn plan(&self) -> &LegacyReadPlan {
+    pub fn plan(&self) -> &MigrationReadPlan {
         &self.plan
     }
 
     /// The reading, taken on first use and kept.
-    pub fn cells(&self) -> &LegacyCells {
+    pub fn cells(&self) -> &MigrationCells {
         self.cells
-            .get_or_init(|| self.adapter.legacy_cells_read(&self.plan))
+            .get_or_init(|| self.adapter.migration_cells_read(&self.plan))
     }
 
     /// The chain head, taken on first use and kept — for the same reason the cells are: the head a
     /// caller reads and the reason it reports must describe one reading of one store.
-    pub fn audit_head(&self) -> &LegacyAuditHead {
-        self.audit.get_or_init(|| self.adapter.legacy_audit_head())
+    pub fn audit_head(&self) -> &MigrationAuditHead {
+        self.audit
+            .get_or_init(|| self.adapter.migration_audit_head())
     }
 }
 
-impl LegacyMigrationSource for LegacyStoreRows {
+impl MigrationSource for MigrationStoreRows {
     /// The chain head, with the per-bucket balances the cells hold hung off it — one object that
     /// read one store, so the head and the figures cannot disagree about what was there.
-    fn read_head(&self) -> LegacyHead {
+    fn read_head(&self) -> MigrationHead {
         let cells = self.cells();
-        LegacyHead {
+        MigrationHead {
             balances: cells.balances.clone(),
             cells_read: cells.cells_read,
             ..self.audit_head().head.clone()
@@ -551,14 +510,14 @@ impl LegacyMigrationSource for LegacyStoreRows {
     }
 }
 
-impl LegacyLedgerRows for LegacyStoreRows {
-    fn read_figures(&self) -> LegacyFigures {
+impl MigrationLedgerRows for MigrationStoreRows {
+    fn read_figures(&self) -> MigrationFigures {
         let cells = self.cells();
         // An unread chain head joins the unread cells on the one channel the migration report
         // already prints, so "the store would not say" reaches an operator whichever read it was.
         let mut unreadable = cells.unreadable.clone();
         unreadable.extend(self.audit_head().unreadable.clone());
-        LegacyFigures {
+        MigrationFigures {
             figures: cells.figures.clone(),
             unreadable,
         }
@@ -566,64 +525,8 @@ impl LegacyLedgerRows for LegacyStoreRows {
 }
 
 impl Shim {
-    /// A poisoned shim lock is recovered from, never propagated: a panic somewhere else must not
-    /// turn every later slice draw into an error, which is exactly what the appendix forbids.
-    fn slices(&self) -> MutexGuard<'_, Slices> {
-        self.slices.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
     fn replay(&self) -> MutexGuard<'_, ReplaySlots> {
         self.replay.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-impl SliceStore for StoreAdapter {
-    /// Draw a slice. The shim grants what was asked for, in full, at its own epoch.
-    ///
-    /// It is not pretending to be a fleet-wide window: a node whose store cannot hold one has no
-    /// fleet to share a cap with, so the bucket's own cap — enforced by the caps unit, not here —
-    /// is the whole of the limit, and a slice draw against it is bookkeeping the node already did.
-    fn reserve(&self, request: &SliceRequest) -> Result<SliceGrant, SliceError> {
-        let mut slices = self.inner.shim.slices();
-        slices.next_id += 1;
-        let id = slices.next_id;
-        slices.granted_total = slices.granted_total.saturating_add(request.wanted);
-        slices.outstanding.insert(id, request.wanted);
-        Ok(SliceGrant {
-            id: SliceId(id),
-            granted: request.wanted,
-            // Nothing expires a lease that no other node can take, so the grant is open-ended.
-            valid_until: busbar_contract::Millis::MAX,
-            // The shim's epoch, not the requested one: stamping is not refusing.
-            epoch: SHIM_EPOCH,
-        })
-    }
-
-    /// Give back what was not spent. An id the shim never granted (a slice drawn before a restore,
-    /// say) is accepted and forgotten rather than refused.
-    fn release(&self, id: SliceId, unspent: u64) -> Result<(), SliceError> {
-        let mut slices = self.inner.shim.slices();
-        if let Some(granted) = slices.outstanding.remove(&id.0) {
-            slices.granted_total = slices.granted_total.saturating_sub(unspent.min(granted));
-        }
-        Ok(())
-    }
-
-    fn epoch(&self) -> Epoch {
-        SHIM_EPOCH
-    }
-}
-
-/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter (status row 187,
-/// ARCHITECT 2026-10-20): the slice epoch this node serves at, which `reseal_epoch_floor` puts in
-/// the store as the floor and the boot compares with the floor the store holds. It is the door the
-/// root reads it through, so the money-slice seam stays named only here and in its defining module.
-impl StoreAdapter {
-    /// This node's slice epoch, as a number: the value the epoch floor is resealed to and checked
-    /// against.
-    #[must_use]
-    pub fn recovery_epoch(&self) -> u64 {
-        SliceStore::epoch(self).0
     }
 }
 

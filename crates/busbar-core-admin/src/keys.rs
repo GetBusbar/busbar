@@ -32,6 +32,7 @@ where
 }
 
 use crate::admin_state::AppAdmin as _;
+use crate::idempotency::durable::{self, Claim, Refused, Settled};
 use crate::idempotency::Probe;
 use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::AdminError;
@@ -364,17 +365,79 @@ fn key_meta(k: &VirtualKey) -> Value {
     // 1.5.0 keys are PURE AUTH bindings: id / name / allowed_pools / group / labels. Keys carry no
     // limits (all enforcement flows through the bound group). `allowed_pools` keeps the intent:
     // JSON `null` = all pools; `[]` = no pools.
-    json!({
+    let mut meta = json!({
         "id": k.id,
         "name": k.name,
         "allowed_pools": k.allowed_scopes.as_ref().map(|list| {
-            list.iter().map(|s| s.value.as_str()).collect::<Vec<_>>()
+            list.iter()
+                .filter(|s| s.kind == "pool")
+                .map(|s| s.value.as_str())
+                .collect::<Vec<_>>()
         }),
         "group": k.group,
         "enabled": k.enabled,
         "created_at": k.created_at,
         "labels": k.labels,
-    })
+    });
+    // Each plane-kind grant the key holds, under its own `allowed_{kind}s` field (W9) — the same
+    // partition the key's stored row carries. A key holding none (every 1.5.5 key) gains no field.
+    let mut by_kind: std::collections::BTreeMap<String, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for s in k
+        .allowed_scopes
+        .iter()
+        .flatten()
+        .filter(|s| s.kind != "pool")
+    {
+        by_kind
+            .entry(busbar_contract::records::scope_kinds::wire_field_for(
+                &s.kind,
+            ))
+            .or_default()
+            .push(s.value.as_str());
+    }
+    for (field, values) in by_kind {
+        meta[field] = json!(values);
+    }
+    meta
+}
+
+/// Lift the plane-kind grant fields (`allowed_{kind}s`, W9) off a mint body: the body without them,
+/// and the grant they state (`None` when the body names none; `Some(list)` when it names at least
+/// one, the list possibly empty; a field whose value is `null` is omitted, as an `Option` field
+/// reads it). `None` (refused) for a body that is not an object, a grant field of a kind no installed
+/// plane declares, or a grant that is not a list of names.
+fn lift_plane_grants(
+    body: Value,
+) -> Option<(Value, Option<Vec<busbar_contract::records::ScopeRef>>)> {
+    let Value::Object(mut fields) = body else {
+        return Some((body, None));
+    };
+    let grant_fields: Vec<(String, String)> = fields
+        .keys()
+        .filter_map(|field| {
+            busbar_kernel::governance::plane_grant_kind(field).map(|kind| (field.clone(), kind))
+        })
+        .collect();
+    let mut plane: Option<Vec<busbar_contract::records::ScopeRef>> = None;
+    for (field, kind) in grant_fields {
+        let value = fields.remove(&field)?;
+        if !busbar_kernel::governance::plane_declares_kind(&kind) {
+            return None;
+        }
+        if value.is_null() {
+            continue;
+        }
+        let names = value.as_array()?;
+        let list = plane.get_or_insert_with(Vec::new);
+        for name in names {
+            list.push(busbar_contract::records::ScopeRef {
+                kind: kind.clone(),
+                value: name.as_str()?.to_string(),
+            });
+        }
+    }
+    Some((Value::Object(fields), plane))
 }
 
 /// `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
@@ -471,12 +534,79 @@ fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// THE NODE'S REPLAY CACHE for the two replayable key mutations: one process-lifetime
 /// [`crate::idempotency::IdempotencyCache`], handed to these handlers as a request extension (the
-/// composition root builds it once and inserts it on every request, the way the claim journal rides
-/// in; [`crate::v1::json`]'s router supplies a per-router one to a mount that supplies none). It
-/// holds the committed 201/200 object, which carries the once-shown secret, and its in-flight
-/// sentinel is stepped over by the sweep, so a mint stuck past the replay window is still refused to
-/// a retry as in flight rather than minted twice.
+/// composition root builds it once and inserts it on every request; [`crate::v1::json`]'s router
+/// supplies a per-router one to a mount that supplies none). It holds the committed 201/200 object,
+/// which carries the once-shown secret, and its in-flight sentinel is stepped over by the sweep, so
+/// a mint stuck past the replay window is still refused to a retry as in flight rather than minted
+/// twice. The secret never goes to the store: what outlives this process is the store claim
+/// ([`durable`]).
 pub type KeyReplayCache = crate::idempotency::IdempotencyCache<Value>;
+
+/// Claim `key` in the configured store before a mint or rotate becomes irreversible (see
+/// [`durable`]), off the async workers.
+async fn claim_in_store(
+    store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
+    key: (String, String),
+) -> Result<Claim, Refused> {
+    let now = busbar_kernel::store::now();
+    tokio::task::spawn_blocking(move || durable::claim(&*store, &key, now))
+        .await
+        .unwrap_or_else(|e| Err(Refused::Unavailable(format!("the claim did not run: {e}"))))
+}
+
+/// Settle a held claim in the configured store, off the async workers. A store that does not keep
+/// it is logged as an error: the key then reads as in flight until the claim lapses, never as free
+/// to run again.
+async fn settle_in_store(
+    store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
+    claim: Option<Claim>,
+    settled: Settled,
+) {
+    let Some(claim) = claim else {
+        return;
+    };
+    let now = busbar_kernel::store::now();
+    let kept =
+        tokio::task::spawn_blocking(move || durable::settle(&*store, &claim, now, &settled)).await;
+    let why = match kept {
+        Ok(Ok(())) => return,
+        Ok(Err(why)) => why,
+        Err(e) => e.to_string(),
+    };
+    diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "idempotency.settle", error = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+}
+
+/// The answer to a store claim that was not granted. Never a second run of the mutation.
+fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
+    let ran = match refused {
+        Refused::InFlight => {
+            return key_err(
+                who,
+                &AdminError::Conflict(
+                    "a request with this Idempotency-Key is already in flight".into(),
+                ),
+                Cond::IdempotencyInFlight,
+            )
+        }
+        Refused::Unavailable(why) => {
+            diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "idempotency.claim", error = %why, "admin store operation failed");
+            record_key_refusal(who);
+            return crate::v1::json::err_json(&AdminError::Unavailable(
+                "the store could not record this Idempotency-Key; nothing was done".into(),
+            ));
+        }
+        Refused::Applied(what) => what,
+        Refused::Answer(_) => "an earlier request".to_string(),
+    };
+    key_err(
+        who,
+        &AdminError::Conflict(format!(
+            "a request with this Idempotency-Key already ran ({ran}); its once-shown secret is not \
+             kept, so it cannot be replayed here"
+        )),
+        Cond::IdempotencyInFlight,
+    )
+}
 
 /// The label a cap rejection uses for the UNBOUND (no `group:`) key bucket.
 const UNBOUND_BUCKET_LABEL: &str = "(no group)";
@@ -538,8 +668,7 @@ pub(crate) async fn create_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
-    // The node's replay cache (item 271: it journals each first sighting on the node's durable
-    // journal itself, where the root bound one).
+    // The node's replay cache.
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
     body: Bytes,
 ) -> Response {
@@ -568,10 +697,7 @@ pub(crate) async fn create_key(
     let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays
-            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
-            .await
-        {
+        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
             // The first (and only) probe of a request that presented no key replays nothing.
             Probe::NoKey => {}
             // A COMPLETED prior mint (the real 201 object): replay it verbatim.
@@ -605,9 +731,21 @@ pub(crate) async fn create_key(
     // This body carries SECRETS (an AWS secret_access_key, the bearer being minted), so any parse
     // failure maps to a GENERIC 400, logging only the byte length via `parse_err_log` (never the raw
     // error, never an input fragment).
-    let req: CreateKeyReq = match busbar_kernel::json::parse(&body) {
-        Ok(req) => req,
-        Err(_) => {
+    // The plane-kind grant fields (`allowed_{kind}s`, W9) are lifted off the body before the rest
+    // is read as `CreateKeyReq`, whose `deny_unknown_fields` (and published schema) stay exactly
+    // 1.5.5's. A grant field of a kind no installed plane declares, or one that is not a list of
+    // names, is refused as an unknown or malformed field is: the same generic 400.
+    let parsed = busbar_kernel::json::parse::<Value>(&body)
+        .ok()
+        .and_then(lift_plane_grants)
+        .and_then(|(rest, plane)| {
+            serde_json::from_value::<CreateKeyReq>(rest)
+                .ok()
+                .map(|req| (req, plane))
+        });
+    let (req, plane_scopes) = match parsed {
+        Some(req) => req,
+        None => {
             diag_debug!(
                 ADMIN_CREATEKEY_MALFORMED_BODY,
                 "create_key: {}",
@@ -647,6 +785,18 @@ pub(crate) async fn create_key(
              `busbar --generate-signing-key`)"
                     .into(),
             ),
+            Cond::NoSigningKey,
+        );
+    }
+    // A RECOVERABLE credential (`issue_aws_credential`) is stored sealed under the at-rest key
+    // (`credentials.at_rest`). Without one, refuse before anything is written, saying what to
+    // configure; the refusal is audited like every other mint refusal. It rides the declared
+    // `Conflict / NoSigningKey` condition (a mint key the config does not provide), so the frozen
+    // error taxonomy and openapi document stay as 1.5.5 published them.
+    if req.issue_aws_credential && !gov.at_rest_enabled() {
+        return key_err(
+            who,
+            &AdminError::Conflict(busbar_kernel::governance::at_rest::NO_KEY_REFUSAL.to_string()),
             Cond::NoSigningKey,
         );
     }
@@ -694,9 +844,20 @@ pub(crate) async fn create_key(
     // the mode the key is minted with — the per-role `binding_modes` ceiling is reachable and refuses
     // a caller whose role may not mint this mode.
     let requested_binding_mode = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
+    // The grant as the key will hold it: naming any grant field makes it exhaustive across kinds,
+    // so its pools are what the ceiling judges (`[]` when only another kind was named).
+    let (requested_pools, grants_other_kinds) =
+        busbar_kernel::governance::mint_policy::requested_grant(
+            busbar_kernel::governance::grant_scopes(
+                req.allowed_pools.clone(),
+                plane_scopes.clone(),
+            )
+            .as_deref(),
+        );
     let mint_req = MintRequest {
         roles: caller_roles,
-        requested_pools: req.allowed_pools.as_deref(),
+        requested_pools: requested_pools.as_deref(),
+        grants_other_kinds,
         requested_ttl_secs: requested_ttl,
         explicit_ttl: explicit,
         requested_mode: Some(requested_binding_mode),
@@ -790,6 +951,7 @@ pub(crate) async fn create_key(
     let spec = NewKeySpec {
         name: req.name,
         allowed_pools,
+        plane_scopes,
         group: req.group.clone(),
         labels: req.labels,
         minted_by: Some(actor.clone()),
@@ -804,6 +966,18 @@ pub(crate) async fn create_key(
     let want_parent = req.parent.clone();
     let gov = gov.clone();
     let txn_actor = actor.clone();
+    // Before the mint becomes irreversible the key is claimed in the store too, so a retry after a
+    // restart or on another node is refused rather than minted a second time.
+    let replay_store = gov.store();
+    let claim = match idem_reservation.as_ref() {
+        Some(r) => {
+            match claim_in_store(std::sync::Arc::clone(&replay_store), r.key().clone()).await {
+                Ok(claim) => Some(claim),
+                Err(refused) => return claim_refused(who, refused),
+            }
+        }
+        None => None,
+    };
     // The mint is about to be handed to `config_transaction`'s uncancellable blocking half — from
     // here on, a dropped handler future (client disconnect) must NOT clear the sentinel, since the
     // mint may already be landing, so a drop from here on leaves the sentinel (a client retry gets
@@ -934,6 +1108,7 @@ pub(crate) async fn create_key(
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
+            settle_in_store(replay_store, claim, Settled::Released).await;
             return crate::v1::json::err_json(&e);
         }
     };
@@ -949,6 +1124,7 @@ pub(crate) async fn create_key(
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
+            settle_in_store(replay_store, claim, Settled::Released).await;
             return key_err(
                 who,
                 &AdminError::Conflict(format!(
@@ -996,6 +1172,12 @@ pub(crate) async fn create_key(
     if let Some(r) = idem_reservation.take() {
         r.commit(body.clone(), busbar_kernel::store::now());
     }
+    settle_in_store(
+        replay_store,
+        claim,
+        Settled::Applied(format!("key:{}", key.id)),
+    )
+    .await;
     json_response(StatusCode::CREATED, body)
 }
 
@@ -1392,6 +1574,19 @@ pub(crate) async fn list_keys(
     }
 }
 
+/// What the rotate's blocking section settled.
+enum RotateOutcome {
+    /// Re-minted: the key's state and the new credential.
+    Rotated(
+        &'static str,
+        Box<busbar_kernel::governance::RotatedCredential>,
+    ),
+    /// No live key under that id.
+    Unknown,
+    /// The key's binding is past the caller's mint ceiling; nothing was re-minted.
+    PastCeiling(String),
+}
+
 /// POST /api/v1/admin/keys/{id}/rotate — re-issue an existing key's CREDENTIAL in place: the id (and
 /// with it budgets, rate windows, usage, audit attribution) is unchanged, the PREVIOUS credential
 /// stops authenticating immediately and fleet-wide, and the new one is returned exactly once,
@@ -1441,10 +1636,7 @@ pub(crate) async fn rotate_key(
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays
-            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
-            .await
-        {
+        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
             Probe::NoKey => {}
             Probe::Replay(cached) => return json_response(StatusCode::OK, cached),
             Probe::InFlight => {
@@ -1469,44 +1661,81 @@ pub(crate) async fn rotate_key(
     // delete that lands between rotate's read and write is clobbered by rotate's put — RESURRECTING
     // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
-    // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
-    // `expires_at` would receive (rotate takes no body today) — and, being a mint, under the SAME
-    // lifetime ceiling (`auth.policy.max_ttl` and the caller's role cap): a default is clamped,
-    // never refused, so a rotate is answered exactly as before wherever no ceiling is configured.
-    // The pool and mode ceilings are not asked: a rotate re-mints the key's existing binding.
+    // A ROTATE IS A MINT OF THE KEY'S OWN BINDING, judged by the mint's ceiling
+    // (`auth.policy.max_ttl`, `auth.policy.mint_ceilings.<role>`): the re-minted token is a working
+    // credential for every pool the key is bound to, under the mode it was minted with. So the
+    // caller's ceiling is asked about exactly that binding — read under the gate, the same read the
+    // rotate makes — and a binding past it is refused before anything is re-minted, as `POST /keys`
+    // refuses it: a delegated admin held to some pools cannot obtain a token for others by rotating
+    // a key it could never have minted. The lifetime is the default a mint with no `expires_in` /
+    // `expires_at` receives (rotate takes no body), clamped to the ceiling, never refused, so a
+    // rotate is answered exactly as before wherever no ceiling is configured.
     let now = busbar_kernel::store::now();
-    let caller_roles: &[String] = principal.0.as_ref().map_or(&[], |p| p.roles.as_slice());
-    let ttl = app
-        .mint_policy
-        .check_mint(&MintRequest {
-            roles: caller_roles,
-            requested_pools: Some(&[]),
-            requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
-            explicit_ttl: false,
-            requested_mode: None,
-        })
-        // A default naming no pools and no mode is clamped, never refused; were it refused, the
-        // token would be minted already expired rather than past the ceiling (fail closed).
-        .unwrap_or(0);
-    let exp = now.saturating_add(ttl);
+    let caller_roles: Vec<String> = principal
+        .0
+        .as_ref()
+        .map_or_else(Vec::new, |p| p.roles.clone());
+    let policy = std::sync::Arc::clone(&app.mint_policy);
+    // Claimed in the store before the rotate becomes irreversible, as the mint is.
+    let replay_store = gov.store();
+    let claim = match idem_reservation.as_ref() {
+        Some(r) => {
+            match claim_in_store(std::sync::Arc::clone(&replay_store), r.key().clone()).await {
+                Ok(claim) => Some(claim),
+                Err(refused) => return claim_refused(who, refused),
+            }
+        }
+        None => None,
+    };
     // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
     // dropped handler future (client disconnect) must NOT clear the sentinel. See
     // `Reservation::in_flight`.
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
-    let res = tokio::task::spawn_blocking(move || {
-        let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        // `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
-        // than after the `.await` below — a rotated key can still be `disabled` or `revoked` (rotate
-        // does not touch `enabled` or the denylist, only tombstoned keys refuse to rotate at all, see
-        // `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed, not just `enabled`.
-        gov.rotate_key(&gid, exp)
-            .map(|opt| opt.map(|rotated| (key_state(&rotated.key, &gov), rotated)))
-    })
+    let res = tokio::task::spawn_blocking(
+        move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
+            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            // A tombstoned row is not rotatable (`GovState::rotate_key`), so it answers unknown
+            // before any ceiling is asked about it.
+            let Some(key) = gov
+                .store()
+                .get_key(&gid)?
+                .filter(|k| k.deleted_at.is_none())
+            else {
+                return Ok(RotateOutcome::Unknown);
+            };
+            let (pools, grants_other_kinds) =
+                busbar_kernel::governance::mint_policy::requested_grant(
+                    key.allowed_scopes.as_deref(),
+                );
+            let ttl = match policy.check_mint(&MintRequest {
+                roles: &caller_roles,
+                requested_pools: pools.as_deref(),
+                grants_other_kinds,
+                requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
+                explicit_ttl: false,
+                requested_mode: key.binding_mode.as_deref(),
+            }) {
+                Ok(ttl) => ttl,
+                Err(msg) => return Ok(RotateOutcome::PastCeiling(msg)),
+            };
+            // `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
+            // than after the `.await` below — a rotated key can still be `disabled` or `revoked`
+            // (rotate does not touch `enabled` or the denylist, only tombstoned keys refuse to
+            // rotate at all, see `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed,
+            // not just `enabled`.
+            Ok(match gov.rotate_key(&gid, now.saturating_add(ttl))? {
+                Some(rotated) => {
+                    RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
+                }
+                None => RotateOutcome::Unknown,
+            })
+        },
+    )
     .await;
     match res {
-        Ok(Ok(Some((state, rotated)))) => {
+        Ok(Ok(RotateOutcome::Rotated(state, rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
             body["state"] = json!(state);
@@ -1519,23 +1748,35 @@ pub(crate) async fn rotate_key(
             if let Some(r) = idem_reservation.take() {
                 r.commit(body.clone(), busbar_kernel::store::now());
             }
+            settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
             json_response(StatusCode::OK, body)
         }
-        // All three arms below are the transaction's OWN fail-closed outcomes, reached only after
+        // All four arms below are the transaction's OWN fail-closed outcomes, reached only after
         // the `.await` completed normally (never on genuine cancellation) — safe to free the
         // reservation for a legitimate retry.
-        Ok(Ok(None)) => {
+        Ok(Ok(RotateOutcome::Unknown)) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
+            settle_in_store(replay_store, claim, Settled::Released).await;
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
+        }
+        Ok(Ok(RotateOutcome::PastCeiling(msg))) => {
+            if let Some(r) = idem_reservation.take() {
+                r.clear();
+            }
+            settle_in_store(replay_store, claim, Settled::Released).await;
+            key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields)
         }
         Ok(Err(e)) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
+            settle_in_store(replay_store, claim, Settled::Released).await;
             internal_error("rotate_key", &e)
         }
+        // A rotate that did not run to completion may or may not have landed: its store claim is
+        // left unsettled, so a retry is refused as in flight until the claim lapses.
         Err(e) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();

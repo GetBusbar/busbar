@@ -171,34 +171,6 @@ fn diag_level_tokens_match_serde() {
     }
 }
 
-/// `Observations` is the author-side collector; folding it produces the envelope the wire carries,
-/// with both arrays populated from the typed entries.
-#[test]
-fn observations_fold_into_the_envelope() {
-    let obs = Observations::none()
-        .metric(PluginMetric::counter("rotated_total", 2.0))
-        .diagnostic(PluginDiagnostic::warn("BUSBAR-1234", "rename failed"));
-    assert!(!obs.is_empty());
-    let e = obs.into_envelope("Delivered");
-    assert_eq!(e.result, "Delivered");
-    assert_eq!(e.metrics.len(), 1);
-    assert_eq!(e.metrics[0]["name"], "rotated_total");
-    assert_eq!(e.diagnostics.len(), 1);
-    assert_eq!(e.diagnostics[0]["code"], "BUSBAR-1234");
-}
-
-/// Nothing to report means a BARE envelope, byte-for-byte — the fold does not manufacture empty
-/// arrays that would then ride every response of every kind.
-#[test]
-fn empty_observations_fold_to_a_bare_envelope() {
-    let e = Observations::none().into_envelope("Delivered");
-    assert!(e.is_bare());
-    assert_eq!(
-        serde_json::to_string(&e).expect("serialize"),
-        r#"{"result":"Delivered"}"#
-    );
-}
-
 /// K9c: a diagnostic's fields attached OUT of key order carry that order (`order`), which a host
 /// rendering a first-party plugin's line as its own writes them in; attached in key order they
 /// carry nothing more (the pinned wire above is unchanged).

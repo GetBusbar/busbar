@@ -81,8 +81,8 @@ fn record(seq: u64) -> AuditRecord {
 #[test]
 fn a_store_that_will_not_answer_for_its_audit_tail_names_the_reason() {
     let adapter = adapter_over_tail(Err("the backend is unreachable".to_string()));
-    let read = adapter.legacy_audit_head();
-    assert_eq!(read.head, LegacyHead::empty(), "an unread head is empty");
+    let read = adapter.migration_audit_head();
+    assert_eq!(read.head, MigrationHead::empty(), "an unread head is empty");
     let reason = read
         .unreadable
         .expect("a store that would not answer must name the reason it did not");
@@ -92,7 +92,7 @@ fn a_store_that_will_not_answer_for_its_audit_tail_names_the_reason() {
     );
 
     // And it reaches the migration report on the same channel an unread cell does.
-    let rows = adapter.legacy_ledger_rows(LegacyReadPlan::nothing());
+    let rows = adapter.migration_ledger_rows(MigrationReadPlan::nothing());
     assert_eq!(
         rows.read_figures().unreadable.len(),
         1,
@@ -106,8 +106,8 @@ fn a_store_that_will_not_answer_for_its_audit_tail_names_the_reason() {
 #[test]
 fn a_store_with_no_audit_rows_reads_empty_without_a_reason() {
     let adapter = adapter_over_tail(Ok(Vec::new()));
-    let read = adapter.legacy_audit_head();
-    assert_eq!(read.head, LegacyHead::empty());
+    let read = adapter.migration_audit_head();
+    assert_eq!(read.head, MigrationHead::empty());
     assert_eq!(
         read.unreadable, None,
         "an empty log is an answer, not an unread row"
@@ -118,7 +118,7 @@ fn a_store_with_no_audit_rows_reads_empty_without_a_reason() {
 #[test]
 fn the_last_audit_row_is_the_head() {
     let adapter = adapter_over_tail(Ok(vec![record(41), record(42)]));
-    let read = adapter.legacy_audit_head();
+    let read = adapter.migration_audit_head();
     assert_eq!(read.head.seq, Some(42));
     assert_eq!(read.head.hash.as_deref(), Some("hash-42"));
     assert_eq!(read.unreadable, None);

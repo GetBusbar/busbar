@@ -200,25 +200,6 @@ impl SealedWrite {
         Poll::Ready(Ok(()))
     }
 
-    /// Write what is left as request BODY pieces on a framed `stream` (`piece` names the body):
-    /// `Ready(Ok(()))` once every byte is taken.
-    pub fn poll_request(
-        &mut self,
-        c: &mut Connector<'_>,
-        stream: u64,
-        piece: &RequestPiece,
-    ) -> Answer<()> {
-        // A framed stream is secured by its need: its target decides (`Exchange`).
-        while !self.finished() {
-            match c.write_request(stream, piece, &self.buf[self.done..]) {
-                Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Ready(Ok(n)) => self.done += n,
-            }
-        }
-        Poll::Ready(Ok(()))
-    }
-
     /// Write it as one request piece on a framed `stream` (`piece`'s spans index these bytes).
     pub fn request(
         &mut self,

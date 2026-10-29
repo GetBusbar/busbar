@@ -2,7 +2,7 @@
 //! answers, the auth kind's challenge round, the store kind's record shapes and error, an export
 //! sink's acknowledgement, and the envelope-field bound.
 
-use crate::bounded::{BoundedVec, Facts, MAX_KEYS, MAX_RECORD_BYTES};
+use crate::bounded::{Facts, MAX_RECORD_BYTES};
 use crate::ids::SchemeAlt;
 use core::fmt;
 
@@ -125,29 +125,4 @@ pub use crate::secret_ref::SecretRef;
 
 // ── export ───────────────────────────────────────────────────────────────────────────────────
 
-/// A sink's acknowledgement.
-///
-/// A sink written against this contract acknowledges at-least-once. The previous release's own
-/// sink subsystem stays fire-and-forget with its admission gate, and it refuses a configuration
-/// that asks it for durability rather than pretending to provide it.
-///
-/// Derives `Deserialize` as well as `Serialize`, and pins `snake_case` wire tokens (`durable` /
-/// `received` / `retry`) — OWNER-RULED 2026-09-21: no consumer outside this crate names `Ack` yet
-/// (verified by a repo-wide grep), so this is the cheapest moment this ever moves. See
-/// `tests/ack_wire.rs` for the pinned wire form and round-trip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Ack {
-    /// Received and durable at the sink.
-    Durable,
-    /// Received, not durable.
-    Received,
-    /// Not received; the kernel retries.
-    Retry,
-}
-
 // ── the shapes the loop passes around that no one kind owns ───────────────────────────────────
-
-/// A bounded list of envelope fields: the one spelling of the bound, for every shape that carries
-/// one.
-pub type EnvelopeFields<'u> = BoundedVec<crate::wire::EnvelopeField<'u>, MAX_KEYS>;

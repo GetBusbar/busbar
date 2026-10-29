@@ -4,30 +4,8 @@
 //! The capabilities on the way out: the sealed destination and the handle that stands for key
 //! material.
 //!
-//! The decoration that authenticates an outbound request ([`AuthDecoration`](crate::AuthDecoration)),
-//! its secret placeholder ([`SecretSlot`](crate::SecretSlot)) and the one-shot secret placeholder
-//! ([`SecretOnce`](crate::SecretOnce)) have ONE home, the destination module (`dest.rs`), and one
-//! spelling, the crate root (#73, X-1802). This module once carried a second, differently-shaped
-//! copy of each; nothing here re-spells them:
-//!
-//! ```compile_fail,E0432
-//! use busbar_contract::caps::SecretOnce;
-//! ```
-//!
-//! ```compile_fail,E0432
-//! use busbar_contract::caps::AuthDecoration;
-//! ```
-//!
-//! ```compile_fail,E0432
-//! use busbar_contract::caps::SecretSlot;
-//! ```
-//!
-//! The one spelling each has:
-//!
-//! ```
-//! use busbar_contract::{AuthDecoration, SecretOnce, SecretSlot};
-//! let _: Option<(AuthDecoration<'static>, SecretOnce, SecretSlot)> = None;
-//! ```
+//! The secret placeholder ([`SecretSlot`](crate::SecretSlot)) and the one-shot secret placeholder
+//! ([`SecretOnce`](crate::SecretOnce)) live in the destination module (`dest.rs`).
 
 use crate::caps::capability::Dial;
 use crate::caps::step::LaneId;

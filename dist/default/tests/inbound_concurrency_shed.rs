@@ -174,9 +174,7 @@ fn free_port() -> u16 {
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
-        format!(
-            "mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n  api_key_env: MOCK_KEY\n"
-        ),
+        format!("mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n"),
     )
     .unwrap();
     std::fs::write(

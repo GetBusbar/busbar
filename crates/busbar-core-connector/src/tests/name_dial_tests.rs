@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A NEED DIALS A HOSTNAME THROUGH THE ONE DESTINATION GUARD, END TO END (`BUSBAR-1.6.0.md` THE
-//! DESIGN, connections; CONNECTOR-19 ruling (b); OWNER ruling DESTINATION GUARD). A plugin's view of
+//! DESIGN, connections). A plugin's view of
 //! the connection table (`HostConns`, over the host's lowered slots) opens a need whose target is a
 //! NAME; the connector judges the authority through the deployment's one judge
 //! (`process::GuardJudge`), the name resolves off the caller's thread, and the connector dials

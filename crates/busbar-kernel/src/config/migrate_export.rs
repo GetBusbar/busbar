@@ -12,7 +12,7 @@
 //!    NAMED-DEFINITION map (`<name>: { module, settings }`), so one module can back several
 //!    instances.
 //! 2. [`migrate_observability_block`] — 1.5.3: the `observability:` block is DELETED, its last
-//!    field folded into an `export:` instance of the trace exporter (the root legacy table names it).
+//!    field folded into an `export:` instance of the trace exporter (the root migration table names it).
 //! 3. [`migrate_export_projection`] — 1.5.3 A0.1: each instance's PROJECTION is made explicit
 //!    (`streams:`), from the same module→streams table the validator reads.
 //!
@@ -26,11 +26,11 @@ use serde_yaml::{Mapping, Value};
 
 /// The retired TYPE keys of the 1.5.x type-keyed `export:` block, each with the default instance
 /// NAME it is rewritten to and the `module:` that backs it — `(type key, instance name, module)` —
-/// read off the root legacy table's `export_type_keys` row (BUSBAR-1.6.0.md §2: a migration for a
+/// read off the root migration table's `export_type_keys` row (BUSBAR-1.6.0.md §2: a migration for a
 /// plugin that may not be in the build lives there, frozen 1.5.5 text; the kernel names no export
 /// instance). Shared with the migrator tests so the goldens cannot drift from the rewrite.
 pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static str)> {
-    super::legacy::text("export_type_keys")
+    super::migration_table::text("export_type_keys")
         .split(" | ")
         .filter_map(|row| {
             let mut field = row.split(':');
@@ -40,10 +40,10 @@ pub(crate) fn export_type_keys() -> Vec<(&'static str, &'static str, &'static st
 }
 
 /// The streams each 1.5.x export module carried — a FROZEN fact about the documents this pass
-/// rewrites (the root legacy table's `export_module_streams` row, `module:stream` per module): the
+/// rewrites (the root migration table's `export_module_streams` row, `module:stream` per module): the
 /// first-party sink on the export axis that now carries each declares the same streams.
 fn released_module_streams() -> Vec<(&'static str, Vec<ExportStream>)> {
-    super::legacy::text("export_module_streams")
+    super::migration_table::text("export_module_streams")
         .split(" | ")
         .filter_map(|row| {
             let (module, streams) = row.split_once(':')?;
@@ -259,8 +259,8 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
         }
         return;
     };
-    let key = super::legacy::text("observability_trace_key");
-    let key_1_4 = super::legacy::text("observability_trace_key_1_4");
+    let key = super::migration_table::text("observability_trace_key");
+    let key_1_4 = super::migration_table::text("observability_trace_key_1_4");
     let url = [key, key_1_4]
         .into_iter()
         .filter(|k| !k.is_empty())
@@ -270,8 +270,11 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
     let url = url.filter(|v| !v.is_null());
     if let Some(url) = url {
         let export = export_map_mut(root);
-        let module = super::legacy::text("export_trace_module");
-        let name = uniq_export_name(export, super::legacy::text("export_trace_instance"));
+        let module = super::migration_table::text("export_trace_module");
+        let name = uniq_export_name(
+            export,
+            super::migration_table::text("export_trace_instance"),
+        );
         let mut settings = Mapping::new();
         settings.insert("url".into(), url);
         let mut inst = Mapping::new();

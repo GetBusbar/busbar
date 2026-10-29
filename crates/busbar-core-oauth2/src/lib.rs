@@ -25,7 +25,7 @@
 //! * [`config`] — the `oauth_as:` block (`OauthAsCfg`/`AsIdentity`), its boot refusals and its
 //!   secret-reference walk. The kernel carries the block as an OPAQUE value (`DeployCfg::oauth_as`)
 //!   and hands it to this crate through the seam's `check` (parse, validate, list secret
-//!   references) and `build`; it never names these types (ARCHITECT ruling 2026-10-03, D4).
+//!   references) and `build`; it never names these types.
 //!
 //! ## The seam
 //!
@@ -49,8 +49,8 @@
 pub mod cimd;
 pub mod config;
 pub mod consent;
-/// The hosted browser login flow (`GET /auth/token`; THE DESIGN §8), moved from the kernel (row 159,
-/// K3#2) and reached through the kernel's login seam.
+/// The hosted browser login flow (`GET /auth/token`; THE DESIGN §8), moved from the kernel
+/// and reached through the kernel's login seam.
 mod hosted_login;
 pub mod plane;
 pub mod policy;
@@ -115,12 +115,12 @@ impl Connections for NoConnections {
 /// every server it builds fetching over `C`'s connection table.
 ///
 /// Called EXACTLY ONCE, by the composition root (`crates/busbar`'s `main`), unconditionally and
-/// before any config loads — mirroring `busbar_kernel::plane::registry::install_planes`'s discipline
+/// before any config loads — mirroring `busbar_kernel::plane_driver::registry::install_planes`'s discipline
 /// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
 /// underlying `oauth-as` crate always was), so every real build calls this.
 pub fn install<C: Connections>() {
     // The hosted login flow: the kernel mounts `GET /auth/token` and routes a credential-form
-    // `POST /auth/token` through this seam (row 159, K3#2).
+    // `POST /auth/token` through this seam.
     busbar_kernel::auth::login::seam::install(hosted_login::SEAM);
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {

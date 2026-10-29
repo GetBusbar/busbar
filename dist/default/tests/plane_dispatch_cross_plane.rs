@@ -15,12 +15,12 @@
 //! fold as the composition root folds it in a shipped build (the linked engine crate that used to
 //! own it is deleted). This file spells no plane key; each plane pins its own literal identity in
 //! its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
-//! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
-//! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
+//! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `sole_of`,
+//! `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
-use busbar_kernel::plane::{
-    fallback_key, has_superset_ir, plane_decl, plane_keys, sole_of, sole_wire_format, superset_of,
-    wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
+use busbar_kernel::plane_driver::dispatch::{
+    fallback_key, plane_decl, plane_keys, sole_of, sole_wire_format, wire_format_names,
+    wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
 };
 
 mod linked;
@@ -55,7 +55,7 @@ fn door(key: &str) -> String {
 /// helper reaches it, keeps the dialect list populated order-independently of whatever order the
 /// harness runs tests in.
 fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::proto::known_protocols();
+    let _ = busbar_kernel::ingress::protocols::known_protocols();
 }
 
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
@@ -122,37 +122,6 @@ fn plane_identity_strings_never_collide_across_planes() {
     assert_eq!(nouns.len(), before, "two planes claim one subject noun");
 }
 
-/// THE SUPERSET-IR RULE, computed rather than asserted per plane: a plane earns a superset IR when
-/// it has TWO wire formats to translate between, and not before.
-#[test]
-fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
-    register_planes();
-    for p in plane_keys() {
-        assert_eq!(
-            has_superset_ir(p),
-            wire_formats(p) >= 2,
-            "{p:?} disagrees with the rule: {} wire format(s) but has_superset_ir() == {}",
-            wire_formats(p),
-            has_superset_ir(p)
-        );
-    }
-}
-
-/// Today, and only as a consequence of the rule above, expressed on the three rows of the roster.
-#[test]
-fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
-    register_planes();
-    warm_shared_protocol_registry();
-    assert!(has_superset_ir(fallback()));
-    assert!(!has_superset_ir(single()));
-    assert!(
-        has_superset_ir(multi()),
-        "the `agents:` plane serves {:?} — bindings of ONE agent, and two of them is the threshold, \
-         stated once and derived",
-        wire_format_names(multi())
-    );
-}
-
 /// THE MULTI-BINDING LEGS' NAMES ARE THE SHARED WIRE-FORMAT WORDS. A door row carries its
 /// Statement's dialect words verbatim (the kernel's fold copies them), and the mount table labels a
 /// request with the word of the door it was knocked on (`wire_format_of`). If the door's words ever
@@ -167,7 +136,7 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         wires,
         [
             WIRE_JSONRPC,
-            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON,
             WIRE_GRPC
         ]
         .as_slice(),
@@ -184,7 +153,7 @@ fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     warm_shared_protocol_registry();
     assert_eq!(
         wire_formats(fallback()),
-        busbar_kernel::proto::known_protocols().len()
+        busbar_kernel::ingress::protocols::known_protocols().len()
     );
     assert!(
         wire_formats(fallback()) >= 2,
@@ -528,19 +497,14 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
 
 /// THE ZERO-DIALECT PLANE, pinned. Pure data — no registration needed.
 #[test]
-fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_design() {
+fn a_plane_with_zero_wire_formats_is_labelless_by_design() {
     assert_eq!(
         sole_of(&[]),
         None,
         "zero dialects: the ingress boundary has nothing to label a request with"
     );
-    assert!(
-        !superset_of(0),
-        "zero wire formats have earned no superset IR (the threshold is two)"
-    );
     assert_eq!(sole_of(&["jsonrpc"]), Some("jsonrpc"));
     assert_eq!(sole_of(&["a", "b"]), None);
-    assert!(superset_of(2));
 }
 
 /// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
@@ -551,12 +515,12 @@ fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_t
     warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel::proto::known_protocols(),
+        busbar_kernel::ingress::protocols::known_protocols(),
         "the fallback plane's wire formats must track the registry"
     );
 
-    let empty = busbar_kernel::proto::registry::Registry::new(
-        busbar_kernel::proto::registry::merged_boot_decls(&[], &[]),
+    let empty = busbar_kernel::ingress::protocols::Registry::new(
+        busbar_kernel::ingress::protocols::merged_boot_decls(&[], &[]),
     );
     let names: &'static [&'static str] = empty.codec_protocols();
     assert!(names.is_empty(), "premise: no declarations, no dialects");
@@ -564,9 +528,5 @@ fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_t
         sole_of(names),
         None,
         "a plane with no dialect has nothing to label a request with"
-    );
-    assert!(
-        !superset_of(names.len()),
-        "zero dialects have earned no superset IR (the threshold is two)"
     );
 }

@@ -1006,7 +1006,10 @@ fn a_callers_unpresentable_credential_logs_on_its_request() {
 #[test]
 fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
-    let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    let sink = crate::root::door_steps::MainLogSink(
+        Arc::new(NoSink),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
+    );
     let got = main_log(|| {
         sink.diag(Diagnostic {
             id: 2,
@@ -1042,9 +1045,13 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
     use busbar_contract::diagnostic::Severity;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    let sink = crate::root::door_steps::MainLogSink(
+        Arc::new(NoSink),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
+    );
     for code in [4013u16, 4014, 4015, 4016, 7087] {
-        let entry = busbar_kernel::diagnostics::by_code(code)
+        let entry = busbar_kernel::diagnostics::Catalogue::NEUTRAL
+            .by_code(code)
             .unwrap_or_else(|| panic!("BUSBAR-{code:04} is in the catalogue"));
         assert!(
             !entry.retired,
@@ -1313,6 +1320,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
                 crate::LINKED.auths,
                 None,
                 crate::root::loader::dispatch::ConnTable::NoNeeds,
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns: Arc::new(busbar_core_connector::Connector::new()),
             stream_ceiling_secs: 1,
@@ -1322,7 +1330,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         };
         let routes = crate::root::door_steps::member_routes(
             &section,
-            &crate::root::door_steps::DoorPools::of(&section).expect("the pools"),
+            &crate::root::door_steps::DoorPools::of(&section, served.section).expect("the pools"),
             &served,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1355,4 +1363,42 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         );
     }
     let _ = std::fs::remove_file(&key_file);
+}
+
+/// RED (arch-audit u29 F1): THE STYLES THE LINKED AUTH PLUGINS DECLARE, as a provider's `auth:` may
+/// name them, in the host's one listing order: 1.5.5's four first, in 1.5.5's order, because their
+/// plugins rank them so (a configuration 1.5.5 refused for an unknown `auth:` word is refused with
+/// 1.5.5's list as the prefix of this one), each with the endpoint bit its plugin states — the
+/// client-credentials style the provider's `token_url`, the jwt-bearer style its credential's own
+/// `token_uri`, the header styles none. The kernel names none of these words.
+#[test]
+fn the_linked_auth_plugins_declare_1_5_5_s_four_styles_first_with_their_endpoint_bits() {
+    use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+    let styles = crate::root::door_steps::declared_styles();
+    let names: Vec<&str> = styles.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names.get(..4),
+        Some(
+            &[
+                "bearer",
+                "api-key",
+                "jwt-bearer",
+                "oauth-client-credentials"
+            ][..]
+        ),
+        "1.5.5's four, in 1.5.5's order, lead the list: {names:?}"
+    );
+    let endpoint = |name: &str| {
+        styles
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.flags & (STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL))
+    };
+    assert_eq!(endpoint("bearer"), Some(0));
+    assert_eq!(endpoint("api-key"), Some(0));
+    assert_eq!(endpoint("jwt-bearer"), Some(STYLE_ENDPOINT_FROM_CREDENTIAL));
+    assert_eq!(
+        endpoint("oauth-client-credentials"),
+        Some(STYLE_ENDPOINT_TOKEN_URL)
+    );
 }

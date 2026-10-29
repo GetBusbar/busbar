@@ -329,7 +329,7 @@ fn start(c: &Connector, url: &str) -> ConnId {
         &OpenDesc {
             target: url,
             fields: &[("content-type", b"application/json")],
-            body: b"{\"model\":\"m\"}",
+            body: busbar_contract::conn::Bytes::from_static(b"{\"model\":\"m\"}"),
             timeout_ms: 5_000,
             method: b"POST",
             head_target: b"/v1/chat/completions",
@@ -462,7 +462,7 @@ async fn the_http1_only_key_offers_http1_alone() {
             &OpenDesc {
                 target: &url,
                 fields: &[],
-                body: b"",
+                body: busbar_contract::conn::Bytes::from_static(b""),
                 timeout_ms: 5_000,
                 method: b"GET",
                 head_target: b"/v1/chat/completions",

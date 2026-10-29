@@ -1,0 +1,13 @@
+# A 1.5.5 deployment with a rate card that prices tokens only. 1.5.5 billed every other unit at
+# nothing; 1.6.0 refuses a card that leaves a billable unit unpriced, and `busbar --migrate-config`
+# prices each such unit at 0. Driven by tests/config_migrate_1_5_5.rs.
+listen: "127.0.0.1:0"
+store: { module: memory }
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+rate_card:
+  test-model: { input_utok: 3.0, output_utok: 15.0 }

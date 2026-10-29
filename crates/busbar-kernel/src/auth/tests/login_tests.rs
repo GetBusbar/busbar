@@ -240,7 +240,7 @@ fn the_lent_settings_are_wiped() {
         "client_id": "client-abc",
         "nested": {"token": "inner-secret", "list": ["a-secret", 7]},
     });
-    wipe_lent_settings(&mut lent);
+    crate::config::secret::wipe_strings(&mut lent);
     assert_eq!(
         lent,
         serde_json::json!({

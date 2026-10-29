@@ -132,7 +132,12 @@ impl PlaneStore for GateStore {
         parents.dedup();
         Ok(parents)
     }
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+    fn purge_plane_records(
+        &self,
+        _kind: &str,
+        _before: u64,
+        _retention: busbar_contract::records::Retention,
+    ) -> RecordStoreResult<u64> {
         Ok(0)
     }
     fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {

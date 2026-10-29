@@ -529,18 +529,6 @@ impl<I: ServiceIn> ServiceCall<I> {
         lent(p.get(), n, "the read region")
     }
 
-    /// The texts a `*const AbiStr` list field of the `in` lends (`SpawnIn::args`).
-    ///
-    /// # Panics
-    ///
-    /// As [`ServiceCall::lent`], or a string is NULL with a length.
-    pub fn lent_texts(&self, field: impl FnOnce(&I) -> &*const AbiStr) -> Vec<&[u8]> {
-        let list: &[AbiStr] = self.lent(field);
-        list.iter()
-            .map(|s| lent(s.ptr, s.len, "a listed AbiStr"))
-            .collect()
-    }
-
     /// The name and value of each `Field` a `*const Field` list field of the `in` lends
     /// (`SpawnIn::env`).
     ///
@@ -654,19 +642,6 @@ impl<I: ServiceIn> ServiceCall<I> {
     /// The reply's byte count (`ServiceOut::len`), for a service whose `len` is no write.
     pub fn set_len(&mut self, len: u64) -> &mut Self {
         self.reply.len = len;
-        self
-    }
-
-    /// The reply's span count (`ServiceOut::items`).
-    pub fn set_items(&mut self, items: u64) -> &mut Self {
-        self.reply.items = items;
-        self
-    }
-
-    /// A short answer's full size (`needed_bytes`, `needed_items`).
-    pub fn set_needed(&mut self, bytes: u64, items: u64) -> &mut Self {
-        self.reply.needed_bytes = bytes;
-        self.reply.needed_items = items;
         self
     }
 

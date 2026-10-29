@@ -195,9 +195,9 @@ Timeouts bound connect and overall duration (`upstream_request_timeout_secs`, de
 `attempt_timeout_ms`; otherwise the first byte is bounded by the remaining overall budget.
 
 ### T8: Supply-chain tampering (boundary 7)
-A backdoored binary, image or plugin must be detectable. **Mitigation in this tree:** each `dev`
-commit gets SLSA provenance from a trusted builder (`.github/workflows/slsa-dev-provenance.yml`);
-plugin release tarballs get a build-provenance attestation (`.github/workflows/plugin-release.yml`);
+A backdoored binary, image or plugin must be detectable. **Mitigation in this tree:** release artifacts are signed by the release pipeline, never by a GitHub workflow or a CI-held key (a source
+rule, `crates/busbar-contract/tests/source_rules/workflows.rs`, refuses any workflow that reads the plugin-signing
+secret, packs a plugin, publishes a GitHub release or signs release provenance);
 dropped-in plugins are signature-checked before they load (see the plugin threat below). Dependencies are checked by
 `cargo deny` on every change (`deny.toml`, `.ci/default.yaml`), and third-party GitHub Actions are
 pinned by commit (`docs/ci/actions-pins.md`).

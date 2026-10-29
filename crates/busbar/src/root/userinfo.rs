@@ -70,13 +70,6 @@ impl UserinfoBasic {
         )))))
     }
 
-    /// The value a legacy hop handed across the auth axis (`AuthAxis::serving_presenting`), as
-    /// the root holds it. TRANSITIONAL: deleted with the legacy lane plane.
-    #[must_use]
-    pub fn from_value(bytes: &[u8]) -> Option<Self> {
-        (!bytes.is_empty()).then(|| Self(Arc::new(Secret::new(bytes.to_vec()))))
-    }
-
     /// The value's bytes, for the root's own field writers, read under the kernel's seal (Part 2
     /// #54).
     fn bytes(&self) -> &[u8] {

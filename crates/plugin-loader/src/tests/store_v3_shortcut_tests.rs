@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COMPILED-IN SHORTCUT'S RED ARM (TODO ABI-b4, store), host side. The store kind's ONE
+//! THE COMPILED-IN SHORTCUT'S RED ARM (store), host side. The store kind's ONE
 //! conformance suite is the published script (`conformance/store.rs`), run in-tree over the
 //! build's store, linked and dropped in (`conformance_store_runs_tests`). What stays here is the
 //! one arm that is not a plugin's: the pre-table arrangement reached the compiled-in store through

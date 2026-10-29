@@ -38,9 +38,8 @@ use crate::abi::plane::{
 };
 #[allow(unused_imports)]
 use crate::abi::store::{
-    AddUsageBatchIn, AppendBatchIn, CellGrant, HostBlobs as StoreHostBlobs,
-    HostBuf as StoreHostBuf, HostRecords, HostSessions, OpBlobsIn, RecordEntry, ReleaseItem,
-    ReserveIn, SessionRow, SliceReleaseIn, UnitCell, UsageCell, WindowCap, WindowCapsIn,
+    AddUsageBatchIn, HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostRecords, OpBlobsIn,
+    RecordEntry, UsageCell,
 };
 #[allow(unused_imports)]
 use crate::abi::transport::{
@@ -48,6 +47,9 @@ use crate::abi::transport::{
     Destination, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots,
     IngestIn, KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
+
+#[allow(unused_imports)]
+use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch};
 
 /// One block's pointer and length pairs, per struct: `(pointer, length, length's width)`.
 macro_rules! lend_pairs {

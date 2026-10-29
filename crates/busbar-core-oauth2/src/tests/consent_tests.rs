@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use super::Sessions;
 
-/// RED (row 159): a lapsed session's staked answers go with it. Before the fix only the eviction at
+/// A lapsed session's staked answers go with it. Before the fix only the eviction at
 /// the session bound dropped them, so every lapsed session that had an answer staked or planted
 /// left it in the table for the life of the process.
 #[test]
@@ -37,7 +37,7 @@ fn a_lapsed_session_takes_its_staked_answers_with_it() {
     );
 }
 
-/// RED (row 159): a second answer to one request on one session replaces the first, and is spent
+/// A second answer to one request on one session replaces the first, and is spent
 /// once, as the deployment's store spends it. Before the fix this table queued both, spending the
 /// FIRST answer before the operator's second one, and a store-backed server spent neither the same
 /// way.

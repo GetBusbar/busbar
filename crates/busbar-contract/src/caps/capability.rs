@@ -61,11 +61,6 @@ capability_markers! {
     KeyHandle => "key-handle";
     /// Admin-verb: mints a one-shot secret placeholder for an administrative verb. Was `AdminToken`.
     AdminVerb => "admin-verb";
-    /// Recover: materialises a hold from a journal record after a crash. Was `RecoveryToken`.
-    ///
-    /// Nothing else in the system can bring a hold into being without passing the door. CI's symbol
-    /// scan confines every use of `Grant::<Recover>` to the kernel's recovery module.
-    Recover => "recover";
     /// Exit: takes the hold out of its cell and seals the unit's end. Was `ExitToken`.
     Exit => "exit";
 }

@@ -133,23 +133,44 @@ fn ready_before_open_is_refused_without_a_crossing() {
     assert_eq!(crossings(&p), 0);
 }
 
-/// APPEND-ONLY: a door built before the `ready` tail (its `size` ends at `ops`) still loads, and the
-/// host never reads past its size — whatever lies there.
+/// APPEND-ONLY: a door stating no `ready` loads with `None`, and the host reads `ready` only where
+/// the door's size covers it. A door whose size ends before `ready` also ends before its layout
+/// fingerprint (status row 188): it predates the word, states `0`, and is refused naming the kind
+/// and both numbers, never loaded and read past its size.
 #[test]
-fn a_door_that_ends_before_ready_loads_with_none() {
+fn a_door_that_ends_before_ready_predates_its_layout_and_is_refused() {
+    use busbar_contract::abi::mechanism::door::DoorParts;
+    use busbar_contract::abi::mechanism::KindCode;
+
     let real: Door = *with_ready::door();
     assert!(real.ready().is_some(), "the witness states ready");
+    // SAFETY: the witness's own parts, its `ready` dropped: a door the witness could have stated.
+    let none: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            ready: None,
+            ..real.parts()
+        })
+    }));
+    let v =
+        validate_door::<Secret>(none).unwrap_or_else(|e| panic!("a door with no ready loads: {e}"));
+    assert!(v.ready.is_none(), "a door stating no ready has none");
+    // SAFETY: the witness's own parts, its stated size ending before `ready` (and the fingerprint).
     let older: &'static Door = Box::leak(Box::new(unsafe {
-        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+        Door::__from_parts(DoorParts {
             size: Door::ready_at() as u32,
             ..real.parts()
         })
     }));
-    let v = validate_door::<Secret>(older).unwrap_or_else(|e| panic!("an older door loads: {e}"));
-    assert!(
-        v.ready.is_none(),
-        "a tail the door's size does not cover is absent"
-    );
+    let host = KindCode::Secret.layout_fingerprint();
+    match validate_door::<Secret>(older).map(|_| ()) {
+        Err(crate::dispatch::LoadError::KindLayout {
+            kind: KindCode::Secret,
+            stated: 0,
+            host: read,
+            ..
+        }) => assert_eq!(read, host),
+        other => panic!("a door predating its layout fingerprint is refused for it: {other:?}"),
+    }
     let whole = validate_door::<Secret>(&real).unwrap_or_else(|e| panic!("the door loads: {e}"));
     assert!(whole.ready.is_some());
 }

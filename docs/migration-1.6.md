@@ -1,11 +1,29 @@
 # Migrating from 1.5.x to 1.6.0
 
-There are two things to do, and both are owner-signed changes from 1.5.5: **a config must now
-carry a `store:` block** (`busbar --migrate-config` inserts it), and **a plugin built for 1.5.5
-must be replaced by one built for 1.6.0**. Everything else is identical to 1.5.5. 1.5.3 was the last
-config-breaking release, the config grammar is frozen and grows only by optional keys, and 1.6.0
-holds to that: a config written for 1.5.5 that has a `store:` block boots, validates and serves on
-1.6.0 with no other edits, and every minted key and every durable store carries over. This was
+**Run `busbar --migrate-config` once.** It takes a working 1.5.5 configuration to one that 1.6.0
+boots and serves the same way, and it prints one line for every change it makes, saying what changed
+and why. Core migrates its own keys; each plugin migrates its own settings section through its own
+`migrate`, and the lines it reports are printed under its name. Every minted key and every durable
+store carries over. What the migration does:
+
+- adds the `store:` block a 1.5.5 config left implicit (`store: {module: memory}`);
+- pins, in `plugins.fetch`, the 1.6.0 release of each plugin the config uses that this binary does
+  not carry, and rewrites a 1.5.5-era `plugins.fetch` pin to the 1.6.0 release (dropping its stale
+  `sha256`). A 1.5.5 build left in `plugins.dir` beside its 1.6.0 build is skipped with a warning;
+- prices every billable unit a `rate_card:` entry left out at `0`, which is what 1.5.5 billed;
+- adds to `advanced.allow_destinations` exactly the private or loopback hosts a provider's plane or a
+  sign-in plugin reports it dials (never a blanket `block_private_addresses: false`);
+- removes a metadata block-list entry that names no usable host (it never matched anything);
+- removes a webhook exporter's auth header that 1.5.5 never sent (the exporter's own migration);
+- writes, for each data-plane sign-in provider whose users 1.5.5 admitted with no grant, the
+  explicit binding `role_bindings.<provider>."*": {}` that keeps their access, with a warning to
+  tighten it;
+- rewrites the old hook spellings `plugin:` and `at:`.
+
+Four things it cannot do for you, each named on this page: rebuild a plugin someone else built for
+1.5.5; invent a provider key whose reference does not resolve where Busbar runs (it prints a TODO
+naming each one); turn a `file:` secret that is a directory, device or pipe into a file; and repoint
+an identity provider whose discovery redirects to a private address. This was
 measured rather than promised — the same configs, requests and plugins were run through the published 1.5.5 binary
 and through 1.6.0, and the differences are the ones named in [the changelog](../CHANGELOG.md)
 under "Improvements", every one additive.
@@ -35,10 +53,13 @@ busbar --validate
 
 The published 1.5.5 plugins spoke a JSON contract. 1.6.0 plugins speak the memory ABI only, so boot
 refuses a 1.5.5 plugin with a message naming the rebuild against the 1.6.0 SDK. That includes the
-four published store plugins (sqlite, postgres, mysql, valkey). Install the 1.6.0 releases of the
-first-party plugins before upgrading; rebuild a third-party plugin with
-[the SDK migration note](plugin-sdk-migration-1.6.md). Your data carries over: a rebuilt store
-plugin opens its own database and upgrades it with its own `migrate()`. See
+four published store plugins (sqlite, postgres, mysql, valkey). `busbar --migrate-config` pins the
+1.6.0 release of each first-party plugin your config uses in `plugins.fetch` (it asks the release
+index which release matches this binary), and rewrites a 1.5.5-era pin. A 1.5.5 build left in
+`plugins.dir` beside its 1.6.0 build is skipped with one warning instead of stopping the boot. A host
+with no network needs the 1.6.0 tarball copied into `plugins.dir` instead. A third-party plugin must
+be rebuilt by its author with [the SDK migration note](plugin-sdk-migration-1.6.md). Your data carries
+over: a rebuilt store plugin opens its own database and upgrades it with its own `migrate()`. See
 [Plugins](plugins.md#plugins-and-160).
 
 ## 1. No other config changes required
@@ -58,29 +79,33 @@ plugin opens its own database and upgrades it with its own `migrate()`. See
   versioned, idempotent migration (a partial run followed by a rerun yields the same totals as a
   clean one); nothing is dropped and recreated.
 - **Store plugins are replaced, not carried.** The four published 1.5.5 store plugins
-  (`abi_version: 2`) are refused at boot; install their 1.6.0 releases, which open the same
+  (`abi_version: 2`) do not load; `--migrate-config` pins their 1.6.0 releases, which open the same
   database. See [Plugins](plugins.md#plugins-and-160).
 - **Validation is the same gate.** `--validate` resolves the same `env:` / `file:` references
   boot reads, and no others, exactly as 1.5.5 did. A CI job that passed on 1.5.5 passes on 1.6.0.
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
   message.
 
-Three exceptions. `--validate` tells you whether either of the first two applies to you; it does not
-catch the third:
+What the migration changes for you, and the one edit it leaves to you:
 
 - a provider whose `api_key` reference does not resolve no longer starts with an empty credential.
   If you were relying on that — most often to run a keyless local ollama or vLLM — you need one
-  edit. See [§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
+  edit; `--migrate-config` names each such provider in a TODO and `--validate` refuses it. See
+  [§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
 - a config with a `rate_card:` must price every billable unit the plane counts, and a 1.5.5 card
   never priced the units a provider reports beside its tokens (`search_units`, `classifications`,
   `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, the Bedrock `guardrail_*`
-  units). If you have a `rate_card:`, you need one edit. See
+  units). `--migrate-config` adds them at `0`, which is what 1.5.5 billed. See
   [§7](#a-card-must-configure-every-billable-unit-its-plane-counts).
 - `advanced.block_private_addresses` now defaults to `true`. A provider whose `base_url` or
   `token_url` is on a private or loopback address (a local ollama or vLLM, an in-cluster gateway)
-  is refused when dialled unless `advanced.allow_destinations` names it. Add the host, IP or CIDR
-  to `advanced.allow_destinations`, or set `advanced.block_private_addresses: false` to restore
-  1.5.5's behaviour. Cloud metadata addresses are refused either way.
+  is refused when dialled unless `advanced.allow_destinations` names it. `--migrate-config` adds
+  exactly the hosts the provider's plane and your sign-in plugins report, and `--validate` names a
+  provider URL the guard will refuse (BUSBAR-3025). Cloud metadata addresses are refused either way.
+- a signed-in user that no role binding grants is refused (401); 1.5.5 let such a user through with
+  no pool limit and no budget. `--migrate-config` writes `role_bindings.<provider>."*": {}` for each
+  data-plane provider whose users 1.5.5 admitted that way, and warns: it keeps 1.5.5's access, and
+  you should tighten it.
 
 ## 2. Deprecated env vars keep working, with a warning
 
@@ -176,10 +201,12 @@ written in the top-level `pools:` map with `tools:` / `agents:` entries as bare-
 the same breaker and failover you already run for models applies to them; see
 [Circuit breaker](circuit-breaker.md).
 
-Validation messages are frozen at 1.5.5's wording: an `expected one of` list still names only the
-keys 1.5.5 knew. The new sections, and the group-limit token sub-metrics `tokens_input`,
-`tokens_output`, `tokens_cache_read` and `tokens_cache_write`, parse and validate but are not named
-in those lists (see [Configuration → `groups`](configuration.md#groups)).
+Validation messages keep 1.5.5's wording, but the key lists they print are not frozen: where a
+message lists what a section accepts (`expected one of …`), the list now also names what 1.6.0
+added, such as the new sections and the group-limit token sub-metrics `tokens_input`,
+`tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see
+[Configuration → `groups`](configuration.md#groups)). A script that matched the exact 1.5.5 list
+needs to allow for the longer one.
 
 ## 5. Retired 1.5.x spellings, rewritten for you
 
@@ -370,18 +397,16 @@ prices only what happens after the edit; it cannot repair a window that is alrea
 
 ## Quick checklist
 
-- [ ] Add a `store:` block: `busbar --migrate-config config.yaml` inserts `store: {module: memory}`. `busbar --validate` refuses a config without one ([the `store:` block is required](#the-store-block-is-required)).
-- [ ] Replace every plugin built for 1.5.5 (including the sqlite, postgres, mysql and valkey stores) with its 1.6.0 release; boot refuses the old ones ([a plugin built for 1.5.5 does not load](#a-plugin-built-for-155-does-not-load)).
-- [ ] Install 1.6.0, `busbar --validate`, start.
-- [ ] If you have a `rate_card:`: add the `units:` map (every open unit at `0`) to every entry (or
-      a real rate for the units you bill). `--validate` names each unit a card leaves out
-      ([§7](#a-card-must-configure-every-billable-unit-its-plane-counts)).
-- [ ] If `--validate` names a provider `api_key` that does not resolve: fix the reference, or — for
-      an upstream that takes no credential (local ollama / vLLM) — declare `api_key: none`. It is
-      a boot refusal now, not a warning ([§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot)).
-- [ ] If a provider `base_url` / `token_url` is on a private or loopback address: name it in
-      `advanced.allow_destinations` (or set `advanced.block_private_addresses: false`). `--validate`
-      does not catch this; the dial is refused at run time ([§1](#1-no-other-config-changes-required)).
+- [ ] Run `busbar --migrate-config config.yaml > config-1.6.yaml` and read what it printed: every
+      change it made, the WARNINGs (the `role_bindings."*"` entries that keep 1.5.5's access) and the
+      TODOs.
+- [ ] Act on the TODOs. A provider `api_key` that does not resolve: fix the reference, or — for an
+      upstream that takes no credential (local ollama / vLLM) — declare `api_key: none`
+      ([§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot)). A third-party plugin built
+      for 1.5.5: get its 1.6.0 build from its author.
+- [ ] On a host with no network, copy the 1.6.0 tarball of each plugin `plugins.fetch` pins into
+      `plugins.dir` ([a plugin built for 1.5.5 does not load](#a-plugin-built-for-155-does-not-load)).
+- [ ] Install 1.6.0, `busbar --validate` the migrated file, start.
 - [ ] If a log pipeline matches on the leading text of `[error]` / `[warn]` lines, allow for the
       `BUSBAR-NNNN:` prefix.
 - [ ] If any key's traffic routinely fails over to an OpenAI Chat Completions lane while streaming,

@@ -154,6 +154,9 @@ pub struct AdminReqCtx {
     pub consumed: Option<crate::auth::ConsumedCredentials>,
     /// The request's query, without its `?` (`None` = none), as the auth gate left it.
     pub query: Option<String>,
+    /// The published instances' admin table of the live generation (`App::serve_tables`), the one
+    /// the composition root published its door planes into: a stated admin route is served off it.
+    pub serve: crate::plane_driver::serve::ServeTables,
 }
 
 /// WHAT A VERB HANDLER ANSWERS WITH, and how the core shim frames it. The variants encode both the wire

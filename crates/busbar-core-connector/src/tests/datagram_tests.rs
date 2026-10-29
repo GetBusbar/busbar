@@ -53,8 +53,6 @@ fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
     }
 }
 
-// ── STUN, as a full ICE agent writes it ─────────────────────────────────────────────────────────
-
 /// A Binding request to the owner of `to`: USERNAME "to.ufrag:from_ufrag", MESSAGE-INTEGRITY under
 /// `key` (the receiver's password when honest).
 fn check(to_ufrag: &str, from_ufrag: &str, key: &str, txid: u8) -> Vec<u8> {
@@ -93,8 +91,6 @@ fn sign(mut m: Vec<u8>, key: &str) -> Vec<u8> {
 fn is_request(d: &[u8]) -> bool {
     d.len() >= 20 && d[0..2] == [0x00, 0x01]
 }
-
-// ── the scripted framer ─────────────────────────────────────────────────────────────────────────
 
 /// One call the framer saw: the lane's host state as it arrived.
 #[derive(Debug, Clone, Default)]
@@ -400,8 +396,6 @@ impl FramerDoor for Scripted {
         ok
     }
 }
-
-// ── the far end ─────────────────────────────────────────────────────────────────────────────────
 
 struct Far {
     a: Association,
@@ -891,8 +885,6 @@ fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_b
     );
 }
 
-// ── the port's demultiplexer ────────────────────────────────────────────────────────────────────
-
 const B_UFRAG: &str = "bfrag";
 const B_PWD: &str = "b-password-0123456789";
 
@@ -1037,8 +1029,6 @@ fn only_a_datagram_framer_is_driven_over_the_port() {
     assert!(DatagramFraming::accept(stream_framer, cert, p("198.51.100.1:3478")).is_ok());
 }
 
-// ── the bridge ──────────────────────────────────────────────────────────────────────────────────
-
 fn got(stream: u64, bytes: &[u8], fields: bool) -> crate::framer::Got {
     crate::framer::Got {
         stream,
@@ -1149,8 +1139,6 @@ fn legs_that_do_not_mirror_never_half_bridge() {
     let _ = k.sort(Leg::Upstream, vec![got(20, b"kind: video\r\n", true)]);
     assert!(k.mirrored().is_err(), "a kind mismatch");
 }
-
-// ── the session book and the upstream leg (ARCHITECT ruling, row 132 "pairing") ────────────────
 
 /// A leg as a test sees it: the frames that crossed into it, and how often it was closed.
 #[derive(Default)]

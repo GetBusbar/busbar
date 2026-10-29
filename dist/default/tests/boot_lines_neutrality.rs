@@ -57,7 +57,7 @@ fn free_port() -> u16 {
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     // A REAL ed25519 signing secret, minted through the binary's own `--generate-signing-key` (the
@@ -221,6 +221,9 @@ fn boot_lines_match_1_5_5_shape() {
         .spawn()
         .expect("spawn busbar");
 
+    // Both "busbar listening" lines must be in the log before the signal: the data one is written
+    // by data worker 0 alone, and `/healthz` below can be answered by worker 1 while worker 0 has
+    // not yet written it. Signalled then, worker 0's line lands after the shutdown line.
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -228,11 +231,11 @@ fn boot_lines_match_1_5_5_shape() {
                 read_to_string(&log_path)
             );
         }
-        read_to_string(&log_path).contains("busbar listening")
+        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
     });
     assert!(
         booted,
-        "busbar did not reach 'listening' within 30s; log:\n{}",
+        "busbar did not reach 'listening' (data and admin) within 30s; log:\n{}",
         read_to_string(&log_path)
     );
 
@@ -329,6 +332,74 @@ fn boot_lines_match_1_5_5_shape() {
     assert_eq!(
         lines, expected,
         "boot INFO+ line set/order drifted from the 1.5.5 shape (raw log follows):\n{log_text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `security.allow_all_metadata: true` swaps the metadata INFO line for exactly one WARN, 1.5.5's
+/// text byte for byte (lead ruling: 1.5.5 look and feel wins; the security doc quotes the product):
+/// `metadata protection DISABLED — all cloud-metadata endpoints reachable`.
+#[test]
+fn allow_all_metadata_boot_line_is_the_warn() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_configs(&dir, data_port, admin_port);
+    let config = dir.join("config.yaml");
+    let mut text = read_to_string(&config);
+    text.push_str("security:\n  allow_all_metadata: true\n");
+    std::fs::write(&config, text).unwrap();
+
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", &config)
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
+        .env("RUST_LOG", "info")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+
+    let booted = wait_for(Duration::from_secs(30), || {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            panic!(
+                "busbar exited before listening (status {status:?}); log:\n{}",
+                read_to_string(&log_path)
+            );
+        }
+        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
+    });
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status();
+    if !wait_for(Duration::from_secs(60), || {
+        child.try_wait().expect("try_wait").is_some()
+    }) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let log_text = read_to_string(&log_path);
+    assert!(booted, "busbar did not reach 'listening'; log:\n{log_text}");
+
+    let metadata_lines: Vec<String> = log_text
+        .lines()
+        .map(strip_ansi)
+        .map(|l| blank_volatile(&l))
+        .filter(|l| l.contains("metadata protection"))
+        .collect();
+    assert_eq!(
+        metadata_lines,
+        vec![
+            "<TS>  WARN metadata protection DISABLED — all cloud-metadata endpoints reachable"
+                .to_string()
+        ],
+        "the allow_all_metadata boot line is the documented WARN; log:\n{log_text}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

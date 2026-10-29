@@ -72,7 +72,7 @@ impl HealthState {
         match cells.get(&lane) {
             Some(per_lane) if !per_lane.is_empty() => per_lane
                 .iter()
-                .map(|(_, c)| c.fsm.verdict(now))
+                .map(|(_, c)| c.verdict(now))
                 .reduce(better)
                 .unwrap_or(BreakerVerdict::Ready),
             // Direct/ad-hoc-only lane (no per-pool cells): the default cell IS the routed cell.
@@ -169,9 +169,8 @@ impl LaneRuntime for HealthState {
     }
 
     fn ready_in(&self, pool: &str, lane: usize, now: u64) -> bool {
-        // Read-only, pool-aware health peek — the EXACT predicate `select_weighted_in` uses to filter
-        // its healthy candidate set (lane-admissible + non-mutating `BreakerCell::ready`), exposed for
-        // the routing-policy ordered walk. Never the probe-stealing `usable`.
+        // Read-only, pool-aware health peek (lane-admissible + non-mutating `BreakerCell::ready`).
+        // Never the probe-stealing `usable`.
         self.ready_for(pool, lane, now)
     }
 
@@ -247,7 +246,7 @@ impl LaneRuntime for HealthState {
         // dead lane and a budget-exhausted lane get DISTINCT taxonomy variants.
         self.lane_gates(lane)?;
         // Breaker peek via the one breaker's decoder — read-only, no probe CAS.
-        Self::verdict_gate(self.cell(pool, lane).fsm().verdict(now))?;
+        Self::verdict_gate(self.cell(pool, lane).verdict(now))?;
         // Breaker would admit; peek permits (racy — advisory). `available_permits` reports an
         // effectively-unbounded count for unbounded lanes, so `== 0` is only ever a bounded lane
         // truly at its `max_concurrent` limit.
@@ -265,7 +264,7 @@ impl LaneRuntime for HealthState {
         self.lane_gates(lane)?;
         let cell = self.cell(pool, lane);
         // Peek the breaker BEFORE the permit, so a refused lane never holds a slot.
-        Self::verdict_gate(cell.fsm().verdict(now))?;
+        Self::verdict_gate(cell.verdict(now))?;
         // Acquire the concurrency PERMIT before the probe acquisition: an expired-Open cell that is
         // ALSO at capacity returns `AtCapacity` WITHOUT touching its probe, so the probe is kept for
         // an attempt that can actually dispatch (`test_try_admit_probe_winnable_at_capacity_
@@ -275,7 +274,7 @@ impl LaneRuntime for HealthState {
         })?;
         // The one breaker's admission: a refusal carries the situation that refused it, decided by
         // the same read (item 142). A refused admission drops the permit it grabbed.
-        let probe_epoch = Self::admission(cell.fsm().acquire(now))?;
+        let probe_epoch = Self::admission(cell.acquire(now))?;
         Ok(Admit {
             permit,
             probe_epoch,
@@ -304,21 +303,21 @@ impl LaneRuntime for HealthState {
         // have taken the probe) meanwhile too, which the acquisition itself answers — with the
         // cooldown that refused it, not a guess (item 142).
         self.lane_gates(lane)?;
-        Self::admission(self.cell(pool, lane).fsm().acquire(now))
+        Self::admission(self.cell(pool, lane).acquire(now))
     }
 
     fn release_probe_in(&self, pool: &str, lane: usize) {
         // Unowned: releases whichever probe is live now (the owner-checked form, at the live epoch).
         let cell = self.cell(pool, lane);
-        cell.fsm().release_probe_owned(cell.fsm().probe_epoch());
+        cell.release_probe_owned(cell.probe_epoch());
     }
 
     fn probe_epoch_in(&self, pool: &str, lane: usize) -> u64 {
-        self.cell(pool, lane).fsm().probe_epoch()
+        self.cell(pool, lane).probe_epoch()
     }
 
     fn release_probe_owned_in(&self, pool: &str, lane: usize, owned_epoch: u64) {
-        self.cell(pool, lane).fsm().release_probe_owned(owned_epoch);
+        self.cell(pool, lane).release_probe_owned(owned_epoch);
     }
 
     fn breaker_state_snapshot_in(&self, pool: &str, lane: usize) -> BreakerState {
@@ -336,7 +335,6 @@ impl LaneRuntime for HealthState {
         // config-plumbing follow-up, not required for an O(1), always-computable health signal.
         let (count, errors) = self
             .cell(pool, lane)
-            .fsm()
             .outcomes_in_window(now, DEFAULT_ERROR_RATE_WINDOW_S);
         (count > 0).then(|| errors as f64 / count as f64)
     }
@@ -349,8 +347,8 @@ impl LaneRuntime for HealthState {
     #[cfg(any(test, feature = "test-support"))]
     fn force_open_in(&self, pool: &str, lane: usize, cooldown_until: u64) {
         let cell = self.cell(pool, lane);
-        let snap = cell.fsm().snapshot();
-        cell.fsm().restore(CellSnapshot {
+        let snap = cell.snapshot();
+        cell.restore(CellSnapshot {
             state: 1,
             cooldown_until,
             ..snap
@@ -380,8 +378,10 @@ impl LaneRuntime for HealthState {
         // double-counts the lane-global stat. The CAS is *usually* a no-op here because the 2xx caller
         // runs `recover_lane` first — but only when `lane_needs_probe` is true, and even then a peer
         // (organic request, hard-down) can move a cell back to HalfOpen between that recovery and this
-        // push; a push that wins the CAS gets the same SWRR reset `recover_lane` gives a close.
-        self.close_all_cells(lane, |c| c.record_success(now));
+        // push.
+        self.close_all_cells(lane, |c| {
+            let _ = c.record_success(now);
+        });
         // Bump the lane-GLOBAL `ok` counter EXACTLY ONCE per probe (not once per cell): the prior
         // per-cell `record_success_in` loop bumped `LaneState.ok` (N+1) times for a lane in N pools.
         // Mirrors `record_probe_failure_all_cells`, which bumps `LaneState.err` once.
@@ -465,7 +465,7 @@ impl LaneRuntime for HealthState {
         // recovers EVERY cell for this lane (the default/direct-route cell and all per-pool cells),
         // clearing both a tripped (non-Closed) breaker AND a soft cooldown on a Closed cell.
         // Lock-free pre-filter: skip cells that are plainly Closed-and-cooled so we don't take the
-        // transition lock (and, on close, the SWRR shard lock) for the common already-healthy case.
+        // transition lock for the common already-healthy case.
         // It returns the cooldown value it OBSERVED (`Some(observed)`) so the under-lock close can
         // re-validate against it. This pre-read is ONLY a fast path AND the snapshot — the
         // authoritative decision happens under the transition lock in `close_if_recoverable`,
@@ -478,16 +478,13 @@ impl LaneRuntime for HealthState {
             suppressed.then_some(cooldown)
         };
         // Close a cell only if it both passed the pre-filter and survives the under-lock re-validation
-        // against the cooldown the pre-filter observed. Returns whether the close actually happened so
-        // the caller can gate the SWRR reset on a real close — a cell a peer re-armed mid-race is left
-        // suppressed and must NOT have its accumulator zeroed.
-        let close = |c: &FsmCell| -> bool {
-            match observe(c) {
-                Some(observed) => c.close_if_recoverable(now, observed),
-                None => false,
+        // against the cooldown the pre-filter observed: a cell a peer re-armed mid-race is left
+        // suppressed.
+        self.close_all_cells(lane, |c| {
+            if let Some(observed) = observe(c) {
+                let _ = c.close_if_recoverable(now, observed);
             }
-        };
-        self.close_all_cells(lane, close);
+        });
     }
 
     fn record_probe_failure_all_cells(
@@ -520,7 +517,7 @@ impl LaneRuntime for HealthState {
         // inherits health lazily on first access via `cell`.)
         let cells = read_recover(&self.pool_cells);
         for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
-            record(&cell.fsm, resolve_cfg(pool_name));
+            record(cell, resolve_cfg(pool_name));
         }
     }
 
@@ -535,7 +532,7 @@ impl LaneRuntime for HealthState {
             .get(&lane)
             .into_iter()
             .flatten()
-            .any(|(_, cell)| suppressed(&cell.fsm))
+            .any(|(_, cell)| suppressed(cell))
     }
 
     fn try_acquire(&self, lane: usize) -> Option<Permit> {
@@ -640,7 +637,7 @@ impl LaneRuntime for HealthState {
                                 cells
                                     .iter()
                                     .map(|(pool, cell)| {
-                                        let c = cell.fsm.snapshot();
+                                        let c = cell.snapshot();
                                         PoolCellHealthSnapshot {
                                             pool: pool.to_string(),
                                             breaker_state: c.state,
@@ -656,44 +653,5 @@ impl LaneRuntime for HealthState {
                 }
             })
             .collect()
-    }
-
-    fn select_weighted_in(
-        &self,
-        pool: &str,
-        candidates: &[usize],
-        weights: &[u32],
-        now: u64,
-    ) -> Option<usize> {
-        self.select_weighted_for(pool, candidates, weights, now)
-    }
-}
-
-impl HealthState {
-    /// READ-ONLY census of every NAMED `(pool, lane)` breaker cell materialized so far, as
-    /// `(pool key, lane, the cell's OWN FSM state, the cell's own remaining cooldown secs)`. The
-    /// state is the same pure projection as `breaker_state_for` (a dead lane reads
-    /// `Open { until: u64::MAX }`). The lane-default (`""`) cells are not listed — they are not
-    /// named. No cell is created, no probe CAS, no transition: the scrape reads what the dispatch
-    /// path already wrote. Order is unspecified.
-    pub(crate) fn named_cell_readings(
-        &self,
-        now: u64,
-    ) -> Vec<(Box<str>, usize, BreakerState, u64)> {
-        let cells = read_recover(&self.pool_cells);
-        let mut out = Vec::new();
-        for (&lane, per_lane) in cells.iter() {
-            let dead = self.get_lane(lane).dead.load(Ordering::Relaxed);
-            for (pool, cell) in per_lane {
-                let state = if dead {
-                    BreakerState::Open { until: u64::MAX }
-                } else {
-                    to_state(cell.fsm.state())
-                };
-                let cooldown = cell.fsm.cooldown_until().saturating_sub(now);
-                out.push((pool.clone(), lane, state, cooldown));
-            }
-        }
-        out
     }
 }

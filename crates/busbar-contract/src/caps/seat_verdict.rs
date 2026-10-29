@@ -67,7 +67,7 @@ use crate::caps::step::{Step, StepName};
 use crate::caps::token::{KernelSeal, Pass};
 
 macro_rules! reasons {
-    ($($(#[$doc:meta])* $name:ident => $wire:literal, $refusal:ident,)*) => {
+    ($($(#[$doc:meta])* $name:ident => $wire:literal, $refusal:ident, $class:ident,)*) => {
         /// Why a unit was stopped. A closed vocabulary: the wire may render whatever a dialect
         /// renders, but the reason a unit ended is one of these and nothing else, so the journal,
         /// the refusal and the disputes report all name the same thing.
@@ -89,6 +89,38 @@ macro_rules! reasons {
             pub fn as_str(self) -> &'static str {
                 match self {
                     $(ReasonCode::$name => $wire,)*
+                }
+            }
+
+            /// THE class of this reason: the table's fourth column, the one reason-to-class
+            /// grouping in the tree (`abi::plane::RefusalClass`).
+            pub(crate) const fn class(self) -> crate::abi::plane::RefusalClass {
+                match self {
+                    $(ReasonCode::$name => crate::abi::plane::RefusalClass::$class,)*
+                }
+            }
+
+            /// This reason's wire code: the wire table names each reason by the reason's own name.
+            pub(crate) const fn wire(self) -> crate::abi::plane::RefusalCode {
+                match self {
+                    $(ReasonCode::$name => crate::abi::plane::RefusalCode::$name,)*
+                }
+            }
+
+            /// The reason a wire code names; `None` for the walk's `Unsent*` codes alone, which
+            /// are no reason of this vocabulary.
+            pub(crate) const fn of_wire(code: crate::abi::plane::RefusalCode) -> Option<ReasonCode> {
+                use crate::abi::plane::RefusalCode as W;
+                match code {
+                    $(W::$name => Some(ReasonCode::$name),)*
+                    W::UnsentNoAttempt
+                    | W::UnsentNoRoute
+                    | W::UnsentNeedUnbound
+                    | W::UnsentTargetNotPath
+                    | W::UnsentFieldName
+                    | W::UnsentUnrecorded
+                    | W::UnsentAuthFailed
+                    | W::UnsentOpenRefused => None,
                 }
             }
         }
@@ -123,112 +155,114 @@ macro_rules! reasons {
     };
 }
 
+// ONE ROW PER REASON: its name, its journal word, its `unit::RefusalReason` spelling, and its
+// `abi::plane::RefusalClass`. Its wire code is the `abi::plane::RefusalCode` of the same name.
 reasons! {
     /// The in-flight table is full.
-    InFlightCap => "in_flight_cap", InFlightCap,
+    InFlightCap => "in_flight_cap", InFlightCap, Busy,
     /// The node-global connection-cursor budget is exhausted.
-    CursorBudget => "cursor_budget", CursorBudget,
+    CursorBudget => "cursor_budget", CursorBudget, TooLarge,
     /// The per-connection credential slab could not hold the credential span.
-    CredentialBudget => "credential_budget", CredentialBudget,
+    CredentialBudget => "credential_budget", CredentialBudget, TooLarge,
     /// The node-global session budget is exhausted.
-    SessionBudget => "session_budget", SessionBudget,
+    SessionBudget => "session_budget", SessionBudget, Unavailable,
     /// The node-global body-spill budget is exhausted.
-    SpillBudget => "spill_budget", SpillBudget,
+    SpillBudget => "spill_budget", SpillBudget, Unavailable,
     /// The per-call scratch pad hit its abuse ceiling.
-    ScratchExhausted => "scratch_exhausted", ScratchExhausted,
+    ScratchExhausted => "scratch_exhausted", ScratchExhausted, Unavailable,
     /// The source is over its arrival rate.
-    RateLimited => "rate_limited", RateLimited,
+    RateLimited => "rate_limited", RateLimited, Throttled,
     /// The request body is larger than the configured maximum.
-    BodyTooLarge => "body_too_large", BodyTooLarge,
+    BodyTooLarge => "body_too_large", BodyTooLarge, TooLarge,
     /// The direction already has an open unit.
-    OpenSlotBusy => "open_slot_busy", OpenSlotBusy,
+    OpenSlotBusy => "open_slot_busy", OpenSlotBusy, Unavailable,
     /// The plane could not make sense of the bytes.
-    DecodeFailed => "decode_failed", DecodeFailed,
+    DecodeFailed => "decode_failed", DecodeFailed, Unreadable,
     /// The plane narrowed to an auth scheme its claim never declared.
-    SchemeNotDeclared => "scheme_not_declared", SchemeNotDeclared,
+    SchemeNotDeclared => "scheme_not_declared", SchemeNotDeclared, Unauthenticated,
     /// The session is unbound, so a credential cannot be taken from it.
-    SessionUnbound => "session_unbound", SessionUnbound,
+    SessionUnbound => "session_unbound", SessionUnbound, Unauthenticated,
     /// No credential resolved to a principal.
-    Unauthenticated => "unauthenticated", CredentialRejected,
+    Unauthenticated => "unauthenticated", CredentialRejected, Unauthenticated,
     /// The challenge exchange ran past its round or byte bound.
-    ChallengeExhausted => "challenge_exhausted", ChallengeExhausted,
+    ChallengeExhausted => "challenge_exhausted", ChallengeExhausted, Unauthenticated,
     /// The credential was revoked.
-    Revoked => "revoked", Revoked,
+    Revoked => "revoked", Revoked, Unauthenticated,
     /// The principal lacks the scope the operation requires.
-    ScopeDenied => "scope_denied", ScopeMissing,
+    ScopeDenied => "scope_denied", ScopeMissing, Forbidden,
     /// The principal is not permitted to reach the bucket it named. Distinct from a plain scope
     /// denial: the ladder answers this one before it asks about pricing at all, and the two carry
     /// different statuses on the wire, so collapsing them would make two refusals indistinguishable
     /// to anything reading the record.
-    PoolNotPermitted => "pool_not_permitted", PoolNotPermitted,
+    PoolNotPermitted => "pool_not_permitted", PoolNotPermitted, Forbidden,
     /// The name the caller supplied has no configured rate. A bad request rather than an exhausted
     /// one: nothing is wrong with the caller's budget, the name simply cannot be billed. Modelled
     /// as its own reason rather than as the absence of a gate, so the record can say which of the
     /// two a refusal was.
-    NoRate => "no_rate", NoRate,
+    NoRate => "no_rate", NoRate, Rejected,
     /// A hook vetoed the unit.
-    HookVeto => "hook_veto", Vetoed,
+    HookVeto => "hook_veto", Vetoed, Forbidden,
     /// No destination survived verification.
-    NoDestination => "no_destination", NoDestination,
+    NoDestination => "no_destination", NoDestination, NotFound,
     /// A budget in the principal's chain has no headroom.
-    OverBudget => "over_budget", OverBudget,
+    OverBudget => "over_budget", OverBudget, QuotaExhausted,
     /// The principal's group is frozen.
-    GroupFrozen => "group_frozen", GroupFrozen,
+    GroupFrozen => "group_frozen", GroupFrozen, Forbidden,
     /// A meter class the present rate card does not price.
-    Unpriced => "unpriced", Unpriced,
+    Unpriced => "unpriced", Unpriced, Rejected,
     /// The overdraft ceiling on a capped bucket is reached.
-    OverdraftCeiling => "overdraft_ceiling", OverdraftCeiling,
+    OverdraftCeiling => "overdraft_ceiling", OverdraftCeiling, Unavailable,
     /// The node's slice of the bucket window is behind the current epoch.
-    StaleSlice => "stale_slice", StaleSlice,
+    StaleSlice => "stale_slice", StaleSlice, Unavailable,
     /// The journal cannot be written durably.
-    DurabilityUnavailable => "durability_unavailable", DurabilityUnavailable,
+    DurabilityUnavailable => "durability_unavailable", DurabilityUnavailable, Unavailable,
     /// Two buckets in one chain disagree about the tier multiplier.
-    TierMismatch => "tier_mismatch", TierMismatch,
+    TierMismatch => "tier_mismatch", TierMismatch, Unavailable,
     /// The idempotency key was already used; the earlier answer is replayed.
-    Replayed => "replayed", Replayed,
+    Replayed => "replayed", Replayed, Rejected,
     /// The idempotency key belongs to a unit still in flight.
-    InFlight => "in_flight", InFlight,
+    InFlight => "in_flight", InFlight, Busy,
     /// The destination spent its lifetime request budget.
-    DestinationBudgetExhausted => "destination_budget_exhausted", DestinationBudgetExhausted,
+    DestinationBudgetExhausted => "destination_budget_exhausted", DestinationBudgetExhausted, Unreachable,
     /// The circuit breaker for the destination is open.
-    BreakerOpen => "breaker_open", BreakerOpen,
+    BreakerOpen => "breaker_open", BreakerOpen, Unreachable,
     /// The destination could not be reached.
-    DestinationUnreachable => "destination_unreachable", DestinationUnreachable,
+    DestinationUnreachable => "destination_unreachable", DestinationUnreachable, Unreachable,
     /// Two evidence sources for the same unit disagree.
-    MeterDisputed => "meter_disputed", MeterDisputed,
+    MeterDisputed => "meter_disputed", MeterDisputed, NodeFault,
     /// A layer offered a handoff the layer adopting it does not compose over, or handed up a body
     /// it cannot adopt. Its own reason rather than a framing failure: nothing was wrong with the
     /// bytes, the two legs simply did not agree on what they were doing.
-    HandoffMismatch => "handoff_mismatch", HandoffMismatch,
+    HandoffMismatch => "handoff_mismatch", HandoffMismatch, NodeFault,
     /// A plane call panicked.
-    PlanePanic => "plane_panic", PlanePanic,
+    PlanePanic => "plane_panic", PlanePanic, PlaneFault,
     /// The task running the unit disappeared without an end.
-    TaskLost => "task_lost", TaskLost,
+    TaskLost => "task_lost", TaskLost, NodeFault,
     /// The unit made no progress within its deadline.
-    Stalled => "stalled", Stalled,
+    Stalled => "stalled", Stalled, Timeout,
     /// A minted secret placeholder did not appear exactly once at its declared location.
-    SecretPlaceholder => "secret_placeholder", SecretPlaceholder,
+    SecretPlaceholder => "secret_placeholder", SecretPlaceholder, NodeFault,
     /// The node is draining.
-    Drain => "drain", Drain,
+    Drain => "drain", Drain, Unavailable,
     /// A later unit superseded this one.
-    Superseded => "superseded", Superseded,
+    Superseded => "superseded", Superseded, Rejected,
     /// The client went away.
-    ClientGone => "client_gone", ClientGone,
+    ClientGone => "client_gone", ClientGone, Unavailable,
     /// The unit ran past its maximum duration.
-    DeadlineExceeded => "deadline_exceeded", DeadlineExceeded,
+    DeadlineExceeded => "deadline_exceeded", DeadlineExceeded, Timeout,
     /// The kernel's Approve step judged the trust facts the plane stated and does not trust the
     /// counterparty or capability the unit rests on (trust is the kernel's
     /// Approve step; a plane only states facts).
-    Untrusted => "untrusted", Untrusted,
+    Untrusted => "untrusted", Untrusted, Forbidden,
     /// The member's own credential, re-resolved for this request, is unavailable (it no longer
     /// resolves, or its new value would not bind): nothing was dialled.
-    CredentialUnavailable => "credential_unavailable", CredentialUnavailable,
+    CredentialUnavailable => "credential_unavailable", CredentialUnavailable, Unreachable,
     /// The request's method is one no route at its path takes: the kernel's own refusal, decided
     /// before any unit.
-    MethodNotAllowed => "method_not_allowed", MethodNotAllowed,
+    MethodNotAllowed => "method_not_allowed", MethodNotAllowed, Rejected,
     /// The node failed in a way it names to no caller (a request handler panicked): the kernel's
     /// own refusal, decided before any unit.
-    Internal => "internal", Internal,
+    Internal => "internal", Internal, NodeFault,
 }
 
 impl std::fmt::Display for ReasonCode {

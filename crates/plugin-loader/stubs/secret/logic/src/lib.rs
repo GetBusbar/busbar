@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+use busbar_contract::abi::sdk::cred::Held;
 use busbar_contract::abi::secret::{
     ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND,
     ERROR_KIND_UNAVAILABLE,
@@ -35,12 +36,16 @@ pub const KEY: &str = "key";
 /// The plugin's name (the manifest name).
 pub const NAME: &str = "busbar-stub-secret";
 
-/// Resolve `settings` (`{ key: VAR }`) to the variable's value, byte for byte.
+/// Resolve `settings` (`{ key: VAR }`) to the variable's value, byte for byte, in a zeroizing
+/// [`Held`] (no getter: it reaches the host only through the SDK's `resolve` answer, into the
+/// host's buffer; the credential chip, row 6).
 ///
 /// # Errors
 /// Fail-closed, as 1.5.5: an unset or non-UTF-8 variable (both "is unset") and an empty one are
 /// refused, and so is a missing or blank `key`. The text names the variable, never its value.
-pub fn resolve(settings: &serde_json::Map<String, serde_json::Value>) -> SecretResult<Vec<u8>> {
+pub fn resolve(
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> SecretResult<Held<Vec<u8>>> {
     let var = match settings.get(KEY).and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v,
         _ => {
@@ -53,17 +58,30 @@ pub fn resolve(settings: &serde_json::Map<String, serde_json::Value>) -> SecretR
     // 1.5.5's reading, byte for byte (v1.5.5 crates/busbar/src/config/secret.rs `resolve_builtin`):
     // `std::env::var`, whose one `Err` covers a variable that is absent and one whose value is not
     // UTF-8, both answered "is unset"; an EMPTY value refused; any other value, a whitespace-only
-    // one included, resolved untrimmed. The value is never quoted back.
-    match std::env::var(var) {
-        Ok(v) if !v.is_empty() => Ok(v.into_bytes()),
-        Ok(_) => Err(SecretModuleError::invalid(format!(
+    // one included, resolved untrimmed. The value is never quoted back. It is MOVED (never copied)
+    // into a zeroizing holder before any judgement (`var` would drop a non-UTF-8 value unwiped
+    // inside its error).
+    let unset = || {
+        SecretModuleError::not_found(format!(
+            "secret env:{var} cannot resolve: environment variable '{var}' is unset"
+        ))
+    };
+    let Some(value) = std::env::var_os(var) else {
+        return Err(unset());
+    };
+    let bytes = value.into_encoded_bytes();
+    let text = std::str::from_utf8(&bytes).is_ok();
+    let held = Held::new(bytes);
+    if !text {
+        return Err(unset());
+    }
+    if held.is_empty() {
+        return Err(SecretModuleError::invalid(format!(
             "secret env:{var} resolved to an EMPTY value; a secret must be non-empty \
              (fail-closed)"
-        ))),
-        Err(_) => Err(SecretModuleError::not_found(format!(
-            "secret env:{var} cannot resolve: environment variable '{var}' is unset"
-        ))),
+        )));
     }
+    Ok(held)
 }
 
 /// A resolve's settings bytes as the JSON object they must be (empty = none).

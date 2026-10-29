@@ -14,7 +14,7 @@
 // same suite's assertions over the REAL linked declarations live with the root, which links them
 // (`crates/busbar/src/root/tests/linked_protocols.rs`).
 mod registry_fold {
-    use crate::proto::{ProtocolDecl, Registry};
+    use crate::ingress::protocols::{ProtocolDecl, Registry};
     use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
     use busbar_contract::codec::{EgressCtx, WireBody};
     use busbar_contract::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
@@ -190,7 +190,7 @@ mod registry_fold {
     #[test]
     fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
         let reg = Registry::new(
-            crate::proto::registry::builtin_decls()
+            crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
                 .iter()
                 .copied()
                 .chain(std::iter::once(&TELEX_DECL)),
@@ -224,10 +224,10 @@ mod registry_fold {
         // The write inverted onto the handle (G6 A4b): the cell's handle writes its own telex wire.
         assert_eq!(&ir.write_egress_request_bytes("telex", "")[..], b"TO paris");
         let resp = cell
-            .read_response(crate::proto::CODEC_HOST, b"REGISTERED paris")
+            .read_response(crate::ingress::protocols::CODEC_HOST, b"REGISTERED paris")
             .expect("its cell reads its own response");
         let busbar_contract::codec::TranslatedResponse::Typed(out) =
-            resp.write_ingress_response(crate::proto::CODEC_HOST, "telex", true)
+            resp.write_ingress_response(crate::ingress::protocols::CODEC_HOST, "telex", true)
         else {
             panic!("telex response writes a typed body");
         };
@@ -251,7 +251,7 @@ mod registry_fold {
         //    still knows only the built-ins, which is the proof that admitting `telex` above required
         //    no edit here rather than a hidden one.
         assert!(
-            crate::proto::decl_for("telex").is_none(),
+            crate::ingress::protocols::decl_for("telex").is_none(),
             "the built-in table was not touched"
         );
     }
@@ -319,7 +319,8 @@ mod registry_fold {
         static EXTRACTED: ProtocolDecl = named_decl("extracted");
         static BUILTIN_A: ProtocolDecl = named_decl("builtin-a");
         static BUILTIN_B: ProtocolDecl = named_decl("builtin-b");
-        let merged = crate::proto::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
+        let merged =
+            crate::ingress::protocols::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
         let names: Vec<&str> = merged.iter().map(|d| d.name).collect();
         assert_eq!(
             names,
@@ -340,7 +341,10 @@ mod registry_fold {
         static INSTALLED_COPY: ProtocolDecl = named_decl("anthro-like");
         static BUILTIN_COPY: ProtocolDecl = named_decl("anthro-like");
         static OTHER: ProtocolDecl = named_decl("other");
-        let merged = crate::proto::merged_boot_decls(&[&INSTALLED_COPY], &[&BUILTIN_COPY, &OTHER]);
+        let merged = crate::ingress::protocols::merged_boot_decls(
+            &[&INSTALLED_COPY],
+            &[&BUILTIN_COPY, &OTHER],
+        );
         assert_eq!(merged.len(), 2, "one entry per name");
         assert!(
             std::ptr::eq(merged[0], &INSTALLED_COPY),
@@ -385,7 +389,7 @@ mod registry_fold {
     fn a_registry_with_no_declarations_reports_no_protocols_at_all() {
         // The boot fold with nothing installed AND nothing built in — a build with every protocol edge
         // removed. Not a hand-written empty slice: the function the process registry initializes with.
-        let decls = crate::proto::merged_boot_decls(&[], &[]);
+        let decls = crate::ingress::protocols::merged_boot_decls(&[], &[]);
         assert!(decls.is_empty(), "no declarations in, no declarations out");
 
         let empty = Registry::new(decls);

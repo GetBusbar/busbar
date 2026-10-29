@@ -11,7 +11,7 @@ Use the exact **check name** the judge posts. ModernCI posts one check, `ci`, pe
 
 ## Reusable workflows (plugin repos call these)
 
-`plugin-ci.yml`, `plugin-consumer-verify.yml`, `plugin-repin.yml` and `plugin-release.yml` are
+`plugin-ci.yml`, `plugin-consumer-verify.yml` and `plugin-repin.yml` are
 `workflow_call` only, called by the plugin repos' rendered callers (busbar-release `template/`,
 `busbar-release plugin sync`). Their status bubbles up into the **caller's** job, so require the
 caller's job in the plugin repo, never these directly. They stay until each plugin repo is

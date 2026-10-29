@@ -14,7 +14,8 @@
 
 mod linked;
 
-use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+use busbar_kernel::test_support::planes::TestRegistryIsolation;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static HYDRATED: AtomicUsize = AtomicUsize::new(0);
@@ -45,11 +46,11 @@ static PROBE: PlaneDecl = PlaneDecl {
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &["law7probe"],
-    provider_dialects: || &[],
+    wire_format_names: |_| &["law7probe"],
+    provider_dialects: |_| &[],
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| {
+    build: |_, _| {
         BUILT.fetch_add(1, Ordering::SeqCst);
         Some(std::sync::Arc::new(()))
     },
@@ -79,6 +80,7 @@ static PROBE: PlaneDecl = PlaneDecl {
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 /// Run hydrate + start over an App whose configured plane sections are exactly `sections`, and

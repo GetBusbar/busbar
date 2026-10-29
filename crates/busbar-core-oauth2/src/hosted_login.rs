@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `GET /auth/token` — the HOSTED BROWSER LOGIN flow (1.5.2), this crate's (THE DESIGN §8:
-//! `busbar-core-oauth2` owns "the authorization server and the hosted login flow"; row 159, K3#2).
+//! `busbar-core-oauth2` owns "the authorization server and the hosted login flow").
 //!
 //! One param-less path, three sub-states read off the query string:
 //! * **chooser** (no params): one button per `identity-providers:` entry that has a `browser_login`
@@ -96,8 +96,8 @@ async fn browser(handle: Arc<AppHandle>, req: Request<Body>) -> Response {
 /// Whether a `?refresh=1` rotation is honoured only on a navigation from busbar's OWN page
 /// (`Sec-Fetch-Site: same-origin`, the key-issued page's "Refresh key" link). A rotate revokes the
 /// user's key, and any site can navigate a signed-in user to `?refresh=1` while the IdP approves
-/// silently (K3 #20). 1.5.5 rotated whatever the navigation's origin (v1.5.5
-/// crates/busbar/src/auth/token.rs:324). OWNER-SIGNED 2026-10-24 (M29): only a same-origin navigation
+/// silently. 1.5.5 rotated whatever the navigation's origin (v1.5.5
+/// crates/busbar/src/auth/token.rs:324). Only a same-origin navigation
 /// rotates; any other `?refresh=1` is a plain issue that re-shows the key.
 pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = true;
 
@@ -257,7 +257,7 @@ async fn callback(
     if !state_ok {
         return clear_and(security_check_failed());
     }
-    // 1.5.5 PARITY (Q128 p9#4, coordinator ruling 2026-10-19): the callback admits any method with
+    // 1.5.5 PARITY: the callback admits any method with
     // a button, a credential one included, and leaves the refusal of an authorization code it never
     // asked for to the plugin, exactly as 1.5.5's callback did (crates/busbar/src/auth/token.rs
     // :466-470 at v1.5.5 filters on `has_button` alone). A method-kind check here would answer 400
@@ -292,7 +292,7 @@ async fn callback(
     };
     let principal = match login_step(app, &cookie.method, LoginStep::Complete(request)).await {
         LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage => return clear_and(provider_unreachable()),
+        LoginOutcome::Outage => return clear_and(provider_unavailable(&cookie.method)),
         // The IdP's answer failed the login's security check: 1.5.5's verification page, the one
         // the state mismatch renders.
         LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
@@ -441,7 +441,7 @@ async fn credential_submit(
     let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
     let principal = match outcome {
         LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage => return clear_and(provider_unreachable()),
+        LoginOutcome::Outage => return clear_and(provider_unavailable(&cookie.method)),
         LoginOutcome::Reject => {
             return clear_and(error_page(
                 StatusCode::UNAUTHORIZED,
@@ -459,8 +459,6 @@ async fn credential_submit(
     };
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
 }
-
-// ── the login cookie (hand-rolled, HttpOnly+Secure+SameSite=Lax) ─────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LoginCookie {
@@ -516,8 +514,6 @@ fn clear_and(mut resp: Response) -> Response {
     resp
 }
 
-// ── PKCE + randomness ────────────────────────────────────────────────────────────────────────────
-
 /// A URL-safe, no-pad base64 string of `n_bytes` of OS randomness.
 fn random_b64url(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
@@ -531,8 +527,6 @@ fn code_challenge_s256(code_verifier: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, code_verifier.as_bytes());
     B64.encode(digest.as_ref())
 }
-
-// ── query parsing + response helpers ─────────────────────────────────────────────────────────────
 
 /// Minimal `application/x-www-form-urlencoded` query parser (percent + `+` decoding). Sufficient for
 /// the small, known param set (`method`/`code`/`state`).
@@ -589,8 +583,6 @@ fn security_check_failed() -> Response {
     )
 }
 
-// ── rendering (the login HTML template, scaffolds stripped) ──────────────────────────────────────
-
 /// The shared `<title>` + `<style>` head (`.note`/`.screen-label`
 /// review scaffolds stripped). `include_str!` so the visual is the reviewed asset, not hand-retyped.
 const HEAD: &str = include_str!("busbar-login.html");
@@ -599,14 +591,14 @@ const HEAD: &str = include_str!("busbar-login.html");
 const GLYPH: &str = r##"<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" style="color:#A3E635" aria-hidden="true"><g transform="translate(64 64) scale(1.46) translate(-62 -64)"><g transform="translate(3 0)"><rect x="46" y="39" width="9" height="50" rx="4.5" fill="currentColor"/><g stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="36" y1="64" x2="41" y2="64" stroke-width="5"/><path d="M60 45 L79 45 Q87 45 87 55" stroke-width="5"/><line x1="60" y1="64" x2="72" y2="64" stroke-width="5"/><path d="M60 83 L79 83 Q87 83 87 73" stroke-width="5"/></g><g fill="currentColor"><circle cx="31" cy="64" r="4.6"/><circle cx="87" cy="55" r="4.6"/><circle cx="76" cy="64" r="4.6"/><circle cx="87" cy="73" r="4.6"/></g></g></g></svg>"##;
 
 /// A sign-in button's brand — its label and icon — inferred from the method name and OIDC issuer
-/// host, NOT from any operator-set display string. The brands are the root legacy table's
+/// host, NOT from any operator-set display string. The brands are the root migration table's
 /// `login_brands` row (frozen 1.5.5 login-page data, `<match tokens> : <label> : <icon ref>` per
 /// brand, in 1.5.5's match order): the first brand any of whose tokens the lower-cased method name
 /// and issuer contain names the button; a method no brand matches is its title-cased name under the
 /// generic icon. The kernel names no brand.
 fn button_brand(name: &str, issuer: Option<&str>) -> (String, &'static str) {
     brand_from(
-        busbar_kernel::config::legacy::text("login_brands"),
+        busbar_kernel::config::migration_table::text("login_brands"),
         name,
         issuer,
     )
@@ -663,15 +655,37 @@ const COPY_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="tr
 /// The door/arrow-out glyph shown on the quiet "Sign out" link of the key-issued page.
 const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 2.5H4A1.5 1.5 0 002.5 4v8A1.5 1.5 0 004 13.5h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 10.5L12.5 8 10 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
-/// 1.5.5's page for an identity provider that could not be reached: a login plugin that answered
-/// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
+/// The page for an identity provider that could not answer: a login plugin that answered
+/// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]), for an IdP that was unreachable or answered 5xx or
+/// 429. 503, so the client may retry (owner ruling 2026-10-27; 1.5.5 answered 502), and the
+/// refusal is logged with its cause and the login method.
+fn provider_unavailable(method: &str) -> Response {
+    tracing::warn!(
+        method = %method,
+        cause = "identity provider unavailable",
+        "sign-in refused (503, retryable): the login plugin answered that the identity provider \
+         could not answer"
+    );
+    provider_unreachable()
+}
+
+/// How long [`provider_unavailable`]'s `Retry-After` asks the client to wait, in seconds.
+pub const PROVIDER_RETRY_AFTER_SECS: u64 = 5;
+
+/// The page [`provider_unavailable`] renders: 503 with `Retry-After`. It never counts as a failed
+/// login: nothing was declined.
 fn provider_unreachable() -> Response {
-    error_page(
-        StatusCode::BAD_GATEWAY,
+    let mut page = error_page(
+        StatusCode::SERVICE_UNAVAILABLE,
         "Couldn't reach your provider",
         "We couldn't reach your identity provider to finish signing you in. Please try again \
          shortly.",
-    )
+    );
+    page.headers_mut().insert(
+        header::RETRY_AFTER,
+        header::HeaderValue::from(PROVIDER_RETRY_AFTER_SECS),
+    );
+    page
 }
 
 /// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
@@ -895,8 +909,6 @@ fn titlecase(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
-// ── the kernel's seam ────────────────────────────────────────────────────────────────────────────
 
 /// The seam's `GET /auth/token` handler: [`browser`], boxed.
 fn seam_browser(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Response> {

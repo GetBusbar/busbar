@@ -1182,7 +1182,8 @@ fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
         severity: 0,
         text: b"the linked transport logged a frame",
     });
-    let path = crate::root::boot::plugin_logs().path_for(&row);
+    let path = crate::root::boot::plugin_logs()
+        .path_for(&row, busbar_contract::abi::mechanism::KindCode::Transport);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut text = String::new();
     while std::time::Instant::now() < deadline {

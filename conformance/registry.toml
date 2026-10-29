@@ -1,35 +1,30 @@
-# THE CONFORMANCE SUITE REGISTRY — the ONE hand-authored input, and it holds NO status.
+# THE CONFORMANCE SUITE REGISTRY: the one hand-authored input, and it holds NO status.
 #
-# This file lists WHICH suites exist and their claim TYPE (`tier`) — the ceiling a suite may ever
-# claim. It does NOT record whether a suite ran or passed, and a field outside the registry's own
-# (`id`, `standard`, `plan`, `tier`, `label`, `verdict`, `public`, `plane`) is refused. Status is
-# DERIVED, never typed: `cargo xtask conformance record` writes one verdict per suite it judged
-# (conformance/verdicts/<id>.json, stamped with the checkout's HEAD), and
-# `cargo xtask gate conformance-sync --write` reconciles the registry and those verdicts into
-# conformance/manifest.json. A registered suite with no verdict is not-run and renders nothing.
+# This file lists WHICH suites exist and their claim TYPE (`tier`), the ceiling a suite may ever
+# claim. Fields: `id`, `repo`, `standard`, `plan`, `tier`, `label`, `verdict`, `public`, `plane`. It
+# does NOT record whether a suite ran or passed. `repo` (required) is the repo whose ModernCI
+# `conformance` check runs the suite (its testing/conformance/suites.tsv lists the id); the release
+# fetches the suite's verdict from that repo's check only (docs/design/conformance-release.md).
+# Status is DERIVED: each repo's ModernCI `conformance` check (testing/conformance/run.sh, from the
+# busbar-release template) writes one verdict per suite it judged, stamped with its repo, commit and
+# core pin; `scripts/conformance/import.sh` brings them into conformance/verdicts/<id>.json, and
+# `python3 scripts/conformance/sync.py --write` renders conformance/manifest.json from this file and
+# those verdicts. A registered suite with no verdict is not-run and renders nothing. A release reads
+# no file of conformance/verdicts/: `sync.py --release` renders from ModernCI's outputs alone.
 #
-# `tier` is a registry constant and is the CEILING (the owner's conformance-matrix ruling):
+# `tier` is the CEILING (the owner's conformance-matrix ruling):
 #   certified        a third-party body ISSUED a cert (requires cert fields in the verdict)
 #   conformant       passes an official/authoritative suite
 #   spec-conformant  validated against a published spec; no vendor cert program exists
 #   capable          implements the mechanism; not externally validated
 #   evidence-only    busbar supplies audit EVIDENCE; never busbar's own cert
 #
-# Two floors hold this file from below, and the gate refuses the registry when either breaks:
-#   * `plane` names the shipped plane a suite judges (`crates/busbar-plane-<key>` in
-#     qa/construction.toml `[gate.plugin_kinds].plane`). Every shipped plane owes at least one suite
-#     here, and no suite may name a plane the build does not ship. A suite that judges no plane (a
-#     transport, the auth server, the supply chain) carries no `plane`.
-#   * the registered ids are exactly the armed set, `SUITE_FLOOR` in
-#     xtask/src/gates/conformance_sync/render.rs (Law 9: a floor only rises). Deleting any suite's
-#     block is refused, so no suite leaves the MUST set; a new suite is armed there in the commit
-#     that adds its block here.
-#
-# A green suite may render only AT OR BELOW its ceiling. Adding a suite is one block here plus its
-# armed id; nothing on the README is hand-edited: it is rendered from the manifest.
+# `plane` names the shipped plane a suite judges; a suite that judges no plane (a transport, the auth
+# server, the supply chain) carries none. A green suite renders only AT OR BELOW its ceiling.
 
 [[suite]]
 id = "a2a"
+repo = "GetBusbar/busbar-plane-a2a"
 standard = "Agent2Agent (A2A) Protocol"
 plan = "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer"
 tier = "conformant"
@@ -40,6 +35,7 @@ public = "true"
 
 [[suite]]
 id = "llm-anthropic"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "Anthropic Messages API"
 plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
@@ -50,6 +46,7 @@ public = "true"
 
 [[suite]]
 id = "llm-bedrock"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "Amazon Bedrock Runtime API"
 plan = "spec battery vs pinned botocore models"
 tier = "spec-conformant"
@@ -60,6 +57,7 @@ public = "true"
 
 [[suite]]
 id = "llm-cohere"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "Cohere Chat API"
 plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
@@ -70,6 +68,7 @@ public = "true"
 
 [[suite]]
 id = "llm-gemini"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "Google Gemini API"
 plan = "spec battery vs pinned discovery document"
 tier = "spec-conformant"
@@ -80,6 +79,7 @@ public = "true"
 
 [[suite]]
 id = "llm-openai"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "OpenAI Chat Completions API"
 plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
@@ -90,6 +90,7 @@ public = "true"
 
 [[suite]]
 id = "llm-responses"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "OpenAI Responses API"
 plan = "spec battery vs pinned vendor OpenAPI"
 tier = "spec-conformant"
@@ -100,6 +101,7 @@ public = "true"
 
 [[suite]]
 id = "mcp"
+repo = "GetBusbar/busbar-plane-mcp"
 standard = "Model Context Protocol"
 plan = "official modelcontextprotocol TCK + in-house battery"
 tier = "conformant"
@@ -110,6 +112,7 @@ public = "true"
 
 [[suite]]
 id = "voice-gemini-live"
+repo = "GetBusbar/busbar-plane-streaming"
 standard = "Google Gemini Live API"
 plan = "spec battery + replay"
 tier = "spec-conformant"
@@ -120,6 +123,7 @@ public = "true"
 
 [[suite]]
 id = "voice-openai-realtime"
+repo = "GetBusbar/busbar-plane-streaming"
 standard = "OpenAI Realtime API"
 plan = "spec battery + replay"
 tier = "spec-conformant"
@@ -129,7 +133,38 @@ plane = "streaming"
 public = "true"
 
 [[suite]]
+id = "voice-transcribe"
+standard = "OpenAI Audio API: POST /v1/audio/transcriptions"
+plan = "busbar's request to the provider and answer to the caller held to the openai-openapi document; control: known-good captures; negative control: planted defects refused"
+tier = "spec-conformant"
+label = "One-shot speech-to-text"
+verdict = "conformance-verdict-voice-transcribe"
+plane = "llm"
+public = "true"
+
+[[suite]]
+id = "voice-tts"
+standard = "OpenAI Audio API: POST /v1/audio/speech"
+plan = "busbar's request to the provider and answer to the caller held to the openai-openapi document; control: known-good captures; negative control: planted defects refused"
+tier = "spec-conformant"
+label = "One-shot text-to-speech"
+verdict = "conformance-verdict-voice-tts"
+plane = "llm"
+public = "true"
+
+[[suite]]
+id = "voice-twilio"
+standard = "Twilio Media Streams"
+plan = "spec battery + replay"
+tier = "spec-conformant"
+label = "Voice Twilio"
+verdict = "conformance-verdict-voice-twilio"
+plane = "streaming"
+public = "true"
+
+[[suite]]
 id = "webrtc-browser"
+repo = "GetBusbar/busbar-transport-webrtc"
 standard = "WebRTC (browser interop: ICE, DTLS-SRTP, SCTP data channels)"
 plan = "headless Chromium and Firefox against busbar's terminating datagram path; control: the browser against itself; negative control: a broken line echo"
 tier = "spec-conformant"
@@ -140,6 +175,7 @@ public = "true"
 
 [[suite]]
 id = "fapi2"
+repo = "GetBusbar/busbar"
 standard = "FAPI 2.0 Security Profile"
 plan = "OIDF FAPI2 conformance suite (self-hosted)"
 tier = "conformant"
@@ -149,8 +185,9 @@ public = "true"
 
 [[suite]]
 id = "h2"
+repo = "GetBusbar/busbar"
 standard = "HTTP/2 (RFC 9113)"
-plan = "h2spec over TLS (ALPN h2) against the tls: listener"
+plan = "h2spec over TLS (ALPN h2) against the tls: listener of the shipped binary"
 tier = "conformant"
 label = "HTTP/2"
 verdict = "conformance-verdict-h2"
@@ -158,6 +195,7 @@ public = "true"
 
 [[suite]]
 id = "jev"
+repo = "GetBusbar/busbar-plane-decisions"
 standard = "jev decision plane"
 plan = "plane battery + served POST /v1/systemone (one model; two models with upstream_model) and POST /api/evaluate (nanojev) on booted busbars; GET /v1/models keeps its 1.5.5 bytes"
 tier = "spec-conformant"
@@ -168,6 +206,7 @@ public = "true"
 
 [[suite]]
 id = "oidf-oauth2"
+repo = "GetBusbar/busbar"
 standard = "OpenID Foundation OAuth2 conformance suite"
 plan = "self-hosted OIDF OAuth2 plan (openid=plain_oauth)"
 tier = "conformant"
@@ -177,8 +216,9 @@ public = "true"
 
 [[suite]]
 id = "slsa-verifier"
-standard = "SLSA provenance (v1.0)"
-plan = "each dev commit's busbar binaries, verified by slsa-verifier against SLSA provenance from busbar's own slsa-dev-provenance run"
+repo = "GetBusbar/busbar"
+standard = "Signed build attestation (in-toto; not SLSA provenance)"
+plan = "each dev build's busbar binaries, verified by cosign verify-blob-attestation against ModernCI's signed check-output attestation (https://modernci.dev/attestation/check-output/v1) and ModernCI's builder key; not-run until ModernCI publishes both"
 tier = "conformant"
 label = "SLSA"
 verdict = "conformance-verdict-slsa-verifier"
@@ -186,6 +226,7 @@ public = "true"
 
 [[suite]]
 id = "tls"
+repo = "GetBusbar/busbar"
 standard = "TLS (rustls, no OpenSSL)"
 plan = "testssl.sh grade against a loopback subject"
 tier = "conformant"
@@ -195,9 +236,67 @@ public = "true"
 
 [[suite]]
 id = "ws"
+repo = "GetBusbar/busbar-transport-ws"
 standard = "WebSocket (RFC 6455)"
 plan = "Autobahn|Testsuite against busbar-transport-ws"
 tier = "conformant"
 label = "WebSocket"
 verdict = "conformance-verdict-ws"
+public = "true"
+
+[[suite]]
+id = "sbom"
+repo = "GetBusbar/busbar"
+standard = "Software bill of materials (CycloneDX)"
+plan = "CycloneDX SBOM of each dev build's busbar binary, generated by cargo-cyclonedx and validated by cyclonedx-cli against the CycloneDX schema"
+tier = "capable"
+label = "SBOM"
+verdict = "conformance-verdict-sbom"
+public = "true"
+
+[[suite]]
+id = "sigstore"
+repo = "GetBusbar/busbar"
+standard = "Sigstore signing (cosign keyless)"
+plan = "cosign verify of a signed release's images and artifacts against the Rekor transparency log; turns green at the first signed release, never from a dev build"
+tier = "capable"
+label = "Sigstore"
+verdict = "conformance-verdict-sigstore"
+public = "true"
+
+[[suite]]
+id = "otlp"
+repo = "GetBusbar/busbar-export-otlp"
+standard = "OpenTelemetry Protocol (OTLP)"
+plan = "busbar-export-otlp exporting into the official opentelemetry-collector-contrib receiver; every span and metric it sent arrives intact"
+tier = "capable"
+label = "OTLP"
+verdict = "conformance-verdict-otlp"
+public = "true"
+
+[[suite]]
+id = "evidence-audit-trail"
+standard = "Audit trail: hash-chained, Ed25519-signed, tamper-evident action log"
+plan = "an independent verifier written from docs/audit-chain-digest-v4.md over /audit/range of the shipped binary: the live chain verifies; tampered, deleted, reordered and truncated records are each refused"
+tier = "evidence-only"
+label = "Audit trail"
+verdict = "conformance-verdict-evidence-audit-trail"
+public = "true"
+
+[[suite]]
+id = "evidence-rbac"
+standard = "Scope-based RBAC: least-privilege admin scopes, per-verb grants, admin/data-plane separation"
+plan = "every admin operation the node's OpenAPI document lists, against principals lacking its scope (refused) and holding it (admitted), plus the data plane's key gate and plane separation"
+tier = "evidence-only"
+label = "RBAC"
+verdict = "conformance-verdict-evidence-rbac"
+public = "true"
+
+[[suite]]
+id = "evidence-tls"
+standard = "TLS / mutual TLS: native termination, client-certificate enforcement, admin plane isolation"
+plan = "the testssl subject (the tls suite) plus certless and rogue-CA clients refused on an mTLS data listener and on admin_tls with client_ca"
+tier = "evidence-only"
+label = "TLS / mTLS"
+verdict = "conformance-verdict-evidence-tls"
 public = "true"

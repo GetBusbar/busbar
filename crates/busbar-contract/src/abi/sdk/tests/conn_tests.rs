@@ -178,52 +178,6 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
     assert_eq!(h.connector(TICKET).within(5).budget_ms(), Some(5));
 }
 
-/// RED: a backoff pends until the host's clock reaches its instant — asking for no resume before
-/// it (the op's wake_at_ns), and a resume that comes sooner pends again with the same instant. (That
-/// the host's timer never resumes before wake_at_ns is the dispatcher's own RED: dispatch_tests'
-/// `pend timer -> ... early=0`.)
-#[test]
-fn a_backoff_pends_until_the_host_clock_reaches_it() {
-    use crate::abi::mechanism::lifecycle::CancelOut;
-    use crate::abi::sdk::out::Out;
-    use std::sync::atomic::Ordering;
-    let _g = SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let h = host(&SLOTS);
-    let until = 5_000_000_000;
-    for early in [1_000, until - 1] {
-        MONO.store(early, Ordering::SeqCst);
-        // SAFETY: plain data; all-zero is valid.
-        let mut o: CancelOut = unsafe { std::mem::zeroed() };
-        let mut out = Out::new(&mut o);
-        let mut c = h.connector(TICKET);
-        assert_eq!(
-            not_before(&mut c, &mut out, until),
-            Poll::Pending,
-            "at {early}"
-        );
-        assert_eq!(
-            o.head.wake_at_ns, until,
-            "resume no earlier than the instant"
-        );
-        assert_eq!(
-            c.issued(),
-            0,
-            "the clock is read on no ticket: no handle drawn, so a replay never reads a stored time"
-        );
-    }
-    MONO.store(until, Ordering::SeqCst);
-    // SAFETY: as above.
-    let mut o: CancelOut = unsafe { std::mem::zeroed() };
-    let mut c = h.connector(TICKET);
-    assert_eq!(
-        not_before(&mut c, &mut Out::new(&mut o), until),
-        Poll::Ready(Ok(()))
-    );
-    assert_eq!(o.head.wake_at_ns, 0, "a ready answer asks for no timer");
-}
-
 /// `open` learns the host's verdict on its needs: admitted, or refused with the host's text
 /// verbatim (so the plugin answers its own 1.5.5 words); on no ticket, drawing no handle.
 #[test]

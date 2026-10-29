@@ -13,9 +13,9 @@
 //! comes from, so a batch is shipped synchronously as part of committing it and a shipping failure
 //! is a durability failure. Same trait, two postures, both stated out loud.
 //!
-//! The seam is the contract's because the store adapter implements it on the other side of it (the
-//! same division as `slice::SliceStore`). The record and its framing stay with the log; a shipper
-//! is generic over the record and sees it through [`ShippedRecord`] alone.
+//! The seam is the contract's because the store adapter implements it on the other side of it. The
+//! record and its framing stay with the log; a shipper is generic over the record and sees it
+//! through [`ShippedRecord`] alone.
 
 /// What a shipper may know of one record: its identity, the pair a re-appended batch is
 /// deduplicated on.

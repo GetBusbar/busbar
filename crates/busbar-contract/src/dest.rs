@@ -84,7 +84,7 @@ pub enum DestinationFacts {
     ///
     /// The requesting plane names the CLASS it needs and never the plane: a plane names no other
     /// plane (#47/#49). The host resolves the class to the plane that declares it in
-    /// [`crate::plane::PlaneDeclaration::served_op_classes`] ([`crate::plane::plane_serving`]).
+    /// [`crate::plane::PlaneDeclaration::served_op_classes`].
     NestedPlane {
         /// The operation class the unit needs served.
         op: OpClassId,
@@ -125,16 +125,6 @@ impl DestinationFacts {
             | Self::SessionAccrual { lane } => Some(*lane),
             _ => None,
         }
-    }
-
-    /// Whether this kind is one the flat request fee is charged against.
-    ///
-    /// The settlement table is explicit that the fee follows the *kind*, not the price: a client
-    /// unit whose route selected an upstream posts the fee even with no rate card configured,
-    /// and every other kind posts nothing unless the card's kernel-verb section prices it.
-    #[must_use]
-    pub const fn is_upstream_kind(&self) -> bool {
-        matches!(self, Self::Upstream { .. } | Self::SessionUpstream { .. })
     }
 }
 
@@ -362,31 +352,6 @@ impl SecretOnce {
     pub fn matches(&self, nonce: u128) -> bool {
         self.nonce == nonce
     }
-}
-
-/// What an egress-auth scheme adds to an outbound request.
-///
-/// Either a decoration applied in one pass, or a declaration that this upstream needs a
-/// multi-round exchange, in which case the upstream's challenge comes back through the scheme's
-/// continue call.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AuthDecoration<'u> {
-    /// Fields, a body signature and slots, applied in one pass.
-    Decorate {
-        /// Envelope fields to set, from the closed allow-list; never a lane-locator field.
-        envelope_fields: crate::kinds::EnvelopeFields<'u>,
-        /// A signature over the body, where the scheme signs one.
-        body_signature: Option<ScratchBytes<'u>>,
-        /// Placeholders the egress-auth unit substitutes secrets into.
-        slots: BoundedVec<SecretSlot, { crate::bounded::MAX_KEYS }>,
-    },
-    /// This upstream needs a multi-round exchange first.
-    Handshake {
-        /// The most frames the exchange may take.
-        max_frames: u16,
-        /// The most bytes the exchange may take.
-        max_bytes: u32,
-    },
 }
 
 /// An opaque handle to transport key material.

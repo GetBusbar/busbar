@@ -48,12 +48,12 @@ fn openapi_operations_carry_stable_operation_ids() {
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 101 = those 81 + the 20 operations the 1.6.0 closed verb table adds, every one with its
-    // effect bound (9 money-governance verbs, 5 ledger views, 3
+    // 100 = those 81 + the 19 operations the 1.6.0 closed verb table adds, every one with its
+    // effect bound (8 money-governance verbs, 5 ledger views, 3
     // audit-chain reads) and the trust verbs (`GET /trust`,
     // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
     // and which the one document describes (items 45/46: no side-car document).
-    assert_eq!(checked, 101, "expected exactly 101 admin operations");
+    assert_eq!(checked, 100, "expected exactly 100 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -206,13 +206,12 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
-        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
-        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
+        // The 1.6.0 kernel verb whose body the node's administrative loop never reads: the chain
+        // break is a pure command (the effect is the store's; the verb IS the argument).
         // Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the count
         // correction) and `ledger/amend-rate-history` (the signed correction) — are not here; the
         // verbs with no effect bound are not served, so not documented at all.
         ("post", "/api/v1/admin/chain-break"),
-        ("post", "/api/v1/admin/reseal-epoch-floor"),
     ];
 
     let doc = openapi_doc_seamed();

@@ -6,8 +6,6 @@ use super::*;
 use crate::classify::WireFault;
 use crate::Outcome;
 
-// ── outcome_and_label: the four-way fold, ported from `classify_error`'s match arms ─────────
-
 #[test]
 fn client_fault_records_nothing() {
     let (outcome, label) = outcome_and_label(Disposition::ClientFault, Some(30));
@@ -46,8 +44,6 @@ fn hard_down_is_hard_down() {
     assert_eq!(outcome, Outcome::HardDown);
     assert_eq!(label, label::HARD_DOWN);
 }
-
-// ── classify_upstream: the reading, and nothing else ──────────────────────────────────────────
 
 fn answered(fault: Option<WireFault>, retry_after: Option<u64>) -> Classified {
     classify_upstream(UpstreamStatus {

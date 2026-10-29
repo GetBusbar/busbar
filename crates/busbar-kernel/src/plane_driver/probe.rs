@@ -77,6 +77,11 @@ impl PlaneDriver {
         let Some(decoded) = units.arrive(key.get()) else {
             return;
         };
+        // A refusal ABOUT AN ENTRY decodes as the entry it names, but it is still a refusal: the
+        // plane refused the probe, so nothing goes out.
+        if units.declined_status().is_some() {
+            return;
+        }
         let Some(ticket) = self.calls.mint() else {
             return;
         };
@@ -126,11 +131,9 @@ impl PlaneProbes {
 
 impl ProbeTarget for PlaneProbes {
     fn suppressing(&self, member: usize) -> bool {
-        self.members.get(member).is_some_and(|d| {
-            self.egress
-                .breaker
-                .suppressing(*d, self.egress.clock.now_secs())
-        })
+        self.members
+            .get(member)
+            .is_some_and(|d| (self.egress.breaker)().suppressing(*d, self.egress.clock.now_secs()))
     }
 
     async fn probe(&self, member: usize, timeout: Duration) {

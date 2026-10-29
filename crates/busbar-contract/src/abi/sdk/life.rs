@@ -61,7 +61,7 @@ use std::task::Poll;
 use zeroize::Zeroizing;
 
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
+    AbiStr, Blob, Diag, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
 };
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, TickIn,
@@ -143,6 +143,25 @@ pub fn settings_object(
         Ok(serde_json::Value::Object(m)) => Ok(m),
         _ => Err(Refusal::failed("settings: must be a JSON object")),
     }
+}
+
+/// A settings blob's bytes as the JSON value they hold; empty is `{}`.
+///
+/// # Errors
+/// The bytes are not JSON: FAILED, `settings: <serde's words>`.
+pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
+    let bytes = if bytes.is_empty() { b"{}" } else { bytes };
+    serde_json::from_slice(bytes).map_err(|e| Refusal::failed(format!("settings: {e}")))
+}
+
+/// A settings blob's bytes as the plugin's settings type `T`, read from their JSON value (as the
+/// configuration grammar reads them, so serde's words name no line or column); empty is `{}`.
+///
+/// # Errors
+/// The bytes are not JSON, or not `T`: FAILED, `settings: <serde's words>`.
+pub fn settings_as<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Refusal> {
+    serde_json::from_value(settings_value(bytes)?)
+        .map_err(|e| Refusal::failed(format!("settings: {e}")))
 }
 
 // ── leases ─────────────────────────────────────────────────────────────────────────────────
@@ -327,6 +346,19 @@ pub struct Refreshed {
     pub counted: Option<Counted>,
 }
 
+/// A diagnostic the plugin's Statement declares, raised by the instance an `open` or `refresh`
+/// built: the host audits one at warn or error on the plugin's behalf (a flagged open loaded,
+/// `plugin.open`, `degraded`), and writes it to the plugin's own log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flagged {
+    /// The index of its id in the plugin's Statement `diag_ids`.
+    pub id_idx: u32,
+    /// `SEVERITY_WARN` or `SEVERITY_ERROR` (`abi::mechanism::call`).
+    pub severity: u8,
+    /// The operator's words; never secret material.
+    pub text: String,
+}
+
 /// ONE KIND'S LIFECYCLE, as its SDK states it: the instance state the nine generic slots serve,
 /// and each per-kind value. A kind's SDK implements it over its author trait; a plugin names it
 /// through its kind's door macro.
@@ -392,7 +424,31 @@ pub trait Life: Send + Sync + Sized + 'static {
         let _ = (host, ticket);
         Poll::Ready(Ok(()))
     }
+
+    /// `close`: what the instance lets go before the SDK drops it, over the host tables `open`
+    /// handed it (`None` when it was handed none): a carrier closes the host I/O handles it still
+    /// holds. The default lets go of nothing.
+    fn close(&self, host: Option<&Host>) {
+        let _ = host;
+    }
+
+    /// What the instance an `open` or `refresh` just built raises on that answer
+    /// ([`Flagged`]): asked after each READY `open` and `refresh`. `None` (the default) raises
+    /// nothing.
+    fn flagged(&self) -> Option<Flagged> {
+        None
+    }
 }
+
+/// The diagnostic an `open` or `refresh` raised ([`Life::flagged`]), held by the instance until
+/// the host has copied the reply, as [`Reported`] is. BOXED: an `open` raises it before its state
+/// moves into the instance box, so the entry the envelope points to must not move with it.
+struct Raised(Mutex<Option<Box<(Flagged, Diag)>>>);
+
+// SAFETY: the entry's one pointer (`text`) points into the `Flagged` text held beside it.
+unsafe impl Send for Raised {}
+// SAFETY: as above.
+unsafe impl Sync for Raised {}
 
 /// The metric entry a `refresh` reports, held by the instance until the host has copied the reply
 /// (lifecycle ops never overlap on one instance, and the host copies a reply as it returns).
@@ -409,6 +465,7 @@ pub struct Held<L> {
     life: L,
     leases: Leases,
     reported: Reported,
+    raised: Raised,
     host: Option<Host>,
 }
 
@@ -429,6 +486,7 @@ impl<L: Life> Held<L> {
             life,
             leases: Leases::default(),
             reported: Reported(Mutex::new(entry(None))),
+            raised: Raised(Mutex::new(None)),
             host,
         }
     }
@@ -461,11 +519,39 @@ fn entry(counted: Option<Counted>) -> MetricEntry {
     }
 }
 
+/// Put what `h`'s instance raises ([`Life::flagged`]) in `head`'s envelope as its one declared
+/// diagnostic, held by the instance until its next lifecycle op; nothing when it raises none.
+fn raise<L: Life>(h: &Held<L>, head: &mut OutHead) {
+    let Some(flag) = h.life.flagged() else {
+        return;
+    };
+    let mut held = h
+        .raised
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (flag, diag) = &mut **held.insert(Box::new((flag, Diag::ZERO)));
+    *diag = Diag {
+        id_idx: flag.id_idx,
+        severity: flag.severity,
+        text: AbiStr {
+            ptr: flag.text.as_ptr(),
+            len: flag.text.len(),
+        },
+        ..Diag::ZERO
+    };
+    head.envelope.diags = std::ptr::from_ref(&*diag);
+    head.envelope.diags_len = 1;
+}
+
 fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
     list.iter().map(Lent::<Blob>::bytes).collect()
 }
 
 // ── the nine slots ──────────────────────────────────────────────────────────────────────────
+
+/// What `release` answers for a lease this instance does not hold.
+pub const NO_SUCH_LEASE: &str = "release: no such lease";
 
 macro_rules! life_slot {
     ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
@@ -504,7 +590,11 @@ life_slot!(
         match L::open(settings, &secrets(input.secrets()), input.generation) {
             Ok(life) => {
                 let host = input.host().map(|h| Host::of(&h));
-                instance.open(Held::new(life, host));
+                // Raised from the state before it is installed: the instance is not this
+                // call's to read until `open` returns (`Instance::get` answers `None` here).
+                let held = Held::new(life, host);
+                raise(&held, &mut out.raw().head);
+                instance.open(held);
                 Outcome::Ready
             }
             Err(r) => out.fail(r),
@@ -530,9 +620,13 @@ life_slot!(
                 let o = out.raw();
                 o.envelope.metrics = std::ptr::from_ref(&*held);
                 o.envelope.metrics_len = 1;
+                raise(h, o);
                 Outcome::Ready
             }
-            Ok(Refreshed { counted: None }) => Outcome::Ready,
+            Ok(Refreshed { counted: None }) => {
+                raise(h, out.raw());
+                Outcome::Ready
+            }
             Err(r) => out.fail(r),
         }
     }
@@ -590,17 +684,24 @@ life_slot!(
 );
 
 life_slot!(
-    /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED.
-    Release(ReleaseIn => OutHead) |instance, input, _out| {
-        instance
-            .get()
-            .map_or(Outcome::Refused, |h| h.leases.release(input.lease))
+    /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED, in
+    /// [`NO_SUCH_LEASE`]'s words.
+    Release(ReleaseIn => OutHead) |instance, input, out| {
+        match instance.get().map(|h| h.leases.release(input.lease)) {
+            Some(Outcome::Ready) => Outcome::Ready,
+            _ => out.fail(Refusal::refused(NO_SUCH_LEASE)),
+        }
     }
 );
 
 life_slot!(
-    /// `close`: READY; the SDK drops the state (every lease with it).
-    Close(InHead => OutHead) |_, _, _out| { Outcome::Ready }
+    /// `close`: [`Life::close`], then READY; the SDK drops the state (every lease with it).
+    Close(InHead => OutHead) |instance, _, _out| {
+        if let Some(h) = instance.get() {
+            h.life.close(h.host());
+        }
+        Outcome::Ready
+    }
 );
 
 #[cfg(test)]

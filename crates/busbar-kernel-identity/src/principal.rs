@@ -11,11 +11,6 @@
 /// reaches a surface; the anonymous principal itself carries no bucket at all.
 pub const ANONYMOUS: &str = "anonymous";
 
-/// The two id prefixes a module may not synthesize. `group:` names a governance group and `vk_`
-/// names a minted key; a module that claims either would be minting an identity the governance
-/// tables believe they alone issue, so the identification is refused rather than trusted.
-const RESERVED_ID_PREFIXES: [&str; 2] = ["group:", "vk_"];
-
 /// The caller a module identified.
 ///
 /// `id` is the stable handle the ledger attributes to. `roles` are what the identifying module
@@ -59,12 +54,6 @@ impl Principal {
     /// anonymous rendering is one fact in one place rather than a literal repeated at each surface.
     pub fn actor_id(&self) -> &str {
         &self.id
-    }
-
-    /// Whether a module-synthesized id lands in reserved space. An id that does is refused exactly
-    /// where governance refuses it: the module does not get to name a group or a minted key.
-    pub fn id_is_reserved(id: &str) -> bool {
-        RESERVED_ID_PREFIXES.iter().any(|p| id.starts_with(p))
     }
 }
 

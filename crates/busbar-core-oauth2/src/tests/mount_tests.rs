@@ -3,7 +3,7 @@
 
 //! THE GATING PROOF: `oauth_as:` absent means the authorization server is not there.
 //!
-//! The ruling this plane ships under is three things at once — built in, taken as a published crate,
+//! This plane ships as three things at once — built in, taken as a published crate,
 //! and INERT unless the operator's config asks for it — and only the third is a claim about running
 //! behaviour, so only the third can be got wrong silently. A binary that links `oauth-as` and mounts
 //! `/token` for every deployment is indistinguishable, from the outside, from one that does not,

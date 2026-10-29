@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS (ARCHITECT round 5 Q-L3B-PROGRAM (A)): ONE long-lived program connection
+//! MEMBER PROGRAMS: ONE long-lived program connection
 //! per (instance, need, member), for a need whose `target_from` is the member-program path
 //! (`busbar_contract::section::MEMBER_PROGRAM`). Each member's program is spawned on the first open
 //! that names it ([`Member::lease`]) and kept: every later open on the member is a LEASE on the
@@ -39,6 +39,7 @@ use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT, RECEIVE_BUFFER_BYTES};
+use crate::map;
 
 /// The wakers of every lease waiting on a member's program, woken together: the program's pipes
 /// are driven with this waker, so a frame read for one lease wakes them all.
@@ -138,15 +139,6 @@ pub(crate) struct Member {
 
 /// The next member's supervision key: process-wide, from `1`.
 static NEXT_SUPERVISION_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn map(f: &Failure) -> ConnError {
-    match f {
-        Failure::Refused(_) => ConnError::Refused,
-        Failure::Timeout => ConnError::Timeout,
-        Failure::Closed => ConnError::Closed,
-        Failure::Failed(_) => ConnError::Fault,
-    }
-}
 
 /// A piece of `kind` that filled `len` bytes.
 fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {

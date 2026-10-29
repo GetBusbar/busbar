@@ -48,8 +48,8 @@ pub struct TokenUsage {
     /// RESIDUALS: counts the provider reported that no billing class records (MONEY LAW, owner
     /// 2026-10-02), keyed by the provider's own count name (a policy-unit count, or
     /// `<identity>.stated_total_gap` for a stated total above its itemized sum). NEVER BILLED: no billed-usage builder reads this map, and no
-    /// meter class is made from it. The reader WARNs where it fills it, and the kernel's settle step
-    /// writes one `usage.residual` audit row per non-empty map. Sparse: a zero count is left off.
+    /// meter class is made from it. The reader WARNs where it fills it; no durable row is written
+    /// for it. Sparse: a zero count is left off.
     pub residual_units: std::collections::BTreeMap<String, u64>,
 }
 
@@ -199,6 +199,37 @@ impl Default for RawTierRates {
     }
 }
 
+/// READ A JSON NUMBER AS AN EXACT, NON-NEGATIVE INTEGER COUNT, or `None` when it is not one: the
+/// one seam a plane reads a billed count through (plane-llm `codec/usage_count.rs` and
+/// plane-streaming `codec/ir/usage.rs` each carried it).
+///
+/// [`serde_json::Value::as_u64`] answers `None` for ANY float-backed number, `27.0` included, so a
+/// provider that spells a count as a float would read as zero work: a ledger that says nothing
+/// happened, faithfully wrong in every money view over it. The integer representation is tried
+/// first; the float one only when it provably denotes an exact integer.
+///
+/// A fractional value (never rounded: rounding invents a quantity), a negative one, a non-finite
+/// one, and anything at or above 2^53 (past which every `f64` has `fract() == 0.0`, so the
+/// integrality test proves nothing) all read as `None`.
+#[must_use]
+pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
+    if let Some(u) = v.as_u64() {
+        return Some(u);
+    }
+    let f = v.as_f64()?;
+    // 2^53. `contains` also rejects NaN and both infinities, which compare inside no range.
+    const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
+    if (0.0..EXACT_INTEGER_LIMIT).contains(&f) && f.fract() == 0.0 {
+        Some(f as u64)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/billing_duration_tests.rs"]
 mod billing_duration_tests;
+
+#[cfg(test)]
+#[path = "tests/billing_count_tests.rs"]
+mod billing_count_tests;

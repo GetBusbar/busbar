@@ -119,8 +119,10 @@ identical surface and changes its behaviour on the backend is invisible to any p
 front of it, Busbar included.
 
 That residual risk is bounded by the other controls, not by the fingerprint: per-backend credential
-scoping (Busbar spends a credential minted for *this* tool under *this* caller's grant), egress/SSRF
-policy (where a call may go), and the audit chain (what happened). The maximally true claim is
+scoping (a `token_exchange:` registration spends a credential minted for *this* tool under *this*
+caller's grant; under the default `upstream_credentials: own`, the upstream sees the operator's
+per-server credential, never the caller's), egress/SSRF policy (where a call may go), and the audit
+chain (what happened). The maximally true claim is
 **"verified against the surface you approved, before every call"** — not a guarantee about the
 upstream's runtime behaviour.
 

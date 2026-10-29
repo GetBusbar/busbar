@@ -85,10 +85,7 @@ lendable!(
     Blob,
     Field,
     crate::abi::auth::NamedValue,
-    crate::abi::store::UnitCell,
     crate::abi::store::UsageCell,
-    crate::abi::store::WindowCap,
-    crate::abi::store::ReleaseItem,
     crate::abi::export::CheckInstance,
 );
 

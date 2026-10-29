@@ -923,7 +923,10 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
         a.verify_now(&request(Some("log"), None)),
         Some(answered(Verified::Pass))
     );
-    let path = log_config().path_for("auth.logged");
+    let path = log_config().path_for(
+        "auth.logged",
+        busbar_contract::abi::mechanism::KindCode::Auth,
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut text = String::new();
     while std::time::Instant::now() < deadline {
@@ -1222,4 +1225,42 @@ fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
         "a form not aligned for its fields is a malformed answer, never read"
     );
     drop(buf);
+}
+
+/// "Busbar … overwriting its own copies with zeroes once the plugin has them" (security.md:318):
+/// the one copy an auth instance must keep is the secrets it re-lends `refresh`, and it keeps them
+/// in a holder that wipes them when the instance drops and whose `Debug` shows no byte of them.
+#[test]
+fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
+    use crate::auth_door::{AuthInstance, AuthSink};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+    let d = dispatcher();
+    let sink = AuthSink::new("keyed");
+    let bind = Bind {
+        instance: Arc::from("keyed-z"),
+        max_inflight_cap: 8,
+        sink: sink.bind(),
+        dispatcher: d.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(keyed::door).unwrap();
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
+    let a = AuthInstance::open(
+        p,
+        sink,
+        d.clone(),
+        "keyed-z",
+        b"{}",
+        vec![b"s3cret".to_vec()],
+    )
+    .expect("the keyed plugin opens over its credential");
+    let kept = a.kept_secrets();
+    wiped_when_dropped(kept);
+    let shown = format!("{kept:?}");
+    assert!(
+        !shown.contains("s3cret") && !shown.contains("115, 51, 99"),
+        "the kept secrets print: {shown}"
+    );
+    assert!(a.refresh().is_ok(), "refresh is still lent the kept secret");
 }

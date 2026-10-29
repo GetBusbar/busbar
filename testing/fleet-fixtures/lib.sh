@@ -84,7 +84,7 @@ track_pid() { FIXTURE_PIDS+=("$1"); }
 
 # ── The upstream far end: the pinned Rust oracle's `mock` ───────────────────────────────────────
 # ONE upstream mock: the `busbar-oracle mock <port> [marker] [control-file]` subcommand of the engine
-# testing/shadow-oracle/oracle-rust.pin names. It answers every dialect with the marker as the
+# the branch file's BUSBAR_ORACLE_* env names. It answers every dialect with the marker as the
 # assistant text and fixed NONZERO usage (11 in / 7 out), which is what the store probe's durability
 # assertion needs. Set ORACLE_MOCK_CAPTURE_DIR=<dir> in the caller to have the mock write one JSON file
 # per request it received (path, method, every header unmasked, body): that is how a probe asserts what

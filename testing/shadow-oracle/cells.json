@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2592,
+    "total": 2590,
     "by_plane": {
       "a2a": 468,
-      "core": 1009,
+      "core": 1007,
       "llm": 203,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 329,
+      "admin.ops": 327,
       "admin.plugins": 7,
       "auth.lifecycle": 4,
       "billing": 16,
@@ -10689,38 +10689,6 @@
           "Content-Type": "application/json"
         },
         "body": "{\"file\":\"{ASSET:webrequest-hook}\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
-        "auth": "none",
-        "listener": "admin"
-      },
-      "why": "no credential -> 401 envelope"
-    },
-    {
-      "id": "admin.ops|PostResealEpochFloor|ok",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "POST",
-        "path": "/api/v1/admin/reseal-epoch-floor",
-        "headers": {},
-        "body": null,
-        "auth": "admin",
-        "listener": "admin"
-      },
-      "why": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. "
-    },
-    {
-      "id": "admin.ops|PostResealEpochFloor|unauth",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "POST",
-        "path": "/api/v1/admin/reseal-epoch-floor",
-        "headers": {},
-        "body": null,
         "auth": "none",
         "listener": "admin"
       },

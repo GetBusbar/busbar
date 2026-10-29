@@ -5,7 +5,7 @@
 //! failing if its check is removed, and the GREEN answers per outcome.
 
 use super::*;
-use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, Outcome, RawOutcome};
 use crate::abi::mechanism::check::HARD_MAX_BYTES;
 
 fn head(outcome: Outcome) -> OutHead {

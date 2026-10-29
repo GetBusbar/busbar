@@ -179,7 +179,7 @@ fn run(p: Plugin<WitnessKind>) {
 /// What the witness instance's file holds once `sink`'s writer has written every line handed over.
 fn read(dir: &Path, sink: &PluginLogSink) -> String {
     sink.flush();
-    let path = config(dir, LogLevel::Trace).path_for(INSTANCE);
+    let path = config(dir, LogLevel::Trace).path_for(INSTANCE, witness::KIND);
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
@@ -309,6 +309,52 @@ fn the_instance_level_filters_its_file() {
 
 /// The file rotates by the host's rule: past the size it is renamed `<file>.1`, and a new file
 /// begins. A line break inside a record stays inside its one line.
+/// TWO KINDS, ONE INSTANCE NAME, TWO FILES. Instance names are unique only within a kind (each is a
+/// key of its own config section), so a store and an auth provider may both be named `memory`. Each
+/// writes its own file, named with its kind's section, and neither's records reach the other's.
+/// RED before: both wrote `memory.log`, one file holding two plugins' records.
+#[test]
+fn a_store_and_an_auth_provider_of_one_name_log_to_two_files() {
+    use crate::dispatch::Diagnostic;
+    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO};
+    let dir = scratch("two-kinds");
+    let cfg = config(&dir, LogLevel::Info);
+    let store = cfg
+        .sink("memory", KindCode::Store, Arc::new(NoSink))
+        .expect("the store's sink opens");
+    let auth = cfg
+        .sink("memory", KindCode::Auth, Arc::new(NoSink))
+        .expect("the auth provider's sink opens");
+    assert_ne!(
+        store.path(),
+        auth.path(),
+        "a store and an auth provider named alike share one log file"
+    );
+    let line = |sink: &PluginLogSink, text: &str| {
+        sink.diag(Diagnostic {
+            id: DIAG_LOG,
+            name: &[],
+            severity: SEVERITY_INFO,
+            text: text.as_bytes(),
+        });
+        sink.flush();
+    };
+    line(&store, "the store's record");
+    line(&auth, "the auth provider's record");
+    let store_text = std::fs::read_to_string(store.path()).expect("the store's file");
+    let auth_text = std::fs::read_to_string(auth.path()).expect("the auth provider's file");
+    assert!(store_text.contains("the store's record"), "{store_text}");
+    assert!(
+        !store_text.contains("the auth provider's record"),
+        "{store_text}"
+    );
+    assert!(
+        auth_text.contains("the auth provider's record"),
+        "{auth_text}"
+    );
+    assert!(!auth_text.contains("the store's record"), "{auth_text}");
+}
+
 #[test]
 fn the_file_rotates_and_keeps_one_record_per_line() {
     use crate::dispatch::Diagnostic;
@@ -320,7 +366,7 @@ fn the_file_rotates_and_keeps_one_record_per_line() {
         .sink("a/b c", witness::KIND, Arc::new(NoSink))
         .expect("the sink opens")
         .with_clock(fixed_clock);
-    assert_eq!(s.path(), dir.join("a_b_c.log"));
+    assert_eq!(s.path(), dir.join("export.a_b_c.log"));
     for i in 0..4 {
         s.diag(Diagnostic {
             id: DIAG_LOG,
@@ -330,8 +376,8 @@ fn the_file_rotates_and_keeps_one_record_per_line() {
         });
     }
     s.flush();
-    let live = std::fs::read_to_string(dir.join("a_b_c.log")).expect("the live file");
-    let archive = std::fs::read_to_string(dir.join("a_b_c.log.1")).expect("the archive");
+    let live = std::fs::read_to_string(dir.join("export.a_b_c.log")).expect("the live file");
+    let archive = std::fs::read_to_string(dir.join("export.a_b_c.log.1")).expect("the archive");
     assert!(archive.contains("record 0\\nsecond half"), "{archive}");
     assert!(live.contains("record 3\\nsecond half"), "{live}");
     assert!(
@@ -437,7 +483,7 @@ fn release(path: PathBuf) -> std::sync::mpsc::Receiver<String> {
 fn a_stalled_log_file_never_stalls_the_plugin_call() {
     let dir = scratch("stalled");
     let cfg = deferred(&dir, LogLevel::Trace);
-    let path = cfg.path_for(INSTANCE);
+    let path = cfg.path_for(INSTANCE, witness::KIND);
     stall(&path);
     let s: Arc<dyn EnvelopeSink> = Arc::new(
         cfg.sink(INSTANCE, witness::KIND, Arc::new(NoSink))
@@ -491,7 +537,7 @@ fn a_full_log_queue_counts_its_lines_and_never_waits() {
     use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO};
     let dir = scratch("full");
     let cfg = deferred(&dir, LogLevel::Info);
-    let path = cfg.path_for(INSTANCE);
+    let path = cfg.path_for(INSTANCE, witness::KIND);
     stall(&path);
     let s = cfg
         .sink(INSTANCE, witness::KIND, Arc::new(NoSink))
@@ -583,7 +629,7 @@ fn two_sinks_of_one_file_rotate_it_once_and_never_write_an_archive() {
         info(s, format!("seq {i:04}").as_bytes());
         s.flush();
     }
-    let live = dir.join("shared.log");
+    let live = dir.join("export.shared.log");
     let archive = |i: u32| PathBuf::from(format!("{}.{i}", live.display()));
     let files: Vec<String> = [archive(3), archive(2), archive(1), live.clone()]
         .iter()
@@ -623,13 +669,13 @@ fn a_failed_rotation_is_reported_once_and_keeps_every_line() {
         .sink("stuck", witness::KIND, Arc::new(NoSink))
         .expect("the sink opens")
         .with_clock(fixed_clock);
-    let blocker = dir.join("stuck.log.1").join("held");
+    let blocker = dir.join("export.stuck.log.1").join("held");
     std::fs::create_dir_all(&blocker).expect("a directory where the archive goes");
     for i in 0..30 {
         info(&s, format!("line {i:02}").as_bytes());
     }
     s.flush();
-    let text = std::fs::read_to_string(dir.join("stuck.log")).unwrap_or_default();
+    let text = std::fs::read_to_string(dir.join("export.stuck.log")).unwrap_or_default();
     let kept = blocker.is_dir();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(kept, "the directory in the archive's place was touched");
@@ -665,7 +711,7 @@ fn a_file_under_a_name_that_is_not_utf8_rotates() {
         info(&s, format!("line {i}").as_bytes());
     }
     s.flush();
-    let mut archive = dir.join("raw.log").into_os_string();
+    let mut archive = dir.join("export.raw.log").into_os_string();
     archive.push(".1");
     let rotated = Path::new(&archive).is_file();
     let _ = std::fs::remove_dir_all(&root);
@@ -713,7 +759,8 @@ fn a_reconfigured_level_and_directory_reach_a_live_sink() {
     cfg.reconfigure(&config(&second, LogLevel::Info));
     info(&s, b"after");
     s.flush();
-    let read = |d: &Path| std::fs::read_to_string(d.join("log-witness.log")).unwrap_or_default();
+    let read =
+        |d: &Path| std::fs::read_to_string(d.join("export.log-witness.log")).unwrap_or_default();
     let (a, b) = (read(&first), read(&second));
     assert_eq!(cfg.level_for(INSTANCE), LogLevel::Info);
     let _ = std::fs::remove_dir_all(&first);
@@ -723,4 +770,144 @@ fn a_reconfigured_level_and_directory_reach_a_live_sink() {
         b.ends_with(" INFO  log-witness export after\n") && !b.contains("before"),
         "{b}"
     );
+}
+
+/// The host log's own events, as a global subscriber sees them: `(target, level, plugin, message)`.
+type HostLine = (String, tracing::Level, String, String);
+
+/// A minimal global subscriber that keeps every event (busbar's own log, as the host writes it).
+struct HostLog(std::sync::Mutex<Vec<HostLine>>);
+
+impl HostLog {
+    /// The process's one host log, installed once as the global subscriber.
+    fn installed() -> &'static HostLog {
+        static LOG: std::sync::OnceLock<&'static HostLog> = std::sync::OnceLock::new();
+        LOG.get_or_init(|| {
+            let log: &'static HostLog = Box::leak(Box::new(HostLog(Default::default())));
+            tracing::subscriber::set_global_default(Shared(log))
+                .expect("no other global subscriber in this test binary");
+            log
+        })
+    }
+
+    fn lines(&self) -> Vec<HostLine> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+struct Shared(&'static HostLog);
+
+#[derive(Default)]
+struct Fields {
+    plugin: String,
+    message: String,
+}
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        match field.name() {
+            "plugin" => self.plugin = format!("{value:?}"),
+            "message" => self.message = format!("{value:?}"),
+            _ => {}
+        }
+    }
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        match field.name() {
+            "plugin" => self.plugin = value.to_string(),
+            "message" => self.message = value.to_string(),
+            _ => {}
+        }
+    }
+}
+
+impl tracing::Subscriber for Shared {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        let meta = event.metadata();
+        self.0 .0.lock().unwrap_or_else(|p| p.into_inner()).push((
+            meta.target().to_string(),
+            *meta.level(),
+            fields.plugin,
+            fields.message,
+        ));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// **A DROPPED-IN PLUGIN'S WARNING REACHES BUSBAR'S OWN LOG** (owner ruling 2026-10-27, the 1.5.5
+/// upgrade): 1.5.5 printed its plugins' warnings in busbar's log, and a log pipeline that watches
+/// only that log must still see them. The dropped-in witness logs at every level; its WARN line is
+/// in its own file AND is one host line at WARN, written as 1.5.5 wrote it (the message, without
+/// the module path the plugin's file leads with), while its INFO and DEBUG lines stay in its file
+/// alone. RED before the mirror: the host log holds no such line.
+#[test]
+fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
+    const MIRRORED: &str = "mirror-witness";
+    let host = HostLog::installed();
+    let dir = scratch("mirror");
+    let s = Arc::new(
+        config(&dir, LogLevel::Trace)
+            .sink(MIRRORED, witness::KIND, Arc::new(NoSink))
+            .expect("the sink opens")
+            .with_clock(fixed_clock),
+    );
+    let p = dropped(s.clone());
+    std::thread::spawn(move || {
+        open(&p);
+        tick(&p, witness::LOG);
+    })
+    .join()
+    .expect("the script runs");
+    s.flush();
+    let file =
+        std::fs::read_to_string(config(&dir, LogLevel::Trace).path_for(MIRRORED, witness::KIND))
+            .unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        file.contains(" WARN  mirror-witness export log_witness: log from the plugin, a"),
+        "the plugin's own file keeps the line:\n{file}"
+    );
+    let ours: Vec<HostLine> = host
+        .lines()
+        .into_iter()
+        .filter(|(target, _, _, _)| target == super::MIRROR_TARGET)
+        .collect();
+    assert!(
+        ours.iter()
+            .any(|(_, level, plugin, message)| *level == tracing::Level::WARN
+                && message == "log from the plugin, a"
+                && plugin.is_empty()),
+        "busbar's own log carries the plugin's WARN line as 1.5.5 wrote it: {ours:?}"
+    );
+    assert!(
+        !ours
+            .iter()
+            .any(|(_, _, _, message)| message.contains("tracing at debug from the plugin")),
+        "only WARN and ERROR lines are copied to busbar's log: {ours:?}"
+    );
+}
+
+/// The busbar.log copy of a plugin line carries no `diag=` field: 1.5.5 printed the line with none
+/// (the oracle's `export|request-log-webhook|loopback-refused` cell holds it byte for byte).
+#[test]
+fn the_busbar_log_copy_carries_no_diag_field() {
+    assert_eq!(
+        super::without_diag_field("x must be https (got 'h'); disabling it diag=BUSBAR-7070"),
+        "x must be https (got 'h'); disabling it"
+    );
+    assert_eq!(
+        super::without_diag_field("a diag=BUSBAR-7070 detail=\"high\""),
+        "a detail=\"high\""
+    );
+    assert_eq!(super::without_diag_field("no field here"), "no field here");
 }

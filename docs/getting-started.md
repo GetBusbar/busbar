@@ -439,7 +439,7 @@ plugins:
   enabled: true
   dir: /etc/busbar/plugins          # ABSOLUTE — the default ("plugins") resolves to /plugins in the image
   fetch:
-    - github: "GetBusbar/busbar-store-sqlite@v1.0.0"   # or omit `fetch` and mount the tarball yourself
+    - github: "GetBusbar/busbar-store-sqlite@v1.6.0"   # or omit `fetch` and mount the tarball yourself
 
 store:
   module: sqlite

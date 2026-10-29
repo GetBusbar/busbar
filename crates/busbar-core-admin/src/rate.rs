@@ -151,29 +151,16 @@ impl MutationClass {
     /// ADMIN_PREFIX-relative path (a new 1.6.0 verb or named surface has none, and falls through to
     /// `Crud`, exactly as 1.5.5's path-only classifier implicitly did for surfaces it never saw).
     ///
-    /// The five 1.6.0 ledger views, the three audit-chain reads
-    /// ([`crate::verb::AUDIT_VERBS`]), the eight named surfaces AND the two 1.6.0 verbs the design
-    /// binds as `GET` ([`crate::verb::READ_ONLY_NEW_VERBS`]) are named in the read-only check
-    /// EXPLICITLY, and this is the one place that matters: none of them has a legacy row, so the row
-    /// lookup below cannot see them, and without the name they would fall through to `Crud` and
-    /// spend a mutation slot per read. A read that consumes a mutation budget refuses an operator's
-    /// config change because they looked at a balance first, ran `verify`, hit `/healthz` or listed
-    /// models, which is the opposite of what a read is for.
-    /// [`crate::verbs::required_scope`] already calls every named surface `ReadOnly` for exactly
-    /// this reason; this check is repeated as data here (rather than calling that function) because
-    /// `for_verb` must stay free of any dependency on the executor module it is classifying inputs
-    /// for.
+    /// Every verb whose row in [`crate::verb::TABLE`] is `ReadOnly` (the legacy reads, the ledger
+    /// views, the audit-chain reads, the named surfaces and the `GET` new verbs) is `Forbidden`:
+    /// without that they would fall through to `Crud` and spend a mutation slot per read, refusing
+    /// an operator's config change because they looked at a balance first.
     pub fn for_verb(verb: KernelVerb, config_class_rules: &[ConfigClassRule]) -> MutationClass {
         if verb == KernelVerb::PostPluginsInspect {
             return MutationClass::PluginInspect;
         }
-        let is_read_only = crate::verb::LEDGER_VERBS.contains(&verb)
-            || crate::verb::AUDIT_VERBS.contains(&verb)
-            || crate::verb::NAMED_SURFACES.contains(&verb)
-            || crate::verb::READ_ONLY_NEW_VERBS.contains(&verb)
-            || crate::verb::LEGACY_VERBS
-                .iter()
-                .any(|r| r.verb == verb && r.scope == crate::verb::VerbScope::ReadOnly);
+        let is_read_only = crate::verb::row_of(verb)
+            .is_some_and(|row| row.scope == crate::verb::VerbScope::ReadOnly);
         if is_read_only {
             return MutationClass::Forbidden;
         }

@@ -77,16 +77,17 @@ pub trait RecordRows: Send + Sync {
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
 
-    /// CLAIM `token` across the fleet until `expires_at`: `true` when this call was the first, a
-    /// test-and-set every node of the fleet sees (the store's `redeem_plane_token`).
+    /// CLAIM `token` under `kind` across the fleet until `expires_at`: `true` when this call was
+    /// the first, a test-and-set every node of the fleet sees (the store's `redeem_plane_token`).
     ///
     /// # Errors
     ///
     /// The store's.
-    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError>;
+    fn claim(&self, kind: &str, token: &str, expires_at: u64, now: u64)
+        -> Result<bool, StoreError>;
 }
 
-/// The single-use token kind a record claim is redeemed under.
+/// The single-use token kind a chained record's position claim is redeemed under.
 pub const CLAIM_KIND: &str = "busbar.record-claim";
 
 /// THE CONFIGURED STORE'S TYPED RECORDS, as [`RecordRows`]: its store v3 record slots
@@ -136,11 +137,14 @@ impl RecordRows for StoreRows {
         awaited(self.0.record_scan(schema.as_str(), prefix, limit))
     }
 
-    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
-        awaited(
-            self.0
-                .redeem_plane_token(CLAIM_KIND, token, expires_at, now),
-        )
+    fn claim(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        awaited(self.0.redeem_plane_token(kind, token, expires_at, now))
     }
 }
 

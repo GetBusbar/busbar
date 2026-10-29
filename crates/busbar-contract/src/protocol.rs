@@ -192,6 +192,97 @@ pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
     spans
 }
 
+/// THE EVENT-STREAM FRAME REASSEMBLER: bytes in, whole frames out, borrowed from the one buffer.
+///
+/// An event stream does not arrive one frame per chunk: one read can carry three frames, half a
+/// frame, or the tail of one and the head of the next. So bytes accumulate here and a frame is
+/// yielded only once the blank line that ends it ([`find_frame_terminator`]) has arrived; the frame
+/// includes its terminator.
+///
+/// Linear in the bytes fed, however they are chunked: a scan resumes where the last one stopped
+/// (three bytes behind it, as the longest terminator, `\r\n\r\n`, is four), never below the end of
+/// the last frame yielded; and the framed prefix is dropped once per [`push`](Self::push), not once
+/// per frame. A frame is copied nowhere: [`next_frame`](Self::next_frame) lends it, and
+/// [`next_span`](Self::next_span) names it in [`buffer`](Self::buffer), which holds until the next
+/// push.
+#[derive(Debug, Clone, Default)]
+pub struct SseFrames {
+    buf: Vec<u8>,
+    /// The end of the last frame yielded.
+    consumed: usize,
+    /// How far into `buf` a scan has looked.
+    scanned: usize,
+}
+
+/// The longest terminator is four bytes, so a scan resuming three bytes behind the previous end
+/// still sees a terminator that straddles two chunks.
+const TERMINATOR_REWIND: usize = 3;
+
+impl SseFrames {
+    /// An empty reassembler.
+    #[must_use]
+    pub const fn new() -> Self {
+        SseFrames {
+            buf: Vec::new(),
+            consumed: 0,
+            scanned: 0,
+        }
+    }
+
+    /// Add a chunk, first dropping every frame already yielded.
+    pub fn push(&mut self, chunk: &[u8]) {
+        if self.consumed > 0 {
+            self.buf.drain(..self.consumed);
+            self.scanned -= self.consumed;
+            self.consumed = 0;
+        }
+        self.buf.extend_from_slice(chunk);
+    }
+
+    /// The span in [`buffer`](Self::buffer) of the next complete frame (its terminator included),
+    /// or `None` until more bytes arrive.
+    pub fn next_span(&mut self) -> Option<std::ops::Range<usize>> {
+        let from = self
+            .scanned
+            .saturating_sub(TERMINATOR_REWIND)
+            .max(self.consumed)
+            .min(self.buf.len());
+        match find_frame_terminator(&self.buf[from..]) {
+            Some((at, len)) => {
+                let start = self.consumed;
+                let end = from + at + len;
+                self.consumed = end;
+                self.scanned = end;
+                Some(start..end)
+            }
+            None => {
+                self.scanned = self.buf.len();
+                None
+            }
+        }
+    }
+
+    /// The next complete frame (its terminator included), lent, or `None` until more bytes arrive.
+    pub fn next_frame(&mut self) -> Option<&[u8]> {
+        let span = self.next_span()?;
+        self.buf.get(span)
+    }
+
+    /// The bytes held since the last [`push`](Self::push) dropped the framed prefix: every span
+    /// [`next_span`](Self::next_span) answered since is in it.
+    #[must_use]
+    pub fn buffer(&self) -> &[u8] {
+        &self.buf
+    }
+
+    /// How many bytes are held that no frame yielded yet. A reader bounds this: a far end that
+    /// streams megabytes with no blank line is an allocation it chose the size of.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.buf.len() - self.consumed
+    }
+}
+
 /// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete stream translator (in the
 /// plane that owns it) sits behind this trait so emission ORDER is preserved verbatim — the
 /// streaming forward path holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
@@ -853,3 +944,7 @@ impl ProtocolDecl {
         self.codec
     }
 }
+
+#[cfg(test)]
+#[path = "tests/sse_frames_tests.rs"]
+mod sse_frames_tests;

@@ -91,8 +91,8 @@ fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
 /// The hook double, opened with the one setting `key: value`.
 fn double_gate(key: &str, value: serde_json::Value) -> Arc<dyn RoutingPolicy> {
     let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
-    let mut settings = serde_json::Map::new();
-    settings.insert(key.into(), value);
+    let mut settings = crate::config::secret::ResolvedSettings::default();
+    settings.map_mut().insert(key.into(), value);
     env.open("reply-gate", &settings, "reply-gate", 5_000)
         .expect("the hook double opens through the axis")
 }
@@ -1014,11 +1014,11 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+            crate::hooks::set_hook_content_max_bytes(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
         }
     }
     let _restore = Restore;
-    crate::proxy::set_hook_content_max_bytes(8);
+    crate::hooks::set_hook_content_max_bytes(8);
 
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,

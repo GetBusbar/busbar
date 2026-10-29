@@ -50,9 +50,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
-use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
+use crate::abi::plane::{
+    AdminRoute, Claim, PlaneSnapshot, RecordRetention, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+};
 use crate::abi::sdk::door::abi_str;
 use crate::ids::OpClassId;
+use crate::records::Retention;
 
 /// The storage one published generation points into. Only the SDK makes one and writes into it;
 /// its contents never move (every piece is its own heap allocation) and are freed only when the
@@ -593,6 +596,18 @@ pub const fn admin_route(
         flags,
         _reserved: 0,
         audit_verb: abi_str(audit_verb),
+    }
+}
+
+/// One record kind's RETENTION RULE in the ABI's spelling (`PlaneTail::record_retentions`): `kind`
+/// its index in the tail's record kinds, `rule` the rule every purge of the kind runs under. A
+/// `const fn`, so a plane states its rules as a `const` table its tail points at; a kind the table
+/// lists no rule for is purged by age.
+#[must_use]
+pub const fn record_retention(kind: u32, rule: Retention) -> RecordRetention {
+    RecordRetention {
+        kind,
+        rule: rule.code(),
     }
 }
 

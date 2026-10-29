@@ -134,8 +134,8 @@ fn wants_client_cert(
 
 /// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
 /// NOT checked, only that it signed the handshake. The operator's explicit opt-in for one need
-/// (`UPGRADE_VERIFY_OFF`, 1.5.5's `rediss://…#insecure`; ARCHITECT ruling 2026-10-03 on Q-L16-4),
-/// honoured for an operator-infrastructure need only (`Connector::upgrade_secure`); never a default.
+/// (`UPGRADE_VERIFY_OFF`, 1.5.5's `rediss://…#insecure`), honoured for an operator-infrastructure
+/// need only (`Connector::upgrade_secure`); never a default.
 #[must_use]
 pub fn unverified_client_config() -> rustls::ClientConfig {
     let crypto = crate::tls::installed_crypto();
@@ -272,8 +272,8 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
     }
 }
 
-/// ONE DESTINATION'S TRUST ANCHORS, sealed for dialling (the transport pin, ARCHITECT 2026-10-03): the far
-/// end's key pin to hold every connection to, and busbar's client identity, parsed once, to present.
+/// ONE DESTINATION'S TRUST ANCHORS, sealed for dialling (the transport pin): the far end's key pin
+/// to hold every connection to, and busbar's client identity, parsed once, to present.
 #[derive(Debug, Clone, Default)]
 pub struct Sealed {
     /// The far end's key pin, read to its canonical spelling

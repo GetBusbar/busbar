@@ -134,8 +134,12 @@ impl AuthChainEntry {
 /// a ROLE asserted by that specific module (bindings are NESTED BY MODULE, so `ad.platform`
 /// and `oidc.platform` are distinct grants and a module can never ride another module's binding).
 /// An unbound role grants NOTHING (fail closed). Limits live on the bound `group`, never here.
+///
+/// Unknown keys are refused at parse, as `deny_unknown_fields` refused them: the one family of
+/// keys beyond the named fields is a plane grant (`allowed_{kind}s`, a list of names), held in
+/// [`RoleBindingCfg::plane_grants`]; whether an installed plane declares its kind is validation's
+/// to say (`config_validate`).
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct RoleBindingCfg {
     /// DATA-PLANE grant: pools this role may target. OMITTED = ALL pools;
     /// an explicit `[]` = NO pools (empty list is the empty set).
@@ -163,10 +167,57 @@ pub struct RoleBindingCfg {
     /// (fail closed: a typo'd verb must never sit inert while the operator believes it granted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbs: Option<serde_json::Value>,
+    /// DATA-PLANE grants of the plane-declared scope kinds (W9), each under its frozen wire field
+    /// `allowed_{kind}s` (a tool plane's server and tool kinds, an agent plane's `agent`, ...) and
+    /// three-state exactly as `allowed_pools` is, read as ONE grant with it
+    /// ([`RoleBindingCfg::scope_grant`]). Empty (no such field) on every 1.5.5 binding, and then
+    /// serialized as nothing.
+    #[serde(flatten, deserialize_with = "plane_grant_fields")]
+    pub plane_grants: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// Read the keys a role binding names beyond its named fields: each must be a plane grant field
+/// (`allowed_{kind}s`) holding a list of names, and anything else is refused as an unknown field.
+fn plane_grant_fields<'de, D>(
+    de: D,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let raw = std::collections::BTreeMap::<String, serde_json::Value>::deserialize(de)?;
+    let mut grants = std::collections::BTreeMap::new();
+    for (field, value) in raw {
+        if crate::governance::plane_grant_kind(&field).is_none() {
+            return Err(D::Error::custom(format!(
+                "unknown field `{field}`, expected one of `allowed_pools`, `group`, \
+                 `admin_scope`, `verbs`, or a plane grant `allowed_<kind>s`"
+            )));
+        }
+        let names = value
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| D::Error::custom(format!("`{field}` must be a list of names")))?;
+        grants.insert(field, names);
+    }
+    Ok(grants)
 }
 
 /// The `verbs:` spelling that grants EVERY admin verb — exactly `admin_scope: full` (#77(9)).
 pub const ALL_ADMIN_VERBS: &str = "*";
+
+/// THE UNGOVERNED ROLE: `role_bindings.<provider>."*"` binds the principals 1.5.5 admitted with no
+/// grant — a principal that asserts no roles, or, when the provider's table binds no other role,
+/// every principal the provider identifies. It grants what its binding states, as any role does;
+/// a principal whose asserted roles a named binding of the table grants is judged by those alone,
+/// and one asserting only roles the table does not name is still refused. `busbar
+/// --migrate-config` writes it to keep a 1.5.5 deployment's access, with a warning.
+pub const UNGOVERNED_ROLE: &str = "*";
 
 /// One role binding's `verbs:` grant, read off the value the operator wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +229,29 @@ pub enum VerbGrant {
 }
 
 impl RoleBindingCfg {
+    /// This binding's DATA-PLANE grant over every scope kind, intent carried intact: no grant field
+    /// = everything (`None`); otherwise exactly the scopes its `allowed_pools` and `allowed_{kind}s`
+    /// fields name, across kinds ([`crate::governance::grant_scopes`]).
+    pub fn scope_grant(&self) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+        let plane = (!self.plane_grants.is_empty()).then(|| {
+            self.plane_grants
+                .iter()
+                .filter_map(|(field, names)| {
+                    crate::governance::plane_grant_kind(field).map(|kind| (kind, names))
+                })
+                .flat_map(|(kind, names)| {
+                    names
+                        .iter()
+                        .map(move |value| busbar_contract::records::ScopeRef {
+                            kind: kind.clone(),
+                            value: value.clone(),
+                        })
+                })
+                .collect()
+        });
+        crate::governance::grant_scopes(self.allowed_pools.clone(), plane)
+    }
+
     /// This binding's `verbs:` grant: `None` when the key is absent; `Some(Err(shape))` when the
     /// value is neither [`ALL_ADMIN_VERBS`] nor a list of names (`shape` says what it was instead,
     /// for the validation message). Whether each NAME is a verb is the closed table's to say, at
@@ -493,7 +567,7 @@ pub use busbar_kernel_identity::operator::provider as operator_module;
 /// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
 /// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
 /// and the principal id it identifies the operator as. Frozen config text the composition root's
-/// legacy table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
+/// migration table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
 /// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never spells it. Which module answers it is
 /// the auth axis's business.
 pub use busbar_kernel_identity::operator::{
@@ -502,12 +576,12 @@ pub use busbar_kernel_identity::operator::{
 
 /// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
 /// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
-/// former name the root legacy table gives that key — every name the registry resolves to that row.
+/// former name the root migration table gives that key — every name the registry resolves to that row.
 pub fn names_operator(module: &str) -> bool {
     let op = operator_provider();
     busbar_kernel_identity::operator::names(op, module)
         || (!op.is_empty()
-            && crate::config::legacy::former_names(op)
+            && crate::config::migration_table::former_names(op)
                 .iter()
                 .any(|f| f == module))
 }

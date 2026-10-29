@@ -46,6 +46,19 @@ pub struct Spawn<'a> {
     pub env: &'a [(&'a str, &'a str)],
 }
 
+/// What `io.ends` answers of a handle ([`IoHost::ends`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ends {
+    /// The local port (`0` for a handle with none).
+    pub port: u16,
+    /// The far end's address (empty = none).
+    pub peer: String,
+    /// A spawned program's exit code once the program itself has exited; `None` while it runs,
+    /// and for every handle that is not a program. A program ended by a signal answers `128` plus
+    /// the signal's number, as a shell reports it.
+    pub exit: Option<u32>,
+}
+
 /// THE HOST'S I/O over the OS handles it owns (module docs). Every method answers at once; one that
 /// may pend answers `Pending` only when nothing moved, `waker` registered for the direction.
 pub trait IoHost: Send + Sync {
@@ -105,10 +118,19 @@ pub trait IoHost: Send + Sync {
     /// Not admitted for the dial, or the system could not start it.
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64>;
 
-    /// `handle`'s local port and its far end's address (empty = none).
+    /// `handle`'s ends: its local port and its far end's address (empty = none), and for a
+    /// spawned program whether the program ITSELF has exited (`io.ends`' `exited`), which a
+    /// descendant still holding its output does not hide.
     ///
     /// # Errors
     ///
     /// Not the caller's handle.
-    fn ends(&self, owner: u64, handle: u64) -> IoResult<(u16, String)>;
+    fn ends(&self, owner: u64, handle: u64) -> IoResult<Ends>;
+
+    /// Release every handle `owner` still holds, each as [`IoHost::close`] releases it: the
+    /// instance is gone (closed and let go, or quarantined) and can never close them itself. The
+    /// host calls it; a plugin's own `close` need not release its handles first.
+    fn reap(&self, owner: u64) {
+        let _ = owner;
+    }
 }

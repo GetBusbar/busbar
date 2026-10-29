@@ -31,13 +31,13 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
+/// The stream `Content-Type` every declared protocol states, folded at boot.
+use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
+use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable, ServeTables};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
-/// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
@@ -96,6 +96,38 @@ pub fn compose(
     }
 }
 
+/// THE TICKET PRESS behind `ticket.mint` (row 132, the ARCHITECT ticket ruling): each mint reads the
+/// live generation through its swap handle, so a ticket is stamped by the deployment's governance
+/// under the mint ceiling (`auth.policy.max_ttl`) in force when it is minted.
+pub struct LiveTickets(pub Arc<busbar_kernel::state::AppHandle>);
+
+impl busbar_kernel::host_services::TicketPress for LiveTickets {
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        use busbar_kernel::governance::TicketRefusal;
+        let app = self.0.load();
+        let gov = app
+            .governance
+            .as_deref()
+            .ok_or(TicketRefusal::NoSigner.reason())?;
+        gov.mint_ticket(
+            key_id,
+            prefix,
+            ttl_secs,
+            app.mint_policy.block_max_ttl_secs,
+            record,
+            now,
+        )
+        .map_err(TicketRefusal::reason)
+    }
+}
+
 /// THE LATE ATTACH, once the first app is built (ARCHITECT S7-TICK 2026-10-01, ruling A): the
 /// kernel's services gain what that build made. That is the runtime's blocking pool, bounded at the
 /// record write queue's [`QUEUE_CAP`]; the governance signer, when governance is configured; and
@@ -129,10 +161,7 @@ pub fn attach(
     // persist where the deployment's state does.
     if let Some(gov) = records {
         if let Some(calls) = gov.store_calls() {
-            kernel.attach_records(
-                Arc::new(busbar_kernel::host_records::StoreRows(calls)),
-                gov.store(),
-            );
+            kernel.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(calls)));
         }
     }
     if let Some(owner) = demotion_owner(planes) {
@@ -381,6 +410,26 @@ impl HostServices for LateServices {
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
         match self.served() {
             Ok(s) => s.session_emit(caller, session, bytes),
+            Err(r) => r,
+        }
+    }
+
+    fn ticket_mint(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.ticket_mint(caller, unit, ttl_secs, record),
+            Err(r) => r,
+        }
+    }
+
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        match self.served() {
+            Ok(s) => s.ticket_take(caller, unit),
             Err(r) => r,
         }
     }
@@ -689,8 +738,8 @@ impl DoorApply {
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
-        let pools =
-            DoorPools::of(&table).map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
+        let pools = DoorPools::of(&table, self.served_facts.section)
+            .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -915,12 +964,13 @@ pub struct Served {
     /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
     /// one connector's.
     pub framers: Option<StreamFramers>,
-    /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
-    /// checkpoint flush tick ([`Served::spawn_ticks`]).
-    pub epoch: busbar_kernel::plane_driver::FlushEpoch,
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
     pub claim_doors: serve_datagram::ClaimDoors,
+    /// THE PUBLISHED INSTANCES' ADMIN TABLE these planes were published into: the generation's
+    /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
+    /// mount ([`public_routes`]).
+    pub tables: ServeTables,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -982,47 +1032,35 @@ impl Served {
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.drives().await });
         }
-        // THE CHECKPOINT FLUSH TICK (THE DESIGN §7: "a checkpoint is a durability `unit.accrued`
-        // record"), on the kernel's flush interval: the piece path only marks a running unit, and
-        // this tick journals each marked unit's counts, once per epoch, off the runtime's workers.
+        // THE FLUSH TICK, on the kernel's flush interval. A running unit's checkpoints stay in RAM
+        // (MONEY-DESIGN §3c, "Long units"), so nothing is journaled here; what the tick still does
+        // is refresh this node's lease on its host name (Q128, MONEY-REVIEW review 12 N4).
         if let Some(post) = &self.post {
-            let checkpoints = Checkpoints {
-                epoch: self.epoch.clone(),
-                money: self.planes.iter().map(|p| Arc::clone(&p.money)).collect(),
-                post: Arc::clone(post),
+            let lease = LeaseTick {
+                node: Arc::clone(post.node()),
             };
-            tokio::spawn(checkpoints.ticks());
+            tokio::spawn(lease.ticks());
         }
     }
 }
 
-/// What the checkpoint flush tick runs over: the flush epoch, every served plane's money steps,
-/// and the node's posting site their checkpoints are journaled through.
-struct Checkpoints {
-    epoch: busbar_kernel::plane_driver::FlushEpoch,
-    money: Vec<Arc<PlaneMoney>>,
-    post: Arc<crate::root::plane_node::NodeEndPost>,
+/// What the flush tick runs over: the process's node, whose journal lane holds the lease.
+struct LeaseTick {
+    node: Arc<crate::root::plane_node::Node>,
 }
 
-impl Checkpoints {
-    /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
-    /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
-    fn tick(&self) -> usize {
-        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
-        // directory keeps journaling under its host's id only while it holds it. It is held on the
-        // lane of the book the node settles onto.
-        if let Some(lane) = self.post.node().book_lane() {
+impl LeaseTick {
+    /// One tick: refresh THE NODE'S LEASE ON ITS HOST NAME (Q128). A node with no data directory
+    /// journals under its host's id only while it holds it, and it is held on the journal's lane to
+    /// the configured store, read directly: no lock is taken.
+    fn tick(&self) {
+        if let Some(lane) = self.node.journal_lane() {
             lane.refresh_held_lease();
         }
-        self.epoch.bump();
-        self.money
-            .iter()
-            .map(|m| m.flush_checkpoints(&*self.post))
-            .sum()
     }
 
     /// Every [`busbar_kernel::host_records::FLUSH_INTERVAL`], for the process's life; each tick's
-    /// journal writes run on the blocking pool, never on a runtime worker.
+    /// lease refresh (a store round trip) runs on the blocking pool, never on a runtime worker.
     async fn ticks(self) {
         let every = busbar_kernel::host_records::FLUSH_INTERVAL;
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
@@ -1031,7 +1069,7 @@ impl Checkpoints {
         loop {
             at.tick().await;
             let tick = Arc::clone(&this);
-            let _journaled = tokio::task::spawn_blocking(move || tick.tick()).await;
+            let _refreshed = tokio::task::spawn_blocking(move || tick.tick()).await;
         }
     }
 }
@@ -1055,6 +1093,7 @@ pub fn compose_served(
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -1071,18 +1110,11 @@ pub fn compose_served(
         journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     });
     let site = Arc::clone(&post);
-    // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
-    // checkpoint flush tick (`Served::spawn_ticks`).
-    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
-    let paced = epoch.clone();
     let money = move || {
-        Arc::new(
-            PlaneMoney::new(
-                Arc::clone(&gov),
-                Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
-            )
-            .with_epoch(paced.clone()),
-        )
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        ))
     };
     let egress = DoorEgress {
         reach,
@@ -1097,9 +1129,9 @@ pub fn compose_served(
         &money,
         Some(&egress),
         stage.as_ref(),
+        tables,
     )?;
     served.post = Some(post);
-    served.epoch = epoch;
     // THE CLAIM DOORS (row 132, ARCHITECT seam ruling (d)): each served plane's inbound need whose
     // settings block states a `listen` binds there, and the ones a datagram framer answers become
     // claim doors (`serve_datagram::ClaimDoors::bind`). The connector is read only when something
@@ -1398,7 +1430,7 @@ pub fn door_pools(
 /// read off the generation under its own key and filed under its section.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    busbar_kernel::plane::registry::plane_decls()
+    busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .filter_map(|decl| {
             app.plane_pools(decl.key)
@@ -1567,13 +1599,13 @@ pub struct DoorEgress<'a> {
 /// a [`PlaneInstance`] on `dispatcher` (unit tickets on worker 0, where its driver ticket is
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
 /// facts and the money steps `money` builds for it, the pools its section states, and its admin
-/// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
-/// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
-/// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
-/// configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
-/// hooks); without, no hook binds. The data routes are the data router's
-/// construction ([`data_routes`]).
+/// routes published on `tables`, the generation's admin table (`plane_driver::serve`, K-SERVE). A
+/// plane whose section is absent stays bound and unopened, as before. With `egress`, each plane's
+/// egress is sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every
+/// walk is exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's
+/// hook configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
+/// hooks); without, no hook binds. The data routes are the data router's construction
+/// ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -1589,6 +1621,7 @@ pub fn compose_planes(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
@@ -1609,6 +1642,7 @@ pub fn compose_planes(
         hooks,
         &clock,
         &scope,
+        tables,
     )
 }
 
@@ -1635,8 +1669,12 @@ pub(crate) fn compose_planes_over(
     hooks: Option<&HookStage>,
     clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     scope: &busbar_contract::config_time::ConfigScope,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
-    let mut served = Served::default();
+    let mut served = Served {
+        tables: tables.clone(),
+        ..Served::default()
+    };
     if doors.is_empty() {
         return Ok(served);
     }
@@ -1764,18 +1802,20 @@ pub(crate) fn compose_planes_over(
             .collect();
         // The admin router's fallback is this table, so a kernel admin route always matches first
         // and is never shadowed; no route is reserved beyond that.
-        publish(
-            ServeTable {
-                instance: instance.clone(),
-                audit_kind: served_facts.audit_kind.to_string(),
-                calls,
-                caps: BufferCaps::default(),
-                routes,
-                records: Some((Arc::clone(&kernel), caller)),
-            },
-            &[],
-        )
-        .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
+        served
+            .tables
+            .publish(
+                ServeTable {
+                    instance: instance.clone(),
+                    audit_kind: served_facts.audit_kind.to_string(),
+                    calls,
+                    caps: BufferCaps::default(),
+                    routes,
+                    records: Some((Arc::clone(&kernel), caller)),
+                },
+                &[],
+            )
+            .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
         let declared = plugin.declared();
         // EVERY REPORTED CLASS IS REGISTERED (THE DESIGN §7): the classes a plane may report are the
         // ones its tail declares, linked or dropped in, registered once at its composition, so its
@@ -1993,7 +2033,8 @@ fn seal_live(
     // The route table: the section, with the catalog model its `session.model` names folded in
     // ([`catalog_routes`]).
     let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
-    let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
+    let pools =
+        DoorPools::of(&table, served_facts.section).map_err(|e| format!("{instance}: {e}"))?;
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(
@@ -2477,8 +2518,14 @@ pub struct DoorRequest {
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, lent for a passthrough member's outbound auth call alone.
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
+    /// key admitted it.
+    pub ticket: Option<Vec<u8>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`): a stream another framer
+    /// frames begins with it.
+    pub scheme: u8,
     /// The head fields the auth gate consumed, each by name with its scheme word
     /// (`PlaneReqCtx::consumed_fields`): what an entry fact reads of them.
     pub consumed_fields: Vec<(String, String)>,
@@ -2957,14 +3004,7 @@ pub fn door_mounts(
             .collect(),
         frames: Mutex::default(),
     });
-    // THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child
-    // on these routes, on the runtime the routes are built on.
-    if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
-        let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes: Arc::downgrade(&routes),
-            runtime,
-        }));
-    }
+    attach_nests(kernel, &routes);
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
@@ -3017,11 +3057,24 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            // A route whose claim takes tickets is told its plane's issued-id prefix (row 132).
+            let ticket_prefix = {
+                let served = &routes.served.planes[plane];
+                let takes = served
+                    .snapshot
+                    .claims
+                    .get(claim as usize)
+                    .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_TICKET != 0);
+                takes
+                    .then(|| served.kernel.ticket_prefix_of(&served.instance))
+                    .flatten()
+            };
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
+                ticket_prefix,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
@@ -3223,13 +3276,19 @@ pub(crate) fn line_routes(
         of_line,
         frames: Mutex::default(),
     });
+    attach_nests(kernel, &routes);
+    Ok(routes)
+}
+
+/// THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child on
+/// `routes`, on the runtime the routes are built on (none outside a runtime).
+fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
     if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
         let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes: Arc::downgrade(&routes),
+            routes: Arc::downgrade(routes),
             runtime,
         }));
     }
-    Ok(routes)
 }
 
 /// THE PUBLIC ROUTES the served door planes state (`abi::plane::ROUTE_PUBLIC`, SEAM-4o): each at its
@@ -3237,6 +3296,7 @@ pub(crate) fn line_routes(
 /// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
 /// public serve path. A verb the router does not mount is left out.
 fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
+    let tables = &served.tables;
     served
         .planes
         .iter()
@@ -3250,21 +3310,26 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                 path: r.target.clone(),
                 method,
                 auth: RouteAuth::None,
-                handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                    Box::pin(async move {
-                        let target = ctx
-                            .uri
-                            .path_and_query()
-                            .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
-                        busbar_kernel::plane_driver::serve::answer_public(
-                            ctx.method.as_str(),
-                            &ctx.path,
-                            &target,
-                            &ctx.headers,
-                            ctx.body,
-                        )
-                        .await
-                    })
+                handler: Arc::new({
+                    let tables = tables.clone();
+                    move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let tables = tables.clone();
+                        Box::pin(async move {
+                            let target = ctx
+                                .uri
+                                .path_and_query()
+                                .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
+                            tables
+                                .answer_public(
+                                    ctx.method.as_str(),
+                                    &ctx.path,
+                                    &target,
+                                    &ctx.headers,
+                                    ctx.body,
+                                )
+                                .await
+                        })
+                    }
                 }),
             })
         })
@@ -3360,7 +3425,9 @@ impl DoorRequest {
             body: ctx.body,
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
+            ticket: ctx.ticket,
             app,
+            scheme: ctx.scheme,
             consumed_fields: ctx.consumed_fields,
         })
     }
@@ -3417,46 +3484,7 @@ impl DataRoutes {
         req: DoorRequest,
     ) -> busbar_kernel::plane_routes::SessionAnswer {
         use busbar_kernel::plane_routes::{SessionAnswer, SessionPipe};
-        let DoorRequest {
-            method,
-            uri,
-            headers,
-            body,
-            gov,
-            credential,
-            app,
-            consumed_fields: _,
-        } = req;
-        let fields: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
-        let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
-        let arrival = Arrival {
-            claim,
-            method: method.as_str().as_bytes().to_vec(),
-            target: target.as_bytes().to_vec(),
-            fields,
-            body: body.clone(),
-        };
-        let principal = match gov.key() {
-            Some(key) => PrincipalId::new(key.id.as_str()),
-            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
-        };
-        // An anonymous caller is admitted on an open claim; and, on the plane serving the `pools`
-        // map, on every claim when the deployment's data front door is open (`auth.chain: []`
-        // without `keys`: 1.5.5 admitted every model request anonymously, its open relay). Any
-        // other plane's credential claim fails closed (ARCHITECT P3 (a)).
-        let pools_plane = self.served.planes[plane].live.served_facts.section
-            == busbar_contract::section::RESERVED_POOLS_KEY;
-        let open = (pools_plane && app.auth.is_open())
-            || self.served.planes[plane]
-                .snapshot
-                .claims
-                .get(claim as usize)
-                .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
-        let key = gov.key.clone();
+        let (door, arrival, _) = self.arrived(plane, claim, req);
         let (from_caller, from_rx) = mpsc::channel(SESSION_QUEUE);
         let (to_tx, to_caller) = mpsc::channel(SESSION_QUEUE);
         let caller = PipeCaller {
@@ -3464,14 +3492,6 @@ impl DataRoutes {
             to: to_tx,
         };
         let (verdict, said) = oneshot::channel();
-        let door = SessionDoor {
-            plane,
-            app,
-            principal,
-            key,
-            open,
-            credential,
-        };
         tokio::spawn(self.session(door, caller, arrival, verdict, Attach::switched()));
         match said.await {
             Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
@@ -3526,6 +3546,7 @@ impl DataRoutes {
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: 0,
                 credential: door.credential.clone(),
+                ticket: door.ticket,
             },
         );
         let far = DoorFar {
@@ -3537,15 +3558,18 @@ impl DataRoutes {
             far: OnceLock::new(),
         };
         let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
-        let Some((opened, ctx, slot)) = node.open_borrowed(
-            unit,
-            arrived,
-            &door.principal,
-            &self.post,
-            &units,
-            (self.pin)(),
-            served.facts.audit_kind,
-        ) else {
+        let Some((opened, ctx, slot)) = node
+            .open_borrowed(
+                unit,
+                arrived,
+                &door.principal,
+                &self.post,
+                &units,
+                (self.pin)(),
+                served.facts.audit_kind,
+            )
+            .await
+        else {
             let _ = verdict.send(Err(None));
             return;
         };
@@ -3694,10 +3718,10 @@ impl DataRoutes {
         }
     }
 
-    /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
-    /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
-    /// resolved; the unit driven inside the response, so a caller that goes away drops it.
-    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+    /// A CLAIMED ARRIVAL, AS ITS UNIT TAKES IT: the caller's head (the fields never kept struck) as
+    /// the [`Arrival`] delivered once at `arrive`, the caller the auth gate resolved and whether the
+    /// claim admits it anonymously, and the body (a framed stream ingests it again).
+    fn arrived(&self, plane: usize, claim: u32, req: DoorRequest) -> (SessionDoor, Arrival, Bytes) {
         let DoorRequest {
             method,
             uri,
@@ -3705,7 +3729,9 @@ impl DataRoutes {
             body,
             gov,
             credential,
+            ticket,
             app,
+            scheme: _,
             consumed_fields: _,
         } = req;
         let fields: HeadFields = headers
@@ -3738,38 +3764,53 @@ impl DataRoutes {
                 .get(claim as usize)
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
-        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
-        let datagram_carrier = self.served.planes[plane]
+        let door = SessionDoor {
+            plane,
+            app,
+            principal,
+            key,
+            open,
+            credential,
+            ticket,
+        };
+        (door, arrival, body)
+    }
+
+    /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
+    /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
+    /// resolved; the unit driven inside the response, so a caller that goes away drops it.
+    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        // The listener's scheme, which a stream another framer frames begins with.
+        let scheme = req.scheme;
+        let (door, arrival, body) = self.arrived(plane, claim, req);
+        // The claim's carrier and the framer that answers it, looked up once.
+        let framed = self.served.planes[plane]
             .snapshot
             .claims
             .get(claim as usize)
-            .map(|c| c.carrier.clone())
-            .and_then(|c| {
-                self.framer_for(&c)
-                    .filter(|d| d.facts().datagram)
-                    .map(|d| (d, c))
-            });
+            .and_then(|c| self.framer_for(&c.carrier).map(|d| (d, c.carrier.as_str())));
+        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
+        let datagram_carrier = framed
+            .as_ref()
+            .filter(|(d, _)| d.facts().datagram)
+            .map(|(d, c)| (Arc::clone(d), (*c).to_owned()));
         if let Some(carried) = datagram_carrier {
-            let door = SessionDoor {
-                plane,
-                app,
-                principal,
-                key,
-                open,
-                credential,
-            };
             return self.open_datagram(carried, door, arrival).await;
         }
+        let SessionDoor {
+            app,
+            principal,
+            key,
+            open,
+            credential,
+            ticket,
+            ..
+        } = door;
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
         // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
         // framer frames this stream alone. A claim stating neither is the data listener's own.
-        let carrier = self.served.planes[plane]
-            .snapshot
-            .claims
-            .get(claim as usize)
-            .map(|c| c.carrier.clone());
         if let Some((door, carrier)) =
-            carrier.and_then(|c| framed_by(&c, |s| self.framer_for(s)).map(|d| (d, c)))
+            framed.and_then(|(d, c)| framed_by(c, |_| Some(Arc::clone(&d))).map(|door| (door, c)))
         {
             let head: Vec<(String, Vec<u8>)> = arrival
                 .fields
@@ -3778,7 +3819,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, &carrier, &target, &head,
+                door, carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
@@ -3796,7 +3837,7 @@ impl DataRoutes {
                 }
             };
             let (arrival, inner, reply) = deframed_arrival(arrival, &messages);
-            let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
+            let stream = serve_framed::shared(stream);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
             let unit = async move {
@@ -3804,7 +3845,7 @@ impl DataRoutes {
                 self.drive(
                     plane,
                     app,
-                    (principal, key, credential),
+                    (principal, key, credential, ticket),
                     open,
                     &caller,
                     arrival,
@@ -3825,7 +3866,7 @@ impl DataRoutes {
             self.drive(
                 plane,
                 app,
-                (principal, key, credential),
+                (principal, key, credential, ticket),
                 open,
                 &caller,
                 arrival,
@@ -3924,7 +3965,7 @@ impl DataRoutes {
                     app,
                     // A nested unit presents no credential of its own: nothing is lent to a
                     // passthrough member on its behalf.
-                    (principal, key, None),
+                    (principal, key, None, None),
                     open,
                     &caller,
                     arrival,
@@ -3961,7 +4002,7 @@ impl DataRoutes {
         &self,
         plane: usize,
         app: Arc<busbar_kernel::state::App>,
-        (principal, key, credential): UnitCaller,
+        (principal, key, credential, ticket): UnitCaller,
         open: bool,
         caller: &C,
         arrival: Arrival,
@@ -3999,6 +4040,7 @@ impl DataRoutes {
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: nesting.as_ref().map_or(0, |n| n.depth),
                 credential: credential.clone(),
+                ticket,
             },
         );
         if let Some(n) = &nesting {
@@ -4014,9 +4056,9 @@ impl DataRoutes {
         };
         let units = served.driver.unit(&steps, &far, caller, arrival, 0);
         let money = Arc::clone(&served.money);
-        let facts = live.facts.clone();
+        let held = Arc::clone(&live);
         let late: crate::root::linked::node::Late =
-            Box::new(move || report_of(&money, unit, &facts));
+            Box::new(move || report_of(&money, unit, &held.facts));
         // THE UNIT'S REQUEST SPAN (`forward`) opens as its route leg begins, once it is admitted
         // and its pool is known, as the previous release's did ([`DoorSteps`]'s `request_span`).
         let ended = node
@@ -4391,6 +4433,8 @@ struct SessionDoor {
     open: bool,
     /// The caller's verified credential, lent to a passthrough member alone.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket that admitted the caller; `None` when a key did.
+    ticket: Option<Vec<u8>>,
 }
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
@@ -4648,11 +4692,11 @@ impl IngressReply {
                 // wrote, sent under its length.
                 Ok(h) if whole_answer(&h.1) => {
                     let mut body = body;
-                    let mut whole = Vec::new();
+                    let mut whole = Whole::default();
                     while let Ok(bytes) = body.try_recv() {
-                        whole.extend_from_slice(&bytes);
+                        whole.push(bytes);
                     }
-                    return stated(unlengthed(h), Body::from(whole));
+                    return stated(unlengthed(h), Body::from(whole.into_bytes()));
                 }
                 Ok(h) => {
                     if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
@@ -4668,11 +4712,13 @@ impl IngressReply {
 }
 
 /// Who a door unit serves: the principal the auth gate verified, its governance key, and its
-/// verified credential (lent for a passthrough member's outbound auth call alone).
+/// verified credential (lent for a passthrough member's outbound auth call alone), and the record
+/// of the ticket that admitted it, if one did.
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    Option<Vec<u8>>,
 );
 
 /// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is
@@ -4707,7 +4753,7 @@ fn whole_answer(fields: &HeadFields) -> bool {
         fields
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(field))
-            .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
+            .map(|(_, value)| String::from_utf8_lossy(value))
     };
     named(b"content-length").is_some()
         && !named(b"content-type").is_some_and(|v| streamed_media(&v))
@@ -4736,13 +4782,13 @@ fn unlengthed((status, mut fields): Head) -> Head {
 
 /// Every piece the unit writes until it ends, the unit driven meanwhile (its writes wait on this
 /// side), then whatever it wrote last.
-async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u8> {
-    let mut whole = Vec::new();
+async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes {
+    let mut whole = Whole::default();
     loop {
         tokio::select! {
             biased;
             piece = body.recv() => match piece {
-                Some(bytes) => whole.extend_from_slice(&bytes),
+                Some(bytes) => whole.push(bytes),
                 None => {
                     let _ = unit.await;
                     break;
@@ -4750,13 +4796,38 @@ async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u
             },
             _ = &mut unit => {
                 while let Ok(bytes) = body.try_recv() {
-                    whole.extend_from_slice(&bytes);
+                    whole.push(bytes);
                 }
                 break;
             }
         }
     }
-    whole
+    whole.into_bytes()
+}
+
+/// A whole answer's pieces, joined: a lone piece is kept as written, never copied.
+#[derive(Default)]
+struct Whole {
+    one: Option<Bytes>,
+    many: Vec<u8>,
+}
+
+impl Whole {
+    fn push(&mut self, piece: Bytes) {
+        match self.one.take() {
+            None if self.many.is_empty() => self.one = Some(piece),
+            first => {
+                if let Some(first) = first {
+                    self.many.extend_from_slice(&first);
+                }
+                self.many.extend_from_slice(&piece);
+            }
+        }
+    }
+
+    fn into_bytes(self) -> Bytes {
+        self.one.unwrap_or_else(|| Bytes::from(self.many))
+    }
 }
 
 /// A unit the data door drives: what it rendered for its caller when it ended before any byte.
@@ -4900,9 +4971,10 @@ mod door_tests;
 
 // THE DOOR CELLS' RIG: the one surface the door planes' own root cells reach the composition root
 // through (no struct literal of a root type, no installer by its path), so a root refactor keeps
-// its signatures and leaves a pinned plane's cells compiling. Compiled iff an enabled door's
-// cells name it (`build.rs`, `door_rig`).
-#[cfg(all(test, linked_section_pools, door_rig))]
+// its signatures and leaves a pinned plane's cells compiling. Compiled in every test build that
+// serves the `pools` section, so a root change that breaks the rig fails here, on the change, and
+// not at the next plane repin (`build.rs` sets `door_rig` when an enabled door's cells name it).
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/door_rig.rs"]
 pub(crate) mod door_rig;
 

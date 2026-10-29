@@ -379,9 +379,7 @@ pub struct PlaneAuditLog {
 }
 
 /// THE PROCESS-WIDE admin audit READ MODEL on the seam. Process state, not config-derived state, so it
-/// lives as a global rather than on the swappable `App` snapshot — exactly like
-/// [`crate::residual_log::RESIDUALS`], and for the same reason: a
-/// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
+/// lives as a global rather than on the swappable `App` snapshot: a config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
 /// has one.
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
     std::sync::LazyLock::new(PlaneAuditLog::new);
@@ -865,6 +863,8 @@ pub(crate) fn register_and_migrate(
              and continues the chain from it (a write the store still cannot serve is queued)"
         ),
     }
+    // The tail is restored: the plugin refusals this boot raised before now are sealed after it.
+    open_plugin_refusals();
 }
 
 /// THE ADMIN-AUDIT CHOKEPOINT EMITTER, hostless. Reached through [`emit_admin_hostless_now`] from
@@ -936,6 +936,191 @@ pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, prin
     emit_admin_hostless(ts, action, resource, outcome, principal);
 }
 
+// ── PLUGIN REFUSALS AT BOOT AND BIND: the host audits them on the plugin's behalf ─────────────────
+//
+// Owner rule: every refusal is audited and explained; nothing silent. A refusal the host makes while
+// a plugin starts or binds (a skip by the trust policy, a need the connection table refused, a
+// warning the plugin declared and raised at its open) is sealed here, on the one admin chain, through
+// [`emit_admin_hostless`]. No plugin writes it: there is no plugin-facing service, and no plugin
+// text becomes structure. Every field is host-composed ([`plugin_refusal_resource`]).
+//
+// Most of these refusals are made before the chain is open (the preflight and the export sinks'
+// opens run before `hydrate_all`), so they are HELD, in the order they were raised, and sealed when
+// [`register_and_migrate`] has restored the chain's tail ([`open_plugin_refusals`]). Holding is not a
+// failure: nothing is logged for it.
+
+/// What the host refused, or flagged, while a plugin started, bound or served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginRefusal {
+    /// The trust policy left a plugin in the plugins directory unloaded.
+    Trust,
+    /// The trust policy LOADED a plugin no key vouches for (unsigned, tampered, third-party or
+    /// signed by a retired release key), under an explicit `plugins.trust` opt-in: it serves,
+    /// UNVERIFIED.
+    Unverified,
+    /// The connection table refused a need the instance declared at `open` or `refresh`.
+    Need,
+    /// The instance's `open` or `refresh` answered with a diagnostic its Statement declares, at
+    /// warn or error: it loaded, flagged.
+    Open,
+    /// Another op of the instance answered with a diagnostic its Statement declares, at error: a
+    /// refusal it met while serving (an IdP destination it refused, say).
+    Op,
+}
+
+impl PluginRefusal {
+    /// The record's action.
+    #[must_use]
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::Trust | Self::Unverified => "plugin.trust",
+            Self::Need => "plugin.need",
+            Self::Open => "plugin.open",
+            Self::Op => "plugin.op",
+        }
+    }
+
+    /// The record's outcome: a refusal is `rejected`; a flagged open or an unverified load loaded,
+    /// `degraded`.
+    #[must_use]
+    pub const fn outcome(self) -> &'static str {
+        match self {
+            Self::Trust | Self::Need | Self::Op => busbar_contract::vocab::OUTCOME_REJECTED,
+            Self::Open | Self::Unverified => busbar_contract::vocab::OUTCOME_DEGRADED,
+        }
+    }
+}
+
+/// The principal a plugin refusal is recorded under: the host acted; no caller did.
+pub const PLUGIN_REFUSAL_PRINCIPAL: &str = "host";
+
+/// The most bytes one part of a refusal's resource keeps.
+const REFUSAL_PART_MAX: usize = 64;
+
+/// The most refusals held before the chain opens; past it each is counted, and the count is sealed
+/// as one record when the chain opens.
+const MAX_HELD_REFUSALS: usize = 256;
+
+/// The action of the record that counts refusals the hold could not keep.
+const HELD_OVER_ACTION: &str = "plugin.refusals";
+
+/// A refusal's resource: `plugin:<kind>/<subject>#<reason>`. Each part is clamped to host words
+/// (`[A-Za-z0-9._-]`, any other byte `_`, at most [`REFUSAL_PART_MAX`] bytes; empty reads `_`), so no
+/// byte a part carries can move a field boundary or smuggle text onto the chain.
+#[must_use]
+pub fn plugin_refusal_resource(kind: &str, subject: &str, reason: &str) -> String {
+    fn word(part: &str) -> String {
+        let clamped: String = part
+            .chars()
+            .take(REFUSAL_PART_MAX)
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if clamped.is_empty() {
+            "_".to_string()
+        } else {
+            clamped
+        }
+    }
+    format!("plugin:{}/{}#{}", word(kind), word(subject), word(reason))
+}
+
+/// One refusal waiting for the chain: when it was raised, and the record it seals as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeldRefusal {
+    ts: u64,
+    refusal: PluginRefusal,
+    resource: String,
+}
+
+/// THE HOLD: `Some` until the chain opens (each refusal kept in raise order, bounded), `None` after
+/// (each refusal sealed at once). One lock orders a refusal raised while the hold is being sealed
+/// after everything held.
+struct RefusalHold {
+    held: Mutex<Option<(Vec<HeldRefusal>, u64)>>,
+}
+
+impl RefusalHold {
+    const fn new() -> Self {
+        Self {
+            held: Mutex::new(Some((Vec::new(), 0))),
+        }
+    }
+
+    /// Hold `row` while the chain is not open; once it is, hand it to `seal`.
+    fn raise(&self, row: HeldRefusal, seal: impl FnOnce(&HeldRefusal)) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((rows, over)) = held.as_mut() {
+            if rows.len() < MAX_HELD_REFUSALS {
+                rows.push(row);
+            } else {
+                *over += 1;
+            }
+            return;
+        }
+        drop(held);
+        seal(&row);
+    }
+
+    /// Open the chain: hand every held row to `seal`, in raise order, then the count the hold could
+    /// not keep (when any) to `over`. A second open seals nothing.
+    fn open(&self, mut seal: impl FnMut(&HeldRefusal), over: impl FnOnce(u64)) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((rows, dropped)) = held.take() else {
+            return;
+        };
+        rows.iter().for_each(&mut seal);
+        if dropped > 0 {
+            over(dropped);
+        }
+    }
+}
+
+/// The process's one hold: the chain opens once per process ([`register_and_migrate`]).
+static PLUGIN_REFUSALS: RefusalHold = RefusalHold::new();
+
+fn seal_refusal(row: &HeldRefusal) {
+    emit_admin_hostless(
+        row.ts,
+        row.refusal.action(),
+        &row.resource,
+        row.refusal.outcome(),
+        PLUGIN_REFUSAL_PRINCIPAL,
+    );
+}
+
+/// RECORD ONE PLUGIN REFUSAL on the admin chain: `refusal` of the plugin `subject` (its instance
+/// label; for a trust skip its tarball's file name) of `kind`, for `reason` (a host code). Held
+/// until the chain opens, sealed at once after.
+pub fn record_plugin_refusal(refusal: PluginRefusal, kind: &str, subject: &str, reason: &str) {
+    PLUGIN_REFUSALS.raise(
+        HeldRefusal {
+            ts: busbar_kernel::store::now(),
+            refusal,
+            resource: plugin_refusal_resource(kind, subject, reason),
+        },
+        seal_refusal,
+    );
+}
+
+/// OPEN THE CHAIN TO PLUGIN REFUSALS: seal every refusal held so far, in raise order, after the
+/// tail the boot restored.
+pub(crate) fn open_plugin_refusals() {
+    PLUGIN_REFUSALS.open(seal_refusal, |over| {
+        emit_admin_hostless_now(
+            HELD_OVER_ACTION,
+            &format!("plugin:held/over#{over}"),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            PLUGIN_REFUSAL_PRINCIPAL,
+        );
+    });
+}
+
 // ── TEST HARNESS — a test drives the chain over its own registered stream id ───────────────────────
 
 /// TEST ONLY: a fresh, process-unique `audit` stream id, well above the production ids (1/2/3) and the
@@ -962,6 +1147,7 @@ fn global_audit_host_app() -> &'static Arc<crate::state::App> {
     APP.get_or_init(|| {
         let app = crate::test_support::TestApp::new().build();
         register_audit_stream(&app);
+        open_plugin_refusals();
         app
     })
 }

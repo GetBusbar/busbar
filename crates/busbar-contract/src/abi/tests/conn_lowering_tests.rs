@@ -26,7 +26,7 @@ impl Conns for Echo {
             self.0.check_need(caller, need)?;
             return Err(ConnError::Refused);
         }
-        let mut first = [desc.method, desc.head_target, desc.body].concat();
+        let mut first = [desc.method, desc.head_target, &desc.body[..]].concat();
         for (name, value) in desc.fields {
             first.extend_from_slice(name.as_bytes());
             first.extend_from_slice(value);
@@ -137,7 +137,7 @@ fn every_operation_crosses_the_lowering() {
             &OpenDesc {
                 target: "echo.test",
                 fields: &[("k", b"v")],
-                body: b"hello",
+                body: crate::conn::Bytes::from_static(b"hello"),
                 timeout_ms: 5,
                 ..OpenDesc::default()
             },
@@ -257,7 +257,7 @@ fn an_undeclared_need_opens_nothing_across_the_lowering() {
     );
 }
 
-/// Every outcome byte decodes, and only the ten stated ones decode to themselves: an unknown byte
+/// Every outcome byte decodes, and only the twelve stated ones decode to themselves: an unknown byte
 /// is a fault, never a refusal it is not.
 #[test]
 fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
@@ -271,11 +271,13 @@ fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
         ConnError::Fault,
         ConnError::Unarmed,
         ConnError::CredentialUnavailable,
+        ConnError::AuthRefused,
+        ConnError::AuthFailed,
     ] {
         assert_eq!(RawConnOutcome::of(Err(e)).result(), Err(e));
     }
     assert_eq!(RawConnOutcome::of(Ok(())).result(), Ok(()));
-    for b in 10..=u8::MAX {
+    for b in 12..=u8::MAX {
         assert_eq!(RawConnOutcome(b).result(), Err(ConnError::Fault));
     }
 }
@@ -315,6 +317,29 @@ fn an_unavailable_credential_is_refused_by_name() {
         ConnError::CredentialUnavailable.to_string(),
         "the request's credential is unavailable; nothing was sent"
     );
+}
+
+/// An auth's refusal and an auth call's failure each cross the ABI by their own outcome byte and
+/// their own text, and both read as auth outcomes, never the destination failing; no other cause
+/// does.
+#[test]
+fn an_auth_outcome_crosses_by_name_and_is_never_the_destinations() {
+    assert_eq!(RawConnOutcome::of(Err(ConnError::AuthRefused)).0, 10);
+    assert_eq!(RawConnOutcome::of(Err(ConnError::AuthFailed)).0, 11);
+    assert_eq!(RawConnOutcome(10).result(), Err(ConnError::AuthRefused));
+    assert_eq!(RawConnOutcome(11).result(), Err(ConnError::AuthFailed));
+    assert_ne!(ConnError::AuthRefused.text(), ConnError::AuthFailed.text());
+    assert_ne!(ConnError::AuthRefused.text(), ConnError::Refused.text());
+    assert!(ConnError::AuthRefused.is_auth() && ConnError::AuthFailed.is_auth());
+    for e in [
+        ConnError::Timeout,
+        ConnError::Closed,
+        ConnError::Refused,
+        ConnError::Fault,
+        ConnError::CredentialUnavailable,
+    ] {
+        assert!(!e.is_auth(), "{e:?}");
+    }
 }
 
 /// An instance its host handed no table answers [`ConnError::Unarmed`], by its own refusal text and

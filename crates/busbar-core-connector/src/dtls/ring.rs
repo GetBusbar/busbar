@@ -103,8 +103,6 @@ static RNG: Rng = Rng;
 static HASHES: Hashes = Hashes;
 static HMACS: Hmacs = Hmacs;
 
-// ── AEAD ────────────────────────────────────────────────────────────────────────────────────────
-
 /// One ring AEAD key (AES-GCM or ChaCha20-Poly1305); the nonce and AAD are dimpl's.
 struct Aead(LessSafeKey);
 
@@ -217,8 +215,6 @@ impl SupportedDtls13CipherSuite for ChaCha13 {
     }
 }
 
-// ── key exchange ────────────────────────────────────────────────────────────────────────────────
-
 fn agreement_of(group: NamedGroup) -> Option<&'static agreement::Algorithm> {
     match group {
         NamedGroup::X25519 => Some(&agreement::X25519),
@@ -289,8 +285,6 @@ impl SupportedKxGroup for KxGroup {
         }))
     }
 }
-
-// ── signing and verification ────────────────────────────────────────────────────────────────────
 
 struct Signer(Arc<signature::EcdsaKeyPair>);
 
@@ -390,8 +384,6 @@ impl SignatureVerifier for Verifier {
         }
     }
 }
-
-// ── hash, hmac, random ──────────────────────────────────────────────────────────────────────────
 
 struct Hash(digest::Context);
 

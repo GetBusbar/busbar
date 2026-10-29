@@ -8,17 +8,16 @@ use busbar_contract::caps::{Admission, Admittance, Grant, Hold, PrincipalId, Rea
 use busbar_contract::caps::{AuditFacts, OpClassId};
 use busbar_contract::FinishClass;
 
-/// The admission of a unit the door admitted at zero: its own hold, reserving nothing, for this
-/// principal, opened with the admittance grant the loop lent for this call.
+/// The admission of a unit the door admitted: its own hold, for this principal, opened with the
+/// admittance grant the loop lent for this call.
 pub fn admitted_at_zero(admit_token: &Grant<Admittance>, principal: PrincipalId) -> Admission {
-    Admission::Own(Hold::open(admit_token, principal, 0))
+    Admission::Own(Hold::open(admit_token, principal))
 }
 
 /// A unit's arrival hold: the hold it carries into the in-flight table before it reaches the door.
-/// It reserves nothing, since a unit refused at the gate spent nothing, and it opens only with the
-/// admittance grant the kernel lends for this call.
+/// It opens only with the admittance grant the kernel lends for this call.
 pub fn arrival_hold(principal: PrincipalId, admit_token: &Grant<Admittance>) -> Hold {
-    Hold::open(admit_token, principal, 0)
+    Hold::open(admit_token, principal)
 }
 
 /// THE NODE'S ONE UNIT-KEY ALLOCATOR, from 1. A unit's identity is the kernel's to mint: a plane

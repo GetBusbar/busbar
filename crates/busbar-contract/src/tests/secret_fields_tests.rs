@@ -165,7 +165,7 @@ fn declared_references_are_the_references_a_path_names() {
 fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
     let mut ok =
-        json!({"dsn": {"env": "PG"}, "servers": {"a": {"env": {"K": {"env": "K"}, "L": "lit"}}}});
+        json!({"dsn": {"env": "PG"}, "servers": {"a": {"env": {"K": {"env": "K"}}, "cmd": "lit"}}});
     crate::secret_fields::resolve_declared(
         &mut ok,
         &paths(&["dsn", "servers.*.env.*"]),
@@ -183,9 +183,159 @@ fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest()
             .is_some_and(|s| s.starts_with("R:")),
         "{ok}"
     );
-    assert_eq!(ok["servers"]["a"]["env"]["L"], json!("lit"));
+    assert_eq!(ok["servers"]["a"]["cmd"], json!("lit"));
     let mut bad = json!({"base": {"env": "B"}});
     let e = crate::secret_fields::resolve_declared(&mut bad, &paths(&["dsn"]), "acme", resolve)
         .expect_err("undeclared");
     assert!(e.contains("settings.base") && e.contains("'acme'"), "{e}");
+}
+
+/// As the kernel resolves (lead ruling item 7b): a literal at a declared path is refused, at an
+/// EXACT path and at a WILDCARD path alike, naming the position and the plugin and never the value.
+/// An unset (`null`) declared position is not a literal.
+#[test]
+fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() {
+    let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
+    for (mut tree, at) in [
+        (
+            json!({"dsn": "postgres://u:pasted-7b@db/x"}),
+            "settings.dsn",
+        ),
+        (
+            json!({"servers": {"a": {"env": {"K": "pasted-7b"}}}}),
+            "settings.servers.a.env.K",
+        ),
+        (
+            json!({"servers": {"a": {"env": {"K": {"literal": "pasted-7b"}}}}}),
+            "settings.servers.a.env.K",
+        ),
+    ] {
+        let Err(e) = crate::secret_fields::resolve_declared(
+            &mut tree,
+            &paths(&["dsn", "servers.*.env.*"]),
+            "acme",
+            resolve,
+        ) else {
+            panic!("a literal at {at} refuses");
+        };
+        assert!(
+            e.starts_with(&format!("{at}: ")) && e.contains("'acme'"),
+            "{e}"
+        );
+        assert!(
+            e.contains("a secret value must be a REFERENCE, never an inline literal"),
+            "{e}"
+        );
+        assert!(!e.contains("pasted-7b"), "the value is echoed: {e}");
+    }
+    let mut unset = json!({"dsn": null, "servers": {"a": {"env": {"K": null}}}});
+    crate::secret_fields::resolve_declared(
+        &mut unset,
+        &paths(&["dsn", "servers.*.env.*"]),
+        "acme",
+        resolve,
+    )
+    .expect("an unset declared position is not a literal");
+}
+
+/// REFERENCE-CAPABLE, NOT-SECRET FIELDS (lead ruling item 7a): at a path the plugin names in its
+/// Statement's reference-capable list, a reference resolves IN PLACE to its string (a 1.5.5 store,
+/// exporter or hook `url: {env: VAR}`), a literal passes as written (the 1.5.5 literal url), and a
+/// reference anywhere else is still refused. Exact and `*` paths alike.
+#[test]
+fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
+    let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
+    let mut by_ref = json!({"url": {"env": "OTLP_URL"}, "sinks": [{"to": {"env": "TO"}}]});
+    crate::secret_fields::resolve_declared_fields(
+        &mut by_ref,
+        &paths(&["auth_header.value"]),
+        &paths(&["url", "sinks.*.to"]),
+        "acme",
+        resolve,
+    )
+    .expect("a reference at a reference-capable field resolves");
+    assert!(
+        by_ref["url"].as_str().is_some_and(|s| s.starts_with("R:")),
+        "{by_ref}"
+    );
+    assert!(
+        by_ref["sinks"][0]["to"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("R:")),
+        "{by_ref}"
+    );
+
+    let literal = json!({"url": "https://collector.example/v1/traces", "sinks": [{"to": "x"}]});
+    let mut as_written = literal.clone();
+    crate::secret_fields::resolve_declared_fields(
+        &mut as_written,
+        &paths(&["auth_header.value"]),
+        &paths(&["url", "sinks.*.to"]),
+        "acme",
+        resolve,
+    )
+    .expect("a literal at a reference-capable field is not refused");
+    assert_eq!(as_written, literal, "a literal passes as written");
+
+    let mut elsewhere = json!({"url": "https://x", "batch": {"env": "B"}});
+    let e = crate::secret_fields::resolve_declared_fields(
+        &mut elsewhere,
+        &[],
+        &paths(&["url"]),
+        "acme",
+        resolve,
+    )
+    .expect_err("a reference outside both lists is still refused");
+    assert!(e.contains("settings.batch") && e.contains("'acme'"), "{e}");
+}
+
+/// A reference-capable field is NEVER a secret: it is never lent (no `{"$secret": …}` marker, no
+/// secret blob) and a declared SECRET path beside it still refuses its literal.
+#[test]
+fn a_reference_capable_field_is_never_lent_and_a_secret_beside_it_still_refuses_a_literal() {
+    let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
+    let mut tree = json!({"url": "https://x", "auth_header": {"value": "pasted-7a"}});
+    let e = crate::secret_fields::resolve_declared_fields(
+        &mut tree,
+        &paths(&["auth_header.value"]),
+        &paths(&["url"]),
+        "acme",
+        resolve,
+    )
+    .expect_err("the secret literal refuses");
+    assert!(e.starts_with("settings.auth_header.value: "), "{e}");
+    assert!(!e.contains("pasted-7a"), "{e}");
+
+    // The lend reads the SECRET list only: a reference-capable path's value stays in the settings.
+    let mut block = json!({"url": "https://x", "auth_header": {"value": "s"}});
+    let lent = lent(&mut block, &["auth_header.value"]);
+    assert_eq!(lent, vec![b"s".to_vec()]);
+    assert_eq!(block["url"], json!("https://x"));
+}
+
+/// A PATH IN BOTH LISTS is a contradiction (refused at load): it names the path and the plugin.
+#[test]
+fn a_path_in_both_lists_is_a_contradiction() {
+    assert_eq!(
+        crate::secret_fields::contradiction(&paths(&["token", "url"]), &paths(&["base", "url"])),
+        Some("url".to_string())
+    );
+    assert_eq!(
+        crate::secret_fields::contradiction(&paths(&["token"]), &paths(&["url"])),
+        None
+    );
+    let e = crate::secret_fields::contradiction_refusal("url", "acme");
+    assert!(e.contains("url") && e.contains("'acme'"), "{e}");
+    let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
+    let mut tree = json!({"url": {"env": "U"}});
+    let e = crate::secret_fields::resolve_declared_fields(
+        &mut tree,
+        &paths(&["url"]),
+        &paths(&["url"]),
+        "acme",
+        resolve,
+    )
+    .expect_err("a contradicting Statement resolves nothing");
+    assert!(e.contains("url") && e.contains("'acme'"), "{e}");
+    assert_eq!(tree, json!({"url": {"env": "U"}}));
 }

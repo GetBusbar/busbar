@@ -26,11 +26,12 @@ use busbar_contract::abi::host::io::{
     check_addr_buf, check_dir, check_how, check_spawn_in, may_pend, op, AddrIn, HandleIn, IoSlots,
     ListenIn, OpenIn, ReadIn, ReadyIn, ShutIn, SpawnIn, WriteIn, SLOTS,
 };
-use busbar_contract::abi::host::service::{check_head, ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{check_head, lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
+use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
+use super::services::{write_out, Answered};
 use super::ticket::Waking;
 
 /// The table every instance is handed.
@@ -56,46 +57,20 @@ pub const UNTICKETED: &str = "an io slot that may pend is callable only inside a
 /// The refusal of an address buffer below `MAX_ADDR`.
 pub const SHORT_ADDR: &str = "an address buffer holds at least MAX_ADDR bytes";
 
-/// One slot's answer, before it is written into the caller's `out`.
-struct Answer {
-    outcome: Outcome,
-    value: u64,
-    len: u64,
-    error: &'static str,
+/// The host's I/O refusal, as the plugin reads it.
+fn refusal(e: IoRefusal) -> Answered {
+    match e {
+        IoRefusal::Refused(t) => Answered::bare(Outcome::Refused, crate::intern_name(&t)),
+        IoRefusal::Failed(t) => Answered::bare(Outcome::Failed, crate::intern_name(&t)),
+    }
 }
 
-impl Answer {
-    const fn ready(value: u64, len: u64) -> Self {
-        Self {
-            outcome: Outcome::Ready,
-            value,
-            len,
-            error: "",
-        }
-    }
-
-    const fn with(outcome: Outcome, error: &'static str) -> Self {
-        Self {
-            outcome,
-            value: 0,
-            len: 0,
-            error,
-        }
-    }
-
-    fn of(e: IoRefusal) -> Self {
-        match e {
-            IoRefusal::Refused(t) => Self::with(Outcome::Refused, crate::intern_name(&t)),
-            IoRefusal::Failed(t) => Self::with(Outcome::Failed, crate::intern_name(&t)),
-        }
-    }
-
-    fn polled<T>(p: Poll<Result<T, IoRefusal>>, ok: impl FnOnce(T) -> Self) -> Self {
-        match p {
-            Poll::Pending => Self::with(Outcome::Pending, ""),
-            Poll::Ready(Ok(v)) => ok(v),
-            Poll::Ready(Err(e)) => Self::of(e),
-        }
+/// A polled I/O's answer: PENDING, `ok`'s, or its refusal.
+fn polled<T>(p: Poll<Result<T, IoRefusal>>, ok: impl FnOnce(T) -> Answered) -> Answered {
+    match p {
+        Poll::Pending => Answered::bare(Outcome::Pending, ""),
+        Poll::Ready(Ok(v)) => ok(v),
+        Poll::Ready(Err(e)) => refusal(e),
     }
 }
 
@@ -155,52 +130,44 @@ fn slot<I: Copy>(
     input: *const c_void,
     out: *mut ServiceOut,
     service: u32,
-    body: impl FnOnce(&I, &Caller, Ticket) -> Answer,
+    body: impl FnOnce(&I, &Caller, Ticket) -> Answered,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
-            return Answer::with(Outcome::Fault, "");
+            return Answered::fault();
         }
         // SAFETY: a non-NULL `in` leads with its head (the call shape).
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
         if check_head(&head, service, size_of::<I>()).is_err() {
-            return Answer::with(Outcome::Fault, "");
+            return Answered::fault();
         }
         let ticket = head.handle.ticket;
         if may_pend(service) && ticket.is_none() {
-            return Answer::with(Outcome::Refused, UNTICKETED);
+            return Answered::bare(Outcome::Refused, UNTICKETED);
         }
         let Some(c) = caller(ctx) else {
-            return Answer::with(Outcome::Refused, NO_IO);
+            return Answered::bare(Outcome::Refused, NO_IO);
         };
         // SAFETY: the head covered an `I`.
         let i = unsafe { input.cast::<I>().read_unaligned() };
         body(&i, &c, ticket)
     }))
-    .unwrap_or(Answer::with(Outcome::Fault, ""));
-    if !out.is_null() {
-        let o = ServiceOut {
-            size: size_of::<ServiceOut>() as u32,
-            outcome: RawOutcome::of(a.outcome),
-            _reserved: [0; 3],
-            value: a.value,
-            len: a.len,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
-            error: AbiStr {
-                ptr: if a.error.is_empty() {
-                    std::ptr::null()
-                } else {
-                    a.error.as_ptr()
-                },
-                len: a.error.len(),
-            },
-        };
-        // SAFETY: the caller's `out`, checked non-NULL.
-        unsafe { out.write_unaligned(o) };
-    }
-    RawOutcome::of(a.outcome)
+    .unwrap_or(Answered::fault());
+    // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
+    // stated.
+    unsafe { write_out(out, &a, lent) }
 }
 
 /// A caller's string, checked: `None` for NULL with a length or bad UTF-8.
@@ -238,11 +205,11 @@ c_entry! {
         slot::<OpenIn>(ctx, input, out, op::OPEN, |i, c, ticket| {
             // SAFETY: the caller's string, live for the call.
             let Some(addr) = (unsafe { text(i.addr) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             match c.io.open(c.owner, ticket, addr) {
-                Ok(h) => Answer::ready(h, 0),
-                Err(e) => Answer::of(e),
+                Ok(h) => Answered::ready(h, 0),
+                Err(e) => refusal(e),
             }
         })
     }
@@ -250,16 +217,16 @@ c_entry! {
     fn listen(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<ListenIn>(ctx, input, out, op::LISTEN, |i, c, ticket| {
             if check_addr_buf(i.addr_buf, i.addr_cap, "io.listen.addr").is_err() {
-                return Answer::with(Outcome::Refused, SHORT_ADDR);
+                return Answered::bare(Outcome::Refused, SHORT_ADDR);
             }
             // SAFETY: the caller's string, live for the call.
             let Some(bind) = (unsafe { text(i.bind) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             match c.io.listen(c.owner, ticket, bind) {
                 // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
-                Ok((h, addr)) => Answer::ready(h, unsafe { put(i.addr_buf, i.addr_cap, &addr) }),
-                Err(e) => Answer::of(e),
+                Ok((h, addr)) => Answered::ready(h, unsafe { put(i.addr_buf, i.addr_cap, &addr) }),
+                Err(e) => refusal(e),
             }
         })
     }
@@ -267,12 +234,12 @@ c_entry! {
     fn accept(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<AddrIn>(ctx, input, out, op::ACCEPT, |i, c, ticket| {
             if check_addr_buf(i.addr_buf, i.addr_cap, "io.accept.addr").is_err() {
-                return Answer::with(Outcome::Refused, SHORT_ADDR);
+                return Answered::bare(Outcome::Refused, SHORT_ADDR);
             }
             let p = c.io.accept(c.owner, ticket, i.handle, &c.waker(ticket));
             // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
-            Answer::polled(p, |(h, peer)| {
-                Answer::ready(h, unsafe { put(i.addr_buf, i.addr_cap, &peer) })
+            polled(p, |(h, peer)| {
+                Answered::ready(h, unsafe { put(i.addr_buf, i.addr_cap, &peer) })
             })
         })
     }
@@ -282,10 +249,10 @@ c_entry! {
             // SAFETY: the caller's buffer, writable for `cap` bytes for the call; NULL with a
             // capacity, or a capacity over the hard byte maximum, is refused before it is formed.
             let Some(buf) = (unsafe { super::validate::lent_mut(i.buf, i.cap) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let p = c.io.read(c.owner, i.handle, buf, &c.waker(ticket));
-            Answer::polled(p, |n| Answer::ready(0, n as u64))
+            polled(p, |n| Answered::ready(0, n as u64))
         })
     }
 
@@ -293,31 +260,31 @@ c_entry! {
         slot::<WriteIn>(ctx, input, out, op::WRITE, |i, c, ticket| {
             // SAFETY: the caller's bytes, live for the call.
             let Some(bytes) = (unsafe { list(i.bytes, i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let p = c.io.write(c.owner, i.handle, bytes, &c.waker(ticket));
-            Answer::polled(p, |n| Answer::ready(0, n as u64))
+            polled(p, |n| Answered::ready(0, n as u64))
         })
     }
 
     fn ready(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<ReadyIn>(ctx, input, out, op::READY, |i, c, ticket| {
             if check_dir(i.dir).is_err() {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             }
             let p = c.io.ready(c.owner, i.handle, i.dir, &c.waker(ticket));
-            Answer::polled(p, |()| Answer::ready(0, 0))
+            polled(p, |()| Answered::ready(0, 0))
         })
     }
 
     fn shut(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<ShutIn>(ctx, input, out, op::SHUT, |i, c, _| {
             if check_how(i.how).is_err() {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             }
             match c.io.shut(c.owner, i.handle, i.how) {
-                Ok(()) => Answer::ready(0, 0),
-                Err(e) => Answer::of(e),
+                Ok(()) => Answered::ready(0, 0),
+                Err(e) => refusal(e),
             }
         })
     }
@@ -325,8 +292,8 @@ c_entry! {
     fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<HandleIn>(ctx, input, out, op::CLOSE, |i, c, _| {
             match c.io.close(c.owner, i.handle) {
-                Ok(()) => Answer::ready(0, 0),
-                Err(e) => Answer::of(e),
+                Ok(()) => Answered::ready(0, 0),
+                Err(e) => refusal(e),
             }
         })
     }
@@ -334,7 +301,7 @@ c_entry! {
     fn spawn(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<SpawnIn>(ctx, input, out, op::SPAWN, |i, c, ticket| {
             if check_spawn_in(i).is_err() {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             }
             // SAFETY: the caller's strings and lists, live for the call.
             let parsed = unsafe {
@@ -349,7 +316,7 @@ c_entry! {
                 program.zip(args).zip(env)
             };
             let Some(((program, args), env)) = parsed else {
-                return Answer::with(Outcome::Fault, "");
+                return Answered::fault();
             };
             let spawn = Spawn {
                 program,
@@ -357,8 +324,8 @@ c_entry! {
                 env: &env,
             };
             match c.io.spawn(c.owner, ticket, &spawn) {
-                Ok(h) => Answer::ready(h, 0),
-                Err(e) => Answer::of(e),
+                Ok(h) => Answered::ready(h, 0),
+                Err(e) => refusal(e),
             }
         })
     }
@@ -366,16 +333,33 @@ c_entry! {
     fn ends(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<AddrIn>(ctx, input, out, op::ENDS, |i, c, _| {
             if check_addr_buf(i.addr_buf, i.addr_cap, "io.ends.addr").is_err() {
-                return Answer::with(Outcome::Refused, SHORT_ADDR);
+                return Answered::bare(Outcome::Refused, SHORT_ADDR);
             }
-            match c.io.ends(c.owner, i.handle) {
-                // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
-                Ok((port, peer)) => Answer::ready(u64::from(port), unsafe {
-                    put(i.addr_buf, i.addr_cap, &peer)
-                }),
-                Err(e) => Answer::of(e),
-            }
+            // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
+            unsafe { ends_answer(c.io.ends(c.owner, i.handle), i.addr_buf, i.addr_cap) }
         })
+    }
+}
+
+/// `io.ends`' answer of what the host's I/O reported: a program that has exited answers its exit
+/// code in `value` with `exited` set and writes no far address; any other handle its local port and
+/// its far end's address.
+///
+/// # Safety
+/// `buf` is the caller's, writable for `cap` bytes.
+unsafe fn ends_answer(ends: IoResult<Ends>, buf: *mut u8, cap: usize) -> Answered {
+    match ends {
+        Ok(Ends {
+            exit: Some(code), ..
+        }) => Answered {
+            exited: 1,
+            ..Answered::ready(u64::from(code), 0)
+        },
+        // SAFETY: the caller's buffer (the contract above).
+        Ok(Ends { port, peer, .. }) => {
+            Answered::ready(u64::from(port), unsafe { put(buf, cap, &peer) })
+        }
+        Err(e) => refusal(e),
     }
 }
 

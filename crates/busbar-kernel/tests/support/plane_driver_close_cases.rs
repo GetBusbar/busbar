@@ -46,6 +46,7 @@ async fn drive_as<F: FarEnd>(
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     match run_unit_async(&kernel, units, &common::ctx(key), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),

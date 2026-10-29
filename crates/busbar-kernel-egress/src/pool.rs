@@ -11,6 +11,7 @@
 //! reads these values and none of which invents one.
 
 use crate::ports::DestinationId;
+use crate::select::WeightedFloor;
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
 /// every attempt including a streaming one.
@@ -125,6 +126,8 @@ pub struct Pool {
     pub failover: Failover,
     /// What to do when the walk finds nowhere to send.
     pub on_exhausted: OnExhausted,
+    /// The weighted floor's rotation memory over this pool's members.
+    pub floor: WeightedFloor,
 }
 
 impl Pool {
@@ -136,6 +139,7 @@ impl Pool {
             members,
             failover: Failover::default(),
             on_exhausted: OnExhausted::default(),
+            floor: WeightedFloor::default(),
         }
     }
 
@@ -161,13 +165,5 @@ impl Pool {
                 .cloned()
                 .collect(),
         )
-    }
-
-    /// Where a member sits in this pool's membership, by destination.
-    #[must_use]
-    pub fn position_of(&self, destination: DestinationId) -> Option<usize> {
-        self.members
-            .iter()
-            .position(|m| m.destination == destination)
     }
 }

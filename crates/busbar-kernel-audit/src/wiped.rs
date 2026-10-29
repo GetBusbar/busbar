@@ -7,10 +7,10 @@
 //! `hmac::Key` pads that key into a buffer it never clears and keeps the inner and outer block
 //! states in the key value, which is dropped unwiped; those states are enough to compute the HMAC
 //! under the seed for any label. THE DESIGN §6 (`BUSBAR-1.6.0.md` l.871, "auth material is
-//! zeroised") takes precedence over the one-crypto-backend rule for this one primitive (ruling 5),
-//! so the HMAC here is FIPS 198-1 over a FIPS 180-4 SHA-256 whose state, message schedule and
-//! block buffers are all wiped: the padded key, the inner and outer pads, the chaining state after
-//! each block and the inner digest.
+//! zeroised") takes precedence over the one-crypto-backend rule for this one primitive, so the HMAC
+//! here is FIPS 198-1 over a FIPS 180-4 SHA-256 whose state, message schedule and block buffers are
+//! all wiped: the padded key, the inner and outer pads, the chaining state after each block and the
+//! inner digest.
 //!
 //! Nothing else in the workspace may hash with it: it exists for the seed-keyed derivation alone.
 

@@ -469,25 +469,6 @@ pub struct ConfigVersionPageView {
     pub next_cursor: Option<String>,
 }
 
-/// The stable v1 error envelope (`{"error":{"code","message"}}`). Kept as a schema-only type so the
-/// generated `Error` component matches the hand-written one exactly and both stay code-derived.
-/// Referenced only via its TYPE (schemars' derive walks it for the schema) -- never constructed as
-/// a value, so it needs the struct-level allow the module doc promises, not just a field-level one.
-#[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
-pub struct ErrorBody {
-    pub error: ErrorDetail,
-}
-
-/// The `error` member of [`ErrorBody`]: a stable machine `code` + human `message`.
-#[derive(Serialize, JsonSchema)]
-#[allow(dead_code)]
-pub struct ErrorDetail {
-    /// One of the frozen [`AdminError`] codes (see the `code` enum on the generated schema).
-    pub code: String,
-    pub message: String,
-}
-
 /// A compile-time cross-check that this schema module stays in step with the frozen error taxonomy:
 /// referencing every [`AdminError`] variant here means adding a new variant forces a look at this
 /// module. (Never called — the match is the assertion.)

@@ -42,7 +42,8 @@
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
-//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
+//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran; [`proxy_route`] is the
+//!   choice it fills, which proxy (if any) a dial goes through.
 //!
 //! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
 //! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
@@ -76,6 +77,7 @@ pub mod pool;
 pub mod process;
 mod program;
 pub mod proxy;
+pub mod proxy_route;
 pub mod registry;
 pub mod socket;
 pub mod spawn_env;
@@ -103,8 +105,8 @@ use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DES
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
-    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
-    Piece, PieceKind, PollConns, Ticket, NO_TICKET,
+    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId, NeedId,
+    OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -122,7 +124,7 @@ use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
-/// the host blames for a ticket it never minted (#74).
+/// the host blames for a ticket it never minted.
 pub type WakeTicket = busbar_contract::conn::ConnWake;
 
 /// A `DEST_*` verdict (`busbar_contract::abi::host::service`) refusing a dial.
@@ -254,16 +256,16 @@ impl DialJudge for LiteralsOnly {
 /// loopback-allowed over connection security, or in plaintext only to a target whose host is
 /// WRITTEN as loopback ([`guard::names_loopback`]: a loopback literal in any spelling, `localhost`,
 /// `*.localhost`), as 1.5.5's collector and webrequest guards ruled on the URL's host and never on
-/// what a name resolved to (ARCHITECT parity ruling A3); every other
-/// class takes the scheme its target names (operator-infrastructure's plaintext included). Which
-/// addresses may be dialled at all is the destination guard's ([`guard`]), the same in every class.
-/// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
-/// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
-/// is refused at the connect, before any byte is written; an empty set states no pin.
-/// THE SCHEME RULE THE TARGET DECIDES ALONE, before any judgement: open-web dials over connection
-/// security only. An open holds its target to it ([`Conns::open`]), and so does a pinned need's
-/// admission at declare ([`Connector::admits_pinned`]); loopback-allowed's plaintext-to-loopback
-/// rule needs the pinned address and is [`class_admits`]'s.
+/// what a name resolved to; every other class takes the scheme its target names
+/// (operator-infrastructure's plaintext included). Which addresses may be dialled at all is the
+/// destination guard's ([`guard`]), the same in every class. THE LANDING RULE rides with it: a dial
+/// stated `within` an address set (`EstablishIn::within`) lands only on an address in it, so a name
+/// that resolves elsewhere since the plugin judged it is refused at the connect, before any byte is
+/// written; an empty set states no pin. THE SCHEME RULE THE TARGET DECIDES ALONE, before any
+/// judgement: open-web dials over connection security only. An open holds its target to it
+/// ([`Conns::open`]), and so does a pinned need's admission at declare
+/// ([`Connector::admits_pinned`]); loopback-allowed's plaintext-to-loopback rule needs the pinned
+/// address and is [`class_admits`]'s.
 fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
 }
@@ -283,14 +285,14 @@ fn class_admits(
         }
 }
 
-/// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER (ARCHITECT parity
-/// ruling A1). A name that did not resolve ([`DEST_UNRESOLVABLE`]), or resolved to no address
-/// ([`DEST_NO_ADDRESSES`]), is a FAILED connection, the same failure a dial that found no far end
-/// is ([`ConnError::Fault`], a FAILED outcome to a plugin): 1.5.5 held "a resolution FAILURE is not
-/// a rejection. A collector whose DNS is briefly down is an availability event, not a security one"
-/// (v1.5.5 `crates/busbar/src/observability.rs:588-590`, `otlp_resolves_to_internal`; its test
-/// `otlp_resolve_check_allows_a_name_that_does_not_resolve`, `:1482-1490`), and its exporter
-/// failed that batch and sent the next. Every other verdict is the guard's refusal
+/// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER. A name that did
+/// not resolve ([`DEST_UNRESOLVABLE`]), or resolved to no address ([`DEST_NO_ADDRESSES`]), is a
+/// FAILED connection, the same failure a dial that found no far end is ([`ConnError::Fault`], a
+/// FAILED outcome to a plugin): 1.5.5 held "a resolution FAILURE is not a rejection. A collector
+/// whose DNS is briefly down is an availability event, not a security one" (v1.5.5
+/// `crates/busbar/src/observability.rs:588-590`, `otlp_resolves_to_internal`; its test
+/// `otlp_resolve_check_allows_a_name_that_does_not_resolve`, `:1482-1490`), and its exporter failed
+/// that batch and sent the next. Every other verdict is the guard's refusal
 /// ([`ConnError::Refused`], a REFUSED outcome, which a sink reads as the run's answer). A verdict
 /// decided at once is never a resolution's ([`DialJudge::judge_dial`]), so only a pended one is
 /// read here.
@@ -301,16 +303,16 @@ fn pended_verdict(v: Verdict) -> ConnError {
     }
 }
 
-/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (ARCHITECT parity
-/// ruling A5; v1.5.5 `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`, `:893-907`
+/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (v1.5.5
+/// `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`, `:893-907`
 /// `sanitize_hop_header`): a CR, LF or NUL in the target, a head word, a field name or a field
-/// value, or a field that states the message's own framing (`content-length`,
-/// `transfer-encoding`, any case), refuses the whole open before anything is dialled or sent. The
-/// framer writes the framing for the bytes it sends; a plugin's own would describe another wire.
-/// Where the host writes the opener's authority (`authority_held`,
-/// [`DeclaredConns::hold_authority`]: every instance of the auth kind), a `host` field of the
-/// plugin's own refuses the open too, as 1.5.5 refused it on an auth module's request; every other
-/// opener (a plane's upstream, which may sign its `host`) keeps the field it wrote.
+/// value, or a field that states the message's own framing (`content-length`, `transfer-encoding`,
+/// any case), refuses the whole open before anything is dialled or sent. The framer writes the
+/// framing for the bytes it sends; a plugin's own would describe another wire. Where the host
+/// writes the opener's authority (`authority_held`, [`DeclaredConns::hold_authority`]: every
+/// instance of the auth kind), a `host` field of the plugin's own refuses the open too, as 1.5.5
+/// refused it on an auth module's request; every other opener (a plane's upstream, which may sign
+/// its `host`) keeps the field it wrote.
 fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
     const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
     const AUTHORITY: &str = "host";
@@ -328,7 +330,7 @@ fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
 }
 
 /// What the connector holds for one declared need: the entry serving its transport, resolved once
-/// at declare (a need no entry serves is refused there, never at its open; spec Part 2 #50).
+/// at declare (a need no entry serves is refused there, never at its open).
 #[derive(Clone)]
 struct DeclaredNeed {
     door: Arc<dyn FramerDoor>,
@@ -360,7 +362,7 @@ type Answer = Arc<
     )>,
 >;
 
-/// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
+/// The trust anchors sealed per destination (the transport pin), by the need's owner, the need and
 /// the destination's authority (lower-case, `host:port`).
 type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
@@ -426,7 +428,55 @@ type MemberAnchored =
 type AuthKey = (InstanceId, NeedId, String, String);
 
 /// The listeners, one per inbound need, by the need's owner and need.
-type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
+type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
+
+/// ONE INBOUND LISTENER, driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
+/// host lock): an accept takes the listener out, crosses the carrier's `accept` (and closes a
+/// connection past the cap) with nothing held, and puts it back. An accept that finds it out
+/// (another accept has it, or its bind is still crossing) answers PENDING, woken when it is back.
+#[derive(Default)]
+struct Accepting {
+    /// The listener while no accept has it out, and the accepts that found it out.
+    slot: Mutex<(Option<Listening>, Vec<Waker>)>,
+}
+
+impl Accepting {
+    /// Take the listener out; `None` (with `waker` woken once it is back) while it is out.
+    fn take(&self, waker: &Waker) -> Option<Listening> {
+        let mut slot = self.slot.lock().expect("listener");
+        let taken = slot.0.take();
+        if taken.is_none() && !slot.1.iter().any(|w| w.will_wake(waker)) {
+            slot.1.push(waker.clone());
+        }
+        taken
+    }
+
+    /// Put `listening` back (`None`: it is gone), waking every accept that found it out.
+    fn put(&self, listening: Option<Listening>) {
+        let waiting = {
+            let mut slot = self.slot.lock().expect("listener");
+            slot.0 = listening;
+            std::mem::take(&mut slot.1)
+        };
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
+/// A listener an accept has out: put back however the accept ends, an unwind included.
+struct AcceptingOut<'a> {
+    home: &'a Accepting,
+    listening: Option<Listening>,
+}
+
+impl Drop for AcceptingOut<'_> {
+    fn drop(&mut self) {
+        if let Some(l) = self.listening.take() {
+            self.home.put(Some(l));
+        }
+    }
+}
 
 /// A dial whose judgement pended: what to dial once it answers, the answer, and the waker of the
 /// read or wait that found it unanswered.
@@ -461,9 +511,9 @@ fn unresolved_here(verdict: Verdict) -> bool {
 }
 
 /// What an exchange lent a pooled line keeps to redial it ONCE on a fresh connection when that line
-/// fails before any byte of the exchange left (ARCHITECT ruling Q-L18-RETRY, 1.5.5's pooled client
-/// re-sending a request its pooled connection closed under before it was written; never once a byte
-/// left, so nothing is sent twice, and no failover: the caller sees one exchange).
+/// fails before any byte of the exchange left (1.5.5's pooled client re-sending a request its
+/// pooled connection closed under before it was written; never once a byte left, so nothing is sent
+/// twice, and no failover: the caller sees one exchange).
 struct Redial {
     door: Arc<dyn FramerDoor>,
     dial: Dial,
@@ -475,14 +525,123 @@ struct Redial {
     mark: u64,
 }
 
+/// A HELD CONNECTION'S DIAL, CROSSING WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
+/// runs under a host lock): its judgement is spent under the judgement's lock, which is let go
+/// before the carrier's `dial`, the ride and the early writes cross. Meanwhile the connection is
+/// neither judging nor dialled: a caller finds it still settling (`Pending`), woken once the dial
+/// came to its end, however it ends.
+struct Crossing<'h> {
+    held: &'h Held,
+}
+
+impl<'h> Crossing<'h> {
+    /// The dial of `held` begins crossing; `judging` (its spent judgement's lock) is let go.
+    fn begin(held: &'h Held, judging: std::sync::MutexGuard<'_, Option<Judging>>) -> Self {
+        *held.crossing.lock().expect("crossing") = Some(Vec::new());
+        drop(judging);
+        Self { held }
+    }
+}
+
+impl Drop for Crossing<'_> {
+    fn drop(&mut self) {
+        let waiting = self
+            .held
+            .crossing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default();
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
+/// A piece a short caller buffer left, and its unread bytes.
+type Left = (Piece, Vec<u8>);
+
+/// What a short caller buffer left of a piece (the piece and its unread bytes), and whether the
+/// end was answered.
+#[derive(Default)]
+struct Rest {
+    piece: Option<Left>,
+    ended: bool,
+    /// A read (or an upgrade) has the rest out.
+    reading: bool,
+    /// The reads that found it out, woken when it is back.
+    missed: Vec<Waker>,
+}
+
+/// ONE READ HAS THE REST (`BUSBAR-1.6.0.md` §11: no plugin code runs under a host lock): taken
+/// under the lock, the read crosses into the line (and a dial) with none held, and what it left is
+/// put back as it ends, however it ends. Another read of the same connection meanwhile answers
+/// PENDING and is woken when the rest is back, so no read takes a piece out of order.
+struct Reading<'h> {
+    rest: &'h Mutex<Rest>,
+    /// The end was answered.
+    ended: bool,
+    /// What a short buffer left, for the next read.
+    left: Option<Left>,
+}
+
+impl<'h> Reading<'h> {
+    /// Take the rest for one read: what a short buffer left, and whether the end was answered.
+    /// `None` while another read has it, `waker` woken once it is back.
+    fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<Left>)> {
+        let mut r = rest.lock().expect("rest");
+        if r.reading {
+            if !r.missed.iter().any(|w| w.will_wake(waker)) {
+                r.missed.push(waker.clone());
+            }
+            return None;
+        }
+        r.reading = true;
+        let kept = r.piece.take();
+        let ended = r.ended;
+        Some((
+            Self {
+                rest,
+                ended,
+                left: None,
+            },
+            kept,
+        ))
+    }
+}
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        let missed = {
+            let mut r = self
+                .rest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            r.reading = false;
+            r.ended |= self.ended;
+            if let Some(left) = self.left.take() {
+                r.piece = Some(left);
+            }
+            std::mem::take(&mut r.missed)
+        };
+        for w in missed {
+            w.wake();
+        }
+    }
+}
+
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
 /// there (a dialled exchange's own; an accepted connection's every stream).
 struct Held {
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// The judgement the dial waits on; `None` once dialled.
     judging: Mutex<Option<Judging>>,
-    /// The piece a short caller buffer left, and whether the end was answered.
-    rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
+    /// THE DIAL IS CROSSING (`Some`, with the callers waiting on it): its judgement is spent and
+    /// its carrier's `dial` (and the early writes' framing) cross with no lock held ([`Crossing`]).
+    crossing: Mutex<Option<Vec<Waker>>>,
+    /// The piece a short caller buffer left, and whether the end was answered: the reading
+    /// caller's while it reads ([`Reading`]).
+    rest: Mutex<Rest>,
     /// The far end's reason phrase, held until its head's last piece is read.
     reason: Mutex<Option<Vec<u8>>>,
     /// Where a dialled connection goes back to when its exchange finished whole: its pool shard
@@ -523,7 +682,8 @@ impl Held {
         Held {
             line: Mutex::new(line),
             judging: Mutex::new(judging),
-            rest: Mutex::new((None, Vec::new(), false)),
+            crossing: Mutex::new(None),
+            rest: Mutex::new(Rest::default()),
             reason: Mutex::new(None),
             pooled,
             whole: AtomicBool::new(false),
@@ -714,7 +874,7 @@ impl Wake for TicketWake {
     }
 }
 
-fn map(f: &Failure) -> ConnError {
+pub(crate) fn map(f: &Failure) -> ConnError {
     match f {
         Failure::Refused(_) => ConnError::Refused,
         Failure::Timeout => ConnError::Timeout,
@@ -760,14 +920,6 @@ impl Connector {
             judge,
             ..Self::default()
         }
-    }
-
-    /// The same connector serving its carriers from `io`: the host I/O the process's dispatcher serves
-    /// every carrier instance (`io.*`), so what the connector admits is what the carriers reach.
-    #[must_use]
-    pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
-        self.io = io;
-        self
     }
 
     /// The same connector resolving its programs' environment references through `secrets`, at
@@ -822,6 +974,30 @@ impl Connector {
                 "no carrier is loaded to reach an address".into(),
             )),
         }
+    }
+
+    /// The framer `owner`'s `need` rides, located at `target` (empty = the need's own, as an open
+    /// naming none dials it): its own head lines, and whether its head states the body's length.
+    /// A carrier carried as itself, a need nobody declared, or a target the framer refuses states
+    /// neither.
+    fn framer_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let need = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| {
+                (
+                    Arc::clone(&n.door),
+                    n.declared_target.clone().filter(|_| target.is_empty()),
+                )
+            });
+        need.and_then(|(door, declared)| self.located(&door, declared.as_deref().unwrap_or(target)))
+            .map(|located| HeadDefaults {
+                lines: located.defaults,
+                states_length: located.states_length,
+            })
+            .unwrap_or_default()
     }
 
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
@@ -909,7 +1085,7 @@ impl Connector {
     }
 
     /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
-    /// arrived on that claim (ARCHITECT 4l, [`framed_stream`]).
+    /// arrived on that claim ([`framed_stream`]).
     #[must_use]
     pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
         self.transports
@@ -976,10 +1152,9 @@ impl Connector {
         )
     }
 
-    /// THE SCHEME MATCH (spec Part 2 #50: "no match => fail closed"): the need is recorded over the
-    /// entry serving `transport`, resolved here once, or refused here; an open never meets an
-    /// unserved scheme. `tls` is the need's own client config when its `trust_from` named an
-    /// operator CA.
+    /// THE SCHEME MATCH: the need is recorded over the entry serving `transport`, resolved here
+    /// once, or refused here; an open never meets an unserved scheme. `tls` is the need's own
+    /// client config when its `trust_from` named an operator CA.
     fn record(
         &self,
         owner: InstanceId,
@@ -1277,16 +1452,40 @@ impl Connector {
                 registered
             }
         };
-        let mut listeners = self.listeners.lock().expect("listeners");
-        if listeners.contains_key(&(owner, need)) {
-            return Err(ConnError::Refused);
+        // The need's place is held first; the carrier's `listen` then crosses with no lock held.
+        let held = Arc::new(Accepting::default());
+        {
+            let mut listeners = self.listeners.lock().expect("listeners");
+            if listeners.contains_key(&(owner, need)) {
+                return Err(ConnError::Refused);
+            }
+            listeners.insert((owner, need), Arc::clone(&held));
         }
-        let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
-        let l =
-            Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
-        let addr = l.local_addr();
-        listeners.insert((owner, need), Arc::new(Mutex::new(l)));
-        Ok(addr)
+        let bound = self
+            .ride_on(&door)
+            .ok_or(ConnError::Refused)
+            .and_then(|(framer, via)| {
+                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)
+            });
+        match bound {
+            Ok(l) => {
+                let addr = l.local_addr();
+                held.put(Some(l));
+                Ok(addr)
+            }
+            Err(e) => {
+                let gone = {
+                    let mut listeners = self.listeners.lock().expect("listeners");
+                    let ours = listeners
+                        .get(&(owner, need))
+                        .is_some_and(|a| Arc::ptr_eq(a, &held));
+                    ours.then(|| listeners.remove(&(owner, need))).flatten()
+                };
+                drop(gone);
+                held.put(None);
+                Err(e)
+            }
+        }
     }
 
     /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
@@ -1312,10 +1511,19 @@ impl Connector {
             .cloned()
             .ok_or(ConnError::Refused)?;
         let waker = self.waker(owner, ticket);
-        let got = l
-            .lock()
-            .expect("listener")
+        let Some(listening) = l.take(&waker) else {
+            return Err(ConnError::Pending);
+        };
+        let mut out = AcceptingOut {
+            home: &l,
+            listening: Some(listening),
+        };
+        let got = out
+            .listening
+            .as_mut()
+            .expect("the listener is out")
             .poll_accept(&mut Context::from_waker(&waker));
+        drop(out);
         match got {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(Err(f)) => Err(map(&f)),
@@ -1358,7 +1566,18 @@ impl Connector {
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let mut judging = held.judging.lock().expect("judging");
         let Some(j) = judging.as_mut() else {
-            return Ok(true);
+            drop(judging);
+            // Judged: dialled, unless its dial is still crossing.
+            let mut crossing = held.crossing.lock().expect("crossing");
+            return Ok(match crossing.as_mut() {
+                Some(waiting) => {
+                    if let Some(w) = waker.filter(|w| !waiting.iter().any(|x| x.will_wake(w))) {
+                        waiting.push(w.clone());
+                    }
+                    false
+                }
+                None => true,
+            });
         };
         let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
@@ -1410,6 +1629,7 @@ impl Connector {
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
             let early = std::mem::take(&mut j.early);
             *judging = None;
+            let _crossing = Crossing::begin(held, judging);
             let connect = proxy::connect_request(planned.authority(), &spec);
             let conn = planned
                 .dial_through(proxy_addr, connect)
@@ -1436,6 +1656,7 @@ impl Connector {
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
+        let _crossing = Crossing::begin(held, judging);
         let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
         let line = self.ride(held, conn);
         for (bytes, end, text) in early {
@@ -1563,10 +1784,9 @@ impl Connector {
         })
     }
 
-    /// THE ONE REDIAL (ARCHITECT ruling Q-L18-RETRY): `held` was lent a pooled line that failed
-    /// before any byte of its exchange left. The line is let go and the exchange's opening is
-    /// dialled afresh, judged as any dial is. `Ok(false)`: no redial is owed (none kept, already
-    /// spent, or a byte had left).
+    /// THE ONE REDIAL: `held` was lent a pooled line that failed before any byte of its exchange
+    /// left. The line is let go and the exchange's opening is dialled afresh, judged as any dial
+    /// is. `Ok(false)`: no redial is owed (none kept, already spent, or a byte had left).
     fn redial(&self, held: &Held) -> Result<bool, ConnError> {
         let mut kept = held.redial.lock().expect("redial");
         let Some((line, stream)) = held.line() else {
@@ -1658,11 +1878,13 @@ impl Connector {
         if let Some((member, lease)) = &held.lease {
             return member.read(*lease, waker, buf);
         }
-        let mut rest = held.rest.lock().expect("rest");
-        let (piece, bytes) = match rest.0.take() {
-            Some(p) => (p, std::mem::take(&mut rest.1)),
+        let Some((mut reading, kept)) = Reading::begin(&held.rest, waker) else {
+            return Err(ConnError::Pending);
+        };
+        let (piece, bytes) = match kept {
+            Some(kept) => kept,
             None => {
-                if rest.2 {
+                if reading.ended {
                     return Err(ConnError::Closed);
                 }
                 let got = loop {
@@ -1677,7 +1899,7 @@ impl Connector {
                         Poll::Ready(Err(_) | Ok(None)) if self.redial(held)? => {}
                         Poll::Ready(Err(f)) => return Err(map(&f)),
                         Poll::Ready(Ok(None)) => {
-                            rest.2 = true;
+                            reading.ended = true;
                             return Ok(completion(0));
                         }
                         Poll::Ready(Ok(Some(got))) => break (got, stream),
@@ -1691,14 +1913,14 @@ impl Connector {
                     // A DIALLED exchange's stream ending whole is the exchange's completion
                     // (`busbar_contract::abi::transport`, "streams end by flag"): the caller
                     // has the whole answer, and the line may carry the next one.
-                    rest.2 = true;
+                    reading.ended = true;
                     held.whole.store(true, Ordering::Release);
                     return Ok(completion(got.stream));
                 }
                 if dialled && got.stream == stream && got.failed {
                     // Its stream FAILED (the framer's reason is never the caller's payload): the
                     // exchange fails, and the line is not kept.
-                    rest.2 = true;
+                    reading.ended = true;
                     return Err(ConnError::Fault);
                 }
                 // The far end's head (and its trailers) arrive as the framer's field block: a
@@ -1736,8 +1958,7 @@ impl Connector {
             // The caller's buffer is short: this piece does not end its frame yet, and the rest
             // is the next read's.
             out.end = false;
-            rest.0 = Some(piece);
-            rest.1 = bytes[n..].to_vec();
+            reading.left = Some((piece, bytes[n..].to_vec()));
         } else if out.kind == PieceKind::Fields && out.end {
             // The head's last piece: its reason phrase follows the field block in the caller's
             // buffer, where the buffer holds it too.
@@ -1848,23 +2069,23 @@ impl DeclaredConns for Connector {
     ) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class, and pinned to the target its config names when it names one (a
-        // `target_from` that resolved to nothing is refused, and so is a target carrying a
-        // userinfo its own settings did not give it: a credential never rides a dial target, it
-        // travels in the request's own headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any
-        // earlier pin is dropped), and refused when no loaded transport serves its scheme (spec
-        // Part 2 #50; the loader fails the boot on it, naming the plugin and the scheme). Its
-        // connections are secured with the operator CA its `trust_from` names added on top of the
-        // public roots (ARCHITECT ruling 2026-10-02): a `trust_from` that resolved to nothing, or to a PEM that does not parse
-        // into a trust anchor, refuses the need here, at declaration. An inbound need is recorded
-        // (the listener binds it), and refused on an unserved scheme alike.
+        // `target_from` that resolved to nothing is refused, and so is a target carrying a userinfo
+        // its own settings did not give it: a credential never rides a dial target, it travels in
+        // the request's own headers — FAIL-CLOSED; any earlier pin is dropped), and refused when no
+        // loaded transport serves its scheme (the loader fails the boot on it, naming the plugin
+        // and the scheme). Its connections are secured with the operator CA its `trust_from` names
+        // added on top of the public roots: a `trust_from` that resolved to nothing, or to a PEM
+        // that does not parse into a trust anchor, refuses the need here, at declaration. An
+        // inbound need is recorded (the listener binds it), and refused on an unserved scheme
+        // alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
         // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
         // is sealed at its own, and dials it like any need the plugin names per open.
         let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
         // A trust anchor in an OWNED section (`owned.<section>.<key>`) is optional by definition
-        // (the section is the operator's to write or not; ARCHITECT ruling 2026-10-14): absent, the
-        // need's connections trust the public roots alone, as one naming no anchor does; present, it
-        // is parsed below and refused when it is no trust anchor, exactly as a `settings.` one is.
+        // (the section is the operator's to write or not): absent, the need's connections trust the
+        // public roots alone, as one naming no anchor does; present, it is parsed below and refused
+        // when it is no trust anchor, exactly as a `settings.` one is.
         let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
         let unresolved =
             (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
@@ -1872,11 +2093,11 @@ impl DeclaredConns for Connector {
                     && !per_member(&spec.trust_from)
                     && !optional_trust
                     && trust.is_none());
-        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, row 159 audit,
-        // the settings-URL userinfo finding): a target read from the plugin's own settings through `target_from`
-        // is declared without its userinfo, which is dropped here — never recorded, judged or
-        // repeated; a credential the plugin means to send rides its request's own fields. Every
-        // other target carrying a userinfo is refused, and so is one this reading cannot clear.
+        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (the settings-URL userinfo finding): a
+        // target read from the plugin's own settings through `target_from` is declared without its
+        // userinfo, which is dropped here — never recorded, judged or repeated; a credential the
+        // plugin means to send rides its request's own fields. Every other target carrying a
+        // userinfo is refused, and so is one this reading cannot clear.
         let cleared = target
             .filter(|t| settings_derived(&spec.target_from) && carries_userinfo(t))
             .and_then(without_userinfo);
@@ -1945,7 +2166,7 @@ impl DeclaredConns for Connector {
         }
         let config = if verify_off {
             // The operator's opt-in to an unverified handshake: an operator-infrastructure need's
-            // only (ARCHITECT ruling 2026-10-03 on Q-L16-4).
+            // only.
             let class = self
                 .over
                 .lock()
@@ -1981,24 +2202,28 @@ impl DeclaredConns for Connector {
         };
         // What a short read left of a clear piece is the far end's clear bytes, unread: the line
         // refuses the upgrade over it and fails the connection, and the rest is never read, the
-        // failure is. Held across the upgrade, so no read takes a piece meanwhile.
-        let mut rest = held.rest.lock().expect("rest");
+        // failure is. The rest is out across the upgrade (no lock held as it crosses), so no read
+        // takes a piece meanwhile.
+        let Some((mut reading, kept)) = Reading::begin(&held.rest, &waker) else {
+            return Err(ConnError::Pending);
+        };
         let answer = line.upgrade_secure(
             &config,
             &name,
             DEFAULT_OPEN_TIMEOUT,
-            rest.0.is_some(),
+            kept.is_some(),
             &mut Context::from_waker(&waker),
         );
+        let over_clear = matches!(
+            &answer,
+            Poll::Ready(Err(Failure::Refused(t))) if t == compose::UPGRADE_OVER_CLEAR_BYTES
+        );
+        if !over_clear {
+            reading.left = kept;
+        }
         match answer {
             Poll::Ready(Ok(())) => Ok(()),
-            Poll::Ready(Err(f)) => {
-                if matches!(&f, Failure::Refused(t) if t == compose::UPGRADE_OVER_CLEAR_BYTES) {
-                    rest.0 = None;
-                    rest.1.clear();
-                }
-                Err(map(&f))
-            }
+            Poll::Ready(Err(f)) => Err(map(&f)),
             Poll::Pending => Err(ConnError::Pending),
         }
     }
@@ -2023,9 +2248,12 @@ impl DeclaredConns for Connector {
         }
     }
 
-    /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
-    /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
-    /// stream.
+    /// A need is framed when the entry serving its transport is a FRAMER (http's kind, over the
+    /// carrier the connector chose); a CARRIER entry is a raw stream.
+    fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        self.framer_head(owner, need, target)
+    }
+
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         self.over
             .lock()
@@ -2122,10 +2350,17 @@ impl DeclaredConns for Connector {
             let _ = self.close(owner, conn);
         }
         self.pools.forget(owner);
-        self.listeners
-            .lock()
-            .expect("listeners")
-            .retain(|(o, _), _| *o != owner);
+        // Let go once the table's lock is: a listener's last hold on its entry goes with it.
+        let gone: Vec<Arc<Accepting>> = {
+            let mut listeners = self.listeners.lock().expect("listeners");
+            let keys: Vec<(InstanceId, NeedId)> = listeners
+                .keys()
+                .filter(|(o, _)| *o == owner)
+                .copied()
+                .collect();
+            keys.iter().filter_map(|k| listeners.remove(k)).collect()
+        };
+        drop(gone);
         let needs: Vec<NeedId> = self
             .over
             .lock()
@@ -2187,8 +2422,8 @@ impl Connector {
         Ok(())
     }
 
-    /// THE SESSION'S CLEANUP (once, K6): its pairing leaves the book and closes, both legs with it,
-    /// so a unit key the slot is given again never finds a stale leg.
+    /// THE SESSION'S CLEANUP (once): its pairing leaves the book and closes, both legs with it, so
+    /// a unit key the slot is given again never finds a stale leg.
     pub fn unpair(&self, unit: u64) {
         let gone = self.pairs.lock().expect("pairs").remove(&unit);
         if let Some(p) = gone {
@@ -2263,13 +2498,13 @@ impl Connector {
         let due = (desc.timeout_ms != 0)
             .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
         // The exchange body: the description alone, or framed into the opener's form.
-        let body = dialled::composed_body(desc.fields, desc.body, &description)?;
+        let body = dialled::composed_body(desc.fields, &desc.body, &description)?;
         let held = self.dial_exchange(
             caller,
             need,
             &OpenDesc {
-                body: &body,
-                ..*desc
+                body: body.into(),
+                ..desc.clone()
             },
             (exchange, alpn),
             target,
@@ -2309,7 +2544,7 @@ impl Connector {
                     .iter()
                     .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                     .collect(),
-                desc.body.to_vec(),
+                desc.body.clone(),
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
@@ -2318,7 +2553,7 @@ impl Connector {
         // secured with it.
         let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
-        // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
+        // THE DESTINATION'S TRUST ANCHORS (the transport pin): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
         // key to hold, and is refused before any judgement or dial. An open naming a registration
         // sealed at this authority is held to THAT registration's anchors alone (or none, where it
@@ -2370,11 +2605,10 @@ impl Connector {
                 .expect("reach")
                 .get(&(caller, need, desc.member.to_owned()))
                 .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
-        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
-        // table, owner-signed 2026-09-27) in the egress default class only: its address is judged
-        // as operator infrastructure. An open-web need keeps its class (public https only, Q128
-        // ruling 14), and a provider need is refused a private address unless allowlisted
-        // (ARCHITECT ruling CRATES-14, `guard::judged_class`).
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class table)
+        // in the egress default class only: its address is judged as operator infrastructure. An
+        // open-web need keeps its class (public https only), and a provider need is refused a
+        // private address unless allowlisted (`guard::judged_class`).
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
@@ -2434,17 +2668,17 @@ impl Connector {
                         return Ok(held);
                     }
                     // The attach wrote the opening and THEN found the line failed (the far end's
-                    // close met in the same drive that flushed it): a byte of the exchange left,
-                    // so it is never re-sent (Q-L18-RETRY). It holds the failed line and its read
-                    // answers the failure, as a failure met at the first read does; the line is
-                    // let go when it closes. Whether the failure is met here or at that read is
-                    // the far end's timing; the verdict is the socket's count either way.
+                    // close met in the same drive that flushed it): a byte of the exchange left, so
+                    // it is never re-sent. It holds the failed line and its read answers the
+                    // failure, as a failure met at the first read does; the line is let go when it
+                    // closes. Whether the failure is met here or at that read is the far end's
+                    // timing; the verdict is the socket's count either way.
                     Err((stream, _)) if line.flushed() != redial.mark => {
                         let held = Held::over(Some((line, stream)), None, pooled);
                         return Ok(held);
                     }
-                    // The lent line failed before the exchange left (ARCHITECT ruling
-                    // Q-L18-RETRY): it is let go, and the exchange dials a fresh connection.
+                    // The lent line failed before the exchange left: it is let go, and the exchange
+                    // dials a fresh connection.
                     Err((stream, _)) => {
                         line.leave(stream, false);
                         self.pools.drop_line(*shard, key, &line);
@@ -2506,7 +2740,7 @@ impl Conns for Connector {
                 .get(program::member_of(desc.target))
                 .cloned()
                 .ok_or(ConnError::Refused)?;
-            let lease = member.lease(desc.body)?;
+            let lease = member.lease(&desc.body)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
             // A refused insert drops the held lease, which closes it.
@@ -2529,7 +2763,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2574,11 +2808,10 @@ impl Conns for Connector {
             )?;
             return self.slab.insert(caller, need, held);
         }
-        // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
-        // served to an operator-infrastructure need as a raw stream, every other class refused
-        // (loopback-allowed included: there is no address to judge, so its loopback rule and
-        // the node's own ports could not hold). A need whose config names its target dials that
-        // path and no other.
+        // A UNIX-DOMAIN TARGET (`unix:/path`): served to an operator-infrastructure need as a raw
+        // stream, every other class refused (loopback-allowed included: there is no address to
+        // judge, so its loopback rule and the node's own ports could not hold). A need whose config
+        // names its target dials that path and no other.
         if let Some(path) = socket::unix_path(target) {
             if egress_class != EGRESS_OPERATOR_INFRASTRUCTURE
                 || declared_target.as_deref().is_some_and(|d| d != target)
@@ -2596,7 +2829,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2658,6 +2891,8 @@ impl Conns for Connector {
                     .push((bytes[..take].to_vec(), end && take == bytes.len(), text));
                 return Ok(take);
             }
+            // Its dial is crossing: re-offered after the caller's next read or wait.
+            return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         match line.emit(stream, bytes, end, text) {
@@ -2697,7 +2932,7 @@ impl Conns for Connector {
                 }
                 continue;
             }
-            if held.rest.lock().expect("rest").0.is_some() {
+            if held.rest.lock().expect("rest").piece.is_some() {
                 return Ok(at);
             }
             match self.settle(&held, Some(&waker)) {
@@ -2765,6 +3000,13 @@ impl Conns for Connector {
 }
 
 impl PollConns for Connector {
+    /// The framer the need rides, located at `target`: its own head lines, and whether its head
+    /// states the body's length. A carrier carried as itself, a need nobody declared, or a target
+    /// the framer refuses states neither.
+    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        self.framer_head(owner, need, target)
+    }
+
     fn poll_read(
         &self,
         caller: InstanceId,
@@ -2892,6 +3134,11 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+/// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/warn_capture.rs"]
+pub mod warn_capture;
 
 #[cfg(test)]
 #[path = "tests/trust_from_tests.rs"]

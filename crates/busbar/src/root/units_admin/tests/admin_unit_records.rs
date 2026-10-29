@@ -100,3 +100,73 @@ fn a_refused_admin_unit_seals_a_refused_record() {
         "nobody was resolved, so the record names the arrival"
     );
 }
+
+/// THE PRODUCTION RECORD SINK WRITES THROUGH THE STORE'S V3 CALLS (C6): the record the admin
+/// `plane-records` write hands the sink lands in the governance store's plane records, read back
+/// through the same calls; governance whose store has no v3 calls keeps nothing and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_live_record_sink_writes_through_the_store_calls() {
+    busbar_kernel::snapshot::init();
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord};
+    use busbar_contract::store_calls::StoreDoor;
+    let opened = busbar_kernel::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(busbar_kernel::test_support::store_double::door),
+            busbar_kernel::test_support::store_double::NAME,
+            b"{}",
+        )
+        .expect("the store double opens through its door");
+    let calls = opened
+        .calls
+        .clone()
+        .expect("a door-opened store has its calls");
+    let gov = std::sync::Arc::new(
+        busbar_kernel::governance::GovState::new(opened.records, None).expect("governance"),
+    );
+    assert!(gov.attach_store_calls(std::sync::Arc::clone(&calls)));
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance(gov)
+        .build();
+    let sink = live_records(std::sync::Arc::new(busbar_kernel::state::AppHandle::new(
+        app,
+    )));
+    let record = |id: &str| PlaneRecord {
+        kind: "sink-probe".to_string(),
+        id: id.to_string(),
+        parent: None,
+        seq: 0,
+        ts: 1_700_000_000,
+        disposition: PlaneDisposition::Active,
+        body: b"{\"v\":1}".to_vec(),
+    };
+    let written = record("r1");
+    tokio::task::spawn_blocking(move || sink(&written))
+        .await
+        .expect("the sink ran")
+        .expect("the record is written");
+    let back = crate::root::durability::wait_for(calls.get_plane_record("sink-probe", "r1"))
+        .expect("the record reads back");
+    assert_eq!(back, Some(b"{\"v\":1}".to_vec()));
+
+    let bare = std::sync::Arc::new(
+        busbar_kernel::governance::GovState::new(
+            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("governance"),
+    );
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance(bare)
+        .build();
+    let sink = live_records(std::sync::Arc::new(busbar_kernel::state::AppHandle::new(
+        app,
+    )));
+    let unkept = record("r2");
+    assert!(
+        tokio::task::spawn_blocking(move || sink(&unkept))
+            .await
+            .expect("the sink ran")
+            .is_err(),
+        "a store with no v3 calls keeps nothing and says so"
+    );
+}

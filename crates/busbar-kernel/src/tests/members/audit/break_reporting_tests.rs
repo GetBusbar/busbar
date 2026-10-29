@@ -24,7 +24,9 @@
 use super::inputs;
 use crate::test_support::tokens::pass;
 use busbar_contract::count::Count;
-use busbar_kernel_audit::amend::{content_access, correction, AmendChain, Amendment, Reader};
+use busbar_kernel_audit::amend::{
+    content_access, Adjust, AmendBody, AmendChain, Amendment, Reader,
+};
 use busbar_kernel_audit::record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditRecord, OpClassId, Subject,
 };
@@ -58,7 +60,7 @@ fn three_amendments() -> (AmendChain, Vec<Amendment>) {
         &t,
     );
     let c = chain.append(
-        correction(
+        legacy_correction(
             &b.hash,
             Subject::PrincipalId("alice".into()),
             "lane",
@@ -72,8 +74,7 @@ fn three_amendments() -> (AmendChain, Vec<Amendment>) {
             "carol",
             "overbilled",
             30,
-        )
-        .unwrap(),
+        ),
         &t,
     );
     (chain, vec![a, b, c])
@@ -288,4 +289,32 @@ fn an_audit_break_says_where_it_is_and_which_tamper_it_was() {
         }
         .to_string()
     );
+}
+
+/// A pre-release 1.6.0 count correction, as that release sealed it: nothing writes one now, but a
+/// chain holding one still verifies, so its breaks are still reported.
+#[allow(clippy::too_many_arguments)]
+fn legacy_correction(
+    amends: &str,
+    subject: busbar_kernel_audit::record::Subject,
+    lane: &str,
+    card_epoch_ms: u64,
+    was: busbar_kernel_audit::amend::ClassCounts,
+    now: busbar_kernel_audit::amend::ClassCounts,
+    authorised_by: &str,
+    reason: &str,
+    wall: u64,
+) -> AmendBody {
+    AmendBody::Adjust(Adjust {
+        amends_hash: amends.to_string(),
+        subject,
+        lane: lane.to_string(),
+        card_epoch_ms,
+        was,
+        now,
+        authorised_by: authorised_by.to_string(),
+        reason: reason.to_string(),
+        wall,
+        pool: None,
+    })
 }

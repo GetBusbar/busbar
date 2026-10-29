@@ -939,10 +939,10 @@ impl Journal {
     /// The same journal KEEPING every record at its bound instead of dropping the oldest.
     ///
     /// For a caller that decides what a full buffer means itself and has said so: the composition
-    /// root over a store, which refuses new money-bearing work while its store lane is full (ARCHITECT
-    /// 2026-10-07 H3 ruling: records are never dropped). What it costs is that the buffer is then
-    /// bounded by the caller's refusal rather than by this journal, so a caller that keeps admitting
-    /// work while the store refuses grows it.
+    /// root over a store, which refuses new money-bearing work while its store lane is full
+    /// (records are never dropped). What it costs is that the buffer is then bounded by the
+    /// caller's refusal rather than by this journal, so a caller that keeps admitting work while
+    /// the store refuses grows it.
     #[must_use]
     pub fn retaining_at_bound(mut self) -> Self {
         self.drop_at_bound = false;
@@ -1109,11 +1109,12 @@ impl Journal {
             // Sealed with a bare `Entry`, the break carries `wall: 0` — 1970 — because
             // [`Entry::new`] stamps both clocks at zero and only [`Entry::at`] moves them. Every
             // retention pass in this tree is the same predicate over a record's own instant
-            // (`r.ts < before` in `purge_plane_records_before`, and each `compact(before)` above
-            // it), so a record dated 0 is older than EVERY positive cutoff and the FIRST sweep at
-            // any window deletes it. The one record that says entries were lost here would be the
-            // first thing lost — the audit evidence a store outage most needs to keep, and the same
-            // defect already fixed on the plane-record path where `append_scoped` hardcoded `ts: 0`.
+            // (`r.ts < before` in `purge_plane_records_before`, under either retention rule the
+            // host passes, and each `compact(before)` above it), so a record dated 0 is older than
+            // EVERY positive cutoff and the FIRST sweep at any window deletes it. The one record
+            // that says entries were lost here would be the first thing lost — the audit evidence a
+            // store outage most needs to keep, and the same defect already fixed on the
+            // plane-record path where `append_scoped` hardcoded `ts: 0`.
             //
             // The break marks the moment THIS batch displaced the older records, so it takes the
             // latest clock the batch carries. A batch is stamped from the unit's pinned arrival

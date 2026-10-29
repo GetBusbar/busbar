@@ -69,6 +69,45 @@ VK_NAME="${ORACLE_VK_NAME:-oracle-store-valkey}"
 READY_TIMEOUT="${ORACLE_STORE_READY_TIMEOUT:-90}"   # seconds to wait per backend
 ENV_FILE="${ORACLE_STORE_ENV_FILE:-oracle-store-services.env}"
 
+# THE PINNED PORTS ARE NOT A STORE'S. A wire-exact capture cell pins its mock's port (cells.json
+# `capture.mock.port`): the 1.5.5 golden records that host port in the request bytes, so the mock
+# must get exactly it, and a backend started here on it would refuse that cell ("capture mock port
+# ... is not free"). A store port that names a pinned port is therefore refused and replaced by a
+# free port no cell pins, before any container starts, and said so. The port actually used is
+# exported back as ORACLE_{PG,MY,VK}_PORT (when sourced) and is what the URLs below carry.
+CELLS_JSON="${ORACLE_CELLS_JSON:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/cells.json}"
+_pinned_ports() {
+  python3 - "$CELLS_JSON" <<'PY' 2>/dev/null
+import json, sys
+try:
+    cells = json.load(open(sys.argv[1]))["cells"]
+except (OSError, ValueError, KeyError):
+    sys.exit(0)
+for c in cells:
+    p = ((c.get("capture") or {}).get("mock") or {}).get("port")
+    if isinstance(p, int):
+        print(p)
+PY
+}
+PINNED_PORTS=" $(_pinned_ports | tr '\n' ' ') "
+_is_pinned() { case "$PINNED_PORTS" in *" $1 "*) return 0 ;; esac; return 1; }
+_port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+_unpinned() {  # _unpinned <what> <port> -> <port>, or a free port no cell pins when <port> is pinned
+  local what="$1" port="$2" p
+  if ! _is_pinned "$port"; then printf '%s\n' "$port"; return 0; fi
+  while :; do
+    p=$(( 20000 + RANDOM % 20000 ))
+    _is_pinned "$p" && continue
+    _port_free "$p" || continue
+    printf '[oracle-store] %s port :%s is pinned by a wire-exact capture cell; using :%s\n' "$what" "$port" "$p" >&2
+    printf '%s\n' "$p"; return 0
+  done
+}
+PG_PORT="$(_unpinned postgres "$PG_PORT")"
+MY_PORT="$(_unpinned mysql "$MY_PORT")"
+VK_PORT="$(_unpinned valkey "$VK_PORT")"
+export ORACLE_PG_PORT="$PG_PORT" ORACLE_MY_PORT="$MY_PORT" ORACLE_VK_PORT="$VK_PORT"
+
 # The connection URLs, in each driver's OWN scheme:
 #   postgres/mysql: sqlx URLs (postgres://, mysql://) with host:port and a database name.
 #   valkey:         the redis crate's own URL scheme is `redis://` (migrate.rs: "redis:// is the

@@ -229,6 +229,8 @@ pub struct UnitSlot {
     cancel: CancelToken,
     marked: AtomicBool,
     last_progress: AtomicU64,
+    /// Whether it holds one of the table's counted slots (an exempt origin holds none).
+    counted: bool,
 }
 
 impl UnitSlot {
@@ -376,7 +378,10 @@ pub struct Enter {
 #[derive(Debug)]
 pub struct InFlight {
     shards: Vec<Mutex<HashMap<UnitKey, Arc<UnitSlot>>>>,
+    /// The units holding a counted slot: what the cap is measured against.
     count: AtomicUsize,
+    /// The exempt units (administrative listener, heartbeat and sweep): live, never counted.
+    exempt: AtomicUsize,
     cap: usize,
 }
 
@@ -386,13 +391,14 @@ impl InFlight {
         InFlight {
             shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
             count: AtomicUsize::new(0),
+            exempt: AtomicUsize::new(0),
             cap,
         }
     }
 
-    /// How many units are live.
+    /// How many units are live, counted and exempt alike.
     pub fn len(&self) -> usize {
-        self.count.load(Ordering::Acquire)
+        self.count.load(Ordering::Acquire) + self.exempt.load(Ordering::Acquire)
     }
 
     /// Whether the node is doing nothing at all.
@@ -419,7 +425,7 @@ impl InFlight {
     pub fn admits(&self, request: &Enter) -> bool {
         match self.ceiling(request) {
             None => true,
-            Some(ceiling) => self.len() < ceiling,
+            Some(ceiling) => self.count.load(Ordering::Acquire) < ceiling,
         }
     }
 
@@ -427,7 +433,7 @@ impl InFlight {
     fn claim_slot(&self, ceiling: Option<usize>) -> bool {
         match ceiling {
             None => {
-                self.count.fetch_add(1, Ordering::AcqRel);
+                self.exempt.fetch_add(1, Ordering::AcqRel);
                 true
             }
             Some(ceiling) => self
@@ -472,7 +478,8 @@ impl InFlight {
                 hold: request.arrival,
             });
         }
-        if !self.claim_slot(self.ceiling(&request)) {
+        let ceiling = self.ceiling(&request);
+        if !self.claim_slot(ceiling) {
             return Err(CapRefused {
                 step: cap_refusal_step(request.origin),
                 reason: ReasonCode::InFlightCap,
@@ -489,6 +496,7 @@ impl InFlight {
             cancel: CancelToken::new(),
             marked: AtomicBool::new(false),
             last_progress: AtomicU64::new(request.now),
+            counted: ceiling.is_some(),
         });
         shard.insert(request.key, Arc::clone(&slot));
         Ok(slot)
@@ -511,8 +519,13 @@ impl InFlight {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&key);
-        if removed.is_some() {
-            self.count.fetch_sub(1, Ordering::AcqRel);
+        if let Some(slot) = &removed {
+            let held = if slot.counted {
+                &self.count
+            } else {
+                &self.exempt
+            };
+            held.fetch_sub(1, Ordering::AcqRel);
         }
         removed
     }
@@ -552,7 +565,6 @@ pub struct SessionSlot {
     open: Mutex<HashMap<(StreamId, Direction), UnitKey>>,
     upstreams: AtomicUsize,
     last_non_tick: AtomicU64,
-    needmore: AtomicUsize,
     closed: AtomicBool,
 }
 
@@ -575,32 +587,6 @@ impl SessionSlot {
             .clone()
     }
 
-    /// Cache the principal. Only a bound session keeps one; on an unbound session this is a
-    /// record of who the last unit was, which is who an accrual between turns is charged to.
-    pub fn remember(&self, principal: PrincipalId) {
-        *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal);
-    }
-
-    /// Claim the one open slot for a direction of a stream.
-    ///
-    /// One open unit per direction, and the second one is refused rather than queued: two units
-    /// relaying the same direction under two holds is two prices for one conversation.
-    pub fn claim_open(
-        &self,
-        stream: StreamId,
-        direction: Direction,
-        unit: UnitKey,
-    ) -> Result<(), ReasonCode> {
-        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-        match open.entry((stream, direction)) {
-            std::collections::hash_map::Entry::Occupied(_) => Err(ReasonCode::OpenSlotBusy),
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(unit);
-                Ok(())
-            }
-        }
-    }
-
     /// Which unit owns a direction, if any.
     pub fn open_unit(&self, stream: StreamId, direction: Direction) -> Option<UnitKey> {
         self.open
@@ -608,20 +594,6 @@ impl SessionSlot {
             .unwrap_or_else(|e| e.into_inner())
             .get(&(stream, direction))
             .copied()
-    }
-
-    /// Give the direction back, but only if `unit` is the one holding it.
-    ///
-    /// An interrupt names a UNIT and the frame carrying it names a DIRECTION, and nothing makes a
-    /// plane put the two together. Freeing whatever happens to hold the direction would hand a
-    /// live conversation's slot to the unit taking over from a different one, which is two units
-    /// relaying one direction under two holds. Read and removed under one lock, because a check
-    /// the caller makes separately is a check another frame can land in the middle of.
-    pub fn release_open_by(&self, stream: StreamId, direction: Direction, unit: UnitKey) {
-        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-        if open.get(&(stream, direction)) == Some(&unit) {
-            open.remove(&(stream, direction));
-        }
     }
 
     /// Pair another upstream connection with this session.
@@ -639,26 +611,6 @@ impl SessionSlot {
     /// How many upstreams it has paired.
     pub fn upstreams(&self) -> usize {
         self.upstreams.load(Ordering::Acquire)
-    }
-
-    /// Count one more frame in a row that was not a whole anything yet, and say what the run is
-    /// now at. The run lives HERE and not in a table beside the pump: a counter keyed by session id
-    /// in a node-global map is a counter nothing takes out again, and one that a later session on
-    /// the same id inherits. On the slot it is born and closed with the connection it describes,
-    /// and no node-global lock is taken on the path every relayed frame walks.
-    pub fn asked_again(&self) -> usize {
-        self.needmore.fetch_add(1, Ordering::AcqRel) + 1
-    }
-
-    /// A frame that WAS something ends the run.
-    pub fn made_progress(&self) {
-        self.needmore.store(0, Ordering::Release);
-    }
-
-    /// Note a unit that was not a tick. The idle clock reads this and nothing else, so a priced
-    /// accrual tick can run all night without making an idle session look busy.
-    pub fn touch_non_tick(&self, now: Millis) {
-        self.last_non_tick.store(now, Ordering::Release);
     }
 
     /// How long since the session did anything that was not a tick.
@@ -733,7 +685,6 @@ impl Sessions {
             open: Mutex::new(HashMap::new()),
             upstreams: AtomicUsize::new(0),
             last_non_tick: AtomicU64::new(now),
-            needmore: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
         });
         let displaced = self

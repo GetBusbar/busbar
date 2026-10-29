@@ -80,7 +80,7 @@ fn write_third_party(dir: &Path, lib: &[u8]) {
 fn write_configs(dir: &Path, data_port: u16, first_party: bool, third_party: bool) {
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     let scrape = if first_party {

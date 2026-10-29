@@ -34,7 +34,7 @@ use crate::exhaustion::{least_bad, retry_after_secs};
 use crate::pool::{Member, OnExhausted, Pool};
 use crate::ports::{Breaker, Capacity, Clock, DestinationId, Permit, Telemetry, Unavailable};
 use crate::race;
-use crate::select::{pick_among, PickInput, RequestCtx, WeightedFloor};
+use crate::select::{pick_among, PickInput, RequestCtx};
 use crate::wire::Shed;
 
 /// Everything the walk reads, borrowed for one step. Shared across every unit of the generation;
@@ -48,8 +48,6 @@ pub struct WalkPorts<'p> {
     pub clock: &'p dyn Clock,
     /// The counters.
     pub telemetry: &'p dyn Telemetry,
-    /// The weighted floor's rotation memory.
-    pub floor: &'p WeightedFloor,
     /// The pools, by name.
     pub pools: &'p HashMap<String, Pool>,
 }
@@ -182,8 +180,8 @@ impl Walk {
         }
     }
 
-    /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's (K7). Its
-    /// one member is the caller's to take, never picked here, so every step answers the shed a probe
+    /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's. Its one
+    /// member is the caller's to take, never picked here, so every step answers the shed a probe
     /// that brought no answer ends on (it has nowhere to fail over to), or the request timeout once
     /// the bound has passed.
     #[must_use]
@@ -376,7 +374,7 @@ impl Walk {
             &PickInput {
                 breaker: ports.breaker,
                 capacity: ports.capacity,
-                floor: ports.floor,
+                floor: &pool.floor,
                 pool: &pool.name,
                 members: &members,
                 affinity,

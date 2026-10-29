@@ -109,12 +109,32 @@ pub fn try_reserve(port: u16) -> Option<std::fs::File> {
     file.try_lock().ok().map(|()| file)
 }
 
-/// Whether the node's log shows BOTH listeners up: one "busbar listening" line from the data side
-/// (written by data worker 0) and one from the admin side (written once the control thread binds
-/// admin). The FIRST line alone is not enough: it lands before admin is bound, so an admin call
-/// fired on it is refused (ConnectionRefused).
+/// Whether the node's log holds BOTH "busbar listening" lines, the data side's (written by data
+/// worker 0) and the admin side's: what a test that compares the boot log's lines waits for before
+/// it stops the node, so neither line lands after the shutdown line. It is not a readiness wait:
+/// for that, [`healthz_answers`].
 pub fn log_shows_data_and_admin_listening(log: &str) -> bool {
     log.matches("busbar listening").count() >= 2
+}
+
+/// Whether the node's data door answers `GET /healthz` with `200` on loopback `port`: the
+/// readiness a client waits on. Once it answers, the admin surface is bound too (busbar binds the
+/// admin socket before any data worker serves, as 1.5.5 did), so an admin call made next is
+/// answered, never refused.
+pub fn healthz_answers(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    if s.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = String::new();
+    let _ = s.read_to_string(&mut buf);
+    buf.lines().next().and_then(|l| l.split_whitespace().nth(1)) == Some("200")
 }
 
 /// The node's whole log, printed to the test's stderr when the test panics while this guard is

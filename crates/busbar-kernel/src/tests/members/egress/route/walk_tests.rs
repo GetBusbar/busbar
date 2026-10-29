@@ -691,26 +691,6 @@ impl RealBreaker {
     }
 }
 
-fn to_unit(outcome: Outcome) -> busbar_kernel_breaker::Outcome {
-    use busbar_kernel_breaker::Outcome as B;
-    match outcome {
-        Outcome::Success => B::Success,
-        Outcome::Transient { retry_after } => B::Transient { retry_after },
-        Outcome::HardDown => B::HardDown,
-        Outcome::RecordNothing => B::RecordNothing,
-    }
-}
-
-fn from_unit(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
-    use busbar_kernel_breaker::Outcome as B;
-    match outcome {
-        B::Success => Outcome::Success,
-        B::Transient { retry_after } => Outcome::Transient { retry_after },
-        B::HardDown => Outcome::HardDown,
-        B::RecordNothing => Outcome::RecordNothing,
-    }
-}
-
 impl Breaker for RealBreaker {
     fn try_admit(
         &self,
@@ -721,14 +701,13 @@ impl Breaker for RealBreaker {
         if self.is_dead(destination) {
             return Err(Unavailable::Dead);
         }
-        match self.unit.try_admit(pool, destination, now) {
-            Ok(admit) => Ok(Admit {
-                probe_epoch: admit.probe_epoch,
-            }),
-            Err(LaneState::Suppressed { until }) => Err(Unavailable::BreakerOpen { until }),
-            Err(LaneState::BudgetExhausted) => Err(Unavailable::BudgetExhausted),
-            Err(LaneState::ProbeInFlight | LaneState::Ready) => Err(Unavailable::ProbeInFlight),
-        }
+        self.unit
+            .try_admit(pool, destination, now)
+            .map_err(|state| match state {
+                LaneState::Suppressed { until } => Unavailable::BreakerOpen { until },
+                LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
+                LaneState::ProbeInFlight | LaneState::Ready => Unavailable::ProbeInFlight,
+            })
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
@@ -762,17 +741,12 @@ impl Breaker for RealBreaker {
         } else {
             busbar_kernel_breaker::classify::Reading::Answered(status.fault)
         };
-        let classified = busbar_kernel_breaker::port::classify_upstream(
+        busbar_kernel_breaker::port::classify_upstream(
             busbar_kernel_breaker::port::UpstreamStatus {
                 reading,
                 retry_after: status.retry_after,
             },
-        );
-        Classified {
-            disposition: classified.disposition,
-            outcome: from_unit(classified.outcome),
-            label: classified.label,
-        }
+        )
     }
 
     fn observe(
@@ -791,7 +765,7 @@ impl Breaker for RealBreaker {
             &self.unit,
             pool,
             destination,
-            to_unit(outcome),
+            outcome,
             &self.cfg,
             now,
             token,
@@ -805,7 +779,7 @@ impl Breaker for RealBreaker {
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
         self.unit.probed(
             destination,
-            to_unit(outcome),
+            outcome,
             &|_: &str| Some(self.cfg.clone()),
             now,
             token,
@@ -828,7 +802,7 @@ impl Breaker for RealBreaker {
 /// The node's production far end, its breaker the served one.
 pub(super) fn real_egress(node: &Node, real: &Arc<RealBreaker>) -> Egress {
     let mut egress = node.egress();
-    egress.breaker = Arc::clone(real) as Arc<dyn Breaker>;
+    egress.breaker = crate::plane_driver::fixed_breaker(Arc::clone(real) as Arc<dyn Breaker>);
     egress
 }
 

@@ -33,7 +33,7 @@ A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` 
 | Class | Budget | Covers |
 |---|---|---|
 | config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`, `DELETE /identity-providers/{name}`, `PUT /export/{name}`, `PATCH /export/{name}/settings`, `DELETE /export/{name}`, `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
-| CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `reseal-epoch-floor`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
+| CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
 | plugin-inspect | 30/min | `POST /plugins/inspect` ONLY. It gets its own dedicated bucket, not the shared CRUD budget (decompressing + parsing an attacker-controlled archive is a heavier, mutation-like cost profile per call than an ordinary CRUD mutation, and a fleet-wide upgrade preview would otherwise burn the same 60/min an operator needs for real mutating work in that window) and not unmetered either, despite being `read-only` scope |
 
 Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the event is audited. Reads are unmetered.
@@ -131,7 +131,6 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | `amend_rate_history` | `POST /api/v1/admin/ledger/amend-rate-history` | `full` | Append a signed, back-dated correction to the dated rate-card history (below) |
 | `commit_upgrade` | `POST /api/v1/admin/commit-upgrade` | `full` | Commit the fleet to the release this node runs; a release this node does not run is refused. Honors `Idempotency-Key` |
 | `chain_break` | `POST /api/v1/admin/chain-break` | `full` | Deliberately break the journal chain (disaster recovery). `204` |
-| `reseal_epoch_floor` | `POST /api/v1/admin/reseal-epoch-floor` | `full` | Reseal the epoch floor after a chain break or restore. `204` |
 | `store_restore` | `POST /api/v1/admin/store-restore` | `full` | Always refused: the configured store has no restore operation (a body without `backup_ref` is `400`; an admitted call is `503 unavailable`). Restore off-node with the store's own tooling |
 | `get_trust` | `GET /api/v1/admin/trust` | `read-only` | Every trust key in the kernel's trust book and its state: what it is approved at and what it was last sighted at |
 | `trust_approve` | `POST /api/v1/admin/trust/approve` | `full` | Approve one trust key at what it was last sighted at. Durable across restart; idempotent |
@@ -156,14 +155,20 @@ keeps them in 128-bit integers and a JSON number is a double, exact only to 2^53
 nano-unit total would silently lose its last digits while still looking like money. Counts are
 ordinary numbers.
 
-`POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — per billable class, as decimal
-strings — never a money figure; what the unit costs stays a read-time view of its counts at its own
-rate-card epoch. The body names the **`pool`** the unit was dispatched through, and it is
+`POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — a signed whole delta per
+billable class on the key's counts for one lane — never a money figure; what the unit costs stays
+its counts x the card in effect at the unit's own time. The body names the key, the lane, the
+rate-card history `entry` the counts were priced with, and the unit's **`card_epoch_ms`** (its
+arrival instant): the correction lands where the unit was ledgered — in each budget window, card
+entry segment and metering day holding that instant — never in the window or card current when the
+correction is made. It fails closed: an epoch no card entry covers, an `entry` other than the one
+the unit's counts were dated with, a window that no longer holds the counts a downward delta moves,
+or a count taken below zero is refused `400 invalid_request` with a message saying why, and nothing
+is applied. The body also names the **`pool`** the unit was dispatched through, and it is
 required: a pool-scoped group budget for that pool takes the correction as well as the group-wide
 budgets, so `/groups/{name}/usage` and the `/metrics` bucket gauges agree with `/admin/usage`
 afterwards. A missing pool, or one this node has not configured, is refused `400 invalid_request`
-with a message naming the fault. A correction sealed before the pool was recorded reaches the
-group-wide budgets only, as it always did. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
+with a message naming the fault. `POST /api/v1/admin/ledger/amend-rate-history` appends a correction signed by the
 fleet's operator key to the dated rate-card history. Each corrected rate's `micro_per_unit` is a
 decimal in micro-units per unit, and it must be exact to one nano-unit (a multiple of `0.001`): the
 card holds integers, and a finer figure is refused `400 invalid_request` rather than rounded into a

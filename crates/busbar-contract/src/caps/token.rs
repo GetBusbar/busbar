@@ -55,24 +55,15 @@
 //! let forged = Grant::<Dial>::mint();
 //! ```
 //!
-//! It cannot reach the recovery grant, which materialises a hold out of a journal record with no
-//! admission at all — the single most dangerous capability in the crate:
-//!
-//! ```compile_fail,E0061
-//! use busbar_contract::caps::{Grant, Recover};
-//! let forged = Grant::<Recover>::mint();
-//! ```
-//!
 //! With the seal, every one of those mints is a plain call — the fixtures above fail for the one
 //! reason they are meant to (the test seal stands in for the kernel's here):
 //!
 #![cfg_attr(feature = "test-seal", doc = "```")]
 #![cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
-//! use busbar_contract::caps::{Admittance, Dial, Grant, KernelSeal, Recover};
+//! use busbar_contract::caps::{Admittance, Dial, Grant, KernelSeal};
 //! let seal = KernelSeal::acquire_for_kernel();
 //! let _admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
 //! let _trust = Grant::<Dial>::mint(&seal);
-//! let _recovery = Grant::<Recover>::mint(&seal);
 //! ```
 //!
 //! And it cannot duplicate a grant it was lent, because no grant is `Clone`:

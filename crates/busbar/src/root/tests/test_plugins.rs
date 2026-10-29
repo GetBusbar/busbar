@@ -330,8 +330,14 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
 
 /// The export sink `lib`, DROPPED IN on the export kind's memory ABI (its door's Statement stated)
 /// and opened under `name` with `settings`, handed `exposition` read into the recorder snapshot, as
-/// the host hands a sink serving `/metrics` its scrape: the body it renders.
-pub fn render_snapshot(lib: &[u8], name: &str, settings: &str, exposition: &str) -> Vec<u8> {
+/// the host hands a sink serving `/metrics` its scrape: the body it renders, or the sink's refusal
+/// (a sink carrying no `metrics` stream refuses in the SDK's `NO_EXPOSITION` words).
+pub fn render_snapshot(
+    lib: &[u8],
+    name: &str,
+    settings: &str,
+    exposition: &str,
+) -> Result<Vec<u8>, String> {
     use busbar_contract::export_calls::ExportCalls as _;
     let families =
         busbar_contract::export_calls::parse_families(exposition).expect("the snapshot reads");
@@ -357,7 +363,7 @@ pub fn render_snapshot(lib: &[u8], name: &str, settings: &str, exposition: &str)
     let sink =
         busbar_plugin_loader::export_door::ExportInstance::open(plugin, d, settings.as_bytes())
             .expect("the sink opens");
-    sink.scrape(&families).expect("the sink renders")
+    sink.scrape(&families)
 }
 
 /// THE NEUTRAL FRAME DOOR (the plugin loader's `neutral_frame_door` example): a transport door that

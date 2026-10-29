@@ -40,13 +40,10 @@ pub mod authz;
 // nowhere else (the unsafe policy above).
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
-// THE COUNTING ALLOCATOR A PLUGIN'S ALLOCATION GATES READ (ARCHITECT ruling 2026-10-21: plugin
-// crate roots keep the literal `#![forbid(unsafe_code)]`, so the `GlobalAlloc` impl lives here). Not
-// in a release build: compiled for this crate's own tests and, through the dev-only, EMPTY
-// `alloc-counter` feature, for a plugin's `[dev-dependencies]` edge; `tests/test_seal_is_dev_only.rs`
-// refuses any non-dev edge or `default` that enables it. Its one `#[allow(unsafe_code)]` sits on the
-// `unsafe impl GlobalAlloc` block alone; the rest of the module stays under the crate's `deny`.
-#[cfg(any(test, feature = "alloc-counter"))]
+// THE COUNTING ALLOCATOR this crate's own allocation gates read: busbar-test-kit's, mounted into
+// this crate's test build (a plugin's gates name `busbar_test_kit::alloc_counter`).
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/alloc_counter.rs"]
 pub mod alloc_counter;
 // THE SANS-IO `hyper` DRIVE framers expand (`hyper_io!(<buffer>)`): a macro only, so the contract
 // depends on neither `hyper` nor a buffer crate (ARCHITECT ruling 2026-09-30 (c)).
@@ -110,7 +107,6 @@ pub mod plugin_rows;
 pub mod protocol;
 // The provider-key descriptor a plane states in its Statement's extensions (row 155 B1c).
 pub mod provider_keys;
-pub mod proxy_route;
 pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
@@ -128,6 +124,8 @@ pub mod secret;
 // The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
 // crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
 pub mod secret_ref;
+/// Settings sensitivity: every plugin setting is sensitive unless its schema declares it public.
+pub mod settings_public;
 // DECLARED SECRET FIELDS: the paths a Statement names in `secret_refs`, matched, lent and policed.
 pub mod secret_fields;
 pub mod section;
@@ -168,18 +166,18 @@ pub use http;
 pub type Millis = u64;
 
 pub use bounded::{
-    BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit, IrPatch, Labels, Overflow,
-    PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS,
-    MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
+    BoundedVec, FactValue, Facts, FactsExhausted, Ir, Labels, Overflow, PlaneAlloc,
+    PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
+    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
     MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES, SCRATCH_BASE_BYTES,
 };
 pub use count::{
-    read_count, read_count_bytes, stored_scale_default, Count, CountError, COUNT_SCALE,
-    MAX_ACROSS_A_64_BIT_COLUMN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
+    read_count, read_count_bytes, Count, CountError, COUNT_SCALE, MAX_ACROSS_A_64_BIT_COLUMN,
+    MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
-    AuthDecoration, ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan,
-    SecretOnce, SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
+    ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan, SecretOnce,
+    SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
 };
 
 pub use grammar::{
@@ -187,14 +185,14 @@ pub use grammar::{
     SelectorFamily, SelectorForm, SignedOver,
 };
 pub use ids::{
-    AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
-    ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
-    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId,
-    StreamId, TransportId, UnitKey, UpstreamIdx,
+    AdminVerbId, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection, ClassEstimate,
+    CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
+    PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey,
+    UpstreamIdx,
 };
 pub use kinds::{
-    Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, EnvelopeFields, Head,
-    PlaneFacts, RecordBytes, SecretRef, StoreError,
+    Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, RecordBytes,
+    SecretRef, StoreError,
 };
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -204,13 +202,10 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
-pub use redacted::{constant_time_eq, sha256_hex, Secret};
+pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
-pub use transport::{
-    check_composition, CompositionError, FrameStream, Fut, Registered, TransportMeta, TRANSPORT_ABI,
-};
-pub use transport::{Carrier, Framer};
+pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
     Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,

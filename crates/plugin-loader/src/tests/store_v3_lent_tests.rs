@@ -100,13 +100,13 @@ mod wedged {
     use busbar_contract::abi::sdk::Safe as S;
 
     const TAIL: busbar_contract::abi::store::StoreTail = d::tail::<M>();
-    const DIAGS: [busbar_contract::abi::mechanism::call::AbiStr; 2] = d::DIAG_IDS;
+    const DIAGS: [busbar_contract::abi::mechanism::call::AbiStr; 1] = d::DIAG_IDS;
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::store::Ops,
         statement: busbar_contract::abi::mechanism::door::Statement {
             diag_ids: DIAGS.as_ptr(),
-            diag_ids_len: 2,
+            diag_ids_len: 1,
             kind_tail: ::core::ptr::from_ref(&TAIL)
                 .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
             ..busbar_contract::abi::sdk::door::statement("wedged", "0", 64)
@@ -127,22 +127,15 @@ mod wedged {
                     get_key: S<d::GetKey<M>>,
                     list_keys: S<d::ListKeys<M>>,
                     delete_key: S<d::DeleteKey<M>>,
-                    scrub_key: S<d::ScrubKey<M>>,
                     list_keys_since: S<d::ListKeysSince<M>>,
                     get_usage: S<d::GetUsage<M>>,
                     put_usage: S<d::PutUsage<M>>,
-                    add_usage: S<d::AddUsage<M>>,
-                    add_metering: S<d::AddMetering<M>>,
                     list_metering: S<d::ListMetering<M>>,
-                    purge_windows_before: S<d::PurgeWindowsBefore<M>>,
-                    purge_metering_before: S<d::PurgeMeteringBefore<M>>,
                     put_credential: S<d::PutCredential<M>>,
                     put_key_with_credential: S<d::PutKeyWithCredential<M>>,
                     list_credentials: S<d::ListCredentials<M>>,
-                    lookup_credential_secret: S<d::LookupCredentialSecret<M>>,
                     revoke_credential: S<d::RevokeCredential<M>>,
                     list_credentials_since: S<d::ListCredentialsSince<M>>,
-                    append_audit: S<d::AppendAudit<M>>,
                     list_audit: S<d::ListAudit<M>>,
                     add_denylist: S<d::AddDenylist<M>>,
                     list_denylist: S<d::ListDenylist<M>>,
@@ -156,20 +149,11 @@ mod wedged {
                     delete_plane_record: S<d::DeletePlaneRecord<M>>,
                     redeem_plane_token: S<d::RedeemPlaneToken<M>>,
                     plane_token_live: S<d::PlaneTokenLive<M>>,
-                    append_batch: S<d::AppendBatch<M>>,
-                    reserve: S<d::Reserve<M>>,
-                    slice_release: S<d::SliceRelease<M>>,
-                    heads: S<d::Heads<M>>,
-                    session_put: S<d::SessionPut<M>>,
-                    session_remove: S<d::SessionRemove<M>>,
-                    sessions_for: S<d::SessionsFor<M>>,
                     record_put: S<d::RecordPut<M>>,
                     record_get: WedgedGet,
                     record_scan: S<d::RecordScan<M>>,
                     add_usage_batch: S<d::AddUsageBatch<M>>,
                     add_metering_batch: S<d::AddMeteringBatch<M>>,
-                    append_audit_batch: S<d::AppendAuditBatch<M>>,
-                    window_caps: S<d::WindowCaps<M>>,
                 },
     }
 }

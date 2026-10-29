@@ -613,7 +613,6 @@ impl SegmentFactory for DirectoryFactory {
     }
 }
 
-// ── Directory durability ─────────────────────────────────────────────────────────────────────────
 // The rule the loader's `durable` module states for every other file busbar publishes, kept here
 // for the log's own segment files and quarantine copies: this crate takes no edge onto the loader
 //, so the log keeps its own copy of the one rule rather than a dependency.

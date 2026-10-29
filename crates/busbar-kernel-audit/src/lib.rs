@@ -68,9 +68,8 @@ pub mod sign;
 mod wiped;
 
 pub use amend::{
-    content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal,
-    Amendment, ClassCounts, CorrectionError, CorrectionRefused, CountCorrection, Reader,
-    AMENDMENTS_RETAINED,
+    content_access, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal, Amendment,
+    ClassCounts, Reader, AMENDMENTS_RETAINED,
 };
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, JOURNAL_TAG};

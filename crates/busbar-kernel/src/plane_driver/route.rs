@@ -366,6 +366,8 @@ pub trait CallerEnd: Sync {
 /// flight.
 pub(crate) struct PieceBufs {
     reply: Vec<u8>,
+    /// The reply window every piece but the caller's is lent (`BufferCaps::reply`).
+    window: usize,
     units: Vec<UnitCount>,
     records: Vec<RecordWrite>,
     fields: Vec<OutField>,
@@ -405,7 +407,10 @@ pub(crate) fn lend_piece(input: &mut Vec<u8>, piece: &mut FarPiece) {
 impl PieceBufs {
     pub(crate) fn new(caps: &BufferCaps, body: bytes::Bytes) -> Self {
         let mut bufs = PieceBufs {
-            reply: vec![0; caps.reply],
+            // The caller's piece is lent the window plus the arrival's length, so the request the
+            // plane binds from the caller's body crosses back once, not once per window.
+            reply: vec![0; caps.reply + body.len()],
+            window: caps.reply,
             units: Vec::new(),
             records: Vec::new(),
             fields: Vec::new(),
@@ -546,7 +551,11 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         status_code: p.status.0,
         status_class: p.status.1,
         reply_buf: bufs.reply.as_mut_ptr(),
-        reply_cap: bufs.reply.len(),
+        reply_cap: if p.from == FROM_CALLER {
+            bufs.reply.len()
+        } else {
+            bufs.window
+        },
         units_buf: bufs.units.as_mut_ptr(),
         units_cap: bufs.units.len(),
         records_buf: bufs.records.as_mut_ptr(),
@@ -1645,7 +1654,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if chosen.is_some() {
                             route_policy_fields(
                                 &mut fields,
-                                crate::proxy::route_policy_headers_enabled(),
+                                route_policy_headers_enabled(),
                                 chosen.as_deref(),
                                 &bufs.member,
                             );
@@ -1701,6 +1710,22 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     }
 }
 
+/// The `x-busbar-route-policy` transparency response header: the policy that chose the member.
+pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+/// The `x-busbar-route-target` transparency response header: the chosen member.
+pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// The operator's `advanced.response_headers.route_policy` opt-in, set once at boot.
+pub fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
 /// THE ROUTE-POLICY TRANSPARENCY FIELDS (opt-in, `advanced.response_headers.route_policy`), as
 /// 1.5.5's `maybe_attach_route_policy_gated` gated them: the pair goes after the plane's own fields
 /// only when the operator opted in (`enabled`, the outer gate) AND a non-default policy chose the
@@ -1714,13 +1739,10 @@ fn route_policy_fields(
 ) {
     if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
         fields.push((
-            crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+            HDR_ROUTE_POLICY.as_bytes().to_vec(),
             name.as_bytes().to_vec(),
         ));
-        fields.push((
-            crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
-            member.to_vec(),
-        ));
+        fields.push((HDR_ROUTE_TARGET.as_bytes().to_vec(), member.to_vec()));
     }
 }
 

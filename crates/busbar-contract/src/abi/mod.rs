@@ -15,7 +15,7 @@
 //!
 //! The cross-boundary discipline, hoisted here so there is one definition:
 //!
-//! 1. **The airlock preamble** ([`AbiPreamble`], [`check_preamble`]) — a `#[repr(C)]` header FROZEN
+//! 1. **The airlock preamble** ([`AbiPreamble`]) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.
@@ -23,12 +23,8 @@
 //!    `size` is read field by field only where `size` proves the sender wrote it (see
 //!    [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended; a peer that
 //!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
-//! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
-//!    publish a large POD result into a caller slot without a `Vec` return.
 
 #![deny(unsafe_op_in_unsafe_fn)]
-
-use core::mem::MaybeUninit;
 
 /// ONE DECLARATIVE LIST PER TABLE: each slot's fn-pointer type and the `#[repr(C)]` table holding
 /// one `Option` of each — the table's size header first, then the slots in the order listed, each
@@ -221,7 +217,7 @@ pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 
 /// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
 /// removal of any frozen field, a preamble change, or any non-append-only alteration. Peers with
-/// different majors are INCOMPATIBLE and [`check_preamble`] refuses them.
+/// different majors are INCOMPATIBLE.
 ///
 /// 1→2 (1.6.0, item 410): minor 21 RESIZED an interior field — `hot::BuildCtx.host_ctx`, 8 → 16
 /// bytes, shifting `config_ptr`/`config_len`/`resolved_refs_*` by 8 — under the old major, so
@@ -374,41 +370,6 @@ impl Default for AbiPreamble {
     }
 }
 
-/// Why a peer's [`AbiPreamble`] was refused. Fail-closed: any non-`Ok` outcome means the seam is
-/// NOT reachable — the caller must abort the crossing, never degrade to a partial read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreambleError {
-    /// The peer's `magic` is not [`ABI_MAGIC`]: these are not plugin-ABI bytes.
-    BadMagic {
-        /// The magic the peer presented.
-        found: u64,
-    },
-    /// The peer's `abi_major` differs from this build's [`ABI_MAJOR`]: incompatible airlock.
-    MajorMismatch {
-        /// The major this build speaks.
-        ours: u32,
-        /// The major the peer presented.
-        theirs: u32,
-    },
-}
-
-/// Check a peer's preamble, FAIL-CLOSED. Refuses on a magic mismatch or a MAJOR mismatch; a differing
-/// MINOR is accepted (append-only compatibility — whichever side is older simply never reads the
-/// newer trailing bytes). This is the FIRST thing any crossing does, before a single sized struct is
-/// interpreted.
-pub fn check_preamble(peer: &AbiPreamble) -> Result<(), PreambleError> {
-    if peer.magic != ABI_MAGIC {
-        return Err(PreambleError::BadMagic { found: peer.magic });
-    }
-    if peer.abi_major != ABI_MAJOR {
-        return Err(PreambleError::MajorMismatch {
-            ours: ABI_MAJOR,
-            theirs: peer.abi_major,
-        });
-    }
-    Ok(())
-}
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 2. Sized-struct discipline — the append-only field-read guard.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -531,26 +492,6 @@ macro_rules! read_sized_field {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 3. The out-param write discipline — init-only-on-Ok.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a host call
-/// returns a large POD without a `Vec`. Mirrors `plugin-sdk/boundary.rs`: the callee fully writes the
-/// slot INSIDE its `catch_unwind` and marks it initialized ONLY on the Ok path — so a caller that
-/// sees a non-`Ok` status must treat the slot as still uninitialized and never read it. A null `out`
-/// is tolerated (the value is dropped), matching the boundary's null-out-guard.
-///
-/// # Safety
-/// `out`, when non-null, must point to a writable, properly-aligned `MaybeUninit<T>` for the duration
-/// of the call. On any non-`Ok` status the caller MUST NOT assume the slot was written.
-#[inline]
-pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
-    if out.is_null() {
-        // No slot to publish into: drop the value, never write through a null pointer.
-        drop(value);
-        return;
-    }
-    // SAFETY: the caller guarantees `out` is a writable, aligned `MaybeUninit<T>` per the contract.
-    unsafe { (*out).write(value) };
-}
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]

@@ -1,0 +1,16 @@
+# A 1.5.5 deployment whose data plane signs users in through a provider with no role bindings.
+# 1.5.5 admitted every principal it identified, on every pool, with no budget; 1.6.0 refuses them
+# (401) unless a binding grants them, and `busbar --migrate-config` writes that binding.
+# Driven by tests/config_migrate_1_5_5.rs.
+listen: "127.0.0.1:0"
+store: { module: memory }
+identity-providers:
+  corp: { module: header }
+auth:
+  chain: [corp]
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock

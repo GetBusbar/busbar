@@ -44,12 +44,12 @@ pub fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
 /// the taxonomy [`crate::v1::contract::taxonomy::observed::Tag`] so the router's recording layer — which knows the matched route,
 /// which this function does not — can attribute the emission to an operation and check it against
 /// `declared_errors`. In a release build the tag does not exist and this is the plain projection.
-#[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
+#[cfg_attr(not(test), allow(unused_variables))]
 fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
+    #[cfg_attr(not(test), allow(unused_mut))]
     let mut resp =
         busbar_kernel::admin::gate::error_envelope(e.http_status(), e.code(), &e.message());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     if let Some(kind) = crate::v1::contract::taxonomy::err_kind_of(e) {
         resp.extensions_mut()
             .insert(crate::v1::contract::taxonomy::observed::Tag { kind, cond });

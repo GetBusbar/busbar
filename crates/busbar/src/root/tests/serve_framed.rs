@@ -23,10 +23,17 @@ struct Answered {
     trailers: Option<axum::http::HeaderMap>,
 }
 
+/// The scheme a plain listener states on every request it serves (`listener::listener_scheme`): a
+/// framed claim's `begin` declares it, and refuses a connection no listener stated.
+fn plain() -> busbar_kernel::plane_routes::ListenerScheme {
+    busbar_kernel::plane_routes::ListenerScheme(busbar_contract::abi::host::service::SCHEME_PLAIN)
+}
+
 async fn framed(g: &Governed, path: &str, body: &'static [u8]) -> Answered {
     let req = axum::http::Request::builder()
         .method("POST")
         .uri(path)
+        .extension(plain())
         .body(axum::body::Body::from(body))
         .expect("a request");
     let resp = g
@@ -140,6 +147,7 @@ async fn a_framed_unit_the_kernel_cuts_after_its_head_closes_as_the_cuts_refusal
     let req = axum::http::Request::builder()
         .method("POST")
         .uri("/framed/drain")
+        .extension(plain())
         .body(axum::body::Body::from(&b"\x01x"[..]))
         .expect("a request");
     let resp = g

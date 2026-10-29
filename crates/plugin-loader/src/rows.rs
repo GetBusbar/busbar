@@ -54,6 +54,7 @@ fn skipped(s: &SkippedPlugin) -> Skipped {
         name: s.manifest.name.clone(),
         alias: s.manifest.alias.clone(),
         reason: s.reason.clone(),
+        code: s.kind.code(),
     }
 }
 
@@ -98,6 +99,14 @@ impl PluginRows for PluginRegistry {
             .and_then(crate::registry::LoadablePlugin::statement)
             .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
             .map(|stated| stated.secret_refs)
+            .unwrap_or_default()
+    }
+
+    fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
+        PluginRegistry::resolve(self, name_or_alias)
+            .and_then(crate::registry::LoadablePlugin::statement)
+            .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
+            .and_then(|stated| stated.reference_fields().ok())
             .unwrap_or_default()
     }
 

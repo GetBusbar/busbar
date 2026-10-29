@@ -124,14 +124,78 @@ impl de::Error for SettingsError {
 /// # Errors
 /// The document is not JSON, or does not match `T`.
 pub fn settings<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SettingsError> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|e| {
+    T::deserialize(Node::new(document(bytes)?, String::new()))
+}
+
+/// The key of the marker a host writes where it took a value at a declared wildcard secret path
+/// (`servers.*.env.*`) out of the settings: `{"$secret": <index into the lent secrets>}`.
+pub const SECRET_MARKER: &str = "$secret";
+
+/// [`settings`] over a document the host lent secrets with: each `{"$secret": <index>}` marker is
+/// replaced by `lent[index]` as a string before `T` is read, so a [`Cred`] field there is sealed
+/// from the lent bytes. Everything is wiped as [`settings`] wipes it, the substituted strings
+/// included, and no error quotes a value.
+///
+/// # Errors
+/// The document is not JSON; a marker's index is not a whole number or is out of range; the lent
+/// bytes it names are not UTF-8; or the document does not match `T`.
+pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<T, SettingsError> {
+    let mut value = document(doc)?;
+    if let Err(e) = substitute(&mut value, lent, "") {
+        wipe(&mut value);
+        return Err(e);
+    }
+    T::deserialize(Node::new(value, String::new()))
+}
+
+fn document(bytes: &[u8]) -> Result<Value, SettingsError> {
+    serde_json::from_slice(bytes).map_err(|e| {
         SettingsError::new(format!(
             "not a JSON document (line {}, column {})",
             e.line(),
             e.column()
         ))
-    })?;
-    T::deserialize(Node::new(value, String::new()))
+    })
+}
+
+/// Replace every marker under `v` (at `path`) with its lent bytes as a string.
+fn substitute(v: &mut Value, lent: &[&[u8]], path: &str) -> Result<(), SettingsError> {
+    let child = |k: &str| {
+        if path.is_empty() {
+            k.to_owned()
+        } else {
+            format!("{path}.{k}")
+        }
+    };
+    match v {
+        Value::Object(m) if m.len() == 1 && m.contains_key(SECRET_MARKER) => {
+            let index = m
+                .get(SECRET_MARKER)
+                .and_then(Value::as_u64)
+                .and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| {
+                    SettingsError::new("a lent-secret marker is not an index".into()).at(path)
+                })?;
+            let bytes = lent.get(index).ok_or_else(|| {
+                SettingsError::new("a lent-secret marker's index is out of range".into()).at(path)
+            })?;
+            let text = core::str::from_utf8(bytes)
+                .map_err(|_| SettingsError::new("the lent secret is not UTF-8".into()).at(path))?;
+            *v = Value::String(text.to_owned());
+        }
+        Value::Object(m) => {
+            for (k, item) in m.iter_mut() {
+                substitute(item, lent, &child(k))?;
+            }
+        }
+        Value::Array(a) => {
+            for (i, item) in a.iter_mut().enumerate() {
+                substitute(item, lent, &child(&i.to_string()))?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
 }
 
 fn wipe(v: &mut Value) {
@@ -381,3 +445,7 @@ impl<'de> de::Deserialize<'de> for UserinfoUrl {
         d.deserialize_string(UserinfoUrlVisitor)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/cred_lent_tests.rs"]
+mod lent_tests;

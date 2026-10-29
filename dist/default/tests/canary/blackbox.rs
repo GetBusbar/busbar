@@ -197,10 +197,10 @@ fn write_node_config(
     std::fs::write(
         dir.join("providers.yaml"),
         format!(
-            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n  api_key_env: MOCK_KEY\n\
-             mockfile:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n  api_key_env: MOCK_KEY\n\
-             mockuser:\n  protocol: anthropic\n  base_url: \"http://{USERINFO_USER}:{}@127.0.0.1:{}\"\n  api_key_env: MOCK_KEY\n\
-             mockdead:\n  protocol: anthropic\n  base_url: \"http://{USERINFO_USER}:{}@127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n\
+             mockfile:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n\
+             mockuser:\n  protocol: anthropic\n  base_url: \"http://{USERINFO_USER}:{}@127.0.0.1:{}\"\n\
+             mockdead:\n  protocol: anthropic\n  base_url: \"http://{USERINFO_USER}:{}@127.0.0.1:9\"\n",
             port("mock"),
             port("mockfile"),
             c.userinfo.value,
@@ -337,7 +337,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         if child.try_wait().ok().flatten().is_some() {
             return true;
         }
-        common::boot::log_shows_data_and_admin_listening(&read_log())
+        common::boot::healthz_answers(data)
     });
     assert!(
         up && child.try_wait().ok().flatten().is_none(),
@@ -480,7 +480,7 @@ pub fn refusals(c: &RefusalCanaries) -> (Vec<Sink>, Vec<String>) {
         "listen: \"127.0.0.1:0\"\nproviders_file: \"{}\"\nstore: {{module: memory}}\n",
         dir.join("providers.yaml").display()
     );
-    let catalog = "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n";
+    let catalog = "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n";
     std::fs::write(dir.join("providers.yaml"), catalog).expect("providers.yaml");
     std::fs::write(dir.join("bad-signing.key"), &c.signing_key_file.value).expect("the key file");
     let model = "models:\n  m: { provider: mock }\n";

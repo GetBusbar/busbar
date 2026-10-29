@@ -71,7 +71,9 @@ jobs:
           repository: GetBusbar/busbar
           ref: ${{ inputs.busbar_sha }}
           path: busbar
-          sparse-checkout: scripts/fleet
+          sparse-checkout: |
+            scripts/fleet
+            dist/default
       - name: selftests (the decision table and the refusals, before trusting a verdict)
         run: |
           set -euo pipefail

@@ -35,11 +35,11 @@
 //! - [`units_admin`] — the admin plane's twelve steps, and the one seam an admin operation's body
 //!   is reached through. The root drives the loop; the operation's own logic stays where it lives.
 //! - the node — the root's half of a unit a plane's arrival hands it: the kernel, the in-flight
-//!   table, the one Route seam its leg is driven through and the book its money settles onto. The
-//!   unit itself is the plane's; the module is the one the manifest's `root-units` table names.
-//! - [`auth_bindings`], [`ledger_identity`], [`migration`], [`otlp`] — the authenticate unit's three
-//!   handed-in seams, the reconciliation identity against the previous release's rows, the first
-//!   boot after an upgrade, and the span exporter.
+//!   table, the one Route seam its leg is driven through and the journal its audit record is sealed
+//!   onto. The unit itself is the plane's; the module is the one the manifest's `root-units` table
+//!   names.
+//! - [`auth_bindings`], [`otlp`] — the authenticate unit's three handed-in seams, and the span
+//!   exporter.
 //!
 //! ## The order
 //!
@@ -66,28 +66,22 @@ pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
+pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
 pub mod dispatch;
 pub mod door_steps;
 pub mod doors;
-// The door-root rows: every linked row whose crate exports only `door`, read off its Statement
-// (status row 195).
-pub mod door_root;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
-#[cfg(any(test, feature = "test-harness"))]
-pub mod harness;
 pub mod hooks;
 pub mod kernel;
 pub mod keyset;
-pub mod ledger_identity;
-pub mod legacy;
 pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
-pub mod migration;
+pub mod migration_table;
 pub mod model_egress;
 pub mod observe;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven
@@ -97,6 +91,7 @@ pub mod plugin_fetch;
 pub mod policy;
 pub mod registry;
 pub mod serve;
+pub mod settings_public;
 pub mod shutdown;
 pub mod transports;
 #[cfg(feature = "root-admin")]
@@ -111,9 +106,10 @@ pub mod userinfo;
 #[path = "tests/admin_plugin_admission.rs"]
 mod admin_plugin_admission;
 
-/// THE PROCESS-WIDE ADMIN SURFACES' ONE TEST LOCK: the admin route table and the operator audit
-/// ring are the process's one each, so a test that publishes a plane's admin routes, or that
-/// counts the audit rows its own admin writes sealed, holds this for as long as either is in play.
+/// THE PROCESS-WIDE ADMIN SURFACE'S ONE TEST LOCK: the operator audit ring is the process's one, so
+/// a test that publishes a plane's admin routes (whose served requests seal rows on it), or that
+/// counts the audit rows its own admin writes sealed, holds this for as long as it is in play. The
+/// admin route table is each generation's own (`App::serve_tables`).
 #[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -121,12 +117,6 @@ pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const
 #[cfg(test)]
 #[path = "tests/doors_refresh.rs"]
 mod doors_refresh;
-
-// A linked transport row is its bare `door`: its key, layers and session are its Statement's
-// (`linked::linked_transport!`, `doors::row_facts`).
-#[cfg(test)]
-#[path = "tests/linked_door_root.rs"]
-mod linked_door_root;
 
 // The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
 // integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan
@@ -140,3 +130,9 @@ pub(crate) mod test_plugins;
 #[cfg(test)]
 #[path = "tests/store_double.rs"]
 pub(crate) mod store_double;
+
+// A linked transport row is its bare `door`: its key, layers and session are its Statement's
+// (`linked::linked_transport!`, `doors::row_facts`).
+#[cfg(test)]
+#[path = "tests/linked_door_root.rs"]
+mod linked_door_root;

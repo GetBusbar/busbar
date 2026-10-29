@@ -394,97 +394,101 @@ fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
     chain
 }
 
-/// RED (coordinator ruling, row 159): a plane that REFUSES to apply a request-stage hook's rewrite
-/// (the rewrite names a model other than the routed one, say) has met that hook's failure, and the
-/// hook's own `on_error` answers it, never a unit failure and never a silent provider switch:
-/// - `on_error: weighted` (and `first`): the unit proceeds with the body and view it had before
-///   that rewrite, as 1.5.5 relayed a rewrite it could not apply (the request unmodified);
-/// - `on_error: reject`: the unit is refused with the shared retryable 503 and its words, the
-///   refusal a failed call of that hook answers, before any attempt.
+/// A REWRITE THE PLANE DID NOT APPLY IS REFUSED, never relayed un-rewritten (owner's standard:
+/// refuse, never default open; it overrides the coordinator ruling of row 159, which let a
+/// non-load-bearing hook's `on_error` proceed with the request unmodified). Two ways the plane
+/// does not apply a request-stage hook's rewrite, under every `on_error`:
+/// - `/refuses-rewrite`: it REFUSES to project with the rewrite (one naming a model other than
+///   the routed one, say);
+/// - `/no-rewrite`: it answers READY with no rewritten body (a rewrite it cannot read, or a
+///   dialect with no conversation to frame it into).
 ///
-/// RED before: the refused re-projection stopped the unit as unreadable (`DecodeFailed`, 400)
-/// whatever the hook's `on_error` said.
+/// `on_error: reject` keeps the shared retryable 503 a failed call of that hook answers; every
+/// other `on_error` is 1.5.5's own 500 for a rewrite it could not apply. Nothing is sent, and the
+/// unit's record names the hook a failed veto, not the rewrite it answered.
+///
+/// RED before: `/refuses-rewrite` under `weighted`/`first`, and `/no-rewrite` under every
+/// `on_error`, sent `user:hello` upstream as the caller wrote it.
 #[tokio::test]
-async fn a_rewrite_the_plane_refuses_is_the_hooks_failure_answered_by_its_on_error() {
-    for on_error in ["weighted", "first"] {
-        let r = rig_with_hooks(
-            Way::Double,
-            BufferCaps::default(),
-            Book::default(),
-            Some(bound(resolved_rewrite(on_error), Vec::new())),
-        );
-        let (steps, far, caller) = (
-            TestUnits::passing(),
-            Far::new(&["ok"], &[b"done"]),
-            Caller::default(),
-        );
-        let units = r.driver.unit(
-            &steps,
-            &far,
-            &caller,
-            arrival("/refuses-rewrite", b"user:hello"),
-            0,
-        );
-        let outcome = drive(&units).await;
-        assert!(
-            matches!(outcome, Outcome::Completed),
-            "on_error: {on_error}: {outcome:?}"
-        );
-        let projects = r.projects();
-        assert_eq!(
-            projects.len(),
-            2,
-            "on_error: {on_error}: the view, then the refused rewrite"
-        );
-        assert!(
-            !projects[1].1.is_empty(),
-            "on_error: {on_error}: the rewrite crossed"
-        );
-        let sent = far.sent();
-        assert_eq!(sent.len(), 1, "on_error: {on_error}: one attempt");
-        assert_eq!(
-            sent[0].body, b"user:hello",
-            "on_error: {on_error}: the request proceeds unmodified"
-        );
+async fn a_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error() {
+    for target in ["/refuses-rewrite", "/no-rewrite"] {
+        for on_error in ["weighted", "first", "reject"] {
+            let mut r = rig_with_hooks(
+                Way::Double,
+                BufferCaps::default(),
+                Book::default(),
+                Some(bound(resolved_rewrite(on_error), Vec::new())),
+            );
+            let reports = Arc::new(Reports::default());
+            r.driver = r
+                .driver
+                .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&["ok"], &[b"done"]),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+            let outcome = drive(&units).await;
+            let case = format!("{target} on_error: {on_error}");
+            assert!(
+                matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+                "{case}: {outcome:?}"
+            );
+            let projects = r.projects();
+            assert_eq!(projects.len(), 2, "{case}: the view, then the rewrite");
+            assert!(!projects[1].1.is_empty(), "{case}: the rewrite crossed");
+            assert_eq!(
+                units
+                    .take_rendered()
+                    .expect("the plane rendered the refusal")
+                    .body,
+                unapplied_rewrite_words(on_error),
+                "{case}"
+            );
+            assert!(far.sent().is_empty(), "{case}: nothing was sent");
+            assert_unapplied_on_record(&reports, &case);
+        }
     }
+}
 
-    let r = rig_with_hooks(
-        Way::Double,
-        BufferCaps::default(),
-        Book::default(),
-        Some(bound(resolved_rewrite("reject"), Vec::new())),
-    );
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["ok"], &[b"done"]),
-        Caller::default(),
-    );
-    let units = r.driver.unit(
-        &steps,
-        &far,
-        &caller,
-        arrival("/refuses-rewrite", b"user:hello"),
-        0,
-    );
-    let outcome = drive(&units).await;
-    assert!(
-        matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
-        "on_error: reject: {outcome:?}"
-    );
-    let rendered = units.take_rendered().expect("the plane rendered the veto");
-    assert_eq!(
-        rendered.status,
-        u32::from(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS)
-    );
-    assert_eq!(
-        rendered.body,
+/// What a caller is answered for a rewrite the plane did not apply, by the hook's `on_error`.
+fn unapplied_rewrite_words(on_error: &str) -> Vec<u8> {
+    if on_error == "reject" {
         format!(
-            "refused:503:{}",
+            "refused:{}:{}",
+            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
             busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
         )
-        .into_bytes(),
+    } else {
+        format!(
+            "refused:{}:{}",
+            busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
+            busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
+        )
+    }
+    .into_bytes()
+}
+
+/// The unit's record names the rewriting hook a failed veto, never the rewrite it answered.
+fn assert_unapplied_on_record(reports: &Reports, case: &str) {
+    let reports = reports.0.lock().unwrap().clone();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{case}: one record for the unit: {reports:?}"
     );
-    assert!(far.sent().is_empty(), "no attempt was made");
+    assert_eq!(
+        reports[0]
+            .hooks
+            .iter()
+            .map(|h| (h.head, h.failed))
+            .collect::<Vec<_>>(),
+        vec![(HookHead::Veto, true)],
+        "{case}: the hook is on record as a failed veto: {reports:?}"
+    );
 }
 
 /// A gate-first binder attaching `gates` and `rewrites` to every entry.
@@ -520,74 +524,206 @@ impl busbar_kernel::plane_driver::HookBinder for GatedBinder {
     }
 }
 
-/// RED, the gate-first twin: the entry's rewrite the plane refuses to apply is the rewriting
-/// hook's failure. `on_error: weighted` serves the unit with its own body; `on_error: reject`
-/// refuses it at the screen with the shared 503, named for the hook, nothing sent. RED before:
-/// both were refused as unreadable.
+/// The gate-first twin: the entry's rewrite the plane did not apply (refused, or READY with no
+/// rewritten body) is refused at the screen under every `on_error`, named for the hook, nothing
+/// sent: `reject` with the shared 503, any other with 1.5.5's 500. RED before: `weighted` served
+/// the unit with its own body, and `/no-rewrite` did under every `on_error`.
 #[tokio::test]
-async fn a_gate_first_rewrite_the_plane_refuses_is_answered_by_the_hooks_on_error() {
-    let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-    let driver = r.driver.with_hooks(Arc::new(GatedBinder {
-        gates: Vec::new(),
-        rewrites: resolved_rewrite("weighted"),
-    }));
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["ok"], &[b"done"]),
-        Caller::default(),
+async fn a_gate_first_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error() {
+    for target in ["/refuses-rewrite", "/no-rewrite"] {
+        for on_error in ["weighted", "first", "reject"] {
+            let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+            let reports = Arc::new(Reports::default());
+            let driver = r
+                .driver
+                .with_hooks(Arc::new(GatedBinder {
+                    gates: Vec::new(),
+                    rewrites: resolved_rewrite(on_error),
+                }))
+                .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&["ok"], &[b"done"]),
+                Caller::default(),
+            );
+            let units = driver.unit(&steps, &far, &caller, arrival(target, b"user:hello"), 0);
+            let outcome = drive(&units).await;
+            let case = format!("{target} on_error: {on_error}");
+            assert!(
+                matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
+                "{case}: {outcome:?}"
+            );
+            let mut words = unapplied_rewrite_words(on_error);
+            words.extend_from_slice(b":hook=rw");
+            assert_eq!(
+                units
+                    .take_rendered()
+                    .expect("the veto is rendered, named for the hook")
+                    .body,
+                words,
+                "{case}"
+            );
+            assert!(far.sent().is_empty(), "{case}: nothing reached the far end");
+            assert_unapplied_on_record(&reports, &case);
+        }
+    }
+}
+
+// ── a rewrite that does not apply to the unit ──────────────────────────────────────────────────
+
+/// The words the kernel warns with when a rewrite does not apply to the unit.
+const NOT_APPLICABLE_WARN: &str = "rewrite not applicable to this request; forwarded unmodified";
+
+/// A capture of the kernel's warnings for the life of the guard, on this test's thread (the
+/// `#[tokio::test]` runtime is current-thread, so the unit's whole drive runs here).
+fn capture_warnings() -> (
+    busbar_kernel::test_support::warn_capture::WarnCapture,
+    tracing::subscriber::DefaultGuard,
+) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
+    (cap, guard)
+}
+
+/// The unit is on record once, the rewriting hook a pass that did not fail: it answered, and its
+/// rewrite had nothing to apply to.
+fn assert_passed_on_record(reports: &Reports, case: &str) {
+    let reports = reports.0.lock().unwrap().clone();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{case}: one record for the unit: {reports:?}"
     );
-    let units = driver.unit(
-        &steps,
-        &far,
-        &caller,
-        arrival("/refuses-rewrite", b"user:hello"),
-        0,
+    assert_eq!(
+        reports[0]
+            .hooks
+            .iter()
+            .map(|h| (h.hook.as_str(), h.head, h.failed))
+            .collect::<Vec<_>>(),
+        vec![("rw", HookHead::Pass, false)],
+        "{case}: the hook is on record as a pass: {reports:?}"
     );
-    let outcome = drive(&units).await;
-    assert!(
-        !matches!(outcome, Outcome::Refused(..) | Outcome::Failed(..)),
-        "on_error: weighted: {outcome:?}"
-    );
-    let sent = far.sent();
-    assert!(
-        !sent.is_empty(),
-        "on_error: weighted: the far end was reached"
-    );
-    for request in &sent {
+}
+
+/// A REWRITE THAT DOES NOT APPLY TO THE UNIT IS AN AUDITED PASS-THROUGH (ruling (A) on #1709): the
+/// plane answers READY with no rewritten body and states [`PROJECT_REWRITE_NOT_APPLICABLE`] (the
+/// unit's operation has no conversation to frame a rewrite into: a rerank's query and documents,
+/// an embedding's input). Under every `on_error`, the load-bearing hook's included, the unit goes
+/// upstream with the caller's own body, the hook is on the unit's record as a pass that did not
+/// fail, and the kernel warns naming the hook and the entry. The refusal of an unapplied rewrite
+/// without the mark is unchanged
+/// (`a_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error`).
+///
+/// RED before: the kernel could not tell the mark from a failed splice and refused the unit (the
+/// hook's 503 under `reject`, 1.5.5's 500 otherwise), nothing sent.
+///
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+#[tokio::test]
+async fn a_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_audited() {
+    for on_error in ["weighted", "first", "reject"] {
+        let (cap, _guard) = capture_warnings();
+        let mut r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(resolved_rewrite(on_error), Vec::new())),
+        );
+        let reports = Arc::new(Reports::default());
+        r.driver = r
+            .driver
+            .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = r.driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/rewrite-not-applicable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        let case = format!("on_error: {on_error}");
+        assert!(matches!(outcome, Outcome::Completed), "{case}: {outcome:?}");
+        let projects = r.projects();
+        assert_eq!(projects.len(), 2, "{case}: the view, then the rewrite");
+        assert!(!projects[1].1.is_empty(), "{case}: the rewrite crossed");
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "{case}: the unit went upstream once");
         assert_eq!(
-            request.body, b"user:hello",
-            "on_error: weighted: the request proceeds unmodified"
+            sent[0].body, b"user:hello",
+            "{case}: the caller's own body, unmodified"
+        );
+        assert_passed_on_record(&reports, &case);
+        let warned: Vec<String> = cap
+            .messages()
+            .into_iter()
+            .filter(|m| m.contains(NOT_APPLICABLE_WARN))
+            .collect();
+        assert_eq!(warned.len(), 1, "{case}: one warning: {:?}", cap.messages());
+        assert!(
+            warned[0].contains("hook=rw") && warned[0].contains("pool="),
+            "{case}: the warning names the hook and the entry: {warned:?}"
         );
     }
+}
 
-    let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-    let driver = r.driver.with_hooks(Arc::new(GatedBinder {
-        gates: Vec::new(),
-        rewrites: resolved_rewrite("reject"),
-    }));
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["ok"], &[b"done"]),
-        Caller::default(),
-    );
-    let units = driver.unit(
-        &steps,
-        &far,
-        &caller,
-        arrival("/refuses-rewrite", b"user:hello"),
-        0,
-    );
-    let outcome = drive(&units).await;
-    assert!(
-        matches!(outcome, Outcome::Refused(_, ReasonCode::HookVeto)),
-        "on_error: reject: {outcome:?}"
-    );
-    let rendered = units.take_rendered().expect("the veto is rendered");
-    assert_eq!(
-        rendered.status,
-        u32::from(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS)
-    );
-    assert!(far.sent().is_empty(), "nothing reached the far end");
+/// The gate-first twin: the entry's rewrite that does not apply to the unit (READY, no rewritten
+/// body, [`PROJECT_REWRITE_NOT_APPLICABLE`]) is forwarded unmodified under every `on_error`, the
+/// hook on record as a pass that did not fail, the kernel warning naming the hook and the entry.
+/// RED before: refused at the screen, named for the hook, nothing sent.
+///
+/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+#[tokio::test]
+async fn a_gate_first_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_audited()
+{
+    for on_error in ["weighted", "first", "reject"] {
+        let (cap, _guard) = capture_warnings();
+        let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
+        let reports = Arc::new(Reports::default());
+        let driver = r
+            .driver
+            .with_hooks(Arc::new(GatedBinder {
+                gates: Vec::new(),
+                rewrites: resolved_rewrite(on_error),
+            }))
+            .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::default(),
+        );
+        let units = driver.unit(
+            &steps,
+            &far,
+            &caller,
+            arrival("/rewrite-not-applicable", b"user:hello"),
+            0,
+        );
+        let outcome = drive(&units).await;
+        let case = format!("gate-first on_error: {on_error}");
+        assert!(matches!(outcome, Outcome::Completed), "{case}: {outcome:?}");
+        let sent = far.sent();
+        assert_eq!(sent.len(), 1, "{case}: the unit went upstream once");
+        assert_eq!(
+            sent[0].body, b"user:hello",
+            "{case}: the caller's own body, unmodified"
+        );
+        assert_passed_on_record(&reports, &case);
+        let warned: Vec<String> = cap
+            .messages()
+            .into_iter()
+            .filter(|m| m.contains(NOT_APPLICABLE_WARN))
+            .collect();
+        assert_eq!(warned.len(), 1, "{case}: one warning: {:?}", cap.messages());
+        assert!(
+            warned[0].contains("hook=rw") && warned[0].contains("entry="),
+            "{case}: the warning names the hook and the entry: {warned:?}"
+        );
+    }
 }
 
 /// RED (row 159, B1): a plane that answers FAULT to a `project` carrying a request-stage hook's

@@ -378,3 +378,53 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
          plugin (got {served:?})"
     );
 }
+
+/// "Busbar resolves them … overwriting its own copies with zeroes once the plugin has them"
+/// (security.md:318). The chain resolves a position's declared secret settings into the bag it
+/// hands `open` and holds until `open` answers (`AuthMiddleware::new`; the admin chain, the store,
+/// the hooks and the hosted login hold the same bag): that bag is a holder that wipes every
+/// resolved string when it drops, so busbar's copy is gone as soon as the chain lets go of it.
+#[test]
+fn chain_open_wipes_the_resolved_settings() {
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+    let var = format!("BUSBAR_CHAIN_WIPE_{}", std::process::id());
+    std::env::set_var(&var, "chain-open-secret\n");
+    let settings: serde_json::Map<String, serde_json::Value> = [
+        (
+            "client_secret".to_string(),
+            serde_json::json!({ "env": var }),
+        ),
+        (
+            "issuer".to_string(),
+            serde_json::json!("https://idp.example"),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let mut resolved = crate::config::secret::resolve_settings(
+        &settings,
+        &["client_secret".to_string()],
+        &[],
+        "busbar-auth-oidc",
+        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("the declared reference resolves");
+    std::env::remove_var(&var);
+    assert_eq!(
+        resolved.as_value()["client_secret"],
+        serde_json::json!("chain-open-secret"),
+        "the plugin is handed the resolved value"
+    );
+    // The type wipes itself on drop (what `open`'s caller drops once `open` answers) ...
+    wiped_when_dropped(&resolved);
+    // ... and the wipe it runs leaves no byte of any resolved string behind.
+    zeroize::Zeroize::zeroize(&mut resolved);
+    assert!(
+        !resolved
+            .as_value()
+            .to_string()
+            .contains("chain-open-secret"),
+        "the wipe left the secret: {resolved:?}"
+    );
+}

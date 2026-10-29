@@ -10,12 +10,12 @@ use crate::appbuild::{
     inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
     stateful_plane_ephemeral_store_warn,
 };
+use crate::config_validate::{registry_refusal, secret_module};
 #[allow(unused_imports)]
 use crate::preflight::{
     build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
     parse_signing_secret, resolve_admin_token, resolve_signing_key,
-    valid_identity_provider_modules, validate_secret_module, validate_secret_modules,
-    validate_secret_refs,
+    valid_identity_provider_modules,
 };
 #[allow(unused_imports)]
 use crate::router::{
@@ -388,8 +388,8 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
 
 /// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
 /// which is the arm these vendor-envelope assertions are about.
-fn residual_planes() -> crate::plane::PlaneDispatch {
-    crate::plane::PlaneDispatch::default()
+fn residual_planes() -> crate::plane_driver::dispatch::PlaneDispatch {
+    crate::plane_driver::dispatch::PlaneDispatch::default()
 }
 
 // THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
@@ -414,7 +414,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         axum::http::StatusCode::NOT_FOUND,
         // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
         // an OpenAI-inferred 404 carries `{"error":{"type":"not_found_error"}}`, not `not_found`.
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(
@@ -436,7 +436,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert!(
@@ -529,7 +529,7 @@ async fn test_reshape_oversized_413_passthrough() {
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         [(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+            axum::http::HeaderValue::from_static(busbar_contract::protocol::APPLICATION_JSON),
         )],
         r#"{"error":{"type":"request_too_large","message":"native"}}"#,
     )
@@ -952,7 +952,7 @@ fn a_linked_rows_refusals_print_its_key() {
             "{word}: {refused}"
         );
         assert_eq!(
-            crate::preflight::validate_secret_module(reg.as_ref(), word).unwrap_err(),
+            crate::config_validate::secret_module(reg.as_ref(), word).unwrap_err(),
             format!(
                 "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
                  secret plugin can back a `secrets:` block entry"
@@ -962,7 +962,7 @@ fn a_linked_rows_refusals_print_its_key() {
             module: word.to_string(),
             ..crate::config::SecretRef::env("K")
         });
-        let refused = crate::preflight::validate_secret_refs(reg.as_ref(), &cfg).unwrap_err();
+        let refused = crate::config_validate::registry_refusal(reg.as_ref(), &cfg).unwrap_err();
         assert!(
             refused.contains(&format!(
                 "references secret module '{word}', but plugin '{key}' has kind 'store'"
@@ -1003,7 +1003,10 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     let var = "BUSBAR_K5B_LINKED_SECRET_ROW";
     std::env::set_var(var, "hunter2");
     let resolver = SecretResolver::builtins_only();
-    assert_eq!(resolver.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    assert_eq!(
+        resolver.resolve(&SecretRef::env(var)).unwrap(),
+        busbar_contract::redacted::Secret::new(b"hunter2".to_vec())
+    );
     let missing = resolver
         .resolve(&SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"))
         .expect_err("an unset variable refuses");
@@ -1038,8 +1041,15 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
         reg.resolve("env").is_some(),
         "the dropped-in row registered"
     );
-    let cold = SecretResolver::with_plugin(Box::new(|_, _| Ok(b"from-the-cold-lane".to_vec())));
-    assert_eq!(cold.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    let cold = SecretResolver::with_plugin(Box::new(|_, _| {
+        Ok(busbar_contract::redacted::Secret::new(
+            b"from-the-cold-lane".to_vec(),
+        ))
+    }));
+    assert_eq!(
+        cold.resolve(&SecretRef::env(var)).unwrap(),
+        busbar_contract::redacted::Secret::new(b"hunter2".to_vec())
+    );
     std::env::remove_var(var);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1383,16 +1393,130 @@ fn secret_registry(
 
 /// A `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
 /// module is rejected — the built-ins take no module-level open() config, so such an entry is an
-/// operator error, not a silent no-op.
+/// operator error, not a silent no-op. The one validator refuses it in its semantic pass, before
+/// any registry exists, on every path (boot, apply, `--validate`, the admin dry run): this is the
+/// refusal the operator reads. (The registry-side check that once refused it a second time, in
+/// other words, could never be reached and is gone — S-10.)
 #[test]
 fn secrets_block_rejects_builtin_resolver_names() {
-    let reg = crate::test_support::rows::empty();
     for reserved in ["env", "file"] {
-        let err = validate_secret_module(reg.as_ref(), reserved).unwrap_err();
-        assert!(
-            err.contains("built-in secret resolver"),
-            "reserved '{reserved}' rejected as a module: {err}"
+        let mut cfg =
+            crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env("K"));
+        cfg.secrets.insert(
+            reserved.to_string(),
+            crate::config::SecretModuleCfg::default(),
         );
+        let errs = crate::config_validate::validate(&cfg).unwrap_err();
+        let refusal = errs
+            .iter()
+            .find(|e| e.starts_with(&format!("secrets.{reserved}: ")))
+            .unwrap_or_else(|| panic!("reserved '{reserved}' not refused: {errs:?}"));
+        assert!(
+            refusal.starts_with(&format!(
+                "secrets.{reserved}: the built-in '{reserved}' secret module takes no \
+                 module-level config; its settings ("
+            )) && refusal.ends_with(
+                ") belong on each individual secret reference, not in the top-level `secrets:` \
+                 block"
+            ),
+            "reserved '{reserved}' refused in the semantic pass's words: {refusal}"
+        );
+        // The same config, through the one validator, stops at the semantic pass.
+        let refused = crate::config_validate::check(
+            &cfg,
+            crate::config_validate::Check {
+                plugins: &crate::config::PluginsCfg::default(),
+                unset_env_vars: &[],
+                root: &crate::config_validate::no_root_rules,
+                fetch: None,
+                resolve_builtins: false,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&refused, crate::config_validate::Refusal::Config(e) if e.contains(refusal)),
+            "the one validator refuses '{reserved}' in the semantic pass: {refused:?}"
+        );
+    }
+}
+
+/// THE ONE VALIDATOR'S ORDER (S-10). Boot, every apply, `--validate` and the admin dry run all
+/// run `config_validate::check`, so one config gets one answer on every path:
+/// - a semantic refusal stops it before the root's rules are asked;
+/// - the root's refusal stops it before any plugin is scanned;
+/// - a `secrets:` block entry no plugin backs is refused before a secret REFERENCE no plugin backs;
+/// - the built-in secrets are resolved only when asked.
+#[test]
+fn one_validator_refuses_in_one_order() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
+    let plugins = crate::config::PluginsCfg::default();
+    let check = |cfg: &crate::config::RootCfg,
+                 root: &dyn Fn(&crate::config::RootCfg) -> Result<(), String>,
+                 resolve_builtins: bool| {
+        crate::config_validate::check(
+            cfg,
+            crate::config_validate::Check {
+                plugins: &plugins,
+                unset_env_vars: &[],
+                root,
+                fetch: None,
+                resolve_builtins,
+            },
+        )
+    };
+    let refuse_root = |_: &crate::config::RootCfg| Err("the root refuses".to_string());
+
+    // A reference to a secret module nothing backs, plus a `secrets:` entry nothing backs.
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "typo-ref".to_string(),
+        ..crate::config::SecretRef::env("K")
+    });
+    cfg.secrets.insert(
+        "typo-vault".to_string(),
+        crate::config::SecretModuleCfg::default(),
+    );
+    match check(&cfg, &crate::config_validate::no_root_rules, false) {
+        Err(crate::config_validate::Refusal::Plugins(e)) => assert!(
+            e.starts_with("secrets.typo-vault: no loadable `kind: secret` plugin"),
+            "the `secrets:` block is judged before the references: {e}"
+        ),
+        other => panic!("refused by the registry half: {other:?}"),
+    }
+    // The root's rules come before any plugin is scanned.
+    assert_eq!(
+        check(&cfg, &refuse_root, false).unwrap_err(),
+        crate::config_validate::Refusal::Root("the root refuses".to_string())
+    );
+    // With the `secrets:` entry gone, the reference is what is refused.
+    cfg.secrets.clear();
+    match check(&cfg, &crate::config_validate::no_root_rules, false) {
+        Err(crate::config_validate::Refusal::Plugins(e)) => assert!(
+            e.contains("references secret module 'typo-ref', which is not a built-in"),
+            "the reference is refused: {e}"
+        ),
+        other => panic!("refused by the registry half: {other:?}"),
+    }
+    // A semantic refusal comes before the root's rules.
+    cfg.limits.reasoning_effort_budgets.minimal = 0;
+    assert!(
+        matches!(
+            check(&cfg, &refuse_root, false),
+            Err(crate::config_validate::Refusal::Config(_))
+        ),
+        "the semantic pass answers first"
+    );
+
+    // Built-in secrets resolve only when asked: an unset env var passes until then.
+    let var = "BUSBAR_S10_ONE_VALIDATOR_UNSET_VAR";
+    assert!(std::env::var_os(var).is_none());
+    let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(var));
+    assert!(check(&cfg, &crate::config_validate::no_root_rules, false).is_ok());
+    match check(&cfg, &crate::config_validate::no_root_rules, true) {
+        Err(crate::config_validate::Refusal::Unresolved(e)) => {
+            assert!(e.contains(var), "the unresolved reference is named: {e}")
+        }
+        other => panic!("refused as unresolved: {other:?}"),
     }
 }
 
@@ -1401,7 +1525,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
 #[test]
 fn secrets_block_rejects_unknown_module() {
     let reg = crate::test_support::rows::empty();
-    let err = validate_secret_module(reg.as_ref(), "typo-vault").unwrap_err();
+    let err = secret_module(reg.as_ref(), "typo-vault").unwrap_err();
     assert!(
         err.contains("no loadable") && err.contains("typo-vault"),
         "unknown module named in the error: {err}"
@@ -1417,11 +1541,11 @@ fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
     let (dir, reg) = secret_registry("secrets-canon");
     // Both the alias and the canonical name resolve to the SAME canonical name.
     assert_eq!(
-        validate_secret_module(reg.as_ref(), "vault").unwrap(),
+        secret_module(reg.as_ref(), "vault").unwrap(),
         "acme-secret-vault"
     );
     assert_eq!(
-        validate_secret_module(reg.as_ref(), "acme-secret-vault").unwrap(),
+        secret_module(reg.as_ref(), "acme-secret-vault").unwrap(),
         "acme-secret-vault"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1453,7 +1577,7 @@ fn secrets_block_rejects_non_secret_kind() {
         &Default::default(),
     )
     .unwrap();
-    let err = validate_secret_module(reg.as_ref(), "x").unwrap_err();
+    let err = secret_module(reg.as_ref(), "x").unwrap_err();
     assert!(
         err.contains("not 'secret'"),
         "wrong-kind rejection names the mismatch: {err}"
@@ -1556,7 +1680,7 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
 /// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
 /// module-existence check is DEFERRED past `config_validate::validate` (which runs before the plugin
-/// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
+/// registry exists) to `config_validate::registry_refusal`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
@@ -1575,7 +1699,7 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
         );
         // The registry-backed pre-flight check PASSES because the plugin is loaded + is kind:secret.
         assert!(
-            validate_secret_refs(reg.as_ref(), &cfg).is_ok(),
+            registry_refusal(reg.as_ref(), &cfg).is_ok(),
             "a loaded kind:secret plugin '{module}' must pass the secret-ref pre-flight"
         );
     }
@@ -1599,7 +1723,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
         crate::config_validate::validate(&cfg).is_ok(),
         "pre-registry validate cannot (and must not) reject the unknown module by itself"
     );
-    let err = validate_secret_refs(reg.as_ref(), &cfg)
+    let err = registry_refusal(reg.as_ref(), &cfg)
         .expect_err("a typo'd secret module with no plugin must fail the pre-flight");
     assert!(
         err.contains("providers.acme.api_key")
@@ -1617,7 +1741,7 @@ fn secret_ref_builtin_modules_pass_with_empty_registry() {
     let reg = crate::test_support::rows::empty();
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env("ACME_KEY"));
     assert!(
-        validate_secret_refs(reg.as_ref(), &cfg).is_ok(),
+        registry_refusal(reg.as_ref(), &cfg).is_ok(),
         "a built-in env ref must pass the pre-flight with no plugins loaded"
     );
 }
@@ -1651,7 +1775,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
         module: "x".to_string(),
         settings: serde_json::Map::new(),
     });
-    let err = validate_secret_refs(reg.as_ref(), &root)
+    let err = registry_refusal(reg.as_ref(), &root)
         .expect_err("a store-kind plugin cannot back a secret reference");
     assert!(
         err.contains("not 'secret'") && err.contains("providers.acme.api_key"),
@@ -1748,7 +1872,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
 /// store open), and no error path used to put the previous values back. A `POST /config/apply` that
 /// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
-/// `busbar_kernel::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// `busbar_kernel_egress::upstream::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
 /// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
 /// requests and failing larger cross-protocol completions.
 ///
@@ -1782,7 +1906,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
         "the build failed for the expected reason: {err}"
     );
     assert_ne!(
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         ILLEGAL,
         "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
          live signed-ingress and cross-protocol translate body caps"
@@ -2127,27 +2251,28 @@ fn env_var_guard_restores_on_panic() {
     std::env::remove_var(KEY);
 }
 
-/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
-/// `test-groups-module` is exempt ONLY when `is_test_build` is true — in a release build it must
-/// be treated as a real (unresolvable) plugin ref, so `--validate` fails it the same way real boot
-/// does, rather than silently agreeing a config naming it is fine. Every other name is always a
-/// real ref regardless of build flavor.
+/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin). A module
+/// the build's auth axis answers in process is exempt ONLY when the install record says so — with
+/// no such answer (every shipped build) it is a real (unresolvable) plugin ref, so `--validate` fails
+/// it the same way real boot does, rather than silently agreeing a config naming it is fine. Every
+/// other name is always a real ref.
 #[test]
-fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_test_builds() {
-    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, true));
-    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, false));
+fn is_real_auth_plugin_ref_exempts_keys_always_and_in_process_modules_only_where_answered() {
+    let none: fn(&str) -> bool = |_| false;
+    let test_modules: fn(&str) -> bool = crate::test_support::auth_modules::answers;
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, test_modules));
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, none));
     assert!(
-        !is_real_auth_plugin_ref("test-groups-module", true),
-        "exempt in a test build, matching AuthMiddleware::new's #[cfg(test)] arm"
+        !is_real_auth_plugin_ref("test-groups-module", test_modules),
+        "exempt where the build's auth axis answers it in process"
     );
     assert!(
-        is_real_auth_plugin_ref("test-groups-module", false),
-        "must NOT be exempt in a release build - it isn't a real registered module there, so a \
-         release config naming it must be treated as a real (and therefore unresolvable) plugin \
-         ref, not silently waved through"
+        is_real_auth_plugin_ref("test-groups-module", none),
+        "must NOT be exempt where nothing answers it in process - a release config naming it must \
+         be treated as a real (and therefore unresolvable) plugin ref, not silently waved through"
     );
-    assert!(is_real_auth_plugin_ref("test-idp-double", true));
-    assert!(is_real_auth_plugin_ref("test-idp-double", false));
+    assert!(is_real_auth_plugin_ref("test-idp-double", test_modules));
+    assert!(is_real_auth_plugin_ref("test-idp-double", none));
 }
 
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
@@ -2308,9 +2433,9 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
 }
 
-/// THE ROOT'S RULES RUN FIRST (`appbuild::RootRules`, passed to the build): a configuration the
-/// rules refuse is refused by the build itself, with the rules' words, before anything of it is
-/// built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
+/// THE ROOT'S RULES JUDGE EVERY BUILD (`appbuild::RootRules`, passed to the build and run by the one
+/// validator right after the semantic pass): a configuration the rules refuse is refused by the
+/// build itself, with the rules' words, before anything of it is built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
 /// and the built `App` keeps the rules it was built under, for every build after it to pass on.
 /// RED before the fix: the build had no root rules, so a configuration only the root could judge
 /// went live through an apply.
@@ -2369,16 +2494,19 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 #[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
     const SECTION: &str = "pending-red";
-    static PENDING: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
-            key: "pending-red-plane",
-            fallback: false,
-            config_section: SECTION,
-            ..crate::test_support::NEUTRAL_FALLBACK.declaration
-        },
-        build: |_| Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
-        ..crate::test_support::NEUTRAL_FALLBACK
-    };
+    static PENDING: crate::plane_driver::registry::PlaneDecl =
+        crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
+                key: "pending-red-plane",
+                fallback: false,
+                config_section: SECTION,
+                ..crate::test_support::NEUTRAL_FALLBACK.declaration
+            },
+            build: |_, _| {
+                Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+            },
+            ..crate::test_support::NEUTRAL_FALLBACK
+        };
     struct Unopened;
     impl crate::appbuild::RootRules for Unopened {
         fn check(&self, _cfg: &crate::config::RootCfg) -> Result<(), String> {
@@ -2392,7 +2520,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             }
         }
     }
-    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = crate::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);
@@ -2452,102 +2580,6 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 // tests pin the two things Step 2.3 actually promises — the slot mirrors the typed field's SAME
 // `Arc` when a plane is configured, and is absent exactly when the typed field is `None`.
 
-// ── PLANELESS CONFIGS GET AN INERT `PlaneBreakers` (idle-RSS doctrine) ───────────────────────
-//
-// "What is not configured must not be loaded": a config with no mounted plane, no `tools:`/
-// `agents:` registration and no plane pools must not pay for the 8 placeholder breaker cells
-// (a preallocated 1024-slot outcome window each, plus per-worker padded counter stripes —
-// ~130 KiB of idle RSS). These pin the four arms of the apply-time decision in
-// `build_app_from_config` and the inert handle's fail-closed guards.
-
-/// Boot with a planeless config yields the INERT handle; a second planeless apply REUSES it
-/// (same `Arc`); the first apply that carries plane content upgrades to a PROVISIONED handle at
-/// apply time; and a provisioned prior is reused even when the plane content disappears again
-/// (learned reliability survives every apply).
-#[test]
-fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
-    let planeless = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
-        ))
-    };
-    let build = |cfg, prior: Option<&crate::state::App>| {
-        crate::build_app_from_config(
-            cfg,
-            crate::config::PluginsCfg::default(),
-            None,
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-            (None, None),
-            prior,
-            &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-                as std::sync::Arc<dyn crate::appbuild::RootRules>),
-        )
-        .expect("boot must succeed")
-        .0
-    };
-
-    // Arm 1: no plane content, no prior → inert.
-    let app = build(planeless(), None);
-    assert!(
-        !app.plane_breakers.is_provisioned(),
-        "a planeless config must get the inert handle"
-    );
-    // The inert guards fail CLOSED (refuse / no-op), never index the empty lane table.
-    assert!(
-        matches!(
-            app.plane_breakers.try_admit("tool:x", 0),
-            Err(busbar_kernel::store::Unavailable::Shedding)
-        ),
-        "inert admit must refuse, not panic"
-    );
-    app.plane_breakers.record_success("tool:x", 0);
-    app.plane_breakers.release("tool:x", 0, Some(7));
-    assert_eq!(app.plane_breakers.retry_after_secs("tool:x", 0), 1);
-
-    // Arm 2: still planeless with an inert prior → the SAME handle (no re-allocation per apply).
-    let app2 = build(planeless(), Some(&app));
-    assert!(
-        std::sync::Arc::ptr_eq(&app.plane_breakers, &app2.plane_breakers),
-        "an inert prior must be reused across a planeless apply"
-    );
-
-    // Arm 3: plane content appears (a plane pool here — any of the plane signals works) →
-    // upgraded to a provisioned handle AT APPLY, not on a request path.
-    let mut with_pool = planeless();
-    with_pool
-        .plane_pools
-        .entry("search-section")
-        .or_default()
-        .insert(
-            "search".to_string(),
-            crate::config::pools::CandidatePoolCfg {
-                members: vec!["search-eu".to_string(), "search-us".to_string()],
-                ..Default::default()
-            },
-        );
-    let app3 = build(with_pool, Some(&app2));
-    assert!(
-        app3.plane_breakers.is_provisioned(),
-        "the first apply carrying plane content must provision the breakers"
-    );
-    assert!(
-        !std::sync::Arc::ptr_eq(&app2.plane_breakers, &app3.plane_breakers),
-        "the provisioned handle is a fresh build, not the inert prior"
-    );
-
-    // Arm 4: plane content removed again → the PROVISIONED prior is kept (learned reliability
-    // survives every apply; an apply never downgrades).
-    let app4 = build(planeless(), Some(&app3));
-    assert!(
-        std::sync::Arc::ptr_eq(&app3.plane_breakers, &app4.plane_breakers),
-        "a provisioned prior must survive an apply that removes the plane content"
-    );
-}
-
 // ── A GENERATION'S LIMITS GO LIVE WITH IT, AND REACH EVERY PLANE (Q128 p1#6, p12#4, p6#1) ──────
 
 /// Puts the process-wide limits back exactly as a test found them, failure path included.
@@ -2566,8 +2598,8 @@ fn live_limits() -> (Option<String>, usize, usize) {
     std::thread::spawn(|| {
         (
             crate::config::limits::installed().map(|l| format!("{l:?}")),
-            busbar_kernel::proxy::max_translate_body_bytes(),
-            busbar_kernel::proxy::hook_content_max_bytes(),
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            crate::hooks::hook_content_max_bytes(),
         )
     })
     .join()
@@ -2697,79 +2729,6 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     assert_eq!(live_limits(), after);
 }
 
-/// THE OPERATOR'S BREAKER LIMITS REACH EVERY PLANE'S CELLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any
-/// plugin gets all functionality ... A capability one plane has and a sibling plane lacks is a gap
-/// to close"). The first plane's store has always been built under `limits.hard_down_cooldown_secs`
-/// / `limits.max_honored_retry_after_secs`; the store every other plane's cells live in now is too,
-/// and — being process-lifetime — takes a subsequent generation's values at the swap that puts that
-/// generation live, not during its build. Under the default config nothing changes: the defaults
-/// the config layer resolves are the values the store was hard-wired to.
-///
-/// RED before the fix: the plane store was built with the hard-wired 1800s sticky cooldown and
-/// never refreshed, so the first hard-down below read ~1800, not <= 60.
-#[test]
-fn the_operator_breaker_limits_reach_every_planes_cells() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D):
-    // without it the fixture's provider is refused before any limit is read.
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
-    let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestorePublished(crate::config::limits::installed());
-    let hard_down = crate::breaker::CanonicalSignal {
-        class: crate::breaker::StatusClass::Auth,
-        provider_signal: None,
-        retry_after: None,
-    };
-    let cfg = |hard_down_cooldown_secs: u64| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_PLANE_LIMITS",
-        ));
-        // Any plane content provisions the plane store; a pool of opaque members is the smallest.
-        cfg.plane_pools.entry("p-section").or_default().insert(
-            "p".to_string(),
-            crate::config::pools::CandidatePoolCfg {
-                members: vec!["m1".to_string(), "m2".to_string()],
-                ..Default::default()
-            },
-        );
-        cfg.limits.hard_down_cooldown_secs = hard_down_cooldown_secs;
-        cfg
-    };
-
-    let (first, _) = build_with(cfg(60), None).expect("builds");
-    assert!(first.plane_breakers.is_provisioned());
-    first.plane_breakers.record_signal("k:a", 0, &hard_down);
-    let ra = first.plane_breakers.retry_after_secs("k:a", 0);
-    assert!(
-        (1..=60).contains(&ra),
-        "the operator's 60s sticky cooldown on a plane cell, got {ra}"
-    );
-
-    // A subsequent generation REUSES the process-lifetime store; its build does not touch the live cells.
-    let (second, _) = build_with(cfg(120), Some(&first)).expect("builds");
-    assert!(std::sync::Arc::ptr_eq(
-        &first.plane_breakers,
-        &second.plane_breakers
-    ));
-    second.plane_breakers.record_signal("k:b", 0, &hard_down);
-    let ra = second.plane_breakers.retry_after_secs("k:b", 0);
-    assert!(
-        (1..=60).contains(&ra),
-        "a generation not yet live must not change the live cells' limits, got {ra}"
-    );
-
-    // Swapped in: the next hard-down arms the new generation's value.
-    let handle = crate::state::AppHandle::new(std::sync::Arc::new(first));
-    handle.swap(std::sync::Arc::new(second));
-    let live = handle.load();
-    live.plane_breakers.record_signal("k:c", 0, &hard_down);
-    let ra = live.plane_breakers.retry_after_secs("k:c", 0);
-    assert!(
-        (61..=120).contains(&ra),
-        "the swapped-in generation's 120s sticky cooldown, got {ra}"
-    );
-}
-
 // ── THE REQUEST-PANIC BOUNDARY (1.6.0 item 148) ──────────────────────────────────────────────────
 
 /// A PANIC FAILS ITS OWN REQUEST, NOT THE CONNECTION. Drives the REAL common layer stack over a
@@ -2841,6 +2800,162 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     server.abort();
 }
 
+/// An admin module that panics on the credential `boom` and passes every other one.
+struct PanickingAdminModule;
+impl crate::auth::AuthModule for PanickingAdminModule {
+    fn name(&self) -> &'static str {
+        "panicking-admin"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> crate::auth::AuthVerdict {
+        assert_ne!(
+            candidate,
+            Some("boom"),
+            "deliberate admin-chain panic (request-panic boundary test)"
+        );
+        crate::auth::AuthVerdict::Pass
+    }
+}
+
+/// BOTH SERVED ROUTERS CARRY THE REQUEST-PANIC BOUNDARY. The data and admin routers come from
+/// `build_split_routers_serving`, the builder the node serves: a panic inside a data route's
+/// handler, and one inside the admin auth chain, each answer `500` in busbar's standard JSON error
+/// body, the same client is served on its next requests, and each panic is logged once at `error`
+/// with the request's path.
+#[tokio::test(flavor = "current_thread")]
+async fn both_served_routers_answer_a_panic_500_log_it_and_keep_serving() {
+    use crate::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    crate::snapshot::init();
+    let cap = crate::test_support::warn_capture::WarnCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
+
+    const BOOM: &str = "/panic-boundary-test/boom";
+    const FINE: &str = "/panic-boundary-test/fine";
+    let door = |path: &str, panics: bool| PlaneRouteSpec {
+        path: path.to_string(),
+        method: RouteMethod::Post,
+        auth: RouteAuth::None,
+        handler: std::sync::Arc::new(move |_: PlaneReqCtx| {
+            Box::pin(async move {
+                assert!(
+                    !panics,
+                    "deliberate data-route panic (request-panic boundary test)"
+                );
+                axum::response::Response::new(axum::body::Body::from("fine"))
+            })
+        }),
+    };
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["panicking-admin".to_string()])
+        .admin_module("panicking-admin", Box::new(PanickingAdminModule))
+        .build();
+    let (data, admin, _handle) = crate::build_split_routers_serving(
+        app,
+        vec![door(BOOM, true), door(FINE, false)],
+        1 << 20,
+        0,
+        false,
+    );
+    let serve = |router: Router| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (addr, server)
+    };
+    let (data_addr, data_server) = serve(data).await;
+    let (admin_addr, admin_server) = serve(admin).await;
+    let client = reqwest::Client::new();
+
+    async fn json_500(r: reqwest::Response) -> serde_json::Value {
+        assert_eq!(r.status().as_u16(), 500, "the one request fails with 500");
+        let ct = r
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.starts_with("application/json"),
+            "content-type was `{ct}`"
+        );
+        let v: serde_json::Value = r.json().await.expect("the 500 body is JSON");
+        assert!(
+            v["error"].is_object(),
+            "busbar's standard error body, got {v}"
+        );
+        v
+    }
+
+    // THE DATA ROUTER: a handler panic.
+    let r = client
+        .post(format!("http://{data_addr}{BOOM}"))
+        .body("x")
+        .send()
+        .await
+        .expect("a panicking data route still produces a response");
+    json_500(r).await;
+    for _ in 0..3 {
+        let ok = client
+            .post(format!("http://{data_addr}{FINE}"))
+            .body("x")
+            .send()
+            .await
+            .expect("the data listener keeps serving after a request panicked");
+        assert_eq!(ok.status().as_u16(), 200);
+        assert_eq!(ok.text().await.unwrap(), "fine");
+    }
+
+    // THE ADMIN ROUTER: a panic in its auth chain.
+    let r = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("boom")
+        .send()
+        .await
+        .expect("a panicking admin chain still produces a response");
+    let v = json_500(r).await;
+    assert_eq!(
+        v["error"]["code"], "internal",
+        "the admin envelope's own code, got {v}"
+    );
+    let next = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("not-boom")
+        .send()
+        .await
+        .expect("the admin listener keeps serving after a request panicked");
+    assert_ne!(
+        next.status().as_u16(),
+        500,
+        "the next admin request is judged, not failed"
+    );
+    let health = client
+        .get(format!("http://{admin_addr}/healthz"))
+        .send()
+        .await
+        .expect("the admin listener keeps serving");
+    // Its readiness answer (this fixture links no plane, so `/healthz` says unready), never the
+    // boundary's 500.
+    assert_ne!(
+        health.status().as_u16(),
+        500,
+        "`/healthz` is answered, not failed"
+    );
+
+    // EACH PANIC IS LOGGED, ONCE, WITH ITS PATH.
+    let logged = cap.messages();
+    for path in [BOOM, "/api/v1/admin/keys"] {
+        let lines: Vec<_> = logged
+            .iter()
+            .filter(|m| m.contains("a request handler panicked") && m.contains(path))
+            .collect();
+        assert_eq!(lines.len(), 1, "{path}: {logged:?}");
+    }
+    data_server.abort();
+    admin_server.abort();
+}
+
 /// On the native-API root the boundary's 500 is the frozen admin envelope's own `internal` code —
 /// never the `not_found` the root's 404/405 branch would otherwise hand a 500.
 #[tokio::test]
@@ -2849,7 +2964,7 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
         &residual_planes(),
         "/api/v1/admin/info",
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        busbar_contract::protocol::KIND_API_ERROR,
         "internal error",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
@@ -2857,157 +2972,6 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["error"]["code"], "internal", "got {v}");
-}
-
-/// THE GATE: every router the kernel SERVES carries the request-panic boundary.
-///
-/// Structural, because the property is about construction: a `Router<Arc<AppHandle>>` cannot be
-/// served until `.with_state` erases its state, so (1) the ONLY production `.with_state(` in the
-/// workspace must be the one in `apply_common_layers`, (2) that function's LAST `.layer(` must be
-/// `CatchPanicLayer` (outermost, so it also covers every other layer), and (3) every production
-/// `Router::new()` must be a known pre-state sub-router that can only be served through (1). A new
-/// router built any other way — a second `.with_state`, a fresh stateless `Router::new()` served on a
-/// listener — fails here until it goes through `apply_common_layers` or wraps `CatchPanicLayer`.
-#[test]
-fn the_request_panic_boundary_wraps_every_served_router() {
-    let kernel = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let crates = kernel.parent().expect("crates/ dir");
-
-    // (2) The boundary is the outermost layer of the one servable-router builder.
-    let router_src = std::fs::read_to_string(kernel.join("src/router.rs")).unwrap();
-    let start = router_src
-        .find("pub(crate) fn apply_common_layers(")
-        .expect("apply_common_layers exists");
-    let body = &router_src[start..];
-    let body = &body[..body.find("\n}\n").expect("end of apply_common_layers")];
-    let last_layer = body
-        .rfind(".layer(")
-        .expect("apply_common_layers applies layers");
-    assert!(
-        body[last_layer..].starts_with(".layer(CatchPanicLayer::new("),
-        "the LAST `.layer(` in apply_common_layers must be the request-panic boundary, so it wraps \
-         every handler and every other layer"
-    );
-    let with_state = body
-        .rfind(".with_state(")
-        .expect("apply_common_layers binds state");
-    assert!(
-        with_state > last_layer,
-        "the boundary is applied before state is bound"
-    );
-
-    // Walk every production source file in the workspace.
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for e in std::fs::read_dir(dir).unwrap().flatten() {
-            let p = e.path();
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if p.is_dir() {
-                if matches!(
-                    name,
-                    "tests" | "test_support" | "testkit" | "benches" | "target" | "examples"
-                ) {
-                    continue;
-                }
-                walk(&p, out);
-            } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
-                out.push(p);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(crates, &mut files);
-    assert!(files.len() > 100, "the walk found the workspace sources");
-
-    // Pre-state sub-routers: typed `Router<Arc<AppHandle>>`, so they are only ever served through
-    // `apply_common_layers`' `.with_state`.
-    let pre_state = [
-        "busbar-kernel/src/core_routes.rs",
-        "busbar-core-admin/src/v1/json/mod.rs",
-        "busbar-core-admin/src/v1/json/named_map.rs",
-    ];
-    // KNOWN GAP, named so it cannot grow: the root-admin wrap builds a STATELESS outer router around
-    // the (guarded) admin router. Requests it forwards are inside the boundary; its own node loop is
-    // not. Closing it is one `.layer(busbar_kernel::router::CatchPanicLayer::new(handle))` in that
-    // file (owned by another slot) — at which point this entry is deleted.
-    let unguarded_pending = ["busbar/src/root/units_admin/admin_mount.rs"];
-
-    let mut with_state_sites = Vec::new();
-    let mut stray_routers = Vec::new();
-    for f in &files {
-        let rel = f
-            .strip_prefix(crates)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let src = std::fs::read_to_string(f).unwrap_or_default();
-        for line in src.lines() {
-            let code = line.split("//").next().unwrap_or("");
-            if code.contains(".with_state(") {
-                with_state_sites.push(rel.clone());
-            }
-            // `Router::new()` as its own identifier (not `CoreRouter::new()`, the pre-state builder).
-            let bare_router_new = code.match_indices("Router::new()").any(|(i, _)| {
-                !code[..i]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
-            });
-            if bare_router_new
-                && !pre_state.contains(&rel.as_str())
-                && !unguarded_pending.contains(&rel.as_str())
-            {
-                stray_routers.push(format!("{rel}: {}", line.trim()));
-            }
-        }
-    }
-    assert_eq!(
-        with_state_sites,
-        vec!["busbar-kernel/src/router.rs".to_string()],
-        "(1) a router became servable somewhere other than apply_common_layers — it would be \
-         served WITHOUT the request-panic boundary"
-    );
-    assert!(
-        stray_routers.is_empty(),
-        "(3) production routers built outside the request-panic boundary: {stray_routers:#?}"
-    );
-}
-
-/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
-/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
-/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
-#[test]
-fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
-    use crate::ir::lane_caps::{
-        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
-    };
-    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
-    let provider = ProviderLaneCaps {
-        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
-        ..ProviderLaneCaps::default()
-    };
-    let rules = [
-        ModelCapabilities {
-            models: vec!["model-a*".to_string()],
-            native_structured_output: Some(true),
-            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
-            ..ModelCapabilities::default()
-        },
-        ModelCapabilities {
-            models: vec!["model-a-2*".to_string()],
-            native_structured_output: Some(false),
-            ..ModelCapabilities::default()
-        },
-    ];
-    assert_eq!(
-        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
-        LaneCaps::NONE
-    );
-    let other = resolve_lane_caps(provider, &rules, "model-b");
-    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
-    assert!(!other.native_structured_output);
-    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
-    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
-    assert!(first_match.native_structured_output);
 }
 
 /// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
@@ -3038,10 +3002,10 @@ pub(crate) fn frozen_str(key: &str) -> String {
 /// dialect's error headers (the content type is the only header).
 #[tokio::test]
 async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
-    let resp = crate::proxy::ingress_error(
+    let resp = crate::ingress::ingress_error(
         "no-such-protocol",
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        crate::proxy::KIND_OVERLOADED,
+        busbar_contract::protocol::KIND_OVERLOADED,
         "everything is on fire",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
@@ -3066,7 +3030,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON envelope");
     assert_eq!(
         v["error"]["type"],
-        crate::proxy::KIND_OVERLOADED,
+        busbar_contract::protocol::KIND_OVERLOADED,
         "the kernel's envelope states the agnostic kind verbatim"
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
@@ -3112,7 +3076,7 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
             path,
             &format!("{path}?q=1"),
             axum::http::StatusCode::METHOD_NOT_ALLOWED,
-            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         )
     };

@@ -2491,6 +2491,118 @@ mod dated_rate_card_history {
         AdminService::new(app).get_usage(Some(bucket), as_of).await
     }
 
+    /// **AN `adjust` MOVES THE SERVED USAGE FIGURE** (item 404, OWNER RULING Q9; MONEY-DESIGN §4,
+    /// PR-C). Key `vk_adjust_404` metered 1,000 input tokens three days ago at 2.5 micro-units
+    /// each: `GET /api/v1/admin/usage` serves 2,500 micro-units. A root adjust of -200 input on
+    /// that key, lane and era, made today, is a signed adjustment row beside THAT day's metering
+    /// rows (the unit's card epoch picks the day, Q128 arch u32 #18; dev's fixture day), and the
+    /// same read serves 800 tokens and 2,000 micro-units: the counts AS ADJUSTED, priced by the one
+    /// function.
+    /// The figure survives a restart (a new state over the same store), an adjustment past the
+    /// metered count is refused and moves nothing, and an adjustment of a key with no metered row
+    /// that day is refused.
+    ///
+    /// RED before the adjustment row: the read-time correction was deleted with the second ledger,
+    /// and the read served 1,000 / 2,500 after the adjust.
+    #[tokio::test]
+    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
+        use busbar_kernel::governance::{AdjustRefused, Adjustment};
+        const ADJUSTED_KEY: &str = "vk_adjust_404";
+        // THE UNIT'S DAY, three days back (dev's fixture), and its arrival instant in it.
+        let (day, _, _) = windows();
+        let served_at = day + 5;
+        let store = Arc::new(MemoryStore::new());
+        let key = VirtualKey {
+            id: ADJUSTED_KEY.to_string(),
+            generation_hash: format!("h:{ADJUSTED_KEY}"),
+            name: "adjusted".to_string(),
+            enabled: true,
+            revision: 1,
+            ..Default::default()
+        };
+        busbar_contract::records::RecordStore::put_key(store.as_ref(), &key).expect("key persists");
+        busbar_contract::records::RecordStore::add_metering(
+            store.as_ref(),
+            &busbar_contract::records::MeteringDelta {
+                key_id: ADJUSTED_KEY.to_string(),
+                bucket: day,
+                model: LANE.to_string(),
+                provider: PROVIDER.to_string(),
+                tokens_input: TOKENS,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: 1,
+                billable_requests: 1,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+                usage_units: Default::default(),
+            },
+        )
+        .expect("the memory store accepts a metering delta");
+        let cost = newest_cost();
+        let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
+        // The budget book holds the same counts, as the unit's accrual put them there.
+        let units = std::collections::BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            TOKENS,
+        )]);
+        gov.record_usage(&cost, &key, "", LANE, &units, served_at);
+        let src = source(History::opening(card(2.5), 0));
+
+        let before = read(gov.clone(), src, day).await.total;
+        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
+
+        let era = busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms());
+        let adjust = |key_id: &'static str, by: i64| {
+            let delta = std::collections::BTreeMap::from([(
+                busbar_contract::records::UNIT_INPUT.to_string(),
+                by,
+            )]);
+            gov.adjust_usage(
+                &cost,
+                &Adjustment {
+                    key_id,
+                    pool: "",
+                    model: LANE,
+                    entry_era: era,
+                    card_epoch_ms: served_at * 1_000,
+                    delta: &delta,
+                    now: busbar_kernel::store::now(),
+                },
+            )
+            .expect("the store reads")
+        };
+        assert!(
+            matches!(
+                adjust(ADJUSTED_KEY, -1_001),
+                Err(AdjustRefused::Exceeds { .. })
+            ),
+            "an adjustment past the metered count is refused"
+        );
+        assert_eq!(
+            read(gov.clone(), src, day).await.total.spend_micros,
+            2_500,
+            "a refused adjustment moves nothing"
+        );
+        assert_eq!(adjust(ADJUSTED_KEY, -200), Ok(()));
+        let after = read(gov.clone(), src, day).await.total;
+        assert_eq!(
+            (after.tokens_input, after.spend_micros),
+            (800, 2_000),
+            "the served figure prices the adjusted counts: 800 x 2.5"
+        );
+
+        let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
+        let again = read(restarted, src, day).await.total;
+        assert_eq!(
+            (again.tokens_input, again.spend_micros),
+            (800, 2_000),
+            "the adjustment row is durable: a restart serves the same figure"
+        );
+    }
+
     /// The three dated windows, day-aligned because a metering bucket is a UTC day. The owner's
     /// example spans months; the arithmetic of "an earlier window keeps its own card" is the same
     /// at any spacing, and a day apart keeps the fixture inside the memory store's retention.
@@ -2791,7 +2903,7 @@ mod dated_rate_card_history {
         let gov =
             Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance builds"));
         let now = busbar_kernel::store::now();
-        let usage = busbar_kernel::billing::TokenUsage {
+        let usage = busbar_contract::billing::TokenUsage {
             input: 11,
             output: 7,
             ..Default::default()
@@ -2826,85 +2938,6 @@ mod dated_rate_card_history {
         assert_eq!(
             view.total.spend_micros, 750_090_000,
             "with no history installed the read is the published 1.5.5 figure"
-        );
-    }
-
-    // ── ITEM 404 (OWNER RULING Q9): an `adjust` of a unit's COUNTS reaches the served figure ──
-
-    /// **THE EXIT TEST FOR ITEM 404's USAGE HALF.** A unit of key `vk_adjust_404` metered 1,000
-    /// input tokens at 2.5 micro-units each: `GET /api/v1/admin/usage` serves 2,500 micro-units
-    /// (2,500,000 nano-units). A root `adjust` seals 800 on the node amendment journal — counts, no
-    /// money — and the same read serves 800 tokens and 2,000 micro-units (2,000,000 nano-units): the
-    /// read prices the counts AS CORRECTED. A correction for another key leaves the row alone.
-    #[tokio::test]
-    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
-        use busbar_kernel::audit::amend::{correct_counts, ClassCounts, CountCorrection};
-        const ADJUSTED_KEY: &str = "vk_adjust_404";
-        let (bucket, _, _) = windows();
-        let store = Arc::new(MemoryStore::new());
-        busbar_contract::records::RecordStore::add_metering(
-            store.as_ref(),
-            &busbar_contract::records::MeteringDelta {
-                key_id: ADJUSTED_KEY.to_string(),
-                bucket,
-                model: LANE.to_string(),
-                provider: PROVIDER.to_string(),
-                tokens_input: TOKENS,
-                tokens_output: 0,
-                tokens_cache_read: 0,
-                tokens_cache_write: 0,
-                requests: 1,
-                billable_requests: 1,
-                key_group_at_use: String::new(),
-                pricing_version: String::new(),
-                priced_from_ms: 0,
-                usage_units: Default::default(),
-            },
-        )
-        .expect("the memory store accepts a metering delta");
-        let gov = Arc::new(GovState::new(store, None).expect("governance builds"));
-        let src = source(History::opening(card(2.5), 0));
-
-        let before = read(gov.clone(), src, bucket).await.total;
-        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
-
-        let count = |n: i128| busbar_contract::count::Count::from_integer(n).expect("whole");
-        let was = ClassCounts::from([(
-            busbar_contract::records::UNIT_INPUT.to_string(),
-            count(1_000),
-        )]);
-        let correct = |principal: &'static str, amends: &'static str| {
-            correct_counts(
-                busbar_contract::authz::Scope::Full,
-                &was,
-                CountCorrection {
-                    amends,
-                    principal: Some(principal),
-                    lane: LANE,
-                    card_epoch_ms: bucket * 1_000 + 5,
-                    now: ClassCounts::from([(
-                        busbar_contract::records::UNIT_INPUT.to_string(),
-                        count(800),
-                    )]),
-                    authorised_by: "admin",
-                    reason: "a retried request was metered twice",
-                    pool: None,
-                },
-            )
-            .expect("a root correction with a reason is sealed")
-        };
-        correct("vk_someone_else_404", "item-404-other-unit");
-        assert_eq!(
-            read(gov.clone(), src, bucket).await.total.spend_micros,
-            2_500,
-            "a correction for another key does not reach this row"
-        );
-        correct(ADJUSTED_KEY, "item-404-usage-unit");
-        let after = read(gov, src, bucket).await.total;
-        assert_eq!(
-            (after.tokens_input, after.spend_micros),
-            (800, 2_000),
-            "the served figure prices the corrected counts: 800 x 2.5"
         );
     }
 }
@@ -3429,7 +3462,8 @@ mod plane_fees_on_admin_usage {
     use busbar_contract::records::RecordStore as _;
     use busbar_kernel::cost::PlaneFees;
     use busbar_kernel::governance::PLANE_LANE_SEP;
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+    use busbar_kernel::test_support::planes::TestRegistryIsolation;
 
     const KEY: &str = "vk_plane_fees";
     /// The pools plane's model and provider, as the rows below name them.
@@ -3467,11 +3501,11 @@ mod plane_fees_on_admin_usage {
                     served_op_classes: &[],
                     caller_credential_refusal: None,
                 },
-                wire_format_names: || &[],
-                provider_dialects: || &[],
+                wire_format_names: |_| &[],
+                provider_dialects: |_| &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
-                build: |_| None,
+                build: |_, _| None,
                 routes: None,
                 admin_routes: None,
                 openapi: None,
@@ -3492,6 +3526,7 @@ mod plane_fees_on_admin_usage {
                 retain_verify_gates: None,
                 default_section: None,
                 resolve_provider: None,
+                door: None,
             }
         };
     }
@@ -3754,7 +3789,7 @@ mod plane_fees_on_admin_usage {
             match call {
                 Call::Tokens { input, output } => {
                     assert!(gov.try_admit(&cost, &key, "", now).is_ok());
-                    let t = busbar_kernel::billing::TokenUsage {
+                    let t = busbar_contract::billing::TokenUsage {
                         input: *input,
                         output: *output,
                         ..Default::default()
@@ -4080,25 +4115,12 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
     assert_eq!(head, want);
 }
 
-/// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, install, inspect
-/// and rollback all reach the policy through the one `admission` (none reaches it any other way),
-/// which builds nothing itself (the root's admission is installed), and it warns about a malformed
-/// anti-downgrade floor before answering.
+/// The admin surface's trust resolution (`admission`, which catalog, install, inspect and rollback
+/// reach) warns about a malformed anti-downgrade floor as boot does, before answering.
 #[test]
 fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let src = include_str!("../service_operations.rs");
-    assert_eq!(
-        src.matches("admission(&self.app)").count(),
-        4,
-        "catalog, install, inspect and rollback resolve through admission"
-    );
-    assert_eq!(
-        src.matches("TrustPolicy::from_config(").count(),
-        0,
-        "the admin surface builds no trust policy of its own: it resolves through the root's"
-    );
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v2".into());
     let app = crate::new_test_app().plugins_cfg(cfg).build();
@@ -4343,4 +4365,39 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         serde_json::to_value(&page.items[0]).unwrap(),
         "the list and the single read give the one flagged view"
     );
+}
+
+/// SENSITIVE BY DEFAULT (owner ruling 2026-10-27): a settings bag in an admin view shows its keys,
+/// and the values of the keys its plugin's schema declares `x-busbar-public` alone. An undeclared
+/// setting's value never appears; a declared-public one is shown; a module that declares nothing
+/// shows keys alone, exactly as before.
+#[test]
+fn an_admin_view_shows_only_declared_public_setting_values() {
+    let public = |module: &str| -> std::collections::BTreeSet<String> {
+        match module {
+            "stub" => ["url".to_string()].into_iter().collect(),
+            _ => std::collections::BTreeSet::new(),
+        }
+    };
+    let mut v = serde_json::json!({
+        "store": { "module": "stub", "settings": {
+            "url": "https://ledger.internal", "password": "hunter2", "undeclared": "u-value"
+        } },
+        "other": { "module": "plain", "settings": { "url": "https://plain.internal" } }
+    });
+    super::redact_settings_bags_with(&mut v, &public);
+    let text = v.to_string();
+    for hidden in ["hunter2", "u-value", "https://plain.internal"] {
+        assert!(!text.contains(hidden), "`{hidden}` shown: {text}");
+    }
+    assert_eq!(
+        v["store"]["settings_public"],
+        serde_json::json!({ "url": "https://ledger.internal" })
+    );
+    assert_eq!(
+        v["store"]["settings_keys"],
+        serde_json::json!(["password", "undeclared", "url"])
+    );
+    assert!(v["other"].get("settings_public").is_none(), "{text}");
+    assert_eq!(v["other"]["settings_keys"], serde_json::json!(["url"]));
 }

@@ -128,7 +128,7 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
 }
 
 /// THE FROZEN SCRAPE MODULE WORD: the `module:` backing the 1.5.x type key whose default instance is
-/// named for the `metrics` stream (the root legacy table's `export_type_keys` row, read through the
+/// named for the `metrics` stream (the root migration table's `export_type_keys` row, read through the
 /// migrator's own `config::migrate_export::export_type_keys`: 1.5.5's spelling of the scrape
 /// sink, which `--migrate-config` writes). The double answers to it; the kernel spells no export
 /// module.
@@ -234,7 +234,7 @@ impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
 /// The axis every test in this binary resolves `export:` against — installed once, as the
 /// composition root does. Besides a neutral row (`k9-axis-sink`, alias `k9-tail`) it holds a row
 /// for each FIRST-PARTY sink's frozen 1.5.5 module word but the scrape one, read off the root
-/// legacy table's `export_modules` row (K9b, K9c, K9e-2): a linked build resolves that module on
+/// migration table's `export_modules` row (K9b, K9c, K9e-2): a linked build resolves that module on
 /// its axis, so a test configuration naming it resolves here too. The host spells none of them.
 /// The rows state no door, so each sink validates nothing and opens nothing (see the module doc) —
 /// enough for the configuration layer, which is all a kernel test drives. The scrape module word
@@ -242,7 +242,7 @@ impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
 /// install holds.
 pub fn install_export_axis() {
     let _ = ROWS.get_or_init(|| {
-        let modules = crate::config::legacy::text("export_modules")
+        let modules = crate::config::migration_table::text("export_modules")
             .split(" | ")
             .filter(|module| !module.is_empty() && *module != scrape_module());
         let mut rows = vec![NeutralRow {

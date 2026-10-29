@@ -20,7 +20,7 @@ use busbar_core_connector::framer::FramerDoor;
 use crate::root::doors::{refresh_named, row_bind, Dispatched};
 // The carrier under test, built in the loader's test fixtures: the root holds no door macro
 // (status row 195).
-use busbar_plugin_loader::root_door_fixtures::held_down;
+use busbar_test_kit::root_door_fixtures::held_down;
 
 /// The carrier, compiled in and opened through the one door with `settings`, as boot opens every
 /// transport.

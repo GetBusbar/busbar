@@ -44,7 +44,7 @@ fn a_tls_material_refusal_names_the_listener_once() {
     let port = common::boot::free_port();
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     std::fs::write(

@@ -449,6 +449,62 @@ fn a_proxy_refusing_the_tunnel_refuses_the_exchange() {
     });
 }
 
+/// THE CLAIM (security.md, "target judged before the proxy is asked"): a target the guard refuses
+/// never reaches the proxy. The judge here REFUSES every destination (the permissive judge the other
+/// rows use would admit it), with a verdict that is not "the name does not resolve here" (that one
+/// is the proxy's to resolve), so the open is refused and the scripted proxy is never contacted: no
+/// CONNECT head, not even a connection.
+#[test]
+fn a_target_the_guard_refuses_never_reaches_the_proxy() {
+    use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
+    worker().block_on(async {
+        for (target, verdict) in [
+            ("169.254.169.254:80", DEST_METADATA),
+            ("10.0.0.5:8080", DEST_INTERNAL),
+            ("upstream.test:8080", DEST_INTERNAL),
+        ] {
+            let (port, seen) = scripted_proxy(b"HTTP/1.1 200 Connection established\r\n\r\n").await;
+            let view = Transports::new(vec![
+                Entry {
+                    door: Arc::new(
+                        TestDoor::identity("bytes")
+                            .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+                    ),
+                    alpn: Vec::new(),
+                },
+                Entry {
+                    door: Arc::new(TestDoor::identity("carrier")),
+                    alpn: Vec::new(),
+                },
+            ])
+            .unwrap();
+            let refusing = move |_: &str, _: u32, _: crate::Judged| Some(Err(verdict));
+            let c = Connector::serving(view, Arc::new(refusing), None, Arc::new(|_, _: Ticket| {}))
+                .proxying(Some(test_config("127.0.0.1", port, None, "")));
+            c.declare_over(OWNER, NeedId(0), "bytes").expect("declares");
+            let opened = c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            );
+            let refused = match opened {
+                Err(e) => e == ConnError::Refused,
+                Ok(id) => read_until(&c, id, b"pong").await == Err(ConnError::Refused),
+            };
+            assert!(refused, "{target}: a target the guard refuses is refused");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(
+                seen.lock().unwrap().is_empty(),
+                "{target}: the proxy was asked for a tunnel to a target the guard refused: {:?}",
+                seen.lock().unwrap()
+            );
+        }
+    });
+}
+
 /// RED: a host `NO_PROXY` names is dialled direct, and a carrier carried as itself (a driver's raw
 /// stream) is never tunnelled; the proxy is never reached. With no proxy configured, a name only a
 /// proxy could resolve is refused (the direct arm judges it).

@@ -18,7 +18,8 @@
 # THE TRANSPORT FRAMERS a networked plugin's conformance host takes as dev-dependencies (rendered by
 # the fleet template, ARCHITECT Q-P4-9: GetBusbar/busbar-transport-*, each its own repo) are pinned
 # too: each such source in the lock must be the one busbar's own Cargo.lock at the pin records for that
-# crate (PIN_CHECK_BUSBAR_LOCK, default: the Cargo.lock of the busbar checkout this script sits in).
+# crate (PIN_CHECK_BUSBAR_LOCK, default: dist/default/Cargo.lock of the busbar checkout this script sits
+# in, the one lock that names plugins since core's workspace depends on none).
 #
 # Two more refusals: a manifest that names a path OUTSIDE the repo (a sibling-checkout dependency
 # builds whatever happens to sit beside the checkout, not the pin), and a retired busbar crate
@@ -108,7 +109,16 @@ check() {
     local framers name src want block
     framers="$(lock_sources "$root/Cargo.lock" | grep -F " git+${FRAMER_SRC}" || true)"
     if [ -n "$framers" ]; then
-      block="${PIN_CHECK_BUSBAR_LOCK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/Cargo.lock}"
+      local busbar_root
+      busbar_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+      block="${PIN_CHECK_BUSBAR_LOCK:-$busbar_root/dist/default/Cargo.lock}"
+      # A sparse checkout of scripts/fleet has the commit's objects but not dist/default on disk:
+      # read the lock from the checked-out commit itself.
+      if [ -z "${PIN_CHECK_BUSBAR_LOCK:-}" ] && [ ! -f "$block" ] \
+        && git -C "$busbar_root" cat-file -e HEAD:dist/default/Cargo.lock 2>/dev/null; then
+        block="$(mktemp)"
+        git -C "$busbar_root" show HEAD:dist/default/Cargo.lock > "$block"
+      fi
       if [ ! -f "$block" ]; then
         err "Cargo.lock resolves a transport framer, and busbar's Cargo.lock at the pin is not at $block to hold it to"
       else

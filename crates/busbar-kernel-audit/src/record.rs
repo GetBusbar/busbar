@@ -20,7 +20,7 @@
 //! ## A price is never in here either
 //!
 //! The record carries COUNTS and the provenance a read-time price needs — the tier, the fee count,
-//! the rate card version — and never a priced figure (#43, #71, #77(3)). Money is a view on the
+//! the rate card version — and never a priced figure. Money is a view on the
 //! ledger and the rate card, computed when it is read through the one function
 //! (`busbar_kernel_ledger::cost::Tally`); a figure sealed here would be a second copy of that
 //! answer, frozen at seal time, that no correction to the card could ever reach.
@@ -261,7 +261,7 @@ pub struct AuditRecord {
     /// The preceding record's digest.
     pub prev_hash: String,
     /// WHICH RECIPE this record was sealed under, and so the rules its digest is recomputed by
-    /// (#34). Every record this build seals is [`crate::recipe::Recipe::V4`]; a record sealed
+    /// Every record this build seals is [`crate::recipe::Recipe::V4`]; a record sealed
     /// under `v2` keeps verifying by `v2`'s rules.
     pub recipe: crate::recipe::Recipe,
     /// This record's own digest.
@@ -470,7 +470,7 @@ impl AuditChain {
         self.signer.as_ref().map(|k| k.public_key_hex())
     }
 
-    /// Sign one ledger checkpoint's body with THIS chain's key — the one keyset (Q71(3), #82).
+    /// Sign one ledger checkpoint's body with THIS chain's key — the one keyset.
     ///
     /// `None` on a node that seals unsigned: its checkpoints are sealed unsigned too, which is the
     /// truth about them, and no second key is ever looked for.
@@ -601,7 +601,7 @@ impl AuditChain {
     }
 }
 
-/// THE LINK AND THE POSITION, judged in that order and reported apart (item 405).
+/// THE LINK AND THE POSITION, judged in that order and reported apart.
 ///
 /// The LINK first: a record missing, inserted or reordered breaks it, and at either end of a cut
 /// the position breaks too — so checking the link first names the real defect ("something is
@@ -744,8 +744,6 @@ impl std::fmt::Display for AuditBreak {
 
 impl std::error::Error for AuditBreak {}
 
-// ── THE TAGS THE DIGEST FREEZES ──────────────────────────────────────────────────────────────────
-//
 // Three of the digested fields are enumerations, and their text used to be whatever the derived
 // `Debug` printed. That made every persisted chain hostage to a derive: renaming a variant, adding a
 // field to one, or a future compiler changing how it renders a struct variant would all move the

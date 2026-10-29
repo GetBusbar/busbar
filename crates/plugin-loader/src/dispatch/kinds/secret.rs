@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by `check_resolve`; `check` answers an
+//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by `check_resolve` against the host buffer
+//! it was lent, and its short answer is the one re-call's; `check` answers an
 //! `OutHead` alone and states no rule beyond the mechanism's (its refusal text is judged where the
 //! host renders it, `check_validate_refusal`).
 
@@ -41,8 +42,23 @@ impl Kind for Secret {
 
     fn check(a: &Answer) -> Result<(), Fault> {
         match a.slot {
-            slot::RESOLVE => validate::check_resolve(a.out::<ResolveOut>()?),
+            slot::RESOLVE => {
+                // Judged against the host buffer the call was lent (the credential chip, row 6: host-owned secret bytes).
+                let input = a.input::<ResolveIn>()?;
+                validate::check_resolve(
+                    a.out::<ResolveOut>()?,
+                    input.secret_buf as usize,
+                    input.secret_cap as u64,
+                )
+            }
             _ => Ok(()),
         }
+    }
+
+    /// A `resolve` whose value does not fit the host's buffer: FAILED with `needed` (M-SB).
+    fn short(a: &Answer) -> bool {
+        a.outcome == Outcome::Failed
+            && a.slot == slot::RESOLVE
+            && a.out::<ResolveOut>().is_ok_and(|o| o.needed != 0)
     }
 }

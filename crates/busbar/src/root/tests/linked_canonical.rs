@@ -16,7 +16,7 @@ use super::linked_exports;
 use crate::root::loader::boot::Candidate;
 use crate::root::loader::LinkedPlugin;
 
-/// THE REGISTRY, read as the legacy table's test reads it (`root/tests/legacy.rs`).
+/// THE REGISTRY, read as the migration table's test reads it (`root/tests/migration_table.rs`).
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 
 /// One plugins.yaml entry, as this guard reads it.
@@ -197,7 +197,7 @@ fn a_row_registered_under_its_alias_is_drift() {
         .stores
         .first()
         .expect("the build links a store");
-    let old = Row::of(&LinkedPlugin::store(key, door, ephemeral));
+    let old = Row::of(&LinkedPlugin::store_named(key, key, door, ephemeral));
     let (_, mismatches, _) = drift(&[old], &entries);
     assert_eq!(mismatches.len(), 1, "the alias-named row is drift");
     assert!(

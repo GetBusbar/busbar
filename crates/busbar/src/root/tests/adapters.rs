@@ -115,7 +115,7 @@ fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_read
 #[test]
 fn the_adapter_reads_the_fault_reading_and_never_the_class() {
     let read = |class, fault| {
-        BreakerAdapter::reading(UpstreamStatus {
+        reading(UpstreamStatus {
             class,
             fault,
             code: None,
@@ -162,7 +162,12 @@ fn a_slow_ladder() -> BreakerCfg {
 }
 
 fn adapter_for(pool: &str) -> BreakerAdapter {
-    BreakerAdapter::with_policy(BreakerPolicy::new().with_pool(pool, a_slow_ladder()))
+    adapter(BreakerPolicy::new().with_pool(pool, a_slow_ladder()))
+}
+
+/// An adapter over a fresh unit, under `policy`.
+fn adapter(policy: BreakerPolicy) -> BreakerAdapter {
+    BreakerAdapter::new(BreakerUnit::new(), policy)
 }
 
 /// The seam is implementable over the two real APIs, and a fresh destination behaves as both
@@ -197,8 +202,7 @@ fn the_configured_ladder_reaches_the_unit_and_not_the_default() {
     );
     let under_configured = configured.cooldown_remaining("pool", dest, 0, &route_token());
 
-    let defaulted =
-        BreakerAdapter::with_policy(BreakerPolicy::new().with_pool("pool", BreakerCfg::default()));
+    let defaulted = adapter(BreakerPolicy::new().with_pool("pool", BreakerCfg::default()));
     assert!(
         !defaulted.observe("pool", dest, failure, 0, &route_token()),
         "the default ladder waits for an error rate and logs no trip on one failure"
@@ -219,7 +223,7 @@ fn the_configured_ladder_reaches_the_unit_and_not_the_default() {
 /// name. A lane that never trips is visible; a lane that trips for the wrong duration is not.
 #[test]
 fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
-    let breaker = BreakerAdapter::with_policy(BreakerPolicy::new());
+    let breaker = adapter(BreakerPolicy::new());
     let dest = DestinationId::new(2);
 
     assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
@@ -234,8 +238,7 @@ fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
 /// is still a pool nobody configured, and still records nothing.
 #[test]
 fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
-    let breaker =
-        BreakerAdapter::with_policy(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
+    let breaker = adapter(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
     let dest = DestinationId::new(5);
 
     assert!(
@@ -258,8 +261,7 @@ fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
 /// declaration of its own rather than a pool that happens to be missing.
 #[test]
 fn the_default_cell_takes_its_own_declared_ladder() {
-    let breaker =
-        BreakerAdapter::with_policy(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
+    let breaker = adapter(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
     let dest = DestinationId::new(4);
     assert!(breaker.observe("", dest, Outcome::HardDown, 0, &route_token()));
     assert!(breaker.cooldown_remaining("", dest, 0, &route_token()) > 0);
@@ -329,13 +331,6 @@ fn a_hard_reading_is_hard_down() {
     assert_eq!(out.outcome, Outcome::HardDown);
 }
 
-/// The boot check on the two hand-kept banks. It passes today, which is the point: it is a
-/// tripwire on a convention, not a repair of a break.
-#[test]
-fn the_two_label_banks_agree() {
-    assert!(check_label_banks().is_ok());
-}
-
 /// And the values themselves, written out, so a change on either side has to change this file
 /// too. A label that reaches the scrape is wire, and wire that only one test knows about is
 /// wire nobody is holding.
@@ -354,136 +349,6 @@ fn the_shared_labels_are_the_expected_wire_values() {
     // they were never a pair.
     assert_eq!(label::CLIENT_FAULT, "client_fault");
     assert_eq!(disposition::ATTEMPT_TIMEOUT, "attempt_timeout");
-}
-
-/// The drift the check would catch, shown as a value rather than left to the imagination.
-#[test]
-fn a_drifted_bank_reads_as_a_drift() {
-    let drift = LabelDrift {
-        breaker: "transient_upstream",
-        egress: "transient-upstream",
-    };
-    assert!(drift.to_string().contains("drifted"));
-}
-
-/// A DRIFT REFUSES THE BOOT, NAMING BOTH SPELLINGS (item 248), and the boot seal on today's banks
-/// still succeeds, so the label-bank check it runs refuses nothing it should not.
-// The seal it drives composes the shipped transport stack (the http rows over the linked transport
-// door); a build that links no transport door cannot seal it, so this cell gates on that axis.
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn a_label_drift_refuses_the_boot_and_todays_banks_seal() {
-    // What a drift refuses the boot with: both spellings, so an operator reading the boot line can
-    // see which side moved.
-    let refusal = crate::root::registry::BootRefusal::LabelDrift(LabelDrift {
-        breaker: "transient_upstream",
-        egress: "transient-upstream",
-    });
-    let line = refusal.to_string();
-    assert!(line.contains("transient_upstream") && line.contains("transient-upstream"));
-
-    assert!(
-        crate::root::registry::seal(
-            &crate::LINKED,
-            crate::root::registry::Dropped::NONE,
-            Default::default()
-        )
-        .is_ok(),
-        "today's banks agree, so the seal still passes"
-    );
-}
-
-/// THE BOOT SEAL RUNS THE LABEL-BANK CHECK (item 248).
-///
-/// The comparison once existed and passed and nothing ran it: its only caller was the test that
-/// shows it passes, so a rename on one side would ship with the binary booting clean. Driven as
-/// behaviour: a drift is planted where the check reads its pairs, and the seal itself must refuse
-/// with `BootRefusal::LabelDrift` naming both spellings. Moving the call out of the seal makes the
-/// seal answer `Ok` here, and this goes red.
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn the_boot_seal_refuses_a_planted_label_drift() {
-    struct Unplant;
-    impl Drop for Unplant {
-        fn drop(&mut self) {
-            super::PLANTED_PAIR.with(|p| p.set(None));
-        }
-    }
-    let _unplant = Unplant;
-    super::PLANTED_PAIR.with(|p| p.set(Some(("transient_upstream", "transient-upstream"))));
-
-    match crate::root::registry::seal(
-        &crate::LINKED,
-        crate::root::registry::Dropped::NONE,
-        Default::default(),
-    ) {
-        Err(crate::root::registry::BootRefusal::LabelDrift(drift)) => assert_eq!(
-            drift,
-            LabelDrift {
-                breaker: "transient_upstream",
-                egress: "transient-upstream",
-            }
-        ),
-        Err(other) => panic!("the seal refused for another reason: {other}"),
-        Ok(_) => panic!("the boot seal sealed over a label drift: it does not run the check"),
-    }
-}
-
-/// ONE CELL SET ON THE NODE. The root's breaker is bound to the kernel's own unit through the live
-/// snapshot, so a pool observation made through the root adapter is the cell the kernel's admission
-/// reads, and a trip the kernel records is the one the adapter answers with. A second unit would
-/// pass neither half: its cells are not the lane store's.
-#[test]
-fn the_root_breaker_observes_into_the_kernels_own_cells() {
-    use busbar_kernel::test_support::{LaneSpec, TestApp};
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
-        .lane(LaneSpec::new("m1", "wire-under-test", "http://127.0.0.1:9"))
-        .pool("pool", &[(0, 1), (1, 1)])
-        .build();
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    let trip_on_first = BreakerCfg {
-        trip: busbar_kernel_breaker::cfg::TripConfig {
-            mode: busbar_kernel_breaker::cfg::TripMode::Consecutive,
-            consecutive_n: 1,
-            ..Default::default()
-        },
-        ..BreakerCfg::default()
-    };
-    let breaker = BreakerAdapter::over_kernel(
-        Arc::clone(&handle),
-        BreakerPolicy::new().with_pool("pool", trip_on_first),
-    );
-
-    // The kernel's own clock: its hard-down below stamps the wall clock in seconds.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs();
-
-    // Through the root adapter, into the kernel's cell.
-    assert!(breaker.observe(
-        "pool",
-        DestinationId::new(0),
-        Outcome::Transient { retry_after: None },
-        now,
-        &route_token(),
-    ));
-    assert!(
-        !handle.load().store.ready_in("pool", 0, now),
-        "the kernel's admission reads the trip the root adapter recorded"
-    );
-
-    // From the kernel's record, out through the root adapter.
-    assert!(breaker.ready("pool", DestinationId::new(1), now, &route_token()));
-    handle
-        .load()
-        .store
-        .record_hard_down_all_cells(1, "one cell set", now);
-    assert!(
-        !breaker.ready("pool", DestinationId::new(1), now, &route_token()),
-        "the root adapter answers with the trip the kernel recorded"
-    );
 }
 
 /// A HEALTH PROBE through the adapter (K7): its answer reaches every cell of the member under the

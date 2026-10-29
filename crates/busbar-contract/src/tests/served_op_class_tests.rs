@@ -48,32 +48,6 @@ const SERVES_OTHER: &[ServedOpClass] = &[ServedOpClass {
 }];
 
 #[test]
-fn the_host_answers_with_the_plane_that_declares_the_class_and_its_declared_name() {
-    let a = decl("alpha", &[]);
-    let b = decl("beta", SERVES_OTHER);
-    let c = decl("gamma", SERVES_CLASS);
-    assert_eq!(
-        plane_serving(CLASS, [&a, &b, &c]),
-        Some(("gamma", SERVES_CLASS[0])),
-        "the answer is the plane that DECLARES the class, whatever its key or position"
-    );
-    assert_eq!(
-        plane_serving(CLASS, [&c]).map(|(_, s)| s.name),
-        Some("Summarizer")
-    );
-}
-
-/// THE RED ARM: a registered plane that does not declare the class is not the answer, however many
-/// planes are registered and whatever else they serve — the requester then refuses.
-#[test]
-fn a_plane_that_does_not_declare_the_class_serves_no_nested_destination() {
-    let a = decl("alpha", &[]);
-    let b = decl("beta", SERVES_OTHER);
-    assert_eq!(plane_serving(CLASS, [&a, &b]), None);
-    assert_eq!(plane_serving(CLASS, []), None, "no registered plane at all");
-}
-
-#[test]
 fn one_class_has_one_server() {
     let b = decl("beta", SERVES_CLASS);
     let c = decl("gamma", SERVES_CLASS);

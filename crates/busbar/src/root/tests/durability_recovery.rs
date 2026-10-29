@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE THREE DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE. Each cell boots a node's book over the build's linked ephemeral
+//! THE TWO DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE. Each cell boots a node's book over the build's linked ephemeral
 //! store, opened through its door on the store axis exactly as boot opens the configured store,
 //! runs one verb through the verb store the boot binds ([`node_verb_store`]), boots a SECOND book
 //! over the SAME store, and reads the effect back from the store and the chain — never from the
 //! first node's memory.
 //!
 //! RED before the fix: the verbs answered `Ok` from the loader adapter's node-memory `Recovery`
-//! counters, so the restarted node found no operator break on its chain and no floor in its store,
-//! and a restore that restored nothing was acknowledged.
+//! counters, so the restarted node found no operator break on its chain, and a restore that
+//! restored nothing was acknowledged.
 
 use super::*;
-use crate::root::durability::{build_on_store, DurabilityConfig, JournalLane};
+use crate::root::durability::{build_on_store, wait_for, DurabilityConfig, JournalLane};
 use busbar_contract::caps::AdminVerb;
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
@@ -27,7 +27,7 @@ const NODE: u64 = 31;
 /// One opened store: the 1.5.5 op set and the v3 slots of ONE instance.
 struct Opened {
     records: Arc<dyn busbar_contract::records::RecordStore>,
-    calls: Arc<dyn StoreCalls>,
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
 }
 
 /// The build's linked ephemeral store, opened through its door on the store axis, as boot opens it.
@@ -66,6 +66,107 @@ fn ephemeral_store() -> Opened {
     }
 }
 
+/// C6: THE STORE'S V3 CALLS SERVE THE KEY, CREDENTIAL, DENYLIST AND LEGACY-READ OPS AS THE 1.5.5
+/// OP SET DID, over one door-opened store: what one surface writes the other reads back the same,
+/// so a caller moved off the synchronous bridge reads and writes what it did before.
+#[test]
+fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
+    use busbar_contract::records::VirtualKey;
+    let store = ephemeral_store();
+    let key = |id: &str| VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("binding:{id}:1"),
+        enabled: true,
+        ..VirtualKey::default()
+    };
+    wait_for(store.calls.put_key(&key("k1"))).expect("v3 put_key");
+    store.records.put_key(&key("k2")).expect("op-set put_key");
+    let got = wait_for(store.calls.get_key("k2")).expect("v3 get_key");
+    assert_eq!(got.map(|k| k.id), Some("k2".to_string()));
+    let mut v3: Vec<String> = (wait_for(store.calls.list_keys()).expect("v3 list_keys"))
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    let mut op_set: Vec<String> = (store.records.list_keys().expect("op-set list_keys"))
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    v3.sort();
+    op_set.sort();
+    assert_eq!(v3, vec!["k1".to_string(), "k2".to_string()]);
+    assert_eq!(v3, op_set);
+
+    assert_eq!(
+        wait_for(store.calls.list_credentials("k1"))
+            .expect("v3 list_credentials")
+            .len(),
+        store
+            .records
+            .list_credentials("k1")
+            .expect("op-set list_credentials")
+            .len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_credentials_since(0))
+            .expect("v3 list_credentials_since")
+            .len(),
+        store
+            .records
+            .list_credentials_since(0)
+            .expect("op-set list_credentials_since")
+            .len()
+    );
+
+    wait_for(store.calls.add_denylist("sub-1", "revoked")).expect("v3 add_denylist");
+    assert_eq!(
+        wait_for(store.calls.list_denylist()).expect("v3 list_denylist"),
+        store.records.list_denylist().expect("op-set list_denylist")
+    );
+    assert!(store
+        .records
+        .list_denylist()
+        .expect("op-set list_denylist")
+        .contains(&"sub-1".to_string()));
+
+    wait_for(store.calls.delete_key("k1")).expect("v3 delete_key");
+    assert_eq!(
+        wait_for(store.calls.get_key("k1"))
+            .expect("v3 get_key")
+            .map(|k| k.deleted_at.is_some()),
+        store
+            .records
+            .get_key("k1")
+            .expect("op-set get_key")
+            .map(|k| k.deleted_at.is_some())
+    );
+    assert_eq!(
+        wait_for(store.calls.list_audit())
+            .expect("v3 list_audit")
+            .len(),
+        store.records.list_audit().expect("op-set list_audit").len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_audit_tail(1))
+            .expect("v3 list_audit_tail")
+            .len(),
+        store
+            .records
+            .list_audit_tail(1)
+            .expect("op-set list_audit_tail")
+            .len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_metering(0))
+            .expect("v3 list_metering")
+            .len(),
+        store
+            .records
+            .list_metering(0)
+            .expect("op-set list_metering")
+            .len()
+    );
+}
+
 /// The verbs unit's admin token, as the kernel mints one for the length of an admin verb.
 fn admin() -> Grant<AdminVerb> {
     busbar_kernel::test_support::tokens::grant::<AdminVerb>()
@@ -76,23 +177,13 @@ fn admin() -> Grant<AdminVerb> {
 fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + Sync>) {
     let lane = JournalLane::start(Arc::clone(&store.calls), STORE).expect("the lane starts");
     let book = Arc::new(Mutex::new(
-        build_on_store(
-            &DurabilityConfig { data_dir: None },
-            NODE,
-            lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
-            None,
-        )
-        .expect("the store reads the chain back"),
+        build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
+            .expect("the store reads the chain back"),
     ));
-    let adapter = StoreAdapter::native(Arc::clone(&store.records));
     let verbs = node_verb_store(
         Arc::clone(&book),
         busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
-        Arc::clone(&store.calls),
         STORE,
-        &adapter,
     )
     .expect("a node over a configured store binds the verb store");
     (book, verbs)
@@ -230,80 +321,58 @@ fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
             .is_empty(),
         "and broke nothing"
     );
-    assert_eq!(
-        epoch_floor(store.calls.as_ref(), STORE).expect("the store answers"),
-        None,
-        "and resealed nothing"
-    );
 }
 
-/// **`reseal_epoch_floor` IS KEPT BY THE STORE, AND SURVIVES A RESTART.** The verb puts the floor
-/// in the store; a node booted again over the same store reads it back through `record_get`.
+/// C6: THE STORE'S V3 CALLS ANSWER THE PLANE PARENTS AND THE RETENTION PURGE AS THE 1.5.5 OP SET
+/// DID, over one door-opened store: the same parents, then the same records purged, so a caller
+/// moved off the synchronous bridge reads and purges what it read and purged before.
 #[test]
-fn a_resealed_epoch_floor_is_read_back_after_a_restart_over_the_same_store() {
+fn the_v3_plane_parents_and_purge_answer_as_the_op_set_did() {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord};
+    const KIND: &str = "c6-probe";
     let store = ephemeral_store();
-    {
-        let (book, verbs) = boot(&store);
-        verbs
-            .reseal_epoch_floor(&admin())
-            .expect("the floor is resealed in the store");
-        stop(book);
+    // A parented row is placed by `(parent, seq)`, so two rows under one parent take two seqs: at
+    // one seq the second would be the first rewritten, and the store would hold two rows, not three.
+    let row = |id: &str, parent: &str, seq: u64, ts: u64| PlaneRecord {
+        kind: KIND.to_string(),
+        id: id.to_string(),
+        parent: Some(parent.to_string()),
+        seq,
+        ts,
+        disposition: PlaneDisposition::Terminal,
+        body: b"{}".to_vec(),
+    };
+    for r in [
+        row("a", "p1", 0, 10),
+        row("b", "p2", 0, 20),
+        row("c", "p2", 1, 30),
+    ] {
+        wait_for(store.calls.upsert_plane_record(r.view())).expect("the store takes the row");
     }
-
-    let (_book, _verbs) = boot(&store);
-    let floor = epoch_floor(store.calls.as_ref(), STORE)
-        .expect("the store answers")
-        .expect("the floor the verb resealed is in the store after the restart");
-    assert_eq!(floor.floor, 0, "resealed to the node's one slice epoch");
-}
-
-/// **THE BOOT READS THE FLOOR BACK, AND A NODE BELOW IT DOES NOT BOOT.** The floor a reseal left is
-/// what the boot's reading answers; a floor above the node's slice epoch refuses the boot, naming
-/// both.
-#[test]
-fn the_boot_reads_the_floor_back_and_a_node_below_it_does_not_boot() {
-    let store = ephemeral_store();
-    {
-        let (book, verbs) = boot(&store);
-        verbs
-            .reseal_epoch_floor(&admin())
-            .expect("the floor is resealed in the store");
-        stop(book);
-    }
-    let (book, _verbs) = boot(&store);
-    let read = boot_recovery(
-        &book.lock().unwrap_or_else(|p| p.into_inner()),
-        store.calls.as_ref(),
-        STORE,
-        0,
-    )
-    .expect("a node at the floor boots");
+    let mut v3 = wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents");
+    let mut op_set = store
+        .records
+        .list_plane_record_parents(KIND)
+        .expect("op-set parents");
+    v3.sort();
+    op_set.sort();
+    assert_eq!(v3, vec!["p1".to_string(), "p2".to_string()]);
+    assert_eq!(v3, op_set);
     assert_eq!(
-        read.map(|f| f.floor),
-        Some(0),
-        "the boot read the floor back"
+        wait_for(store.calls.purge_plane_records_before(KIND, 25)).expect("v3 purge"),
+        2,
+        "the two terminal rows older than 25 go"
     );
-
-    let above = RecordBytes::new(encode_floor(EpochFloor {
-        floor: 5,
-        resealed_at: 1,
-    }))
-    .expect("a small record");
-    wait_for(
+    assert_eq!(
         store
-            .calls
-            .record_put(EPOCH_FLOOR_SCHEMA, &floor_key(STORE), &above),
-    )
-    .expect("the store takes the floor");
-    let refused = boot_recovery(
-        &book.lock().unwrap_or_else(|p| p.into_inner()),
-        store.calls.as_ref(),
-        STORE,
+            .records
+            .purge_plane_records_before(KIND, 25)
+            .expect("op-set purge"),
         0,
-    )
-    .expect_err("a node below the floor does not boot");
-    assert!(
-        refused.contains("below the epoch floor 5"),
-        "the refusal names the floor: {refused}"
+        "nothing older is left for the op set to purge"
+    );
+    assert_eq!(
+        wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents"),
+        vec!["p2".to_string()]
     );
 }

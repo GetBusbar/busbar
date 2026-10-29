@@ -10,17 +10,15 @@
 //! answers it, and neither depends on the other.
 //!
 //! The store seam here is the disaster-recovery primitives named in the architecture document's
-//! irreducible set (`chain_break`, `store_restore`, `reseal_epoch_floor`), plus the store-backed
-//! sealed idempotency cache the new credential-minting verbs use. Every method is a `// contract:`
-//! seam: the actual durable operation is always the integrator's.
+//! irreducible set (`chain_break`, `store_restore`). Every method is a
+//! `// contract:` seam: the actual durable operation is always the integrator's.
 
 use crate::caps::{AdminVerb, Grant};
 
 /// Replay window (seconds) — 600 s, exactly `IDEMPOTENCY_TTL_SECS` in 1.5.5/1.6.0-legacy admin.
 ///
-/// The per-node, in-process idempotency-replay cache in the admin verb-execution unit ages its
-/// slots against this window, and a loaded store's sealed replay cache answers for the same one, so
-/// a deployment whose store predates the durable cache gets the same replay window either way.
+/// The admin idempotency-replay cache ages its slots against this window, and an `Idempotency-Key`
+/// claimed in the configured store lapses with it.
 pub const IDEMPOTENCY_TTL_SECS: u64 = 600;
 
 /// A store-layer error. The admin verb-execution unit maps it the same fail-closed way it maps a
@@ -44,24 +42,4 @@ pub trait Store {
     /// operation answers [`StoreError::Failed`] and restores nothing; it never acknowledges a restore
     /// that did not happen.
     fn store_restore(&self, admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), StoreError>;
-
-    /// `// contract:` reseal the epoch floor after a chain break or restore.
-    fn reseal_epoch_floor(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
-
-    /// `// contract:` the store-backed sealed idempotency cache for the NEW credential-minting
-    /// verbs (`set_operator_key`, `export_keyset`'s recipient-sealed export, and any future
-    /// credential-minting new verb) — TTL `min(dispute_max_age, max(600s, longest finite cap
-    /// window + max_unit_duration))`, per the architecture document. Returns the previously
-    /// committed response bytes for a replay, or `None` on first sighting (in which case the
-    /// integrator is expected to have already reserved the slot before this call returns,
-    /// mirroring the in-process `IdempotencyCache`'s reservation discipline, but over durable
-    /// storage instead of an in-process map).
-    fn replay_new_verb(&self, key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError>;
-
-    /// `// contract:` commit a new-verb replay slot.
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        response: &[u8],
-    ) -> Result<(), StoreError>;
 }

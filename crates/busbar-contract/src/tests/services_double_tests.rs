@@ -116,6 +116,10 @@ const ROWS: &[Row] = &[
     ("session_emit", |s, _| {
         s.session_emit(&caller(), 1, b"bytes")
     }),
+    ("ticket_mint", |s, _| {
+        s.ticket_mint(&caller(), Some(1), 600, b"{}")
+    }),
+    ("ticket_take", |s, _| s.ticket_take(&caller(), Some(1))),
     ("random_fill", |s, _| s.random_fill(16)),
     ("records_secret", |s, l| {
         now("records_secret", s.records_secret("k", "id", later(l)))

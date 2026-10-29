@@ -388,7 +388,6 @@ impl FramerDoor for Dispatched {
             Carry::Write(i, o) => go_inline(p, t, resume, slot::WRITE, i, o),
             Carry::Flush(i, o) => go_inline(p, t, resume, slot::FLUSH, i, o),
             Carry::Shut(i, o) => go_inline(p, t, resume, slot::SHUT, i, o),
-            Carry::Arrival(i, o) => go_inline(p, t, resume, slot::ARRIVAL, i, o),
             // `cancel` is made on no ticket: the ticket it cancels rides its `in`.
             Carry::Cancel(i, o) => go(p, life::CANCEL, i, o),
         }
@@ -407,6 +406,29 @@ impl FramerDoor for Dispatched {
             Call::Detach(i, o) => go(p, slot::DETACH, i, o),
             Call::Adopt(i, o) => go(p, slot::ADOPT, i, o),
             Call::Timer(i, o) => go(p, slot::TIMER, i, o),
+        }
+    }
+
+    /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
+    /// the process's one dispatcher, as a carrier's side does: each may call the auth service,
+    /// which may pend, and its wake routes there. A new one each time the framing asks, so an op
+    /// parked on one stream's ticket holds that stream alone.
+    fn framing_side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
+        let (p, t) = (&self.live.plugin, side.ticket());
+        match call {
+            Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
+            Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
+            Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
+            other => self.cross(other),
         }
     }
 }

@@ -167,10 +167,7 @@ fn built_route_fields(enabled: bool, policy: Option<&str>, member: &[u8]) -> (St
             .map(|(_, v)| String::from_utf8(v.clone()).expect("utf8"))
             .unwrap_or_default()
     };
-    (
-        get(crate::proxy::HDR_ROUTE_POLICY),
-        get(crate::proxy::HDR_ROUTE_TARGET),
-    )
+    (get(super::HDR_ROUTE_POLICY), get(super::HDR_ROUTE_TARGET))
 }
 
 /// F25 row 630: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::

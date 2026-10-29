@@ -18,9 +18,7 @@ use busbar_contract::caps::{
     PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, StepName, VerifiedDestination, Verify,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
-use busbar_kernel::teller::{
-    exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx, Units,
-};
+use busbar_kernel::teller::{exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx};
 
 use common::{cell, ctx, principal, Door, TestUnits};
 
@@ -51,6 +49,7 @@ impl ParentExitsMidRoute<'_> {
                 gauge: &gauge,
                 canary: &Canary::new(),
                 meter: &meter,
+                taps: None,
             },
             Outcome::Completed,
             true,
@@ -59,16 +58,19 @@ impl ParentExitsMidRoute<'_> {
     }
 }
 
-impl Units for ParentExitsMidRoute<'_> {
+impl busbar_kernel::teller::DoorSeats for ParentExitsMidRoute<'_> {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.child.arrival(token, ctx)
     }
+
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
         self.child.decode(token, ctx)
     }
+
     fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
         self.child.authenticate(token, ctx)
     }
+
     fn verify(
         &self,
         token: &Pass<Verify>,
@@ -78,6 +80,7 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Verify> {
         self.child.verify(token, trust, ctx, principal)
     }
+
     fn approve(
         &self,
         token: &Pass<Approve>,
@@ -87,6 +90,7 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Approve> {
         self.child.approve(token, ctx, principal, destinations)
     }
+
     fn admit(
         &self,
         token: &Pass<Admit>,
@@ -99,6 +103,9 @@ impl Units for ParentExitsMidRoute<'_> {
         self.child
             .admit(token, admit, ctx, principal, destinations, leases)
     }
+}
+
+impl busbar_kernel::teller::UnitEnds for ParentExitsMidRoute<'_> {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -109,6 +116,7 @@ impl Units for ParentExitsMidRoute<'_> {
         self.parent_exits();
         routed
     }
+
     fn meter(
         &self,
         token: &Pass<Meter>,
@@ -120,9 +128,11 @@ impl Units for ParentExitsMidRoute<'_> {
         self.child
             .meter(token, usage, ctx, provisional, destinations)
     }
+
     fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
         self.child.audit(token, ctx, outcome)
     }
+
     fn audit_refused(
         &self,
         token: &Pass<Audit>,
@@ -131,6 +141,7 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Audit> {
         self.child.audit_refused(token, ctx, refusal)
     }
+
     fn encode(
         &self,
         token: &Pass<Encode>,
@@ -139,12 +150,14 @@ impl Units for ParentExitsMidRoute<'_> {
     ) -> SeatVerdict<Encode> {
         self.child.encode(token, ctx, outcome)
     }
+
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         self.child.evidence(ctx)
     }
-    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
+
+    fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
         match self.door_backs {
-            None => Ok(accrual.amount()),
+            None => Ok(()),
             Some(reason) => Err(Refusal::new(reason)),
         }
     }
@@ -155,13 +168,13 @@ impl Units for ParentExitsMidRoute<'_> {
 fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCell, Canary) {
     let kernel = Kernel::new();
     let parent = Arc::new(cell(&kernel));
-    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), principal(), 5_000);
+    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), principal());
     let _arrival = parent
         .admit(admitted, &kernel.admit_token())
         .expect("the parent's cell was fresh");
     let units = ParentExitsMidRoute {
         child: TestUnits {
-            door: Door::Accrual(Arc::clone(&parent), 250),
+            door: Door::Accrual(Arc::clone(&parent)),
             spend: 400,
             evidence: Evidence {
                 reported: Some(400),
@@ -187,15 +200,15 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     assert_eq!(parent.state(), HoldCellState::Taken, "the parent exited");
     (ended, child_cell, canary)
 }
 
-/// THE CHILD'S ACCRUAL BECOMES ITS OWN HOLD. It settles against a reservation of 250 — what it
-/// pushed — with only the spend past that carried as an overdraft, where it used to post the
-/// whole accrual late against nothing (reserved 0, overdraft 250, LATE_ACCRUAL).
+/// THE CHILD'S ACCRUAL BECOMES ITS OWN HOLD. It posts the 400 it reported on a hold of its own,
+/// where it used to post the whole accrual late against nothing (LATE_ACCRUAL).
 #[test]
 fn a_parent_exit_converts_the_childs_accrual_to_its_own_hold() {
     let (ended, child_cell, canary) = child_outliving_its_parent(None);
@@ -204,12 +217,10 @@ fn a_parent_exit_converts_the_childs_accrual_to_its_own_hold() {
             assert_eq!(end.outcome(), Outcome::Completed);
             let posted = end.posted().expect("the child posts like any other unit");
             assert_eq!(
-                posted.reserved(),
-                250,
-                "the child holds its own reservation"
+                posted.quantity(),
+                400,
+                "the child's own report, on its own hold"
             );
-            assert_eq!(posted.settled(), 400);
-            assert_eq!(posted.overdraft(), 150, "only the spend past its own hold");
             assert!(!posted.flags().contains(PostingFlags::LATE_ACCRUAL));
             assert_eq!(
                 (requests, fee),
@@ -225,8 +236,8 @@ fn a_parent_exit_converts_the_childs_accrual_to_its_own_hold() {
 }
 
 /// A HOLD THE DOOR CANNOT BACK REFUSES THE CHILD ON THE BUDGET. The end is the door's refusal —
-/// the over-budget code, at the admission step — and the accrual still posts, late: the spend
-/// happened, and a refusal is never where money disappears.
+/// the over-budget code, at the admission step — and the accrual still posts, late: the unit
+/// happened, and a refusal is never where a posting disappears.
 #[test]
 fn a_converted_hold_the_door_cannot_back_ends_the_child_over_budget() {
     let (ended, child_cell, canary) = child_outliving_its_parent(Some(ReasonCode::OverBudget));
@@ -237,7 +248,7 @@ fn a_converted_hold_the_door_cannot_back_ends_the_child_over_budget() {
                 Outcome::Failed(StepName::Admit, ReasonCode::OverBudget)
             );
             let posted = end.posted().expect("the accrual still posts");
-            assert_eq!((posted.reserved(), posted.settled()), (0, 250));
+            assert_eq!(posted.principal(), &principal());
             assert!(posted.flags().contains(PostingFlags::LATE_ACCRUAL));
             assert_eq!((requests, fee), (0, 0));
         }
@@ -268,6 +279,7 @@ fn run_on(
             gauge: &gauge,
             canary,
             meter: &units.meter,
+            taps: None,
         },
     )
 }
@@ -287,7 +299,7 @@ fn spending(door: Door, amount: u64) -> TestUnits {
 
 /// A CHILD FIRST RUN AFTER ITS PARENT SEALED NEVER WRITES THE PARENT'S LINE (a task's
 /// continuation: BUSBAR-1.6.0.md, the `work.*` row note — a child unit whose parent has exited,
-/// filed under the late-arm rules). The parent settles 300 on its own sealed line; the child, nested
+/// filed under the late-arm rules). The parent posts 300 on its own sealed line; the child, nested
 /// on that parent's cell and asking to accrue at zero the way the root door does, is refused the
 /// accrual and posts its own line of 400. The parent's cell is byte-identical before and after the
 /// child; the two lines total 700, each counted once.
@@ -298,7 +310,7 @@ fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents(
     let parent_cell = Arc::new(cell(&kernel));
     let parent_line = match run_on(
         &kernel,
-        &spending(Door::Own(1_000), 300),
+        &spending(Door::Own, 300),
         7,
         &parent_cell,
         None,
@@ -312,16 +324,13 @@ fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents(
         HoldCellState::Taken,
         "the parent sealed"
     );
-    assert_eq!(
-        (parent_line.reserved(), parent_line.settled()),
-        (1_000, 300)
-    );
+    assert_eq!(parent_line.quantity(), 300);
     let sealed = format!("{parent_cell:?}");
 
     let child_cell = cell(&kernel);
     let child_line = match run_on(
         &kernel,
-        &spending(Door::Accrual(Arc::clone(&parent_cell), 0), 400),
+        &spending(Door::Accrual(Arc::clone(&parent_cell)), 400),
         8,
         &child_cell,
         Some(&parent_cell),
@@ -346,13 +355,13 @@ fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents(
     );
     assert_eq!(child_line.principal(), parent_line.principal());
     assert_eq!(
-        (child_line.reserved(), child_line.settled()),
-        (0, 400),
-        "the child's own line, at its own zero hold"
+        child_line.quantity(),
+        400,
+        "the child's own line, on its own hold"
     );
     assert_eq!(child_cell.state(), HoldCellState::Taken);
     assert_eq!(
-        parent_line.settled() + child_line.settled(),
+        parent_line.quantity() + child_line.quantity(),
         700,
         "billed: parent + child, nothing lost and nothing twice"
     );

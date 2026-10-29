@@ -15,7 +15,7 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// The plane every emission in this module drives: the FALLBACK (model) plane, whose
 /// `busbar_requests_total` / `busbar_request_duration_seconds` families carry NO `plane` label
 /// (v1.5.4-identical) and are the only ones the bank's fast path serves — `request_finished`
-/// branches on `crate::plane::is_fallback(plane)`, so the key handed in must be WHATEVER key is
+/// branches on `crate::plane_driver::dispatch::is_fallback(plane)`, so the key handed in must be WHATEVER key is
 /// currently registered fallback, never a hard-coded literal. Registers
 /// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
 /// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
@@ -25,7 +25,7 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// `plane::metrics_tests` / `a2a::relay_tests`.
 fn model_plane_key() -> &'static str {
     crate::test_support::register_neutral_test_plane();
-    crate::plane::fallback_key()
+    crate::plane_driver::dispatch::fallback_key()
 }
 
 /// Two DISTINCT shipped protocol names, read off the protocol registry's own codec list (the same
@@ -35,7 +35,7 @@ fn model_plane_key() -> &'static str {
 /// different ingress. Read through `registry()`, which seeds this test binary's built-in set first:
 /// `known_protocols()` seeds nothing, and these tests ask before any request path has seeded it.
 fn shipped_protocols() -> (&'static str, &'static str) {
-    let known = crate::proto::registry::registry().codec_protocols();
+    let known = crate::ingress::protocols::known_protocols();
     assert!(
         known.len() >= 2,
         "the test binary's protocol registry must ship at least two codecs; got {known:?}"
@@ -249,17 +249,22 @@ fn test_engine_helpers_emit_premigration_series() {
         &[
             ("pool", "tel-eng-pool"),
             ("lane", "tel-eng-model"),
-            ("disposition", crate::proxy::DISPOSITION_TRANSIENT),
+            ("disposition", crate::telemetry::DISPOSITION_TRANSIENT),
         ],
     );
-    upstream_failure(&app, "tel-eng-pool", 0, crate::proxy::DISPOSITION_TRANSIENT);
+    upstream_failure(
+        &app,
+        "tel-eng-pool",
+        0,
+        crate::telemetry::DISPOSITION_TRANSIENT,
+    );
     assert_eq!(
         (metric_sum(
             crate::snapshot::UPSTREAM_FAILURES_TOTAL,
             &[
                 ("pool", "tel-eng-pool"),
                 ("lane", "tel-eng-model"),
-                ("disposition", crate::proxy::DISPOSITION_TRANSIENT),
+                ("disposition", crate::telemetry::DISPOSITION_TRANSIENT),
             ],
         ) - failures0)
             .round() as u64,
@@ -276,10 +281,14 @@ fn test_engine_helpers_emit_premigration_series() {
     // A failover with a transport-class reason (`timeout`, from the pre-response error arm).
     let fo_labels = [
         ("pool", "tel-eng-pool"),
-        ("reason", crate::proxy::ERR_NET_TIMEOUT),
+        ("reason", busbar_kernel_egress::upstream::ERR_NET_TIMEOUT),
     ];
     let failovers0 = metric_sum(crate::snapshot::FAILOVERS_TOTAL, &fo_labels);
-    failover(&app, "tel-eng-pool", crate::proxy::ERR_NET_TIMEOUT);
+    failover(
+        &app,
+        "tel-eng-pool",
+        busbar_kernel_egress::upstream::ERR_NET_TIMEOUT,
+    );
     assert_eq!(
         (metric_sum(crate::snapshot::FAILOVERS_TOTAL, &fo_labels) - failovers0).round() as u64,
         1

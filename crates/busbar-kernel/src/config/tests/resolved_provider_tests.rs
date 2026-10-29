@@ -26,12 +26,12 @@ fn table(value: serde_json::Value) -> ProviderTable {
 fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutral_rule() {
     let def: ProviderDef = serde_yaml::from_str(
         "protocol: proto-a\nbase_url: https://api.example.com\n\
-         error_map: {a: x, b: y}\norganization: org-1\n\
+         error_map: {a: x, b: y}\n\
          model_capabilities: [{models: [m1*], native_structured_output: true}]\n",
     )
     .expect("a catalog entry");
     let dep: ProviderDeploy = serde_yaml::from_str(
-        "api_key: {env: K}\nerror_map: {b: z, c: w}\nproject: proj-1\n\
+        "api_key: {env: K}\nerror_map: {b: z, c: w}\n\
          model_capabilities: [{models: [m2*]}]\npath: /v1/x\n",
     )
     .expect("a deployment");
@@ -44,8 +44,6 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
         json!({
             "protocol": "proto-a",
             "error_map": {"a": "x", "b": "z", "c": "w"},
-            "organization": "org-1",
-            "project": "proj-1",
             "model_capabilities": [{"models": ["m2*"]}],
         })
     );

@@ -173,3 +173,48 @@ fn the_root_gets_its_registry_back() {
     }
     assert!(crate::rows::registry_of(&NotARegistry).is_none());
 }
+
+/// A linked auth door stating `base_url` reference-capable (its Statement's extensions, under
+/// `reference_fields`) beside its secret `client_secret`.
+mod referencing {
+    const EXT: &[u8] = &busbar_contract::abi::mechanism::extensions::entry::<
+        {
+            busbar_contract::abi::mechanism::extensions::entry_len(
+                busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS,
+                br#"["base_url"]"#,
+            )
+        },
+    >(
+        busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS,
+        br#"["base_url"]"#,
+    );
+    busbar_contract::auth_verify_door!(
+        super::Door,
+        busbar_contract::abi::sdk::auth_door::with_tail(
+            busbar_contract::abi::mechanism::door::Statement {
+                secret_refs: super::SECRET_REFS.as_ptr(),
+                secret_refs_len: super::SECRET_REFS.len(),
+                extensions: busbar_contract::abi::mechanism::extensions::statement_blob(EXT),
+                ..busbar_contract::abi::sdk::door::statement("referencing", "1.0.0", 4)
+            },
+            super::TAIL
+        )
+    );
+}
+
+/// The view's `reference_slots` are the reference-capable paths the row's Statement names (lead
+/// ruling item 7a), apart from its `secret_slots`; a door naming none answers none.
+#[test]
+fn reference_slots_are_the_reference_fields_the_statement_names() {
+    let reg = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::auth_door("referencing", referencing::door),
+            LinkedPlugin::auth_door("unslotted", unslotted::door),
+        ])
+        .expect("the linked doors register");
+    let rows: &dyn PluginRows = &reg;
+    assert_eq!(rows.reference_slots("referencing"), vec!["base_url"]);
+    assert_eq!(rows.secret_slots("referencing"), vec!["client_secret"]);
+    assert!(rows.reference_slots("unslotted").is_empty());
+    assert!(rows.reference_slots("nope").is_empty());
+}

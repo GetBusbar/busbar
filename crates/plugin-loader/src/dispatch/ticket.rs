@@ -96,6 +96,9 @@ pub(crate) struct InstanceWake {
         busbar_contract::conn::InstanceId,
         std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
     )>,
+    /// What the connector slots hold for the instance: its streams, their facts, its dials in
+    /// flight and its kept answers (`super::conn_services`), under locks of its own.
+    pub(crate) conn_state: super::conn_services::ConnState,
     /// The settings keys the instance's manifest declares DESTINATIONS (granted once, by the
     /// opener that read the manifest): `disk.append` serves this instance those only.
     pub(crate) destinations: OnceLock<Vec<String>>,
@@ -158,7 +161,8 @@ impl Waking {
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
 /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
 /// worker, which alone knows the generation).
-pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
     // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
     // counted by the worker, never silently lost here.
     // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes

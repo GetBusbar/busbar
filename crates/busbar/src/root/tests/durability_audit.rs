@@ -5,7 +5,6 @@
 
 use super::*;
 use busbar_kernel_audit::expose;
-use busbar_kernel_ledger::legacy::RecordingRows;
 use busbar_kernel_wal::NullShipper;
 
 /// A directory nobody else writes to, removed when the test ends.
@@ -38,7 +37,6 @@ pub(super) fn open(dir: &std::path::Path) -> Durability {
         },
         7,
         Box::new(NullShipper::new()),
-        Box::new(RecordingRows::new()),
     )
     .expect("the directory is writable")
 }

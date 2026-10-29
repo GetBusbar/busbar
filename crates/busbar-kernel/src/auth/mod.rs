@@ -40,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
@@ -194,11 +188,12 @@ const AUTH_REPLAY: &str = "auth-replay";
 /// THE REPLAY CLAIM (THE DESIGN §6, Inbound verify: "a verified identity may carry a replay_key and
 /// replay_ttl_secs, and the verify caller claims the record ... already TAKEN is 401"): the identity
 /// `provider` verified is admitted only by the call that first claims `<provider>/<key>` in
-/// governance's record store, the claim standing `ttl_secs` from `now`. An empty key asks for no
-/// claim. FAIL-CLOSED: a claim already taken, a store that cannot answer, and no governance to
-/// claim in each refuse — a ledger that cannot say whether the message was seen must not be read
-/// as saying it was not. A sender's retry inside the window is a replay, refused alike.
-fn replay_claimed(
+/// governance's record store, the claim standing `ttl_secs` from `now`, awaited through the store's
+/// v3 calls. An empty key asks for no claim. FAIL-CLOSED: a claim already taken, a store that
+/// cannot answer, and no governance store to claim in each refuse — a ledger that cannot say
+/// whether the message was seen must not be read as saying it was not. A sender's retry inside the
+/// window is a replay, refused alike.
+async fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
     provider: &str,
     replay: &Replay,
@@ -207,13 +202,14 @@ fn replay_claimed(
     if replay.key.is_empty() {
         return true;
     }
-    let Some(gov) = gov else {
+    let Some(calls) = gov.and_then(crate::governance::GovState::store_calls) else {
         return false;
     };
     let token = format!("{provider}/{}", replay.key);
     let expires_at = now.saturating_add(replay.ttl_secs);
-    gov.store()
+    calls
         .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
+        .await
         .unwrap_or(false)
 }
 
@@ -222,15 +218,16 @@ fn replay_claimed(
 /// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
 /// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
 /// identity asks for none, or when this call won the claim.
-fn signed_replay_claimed(
+async fn signed_replay_claimed(
     gov: Option<&crate::governance::GovState>,
     reader: &str,
     id: &busbar_contract::auth_calls::VerifiedIdentity,
     now: u64,
 ) -> bool {
-    id.replay
-        .as_deref()
-        .is_none_or(|replay| replay_claimed(gov, reader, replay, now))
+    match id.replay.as_deref() {
+        None => true,
+        Some(replay) => replay_claimed(gov, reader, replay, now).await,
+    }
 }
 
 /// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
@@ -696,14 +693,13 @@ impl AdminAuthChain {
             match entry.module.as_str() {
                 // The operator credential is opened beside the chain ([`open_operator`]).
                 module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
-                // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
-                // resolved as plugins. Compiled out of release binaries.
-                #[cfg(any(test, feature = "test-support"))]
-                "test-scope-module" | "test-groups-module" => {}
                 other => {
                     let name = entry.name.as_str();
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        &registry.reference_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -734,8 +730,10 @@ impl AdminAuthChain {
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
                     let label = format!("admin_auth.{name}");
+                    // `resolved` is wiped when it drops, at the end of this arm: once `open` has
+                    // answered, busbar's copy of the resolved secrets is gone.
                     let calls = axis
-                        .open(other, &label, &serde_json::Value::Object(resolved))
+                        .open(other, &label, resolved.as_value())
                         .map_err(refused)?;
                     // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
                     // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
@@ -785,40 +783,11 @@ impl AuthMiddleware {
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         let mut chain: Vec<ChainEntry> = Vec::new();
-        // An in-process TEST stand-in, as a chain position: the in-process adapter over the module,
-        // answered on the caller's thread (it cannot block).
-        #[cfg(any(test, feature = "test-support"))]
-        let stand_in = |provider: &str, module: Box<dyn AuthModule>| {
-            let calls = stand_in::InProcessAuth::new(module);
-            ChainEntry {
-                provider: provider.to_string(),
-                name: calls.name().to_string(),
-                calls: std::sync::Arc::new(calls),
-            }
-        };
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.chain {
             match entry.module.as_str() {
                 crate::config::KEYS_MODULE => {
                     keys_in_chain = true;
-                }
-                // TEST-ONLY external-module stand-in for the DATA-PLANE chain (the admin chain has
-                // its own): `grp:<role>` identifies as a principal carrying that role, so the
-                // governance re-key is e2e-testable. Compiled out of release binaries entirely.
-                #[cfg(any(test, feature = "test-support"))]
-                "test-groups-module" => {
-                    chain.push(stand_in(&entry.name, Box::new(TestGroupsModule)));
-                }
-                // TEST-ONLY stand-in for a real OIDC auth plugin: it verifies (here, pretends to
-                // verify) an issuer's signature and identifies the bearer. It is deliberately
-                // AUDIENCE-BLIND, because that is what the module ABI makes every such plugin —
-                // `AuthOutcome` has no shape for "and it was minted for you". Without a module of
-                // this shape in the tree, no test can tell an audience check that runs from one
-                // that does not: a keys-only chain refuses a foreign token anyway, for a different
-                // reason, and every assertion about the plane boundary passes vacuously.
-                #[cfg(any(test, feature = "test-support"))]
-                "test-idp-module" => {
-                    chain.push(stand_in(&entry.name, Box::new(TestIdpModule)));
                 }
                 other => {
                     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
@@ -827,6 +796,9 @@ impl AuthMiddleware {
                     // dangling reference.
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        &registry.reference_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -852,9 +824,11 @@ impl AuthMiddleware {
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
-                    let calls = axis
-                        .open(other, &entry.name, &serde_json::Value::Object(resolved))
-                        .map_err(refused)?;
+                    let opened = axis.open(other, &entry.name, resolved.as_value());
+                    // busbar's copy of the resolved secrets is wiped the moment `open` answers,
+                    // whatever it answered (security.md:318).
+                    drop(resolved);
+                    let calls = opened.map_err(refused)?;
                     chain.push(ChainEntry {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),
@@ -941,8 +915,8 @@ impl AuthMiddleware {
         })
     }
 
-    /// TEST-ONLY convenience: build the chain against an EMPTY plugin registry (only builtins +
-    /// the compiled-in `test-groups-module` resolve). Panics on a plugin-name entry — a test that
+    /// TEST-ONLY convenience: build the chain against an EMPTY plugin registry (only builtins and
+    /// the modules the test build's auth axis answers in process resolve). Panics on a plugin-name entry — a test that
     /// needs a real `kind: auth` plugin builds a registry and calls [`new`] directly. Keeps the
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
     #[cfg(any(test, feature = "test-support"))]
@@ -1085,7 +1059,7 @@ impl AuthMiddleware {
                 AuthVerdict::Identify(principal) => {
                     // The replay claim travels with the verdict and is won here, before admitting.
                     if let Some(replay) = judged.replay.as_deref() {
-                        if !replay_claimed(gov, &entry.provider, replay, now) {
+                        if !replay_claimed(gov, &entry.provider, replay, now).await {
                             return Ok(ChainVerdict::Denied);
                         }
                     }
@@ -1341,12 +1315,12 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
 /// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
 /// signals available for shaping a native 401 envelope.
 ///
-/// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
+/// A THIN delegation to the CANONICAL `crate::plane_driver::dispatch::PlaneDispatch::ingress_of`, which is the ONE
 /// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
 /// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
 /// in one dialect and another handler shapes it in a different dialect — or where auth answers a
 /// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
-fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
+fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::dispatch::Ingress {
     app.planes.ingress_of(path)
 }
 
@@ -1361,7 +1335,7 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
 /// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
 /// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
 fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+    crate::ingress::protocols::vendor_auth_failure_message(proto)
 }
 
 /// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
@@ -1381,12 +1355,18 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// Not a disposition/breaker match, so an unknown future proto falls back to the standard
 /// 401 authentication_error, keeping the request path panic-free.
 ///
-/// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
-/// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
-// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
-// historical path are unchanged.
-pub use busbar_kernel::proxy::auth_failure_status_and_kind;
+/// Read from the protocol registry's `ProtocolDecl::auth_failure_status_and_kind`.
+pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
+    crate::ingress::protocols::decl_for(proto)
+        .and_then(|d| {
+            let (status, kind) = d.auth_failure_status_and_kind;
+            Some((StatusCode::from_u16(status).ok()?, kind))
+        })
+        .unwrap_or((
+            StatusCode::UNAUTHORIZED,
+            busbar_contract::protocol::KIND_AUTHENTICATION,
+        ))
+}
 
 /// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
@@ -1472,59 +1452,6 @@ pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
 /// the type is now cross-crate, but it still never carries the credential.
 pub use busbar_contract::auth::AuthPrincipal;
 
-/// TEST-ONLY data-plane module (see the `test-groups-module` chain arm): credential `grp:<g>`
-/// identifies as `test:<g>` carrying exactly that group; anything else defers (`Pass`).
-#[cfg(any(test, feature = "test-support"))]
-struct TestGroupsModule;
-
-#[cfg(any(test, feature = "test-support"))]
-impl AuthModule for TestGroupsModule {
-    fn name(&self) -> &'static str {
-        "test-groups-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
-        match candidate.and_then(|t| t.strip_prefix("grp:")) {
-            Some(group) => {
-                let mut p = Principal::from_id(format!("test:{group}"));
-                p.roles = vec![group.to_string()];
-                AuthVerdict::Identify(p)
-            }
-            None => AuthVerdict::Pass,
-        }
-    }
-}
-
-/// TEST-ONLY data-plane module standing in for an operator's OIDC auth plugin: it identifies ANY
-/// non-empty credential and asks nothing about audience, exactly as the plugin ABI forces a real one
-/// to. See the `test-idp-module` chain arm for why the tree needs one.
-///
-/// The principal carries the role [`TEST_IDP_ROLE`], because an identified principal earns data-plane
-/// access ONLY through a key (no key, refuse) — a stand-in for a DEPLOYED IdP is one whose
-/// role the operator bound under `role_bindings`, which is what `TestApp::idp_chain` installs.
-#[cfg(any(test, feature = "test-support"))]
-struct TestIdpModule;
-
-/// The role the [`TestIdpModule`] stand-in asserts for every principal it identifies.
-#[cfg(any(test, feature = "test-support"))]
-pub const TEST_IDP_ROLE: &str = "idp-user";
-
-#[cfg(any(test, feature = "test-support"))]
-impl AuthModule for TestIdpModule {
-    fn name(&self) -> &'static str {
-        "test-idp-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
-        match candidate.filter(|c| !c.is_empty()) {
-            Some(_) => {
-                let mut p = Principal::from_id("idp:subject".to_string());
-                p.roles = vec![TEST_IDP_ROLE.to_string()];
-                AuthVerdict::Identify(p)
-            }
-            None => AuthVerdict::Pass,
-        }
-    }
-}
-
 /// One admin chain's answer: the chain verdict and the identifying module's scope ceiling.
 type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 
@@ -1568,20 +1495,6 @@ async fn run_admin_chain(
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
         let outcome = match name.as_str() {
-            // TEST-ONLY external-module stand-in: lets the e2e suite exercise group-mapped,
-            // NON-full principals (unreachable with the operator credential alone). Credential grammar:
-            // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
-            // of release binaries entirely.
-            #[cfg(any(test, feature = "test-support"))]
-            "test-scope-module" => Some(match candidate.and_then(|t| t.strip_prefix("grp:")) {
-                Some(group) => {
-                    let mut p = Principal::from_id(format!("test:{group}"));
-                    p.roles = vec![group.to_string()];
-                    Judgement::of(AuthVerdict::Identify(p))
-                }
-                // Not my credential shape — the next module is tried (the PAM contract).
-                None => Judgement::of(AuthVerdict::Pass),
-            }),
             // The operator credential (its row, opened through the auth axis by the provider key),
             // judged on the request's head through its door: an overloaded verifier or one that
             // answered no verdict is denied, as 1.5.5 refused (its 401) — the admin-door 503 is not
@@ -1812,17 +1725,45 @@ async fn judge_admin_door(
     claim: bool,
     strips: &mut Vec<Strip>,
 ) -> AdminDoor {
-    let mut carried = AdminCarried::default();
-    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
-    strips.append(&mut carried.strips);
+    let (verdict, cap, replay) =
+        judge_admin_chain(app, method, target, headers, probe, strips).await;
     if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
-        (claim, &verdict, &carried.replay)
+        (claim, &verdict, &replay)
     {
         let now = busbar_kernel::store::now();
-        if !replay_claimed(app.governance.as_deref(), provider, replay, now) {
+        if !replay_claimed(app.governance.as_deref(), provider, replay, now).await {
             return AdminDoor::Denied;
         }
     }
+    admin_door_of(app, verdict, cap)
+}
+
+/// The admin chain's verdict of one request, its scope cap, and the replay claim its identity asks
+/// for (unclaimed). The lines every module named for the transport are added to `strips`.
+async fn judge_admin_chain(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    probe: bool,
+    strips: &mut Vec<Strip>,
+) -> (
+    ChainVerdict,
+    Option<busbar_contract::authz::Scope>,
+    Option<(String, Box<Replay>)>,
+) {
+    let mut carried = AdminCarried::default();
+    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
+    strips.append(&mut carried.strips);
+    (verdict, cap, carried.replay)
+}
+
+/// The admin door a chain verdict opens, under its scope `cap`.
+fn admin_door_of(
+    app: &App,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
     match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
@@ -1863,21 +1804,38 @@ fn probe_admin_door(
 ) -> AdminDoor {
     // The lines a module names are the transport's; a probe hands no request on.
     let mut strips = Vec::new();
-    let judged = std::pin::pin!(judge_admin_door(
+    let judged = std::pin::pin!(judge_admin_chain(
         app,
         method,
         target,
         headers,
         true,
-        claim,
         &mut strips
     ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(judged, &mut cx) {
-        std::task::Poll::Ready(door) => door,
+    let (verdict, cap, replay) = match std::future::Future::poll(judged, &mut cx) {
+        std::task::Poll::Ready(judged) => judged,
         // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
-        std::task::Poll::Pending => AdminDoor::Denied,
+        std::task::Poll::Pending => return AdminDoor::Denied,
+    };
+    if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
+        (claim, &verdict, &replay)
+    {
+        // THE PROBE'S ONE WAIT: the replay claim is a store call, awaited on this caller's own
+        // thread, as the synchronous caller asked by calling synchronously (the root's admin
+        // units answer on the blocking pool, never on a runtime worker or a dispatcher worker).
+        let now = busbar_kernel::store::now();
+        let claimed = futures::executor::block_on(replay_claimed(
+            app.governance.as_deref(),
+            provider,
+            replay,
+            now,
+        ));
+        if !claimed {
+            return AdminDoor::Denied;
+        }
     }
+    admin_door_of(app, verdict, cap)
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
@@ -2228,6 +2186,9 @@ pub(crate) async fn auth_middleware(
     // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
     // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
     let mut dpop_proven = false;
+    // The bearer's payload, read at most once: by the DPoP binding check, then the audience
+    // pre-filter. A proven DPoP token was never read here, so the pre-filter reads it afresh.
+    let mut read = None;
     let client_token = if is_admin {
         client_token
     } else {
@@ -2237,6 +2198,7 @@ pub(crate) async fn auth_middleware(
             &path,
             req.headers(),
             client_token.as_deref(),
+            &mut read,
         )
         .await
         {
@@ -2263,7 +2225,7 @@ pub(crate) async fn auth_middleware(
     // token as a ref. Handed on with the request so the host strips all of them before any plane
     // sees it (`caller_credential`).
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller = client_token.clone().map(CallerCredential);
+    consumed.caller = client_token.as_deref().map(CallerCredential::verified);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE
@@ -2483,8 +2445,11 @@ pub(crate) async fn auth_middleware(
             // reachable from attacker-controlled headers alone, so the cap is enforced here, not
             // assumed of the layer stack.
             let (parts, body) = req.into_parts();
-            let Ok(body_bytes) =
-                axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
+            let Ok(body_bytes) = axum::body::to_bytes(
+                body,
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            )
+            .await
             else {
                 return Err(unauthorized_response(&app, &path, door.as_ref()));
             };
@@ -2511,6 +2476,7 @@ pub(crate) async fn auth_middleware(
                     // this verifier; a claim already taken is the same opaque refusal.
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
+                            .await
                     {
                         return Err(unauthorized_response(&app, &path, door.as_ref()));
                     }
@@ -2535,7 +2501,40 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
+    // THE TICKET ARM (row 132, the ARCHITECT ticket ruling): on a door route that takes tickets,
+    // a credential carrying its plane's declared issued-id prefix is a ticket, which `keys` admits
+    // ONCE as the key it was minted for. The gate spends it here and hands its record on with the
+    // request; any ticket that is not a standing, unspent one of this deployment is the door's
+    // `401`, the same as a bad key. Only where the chain names `keys`: a ticket is a busbar token.
+    let ticketed = match (
+        signed.is_none(),
+        core_routes.door_ticket(&path, req.method()),
+        client_token.as_deref(),
+    ) {
+        (true, Some(prefix), Some(token))
+            if app.auth.keys_in_chain && token.starts_with(prefix) =>
+        {
+            let admitted = app
+                .governance
+                .as_deref()
+                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            match admitted {
+                Some((key, record)) => {
+                    consumed.ticket = Some(record);
+                    Some(ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    })
+                }
+                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+            }
+        }
+        _ => None,
+    };
     let verdict = if let Some(verdict) = signed {
+        verdict
+    } else if let Some(verdict) = ticketed {
         verdict
     } else {
         // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The
@@ -2548,7 +2547,8 @@ pub(crate) async fn auth_middleware(
         // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
         // chain, so this can narrow what is admitted and can never widen it.
         if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
-            match audience::inspect_bearer(tok, &adm.audience) {
+            let read = read.get_or_insert_with(|| audience::Bearer::read(tok));
+            match read.binding(&adm.audience) {
                 // A busbar-signed token: the verifier below has the claims and the signature, and
                 // does the real check. Pre-judging it here would refuse every valid one.
                 audience::Binding::Deferred | audience::Binding::Bound => {}

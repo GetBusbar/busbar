@@ -159,10 +159,6 @@ pub const EV_DELEGATED: &str = "task.delegated";
 pub const EV_ARTIFACT: &str = "task.artifact";
 /// Reached a terminal state (completed/failed/canceled/rejected).
 pub const EV_TERMINAL: &str = "task.terminal";
-/// A declared-but-unmounted kind: boot rehydrate does not append its own event yet, but the kind is
-/// declared because the digest covers its value — adding one later is a chained-record field change
-/// no deployment with existing chains can absorb.
-pub const EV_REHYDRATED: &str = "task.rehydrated";
 /// The push receiver answered 2xx: the notification is delivered.
 pub const EV_PUSH_DELIVERED: &str = "task.push_delivered";
 /// busbar declined to connect: the delivery-time SSRF guard refused the fresh resolution. Nothing

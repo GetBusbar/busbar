@@ -5,51 +5,40 @@
 //!
 //! The node journal is ONE per process, so a restart is proven with two real processes rather than
 //! by resetting it under the other tests of this binary: the parent test runs this same test binary
-//! twice over one data directory, filtered to [`restart_phase`] — first to seal a correction and an
-//! access, then, in a fresh process whose node journal starts empty, to read them back.
+//! twice over one data directory, filtered to itself — first to seal content accesses, then, in a
+//! fresh process whose node journal starts empty, to read them back.
 
 use super::*;
-use busbar_kernel::audit::amend::{
-    correct_counts, counts_now, node_recent, CountCorrection, Reader,
-};
-use busbar_kernel_ledger::cost::{
-    nanos_of_exact, whole, Count, LaneClass, RateCard, Tally, STANDARD_TIER_BP,
-};
+use busbar_kernel::audit::amend::{node_recent, Reader};
 
 /// Which half of the restart the child process runs, and where.
 const PHASE: &str = "BUSBAR_TEST_AMEND_RESTART_PHASE";
 const DIR: &str = "BUSBAR_TEST_AMEND_RESTART_DIR";
 
-/// The entry the correction amends, the lane its counts price on, and the hook that reads content.
-const ENTRY: &str = "the-entry-a-root-correction-amends";
-const LANE_M: &str = "m";
+/// The hooks that read content.
 const HOOK: &str = "compressor";
-/// A second recorded unit, corrected with a POOL named (Q64/Q67).
-const POOLED_ENTRY: &str = "the-entry-a-pooled-correction-amends";
+const LATE_HOOK: &str = "summarizer";
 
-/// 2,500 nano-units per `input` unit on [`LANE_M`].
-fn card() -> RateCard {
-    RateCard::from_nano_rates([(LaneClass::new(LANE_M, "input"), 2_500)], 0)
+/// A hook named `hook` was handed one unit's content: one access on the node journal.
+fn access(hook: &str) {
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    busbar_kernel::plane_driver::engine_host(&app).hook_read(
+        hook,
+        Some("pseudonym-1"),
+        "chat",
+        false,
+    );
 }
 
-fn counts(n: u64) -> ClassCounts {
-    ClassCounts::from([("input".to_string(), whole(n))])
-}
-
-/// What `c` costs on [`LANE_M`] at [`card`], in nano-units, through the one function.
-fn priced(c: &ClassCounts) -> u128 {
-    let card = card();
-    let mut tally = Tally::at_card(&card);
-    tally
-        .row(
-            LANE_M,
-            0,
-            STANDARD_TIER_BP,
-            c.iter().map(|(class, n)| (class.as_str(), *n)),
-            Count::ZERO,
-        )
-        .expect("every class is priced");
-    nanos_of_exact(tally.exact().expect("in range")).expect("in range")
+/// The hooks the node journal holds an access of, oldest first.
+fn accessed() -> Vec<String> {
+    node_recent()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            AmendBody::Access(x) if x.reader == Reader::Hook => Some(x.name),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The node's boot, as `root::boot::compose_book` and `root::boot::book` run it: build over the data
@@ -61,7 +50,6 @@ fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
         },
         4,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("the directory is writable");
     durability
@@ -72,61 +60,25 @@ fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
     book
 }
 
-/// ONE HALF OF THE RESTART, run only in a child process the restart tests below start
-/// ([`run_phase`], `--ignored`). Ignored so the default run never counts it as a pass: alone it
-/// proves nothing, and run without its phase it fails (status row 114).
-#[test]
-#[ignore = "child process of the restart tests: run_phase runs it with --ignored"]
-fn restart_phase() {
+/// In a child process [`run_phase`] started: run its phase and answer `true`. In the test's own
+/// process: `false`, and the test goes on to start its phases.
+fn child_phase() -> bool {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
-        panic!("restart_phase is the child half of the restart tests: run them, not this");
+        return false;
     };
+    restart_phase(&phase, &dir);
+    true
+}
+
+/// ONE HALF OF THE RESTART, run in a child process of the test that names it.
+fn restart_phase(phase: &str, dir: &str) {
     if phase == "store" {
         store_phase();
         return;
     }
-    let book = boot(std::path::Path::new(&dir));
-    let recorded = counts(1_000);
-    match phase.as_str() {
-        "seal" => {
-            correct_counts(
-                busbar_contract::authz::Scope::Full,
-                &recorded,
-                CountCorrection {
-                    amends: ENTRY,
-                    principal: Some("pseudonym-1"),
-                    lane: LANE_M,
-                    card_epoch_ms: 1_700_000_000_000,
-                    now: counts(800),
-                    authorised_by: "root",
-                    reason: "duplicate charge on a retried request",
-                    pool: None,
-                },
-            )
-            .expect("a root correction to a non-negative count lands");
-            correct_counts(
-                busbar_contract::authz::Scope::Full,
-                &recorded,
-                CountCorrection {
-                    amends: POOLED_ENTRY,
-                    principal: Some("pseudonym-1"),
-                    lane: LANE_M,
-                    card_epoch_ms: 1_700_000_000_000,
-                    now: counts(800),
-                    authorised_by: "root",
-                    reason: "duplicate charge on a retried request",
-                    pool: Some("pool-a"),
-                },
-            )
-            .expect("a pooled root correction lands");
-            let app = busbar_kernel::test_support::TestApp::new().build();
-            busbar_kernel::plane_driver::engine_host(&app).hook_read(
-                HOOK,
-                Some("pseudonym-1"),
-                "chat",
-                false,
-            );
-        }
+    let book = boot(std::path::Path::new(dir));
+    match phase {
+        "seal" => access(HOOK),
         "read" => {
             let durability = book.lock().unwrap_or_else(|p| p.into_inner());
             assert!(
@@ -134,64 +86,24 @@ fn restart_phase() {
                 "{:?}",
                 durability.restart_findings
             );
-            let now = counts_now(ENTRY, &recorded);
-            assert_eq!(now, counts(800), "the correction survived the restart");
             assert_eq!(
-                priced(&now),
-                2_000_000,
-                "and its money with it: 800 x 2,500 nano-units, not the recorded 2,500,000"
+                accessed(),
+                vec![HOOK.to_string()],
+                "the content access survived the restart"
             );
-            let accesses: Vec<_> = node_recent()
-                .into_iter()
-                .filter_map(|a| match a.body {
-                    AmendBody::Access(x) if x.reader == Reader::Hook && x.name == HOOK => Some(x),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(accesses.len(), 1, "the content access survived the restart");
-            // Q64/Q67: the pool rides the journal record; the unscoped one reads back unscoped.
-            let pools: Vec<_> = (busbar_kernel::audit::amend::node_corrections().into_iter())
-                .filter_map(|a| match a.body {
-                    AmendBody::Adjust(x) => Some((x.amends_hash, x.pool)),
-                    AmendBody::Access(_) => None,
-                })
-                .collect();
-            assert_eq!(
-                pools,
-                vec![
-                    (ENTRY.to_string(), None),
-                    (POOLED_ENTRY.to_string(), Some("pool-a".to_string()))
-                ],
-                "the pool survived the restart, and the unscoped correction stayed unscoped"
-            );
-            assert_eq!(accesses[0].fields, vec!["content".to_string()]);
         }
-        // U15: the on-demand verify sees an edit to the HELD amendment run. One correction is
-        // sealed and `/verify` reports nothing; the held run is then edited in place, and `/verify`
-        // names the amendment chain. A process of its own, because the node journal is the
-        // process's one journal.
+        // U15: the on-demand verify sees an edit to the HELD amendment run. One access is sealed
+        // and `/verify` reports nothing; the held run is then edited in place, and `/verify` names
+        // the amendment chain. A process of its own, because the node journal is the process's one.
         #[cfg(feature = "root-admin")]
         "tamper" => {
-            correct_counts(
-                busbar_contract::authz::Scope::Full,
-                &recorded,
-                CountCorrection {
-                    amends: ENTRY,
-                    principal: Some("pseudonym-1"),
-                    lane: LANE_M,
-                    card_epoch_ms: 1_700_000_000_000,
-                    now: counts(800),
-                    authorised_by: "root",
-                    reason: "duplicate charge on a retried request",
-                    pool: None,
-                },
-            )
-            .expect("a root correction lands");
+            access(HOOK);
             let findings = |answer: crate::root::units_admin::AdminAnswer| -> String {
                 String::from_utf8(answer.body).expect("utf-8")
             };
             let clean = crate::root::units_admin::bound::verify_effect(
                 &crate::root::units_admin::UnopenedLedger,
+                None,
             )
             .expect("verify answers");
             let clean = findings(clean);
@@ -200,6 +112,7 @@ fn restart_phase() {
             let tampered = findings(
                 crate::root::units_admin::bound::verify_effect(
                     &crate::root::units_admin::UnopenedLedger,
+                    None,
                 )
                 .expect("verify answers"),
             );
@@ -225,15 +138,9 @@ const PAD_BODY: usize = 100_000;
 /// book, bind it.
 fn store_boot(slots: &crate::root::store_double::RecordSlots) -> Arc<Mutex<Durability>> {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    let mut durability = build_on_store(
-        &DurabilityConfig { data_dir: None },
-        STORE_NODE,
-        lane,
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(|| None),
-        None,
-    )
-    .expect("the store reads back");
+    let mut durability =
+        build_on_store(&DurabilityConfig { data_dir: None }, STORE_NODE, lane, None)
+            .expect("the store reads back");
     durability
         .restore_amendments()
         .expect("the chain reads back");
@@ -254,49 +161,15 @@ fn store_drained(book: &Arc<Mutex<Durability>>) {
     );
 }
 
-/// A root correction of the entry `amends` from 1,000 input units to 800.
-fn correct(amends: &str) {
-    correct_counts(
-        busbar_contract::authz::Scope::Full,
-        &counts(1_000),
-        CountCorrection {
-            amends,
-            principal: Some("pseudonym-1"),
-            lane: LANE_M,
-            card_epoch_ms: 1_700_000_000_000,
-            now: counts(800),
-            authorised_by: "root",
-            reason: "duplicate charge on a retried request",
-            pool: None,
-        },
-    )
-    .expect("a root correction to a non-negative count lands");
-}
-
 /// THE `store` PHASE (audit R1#1): a node with no data directory whose chain outgrows one memory
-/// segment. The first boot seals the migration marker and a correction, pads the journal past one
-/// segment, seals a second correction, and stops; the second boot over the same store must see
-/// both corrections and the marker, with no restart finding.
+/// segment. The first boot seals an access, pads the journal past one segment, seals a second
+/// access, and stops; the second boot over the same store must see both, with no restart finding.
 fn store_phase() {
     let slots = crate::root::store_double::RecordSlots::new();
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    let sealed = MigrationMarker {
-        checkpoint_seq: 0,
-        node: STORE_NODE,
-        sealed_at: 1_700_000_000,
-        body_hash: [7u8; 32],
-        balances: 3,
-        cells_read: 11,
-        rate_card_version: 5,
-    };
     {
         let book = store_boot(&slots);
-        book.lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .migration_records(&token, StepName::Meter)
-            .write_marker(&sealed)
-            .expect("the marker goes on the chain");
-        correct(ENTRY);
+        access(HOOK);
         let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
         for _ in 0..pads {
             book.lock()
@@ -309,7 +182,7 @@ fn store_phase() {
                 )
                 .expect("the padding goes on the chain");
         }
-        correct(POOLED_ENTRY);
+        access(LATE_HOOK);
         store_drained(&book);
         assert!(
             book.lock()
@@ -323,29 +196,11 @@ fn store_phase() {
     }
 
     let restarted = store_boot(&slots);
-    let mut durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
+    let durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
     assert_eq!(
-        durability.migration_marker(),
-        Some(sealed.clone()),
-        "the restarted node reads the marker its first boot sealed"
-    );
-    assert_eq!(
-        durability
-            .migration_records(&token, StepName::Meter)
-            .read_marker()
-            .expect("readable"),
-        Some(sealed),
-        "the migration step reads the marker, so it does not seal a second opening"
-    );
-    assert_eq!(
-        counts_now(ENTRY, &counts(1_000)),
-        counts(800),
-        "the correction sealed before the roll survived the restart"
-    );
-    assert_eq!(
-        counts_now(POOLED_ENTRY, &counts(1_000)),
-        counts(800),
-        "the correction sealed after the roll survived the restart"
+        accessed(),
+        vec![HOOK.to_string(), LATE_HOOK.to_string()],
+        "the accesses sealed before and after the roll survived the restart"
     );
     assert!(
         durability.restart_findings.is_empty(),
@@ -354,22 +209,31 @@ fn store_phase() {
     );
 }
 
-/// A NODE WITH NO DATA DIRECTORY WHOSE CHAIN OUTGREW ONE MEMORY SEGMENT keeps its corrections and its
-/// migration marker across a restart (audit R1#1). The memory log keeps only its newest segment
-/// resident; the store keeps the rest, and every chain read after boot reads the whole of it. With
-/// the reads on the resident segment only, the restart read the marker as absent and the corrections
-/// as never made (the money reverted). See the `store` phase.
+/// A NODE WITH NO DATA DIRECTORY WHOSE CHAIN OUTGREW ONE MEMORY SEGMENT keeps its amendments across a
+/// restart (audit R1#1). The memory log keeps only its newest segment resident; the store keeps the
+/// rest, and every chain read after boot reads the whole of it. See the `store` phase.
 #[test]
-fn a_chain_past_one_memory_segment_keeps_its_corrections_and_marker_over_the_store() {
+fn a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-store");
-    run_phase("store", &dir.0);
+    run_phase(
+        "a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store",
+        "store",
+        &dir.0,
+    );
 }
 
-/// Run [`restart_phase`] in a fresh process of this test binary.
-fn run_phase(phase: &str, dir: &std::path::Path) {
+/// Run `phase` in a fresh process of this test binary: the test `test` again, which runs the phase
+/// ([`child_phase`]).
+fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::durability::amend::tests::restart_phase"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .args([
+            "--exact",
+            &format!("root::durability::amend::tests::{test}"),
+        ])
+        .args(["--test-threads", "1", "--nocapture"])
         .env(PHASE, phase)
         .env(DIR, dir)
         .output()
@@ -387,32 +251,40 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
 #[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-verify");
-    run_phase("tamper", &dir.0);
+    run_phase(
+        "verify_reports_an_edit_to_the_held_amendment_run",
+        "tamper",
+        &dir.0,
+    );
 }
 
-/// A CORRECTED COUNT AND A CONTENT ACCESS SURVIVE A RESTART. The first process seals a root
-/// correction (1,000 input units corrected to 800) and a hook's content access; the second, whose
-/// node journal starts empty, boots over the same data directory and reads the count as 800 — and
-/// the money view as 800 × the card — and finds the access. With the amendments held in memory
-/// only, the second process read the count as recorded and found no access.
+/// A CONTENT ACCESS SURVIVES A RESTART. The first process seals a hook's content access; the second,
+/// whose node journal starts empty, boots over the same data directory and finds it. With the
+/// amendments held in memory only, the second process found no access.
 #[test]
-fn a_corrected_count_and_a_content_access_survive_a_restart() {
+fn a_content_access_survives_a_restart() {
+    if child_phase() {
+        return;
+    }
     let dir = crate::root::durability::Scratch::new("amend-restart");
-    run_phase("seal", &dir.0);
-    run_phase("read", &dir.0);
+    let test = "a_content_access_survives_a_restart";
+    run_phase(test, "seal", &dir.0);
+    run_phase(test, "read", &dir.0);
 }
 
 /// A NODE WITH NO DATA DIRECTORY rebuilds nothing, so it binds nothing: the node journal stays
 /// memory-only, the previous release's shape, and no amendment reaches its memory-buffered journal.
 #[test]
 fn without_a_data_dir_the_amendment_journal_is_neither_rebuilt_nor_bound() {
-    let mut durability = build_priced(
+    let mut durability = build_with_cards(
         &DurabilityConfig { data_dir: None },
         0,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(|| None),
+        None,
     )
     .expect("a memory-buffered journal cannot fail to open");
     durability

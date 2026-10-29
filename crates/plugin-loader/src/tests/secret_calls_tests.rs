@@ -51,7 +51,7 @@ fn settings() -> serde_json::Value {
 }
 
 /// A resolver no plugin reference reaches (the env source states no `secret_refs`).
-fn unreached(r: &SecretRef) -> Result<Vec<u8>, String> {
+fn unreached(r: &SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
     panic!("no secret reference to resolve: {}", r.describe())
 }
 

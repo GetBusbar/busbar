@@ -10,8 +10,6 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use sha2::Digest as _;
 
-// ── the unset trust is the posture every outbound connection already had ───────────────────────
-
 /// The default trust is genuinely nothing decided — the whole basis for the byte-identity claim.
 #[test]
 fn a_default_egress_trust_is_unset() {
@@ -61,8 +59,6 @@ fn the_key_info_walk_refuses_what_is_not_a_certificate() {
     assert!(subject_public_key_info(&[0x30, 0x80]).is_none()); // indefinite length is BER, not DER
     assert!(subject_public_key_info(&[0x02, 0x01, 0x01]).is_none()); // an INTEGER, not a certificate
 }
-
-// ── each trust setting, through a real handshake ───────────────────────────────────────────────
 
 /// A CA and a leaf it signs for `sans`: (ca_der, leaf_chain_der, leaf_key_der).
 fn ca_and_leaf(sans: &[&str]) -> (Vec<u8>, Vec<Vec<u8>>, Vec<u8>) {
@@ -259,8 +255,6 @@ fn a_client_identity_that_does_not_parse_is_refused() {
         Err(BadClientIdentity(_))
     ));
 }
-
-// ── the key pin walk, against a certificate somebody else built ────────────────────────────────
 
 /// A self-signed certificate over `kp` naming `names`.
 fn cert_over(kp: &rcgen::KeyPair, names: &[&str]) -> Vec<u8> {

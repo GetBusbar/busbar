@@ -84,11 +84,10 @@ pub const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
 pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// Default ceiling on a honored upstream `Retry-After` (seconds). Mirrors `store.rs` (24h).
 pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
-/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes). The literal lives ONCE, in
-/// the neutral `proxy` module (which owns the process-global this seeds), so the serde default here
-/// and the accessor a plane reads can never drift apart.
+/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes): the egress unit's
+/// default, so the serde default here and the accessor a plane reads can never drift apart.
 pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
-    crate::proxy::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
+    busbar_kernel_egress::upstream::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
 /// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
 /// upstream reads already apply (`proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
 /// body must NOT be buffered whole into memory via an unbounded `resp.bytes()` read — that OOMs
@@ -96,26 +95,6 @@ pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
 /// legitimate signed plugin tarball while bounding the worst case; the download is aborted with a
 /// clear "exceeded the cap" error the instant more bytes arrive, never buffered past it.
 pub const DEFAULT_PLUGIN_FETCH_MAX_BYTES: usize = 256 * 1024 * 1024;
-/// Default depth, in FRAMES, of the OUTBOUND queue on one full-duplex leg: how many frames a plane
-/// may have handed a socket that has not yet drained them.
-///
-/// The mirror of the inbound queue depth the duplex acceptor and dialer already bound, pointed the
-/// other way, and it is a cap for the same reason. An UNBOUNDED outbound queue charges this node's
-/// memory for the difference between the rate a plane produces frames at and the rate the far end
-/// accepts them: a relay leg whose upstream has stalled (a wedged provider, a peer that stopped
-/// reading, a socket held open by a middlebox) goes on accepting frames forever, and the amount of
-/// memory one session can cost is then decided by the producer alone with nothing on the other side
-/// of the equation. Bounded, the producer's own `send` waits for capacity instead, which is what
-/// pushes the stall back to whoever is causing it — the same discipline the inbound side applies to
-/// a flooding peer. 64 frames is deep enough that ordinary jitter between a plane's writes and a
-/// socket's drain never reaches it, and shallow enough that a wedged leg is bounded by a queue and
-/// not by the heap.
-///
-/// Lives HERE, with every other operational cap, rather than beside the transport that reads it: it
-/// is the same kind of number as the rest of this page, and a neutral transport reads it without
-/// naming the engine. No `limits:` key drives it — like [`DEFAULT_MAX_TOKENS`], the constant IS the
-/// posture.
-pub const DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES: usize = 64;
 /// Default TLS handshake wall-clock bound (seconds). Mirrors `tls.rs`.
 pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// Default inbound request-BODY read bound (seconds): the max time allowed BETWEEN inbound body
@@ -177,7 +156,7 @@ pub fn default_max_auto_provisioned_groups() -> usize {
     0
 }
 pub fn default_hook_content_max_bytes() -> usize {
-    crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES
+    crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES
 }
 pub fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
@@ -619,7 +598,7 @@ pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_
 /// this. The remaining consumer is the one test whose SUBJECT is racing the live
 /// cap by re-installing it in a hot loop with no rollback between iterations — `InstallGuard` cannot
 /// serve that (a guard restores on drop, but the test wants the value to keep flipping mid-run).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
     mirror_derived_caps(Some(resolved));
@@ -633,7 +612,7 @@ pub fn install(resolved: &LimitsResolved) {
 /// use `InstallGuard` for that, because a broken `InstallGuard::drop` would then silently repair the
 /// very state the assertions inspect. Mirrors the derived caps exactly as every other mutation does,
 /// so a raw poke cannot leave the `proxy` globals disagreeing with the accessors.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn set_installed(slot: Option<LimitsResolved>) {
     mirror_derived_caps(slot.as_ref());
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = slot;
@@ -687,27 +666,23 @@ impl Drop for InstallGuard {
     }
 }
 
-/// Mirror the upstream-error-body cap, the egress translate-body cap AND the hook content ceiling
+/// Mirror the egress translate-body cap AND the hook content ceiling
 /// into the `proxy` process globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read
 /// the translate cap) sees the SAME value busbar-core's own accessors return. Called after EVERY
 /// mutation of `INSTALLED` (install, reload, and the [`InstallGuard`] rollback) with that same
 /// slot's value, resolving the `None`/uninstalled case to the historical default exactly as each
 /// accessor does — the mirrors can never diverge from the accessors.
 fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
-    let cap = slot
-        .map(|l| l.upstream_error_body_max_bytes)
-        .unwrap_or(DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
-    crate::proxy::set_max_upstream_buffered_bytes(cap);
     // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
     // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
     let translate_cap = slot
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
-    crate::proxy::set_max_translate_body_bytes(translate_cap);
-    // The hook CONTENT ceiling, with the uninstalled fallback the proxy global starts at, so a
+    busbar_kernel_egress::upstream::set_max_translate_body_bytes(translate_cap);
+    // The hook CONTENT ceiling, with the uninstalled fallback the hooks global starts at, so a
     // rejected apply's ceiling goes back with the rest of its limits (audit kernel-K1 #5).
     let hook_content = slot
         .map(|l| l.hook_content_max_bytes)
-        .unwrap_or(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
-    crate::proxy::set_hook_content_max_bytes(hook_content);
+        .unwrap_or(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    crate::hooks::set_hook_content_max_bytes(hook_content);
 }

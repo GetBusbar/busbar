@@ -168,7 +168,7 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
 /// are held for the spawns. A door's root cells build their connector with this same resolver.
 #[must_use]
 pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
-    busbar_kernel::config::secret::resolve_linked_string_at_config
+    busbar_core_connector::spawn_env::linked_spawn_secret
 }
 
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, each opened

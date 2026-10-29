@@ -37,7 +37,7 @@ fn workdir(tag: &str) -> PathBuf {
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(
         d.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     d

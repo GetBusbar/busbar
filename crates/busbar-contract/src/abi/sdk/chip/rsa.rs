@@ -73,6 +73,13 @@ fn mgf1_sha1(seed: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
     out
 }
 
+/// The SHA-256 of the PEM key's DER body: what `server_public_key_sha256` pins.
+pub(crate) fn key_sha256(pem: &[u8]) -> Result<[u8; 32], Refused> {
+    let der = pem_body(pem).ok_or(BAD_KEY)?;
+    rsa_public_key(&der).ok_or(BAD_KEY)?;
+    Ok(*super::digests::sha256(&[&der]))
+}
+
 /// `message` encrypted to the PEM public key `pem` with OAEP over SHA-1 and the 20-byte `seed`.
 pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8], seed: &[u8; 20]) -> Result<Vec<u8>, Refused> {
     let der = pem_body(pem).ok_or(BAD_KEY)?;

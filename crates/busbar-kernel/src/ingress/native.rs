@@ -5,7 +5,7 @@
 //!
 //! Everything that must answer a request from its PATH ALONE — the oversized-body `413` reshape,
 //! the `404` fallback, the `405` wrong-method reply, the auth-time `401` — comes through here, so
-//! there is exactly one place that turns [`crate::plane::PlaneDispatch::ingress_of`]'s answer into
+//! there is exactly one place that turns [`crate::plane_driver::dispatch::PlaneDispatch::ingress_of`]'s answer into
 //! bytes. The alternative is what shipped: several sites each deciding for themselves, from a
 //! classifier that could not see the mount table, and quietly disagreeing about what a given mounted
 //! plane's path is.
@@ -16,7 +16,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use crate::plane::Ingress;
+use crate::plane_driver::dispatch::Ingress;
 
 /// The dialect an answer to `ingress` is SHAPED IN, as a name the protocol registry understands.
 ///
@@ -41,7 +41,7 @@ pub fn envelope_dialect(ingress: Ingress) -> &'static str {
     // caller gets the generic envelope — the honest deletion behaviour.
     ingress
         .shaping_wire_format()
-        .or_else(crate::proto::residual_default_dialect)
+        .or_else(crate::ingress::protocols::residual_default_dialect)
         .unwrap_or("")
 }
 
@@ -68,7 +68,7 @@ pub(crate) fn native_error(
         // [`envelope_dialect`] for what is chosen then, and why that is a decision about the reply
         // rather than the fallthrough the old classifier smuggled into every site that read it.
         Ingress::Fallback(_) => {
-            crate::proxy::ingress_error(envelope_dialect(ingress), status, kind, message)
+            crate::ingress::ingress_error(envelope_dialect(ingress), status, kind, message)
         }
     }
 }

@@ -171,30 +171,63 @@ pub trait Breaker: sealed::Sealed {
     ) -> LaneState;
 }
 
-/// Every `(pool, destination)` cell, nested pool-first. The default cell (direct/ad-hoc routes)
-/// lives under pool `""`, exactly as 1.5.5's `LaneState`-embedded default cell did.
+/// One destination's breaker state: its lifetime budget, where one is declared, and its cells —
+/// the default cell (direct/ad-hoc routes) under pool `""`, exactly as 1.5.5's
+/// `LaneState`-embedded default cell did, and one per named pool that has touched it.
 ///
-/// Nested rather than keyed on a `(String, DestinationId)` tuple because a tuple key can only be
-/// looked up by a whole tuple, which means minting an owned `String` from the caller's `&str` on
-/// EVERY lookup — an allocation per admission and per observation, on the hot path, thrown away
-/// again immediately. Nested, both halves are borrowed: the pool as `&str`, the destination as the
-/// small `Copy` locator it is. Only creating a cell spells the pool name into a `String`.
-type CellMap = HashMap<String, HashMap<DestinationId, Arc<BreakerCell>>>;
+/// The cells are a short list scanned by `&str`, not a map: a destination sits in a handful of
+/// pools, so a scan of borrowed names beats hashing the pool name on every admission and
+/// observation, and nothing on the hot path owns a copy of it. Only creating a cell spells the pool
+/// name into a `Box<str>`. Being one list, a cell is reachable exactly when it is registered for
+/// the destination's hard-down fan-out ([`BreakerUnit::hard_down_all`]).
+#[derive(Default)]
+struct Destination {
+    budget: Option<Arc<LifetimeBudget>>,
+    cells: Vec<(Box<str>, Arc<BreakerCell>)>,
+}
+
+impl Destination {
+    fn cell(&self, pool: &str) -> Option<&Arc<BreakerCell>> {
+        self.cells
+            .iter()
+            .find(|(p, _)| &**p == pool)
+            .map(|(_, c)| c)
+    }
+}
+
+/// The destination map's hasher: a destination is a small integer, so one multiply spreads it
+/// over the table, where the default SipHash would spend a keyed hash per admission.
+#[derive(Default, Clone, Copy)]
+struct DestinationHash(u64);
+
+impl std::hash::Hasher for DestinationHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+type Destinations =
+    HashMap<DestinationId, Destination, std::hash::BuildHasherDefault<DestinationHash>>;
 
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
-/// budget, behind one lock each. Cells are created lazily on first touch (a cell not yet created
-/// inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
+/// budget, behind one lock, keyed by destination. Cells are created lazily on first touch (a cell
+/// not yet created inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
 ///
 /// The unit classifies nothing. Reading an upstream's error body against an operator's `error_map`
 /// is the plane's work, done once by the plane's own classifier; the unit is told the verdict as an
 /// [`Outcome`] and acts on it.
 pub struct BreakerUnit {
-    cells: RwLock<CellMap>,
-    /// Which pools exist for a given destination, so a hard-down fan-out can reach every one of
-    /// them without scanning the whole cell map. Populated the first time a pool cell for that
-    /// destination is touched.
-    pools_by_destination: RwLock<HashMap<DestinationId, Vec<String>>>,
-    budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
+    destinations: RwLock<Destinations>,
     /// Atomics, not plain fields: a unit that outlives one configuration generation (the plane
     /// breaker store is process-lifetime) takes each new generation's `limits.*` through
     /// [`Self::set_limits`] without being rebuilt and losing its learned cells.
@@ -212,9 +245,7 @@ impl BreakerUnit {
     /// A breaker unit with the ADR-0002 defaults.
     pub fn new() -> Self {
         Self {
-            cells: RwLock::new(HashMap::new()),
-            pools_by_destination: RwLock::new(HashMap::new()),
-            budgets: RwLock::new(HashMap::new()),
+            destinations: RwLock::new(Destinations::default()),
             hard_down_cooldown_secs: AtomicU64::new(DEFAULT_HARD_DOWN_COOLDOWN_SECS),
             max_honored_retry_after_secs: AtomicU64::new(DEFAULT_MAX_HONORED_RETRY_AFTER_SECS),
         }
@@ -241,26 +272,30 @@ impl BreakerUnit {
             .store(max_honored_retry_after_secs, Ordering::Relaxed);
     }
 
+    /// The destination map, read. A poisoned lock is recovered: every write under it leaves the map
+    /// whole.
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, Destinations> {
+        self.destinations.read().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Declare a destination's lifetime request budget. `max_requests < 0` means unlimited
     /// (1.5.5's default; see [`LifetimeBudget::limited`]). Calling this again for the same
     /// destination replaces its budget counter (a config-apply rebuild, not a per-request operation).
     pub fn set_budget(&self, destination: DestinationId, max_requests: i64) {
         let budget = LifetimeBudget::limited(max_requests);
-        self.budgets
+        self.destinations
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(destination, Arc::new(budget));
+            .entry(destination)
+            .or_default()
+            .budget = Some(Arc::new(budget));
     }
 
     /// The destination's declared budget itself, shared rather than copied: a caller that
     /// admits against one destination many times holds the counter this unit spends, so there is
     /// one budget and one figure however many readers it has. `None` if never declared.
     pub fn budget(&self, destination: DestinationId) -> Option<Arc<LifetimeBudget>> {
-        self.budgets
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&destination)
-            .map(Arc::clone)
+        self.read().get(&destination)?.budget.clone()
     }
 
     /// The sticky cooldown a hard-down trip arms (see [`Self::with_limits`]).
@@ -276,11 +311,7 @@ impl BreakerUnit {
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
     /// (an undeclared destination is treated as unlimited, matching 1.5.5's default).
     pub fn budget_remaining(&self, destination: DestinationId) -> Option<i64> {
-        self.budgets
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&destination)
-            .and_then(|b| b.remaining())
+        self.read().get(&destination)?.budget.as_ref()?.remaining()
     }
 
     /// Whether the destination has nothing left to spend: the same test [`LifetimeBudget::spend`]
@@ -294,10 +325,9 @@ impl BreakerUnit {
     #[must_use]
     pub fn spend_budget(&self, destination: DestinationId) -> bool {
         match self
-            .budgets
             .read()
-            .unwrap_or_else(|e| e.into_inner())
             .get(&destination)
+            .and_then(|d| d.budget.as_ref())
         {
             Some(b) => b.spend(),
             None => true,
@@ -307,10 +337,9 @@ impl BreakerUnit {
     /// Compensating refund of one unit previously spent (see [`budget::LifetimeBudget::refund`]).
     pub fn refund_budget(&self, destination: DestinationId) {
         if let Some(b) = self
-            .budgets
             .read()
-            .unwrap_or_else(|e| e.into_inner())
             .get(&destination)
+            .and_then(|d| d.budget.as_ref())
         {
             b.refund();
         }
@@ -345,20 +374,30 @@ impl BreakerUnit {
 
     /// The `(pool, destination)` cell if it exists, creating nothing.
     fn existing(&self, pool: &str, destination: DestinationId) -> Option<Arc<BreakerCell>> {
-        self.cells
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(pool)
-            .and_then(|by_destination| by_destination.get(&destination))
-            .cloned()
+        self.read().get(&destination)?.cell(pool).cloned()
+    }
+
+    /// Run `f` on the `(pool, destination)` cell under the map's read lock, with no copy of the
+    /// handle — creating the cell ([`Self::cell`]) on its first touch. `f` must not call back into
+    /// the unit.
+    fn on_cell<R>(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        f: impl Fn(&BreakerCell) -> R,
+    ) -> R {
+        if let Some(cell) = self.read().get(&destination).and_then(|d| d.cell(pool)) {
+            return f(cell);
+        }
+        f(&self.cell(pool, destination))
     }
 
     /// The one creation path. `seed` runs on the cell exactly when THIS call creates it, under the
-    /// cell map's write lock, with the destination's default cell when one exists and `pool` is a
-    /// named pool. Read under that lock, the default cell's health is the one a concurrent
+    /// map's write lock, with the destination's default cell when one exists and `pool` is a named
+    /// pool. Read under that lock, the default cell's health is the one a concurrent
     /// [`Self::hard_down_all`] either already parked or has yet to fan out from: that walk tripped
-    /// the default cell before it reads the registered pools, and registration happens here, under
-    /// the same lock, before the seed runs.
+    /// the default cell before it reads the destination's cells, and a cell is published into that
+    /// same list, under the same lock, after the seed runs — reachable is registered.
     fn cell_with(
         &self,
         pool: &str,
@@ -370,41 +409,22 @@ impl BreakerUnit {
         if let Some(c) = self.existing(pool, destination) {
             return c;
         }
-        let mut cells = self.cells.write().unwrap_or_else(|e| e.into_inner());
-        let default = if pool.is_empty() {
-            None
-        } else {
-            cells
-                .get("")
-                .and_then(|by_destination| by_destination.get(&destination))
-                .cloned()
-        };
-        // The pool name is registered against the destination BEFORE the cell is published, and
-        // both happen under the cell map's write lock. Publishing first left a window in which the
-        // cell was fully reachable — admissions ran through it — while `hard_down_all`, which walks
-        // the destination's registered names, could not see it: a bad key would suppress every
-        // other pool for that destination and leave this one serving. Reachable now implies
-        // registered. The lock order matches `hard_down_all`'s own, cells before pools.
-        {
-            let mut pools = self
-                .pools_by_destination
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            let list = pools.entry(destination).or_default();
-            if !list.iter().any(|p| p == pool) {
-                list.push(pool.to_string());
-            }
+        let mut destinations = self.destinations.write().unwrap_or_else(|e| e.into_inner());
+        let dest = destinations.entry(destination).or_default();
+        if let Some(c) = dest.cell(pool) {
+            return Arc::clone(c);
         }
-        cells
-            .entry(pool.to_string())
-            .or_default()
-            .entry(destination)
-            .or_insert_with(|| {
-                let cell = BreakerCell::new();
-                seed(&cell, default.as_deref());
-                Arc::new(cell)
-            })
-            .clone()
+        let cell = BreakerCell::new();
+        seed(
+            &cell,
+            (!pool.is_empty())
+                .then(|| dest.cell(""))
+                .flatten()
+                .map(|c| &**c),
+        );
+        let cell = Arc::new(cell);
+        dest.cells.push((Box::from(pool), Arc::clone(&cell)));
+        cell
     }
 
     /// Whether a cell for this pool and destination already exists, without creating one.
@@ -413,11 +433,7 @@ impl BreakerUnit {
     /// and ask what else can see it then.
     #[cfg(test)]
     pub(crate) fn has_cell(&self, pool: &str, destination: DestinationId) -> bool {
-        self.cells
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(pool)
-            .is_some_and(|by_destination| by_destination.contains_key(&destination))
+        self.existing(pool, destination).is_some()
     }
 
     /// Trip EVERY existing pool cell for `destination` hard-down at once (the default `""`
@@ -431,20 +447,23 @@ impl BreakerUnit {
         let default_cell = self.cell("", destination);
         let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs());
 
-        for pool in self.named_pools(destination) {
-            let cell = self.cell(&pool, destination);
+        for (_, cell) in self.named_cells(destination) {
             let _ = cell.hard_down(now, self.hard_down_cooldown_secs());
         }
         default_was_fresh
     }
 
-    /// The named pools (never the default `""`) that have a cell for `destination`.
-    fn named_pools(&self, destination: DestinationId) -> Vec<String> {
-        self.pools_by_destination
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+    /// The named pools' cells (never the default `""`) for `destination`, with their pools.
+    fn named_cells(&self, destination: DestinationId) -> Vec<(Box<str>, Arc<BreakerCell>)> {
+        self.read()
             .get(&destination)
-            .map(|pools| pools.iter().filter(|p| !p.is_empty()).cloned().collect())
+            .map(|d| {
+                d.cells
+                    .iter()
+                    .filter(|(p, _)| !p.is_empty())
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -452,12 +471,11 @@ impl BreakerUnit {
     /// `destination` in ANY cell — not Closed, or Closed inside a pending soft cooldown. Read-only:
     /// a cell nothing has touched is Closed, and none is created.
     pub fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
-        let pools = self.named_pools(destination);
-        let cells = self.cells.read().unwrap_or_else(|e| e.into_inner());
-        std::iter::once("")
-            .chain(pools.iter().map(String::as_str))
-            .filter_map(|pool| cells.get(pool).and_then(|by| by.get(&destination)))
-            .any(|cell| suppressed(cell, now).is_some())
+        self.read().get(&destination).is_some_and(|d| {
+            d.cells
+                .iter()
+                .any(|(_, cell)| suppressed(cell, now).is_some())
+        })
     }
 
     /// ONE HEALTH PROBE'S ANSWER, folded into EVERY cell of `destination` — the default cell and
@@ -482,9 +500,8 @@ impl BreakerUnit {
         _token: &Pass<Route>,
     ) {
         let cells = || {
-            std::iter::once(String::new())
-                .chain(self.named_pools(destination))
-                .map(move |pool| (self.cell(&pool, destination), pool))
+            std::iter::once((Box::from(""), self.cell("", destination)))
+                .chain(self.named_cells(destination))
         };
         match outcome {
             Outcome::RecordNothing => {}
@@ -492,7 +509,7 @@ impl BreakerUnit {
                 let _ = self.hard_down_all(destination, now);
             }
             Outcome::Success => {
-                for (cell, _) in cells() {
+                for (_, cell) in cells() {
                     if let Some(observed) = suppressed(&cell, now) {
                         let _ = cell.close_if_recoverable(now, observed);
                     }
@@ -500,7 +517,7 @@ impl BreakerUnit {
                 }
             }
             Outcome::Transient { retry_after } => {
-                for (cell, pool) in cells() {
+                for (pool, cell) in cells() {
                     if let Some(cfg) = cfg_of(&pool) {
                         let _ = cell.record_failure(
                             now,
@@ -526,8 +543,7 @@ impl BreakerUnit {
         if self.budget_exhausted(destination) {
             return Err(LaneState::BudgetExhausted);
         }
-        let cell = self.cell(pool, destination);
-        match cell.acquire(now) {
+        self.on_cell(pool, destination, |cell| match cell.acquire(now) {
             // The refusal's own reason, not a second look at a cell a peer may have moved: a
             // caller is entitled to read a refusal as "this would not have admitted".
             ProbeAdmit::Denied(DeniedBy::Cooling { until }) => Err(LaneState::Suppressed { until }),
@@ -536,14 +552,15 @@ impl BreakerUnit {
             ProbeAdmit::ProbeWon(epoch) => Ok(Admit {
                 probe_epoch: Some(epoch),
             }),
-        }
+        })
     }
 
     /// Release a probe won by [`Self::try_admit`] but never dispatched (owner-checked: a stale,
     /// late release cannot revert a newer probe a different caller has since won).
     pub fn release_probe(&self, pool: &str, destination: DestinationId, owned_epoch: u64) {
-        self.cell(pool, destination)
-            .release_probe_owned(owned_epoch);
+        self.on_cell(pool, destination, |cell| {
+            cell.release_probe_owned(owned_epoch)
+        });
     }
 }
 
@@ -580,16 +597,19 @@ impl Breaker for BreakerUnit {
             Outcome::RecordNothing => false,
             Outcome::HardDown => self.hard_down_all(destination, now),
             Outcome::Success => {
-                let _ = self.cell(pool, destination).record_success(now);
+                let _ = self.on_cell(pool, destination, |cell| cell.record_success(now));
                 false
             }
             // The trip signal is what the call REPORTS, decided under the cell's transition lock,
             // never a state read before it: a read here can be stale by the time `record_failure`
             // takes the lock, and would count a probe's reopen as a fresh trip.
-            Outcome::Transient { retry_after } => self
-                .cell(pool, destination)
-                .record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs())
-                .tripped(),
+            Outcome::Transient { retry_after } => {
+                let max_honored = self.max_honored_retry_after_secs();
+                self.on_cell(pool, destination, |cell| {
+                    cell.record_failure(now, cfg, retry_after, max_honored)
+                        .tripped()
+                })
+            }
         }
     }
 
