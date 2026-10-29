@@ -141,7 +141,7 @@ public = "true"
 [[suite]]
 id = "h2"
 standard = "HTTP/2 (RFC 9113)"
-plan = "h2spec over TLS (ALPN h2) against the tls: listener"
+plan = "h2spec over TLS (ALPN h2) against the tls: listener of the shipped binary"
 tier = "conformant"
 label = "HTTP/2"
 verdict = "conformance-verdict-h2"
@@ -218,4 +218,31 @@ plan = "busbar-export-otlp exporting into the official opentelemetry-collector-c
 tier = "capable"
 label = "OTLP"
 verdict = "conformance-verdict-otlp"
+public = "true"
+
+[[suite]]
+id = "evidence-audit-trail"
+standard = "Audit trail: hash-chained, Ed25519-signed, tamper-evident action log"
+plan = "an independent verifier written from docs/audit-chain-digest-v4.md over /audit/range of the shipped binary: the live chain verifies; tampered, deleted, reordered and truncated records are each refused"
+tier = "evidence-only"
+label = "Audit trail"
+verdict = "conformance-verdict-evidence-audit-trail"
+public = "true"
+
+[[suite]]
+id = "evidence-rbac"
+standard = "Scope-based RBAC: least-privilege admin scopes, per-verb grants, admin/data-plane separation"
+plan = "every admin operation the node's OpenAPI document lists, against principals lacking its scope (refused) and holding it (admitted), plus the data plane's key gate and plane separation"
+tier = "evidence-only"
+label = "RBAC"
+verdict = "conformance-verdict-evidence-rbac"
+public = "true"
+
+[[suite]]
+id = "evidence-tls"
+standard = "TLS / mutual TLS: native termination, client-certificate enforcement, admin plane isolation"
+plan = "the testssl subject (the tls suite) plus certless and rogue-CA clients refused on an mTLS data listener and on admin_tls with client_ca"
+tier = "evidence-only"
+label = "TLS / mTLS"
+verdict = "conformance-verdict-evidence-tls"
 public = "true"
