@@ -2730,6 +2730,48 @@ tools:
     );
 }
 
+/// The 1.6.0 FLAT `tools:` shape (`tools.<id>`, no `servers:` level) gets the same rename: the
+/// trust doc promises `--migrate-config` carries an MCP `refresh_ttl:` over to `verify_ttl:` with a
+/// loud warning, whichever shape the entry is written in.
+/// RED: a flat entry's `refresh_ttl` is left in place and nothing warns.
+#[test]
+fn migrate_renames_a_flat_tools_entry_refresh_ttl() {
+    let raw = r#"
+tools:
+  fs:
+    url: "https://fs.example.com/rpc"
+    pin: { mechanism: cert_spki, key: "sha256:abc" }
+    refresh_ttl: "6h"
+  docs:
+    url: "https://docs.example.com/rpc"
+    pin: { mechanism: unpinned }
+"#;
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["tools", "fs", "refresh_ttl"]).is_none(),
+        "the old `refresh_ttl` key must be removed: {}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["tools", "fs", "verify_ttl"]).and_then(|v| v.as_str()),
+        Some("6h"),
+        "the value is carried over onto `verify_ttl`: {}",
+        out.yaml
+    );
+    assert!(
+        dig(&doc, &["tools", "docs", "verify_ttl"]).is_none(),
+        "an entry that never set it is untouched: {}",
+        out.yaml
+    );
+    assert!(
+        out.warnings.iter().any(|w| {
+            w.contains("tools.fs.refresh_ttl -> verify_ttl") && w.contains("MAX staleness")
+        }),
+        "the rename must warn about the changed meaning: {:?}",
+        out.warnings
+    );
+}
+
 /// MIGRATION NEVER INVENTS `api_key: none`. Whether an upstream takes a credential is a fact about
 /// the deployment, not something readable off the config file: guessing `none` for a provider with
 /// no `api_key_env` to convert would silently disarm a provider that does need one — the same quiet
