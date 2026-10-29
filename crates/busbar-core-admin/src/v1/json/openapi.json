@@ -5268,7 +5268,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
+        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing; the card it verified is recorded as the agent's card records, which an instance opened again serves from",
         "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
