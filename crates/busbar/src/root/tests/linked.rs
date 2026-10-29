@@ -560,6 +560,24 @@ fn every_linked_plane_door_declares_what_its_statement_states() {
     }
 }
 
+/// THE LINKED PLANE DOORS' DECLARED DIAGNOSTICS JOIN THE CATALOGUE: every code a linked plane door
+/// declares (its `declares.diagnostics`, read as boot reads it) is one the catalogue does not hold
+/// yet, beside the linked entries' own codes. A collision refuses the boot (`register_diagnostics`
+/// exits 2 before anything runs, `--version` included), so the shipped table must never carry one.
+#[test]
+fn the_linked_plane_doors_declared_diagnostics_join_the_catalogue() {
+    let owned: Vec<&'static busbar_contract::diagnostic::Diagnostic> = crate::LINKED
+        .diagnostics
+        .iter()
+        .flat_map(|diags| diags.iter().copied())
+        .collect();
+    let declares =
+        crate::root::linked::plane_door_declares(&crate::LINKED).expect("the doors' declares read");
+    if let Err(refusal) = crate::root::linked::door_declared_diagnostics(&declares, &owned) {
+        panic!("a linked plane door's declared code does not join the catalogue: {refusal}");
+    }
+}
+
 /// THE LINKED SCRAPE SINK RENDERS THE RECORDER'S BYTES BACK. The build's linked export rows,
 /// registered as boot registers them (`linked_exports` through the one admission) and opened on the
 /// process's one dispatcher through the root's export rows, answer the frozen scrape module word
