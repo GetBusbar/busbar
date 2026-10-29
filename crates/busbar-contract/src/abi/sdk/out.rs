@@ -321,7 +321,6 @@ unsafe impl Scalar for crate::abi::transport::FrameSpan {}
 unsafe impl Scalar for crate::abi::transport::DatagramRoute {}
 unsafe impl Scalar for crate::abi::transport::RendezvousTerms {}
 unsafe impl Scalar for crate::abi::transport::DatagramYield {}
-unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
 /// the SDK's writers. Only the SDK makes one; it lives for the call.
@@ -916,6 +915,34 @@ impl<'a, T: AbiOut> Out<'a, T> {
     ) {
         let s = buf.str_at(span);
         self.put(pick, s);
+    }
+
+    /// Set the blob field `pick` names to the first `len` bytes of `buf`, the host's secret buffer
+    /// lent for this call, flagged secret (the credential chip, row 6: host-owned secret bytes): the SDK's writer for a resolved
+    /// value the host owns ([`crate::abi::sdk::cred::resolved`]). `len` is at most what was written.
+    pub(crate) fn host_secret(
+        &mut self,
+        pick: impl FnOnce(&T) -> &crate::abi::mechanism::call::Blob,
+        buf: &HostBuf<'_, u8>,
+        len: usize,
+    ) {
+        use crate::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
+        let blob = if len == 0 {
+            Blob {
+                ptr: ptr::null(),
+                len: 0,
+                fmt: 0,
+                flags: 0,
+            }
+        } else {
+            Blob {
+                ptr: buf.as_ptr().cast_const(),
+                len,
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            }
+        };
+        self.put(pick, blob);
     }
 
     /// Point the field `pick` names at the rows of `buf`, a host buffer lent for this call; the

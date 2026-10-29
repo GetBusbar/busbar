@@ -423,6 +423,45 @@ pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::
     auth_axis(linked().ok()?)
 }
 
+/// The root's reader of the outbound styles this build's auth plugins declare, linked and dropped
+/// in ([`install_declared_styles`]).
+pub type DeclaredStyles = fn() -> Vec<busbar_contract::auth_calls::DeclaredStyle>;
+
+static DECLARED_STYLES: std::sync::OnceLock<DeclaredStyles> = std::sync::OnceLock::new();
+
+/// THE ROOT'S DOOR onto the declared outbound styles (the first install stands). Installed once
+/// the plugins directory is scanned and before the configuration is first parsed, so a provider's
+/// `auth:` is read against every auth plugin this process loads, a dropped-in one as a linked one
+/// (BUSBAR-1.6.0.md Part 2 #2), and nothing is opened to read them.
+pub fn install_declared_styles(read: DeclaredStyles) {
+    let _ = DECLARED_STYLES.set(read);
+}
+
+/// THE OUTBOUND STYLES a provider's `auth:` may name (BUSBAR-1.6.0.md #50; arch-audit u29 F1): the
+/// ones this build's auth plugins declare, in the host's one listing order
+/// (`busbar_contract::auth_calls::listed_styles`), each with its declared flags (its endpoint bits
+/// among them): the root's reader ([`install_declared_styles`]), else the auth axis over this
+/// build's linked rows (a build with no root: a test binary's stand-in). The kernel names none.
+#[must_use]
+pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    if let Some(read) = DECLARED_STYLES.get() {
+        return read();
+    }
+    linked_auth_axis()
+        .map(|axis| axis.outbound_styles())
+        .unwrap_or_default()
+}
+
+/// The declared flags of the outbound style `word` ([`declared_styles`]; `abi::auth::STYLE_*`);
+/// `0` when none declares it.
+#[must_use]
+pub fn style_flags(word: &str) -> u32 {
+    declared_styles()
+        .into_iter()
+        .find(|s| s.name == word)
+        .map_or(0, |s| s.flags)
+}
+
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores and the linked auth rows — a test build (no root) stands its fixture entries in. The
 /// root's registry build admits each through the admission a dropped-in row takes (DECISIONS #2
@@ -898,6 +937,14 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                     reason = %s.reason,
                     "plugin present but NOT loaded (trust policy)"
                 );
+                // AUDITED, in host words: the trust evaluator's category, never its reason text
+                // (which embeds manifest bytes).
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Trust,
+                    "file",
+                    &s.file,
+                    s.code,
+                );
             }
             for p in &loadable {
                 match &p.trust {
@@ -957,10 +1004,10 @@ pub(crate) fn resolve_admin_token(
     let token = resolver
         .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
         .map_err(|e| unresolved_token(op, &e))?;
-    if token.trim().is_empty() {
+    if token.expose(&crate::seal::lend()).trim().is_empty() {
         return Err(blank_token(op));
     }
-    Ok(Some(busbar_contract::redacted::Secret::new(token)))
+    Ok(Some(token))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
@@ -1027,7 +1074,7 @@ pub(crate) fn resolve_signing_key(
              issues busbar-signed keys."
         )
         })?;
-    let secret = parse_signing_secret(&bytes)?;
+    let secret = parse_signing_secret(bytes.expose(&crate::seal::lend()))?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
@@ -1047,15 +1094,15 @@ pub(crate) fn resolve_at_rest_keys(
         return Ok(None);
     };
     let resolve = |path: &str, r: &config::SecretRef| {
-        let bytes = resolver
+        // The resolved key stays in the holder its source wrote it into (row 6), wiped when it drops.
+        let held = resolver
             .resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-            .map(zeroize::Zeroizing::new)
             .map_err(|e| {
                 format!(
                     "{path} did not resolve: {e}. It is a reference to an EXISTING secret                      (env/file/plugin) holding 32 random bytes; create one with `openssl rand -hex                      32`"
                 )
             })?;
-        governance::at_rest::parse_key(path, &bytes)
+        governance::at_rest::parse_key(path, held.expose(&crate::seal::lend()))
     };
     let key = resolve("credentials.at_rest.key", &at_rest.key)?;
     let previous = at_rest
@@ -1192,7 +1239,7 @@ pub(crate) fn build_secret_resolver(
             move |module: &str,
                   settings: &str,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
-                  -> Result<Vec<u8>, String> {
+                  -> Result<config::secret::Held, String> {
                 if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
                     // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
                     // open the plugin once.
@@ -1257,13 +1304,12 @@ impl OpenedSecrets {
         settings: &str,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<config::secret::Held, String> {
         let calls = self.calls(key, open)?;
         match scope {
             Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
             None => calls.resolve(settings.as_bytes()),
         }
-        .map(|m| m.expose(&crate::seal::lend()).clone())
         .map_err(|r| r.text)
     }
 }
@@ -1327,3 +1373,7 @@ mod opened_secrets_tests;
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
 mod store_row_tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_refusal_tests.rs"]
+mod plugin_refusal_tests;

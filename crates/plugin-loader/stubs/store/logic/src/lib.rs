@@ -16,8 +16,8 @@
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -131,8 +131,7 @@ pub struct MemoryStore {
     /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
     /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
     clock: AtomicU64,
-    /// The store v3 slots' own state: the `op_id` dedupe log, the caps, the drawn totals, the
-    /// slices, the ledger streams and the session directory ([`v3`]).
+    /// The store v3 slots' own state: the `op_id` dedupe log ([`v3`]).
     v3: v3::State,
 }
 
@@ -173,7 +172,7 @@ impl MemoryStore {
     pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
         // No age sweep rides this write: a record-leg row is never evicted by age (see the
         // `records` field's doc), because nothing here can tell an active work handle from a
-        // settled one. An EMPTY value is the host's strike (slot 40's rule): it removes the row.
+        // settled one. An EMPTY value is the host's strike (slot 26's rule): it removes the row.
         let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
         let at = (schema.to_string(), key.to_vec());
         if value.as_slice().is_empty() {
@@ -433,22 +432,6 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn scrub_key(&self, id: &str) -> StoreResult<()> {
-        let mut keys = self.keys();
-        let Some(key) = keys.get_mut(id) else {
-            return Err(StoreError(format!("scrub_key: unknown key '{id}'")));
-        };
-        if key.deleted_at.is_none() {
-            return Err(StoreError(format!(
-                "scrub_key: '{id}' is not tombstoned — delete it first"
-            )));
-        }
-        key.name.clear();
-        key.labels.clear();
-        key.revision = self.next_revision();
-        Ok(())
-    }
-
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .keys_read()
@@ -464,16 +447,6 @@ impl Store for MemoryStore {
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
-    }
-
-    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
-        // The money slots' windows first (the v3 lock is always taken before a map lock), then the
-        // token ledger's.
-        let slots = self.v3.purge_windows_before(before, self.now());
-        let mut usage = self.usage();
-        let held = usage.len();
-        usage.retain(|(_, window_start), _| *window_start >= before);
-        Ok(slots + (held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -684,18 +657,6 @@ impl Store for MemoryStore {
             .collect())
     }
 
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> StoreResult<Option<CredentialSecret>> {
-        Ok(self
-            .creds_read()
-            .values()
-            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
-            .cloned())
-    }
-
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
         let mut creds = self.creds();
         let Some(c) = creds.get_mut(id) else {
@@ -844,16 +805,35 @@ impl Store for MemoryStore {
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
-        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
-        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
-        // work), every other kind drops any row older than `before`.
+        // The rule-less form: `task` drops only TERMINAL rows (an interrupted task waiting on a human
+        // is exactly the row that sits still longest), every other kind drops any row older than
+        // `before`.
+        let retention = if kind == "task" {
+            Retention::TerminalOnly
+        } else {
+            Retention::Age
+        };
+        self.purge_plane_records(kind, before, retention)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        // WHICH rows go is the rule the purge is handed, never one inferred from the kind's name:
+        // under `TerminalOnly` an old ACTIVE row stays and an old TERMINAL one goes.
         let mut records = self.plane_records();
         let before_len = records.len();
         records.retain(|(k, _, _), r| {
-            if k != kind || r.ts >= before {
-                return true;
-            }
-            k == "task" && r.disposition != PlaneDisposition::Terminal
+            let goes = k == kind
+                && r.ts < before
+                && match retention {
+                    Retention::Age => true,
+                    Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
+                };
+            !goes
         });
         Ok((before_len - records.len()) as u64)
     }
