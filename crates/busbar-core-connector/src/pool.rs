@@ -15,8 +15,8 @@
 //!
 //! A connection that MULTIPLEXES (an `h2` connection, agreed in the handshake or by prior
 //! knowledge) is shared while it is in use: a concurrent open to the same place on the same shard
-//! rides it as its next stream (ARCHITECT ruling Q-L18-MUX, 1.5.5's pooled h2 client). An HTTP/1.1
-//! connection carries one exchange at a time and is lent again only once idle.
+//! rides it as its next stream (1.5.5's pooled h2 client). An HTTP/1.1 connection carries one
+//! exchange at a time and is lent again only once idle.
 //!
 //! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
 //! the need that dialled it (THE DESIGN §5, a connection belongs to the instance that opened it; §8,

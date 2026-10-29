@@ -3,16 +3,16 @@
 
 //! THE CONNECTOR'S TLS TEST KIT: the TLS far ends and the recording TLS fixture server, for the
 //! tests that need a real handshake.
-//! TLS stays in the connector (THE DESIGN; 1.6.0-TODO P2), so no other crate names a TLS library —
+//! TLS stays in the connector (THE DESIGN), so no other crate names a TLS library —
 //! not even in a test — and every row that needs a real handshake lives in this crate's own suite
 //! (a plane's transport battery rides the kernel's TLS test double instead).
 //!
 //! Test machinery only: compiled under `cfg(test)` for this crate's own suite, and under the
-//! `test-support` feature for a PLUGIN REPO'S conformance test (its host connector's TLS far ends,
-//! ARCHITECT Q-P4-9: the adapter lives in the plugin repo, a dev-dependency), so the far end's TLS is
-//! still this crate's and the plugin names no TLS library. Nothing in a shipped build reaches it.
-//! The gate below restates, on the file itself, the gate `lib.rs` puts on `pub mod test_support;`,
-//! so a per-file reader (`cargo xtask loc`) counts this file as the test machinery it is.
+//! `test-support` feature for a PLUGIN REPO'S conformance test (the adapter lives in the plugin
+//! repo, a dev-dependency), so the far end's TLS is still this crate's and the plugin names no TLS
+//! library. Nothing in a shipped build reaches it. The gate below restates, on the file itself, the
+//! gate `lib.rs` puts on `pub mod test_support;`, so a per-file reader (`cargo xtask loc`) counts
+//! this file as the test machinery it is.
 #![cfg(any(test, feature = "test-support"))]
 
 use std::io::{self, Read, Write};
@@ -69,8 +69,6 @@ pub fn certs_from_pem(pem: &str) -> Vec<Vec<u8>> {
         .map(|c| c.expect("certificate PEM").to_vec())
         .collect()
 }
-
-// ── the far end ──────────────────────────────────────────────────────────────────────────────────
 
 /// A test far end's TLS: its certificate and key, the client CA it demands a certificate chaining
 /// to (mutual TLS) when it names one, and the protocols it agrees by ALPN.
@@ -309,8 +307,6 @@ impl Write for StdClientSession {
         rustls::Stream::new(&mut self.conn, &mut self.tcp).flush()
     }
 }
-
-// ── the recording TLS fixture server ─────────────────────────────────────────────────────────────
 
 /// What one connection to a TLS fixture told the server about itself. Every field is an observation
 /// a differential test compares across the two stacks.

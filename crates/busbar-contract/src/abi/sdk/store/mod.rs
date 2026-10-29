@@ -18,9 +18,12 @@
 //! (S1); the same `op_id` with different value fields is [`OpRefused::Conflict`] and applies nothing (S2,
 //! [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT)); only an answer that APPLIED a
 //! change is recorded. The SDK checks every host capacity BEFORE calling the method, so a
-//! short-buffer answer never reaches the store and is never recorded (the S1 addendum).
+//! short-buffer answer never reaches the store and is never recorded (the S1 addendum). The check,
+//! the answers and what is recorded are [`dedupe`]'s; the store keeps the log.
 
 pub mod door;
+// The `op_id` dedupe: the state machine and the body a store records.
+pub mod dedupe;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
