@@ -278,25 +278,16 @@ fn a_readmit_keeps_state_unless_the_declared_pin_changed() {
     );
 }
 
+/// NO BACKGROUND TIMER (tool-and-agent-trust.md:61-62): whatever the declared cadence, and however
+/// long since the last sighting, no counterparty is ever due; one never admitted has no answer.
 #[test]
-fn the_tick_marks_by_the_declared_cadence_and_a_sighting_clears_the_mark() {
+fn no_counterparty_is_ever_due_by_the_clock() {
     let (b, _) = book(entry(None, 100, 0));
-    b.mark_due(0);
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]));
-    // Answering the marks does not spend them.
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]));
+    assert_eq!(b.due("inst"), Some(vec![]));
     b.sight("inst", "cp", "h", 10).unwrap();
     assert_eq!(b.due("inst"), Some(vec![]));
-    b.mark_due(50);
-    assert_eq!(b.due("inst"), Some(vec![]));
-    b.mark_due(110);
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]));
-}
-
-#[test]
-fn a_zero_cadence_is_never_marked_by_the_timer() {
+    assert_eq!(b.due("nowhere"), None);
     let (b, _) = book(entry(None, 0, 0));
-    b.mark_due(1_000_000);
     assert_eq!(b.due("inst"), Some(vec![]));
 }
 
@@ -538,9 +529,11 @@ fn an_unreachable_sighting_answers_the_last_verdict_and_changes_nothing() {
     // A declared fingerprint never approved is pending, reached or not (coordinator 2026-10-07,
     // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::New));
-    b.mark_due(0);
-    assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::New));
-    assert_eq!(b.due("inst"), Some(vec!["cp".to_string()]), "still due");
+    assert_eq!(
+        b.last_verdict(&i, "cp"),
+        Ok(Sight::New),
+        "answering changes nothing"
+    );
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::Same), "approved");
     b.sight(&i, "cp", "h2", 1).unwrap();
@@ -774,6 +767,7 @@ fn a_kept_approval_never_replays_onto_a_rootless_registration() {
         item: item.map(Into::into),
         approved: approved.map(Into::into),
         declared: rootless.pin.clone(),
+        demoted: false,
     };
     b.sight_item(&i, "cp", "t", "d1").unwrap();
     b.admit_decided(&i, [&row(None, Some("h1")), &row(Some("t"), Some("d1"))]);
@@ -851,4 +845,48 @@ fn a_ruling_changes_nothing_until_it_is_applied() {
     // A fact whose declaration moved under it is not taken.
     b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);
     assert_eq!(b.apply(&fact), Err(Undecided::Stale));
+}
+
+/// A DRIFTED ITEM IS DEMOTED AT ITEM LEVEL, AND A REVERT DOES NOT LIFT IT (tool-and-agent-trust.md
+/// 34-37: a changed fingerprint is quarantined; mcp.astro:374 "until a person approves"). An item
+/// approved in config or by the operator, re-sighted at another digest, is refused; sighted back at
+/// its approved digest it is STILL refused, until the operator approves it again. RED before: the
+/// revert served, the drift a per-call refusal and nothing more.
+#[test]
+fn a_drifted_item_reverted_stays_refused_until_reapproved() {
+    let at = |item| TrustFacts {
+        counterparty: "cp",
+        item: Some(item),
+        digest: None,
+    };
+    let mut e = entry(None, 0, 0);
+    e.approved.insert("t".to_string(), "d1".to_string());
+    let (b, i) = book(e);
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    assert_eq!(b.judge(&i, &at("t")), Ok(()), "configured, sighted at it");
+    b.sight_item(&i, "cp", "t", "d2").unwrap();
+    assert_eq!(b.judge(&i, &at("t")), Err(Distrust::Changed), "drifted");
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    assert_eq!(
+        b.judge(&i, &at("t")),
+        Err(Distrust::Changed),
+        "reverted, it stays refused"
+    );
+    let state = |b: &TrustBook| {
+        b.rows()
+            .into_iter()
+            .find(|r| r.item.as_deref() == Some("t"))
+            .map(|r| r.state)
+    };
+    assert_eq!(state(&b), Some(KeyState::Quarantined), "listed demoted");
+    // A re-admit (a config reload) is no person's approval of the drift.
+    let mut e = entry(None, 0, 0);
+    e.approved.insert("t".to_string(), "d1".to_string());
+    b.admit(&i, [("cp".to_string(), e)], []);
+    assert_eq!(b.judge(&i, &at("t")), Err(Distrust::Changed));
+    // The operator approves what it is offered at now: it serves.
+    b.decide(&i, "cp", Some("t"), Ruling::Approve, None)
+        .expect("a key");
+    assert_eq!(b.judge(&i, &at("t")), Ok(()));
+    assert_eq!(state(&b), Some(KeyState::Same));
 }

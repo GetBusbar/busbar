@@ -47,6 +47,9 @@ impl PluginObserver for Observer {
             BindRefusal::Open { code } => {
                 record_plugin_refusal(PluginRefusal::Open, kind, instance, code);
             }
+            BindRefusal::Op { code } => {
+                record_plugin_refusal(PluginRefusal::Op, kind, instance, code);
+            }
         }
     }
 }
