@@ -48,8 +48,8 @@ pub struct TokenUsage {
     /// RESIDUALS: counts the provider reported that no billing class records (MONEY LAW, owner
     /// 2026-10-02), keyed by the provider's own count name (a policy-unit count, or
     /// `<identity>.stated_total_gap` for a stated total above its itemized sum). NEVER BILLED: no billed-usage builder reads this map, and no
-    /// meter class is made from it. The reader WARNs where it fills it, and the kernel's settle step
-    /// writes one `usage.residual` audit row per non-empty map. Sparse: a zero count is left off.
+    /// meter class is made from it. The reader WARNs where it fills it; no durable row is written
+    /// for it. Sparse: a zero count is left off.
     pub residual_units: std::collections::BTreeMap<String, u64>,
 }
 
