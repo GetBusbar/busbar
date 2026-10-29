@@ -81,7 +81,8 @@ pub fn row(name: &str, alias: &str, kind: &str) -> Row {
     }
 }
 
-/// A plugin present in the directory and SKIPPED, `reason` in the trust evaluator's words.
+/// A plugin present in the directory and SKIPPED, `reason` in the trust evaluator's words, its
+/// category `unsigned` (a test sets another `code` on the returned row).
 #[must_use]
 pub fn skipped(name: &str, alias: &str, reason: &str) -> Skipped {
     Skipped {
@@ -89,6 +90,7 @@ pub fn skipped(name: &str, alias: &str, reason: &str) -> Skipped {
         name: name.to_string(),
         alias: alias.to_string(),
         reason: reason.to_string(),
+        code: "unsigned",
     }
 }
 
@@ -189,6 +191,17 @@ impl Rows {
             .filter(|e| !e.inbound_style.is_empty())
             .map(|e| (e.row.key.clone(), e.inbound_style.clone()))
             .collect()
+    }
+
+    /// `self` with the dropped-in `row` admitted, its Statement naming the secret references
+    /// `slots` (the declared paths, `*` = any key or index).
+    #[must_use]
+    pub fn with_dropped_secret_slots(mut self, row: Row, slots: &[&str]) -> Self {
+        self = self.with_dropped(row);
+        if let Some(e) = self.dropped.last_mut() {
+            e.secret_slots = slots.iter().map(|s| (*s).to_string()).collect();
+        }
+        self
     }
 
     /// `self` with the dropped-in `row` admitted after the rows it already has.
@@ -399,7 +412,19 @@ pub fn registry_stand_in(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let mut rows = i.linked.into_iter().fold(Rows::new(), Rows::with_linked);
+    // A test build has no loader to read a door's Statement, so the double's row states here the
+    // secret paths its door's Statement declares, as the production registry reads them off the
+    // linked store's door (`PluginRegistry::secret_slots`).
+    use crate::test_support::store_double::{NAME as DOUBLE, SECRET_REF_PATHS};
+    let mut rows = i
+        .linked
+        .into_iter()
+        .fold(Rows::new(), |rows, row| match row {
+            LinkedRow::Store(store) if store.3 == DOUBLE => {
+                rows.with_linked_secret_slots(row, SECRET_REF_PATHS)
+            }
+            row => rows.with_linked(row),
+        });
     let Some(plugins) = i.plugins else {
         return Ok(rows.into_rows());
     };

@@ -15,8 +15,6 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         health: None,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -26,6 +24,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         anthropic_adaptive_thinking: None,
         native_structured_output: None,
         model_capabilities: Vec::new(),
+        options: Default::default(),
     }
 }
 
@@ -38,8 +37,6 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         error_map: None,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -50,6 +47,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         native_structured_output: None,
         model_capabilities: None,
         health: None,
+        options: Default::default(),
     }
 }
 
@@ -62,6 +60,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         // Left at its type default (unset).
         endpoint: Default::default(),
         oauth_as: None,
+        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
@@ -607,7 +606,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// registry's serial lock for its lifetime, so no sibling test's registration can leak in.
 #[test]
 fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
-    let _isolation = busbar_kernel::plane_driver::registry::TestRegistryIsolation::empty();
+    let _isolation = busbar_kernel::test_support::planes::TestRegistryIsolation::empty();
     let result = serde_yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
     let err = result.expect_err(
         "a config with a pools: section must be REFUSED, not silently accepted, when no plane \
@@ -1497,7 +1496,9 @@ models: {}
         "an inline literal api_key must be rejected at parse"
     );
 
-    // The removed api_key_env spelling: unknown-field error.
+    // The removed api_key_env spelling is not the credential: the entry names none and is refused
+    // at parse. (A key beyond busbar's is a provider option now, judged at validation by the plane,
+    // owner ruling 2026-10-27; boot's legacy-marker pass names this one with its migration first.)
     let yaml = r#"
 providers:
   myprov:
@@ -1507,10 +1508,7 @@ models: {}
     let err = serde_yaml::from_str::<DeployCfg>(yaml)
         .expect_err("the removed api_key_env key must be rejected");
     let msg = err.to_string();
-    assert!(
-        msg.contains("unknown field") && msg.contains("api_key_env"),
-        "{msg}"
-    );
+    assert!(msg.contains("missing field `api_key`"), "{msg}");
 }
 
 #[test]
@@ -2033,7 +2031,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         SecretResolver::builtins_only()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
-        b"s3cr3t-value".to_vec()
+        busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
@@ -2061,9 +2059,12 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
         SecretResolver::builtins_only().resolve(&sref).unwrap(),
-        b"file-secret\n".to_vec()
+        busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(&sref).unwrap(),
+        busbar_contract::redacted::Secret::new("file-secret".to_string())
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
@@ -3726,7 +3727,7 @@ static NEUTRAL_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
 /// section with its own `validate` (`crates/busbar/tests/cli_validate.rs`, the decisions block).
 #[test]
 fn test_decisions_section_parses() {
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &NEUTRAL_SECTION_PLANE,
     ]);
@@ -3779,7 +3780,7 @@ static SECOND_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
 /// endpoint resource and count `{}` as written). Each is a declared plane section for LAW 7 at resolve.
 #[test]
 fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &NEUTRAL_SECTION_PLANE,
         &SECOND_SECTION_PLANE,
@@ -3806,7 +3807,7 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
 /// served through its door opens with it as its settings, as a raw-carried plane does.
 #[test]
 fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &NEUTRAL_SECTION_PLANE,
         &RAW_SECTION_PLANE,
@@ -3862,7 +3863,7 @@ static RAW_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
 /// as an unknown field.
 #[test]
 fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &RAW_SECTION_PLANE,
     ]);
@@ -3913,7 +3914,7 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
 /// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
 #[test]
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
     ]);
     let err = crate::config::deploy_from_yaml_str(
@@ -4013,7 +4014,7 @@ static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
 #[test]
 fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
     let _isolation =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     PLANE_SAW.lock().unwrap().clear();
     let deploy = crate::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\ntools:\n  srv: { url: \"https://x.example/srv\" }\n  \
@@ -4059,7 +4060,7 @@ fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
 fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
     use busbar_kernel_ledger::cost::PlaneFees;
     let _isolation =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     PLANE_SAW.lock().unwrap().clear();
     let deploy = crate::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\nper_request_fee: 5\ntools:\n  srv: { url: \"https://x.example/srv\" }\n  \
@@ -4109,7 +4110,7 @@ fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
 fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
     use busbar_contract::section::reserved_name_refusal;
     let _isolation =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     let head = "providers: {}\nmodels: {}\ntools:\n  srv: { url: \"https://x.example/srv\" }\n";
     for key in [
         "breaker",
@@ -4159,7 +4160,11 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
 /// section words are refused as pool names, in 1.5.5's sentence.
 #[test]
 fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
-    crate::test_support::register_neutral_test_plane();
+    // Seeded, not registered: a registration is visible to the next read only until a sibling
+    // test's `TestRegistryIsolation` swaps the list, so the reader holds the isolation itself.
+    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
     let pools: crate::config::PoolsCfg = serde_yaml::from_str(
         "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
          breaker:\n  members: [{model: m}]\n",
@@ -4273,7 +4278,7 @@ const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
 #[test]
 fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
     let _isolation =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&REQUIRES_BOTH]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&REQUIRES_BOTH]);
     let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
     assert_eq!(err.to_string(), "missing field `providers`");
     let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n")
@@ -4288,9 +4293,8 @@ fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field
 /// A plane that requires `providers` only makes `providers` required: `models` reads empty.
 #[test]
 fn a_plane_requiring_one_section_leaves_the_other_omissible() {
-    let _isolation = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
-        &REQUIRES_PROVIDERS,
-    ]);
+    let _isolation =
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&REQUIRES_PROVIDERS]);
     let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
     assert_eq!(err.to_string(), "missing field `providers`");
     let deploy = crate::config::deploy_from_yaml_str("providers: {}\n")
@@ -4310,7 +4314,7 @@ fn a_plane_requiring_one_section_leaves_the_other_omissible() {
 #[test]
 fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     let _isolation =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&REQUIRES_NONE]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&REQUIRES_NONE]);
     let deploy = crate::config::deploy_from_yaml_str(NO_CATALOG)
         .expect("no registered plane requires a catalog section");
     assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
@@ -4345,7 +4349,7 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
 fn any_section_a_registered_plane_requires_is_refused_when_absent() {
     static REQUIRES_POOLS: crate::plane_driver::registry::PlaneDecl = requiring_plane(&["pools"]);
     let _isolation =
-        busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[&REQUIRES_POOLS]);
+        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&REQUIRES_POOLS]);
     let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\n")
         .expect_err("pools is required by a registered plane");
     assert_eq!(err.to_string(), "missing field `pools`");
@@ -4388,24 +4392,140 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
     );
 }
 
-/// The provider's tenant (`organization`, `project`) merges like `path_base`: the deployment's value
-/// wins over the catalog's, and absent everywhere it stays absent.
+/// A `providers:` section read the way boot reads it.
+#[derive(serde::Deserialize)]
+struct ProvidersDoc {
+    #[serde(deserialize_with = "crate::config::providers::deployments")]
+    providers: HashMap<String, ProviderDeploy>,
+}
+
+/// A deployment's keys beyond busbar's own are its OPTIONS (owner ruling 2026-10-27): read aside,
+/// under the name the operator wrote, they ride the resolved entry's table to the plane that judges
+/// them; the typed keys read as before. The retired `organization` is an option name like any
+/// other now, for the plane to refuse.
 #[test]
-fn the_provider_tenant_merges_deployment_over_catalog() {
-    let mut def = provider_def("openai", "https://api.example.com");
-    let mut deploy = provider_deploy("K");
-    // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
-    // legacy lane carrier reads them.
-    let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
+fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
+    let doc: ProvidersDoc = serde_yaml::from_str(
+        "providers:\n  p:\n    api_key: {env: K}\n    OpenAI-Organization: org-abc\n    \
+         api-version: 2024-10-21\n    path: /v1/x\n    organization: o\n",
+    )
+    .expect("reads");
+    let dep = &doc.providers["p"];
+    assert_eq!(dep.path.as_deref(), Some("/v1/x"));
+    let mut names: Vec<&String> = dep.options.keys().collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["OpenAI-Organization", "api-version", "organization"]
+    );
+    let merged = merge_provider_fallback(&provider_def("openai", "https://api.example.com"), dep);
+    assert_eq!(
+        merged.table.get("OpenAI-Organization"),
+        Some(&serde_json::json!("org-abc"))
+    );
+    assert_eq!(
+        merged.table.get("api-version"),
+        Some(&serde_json::json!("2024-10-21"))
+    );
+    // No plane is folded in this build, so nothing speaks the dialect: an option is refused.
+    assert_eq!(
+        crate::config::providers::judge_options("p", &merged),
+        Err(
+            "providers.p: unknown field `OpenAI-Organization`: no loaded plane speaks this \
+             provider's dialect, so it takes no option"
+                .to_string()
+        )
+    );
+    // An entry that sets no option is judged by nobody.
+    let plain: ProvidersDoc =
+        serde_yaml::from_str("providers:\n  p:\n    api_key: {env: K}\n").expect("reads");
+    let plain = merge_provider_fallback(
+        &provider_def("openai", "https://api.example.com"),
+        &plain.providers["p"],
+    );
+    assert_eq!(crate::config::providers::judge_options("p", &plain), Ok(()));
+}
+
+/// A `providers.yaml` CATALOG entry follows the same rule as a `config.yaml` one (owner ruling
+/// 2026-10-27: "we provide this file so it should be perfect; if the user modified it, refuse"):
+/// its keys beyond busbar's are its options, and every entry, referenced or not, is judged at
+/// resolve, the refusal naming the file and the key. A typed key's refusal keeps 1.5.5's path and
+/// position. RED on dev: the catalog silently dropped a key it did not read.
+#[test]
+fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
+    let defs = crate::config::providers::catalog_from_str(
+        "p:\n  protocol: openai\n  base_url: https://api.example.com\n  bogus_key: true\n\
+         q:\n  protocol: openai\n  base_url: https://api.example.com\n  stray: 1\n",
+    )
+    .expect("the catalog reads; its options are judged at resolve");
+    assert_eq!(defs["p"].options.keys().collect::<Vec<_>>(), ["bogus_key"]);
+    let mut deploy = base_deploy();
+    deploy
+        .providers
+        .insert("p".to_string(), provider_deploy("K"));
+    let errors = resolve(&deploy, &defs).expect_err("a stray catalog key is refused");
+    let no_plane = |name: &str, key: &str| {
+        format!(
+            "providers.yaml: providers.{name}: unknown field `{key}`: no loaded plane speaks this \
+             provider's dialect, so it takes no option"
+        )
     };
-    assert_eq!(tenant(&def, &deploy).organization, None);
-    def.organization = Some("org-catalog".to_string());
-    def.project = Some("proj-catalog".to_string());
-    deploy.organization = Some("org-deploy".to_string());
-    let merged = tenant(&def, &deploy);
-    assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
-    assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
+    assert!(errors.contains(&no_plane("p", "bogus_key")), "{errors:?}");
+    assert!(
+        errors.contains(&no_plane("q", "stray")),
+        "an entry config.yaml does not reference is judged too: {errors:?}"
+    );
+    let e = crate::config::providers::catalog_from_str("p:\n  protocol: [1]\n  base_url: x\n")
+        .expect_err("a typed key of the wrong type")
+        .to_string();
+    assert!(e.starts_with("p.protocol: invalid type: sequence"), "{e}");
+}
+
+/// An option written twice in one entry is refused.
+#[test]
+fn an_option_written_twice_is_refused() {
+    let e = serde_yaml::from_str::<ProvidersDoc>(
+        "providers:\n  p:\n    api_key: {env: K}\n    x-a: 1\n    x-a: 2\n",
+    )
+    .err()
+    .map(|e| e.to_string())
+    .unwrap_or_default();
+    assert!(e.contains("x-a"), "{e}");
+}
+
+/// `CATALOG_KEYS` is the catalog's typed grammar's own list, in its order.
+#[test]
+fn the_catalog_keys_are_the_typed_grammars() {
+    let e = serde_yaml::from_str::<ProviderDef>("zzz: 1\n")
+        .expect_err("the typed grammar alone refuses a key it does not read")
+        .to_string();
+    let listed: String = crate::config::providers::CATALOG_KEYS
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        e.starts_with(&format!("unknown field `zzz`, expected one of {listed}")),
+        "{e}"
+    );
+}
+
+/// `DEPLOY_KEYS` is the typed grammar's own list, in its order: the derived reader's refusal of a
+/// key it does not read lists exactly these.
+#[test]
+fn the_deploy_keys_are_the_typed_grammars() {
+    let e = serde_yaml::from_str::<ProviderDeploy>("zzz: 1\n")
+        .expect_err("the typed grammar alone refuses a key it does not read")
+        .to_string();
+    let listed: String = crate::config::providers::DEPLOY_KEYS
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        e.starts_with(&format!("unknown field `zzz`, expected one of {listed}")),
+        "{e}"
+    );
 }
 
 /// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
@@ -4432,7 +4552,7 @@ static OWNS_BESIDE_PLANE: crate::plane_driver::registry::PlaneDecl =
 /// own section and not this one lifts nothing extra.
 #[test]
 fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &OWNS_BESIDE_PLANE,
     ]);

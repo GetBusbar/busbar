@@ -68,6 +68,8 @@ pub fn check(cfg: &RootCfg, c: Check<'_>) -> Result<Arc<dyn PluginRows>, Refusal
     )
     .map_err(Refusal::Plugins)?;
     secret_refs::registry_refusal(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;
+    // A secret reference in a plugin's settings at a field the plugin did not declare secret.
+    super::undeclared_secret_refs(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;
     if c.resolve_builtins {
         secret_refs::builtins_resolve(cfg).map_err(Refusal::Unresolved)?;
     }

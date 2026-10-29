@@ -40,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
@@ -707,6 +701,8 @@ impl AdminAuthChain {
                     let name = entry.name.as_str();
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -830,6 +826,8 @@ impl AuthMiddleware {
                     // dangling reference.
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -2317,7 +2315,7 @@ pub(crate) async fn auth_middleware(
     // token as a ref. Handed on with the request so the host strips all of them before any plane
     // sees it (`caller_credential`).
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller = client_token.clone().map(CallerCredential);
+    consumed.caller = client_token.as_deref().map(CallerCredential::verified);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE
@@ -2593,7 +2591,40 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
+    // THE TICKET ARM (row 132, the ARCHITECT ticket ruling): on a door route that takes tickets,
+    // a credential carrying its plane's declared issued-id prefix is a ticket, which `keys` admits
+    // ONCE as the key it was minted for. The gate spends it here and hands its record on with the
+    // request; any ticket that is not a standing, unspent one of this deployment is the door's
+    // `401`, the same as a bad key. Only where the chain names `keys`: a ticket is a busbar token.
+    let ticketed = match (
+        signed.is_none(),
+        core_routes.door_ticket(&path, req.method()),
+        client_token.as_deref(),
+    ) {
+        (true, Some(prefix), Some(token))
+            if app.auth.keys_in_chain && token.starts_with(prefix) =>
+        {
+            let admitted = app
+                .governance
+                .as_deref()
+                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            match admitted {
+                Some((key, record)) => {
+                    consumed.ticket = Some(record);
+                    Some(ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    })
+                }
+                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+            }
+        }
+        _ => None,
+    };
     let verdict = if let Some(verdict) = signed {
+        verdict
+    } else if let Some(verdict) = ticketed {
         verdict
     } else {
         // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The

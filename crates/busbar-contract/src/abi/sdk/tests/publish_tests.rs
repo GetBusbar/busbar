@@ -287,3 +287,20 @@ fn a_claims_arrival_span_is_published_one_per_claim() {
     assert_eq!(snap.arrival_spans_len, 0);
     assert!(snap.arrival_spans.is_null());
 }
+
+/// A plane's `const` retention table lowers each rule to its ABI code, and the table passes the
+/// tail's element check.
+#[test]
+fn a_record_retention_table_lowers_to_the_tail_codes() {
+    use crate::abi::plane::check::check_record_retentions;
+    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use crate::records::Retention;
+    const TABLE: [crate::abi::plane::RecordRetention; 2] = [
+        record_retention(1, Retention::TerminalOnly),
+        record_retention(0, Retention::Age),
+    ];
+    assert_eq!(TABLE[0].kind, 1);
+    assert_eq!(TABLE[0].rule, RETENTION_TERMINAL_ONLY);
+    assert_eq!(TABLE[1].rule, RETENTION_AGE);
+    assert_eq!(check_record_retentions(&TABLE, 2), Ok(()));
+}
