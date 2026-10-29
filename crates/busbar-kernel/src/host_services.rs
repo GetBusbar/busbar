@@ -1120,7 +1120,8 @@ impl KernelServices {
     /// # Errors
     ///
     /// [`TrustRefused::NoSuchKey`] for a key no admitted instance has,
-    /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at, and
+    /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at,
+    /// [`TrustRefused::Unverified`] for an approval at a sighting that failed its verification, and
     /// [`TrustRefused::Store`] (the store's words) when the decision could not be kept.
     pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
         let found = self
@@ -1159,6 +1160,7 @@ impl KernelServices {
             Undecided::NothingSighted => TrustRefused::NothingSighted,
             Undecided::Rootless => TrustRefused::Rootless,
             Undecided::Stale => TrustRefused::Stale,
+            Undecided::Unverified => TrustRefused::Unverified,
         };
         // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
         // then takes effect, so a decision the store refused is not in force in this process
@@ -1386,11 +1388,6 @@ impl KernelServices {
                 batcher.flush(&pending, &*rows, &chains);
             }
         }));
-    }
-
-    /// The kernel tick's re-verification mark, at the wall clock.
-    pub fn mark_due(&self) {
-        self.trust.mark_due((self.wall_ms)());
     }
 
     /// The kernel's flush tick, run by [`Self::flushes`] every [`crate::host_records::FLUSH_INTERVAL`]:
@@ -1650,6 +1647,9 @@ pub enum TrustRefused {
     Rootless,
     /// The fingerprint the caller approves is not the key's current sighting.
     Stale,
+    /// The key's current sighting failed its verification
+    /// ([`crate::trust::book::UNVERIFIED_SIGHTING`]): nothing verified to approve.
+    Unverified,
     /// The decision could not be kept; the store's words, for the node's log.
     Store(String),
 }
@@ -2057,6 +2057,8 @@ impl HostServices for KernelServices {
                 Err(TrustRefused::NothingSighted) => svc::UNDECIDED_UNPINNED,
                 Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
                 Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
+                // A sighting that failed its verification is nothing verified to approve at.
+                Err(TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
                 Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
             },
         )
@@ -2105,9 +2107,23 @@ impl HostServices for KernelServices {
     ) -> Stored {
         match self
             .trust
-            .sight_item(&caller.instance, counterparty, item, digest)
+            .sight_item_kept(&caller.instance, counterparty, item, digest)
         {
-            Ok(sight) => Stored::ready(sight_code(sight)),
+            Ok((sight, demotion)) => {
+                // The item's drift demotion is kept with the operator's decisions, so a restart
+                // never lets a reverted item serve without a person's approval.
+                if let (Some(fact), Some(d)) = (demotion, self.demotions.get()) {
+                    if let Err(why) = d.record.keep_decision(&fact, (self.wall_ms)() / 1000) {
+                        tracing::error!(
+                            counterparty,
+                            item,
+                            error = %why,
+                            "an item's drift demotion could not be kept; it holds in this process"
+                        );
+                    }
+                }
+                Stored::ready(sight_code(sight))
+            }
             Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
         }
@@ -2585,6 +2601,10 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "tests/trust_verify_tests.rs"]
 mod trust_verify_tests;
+
+#[cfg(test)]
+#[path = "tests/trust_rule_tests.rs"]
+mod trust_rule_tests;
 
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
