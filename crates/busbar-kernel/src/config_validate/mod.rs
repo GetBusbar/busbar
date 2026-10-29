@@ -976,6 +976,19 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         }
                     }
                 }
+                // Rule (plane grants, W9): an `allowed_{kind}s` grant names a kind an installed
+                // plane declares. A grant of a kind nothing serves is refused, never left inert.
+                for field in binding.plane_grants.keys() {
+                    let declared = crate::governance::plane_grant_kind(field)
+                        .is_some_and(|kind| crate::governance::plane_declares_kind(&kind));
+                    if !declared {
+                        errors.push(format!(
+                            "role_bindings.{module}.{role}.{field} grants a scope kind no \
+                             installed plane declares; remove it, or install the plane whose \
+                             grants it names"
+                        ));
+                    }
+                }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
                         errors.push(format!(

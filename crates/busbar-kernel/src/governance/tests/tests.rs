@@ -5304,6 +5304,7 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
             labels,
             minted_by: Some(admin.to_string()),
             binding_mode: Some("time-bound".to_string()),
+            plane_scopes: None,
         };
         let (key, token) = gov.mint_signed(spec, now + 30 * 86_400, now).unwrap();
         minted.push((label, pool, key, token));
