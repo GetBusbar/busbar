@@ -1511,6 +1511,45 @@ models: {}
     assert!(msg.contains("missing field `api_key`"), "{msg}");
 }
 
+/// security.md: pasting a secret inline is refused with ONE message that names the rule and the
+/// config position, and never echoes the value. Driven through the loader boot uses
+/// (`deploy_from_yaml_str`) on a document whose literal sits on a known line, as a bare string, an
+/// unquoted number and a boolean (each a spelling an operator pastes), so the refusal is the
+/// operator's to act on: it points at the line and the key, and carries none of the value.
+#[test]
+fn an_inline_literal_refusal_names_its_config_position() {
+    for (literal, line) in [
+        ("sk-live-0123456789abcdef", 5),
+        ("\"sk-live-0123456789abcdef\"", 5),
+        ("483920175534", 5),
+        ("true", 5),
+    ] {
+        let yaml = format!(
+            "store: {{module: memory}}\nmodels: {{}}\nproviders:\n  myprov:\n    api_key: {literal}\n"
+        );
+        let err = deploy_from_yaml_str(&yaml)
+            .expect_err("an inline literal secret is refused")
+            .to_string();
+        let value = literal.trim_matches('"');
+        assert!(
+            !err.contains(value),
+            "the refusal must not echo the value `{value}`: {err}"
+        );
+        assert!(
+            err.contains("REFERENCE") && err.contains("inline literal"),
+            "the refusal names the rule: {err}"
+        );
+        assert!(
+            err.contains("providers.myprov.api_key"),
+            "the refusal names the key path: {err}"
+        );
+        assert!(
+            err.contains(&format!("at line {line} ")),
+            "the refusal names the line: {err}"
+        );
+    }
+}
+
 #[test]
 fn test_resolve_unknown_provider_error() {
     // config.yaml references nope not in providers.yaml -> resolve returns error naming nope
