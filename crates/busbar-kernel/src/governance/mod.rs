@@ -916,6 +916,10 @@ pub use state::{
     metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
     ADJUST_UP_BUCKET,
 };
+// TICKETS (row 132): short-lived single-use credentials minted for a unit's principal through the
+// same token stamp, and admitted once on a route that takes them.
+mod tickets;
+pub use tickets::{TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -100,11 +100,11 @@ mod audit;
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
 
-/// The three disaster-recovery verbs over the node's journal and the configured store (status row
-/// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
-/// A private child module, as `replay` is; its public items are re-exported here.
+/// The two disaster-recovery verbs over the node's journal and the configured store (status row
+/// 187): the operator's chain break on the chain, the restore refused. A private child module, as
+/// `replay` is; its public items are re-exported here.
 mod recovery;
-pub use recovery::{boot_recovery, node_verb_store};
+pub use recovery::{node_verb_store, report_operator_breaks};
 
 /// The first-party anti-downgrade floor the store keeps per host.
 mod plugin_floor;

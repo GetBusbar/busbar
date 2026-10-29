@@ -16,7 +16,8 @@
 //!   serves declares about itself (its contract `PlaneDeclaration`), read off the registry. A plane
 //!   this node does not serve is `404` — the same Law-7 answer its admin paths give.
 //! * `POST /api/v1/admin/plane-record-write` — [`plane_record_write_effect`]: one upsert of a plane
-//!   record, through the plane-facing store seam the planes themselves persist through.
+//!   record into the named plane's own rows (keyed by the plane), through the plane-facing store
+//!   seam; never onto a row the kernel keeps.
 //! * `POST /api/v1/admin/commit-upgrade` — [`commit_upgrade_effect`]: seal, on the node's journal as
 //!   a `Policy` record, that the fleet commits to the release THIS binary is. The body names the
 //!   release; one this binary is not is refused, so a commit can never name a version nobody runs.
@@ -221,6 +222,12 @@ pub(crate) fn plane_facts_effect(
 /// "body": <json> }`. `body` is the record's opaque row, stored as its JSON bytes and never decoded
 /// by the store; `terminal` (default `false`) is the retention disposition. `written_at` is the
 /// arrival second, pinned by the unit.
+///
+/// The record lands in the NAMED PLANE'S OWN ROWS, under the store kind
+/// [`busbar_kernel::store::plane_view::plane_owned_kind`] keys by the plane; the answer names the
+/// kind as written. A kind the kernel keeps its own rows under
+/// ([`busbar_kernel::store::plane_view::KERNEL_RECORD_KINDS`]) is refused `403` even where the plane
+/// declares it, writing nothing (`BUSBAR-7107`).
 pub(crate) fn plane_record_write_effect(
     body: &[u8],
     at: u64,
@@ -288,9 +295,38 @@ pub(crate) fn plane_record_write_effect(
             &format!("plane `{plane}` may not write record kind `{kind}`"),
         ));
     }
+    // THE KERNEL'S OWN ROWS ARE NEVER A PLANE'S, declared or not: plane-mcp declares `demotion`,
+    // and the rows under it are the kernel's durable demotion record, which a write in the plane's
+    // name must not alter (a demoted upstream would re-open). Refused by name, writing nothing; the
+    // unit seals the refusal on the audit ring as `rejected`.
+    if busbar_kernel::store::plane_view::KERNEL_RECORD_KINDS.contains(&kind) {
+        busbar_kernel::diagnostics::diag_warn!(
+            busbar_kernel::diagnostics::PLANE_RECORD_WRITE_KERNEL_KIND,
+            plane = %plane,
+            kind = %kind,
+            "an admin plane record write named a record kind the kernel keeps its own records \
+             under: refused, nothing written"
+        );
+        return Ok(refused(
+            403,
+            "forbidden",
+            &format!(
+                "record kind `{kind}` is kept by the kernel: plane `{plane}` may not write it"
+            ),
+        ));
+    }
+    // THE PLANE'S OWN ROWS, keyed by the plane: two planes declaring one kind never land on (or
+    // read) each other's rows, and no plane's row is a kernel kind's.
+    let Some(owned) = busbar_kernel::store::plane_view::plane_owned_kind(plane, kind) else {
+        return Ok(refused(
+            400,
+            "invalid_request",
+            "plane and kind must not hold a control character",
+        ));
+    };
     let sink = sink.ok_or(GovernanceError::Store)?;
     let record = PlaneRecord {
-        kind: kind.to_string(),
+        kind: owned,
         id: id.to_string(),
         parent,
         seq: 0,
@@ -305,7 +341,7 @@ pub(crate) fn plane_record_write_effect(
     sink(&record).map_err(|_| GovernanceError::Store)?;
     answer(&serde_json::json!({
         "plane": plane,
-        "kind": record.kind,
+        "kind": kind,
         "id": record.id,
         "parent": record.parent,
         "terminal": terminal,
@@ -499,6 +535,76 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
 /// SHA-256 of the body the first call carried and the answer it produced.
 pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], AdminAnswer)>;
 
+/// The configured store a key is claimed in, read when the claim is taken.
+pub type ReplayStore =
+    Arc<dyn Fn() -> Option<Arc<dyn busbar_contract::records::RecordStore>> + Send + Sync>;
+
+/// THE PRODUCTION REPLAY STORE: the live configuration's governance store.
+#[must_use]
+pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplayStore {
+    Arc::new(move || app.load().governance.as_ref().map(|gov| gov.store()))
+}
+
+/// A first answer as the store keeps it: the body's digest, then the whole answer — status, every
+/// header in emission order, body — length-prefixed, so a header value or a body may hold any byte
+/// and come back identical. The store boundary is the only place an answer is bytes.
+fn stored_answer(digest: &[u8; 32], answer: &AdminAnswer) -> Vec<u8> {
+    fn push(out: &mut Vec<u8>, bytes: &[u8]) {
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&bytes[..len as usize]);
+    }
+    let mut out = Vec::with_capacity(32 + 6 + answer.body.len() + 64);
+    out.extend_from_slice(digest);
+    out.extend_from_slice(&answer.status.to_be_bytes());
+    let count = u32::try_from(answer.headers.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&count.to_be_bytes());
+    for (name, value) in answer.headers.iter().take(count as usize) {
+        push(&mut out, name.as_bytes());
+        push(&mut out, value.as_bytes());
+    }
+    push(&mut out, &answer.body);
+    out
+}
+
+/// What [`stored_answer`] wrote, read back: the first body's digest and the first answer. `None`
+/// on anything that is not exactly that framing. The header count is a claim the bytes make about
+/// themselves, so nothing is reserved on it: each header is read off the bytes actually held.
+fn kept_answer(kept: &[u8]) -> Option<([u8; 32], AdminAnswer)> {
+    fn take<'b>(bytes: &'b [u8], cursor: &mut usize, n: usize) -> Option<&'b [u8]> {
+        let end = cursor.checked_add(n)?;
+        let slice = bytes.get(*cursor..end)?;
+        *cursor = end;
+        Some(slice)
+    }
+    fn pull<'b>(bytes: &'b [u8], cursor: &mut usize) -> Option<&'b [u8]> {
+        let len = u32::from_be_bytes(take(bytes, cursor, 4)?.try_into().ok()?);
+        take(bytes, cursor, usize::try_from(len).ok()?)
+    }
+    let mut cursor = 0usize;
+    let digest: [u8; 32] = take(kept, &mut cursor, 32)?.try_into().ok()?;
+    let status = u16::from_be_bytes(take(kept, &mut cursor, 2)?.try_into().ok()?);
+    let count = u32::from_be_bytes(take(kept, &mut cursor, 4)?.try_into().ok()?);
+    let mut headers = Vec::new();
+    for _ in 0..count {
+        let name = String::from_utf8(pull(kept, &mut cursor)?.to_vec()).ok()?;
+        let value = String::from_utf8(pull(kept, &mut cursor)?.to_vec()).ok()?;
+        headers.push((name, value));
+    }
+    let body = pull(kept, &mut cursor)?.to_vec();
+    if cursor != kept.len() {
+        return None;
+    }
+    Some((
+        digest,
+        AdminAnswer {
+            status,
+            headers,
+            body,
+        },
+    ))
+}
+
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
@@ -512,6 +618,7 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// existing `409 conflict` "a request with this Idempotency-Key is already in flight".
 pub(crate) fn replayable(
     cache: &ReplayCache,
+    store: Option<&ReplayStore>,
     verb: busbar_core_admin::KernelVerb,
     actor: &str,
     unit: &super::AdminRequest,
@@ -533,28 +640,81 @@ pub(crate) fn replayable(
     let digest: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(body);
     // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
     // never replay each other's answer.
-    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
-        Probe::Replay((first, answer)) if first == digest => Ok(answer),
-        Probe::Replay(_) => Ok(refused(
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+
+    let other_body = || {
+        Ok(refused(
             409,
             "conflict",
             "this Idempotency-Key was already used with a different request body",
-        )),
-        Probe::InFlight => Ok(refused(
+        ))
+    };
+    let in_flight = || {
+        Ok(refused(
             409,
             "conflict",
             "a request with this Idempotency-Key is already in flight",
-        )),
+        ))
+    };
+    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
+        Probe::Replay((first, answer)) if first == digest => Ok(answer),
+        Probe::Replay(_) => other_body(),
+        Probe::InFlight => in_flight(),
         Probe::NoKey => effect(),
-        Probe::Reserved(reservation) => match effect() {
-            Ok(answer) if (200..300).contains(&answer.status) => {
-                reservation.commit((digest, answer.clone()), unit.at);
-                Ok(answer)
+        Probe::Reserved(reservation) => {
+            // Claimed in the store before the effect runs, so a retry after a restart or on another
+            // node replays the first answer or is refused: it never runs the effect again.
+            let store = store.and_then(|store| store());
+            let claim = match &store {
+                Some(store) => match durable::claim(&**store, reservation.key(), unit.at) {
+                    Ok(claim) => Some(claim),
+                    Err(Refused::Answer(kept)) => {
+                        // The first answer, whole and byte for byte — status, headers and body: a
+                        // re-render would mint a second one-time secret over one identity.
+                        return match kept_answer(&kept) {
+                            Some((first, answer)) if first == digest => Ok(answer),
+                            Some(_) => other_body(),
+                            None => {
+                                tracing::error!("the store keeps an Idempotency-Key's first answer in a form this node cannot read");
+                                Ok(journal_unavailable(
+                                    "the first answer to this Idempotency-Key cannot be read back; nothing was done",
+                                ))
+                            }
+                        };
+                    }
+                    Err(Refused::Unavailable(why)) => {
+                        tracing::error!(reason = %why, "an Idempotency-Key could not be claimed in the store");
+                        return Ok(journal_unavailable(
+                            "the store could not record this Idempotency-Key; nothing was done",
+                        ));
+                    }
+                    Err(Refused::InFlight | Refused::Applied(_)) => {
+                        return in_flight();
+                    }
+                },
+                None => None,
+            };
+            let (answer, settled) = match effect() {
+                Ok(answer) if (200..300).contains(&answer.status) => {
+                    let settled = Settled::Answer(stored_answer(&digest, &answer));
+                    reservation.commit((digest, answer.clone()), unit.at);
+                    (Ok(answer), settled)
+                }
+                other => {
+                    reservation.clear();
+                    (other, Settled::Released)
+                }
+            };
+            if let (Some(store), Some(claim)) = (&store, &claim) {
+                if let Err(why) = durable::settle(&**store, claim, unit.at, &settled) {
+                    tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+                }
             }
-            other => {
-                reservation.clear();
-                other
-            }
-        },
+            answer
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/bound_tests.rs"]
+mod bound_tests;

@@ -96,6 +96,38 @@ pub fn compose(
     }
 }
 
+/// THE TICKET PRESS behind `ticket.mint` (row 132, the ARCHITECT ticket ruling): each mint reads the
+/// live generation through its swap handle, so a ticket is stamped by the deployment's governance
+/// under the mint ceiling (`auth.policy.max_ttl`) in force when it is minted.
+pub struct LiveTickets(pub Arc<busbar_kernel::state::AppHandle>);
+
+impl busbar_kernel::host_services::TicketPress for LiveTickets {
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        use busbar_kernel::governance::TicketRefusal;
+        let app = self.0.load();
+        let gov = app
+            .governance
+            .as_deref()
+            .ok_or(TicketRefusal::NoSigner.reason())?;
+        gov.mint_ticket(
+            key_id,
+            prefix,
+            ttl_secs,
+            app.mint_policy.block_max_ttl_secs,
+            record,
+            now,
+        )
+        .map_err(TicketRefusal::reason)
+    }
+}
+
 /// THE LATE ATTACH, once the first app is built (ARCHITECT S7-TICK 2026-10-01, ruling A): the
 /// kernel's services gain what that build made. That is the runtime's blocking pool, bounded at the
 /// record write queue's [`QUEUE_CAP`]; the governance signer, when governance is configured; and
@@ -378,6 +410,26 @@ impl HostServices for LateServices {
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
         match self.served() {
             Ok(s) => s.session_emit(caller, session, bytes),
+            Err(r) => r,
+        }
+    }
+
+    fn ticket_mint(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.ticket_mint(caller, unit, ttl_secs, record),
+            Err(r) => r,
+        }
+    }
+
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        match self.served() {
+            Ok(s) => s.ticket_take(caller, unit),
             Err(r) => r,
         }
     }
@@ -2451,8 +2503,14 @@ pub struct DoorRequest {
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, lent for a passthrough member's outbound auth call alone.
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
+    /// key admitted it.
+    pub ticket: Option<Vec<u8>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`): a stream another framer
+    /// frames begins with it.
+    pub scheme: u8,
     /// The head fields the auth gate consumed, each by name with its scheme word
     /// (`PlaneReqCtx::consumed_fields`): what an entry fact reads of them.
     pub consumed_fields: Vec<(String, String)>,
@@ -2984,11 +3042,24 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            // A route whose claim takes tickets is told its plane's issued-id prefix (row 132).
+            let ticket_prefix = {
+                let served = &routes.served.planes[plane];
+                let takes = served
+                    .snapshot
+                    .claims
+                    .get(claim as usize)
+                    .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_TICKET != 0);
+                takes
+                    .then(|| served.kernel.ticket_prefix_of(&served.instance))
+                    .flatten()
+            };
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
+                ticket_prefix,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
@@ -3333,7 +3404,9 @@ impl DoorRequest {
             body: ctx.body,
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
+            ticket: ctx.ticket,
             app,
+            scheme: ctx.scheme,
             consumed_fields: ctx.consumed_fields,
         })
     }
@@ -3452,6 +3525,7 @@ impl DataRoutes {
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: 0,
                 credential: door.credential.clone(),
+                ticket: door.ticket,
             },
         );
         let far = DoorFar {
@@ -3634,7 +3708,9 @@ impl DataRoutes {
             body,
             gov,
             credential,
+            ticket,
             app,
+            scheme: _,
             consumed_fields: _,
         } = req;
         let fields: HeadFields = headers
@@ -3674,6 +3750,7 @@ impl DataRoutes {
             key,
             open,
             credential,
+            ticket,
         };
         (door, arrival, body)
     }
@@ -3682,6 +3759,8 @@ impl DataRoutes {
     /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
     /// resolved; the unit driven inside the response, so a caller that goes away drops it.
     async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        // The listener's scheme, which a stream another framer frames begins with.
+        let scheme = req.scheme;
         let (door, arrival, body) = self.arrived(plane, claim, req);
         // The claim's carrier and the framer that answers it, looked up once.
         let framed = self.served.planes[plane]
@@ -3703,6 +3782,7 @@ impl DataRoutes {
             key,
             open,
             credential,
+            ticket,
             ..
         } = door;
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
@@ -3718,7 +3798,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, carrier, &target, &head,
+                door, carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
@@ -3744,7 +3824,7 @@ impl DataRoutes {
                 self.drive(
                     plane,
                     app,
-                    (principal, key, credential),
+                    (principal, key, credential, ticket),
                     open,
                     &caller,
                     arrival,
@@ -3765,7 +3845,7 @@ impl DataRoutes {
             self.drive(
                 plane,
                 app,
-                (principal, key, credential),
+                (principal, key, credential, ticket),
                 open,
                 &caller,
                 arrival,
@@ -3864,7 +3944,7 @@ impl DataRoutes {
                     app,
                     // A nested unit presents no credential of its own: nothing is lent to a
                     // passthrough member on its behalf.
-                    (principal, key, None),
+                    (principal, key, None, None),
                     open,
                     &caller,
                     arrival,
@@ -3901,7 +3981,7 @@ impl DataRoutes {
         &self,
         plane: usize,
         app: Arc<busbar_kernel::state::App>,
-        (principal, key, credential): UnitCaller,
+        (principal, key, credential, ticket): UnitCaller,
         open: bool,
         caller: &C,
         arrival: Arrival,
@@ -3939,6 +4019,7 @@ impl DataRoutes {
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: nesting.as_ref().map_or(0, |n| n.depth),
                 credential: credential.clone(),
+                ticket,
             },
         );
         if let Some(n) = &nesting {
@@ -4331,6 +4412,8 @@ struct SessionDoor {
     open: bool,
     /// The caller's verified credential, lent to a passthrough member alone.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket that admitted the caller; `None` when a key did.
+    ticket: Option<Vec<u8>>,
 }
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
@@ -4608,11 +4691,13 @@ impl IngressReply {
 }
 
 /// Who a door unit serves: the principal the auth gate verified, its governance key, and its
-/// verified credential (lent for a passthrough member's outbound auth call alone).
+/// verified credential (lent for a passthrough member's outbound auth call alone), and the record
+/// of the ticket that admitted it, if one did.
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    Option<Vec<u8>>,
 );
 
 /// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is

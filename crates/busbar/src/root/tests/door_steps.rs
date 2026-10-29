@@ -524,6 +524,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -652,6 +653,7 @@ fn charge_once_at(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
@@ -2508,7 +2510,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
-                busbar_kernel::config::secret::resolve_linked_string_at_config,
+                busbar_core_connector::spawn_env::linked_spawn_secret,
             )
             .expect("the connector builds");
             let plane = bound(
@@ -6838,9 +6840,16 @@ pub(crate) mod hook_parity {
             port,
             vec![(
                 "screen",
+                // Screens only: clean arguments are let through untouched (the double's default
+                // answer is a chat rewrite a tool call cannot take, which is refused, never
+                // relayed un-rewritten).
                 gate(
                     "rw",
-                    serde_json::json!({ "reject_if_contains": "/etc/shadow", "reject_status": 451 }),
+                    serde_json::json!({
+                        "reject_if_contains": "/etc/shadow",
+                        "reject_status": 451,
+                        "raw_transform_reply": {},
+                    }),
                 ),
             )],
         );
@@ -7667,6 +7676,8 @@ fn per_hop_over(
 ) -> super::PerHop {
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
     let value = secrets.resolve_string(&secret).expect("it resolves");
+    let seal = busbar_kernel::seal::lend();
+    let value = value.expose(&seal);
     let settings = serde_json::json!({});
     let handle = {
         use busbar_contract::auth_calls::OutboundAuth as _;
@@ -7857,7 +7868,10 @@ struct CountingResolves {
 }
 
 impl busbar_contract::secret::SecretResolve for CountingResolves {
-    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
@@ -7866,7 +7880,7 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
     fn resolve_string(
         &self,
         secret: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<String, String> {
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)
@@ -8545,6 +8559,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 records: None,
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };

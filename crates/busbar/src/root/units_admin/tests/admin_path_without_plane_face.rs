@@ -517,28 +517,6 @@ impl busbar_contract::verb_store::Store for AnApplyingStore {
     ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
 }
 
 /// The served rows for one resource that the operator (`admin`) is attributed, as
@@ -594,11 +572,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             r#"{"backup_ref":"nightly"}"#,
             "store_restore",
         ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-        ),
     ];
     for (path, body, verb) in applied {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
@@ -646,12 +619,11 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 ///
 /// The book is the one `root::boot::book` opens over a real App with a governance store, and the
 /// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The chain break
-/// and the reseal answer `204` and land on the book's journal and that store; the restore is
+/// answers `204` and lands on the book's journal and that store; the restore is
 /// refused `503` — the store has no restore operation (row 187). RED (the defect this
 /// replaced): the composition held a refusing stand-in, so each answered the store failure on a
 /// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then break -> restore -> reseal -> replay over the SAME store: a replay slot committed
-/// before them survives all three, and answers its first bytes.
+/// goes red.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
@@ -672,20 +644,10 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         .governance(gov)
         .build();
     let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
-    let store = book
-        .verb_store
-        .clone()
-        .expect("a node with a configured store carries it on its book");
-
-    // A replay slot committed BEFORE the recovery sequence.
-    let key = (
-        "idem-row-113".to_string(),
-        "POST /api/v1/admin/keys".to_string(),
+    assert!(
+        book.verb_store.is_some(),
+        "a node with a configured store carries it on its book"
     );
-    assert_eq!(store.replay_new_verb(&key).expect("the slot reads"), None);
-    store
-        .commit_new_verb_replay(&key, b"first answer")
-        .expect("the slot commits");
 
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -722,12 +684,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
             "store_restore",
             503,
         ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-            204,
-        ),
     ] {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
         assert_eq!(
@@ -736,13 +692,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
              operation"
         );
     }
-
-    // The slot survived the restore and the reseal, and replays the first answer's bytes.
-    assert_eq!(
-        store.replay_new_verb(&key).expect("the slot reads"),
-        Some(b"first answer".to_vec()),
-        "a committed replay slot survives break -> restore -> reseal"
-    );
 }
 
 /// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
@@ -1340,9 +1289,10 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     {
         let kept = kept.lock().expect("the sink");
         assert_eq!(kept.len(), 1, "exactly one record written");
+        // The record lands in the plane's own rows: its declared kind, keyed by the plane.
         assert_eq!(
             (kept[0].kind.as_str(), kept[0].id.as_str(), kept[0].ts),
-            ("note", "n-1", at)
+            ("\u{1}plane\u{1}example\u{1}note", "n-1", at)
         );
         assert_eq!(kept[0].body, br#"{"text":"hello"}"#.to_vec());
         assert_eq!(
