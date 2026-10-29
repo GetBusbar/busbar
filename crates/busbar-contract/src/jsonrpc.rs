@@ -448,6 +448,89 @@ pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
     }
 }
 
+// ══ THE ENVELOPE WRITERS ══════════════════════════════════════════════════════════════════════════
+//
+// The four envelopes a plane writes, straight to bytes: no `Value` tree is built for the envelope,
+// and the members it carries (`id`, `result`, `params`, `data`) go in as the JSON bytes the caller
+// already holds. Each writes exactly what `serde_json::to_vec(&json!({ "jsonrpc": "2.0", ... }))`
+// writes over the same members: serde_json's map orders its keys (no `preserve_order`), so the
+// envelope's members come out sorted (`error`, `id`, `jsonrpc`, `method`, `params`, `result`), the
+// error object's too (`code`, `data`, `message`), and a string is escaped by serde_json itself.
+// Members passed as bytes are copied verbatim, so they are serde_json's compact bytes when the
+// caller wrote them with it, and the far end's own bytes when it spliced them out.
+
+/// `s` as a JSON string, escaped by serde_json's own escaper.
+fn push_str(out: &mut Vec<u8>, s: &str) {
+    // Writing a `str` into a `Vec` cannot fail.
+    let _ = serde_json::to_writer(&mut *out, s);
+}
+
+/// A success response: `{"id":<id>,"jsonrpc":"2.0","result":<result>}`. `id` and `result` are
+/// JSON bytes.
+#[must_use]
+pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(id.len() + result.len() + 32);
+    out.extend_from_slice(b"{\"id\":");
+    out.extend_from_slice(id);
+    out.extend_from_slice(b",\"jsonrpc\":\"2.0\",\"result\":");
+    out.extend_from_slice(result);
+    out.push(b'}');
+    out
+}
+
+/// An error response:
+/// `{"error":{"code":<code>,"data":<data>,"message":<message>},"id":<id>,"jsonrpc":"2.0"}`, with
+/// no `data` member when `data` is `None`. `id` and `data` are JSON bytes.
+#[must_use]
+pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(id.len() + message.len() + data.map_or(0, <[u8]>::len) + 64);
+    out.extend_from_slice(b"{\"error\":{\"code\":");
+    out.extend_from_slice(code.to_string().as_bytes());
+    if let Some(data) = data {
+        out.extend_from_slice(b",\"data\":");
+        out.extend_from_slice(data);
+    }
+    out.extend_from_slice(b",\"message\":");
+    push_str(&mut out, message);
+    out.extend_from_slice(b"},\"id\":");
+    out.extend_from_slice(id);
+    out.extend_from_slice(b",\"jsonrpc\":\"2.0\"}");
+    out
+}
+
+/// A request: `{"id":<id>,"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
+/// member when `params` is `None`. `id` and `params` are JSON bytes.
+#[must_use]
+pub fn request_bytes(id: &[u8], method: &str, params: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(id.len() + method.len() + params.map_or(0, <[u8]>::len) + 48);
+    out.extend_from_slice(b"{\"id\":");
+    out.extend_from_slice(id);
+    out.push(b',');
+    push_call(&mut out, method, params);
+    out
+}
+
+/// A notification: `{"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
+/// member when `params` is `None`. `params` is JSON bytes.
+#[must_use]
+pub fn notification_bytes(method: &str, params: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(method.len() + params.map_or(0, <[u8]>::len) + 40);
+    out.push(b'{');
+    push_call(&mut out, method, params);
+    out
+}
+
+/// The members a request and a notification share, and the closing brace.
+fn push_call(out: &mut Vec<u8>, method: &str, params: Option<&[u8]>) {
+    out.extend_from_slice(b"\"jsonrpc\":\"2.0\",\"method\":");
+    push_str(out, method);
+    if let Some(params) = params {
+        out.extend_from_slice(b",\"params\":");
+        out.extend_from_slice(params);
+    }
+    out.push(b'}');
+}
+
 #[cfg(test)]
 #[path = "tests/jsonrpc_tests.rs"]
 mod jsonrpc_tests;
