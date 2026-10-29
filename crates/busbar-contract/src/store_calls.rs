@@ -19,10 +19,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::abi::sdk::store::{Cap, Cell, Grant, ReserveRefused};
 use crate::abi::store::OpId;
-use crate::kinds::{Head, RecordBytes};
-use crate::records::{AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use crate::kinds::RecordBytes;
+use crate::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 
 /// THE NODE'S ONE `op_id` ALLOCATOR, as a store handle is handed it: every `op_id` a handle mints
 /// for itself (the synchronous bridge's additive writes) comes from the kernel's one allocator, so no
@@ -35,17 +34,15 @@ pub type StoreCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreFailure>>
 /// Why a store call answered without its result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreFailure {
-    /// FAILED: nothing applied; the store's text.
+    /// FAILED: the store's text. For an `op_id`-carrying write this proves nothing (S5): the commit
+    /// may have landed, so the caller replays the same `op_id` with the same body.
     Failed(String),
-    /// REFUSED: the store would not take the op; its text.
+    /// REFUSED: the store would not take the op; its text. For an `op_id`-carrying write, decided
+    /// before commit: nothing applied and nothing recorded (S3, S5).
     Refused(String),
     /// The `op_id` was already used with different value fields (`STORE_OPID_CONFLICT`); nothing
     /// applied.
     Conflict,
-    /// A cap push conflicted at this index (`STORE_CAP_CONFLICT`); nothing applied.
-    CapConflict(usize),
-    /// `reserve` drew nothing, for this reason.
-    Reserve(ReserveRefused),
     /// The instance is at its `max_inflight`: REFUSED without a crossing.
     Overloaded,
     /// The instance faulted, or the op did not answer within its deadline.
@@ -58,8 +55,6 @@ impl std::fmt::Display for StoreFailure {
             Self::Failed(t) => write!(f, "the store failed the op: {t}"),
             Self::Refused(t) => write!(f, "the store refused the op: {t}"),
             Self::Conflict => f.write_str(crate::abi::store::DIAG_OPID_CONFLICT),
-            Self::CapConflict(i) => write!(f, "{i}: {}", crate::abi::store::DIAG_CAP_CONFLICT),
-            Self::Reserve(r) => write!(f, "the reserve drew nothing: {r:?}"),
             Self::Overloaded => f.write_str("the store is at its in-flight limit"),
             Self::Fault(t) => write!(f, "the store faulted: {t}"),
         }
@@ -70,20 +65,6 @@ impl std::error::Error for StoreFailure {}
 
 /// ONE STORE INSTANCE'S CALLS, as the kernel makes them: the store v3 slots, typed.
 pub trait StoreCalls: Send + Sync {
-    /// `reserve`: one all-or-nothing draw.
-    fn reserve<'a>(
-        &'a self,
-        op: OpId,
-        epoch: u64,
-        cells: &'a [Cell<'a>],
-    ) -> StoreCall<'a, Vec<Grant>>;
-    /// `slice_release`: per `(slice_id, unspent)`, what was taken back.
-    fn slice_release<'a>(
-        &'a self,
-        op: OpId,
-        epoch: u64,
-        items: &'a [(u64, u64)],
-    ) -> StoreCall<'a, Vec<u64>>;
     /// `add_usage_batch`: one coalesced batch, one `op_id`.
     fn add_usage_batch<'a>(
         &'a self,
@@ -93,30 +74,6 @@ pub trait StoreCalls: Send + Sync {
     /// `add_metering_batch`.
     fn add_metering_batch<'a>(&'a self, op: OpId, deltas: &'a [MeteringDelta])
         -> StoreCall<'a, ()>;
-    /// `append_audit_batch`.
-    fn append_audit_batch<'a>(&'a self, op: OpId, entries: &'a [AuditRecord]) -> StoreCall<'a, ()>;
-    /// `window_caps`.
-    fn window_caps<'a>(&'a self, op: OpId, caps: &'a [Cap<'a>]) -> StoreCall<'a, ()>;
-    /// `append_batch`: the head the stream reached.
-    fn append_batch<'a>(
-        &'a self,
-        op: OpId,
-        stream: &'a str,
-        records: &'a [RecordBytes],
-    ) -> StoreCall<'a, Head>;
-    /// `heads`.
-    fn heads(&self) -> StoreCall<'_, Vec<(String, Head)>>;
-    /// `session_put`.
-    fn session_put<'a>(
-        &'a self,
-        session: u64,
-        node: &'a str,
-        principal: &'a str,
-    ) -> StoreCall<'a, ()>;
-    /// `session_remove`.
-    fn session_remove(&self, session: u64) -> StoreCall<'_, ()>;
-    /// `sessions_for`.
-    fn sessions_for<'a>(&'a self, principal: &'a str) -> StoreCall<'a, Vec<(u64, String)>>;
     /// `record_put`.
     fn record_put<'a>(
         &'a self,
@@ -137,6 +94,78 @@ pub trait StoreCalls: Send + Sync {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>>;
+    /// `put_key`. An implementation that does not serve one of these 1.5.5 ops REFUSES it.
+    fn put_key<'a>(&'a self, key: &'a crate::records::VirtualKey) -> StoreCall<'a, ()> {
+        let _ = key;
+        unserved("put_key")
+    }
+    /// `get_key`.
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<crate::records::VirtualKey>> {
+        let _ = id;
+        unserved("get_key")
+    }
+    /// `list_keys`: every key, tombstones included.
+    fn list_keys(&self) -> StoreCall<'_, Vec<crate::records::VirtualKey>> {
+        unserved("list_keys")
+    }
+    /// `delete_key`.
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        let _ = id;
+        unserved("delete_key")
+    }
+    /// `put_key_with_credential`: the key and its credential, kept together or not at all.
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a crate::records::VirtualKey,
+        secret: &'a crate::records::CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        let _ = (key, secret);
+        unserved("put_key_with_credential")
+    }
+    /// `list_credentials`: a key's credentials, without their secrets.
+    fn list_credentials<'a>(
+        &'a self,
+        key_id: &'a str,
+    ) -> StoreCall<'a, Vec<crate::records::CredentialMeta>> {
+        let _ = key_id;
+        unserved("list_credentials")
+    }
+    /// `revoke_credential`.
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        let _ = (id, reason);
+        unserved("revoke_credential")
+    }
+    /// `list_credentials_since`.
+    fn list_credentials_since(
+        &self,
+        since: u64,
+    ) -> StoreCall<'_, Vec<crate::records::CredentialSecret>> {
+        let _ = since;
+        unserved("list_credentials_since")
+    }
+    /// `add_denylist`.
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        let _ = (sub, reason);
+        unserved("add_denylist")
+    }
+    /// `list_denylist`.
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        unserved("list_denylist")
+    }
+    /// `list_metering`: one bucket's metering rows.
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<crate::records::MeteringRow>> {
+        let _ = bucket;
+        unserved("list_metering")
+    }
+    /// `list_audit`: the legacy audit table, oldest first from genesis.
+    fn list_audit(&self) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+        unserved("list_audit")
+    }
+    /// `list_audit_tail`: the legacy audit table's last `limit` records.
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<crate::records::AuditRecord>> {
+        let _ = limit;
+        unserved("list_audit_tail")
+    }
     /// `upsert_plane_record`.
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()>;
     /// `get_plane_record`: the body.
@@ -169,6 +198,26 @@ pub trait StoreCalls: Send + Sync {
         expires_at: u64,
         now: u64,
     ) -> StoreCall<'a, bool>;
+    /// `list_plane_record_parents`: every distinct parent `kind`'s records name. An implementation
+    /// that does not serve it REFUSES it.
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        let _ = kind;
+        not_served("list_plane_record_parents")
+    }
+    /// `purge_plane_records_before`: `kind`'s records older than `before` removed, as the store's
+    /// retention rule for the kind reads it; how many went. An implementation that does not serve
+    /// it REFUSES it.
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        let _ = (kind, before);
+        not_served("purge_plane_records_before")
+    }
+}
+
+/// The answer of a [`StoreCalls`] op an implementation does not serve: REFUSED, naming the op.
+fn not_served<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
+    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
+        "this store does not serve {op}"
+    )))))
 }
 
 // THE STORE AXIS (WIRE-STORE Q8/Q9: the kernel receives the store kind's axis from the
@@ -230,4 +279,11 @@ pub trait StoreAxis: Send + Sync {
     /// Why it will not open: the door refused the load, or the store refused its settings (in the
     /// store's own words).
     fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String>;
+}
+
+/// The answer of a 1.5.5 [`StoreCalls`] op an implementation does not serve: REFUSED, naming it.
+fn unserved<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
+    Box::pin(std::future::ready(Err(StoreFailure::Refused(format!(
+        "this store does not serve {op}"
+    )))))
 }
