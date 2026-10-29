@@ -18,19 +18,15 @@ use super::*;
 #[test]
 fn red_a_snapshot_length_over_the_byte_cap_is_refused_before_any_copy() {
     crate::dispatch_tests::assert_child_passes(
-        "oversize_snapshot_lengths_child",
+        "red_a_snapshot_length_over_the_byte_cap_is_refused_before_any_copy",
         "a snapshot length over the byte cap was copied",
+        oversize_snapshot_lengths_child,
     );
 }
 
-#[test]
-#[ignore = "child process of red_a_snapshot_length_over_the_byte_cap_is_refused_before_any_copy"]
+/// The child half of the test above, in a process of its own.
 fn oversize_snapshot_lengths_child() {
     use busbar_contract::abi::plane::PlaneSnapshot;
-    assert!(
-        std::env::var_os(crate::dispatch_tests::CHILD_ENV).is_some(),
-        "the child half of red_a_snapshot_length_over_the_byte_cap_is_refused_before_any_copy"
-    );
     let b = [b'a'; 8];
     let over = u32::MAX as usize + 1;
     let snap = || {

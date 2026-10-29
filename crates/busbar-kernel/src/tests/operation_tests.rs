@@ -94,7 +94,7 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
 fn the_metric_label_surface_is_exactly_these_thirteen() {
     let mut labels: Vec<&str> = OpVerb::ALL
         .iter()
-        .chain(crate::ingress::protocols::declared_verbs())
+        .chain(crate::test_support::protocols::declared_verbs())
         .map(|o| o.name())
         .collect();
     labels.sort_unstable();

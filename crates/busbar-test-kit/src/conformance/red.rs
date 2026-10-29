@@ -17,6 +17,9 @@
 //!   declared need opens;
 //! * [`red_cross_instance_conn`]: one instance writing, reading or closing a connection another
 //!   instance of the door opened is refused (`NotOwner`), and the owner's connection is untouched;
+//! * [`red_kind_layout`]: the door, of any kind, restated with another layout fingerprint than its
+//!   kind's (and with none, `0`) is refused, by the pack tool and linked
+//!   ([`LoadError::KindLayout`]);
 //! * [`red_frame_piece`]: a transport door restated with a tail stating another frame piece size
 //!   than the host's is refused, linked and by the pack tool ([`LoadError::FramePieceSize`]);
 //! * [`red_plane_layout`]: a plane door restated with a tail stating another answer layout than
@@ -44,9 +47,10 @@ use busbar_contract::conn::{ConnError, DeclaredConns};
 use super::{
     bind, connection_fixture, dispatcher, load, load_dropped_staged, real_door, restated_door,
     with_an_outbound_need, Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport,
-    CONNECTED, LAID, PIECED, VERSIONED,
+    CONNECTED, FINGERPRINTED, LAID, PIECED, VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
+use crate::dispatch::load::rendering_of_raw;
 use crate::dispatch::{load_linked, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin};
 
 /// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
@@ -56,6 +60,8 @@ const CONNECTED_DOOR: RawDoorFn = restated_door::<2>;
 const PIECED_DOOR: RawDoorFn = restated_door::<3>;
 /// The door function of [`LAID`].
 const LAID_DOOR: RawDoorFn = restated_door::<4>;
+/// The door function of [`FINGERPRINTED`].
+const FINGERPRINTED_DOOR: RawDoorFn = restated_door::<5>;
 
 /// Every kind the host has.
 const KINDS: [KindCode; 7] = [
@@ -123,6 +129,67 @@ pub fn red_statement(s: &Subject) {
             Some(LoadError::StatementMismatch),
             "a door stating another version than its row is refused"
         );
+    });
+}
+
+/// **RED: a door built against other shapes of its kind is refused at load (status row 188).** The
+/// host reads every struct crossing a kind's table at its own layout, and the kind's version number
+/// does not move with a layout (a field inserted into the hook `RequestView` moved every later
+/// field of `DecideIn` by 24 bytes under the same hook ABI version). The door states its kind's
+/// layout fingerprint as built; the honest door loads linked and dropped in, and the door restated
+/// with another fingerprint, or with none (`0`, a door that predates the word), is refused by the
+/// pack tool, by its honest linked row and by its own, naming the plugin, the kind, both numbers
+/// and the rebuild ([`LoadError::KindLayout`]). Every kind carries this arm.
+///
+/// # Panics
+/// When a restated door loads, or the honest one does not.
+pub fn red_kind_layout(s: &Subject) {
+    let kind = s.kind();
+    let host = kind.layout_fingerprint();
+    let real = real_door(s);
+    assert_eq!(
+        real.layout, host,
+        "the {kind:?} door states its kind's layout fingerprint"
+    );
+    let stated_rendering = s.stated();
+    by_kind!(kind, K => {
+        let d = dispatcher();
+        load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked"))
+            .expect("the honest door loads linked");
+        load::<K>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
+            .expect("the honest library loads dropped in");
+        for stated in [host ^ 1, 0] {
+            let _held = FINGERPRINTED.hold(DoorParts { layout: stated, ..real });
+            let refused = rendering_of_raw(FINGERPRINTED_DOOR)
+                .expect_err("the pack tool signs no door at another kind layout");
+            let LoadError::KindLayout { kind: named, stated: said, host: read, .. } = &refused
+            else {
+                panic!("the restated {kind:?} door is refused for its layout: {refused:?}");
+            };
+            assert_eq!(
+                (*named, *said, *read),
+                (kind, stated, host),
+                "the kind and both numbers, named"
+            );
+            assert!(
+                refused.to_string().contains("rebuild against this busbar-contract"),
+                "{refused}"
+            );
+            let honest_row = LinkedRow {
+                statement: stated_rendering.clone(),
+                door: FINGERPRINTED_DOOR,
+            };
+            let linked = load_linked::<K>(&honest_row, s.bind(&d, "red-kind-layout"))
+                .map(|_| ())
+                .expect_err("a linked door at another kind layout is refused under its honest row");
+            assert_eq!(linked, refused, "the same refusal, linked");
+            let own = LinkedRow::of_raw(FINGERPRINTED_DOOR)
+                .and_then(|row| {
+                    load_linked::<K>(&row, s.bind(&d, "red-kind-layout-own")).map(|_| ())
+                })
+                .expect_err("a linked door at another kind layout is refused under its own row");
+            assert_eq!(own, refused, "the same refusal, under its own row");
+        }
     });
 }
 
@@ -324,7 +391,9 @@ fn head(op: u32, size: usize) -> ServiceHead {
 /// An empty service `out`.
 fn out() -> ServiceOut {
     // SAFETY: a plain repr(C) value of integers and a NULL/0 string: all-zero is valid.
-    unsafe { std::mem::zeroed() }
+    let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
+    out
 }
 
 /// A host slot's answer: its outcome, scalar and text.

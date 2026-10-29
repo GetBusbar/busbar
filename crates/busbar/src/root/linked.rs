@@ -126,7 +126,7 @@ pub mod node {
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
     use busbar_kernel::plane_driver::PlaneAnswer;
-    use busbar_kernel::teller::{RouteAwait, Units};
+    use busbar_kernel::teller::RouteAwait;
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
@@ -143,7 +143,7 @@ pub mod node {
     pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
     /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
     pub type Built = (
-        Arc<dyn Units + Send + Sync>,
+        Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync>,
         Arc<dyn RouteAwait + Send + Sync>,
         Finish,
     );

@@ -553,3 +553,35 @@ pub trait ConnHandle: Send + Sync {
     /// The peer's source address.
     fn peer(&self) -> String;
 }
+
+/// What connection security established on a connection, as facts (never material): the name the
+/// dialler offered, the protocol the two ends agreed, and what the far end's certificate says.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ConnFacts {
+    /// The server name offered during the handshake.
+    pub sni: Option<String>,
+    /// The protocol the handshake agreed.
+    pub alpn: Option<String>,
+    /// What the far end's presented certificate says about its holder.
+    pub peer_cert: Option<CertFacts>,
+    /// The claim the host resolved this connection to — the dialled target's scheme, or the claim
+    /// the accepting binding resolved; `None` is the entry's first claim.
+    pub claim: Option<String>,
+    /// THE FAR END'S KEY, as the connector observed it on a secured dial: the pin of its leaf
+    /// certificate's SubjectPublicKeyInfo ([`crate::transport::trust::key_pin`]); `None` = the
+    /// connection carried no certificate (it is not secured). A dial whose trust anchors pin a key
+    /// is refused when this is not that key, and this still names what the far end served.
+    pub peer_key_pin: Option<String>,
+    /// Whether busbar presented its client identity in the handshake (a mutual handshake the far end
+    /// asked for, under trust anchors that carry one).
+    pub client_identity: bool,
+}
+
+/// Which end of a connection a framing state is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Side {
+    /// The end that accepted the connection.
+    Accept,
+    /// The end that dialled it.
+    Dial,
+}
