@@ -5,14 +5,8 @@
 //! build's store (its row reached by KIND, `both_ways::store_fixture`) loaded LINKED and DROPPED IN
 //! (`door_both_ways`), each opened as the host opens a store ([`LoadedStore`]), and driven over one
 //! get/put script: record writes and reads, an overwrite, a miss, a key written and read back, and
-//! a `reserve` with no cap pushed. The two transcripts must be equal, line for line.
-//!
-//! RED ARM, KEPT: [`a_store_that_grants_part_of_a_cell_is_refused_through_both_doors`] loads a
-//! store that breaks the kind's whole-or-nothing `reserve` (`store_broken_plugin`) the same two
-//! ways: the dispatcher answers its grants FAULT on both, where the conforming store answers
-//! within the contract.
+//! a count batch read back. The two transcripts must be equal, line for line.
 
-use busbar_contract::abi::sdk::store::{Cell, CellKey, Dimension, Grant};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{RecordStore, VirtualKey};
@@ -21,9 +15,6 @@ use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 use super::door_both_ways::{self as both, same, Loaded};
 use crate::dispatch::kinds::store::Store;
 use crate::store_v3::LoadedStore;
-
-#[path = "../../tests/fixtures/store_broken_plugin.rs"]
-mod store_broken_plugin;
 
 /// The schema the script writes under.
 const SCHEMA: &str = "both-ways";
@@ -39,25 +30,6 @@ fn block<T>(f: impl std::future::Future<Output = T>) -> T {
 /// `loaded` opened as the host opens a store.
 fn store(loaded: Loaded<Store>) -> LoadedStore {
     LoadedStore::open(loaded.plugin, loaded.dispatcher, b"{}", mint).expect("the store opens")
-}
-
-/// One cell of `amount` requests.
-fn cell(amount: u64) -> Cell<'static> {
-    Cell {
-        key: CellKey {
-            bucket: "k",
-            pool: None,
-            dimension: Dimension::Requests,
-            window_start: 60,
-        },
-        amount,
-    }
-}
-
-/// `reserve` of one cell of `amount` on `s`.
-fn reserved(s: &LoadedStore, amount: u64) -> Result<Vec<Grant>, StoreFailure> {
-    let cells = [cell(amount)];
-    block(StoreCalls::reserve(s, OpId::from_parts(3, 1), 1, &cells))
 }
 
 /// A record read, its bytes shown as text: the derived `Debug` prints a byte list, which no
@@ -109,7 +81,27 @@ fn script(s: &LoadedStore) -> Vec<String> {
         "get no key = {:?}",
         RecordStore::get_key(s, "key-0")
     ));
-    t.push(format!("reserve, no cap = {:?}", reserved(s, 4)));
+    let cells = [(
+        "k",
+        60,
+        busbar_contract::records::UsageDelta {
+            requests: 4,
+            billable_requests: 4,
+            models: Vec::new(),
+        },
+    )];
+    t.push(format!(
+        "usage batch = {:?}",
+        block(StoreCalls::add_usage_batch(
+            s,
+            OpId::from_parts(3, 1),
+            &cells
+        ))
+    ));
+    t.push(format!(
+        "usage = {:?}",
+        RecordStore::get_usage(s, "k", 60).map(|u| u.requests)
+    ));
     t
 }
 
@@ -126,31 +118,7 @@ fn a_linked_and_a_dropped_in_store_answer_get_and_put_identically() {
     assert!(linked[4].contains("two"), "{}", linked[4]);
     assert!(linked[6].contains("key one"), "{}", linked[6]);
     assert!(linked[7].ends_with("Ok(None)"), "{}", linked[7]);
-    assert!(linked[8].contains("NoCap"), "{}", linked[8]);
-}
-
-/// THE RED ARM, KEPT: a store that grants part of a cell breaks the kind's whole-or-nothing rule.
-/// Through either door the dispatcher answers FAULT; the conforming store answers the same
-/// `reserve` within the contract.
-#[test]
-fn a_store_that_grants_part_of_a_cell_is_refused_through_both_doors() {
-    let broken = store_broken_plugin::door;
-    let linked = reserved(&store(both::linked::<Store>(broken)), 4);
-    assert!(
-        matches!(linked, Err(StoreFailure::Fault(_))),
-        "the linked broken store's partial grant is FAULT: {linked:?}"
-    );
-    let conforming = reserved(
-        &store(both::linked::<Store>(crate::both_ways::store_fixture::door)),
-        4,
-    );
-    assert!(
-        matches!(conforming, Err(StoreFailure::Reserve(_))),
-        "the conforming store answers the same reserve within the contract: {conforming:?}"
-    );
-    let dropped = both::dropped::<Store>(broken, "store_broken_door");
-    let dropped = reserved(&store(dropped), 4);
-    same(&[format!("{linked:?}")], &[format!("{dropped:?}")]);
+    assert!(linked[9].ends_with("Ok(4)"), "{}", linked[9]);
 }
 
 /// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.

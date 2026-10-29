@@ -33,8 +33,22 @@ use busbar_contract::secret_ref::SecretRef;
 /// The composition root hands it to the connector it builds (`Connector::resolving_spawn_secrets`),
 /// and the connector hands it to every environment it loads: no process-wide static holds it. A
 /// connector handed none resolves no reference, and a program that states one is not spawned
-/// (fail-closed).
-pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<String, String>;
+/// (fail-closed). The value stays in its zeroizing holder until the environment is rendered.
+pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<Secret<String>, String>;
+
+/// THE LINKED SPAWN RESOLVER: one member program's `env` reference, resolved at config time through
+/// the linked secret plugins, still in its zeroizing holder. OWED (row 7): an environment template
+/// is rendered as text, so the value leaves the holder when the template renders, into the
+/// [`Secret`] the spawn holds.
+///
+/// # Errors
+/// The reference does not resolve; the text names it, never a value.
+pub fn linked_spawn_secret(
+    secret: &SecretRef,
+    scope: &ConfigScope,
+) -> Result<Secret<String>, String> {
+    busbar_kernel::config::secret::resolve_linked_string_at_config(secret, scope)
+}
 
 /// How often a held environment is re-resolved, off the request path: the refresher's lease.
 pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
@@ -117,7 +131,9 @@ fn resolve_each(
             )
         })?;
         let value = reference
-            .resolve_template(&|r| secret(r, scope))
+            .resolve_template(&|r| {
+                secret(r, scope).map(|held| held.expose(&busbar_kernel::seal::lend()).clone())
+            })
             .map_err(|e| {
                 format!(
                     "the program's environment `{name}` ({}) did not resolve: {e}",
@@ -309,7 +325,7 @@ pub(crate) fn refresh_all() {
 /// resolution is counted by variable, so a cell can tell a spawn resolved nothing. A cell hands it
 /// to the connector or the environment it builds.
 #[cfg(test)]
-pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<String, String> {
+pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<Secret<String>, String> {
     let var = r
         .env_var()
         .ok_or_else(|| format!("{} does not resolve", r.describe()))?;
@@ -318,7 +334,9 @@ pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<String
         .unwrap_or_else(PoisonError::into_inner)
         .entry(var.to_string())
         .or_insert(0) += 1;
-    std::env::var(var).map_err(|_| format!("{} does not resolve", r.describe()))
+    std::env::var(var)
+        .map(Secret::new)
+        .map_err(|_| format!("{} does not resolve", r.describe()))
 }
 
 #[cfg(test)]

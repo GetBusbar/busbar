@@ -40,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
@@ -2286,6 +2280,9 @@ pub(crate) async fn auth_middleware(
     // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
     // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
     let mut dpop_proven = false;
+    // The bearer's payload, read at most once: by the DPoP binding check, then the audience
+    // pre-filter. A proven DPoP token was never read here, so the pre-filter reads it afresh.
+    let mut read = None;
     let client_token = if is_admin {
         client_token
     } else {
@@ -2295,6 +2292,7 @@ pub(crate) async fn auth_middleware(
             &path,
             req.headers(),
             client_token.as_deref(),
+            &mut read,
         )
         .await
         {
@@ -2597,7 +2595,40 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
+    // THE TICKET ARM (row 132, the ARCHITECT ticket ruling): on a door route that takes tickets,
+    // a credential carrying its plane's declared issued-id prefix is a ticket, which `keys` admits
+    // ONCE as the key it was minted for. The gate spends it here and hands its record on with the
+    // request; any ticket that is not a standing, unspent one of this deployment is the door's
+    // `401`, the same as a bad key. Only where the chain names `keys`: a ticket is a busbar token.
+    let ticketed = match (
+        signed.is_none(),
+        core_routes.door_ticket(&path, req.method()),
+        client_token.as_deref(),
+    ) {
+        (true, Some(prefix), Some(token))
+            if app.auth.keys_in_chain && token.starts_with(prefix) =>
+        {
+            let admitted = app
+                .governance
+                .as_deref()
+                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            match admitted {
+                Some((key, record)) => {
+                    consumed.ticket = Some(record);
+                    Some(ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    })
+                }
+                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+            }
+        }
+        _ => None,
+    };
     let verdict = if let Some(verdict) = signed {
+        verdict
+    } else if let Some(verdict) = ticketed {
         verdict
     } else {
         // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The
@@ -2610,7 +2641,8 @@ pub(crate) async fn auth_middleware(
         // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
         // chain, so this can narrow what is admitted and can never widen it.
         if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
-            match audience::inspect_bearer(tok, &adm.audience) {
+            let read = read.get_or_insert_with(|| audience::Bearer::read(tok));
+            match read.binding(&adm.audience) {
                 // A busbar-signed token: the verifier below has the claims and the signature, and
                 // does the real check. Pre-judging it here would refuse every valid one.
                 audience::Binding::Deferred | audience::Binding::Bound => {}
