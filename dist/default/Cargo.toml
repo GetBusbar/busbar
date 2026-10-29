@@ -927,7 +927,7 @@ busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory"
 # every build's tests. The pin is the plane repo's dev head, so what its conformance suite judges is
 # what ships.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "a6ad86a4ea2e2d321e1f2c2fbcfefededfd3ed33" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "02c5bce42cfb6e0bd01fa0299502f2f1cfc39ff9" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`; the plane repo's dev
 # head). Its
@@ -944,13 +944,13 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # head), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "3071e3d8ffc5108097fe19a69145715dbc38019d" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "f536805c3a47d57ab2fa0bc18569c37f61560dab" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "3071e3d8ffc5108097fe19a69145715dbc38019d" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "f536805c3a47d57ab2fa0bc18569c37f61560dab" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

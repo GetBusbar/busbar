@@ -732,7 +732,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=a6ad86a4ea2e2d321e1f2c2fbcfefededfd3ed33#a6ad86a4ea2e2d321e1f2c2fbcfefededfd3ed33"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=02c5bce42cfb6e0bd01fa0299502f2f1cfc39ff9#02c5bce42cfb6e0bd01fa0299502f2f1cfc39ff9"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -745,7 +745,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=3071e3d8ffc5108097fe19a69145715dbc38019d#3071e3d8ffc5108097fe19a69145715dbc38019d"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=f536805c3a47d57ab2fa0bc18569c37f61560dab#f536805c3a47d57ab2fa0bc18569c37f61560dab"
 dependencies = [
  "busbar-contract",
  "bytes",

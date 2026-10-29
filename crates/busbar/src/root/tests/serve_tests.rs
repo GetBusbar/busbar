@@ -4029,7 +4029,7 @@ mod tools_door {
         let (plain, mut plain_heard) = tool_server().await;
         let (exchanged, mut exchanged_heard) = tool_server().await;
         let mut tools = registration("plain", plain, "");
-        for extra in [registration(
+        let extra = registration(
             "exchanged",
             exchanged,
             &format!(
@@ -4037,12 +4037,11 @@ mod tools_door {
                      token_exchange:\n    token_url: \"https://as.example/token\"\n    \
                      subject_token: {{ env: {SUBJECT} }}\n"
             ),
-        )] {
-            tools
-                .as_mapping_mut()
-                .expect("a mapping")
-                .extend(extra.as_mapping().expect("a mapping").clone());
-        }
+        );
+        tools
+            .as_mapping_mut()
+            .expect("a mapping")
+            .extend(extra.as_mapping().expect("a mapping").clone());
         let rig = rig_tools(instance, plain, tools, &|app| app);
         let caller = format!("bearer {}", rig.token.to_ascii_lowercase());
         let heard_call = |heard: &mut Heard| {
