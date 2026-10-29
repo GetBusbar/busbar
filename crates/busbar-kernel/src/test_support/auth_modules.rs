@@ -157,4 +157,7 @@ impl busbar_contract::auth_calls::AuthAxis for Around {
     ) -> Result<Vec<String>, String> {
         self.0.check_outbound(style, credential, settings)
     }
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        self.0.outbound_styles()
+    }
 }
