@@ -1397,23 +1397,32 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         };
         let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
-        let data_handles = serve_thread_per_core(
-            data_workers,
-            listen.clone(),
-            data_at,
-            data_router,
-            tls_cfg,
-            tls_secret_resolver.clone(),
-            &shutdown_tx,
-            worker_shutdown_rx,
-        );
         // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
         // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
         let admin_via = root::connector::the().address_via();
-        let admin_listener =
-            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
-                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
-            );
+        // The admin door is BOUND before the data workers start serving (1.5.5's order: both
+        // bound before either serves), so a client that sees the data door ready is never
+        // refused by the admin door (`root::listener::admin_bound_before_data`).
+        let (admin_listener, data_handles) = root::listener::admin_bound_before_data(
+            || {
+                Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS)
+                    .unwrap_or_else(|e| {
+                        die(format!("cannot bind listen address '{admin_listen}': {e}"))
+                    })
+            },
+            || {
+                serve_thread_per_core(
+                    data_workers,
+                    listen.clone(),
+                    data_at,
+                    data_router,
+                    tls_cfg,
+                    tls_secret_resolver.clone(),
+                    &shutdown_tx,
+                    worker_shutdown_rx,
+                )
+            },
+        );
         tracing::debug!(
             listen = %admin_listen,
             carrier = %root::connector::carrier_name(admin_via.as_ref()),

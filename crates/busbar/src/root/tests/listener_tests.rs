@@ -1120,3 +1120,26 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
     );
     let _ = tx.send(());
 }
+
+/// THE ADMIN DOOR TAKES CONNECTIONS ONCE THE DATA DOOR SERVES (the oracle's
+/// `wire.h1|large-body|openai`, and every capture cell: it waits for `GET /healthz` on the data
+/// door, then mints its key on the admin door at once). 1.5.5 bound both doors before serving
+/// either. RED before the fix: the data door was started first and the admin door bound after it,
+/// so a client that reached the serving data door found nothing listening on the admin door and was
+/// refused (`ECONNREFUSED`, the cell's `capture cell: Connection refused (os error 111)`).
+#[test]
+fn the_admin_door_is_bound_before_the_data_door_serves() {
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let admin_at = free.local_addr().unwrap();
+    drop(free);
+    let (admin, reached) = super::admin_bound_before_data(
+        || std::net::TcpListener::bind(admin_at).unwrap(),
+        // The data door is serving: a client that saw it ready goes straight to the admin door.
+        || std::net::TcpStream::connect(admin_at).map(|_| ()),
+    );
+    assert!(
+        reached.is_ok(),
+        "the admin door refused a client once the data door served: {reached:?}"
+    );
+    drop(admin);
+}

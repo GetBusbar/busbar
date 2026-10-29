@@ -826,6 +826,22 @@ impl Served {
     }
 }
 
+/// THE ROOT'S DOORS OPEN IN 1.5.5'S ORDER: the admin listener is BOUND before the data door
+/// serves a single request, and the data door is then started (`serve_data`). 1.5.5 bound both
+/// sockets before serving either, so by the time its data door answered `GET /healthz` the admin
+/// door already took connections. 1.6.0's data door is per-core workers that bind and serve on
+/// their own threads; binding the admin door after starting them let a client that saw the data
+/// door ready reach a not-yet-bound admin door and be refused (the oracle's capture cells mint
+/// their key on the admin door right after `/healthz` answers).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn admin_bound_before_data<A, D>(
+    bind_admin: impl FnOnce() -> A,
+    serve_data: impl FnOnce() -> D,
+) -> (A, D) {
+    let admin = bind_admin();
+    (admin, serve_data())
+}
+
 /// How long a closed connection may go on draining what its client still sends, in all (nginx's
 /// `lingering_time`), and between two reads (its `lingering_timeout`).
 const LINGER_TOTAL: Duration = Duration::from_secs(30);
