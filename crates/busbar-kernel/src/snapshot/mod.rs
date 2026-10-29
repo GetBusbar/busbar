@@ -61,7 +61,7 @@ pub(crate) mod hooks;
 /// THE OBSERVATION SOURCE — the recorder the emission sites write and [`snapshot`] reads.
 mod source;
 /// A test builds its own source to drive one through `metrics::with_local_recorder`.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub use source::Source;
 
 // ─── PER-REQUEST HANDLE CACHE ─────────────────────────────────────────────────────────────────────

@@ -107,3 +107,13 @@ fn counters_pin_never_wrap() {
     assert_eq!(read_u64(-1), 0);
     assert_eq!(read_u64(i64::MIN), 0);
 }
+
+#[test]
+fn prefix_end_carries_past_trailing_0xff_and_has_no_successor_for_all_0xff_or_empty() {
+    assert_eq!(prefix_end(b"a"), Some(b"b".to_vec()));
+    assert_eq!(prefix_end(b"b\xff"), Some(b"c".to_vec()));
+    assert_eq!(prefix_end(b"b\xff\xff"), Some(b"c".to_vec()));
+    assert_eq!(prefix_end(b"ab"), Some(b"ac".to_vec()));
+    assert_eq!(prefix_end(b"\xff\xff"), None);
+    assert_eq!(prefix_end(b""), None);
+}
