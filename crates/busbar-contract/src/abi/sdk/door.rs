@@ -632,6 +632,7 @@ pub const unsafe fn door<T: KindOps>(
             statement,
             ops: ptr::from_ref(ops).cast::<OpsHead>(),
             ready,
+            layout: T::KIND.layout_fingerprint(),
         })
     }
 }
@@ -656,6 +657,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     };
 /// }
 /// ```
@@ -674,6 +676,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     });
 /// }
 /// ```
@@ -691,6 +694,7 @@ pub const unsafe fn door<T: KindOps>(
 ///             statement: core::ptr::null(),
 ///             ops: core::ptr::null(),
 ///             ready: None,
+///             layout: 0,
 ///         })
 ///     };
 /// }
