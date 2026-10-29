@@ -280,7 +280,7 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_allowlisted() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     let private = vec!["10.0.0.5".parse().unwrap()];
-    let strict = guard_for(&Destinations::default()).expect("the strict guard");
+    let strict = guard_for(&deployment(&[], "").destinations()).expect("the default guard");
     let listed = deployment(&[], "advanced:\n  allow_destinations: [token.internal]\n");
     let listed = guard_for(&listed.destinations()).expect("a guard");
     let mut outbound = 0usize;
