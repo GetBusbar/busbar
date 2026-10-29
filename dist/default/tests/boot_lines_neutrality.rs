@@ -337,8 +337,9 @@ fn boot_lines_match_1_5_5_shape() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `security.allow_all_metadata: true` swaps the metadata INFO line for the WARN the security doc
-/// prints word for word: `metadata protection DISABLED; all cloud-metadata endpoints reachable`.
+/// `security.allow_all_metadata: true` swaps the metadata INFO line for exactly one WARN, 1.5.5's
+/// text byte for byte (lead ruling: 1.5.5 look and feel wins; the security doc quotes the product):
+/// `metadata protection DISABLED — all cloud-metadata endpoints reachable`.
 #[test]
 fn allow_all_metadata_boot_line_is_the_warn() {
     let dir = fixture_dir();
@@ -395,7 +396,7 @@ fn allow_all_metadata_boot_line_is_the_warn() {
     assert_eq!(
         metadata_lines,
         vec![
-            "<TS>  WARN metadata protection DISABLED; all cloud-metadata endpoints reachable"
+            "<TS>  WARN metadata protection DISABLED — all cloud-metadata endpoints reachable"
                 .to_string()
         ],
         "the allow_all_metadata boot line is the documented WARN; log:\n{log_text}"

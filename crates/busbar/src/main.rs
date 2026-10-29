@@ -691,7 +691,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     if cfg.allow_all_metadata {
         tracing::warn!(
             diag = %diagnostics::METADATA_PROTECTION_DISABLED.banner(),
-            "metadata protection DISABLED; all cloud-metadata endpoints reachable"
+            "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
         let blocked =
