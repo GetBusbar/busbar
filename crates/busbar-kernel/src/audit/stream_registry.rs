@@ -10,9 +10,9 @@
 //! `seq`/`prev_hash`/`hash`, frames the prelude in the stream's framing, joins the record's opaque
 //! pre-framed content suffix, and persists the neutral `{seq, prev_hash, hash, content}` body.
 //!
-//! Core's own streams (the admin audit log, [`crate::audit::auditlog`]; the usage residual log,
-//! [`crate::residual_log`]) register with an in-core decode ([`Decode::Native`]) and drive their
-//! chain through [`register`], [`append_full`] and [`seed`] directly, with no host handle.
+//! Core's own stream (the admin audit log, [`crate::audit::auditlog`]) registers with an in-core
+//! decode ([`Decode::Native`]) and drives its chain through [`register`], [`append_full`] and
+//! [`seed`] directly, with no host handle.
 //!
 //! ## The digest, and the PipeSeparated landmine
 //!
