@@ -19,9 +19,12 @@
 //! contract's own public surfaces directly. What a cell needs and this rig does not offer is added
 //! HERE, never reached for past it.
 //!
-//! The rig compiles iff an enabled door's cells name it (`build.rs` sets `door_rig`), and it
-//! carries no allow: an item no compiled cell calls is dead code and refused, so the surface is
-//! exactly what the cells use.
+//! The rig compiles in every test build that serves the `pools` section, so a root change that
+//! breaks it fails on that change, not at the next plane repin. Where an enabled door's cells name
+//! it (`build.rs` sets `door_rig`) it carries no allow: an item no compiled cell calls is dead code
+//! and refused, so the surface is exactly what the cells use. Only a build whose cells name no rig
+//! item lets the surface stand unused.
+#![cfg_attr(not(door_rig), allow(dead_code, unused_imports))]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -50,7 +53,7 @@ use crate::root::loader::sign::BreakerDecl;
 pub(crate) use super::planes_tests::{Published, PUBLISHING};
 pub(crate) use super::with_pools;
 pub(crate) use crate::root::door_steps::Rules;
-pub(crate) use crate::root::durability::{Durability, UnitCounts};
+pub(crate) use crate::root::durability::Durability;
 pub(crate) use crate::root::kernel::RootHistory;
 pub(crate) use crate::root::loader::dispatch::LinkedRow;
 pub(crate) use crate::root::loader::sign::NeedLevel;
@@ -609,7 +612,7 @@ pub(crate) fn hook_env(
 ) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::test_support::test_hook_env(
         aliases,
-        busbar_kernel::test_support::hook_needs(prompt, user),
+        busbar_kernel::test_support::HookNeeds { prompt, user },
     )
 }
 
