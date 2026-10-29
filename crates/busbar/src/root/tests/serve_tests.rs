@@ -5145,6 +5145,57 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     );
 }
 
+/// A FAILOVER LANE PRESENTS ITS OWN CREDENTIAL (security use case: every lane is reached with its
+/// own key): the primary member, configured with its own key, answers 500, the walk fails over to
+/// the second member, configured with a different key, and the caller is served. Each far end saw
+/// exactly its own member's key; the failover hop never carries the primary's, nor the caller's.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
+    const PRIMARY_KEY: &str = "sk-primary-6c2f81";
+    const FAILOVER_KEY: &str = "sk-failover-0d94e3";
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failover-credential";
+    let _published = Withdrawn(instance);
+    let primary = seat_far_end(
+        500,
+        r#"{"error":{"message":"upstream down","type":"server_error"}}"#,
+    )
+    .await;
+    let failover = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(primary.port, 100), (failover.port, 1)],
+            member_keys: &[PRIMARY_KEY, FAILOVER_KEY],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        (primary.served(), failover.served()),
+        (1, 1),
+        "the primary failed and the walk failed over"
+    );
+    assert_eq!(
+        primary.authorizations.lock().unwrap().clone(),
+        vec![format!("Bearer {PRIMARY_KEY}")],
+        "the primary is reached with its own key"
+    );
+    let seen = failover.authorizations.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![format!("Bearer {FAILOVER_KEY}")],
+        "the failover lane presents its own key"
+    );
+    assert!(
+        !seen[0].contains(PRIMARY_KEY) && !seen[0].contains(&rig.token),
+        "never the primary's key, never the caller's token"
+    );
+}
+
 /// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5466,6 +5517,76 @@ async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
     let text = String::from_utf8_lossy(&payload);
     assert!(text.contains(REWRITTEN), "{text}");
     assert!(!text.contains("the original prompt"), "{text}");
+}
+
+/// A HOOK NEVER SEES A CREDENTIAL (hooks.md: "Never the secret/token, under any configuration";
+/// guardrails: caller secrets are excluded from the hook payload): a keyed caller whose request also
+/// carries `x-api-key`, `proxy-authorization` and `cookie` fields reaches the far end, and the
+/// request-stage tap, which holds the prompt grant, is delivered a projection that carries none of
+/// the caller's credentials, no auth field name, and not the provider's own key.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hook_payload_never_carries_auth_headers() {
+    const CALLER_API_KEY: &str = "caller-x-api-key-5b1e0c";
+    const PROXY_SECRET: &str = "Basic cHJveHk6c2VjcmV0LTkxZDM=";
+    const COOKIE: &str = "session=cookie-secret-3a7f";
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-tap-no-auth";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            no_rewrite: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let bearer = format!("Bearer {}", rig.token);
+    let (status, _, body) = rig
+        .send_bare(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "the caller's prompt"}]})),
+            &[
+                ("authorization", bearer.as_str()),
+                ("x-api-key", CALLER_API_KEY),
+                ("proxy-authorization", PROXY_SECRET),
+                ("cookie", COOKIE),
+            ],
+        )
+        .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let payload = rig
+        .request_tap_payload(2_000)
+        .await
+        .expect("the request-stage tap is delivered");
+    let text = String::from_utf8_lossy(&payload);
+    assert!(
+        text.contains("the caller's prompt"),
+        "the tap holds the prompt grant, so the payload is the full projection: {text}"
+    );
+    for secret in [
+        rig.token.as_str(),
+        CALLER_API_KEY,
+        PROXY_SECRET,
+        COOKIE,
+        "sk-seats",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "a credential reached the hook: {text}"
+        );
+    }
+    let lower = text.to_ascii_lowercase();
+    for field in ["authorization", "x-api-key", "cookie"] {
+        assert!(
+            !lower.contains(field),
+            "an auth field name reached the hook ({field}): {text}"
+        );
+    }
 }
 
 /// CATALOGUE: what a restricted key may SEE is the one catalogue walk's answer: the pool it may
@@ -11342,6 +11463,76 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     assert_eq!(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
+    );
+}
+
+/// A VIRTUAL KEY EXPIRES (governance guide: "a virtual key is a signed, expiring bearer token"):
+/// end to end on the data plane through the `keys` chain, a key minted on the same governance book
+/// whose token `exp` has passed is refused 401 and never reaches the far end, while the rig's live
+/// key is admitted on the same app.
+/// RED: an expired virtual key is admitted.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_virtual_key_is_refused() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-key-token-expired";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // Minted an hour ago with a ten-minute lifetime: signed by the book's own key, and expired.
+    let now = busbar_kernel::store::now();
+    let (_, expired) = rig
+        .gov
+        .mint_signed(
+            NewKeySpec {
+                name: "expired".to_string(),
+                allowed_pools: Some(vec!["p".to_string()]),
+                ..Default::default()
+            },
+            now - 3_000,
+            now - 3_600,
+        )
+        .expect("mint");
+    let expired = expired.expose(&busbar_kernel::seal::lend()).to_string();
+
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let bearer = format!("Bearer {expired}");
+    let (refused, _, body) = rig
+        .send_bare(
+            "POST",
+            path,
+            Some(ask.clone()),
+            &[("authorization", bearer.as_str())],
+        )
+        .await;
+    assert_eq!(
+        refused,
+        401,
+        "an expired virtual key is refused: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(far.served(), 0, "the expired key never reached the far end");
+
+    let (admitted, _, body) = rig.send("POST", path, Some(ask)).await;
+    assert_eq!(
+        admitted,
+        200,
+        "the live key is admitted on the same app: {}",
+        String::from_utf8_lossy(&body)
     );
 }
 

@@ -296,3 +296,45 @@ fn the_section_default_is_judged_after_its_registrations() {
         "a registration's refusal comes first, as the plane's section split ordered it"
     );
 }
+
+/// RED (security item 5; website `mcp.astro:497-531`, "the caller's own Busbar credential never
+/// travels upstream, in any credential mode"): A REGISTRATION'S OWN `upstream_credentials:
+/// passthrough` IS REFUSED in the plane's words, exactly as the section default is. The key is the
+/// kernel's and is stripped before the section reaches a door plane, so the plane's own validator
+/// never sees it: only the kernel can refuse it, on boot and on the admin write path alike, naming
+/// the registration. A plane that states no refusal is unchanged.
+#[test]
+fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
+    let _isolation =
+        crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE, &MOORINGS_PLANE]);
+    let moorings = |section: &str| {
+        crate::config::deploy_from_yaml_str(&format!(
+            "providers: {{}}\nmodels: {{}}\nmoorings:\n{section}"
+        ))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    };
+    let refused = moorings("  berth:\n    upstream_credentials: passthrough\n")
+        .expect_err("a registration's own passthrough is refused");
+    assert!(
+        refused.contains("`moorings.berth`") && refused.contains(FORWARD_REFUSAL),
+        "the refusal names the registration, in the plane's words: {refused}"
+    );
+    moorings("  berth:\n    upstream_credentials: own\n")
+        .expect("a registration's own credential is not refused");
+
+    let refused = NamedMapSection::Plane("moorings")
+        .parse_def(
+            "berth",
+            &serde_json::json!({ "upstream_credentials": "passthrough" }),
+        )
+        .err()
+        .expect("the admin write path refuses what boot refuses");
+    assert!(
+        refused.starts_with("`moorings.berth`") && refused.contains(FORWARD_REFUSAL),
+        "{refused}"
+    );
+
+    boot("  dock:\n    upstream_credentials: passthrough\n")
+        .expect("a plane that states no refusal accepts a registration's own passthrough");
+}

@@ -428,6 +428,8 @@ pub fn register_stores(linked: &Linked) {
             auth_chain_module: Some(crate::root::admission::auth_chain_module),
             dispatch_latched: Some(crate::root::admission::dispatch_latched),
             auth_axis: Some(crate::root::dispatch::auth_axis),
+            // Every non-built-in auth module is a plugin the registry answers.
+            in_process_auth: None,
             config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
