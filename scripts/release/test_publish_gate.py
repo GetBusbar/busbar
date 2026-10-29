@@ -30,6 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import publish_gate as pg  # noqa: E402
+import conformance_gate as cg  # noqa: E402
+from test_conformance_gate import FakeMCI, verdict  # noqa: E402
 
 PACK = os.environ.get("PACK", "")
 VERSION = "1.6.0"
@@ -144,6 +146,11 @@ class World:
         (r / "dist" / "default").mkdir(parents=True)
         (r / "dist" / "default" / "Cargo.lock").write_text(
             f'[[package]]\nname = "x"\nsource = "git+https://github.com/GetBusbar/{PLUGIN}?rev=abc#{self.plugin_commit}"\n')
+        # The conformance registry at the release commit: one public core suite (G-C).
+        (r / "conformance").mkdir()
+        (r / "conformance" / "registry.toml").write_text(
+            '[[suite]]\nid = "tls"\nrepo = "GetBusbar/busbar"\nstandard = "TLS"\nplan = "testssl.sh"\n'
+            'tier = "conformant"\nlabel = "TLS"\nverdict = "conformance-verdict-tls"\npublic = "true"\n')
         sh("git", "add", "-A", cwd=r)
         sh("git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "release", cwd=r)
         self.commit = sh("git", "rev-parse", "HEAD", cwd=r).decode().strip()
@@ -192,6 +199,14 @@ class World:
             "test_kit": {"tag": f"test-kit-v{VERSION}", "commit": self.kit},
             "plugins": [{"repo": PLUGIN, "version": PVER, "tag": f"v{PVER}", "commit": self.plugin_commit}]}))
         self.sums()
+        # The conformance-manifest slice: ModernCI's verdicts for the release commit.
+        self.mci = FakeMCI()
+        self.mci.outputs[("GetBusbar/busbar", self.commit)] = [verdict("tls", "GetBusbar/busbar", self.commit, self.commit)]
+        self.conformance()
+
+    def conformance(self):
+        shutil.rmtree(self.cand / "conformance", ignore_errors=True)
+        cg.build_manifest(self.mci, self.root, commit=self.commit, release=VERSION, out=self.cand)
 
     @staticmethod
     def _raw_tar(members):
@@ -219,7 +234,7 @@ class World:
     def inputs(self, net=None):
         self.net = net or FakeNet(self.kit)
         return pg.Inputs(root=self.root, cand=self.cand, trust=self.trust, pack=PACK, net=self.net,
-                         require_hardware_k2=False)
+                         require_hardware_k2=False, mci=self.mci)
 
     def verify(self, net=None):
         vd, _, _ = pg.verify_all(self.inputs(net))
@@ -397,6 +412,32 @@ class Gate(unittest.TestCase):
             builtins.input = orig
         self.assertEqual(code, pg.EXIT_REFUSED)
         self.assertFalse((self.w.out / "signed").exists())
+
+    # G-C (docs/design/conformance-release.md): the tag needs a public pass for every public suite.
+    def test_gc_a_registered_public_suite_without_a_pass_refuses_the_tag(self):
+        self.w.mci.outputs[("GetBusbar/busbar", self.w.commit)] = [
+            verdict("tls", "GetBusbar/busbar", self.w.commit, self.w.commit, status="fail", reason="grade B")]
+        self.w.conformance()
+        self.refused("G-C", "tls")
+
+    def test_gc_a_hand_edited_manifest_is_refused(self):
+        self.w.mci.outputs.clear()
+        self.w.conformance()
+        f = self.w.cand / "conformance-manifest.json"
+        f.write_text(f.read_text().replace('"not-run"', '"pass"'))
+        self.refused("G-C", "conformance-manifest.json")
+
+    def test_gc_a_candidate_without_the_manifest_is_refused(self):
+        (self.w.cand / "conformance-manifest.json").unlink()
+        self.refused("G-C", "conformance-manifest.json")
+
+    def test_gc_the_evidence_carries_the_manifest_sha256(self):
+        self.assertEqual(pg.cmd_verify(self.w.inputs(), self.w.out), 0)
+        ev = json.loads((self.w.out / "release-evidence.json").read_text())
+        want = hashlib.sha256((self.w.cand / "conformance-manifest.json").read_bytes()).hexdigest()
+        self.assertEqual(ev["conformance_manifest_sha256"], want)
+        self.assertEqual(ev["conformance"]["rule"], "G-C")
+        self.assertEqual(ev["rules"]["G-C"], "pass")
 
 
 if __name__ == "__main__":
