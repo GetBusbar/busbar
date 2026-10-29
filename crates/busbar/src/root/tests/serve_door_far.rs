@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_ONCE};
 use busbar_contract::abi::transport::FAULT_HEALTHY;
-use busbar_contract::caps::{Dial, PrincipalId, Route, Verify};
+use busbar_contract::caps::{Dial, PrincipalId, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
 };
@@ -27,7 +27,7 @@ use busbar_contract::transport::ConnFacts;
 use busbar_kernel::plane_driver::{
     DriverSteps, Egress, FarEnd, MemberRoute, OutboundRequest, Pick, DEFAULT_ERROR_BODY_MAX,
 };
-use busbar_kernel::teller::{UnitCtx, Units};
+use busbar_kernel::teller::UnitCtx;
 use busbar_kernel::test_support::tokens::{grant, pass};
 use busbar_kernel_egress::ports::{
     Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
@@ -278,6 +278,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     let ctx = UnitCtx {
@@ -291,12 +292,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     };
     steps.decoded(&ctx, OpClassId::new("op"), ROUTE_DIRECT, Some(b"e"));
     steps.route_flags(&ctx, ROUTE_ONCE);
-    let _ = steps.verify(
-        &pass::<Verify>(),
-        &grant::<Dial>(),
-        &ctx,
-        &PrincipalId::new("vk_one"),
-    );
+    let _ = steps.verify(&grant::<Dial>(), &ctx, &PrincipalId::new("vk_one"));
     let routed = steps.routed().expect("the unit is routed to `e`");
     assert!(steps.once(), "performed at most once");
     // The egress over that route: one member, its far end answering 502.
