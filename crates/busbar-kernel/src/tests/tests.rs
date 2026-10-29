@@ -414,7 +414,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         axum::http::StatusCode::NOT_FOUND,
         // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
         // an OpenAI-inferred 404 carries `{"error":{"type":"not_found_error"}}`, not `not_found`.
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(
@@ -436,7 +436,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert!(
@@ -2502,7 +2502,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
                 config_section: SECTION,
                 ..crate::test_support::NEUTRAL_FALLBACK.declaration
             },
-            build: |_| {
+            build: |_, _| {
                 Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
             },
             ..crate::test_support::NEUTRAL_FALLBACK
@@ -2843,8 +2843,8 @@ fn the_operator_breaker_limits_reach_every_planes_cells() {
     crate::snapshot::init();
     let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestorePublished(crate::config::limits::installed());
-    let hard_down = crate::breaker::CanonicalSignal {
-        class: crate::breaker::StatusClass::Auth,
+    let hard_down = busbar_contract::upstream::CanonicalSignal {
+        class: busbar_contract::upstream::StatusClass::Auth,
         provider_signal: None,
         retry_after: None,
     };
@@ -3143,44 +3143,6 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     assert_eq!(v["error"]["code"], "internal", "got {v}");
 }
 
-/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
-/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
-/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
-#[test]
-fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
-    use crate::ir::lane_caps::{
-        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
-    };
-    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
-    let provider = ProviderLaneCaps {
-        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
-        ..ProviderLaneCaps::default()
-    };
-    let rules = [
-        ModelCapabilities {
-            models: vec!["model-a*".to_string()],
-            native_structured_output: Some(true),
-            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
-            ..ModelCapabilities::default()
-        },
-        ModelCapabilities {
-            models: vec!["model-a-2*".to_string()],
-            native_structured_output: Some(false),
-            ..ModelCapabilities::default()
-        },
-    ];
-    assert_eq!(
-        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
-        LaneCaps::NONE
-    );
-    let other = resolve_lane_caps(provider, &rules, "model-b");
-    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
-    assert!(!other.native_structured_output);
-    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
-    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
-    assert!(first_match.native_structured_output);
-}
-
 /// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
 /// `tests/fixtures/frozen_customer_text.yaml`, the golden input DATA that holds the store spellings and
 /// credential kind operators see, byte-for-byte as 1.5.5 shipped them — so no test source spells them.
@@ -3283,7 +3245,7 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
             path,
             &format!("{path}?q=1"),
             axum::http::StatusCode::METHOD_NOT_ALLOWED,
-            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         )
     };
