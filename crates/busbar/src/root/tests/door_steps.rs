@@ -46,15 +46,16 @@ fn a_pool_route_walks_its_named_pools_members_under_its_label() {
 
 /// RED (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): an entry's reserved `timeout:` is
 /// its member's attempt bound, read for every entry alike — a section's own entries and a
-/// model-serving section's `models` entries; an entry that writes none has no bound of its own.
+/// model-serving section's `models` entries; a registration that writes none is held to the core's
+/// default, and a model entry that writes none has no bound of its own.
 #[test]
 fn an_entrys_timeout_is_its_members_attempt_bound() {
     let p = pools("a: { timeout: 10s }\nb: {}\npools:\n  both:\n    members: [a, b]");
     assert_eq!(p.timeout_ms("a"), Some(10_000));
     assert_eq!(
         p.timeout_ms("b"),
-        None,
-        "none written: the walk's own budget"
+        Some(busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS),
+        "none written: the core's default"
     );
     assert_eq!(p.timeout_ms("both"), None, "a pool is no entry");
     let m = pools("models:\n  m1: { provider: p, timeout: 2m }\n  m2: { provider: p }");
