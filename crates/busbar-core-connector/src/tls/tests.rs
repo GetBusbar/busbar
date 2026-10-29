@@ -86,7 +86,7 @@ async fn prepare_plaintext_is_identity_and_passes_bytes_unchanged() {
 /// verifier when `client_ca` is absent) — and `prepare` reaches the same result for a
 /// TLS-configured, capable binding.
 ///
-/// The ALPN offer is `h2, http/1.1`, in that order: OWNER RULING Q137 (2026-10-04), a signed
+/// The ALPN offer is `h2, http/1.1`, in that order, a
 /// customer-visible change from 1.5.5, which offered `http/1.1` alone. The listener serves HTTP/2 on
 /// an `h2` connection; a client offering only `http/1.1` is served as in 1.5.5.
 #[tokio::test]
@@ -110,7 +110,7 @@ async fn build_server_config_and_prepare_build_from_operator_config() {
 }
 
 /// A syntactically invalid PEM cert errors with the cert named, not a panic — moved here verbatim
-/// in spirit from `busbar-kernel`'s former `malformed_cert_errors_clearly` (DECISIONS #40: the
+/// in spirit from `busbar-kernel`'s former `malformed_cert_errors_clearly`(the
 /// parsing this asserts now lives in `build_server_config`, in this crate).
 #[test]
 fn malformed_cert_errors_clearly() {
@@ -128,7 +128,7 @@ fn malformed_cert_errors_clearly() {
 }
 
 /// A missing cert FILE errors with the offending path named, not a panic — moved here verbatim in
-/// spirit from `busbar-kernel`'s former `bad_cert_path_errors_clearly` (DECISIONS #40).
+/// spirit from `busbar-kernel`'s former `bad_cert_path_errors_clearly`.
 #[test]
 fn bad_cert_path_errors_clearly() {
     let tls = TlsCfg {
@@ -239,8 +239,6 @@ async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
     server_task.await.unwrap();
 }
 
-// ── HANDSHAKES AGAINST THE CONFIG THIS CRATE BUILDS ────────────────────────────────────────────
-//
 // TLS is core-only connection security: this crate is the one TLS path and it never crosses the
 // plugin ABI, so what a TLS listener does to a client is proven here, against the config built from
 // the operator's `tls:` block and the `Tls` wrap handed to a listener. Each handshake runs for real —
@@ -614,8 +612,6 @@ fn any_offered_name_or_none_is_served_the_configured_certificate() {
     );
 }
 
-// ── ALPN: h2 OVER TLS (OWNER RULING Q137, 2026-10-04) ─────────────────────────────────────
-//
 // A TLS listener offers ALPN `h2, http/1.1`: a client that offers `h2` speaks HTTP/2, one that offers
 // only `http/1.1` (or no ALPN at all) is served HTTP/1.1 as in 1.5.5. A connection whose ALPN is `h2`
 // is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes: one that does not open with the
@@ -742,7 +738,7 @@ async fn an_h2_connection_that_does_not_open_with_the_preface_is_closed() {
 }
 
 /// On an `http/1.1` connection (and one with no ALPN) the first bytes are not screened here: an
-/// unparseable request line reaches the HTTP/1 server, which keeps 1.5.5's `400` (Q137 (2)).
+/// unparseable request line reaches the HTTP/1 server, which keeps 1.5.5's `400`.
 #[tokio::test]
 async fn an_http1_connection_is_handed_its_bytes_unscreened() {
     for protocols in [&[&b"http/1.1"[..]][..], &[]] {

@@ -28,8 +28,8 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
     assert!(door.count("ingest") > 1, "re-called while it owed more");
 }
 
-/// WS-DIAL (ARCHITECT Q-L5B-WS-DIAL 2026-10-03): a dialled framing's `begin` is handed the dial's
-/// opening head fields (`BeginIn::fields`), in order; a framing begun without any hands none.
+/// WS-DIAL: a dialled framing's `begin` is handed the dial's opening head fields
+/// (`BeginIn::fields`), in order; a framing begun without any hands none.
 #[test]
 fn a_dial_hands_its_opening_head_fields_to_begin() {
     let door = Arc::new(TestDoor::identity("bytes"));
@@ -59,8 +59,7 @@ fn a_dial_hands_its_opening_head_fields_to_begin() {
     );
 }
 
-/// RED (C19-TAIL U5): a piece the framer states as text (`PIECE_TEXT`) is read up as text; one it
-/// does not is binary.
+/// A piece the framer states as text (`PIECE_TEXT`) is read up as text; one it does not is binary.
 #[test]
 fn a_text_piece_is_read_as_text() {
     for text in [true, false] {
@@ -259,9 +258,9 @@ fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block
     assert_eq!(l.take(3, FieldPiece::Payload, b"body"), Ok(()));
 }
 
-/// RED (Law 0: a plugin is isolated to its ABI, and holds no host worker): a framer that keeps
-/// answering that it owes more (`YIELD_MORE`) and writes nothing FAULTs its framing after a bounded
-/// number of re-calls. Re-called with no bound, it spun the host worker forever.
+/// A framer that keeps answering that it owes more (`YIELD_MORE`) and writes nothing FAULTs its
+/// framing after a bounded number of re-calls. Re-called with no bound, it spun the host worker
+/// forever.
 #[test]
 fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
     use std::sync::mpsc;
@@ -813,8 +812,7 @@ fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
     );
 }
 
-/// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE"):
-/// a `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
+/// A `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
 /// a frame: it is never handed up as a piece (relayed, it reached a reader as an empty body piece,
 /// ahead of the head on a dialled stream). The messages around it are handed up as they came.
 #[test]
@@ -836,10 +834,10 @@ fn a_writable_piece_is_never_handed_up_as_a_frame() {
     assert_eq!(got, vec![b"x".to_vec(), b"z".to_vec()]);
 }
 
-/// RED (row 159, a transport's size answer): `locate`'s short answer names the buffer sizes it
-/// needs, and the contract admits up to 4 GiB each. The host bounds what it gives a locate answer
-/// and refuses a larger ask as the transport's FAULT: it never allocates what the transport named
-/// past that bound, and never asks again.
+/// RED (a transport's size answer): `locate`'s short answer names the buffer sizes it needs, and
+/// the contract admits up to 4 GiB each. The host bounds what it gives a locate answer and refuses
+/// a larger ask as the transport's FAULT: it never allocates what the transport named past that
+/// bound, and never asks again.
 #[test]
 fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
     let needed = busbar_contract::abi::mechanism::check::MAX_BYTES;

@@ -146,7 +146,7 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
         let Some(admin_routes) = decl.admin_routes else {
             continue;
         };
-        for spec in admin_routes(&() as &dyn std::any::Any) {
+        for spec in admin_routes(decl, &() as &dyn std::any::Any) {
             let method = serde_json::to_value(spec.method)
                 .ok()
                 .and_then(|m| m.as_str().map(str::to_string))

@@ -20,7 +20,7 @@ use super::{
     unset,
 };
 use crate::root::door_steps::tests::tool_door::try_rig_tools;
-use crate::root::serve::planes_tests::{Published, PUBLISHING};
+use crate::root::serve::planes_tests::PUBLISHING;
 
 /// One caller-facing answer: its status, its headers and its body.
 type Answer = (StatusCode, HeaderMap, Vec<u8>);
@@ -28,7 +28,6 @@ type Answer = (StatusCode, HeaderMap, Vec<u8>);
 /// The caller's answer to a call on a member program whose `env` reference is `secret`, which does
 /// not resolve, served by the tool door as `instance`.
 async fn refused_call(instance: &'static str, secret: &SecretRef) -> Answer {
-    let _published = Published(instance);
     let rig = try_rig_tools(instance, 0, program_section(secret))
         .unwrap_or_else(|e| panic!("{instance}: a member's env is not resolved at compose: {e}"));
     call(&rig).await

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD, ARCHITECT RULING DEST-GUARD): the one
-//! check every outbound connection asks, whatever dials it. It is the only code that decides
-//! whether an address may be dialled.
+//! THE DESTINATION GUARD: the one check every outbound connection asks, whatever dials it. It is
+//! the only code that decides whether an address may be dialled.
 //!
 //! * Every name is compared in ONE form (`norm`, `busbar_contract::net::judged_host`): the ASCII
 //!   name or address a URL client dials, UTS #46 to-ASCII and `url`'s IPv4 reading, so
@@ -29,7 +28,7 @@
 //! unique-local, unspecified and the rest of that list); in the loopback-allowed class, where
 //! `block_private_addresses` holds, every private address but loopback ([`is_loopback`]: the class
 //! is named for it, and 1.5.5 reached a loopback collector with no configuration).
-//! A HOST allowlist entry never admits a metadata answer (owner Q8): it is how internal DNS is
+//! A HOST allowlist entry never admits a metadata answer: it is how internal DNS is
 //! admitted, and it must not become a way to reach IMDS by a rebinding answer. The denylist (cloud
 //! metadata and `security.blocked_metadata_hosts`) takes precedence over every private-range
 //! allowance: an IP/CIDR entry admits a denylisted address only when it names exactly that address
@@ -37,19 +36,19 @@
 //! `100.64.0.0/10` does not admit `100.100.100.200` and `169.254.0.0/16` does not admit
 //! `169.254.169.254`.
 //!
-//! THE 1.5.5 CARVE-OUTS (ARCHITECT ruling on #413, DEST-GUARD) speak for provider dials only, as
-//! they did in 1.5.5, where they were read for a provider's own URLs and nowhere else: a provider's
-//! `allow_metadata_hosts` admits only for a host that provider's own URLs name (`base_url`,
-//! `token_url`), `security.allow_metadata_hosts` and `security.allow_all_metadata` for any provider
-//! dial. No other class (the default class, open-web, loopback-allowed, operator infrastructure)
-//! admits metadata through any carve-out; operator infrastructure refuses it whatever they say.
-//! IPv6 link-local (fe80::/10) is refused in every class as metadata is (ARCHITECT PB-100, the
-//! same `DEST_METADATA` verdict the endpoint check gave it), and admitted only by an IP or CIDR entry naming it (the allowlist's, or a provider carve-out's).
+//! THE 1.5.5 CARVE-OUTS speak for provider dials only, as they did in 1.5.5, where they were read
+//! for a provider's own URLs and nowhere else: a provider's `allow_metadata_hosts` admits only for
+//! a host that provider's own URLs name (`base_url`, `token_url`), `security.allow_metadata_hosts`
+//! and `security.allow_all_metadata` for any provider dial. No other class (the default class,
+//! open-web, loopback-allowed, operator infrastructure) admits metadata through any carve-out;
+//! operator infrastructure refuses it whatever they say. IPv6 link-local (fe80::/10) is refused in
+//! every class as metadata is (the same `DEST_METADATA` verdict the endpoint check gave it), and
+//! admitted only by an IP or CIDR entry naming it (the allowlist's, or a provider carve-out's).
 //! This guard is the ONLY metadata and link-local refusal a judged dial meets: the endpoint check
 //! ahead of it reads only that the target names a host (`crate::endpoint::named`), so the
-//! carve-outs and the allowlist reach every dial.
-//! The carve-outs and the extra refusals are re-read at every config commit
-//! ([`Guard::publish`]); the allowlist and `block_private_addresses` are fixed at boot.
+//! carve-outs and the allowlist reach every dial. The carve-outs and the extra refusals are re-read
+//! at every config commit ([`Guard::publish`]); the allowlist and `block_private_addresses` are
+//! fixed at boot.
 //!
 //! The ranges and names are `busbar_contract::net`'s, read only here.
 
@@ -70,17 +69,16 @@ use busbar_kernel::config::Destinations;
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 /// for (where `block_private_addresses` holds; the allowlist is the escape hatch).
 ///
-/// - `provider` (THE DESIGN §5 destination guard, OWNER DESTINATION GUARD and Q130 (B), scoped by
-///   the ARCHITECT ruling CRATES-14: "the 'refused unless allowlisted' default applies to the
+/// - `provider` (THE DESIGN §5 destination guard, scoped by
+///   the rule "the 'refused unless allowlisted' default applies to the
 ///   provider and IdP egress classes only"): a provider dial, its configured `base_url` included, is
 ///   refused a private or loopback address unless `advanced.allow_destinations` names it.
 /// - the default class and `open-web`: a destination from request data or the network.
 ///
-/// Not here: `operator-infrastructure` (THE DESIGN §5 egress-class table, owner 2026-09-27:
-/// private, loopback and plaintext allowed; pinned) and `loopback-allowed`, which the guard's
-/// address arm holds to the same refusal LOOPBACK EXCEPTED (ARCHITECT parity ruling A2: https to
-/// any host, the destination guard still applying; 1.5.5 refused a private, CGNAT, unique-local or
-/// link-local collector and admitted a loopback one, v1.5.5
+/// Not here: `operator-infrastructure` (private, loopback and plaintext allowed; pinned) and
+/// `loopback-allowed`, which the guard's address arm holds to the same refusal LOOPBACK EXCEPTED
+/// (https to any host, the destination guard still applying; 1.5.5 refused a private, CGNAT,
+/// unique-local or link-local collector and admitted a loopback one, v1.5.5
 /// `crates/busbar/src/observability.rs:620-633`, `:676-728`). Cloud metadata is refused in every
 /// class whatever this table says, a configured NAME rebinding to it included, unless an IP
 /// allowlist entry (or a /32 or /128) names exactly that address (or, for a provider dial only, a 1.5.5 carve-out).
@@ -133,16 +131,14 @@ pub fn names_loopback(host: &str) -> bool {
 }
 
 /// The classes a need whose config names its target is lifted out of, to operator infrastructure:
-/// the egress default only (Q128 ruling 14). A configured OPEN-WEB target keeps the open-web class,
-/// public https only, as 1.5.5's webhook export refused a private or loopback URL; a provider dial
-/// is refused a private address unless allowlisted whether or not its config names the target
-/// (ARCHITECT ruling CRATES-14).
+/// the egress default only. A configured OPEN-WEB target keeps the open-web class, public https
+/// only, as 1.5.5's webhook export refused a private or loopback URL; a provider dial is refused a
+/// private address unless allowlisted whether or not its config names the target.
 const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
 /// `configured`, in the egress default class) the operator's own destination, judged as operator
-/// infrastructure (THE DESIGN §5 egress-class table, owner-signed 2026-09-27; Q128 ruling 14). An
-/// open-web or provider need keeps its class.
+/// infrastructure (THE DESIGN §5 egress-class table). An open-web or provider need keeps its class.
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
@@ -580,8 +576,7 @@ impl Guard {
         // `16909060` to `1.2.3.4`, before the guard looked (v1.5.5
         // `crates/busbar/src/observability.rs:695-710`, `:738-764`). So a spelling of loopback is
         // the loopback collector, a spelling of a public address a public collector, and a
-        // spelling of a private or metadata address is refused as the address it is. ARCHITECT
-        // parity ruling A3.
+        // spelling of a private or metadata address is refused as the address it is.
         if is_alternate_ipv4_encoding(&name)
             && !(class == LOOPBACK_CLASS && host_ip(&name).is_some())
         {
@@ -654,9 +649,9 @@ impl Guard {
         };
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
-        // IPv6 LINK-LOCAL (fe80::/10, ARCHITECT PB-100: metadata and link-local are refused on
-        // every need, whatever its egress class): refused in every class, and admitted only by an
-        // IP or CIDR allowlist entry, or a provider's carve-out entry, that names the address.
+        // IPv6 LINK-LOCAL (fe80::/10, whatever its egress class): refused in every class, and
+        // admitted only by an IP or CIDR allowlist entry, or a provider's carve-out entry, that
+        // names the address.
         let link_local = matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6));
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));

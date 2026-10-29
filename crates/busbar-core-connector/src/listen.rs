@@ -84,8 +84,6 @@ pub struct Handed {
     pub slot: Slot,
 }
 
-// ── THE ACCEPT SOURCE ─────────────────────────────────────────────────────────────────────────────
-
 /// ONE CONNECTION AN INBOUND LISTENER ADMITTED: the accepted socket, not yet on any worker's reactor
 /// (so placement may hand it to another worker), its peer, and what the listener holds for it while
 /// it is served (its connection slot), released when the connection ends.
@@ -246,8 +244,8 @@ impl Listening {
     /// accept backoff, and hand each admitted socket up as it arrived
     /// ([`Listening::poll_accept_stream`]) to be secured and served by the kernel's hardened HTTP
     /// loop: the byte stream moves on. The admin surface keeps it; the data door's use is
-    /// TRANSITIONAL: once the plane driver serves the data door (K1 U6/U7), its connections are
-    /// framed ([`Listening::bind`]) and this hand-up stops being its path.
+    /// TRANSITIONAL: once the plane driver serves the data door, its connections are framed
+    /// ([`Listening::bind`]) and this hand-up stops being its path.
     ///
     /// # Errors
     ///
