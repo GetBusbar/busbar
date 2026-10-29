@@ -20,8 +20,6 @@ fn lane(model: &str, provider: &str) -> LaneInput {
         url_userinfo: None,
         path: None,
         path_base: None,
-        organization: None,
-        project: None,
         upstream_model: None,
         api_key: busbar_contract::redacted::Secret::new(String::new()),
         auth_style: AuthStyleInput::Default,

@@ -2212,9 +2212,10 @@ fn a_minted_ticket_reaches_the_plane_sealed() {
     assert!(!shown.contains("bt_k"), "Debug shows the ticket: {shown}");
     assert!(shown.contains("<600 bytes>"), "{shown}");
 
+    // Named sorted, as `serde_json::json!` writes them (SealedJson writes members in the order named).
     let mut answer = crate::abi::sdk::cred::SealedJson::new()
-        .sealed("value", &minted.ticket)
         .public("expires_at_unix", minted.expires_at_unix)
+        .sealed("value", &minted.ticket)
         .encoded()
         .expect("the ticket is text");
     let ticket = String::from_utf8(minted_ticket()).expect("text");

@@ -90,6 +90,7 @@ extern "C" {
 #define BB_MECH_SLOT_RELEASE UINT32_C(7) /* `release`. */
 #define BB_MECH_SLOT_CLOSE UINT32_C(8) /* `close`. */
 #define BB_MECH_SLOT_READY UINT32_C(0xffffffff) /* `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table */
+#define BB_MECH_SLOT_MIGRATE UINT32_C(0xfffffffe) /* `migrate`: the door's optional tail op ([`super::super::door::Door::migrate`]), NOT a table */
 #define BB_MECH_LIFECYCLE_SLOTS UINT32_C(9) /* How many lifecycle slots [`OpsHead`] holds. */
 #define BB_MECH_KIND_STORE "store" /* `abi/store/`. */
 #define BB_MECH_KIND_SECRET "secret" /* `abi/secret/`. */
@@ -106,6 +107,7 @@ extern "C" {
 #define BB_STORE_LIST_ITEMS_HARD_MAX UINT64_C(0x100000) /* The hard maximum of any store list's item count (`needed_items`, a leased list's length): */
 #define BB_STORE_NEEDED_BYTES_HARD_MAX UINT64_C(0xffffffff) /* The hard maximum of any `needed_bytes` (`needed_bytes <= u32::MAX`). */
 #define BB_STORE_ABI_VERSION UINT32_C(3) /* The store kind's ABI version: v1.5.5 shipped `2` (`ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_STORE_LAYOUT_FINGERPRINT UINT64_C(0x56bdc8a89ba6e6e0) /* The store kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_STORE_FOUND UINT32_C(1) /* [`HostBytesOut::found`]: the record exists and was written. */
 #define BB_STORE_ABSENT UINT32_C(0) /* [`HostBytesOut::found`] / [`LeasedBlobOut::found`]: no such record. `0`, so an `out` nobody */
 #define BB_STORE_VERDICT_NO UINT32_C(0) /* [`VerdictOut::verdict`]: no (and the fail-closed zero). */
@@ -114,68 +116,40 @@ extern "C" {
 #define BB_STORE_CANCEL_NOT_APPLIED UINT32_C(1) /* The cancelled op applied nothing. */
 #define BB_STORE_CANCEL_APPLIED UINT32_C(2) /* The cancelled op had committed; its original `out` is kept under its `op_id`, so a replay */
 #define BB_STORE_DIAG_OPID_CONFLICT "STORE_OPID_CONFLICT" /* The diagnostic id a store answers with REFUSED for an `op_id` replayed with a different body */
-#define BB_STORE_DIAG_CAP_CONFLICT "STORE_CAP_CONFLICT" /* The diagnostic id a store answers with REFUSED for a `window_caps` cap at an EQUAL */
 #define BB_STORE_OP_ID_RETENTION_SECS UINT64_C(0x15180) /* How long a store remembers an `op_id`, at least (m3-inputs "store v3 money slots", DEDUPE: */
-#define BB_STORE_KIND_SLOTS UINT32_C(47) /* How many kind slots the store table holds after the lifecycle. */
-#define BB_STORE_TABLE_SLOTS UINT32_C(56) /* How many slots the whole store table holds, lifecycle included ([`OpsHead::slots`]). */
+#define BB_STORE_KIND_SLOTS UINT32_C(31) /* How many kind slots the store table holds after the lifecycle. */
+#define BB_STORE_TABLE_SLOTS UINT32_C(40) /* How many slots the whole store table holds, lifecycle included ([`OpsHead::slots`]). */
 #define BB_STORE_SLOT_PUT_KEY UINT32_C(9)
 #define BB_STORE_SLOT_GET_KEY UINT32_C(10)
 #define BB_STORE_SLOT_LIST_KEYS UINT32_C(11)
 #define BB_STORE_SLOT_DELETE_KEY UINT32_C(12)
-#define BB_STORE_SLOT_SCRUB_KEY UINT32_C(13)
-#define BB_STORE_SLOT_LIST_KEYS_SINCE UINT32_C(14)
-#define BB_STORE_SLOT_GET_USAGE UINT32_C(15)
-#define BB_STORE_SLOT_PUT_USAGE UINT32_C(16)
-#define BB_STORE_SLOT_ADD_USAGE UINT32_C(17)
-#define BB_STORE_SLOT_ADD_METERING UINT32_C(18)
-#define BB_STORE_SLOT_LIST_METERING UINT32_C(19)
-#define BB_STORE_SLOT_PURGE_WINDOWS_BEFORE UINT32_C(20)
-#define BB_STORE_SLOT_PURGE_METERING_BEFORE UINT32_C(21)
-#define BB_STORE_SLOT_PUT_CREDENTIAL UINT32_C(22)
-#define BB_STORE_SLOT_PUT_KEY_WITH_CREDENTIAL UINT32_C(23)
-#define BB_STORE_SLOT_LIST_CREDENTIALS UINT32_C(24)
-#define BB_STORE_SLOT_LOOKUP_CREDENTIAL_SECRET UINT32_C(25)
-#define BB_STORE_SLOT_REVOKE_CREDENTIAL UINT32_C(26)
-#define BB_STORE_SLOT_LIST_CREDENTIALS_SINCE UINT32_C(27)
-#define BB_STORE_SLOT_APPEND_AUDIT UINT32_C(28)
-#define BB_STORE_SLOT_LIST_AUDIT UINT32_C(29)
-#define BB_STORE_SLOT_ADD_DENYLIST UINT32_C(30)
-#define BB_STORE_SLOT_LIST_DENYLIST UINT32_C(31)
-#define BB_STORE_SLOT_LIST_AUDIT_TAIL UINT32_C(32)
-#define BB_STORE_SLOT_UPSERT_PLANE_RECORD UINT32_C(33)
-#define BB_STORE_SLOT_GET_PLANE_RECORD UINT32_C(34)
-#define BB_STORE_SLOT_APPEND_PLANE_RECORD UINT32_C(35)
-#define BB_STORE_SLOT_LIST_PLANE_RECORDS UINT32_C(36)
-#define BB_STORE_SLOT_LIST_PLANE_RECORD_PARENTS UINT32_C(37)
-#define BB_STORE_SLOT_PURGE_PLANE_RECORDS_BEFORE UINT32_C(38)
-#define BB_STORE_SLOT_DELETE_PLANE_RECORD UINT32_C(39)
-#define BB_STORE_SLOT_REDEEM_PLANE_TOKEN UINT32_C(40)
-#define BB_STORE_SLOT_PLANE_TOKEN_LIVE UINT32_C(41)
-#define BB_STORE_SLOT_APPEND_BATCH UINT32_C(42)
-#define BB_STORE_SLOT_RESERVE UINT32_C(43)
-#define BB_STORE_SLOT_SLICE_RELEASE UINT32_C(44)
-#define BB_STORE_SLOT_HEADS UINT32_C(45)
-#define BB_STORE_SLOT_SESSION_PUT UINT32_C(46)
-#define BB_STORE_SLOT_SESSION_REMOVE UINT32_C(47)
-#define BB_STORE_SLOT_SESSIONS_FOR UINT32_C(48)
-#define BB_STORE_SLOT_RECORD_PUT UINT32_C(49)
-#define BB_STORE_SLOT_RECORD_GET UINT32_C(50)
-#define BB_STORE_SLOT_RECORD_SCAN UINT32_C(51)
-#define BB_STORE_SLOT_ADD_USAGE_BATCH UINT32_C(52)
-#define BB_STORE_SLOT_ADD_METERING_BATCH UINT32_C(53)
-#define BB_STORE_SLOT_APPEND_AUDIT_BATCH UINT32_C(54)
-#define BB_STORE_SLOT_WINDOW_CAPS UINT32_C(55)
-#define BB_STORE_DIM_NANO_UNITS UINT32_C(0) /* [`UnitCell::dimension`]: money, in nano-units (`CapDimension::NanoUnits`). */
-#define BB_STORE_DIM_REQUESTS UINT32_C(1) /* [`UnitCell::dimension`]: the admission counter (`CapDimension::Requests`). */
-#define BB_STORE_DIM_CONCURRENCY UINT32_C(2) /* [`UnitCell::dimension`]: the live gauge (`CapDimension::Concurrent`). */
-#define BB_STORE_DIM_CLASS UINT32_C(3) /* [`UnitCell::dimension`]: a declared meter class, keyed by [`UnitCell::class_key`] */
-#define BB_STORE_RESERVE_OK UINT32_C(0) /* [`ReserveOut::reason`]: granted (READY). */
-#define BB_STORE_RESERVE_EXHAUSTED UINT32_C(1) /* [`ReserveOut::reason`]: a cell's window has no headroom (`SliceError::Exhausted`). */
-#define BB_STORE_RESERVE_STALE_EPOCH UINT32_C(2) /* [`ReserveOut::reason`]: the node's epoch is behind the fleet's (`SliceError::StaleEpoch`). */
-#define BB_STORE_SLICE_TTL_MS UINT64_C(60000) /* THE STORE KIND'S EPOCH AND SLICE LIFE (ARCHITECT ruling on the store epoch spec). A store a */
-#define BB_STORE_RESERVE_UNAVAILABLE UINT32_C(3) /* [`ReserveOut::reason`]: the store could not be reached (`SliceError::Unavailable`). */
-#define BB_STORE_RESERVE_NO_CAP UINT32_C(4) /* [`ReserveOut::reason`]: a cell names a window no `window_caps` cap was pushed for — never an */
-#define BB_STORE_RESERVE_NO_FAILED_CELL UINT32_C(0xffffffff) /* [`ReserveOut::failed_cell`]: no cell is named (READY, or a failure no single cell caused). */
+#define BB_STORE_SLOT_LIST_KEYS_SINCE UINT32_C(13)
+#define BB_STORE_SLOT_GET_USAGE UINT32_C(14)
+#define BB_STORE_SLOT_PUT_USAGE UINT32_C(15)
+#define BB_STORE_SLOT_LIST_METERING UINT32_C(16)
+#define BB_STORE_SLOT_PUT_CREDENTIAL UINT32_C(17)
+#define BB_STORE_SLOT_PUT_KEY_WITH_CREDENTIAL UINT32_C(18)
+#define BB_STORE_SLOT_LIST_CREDENTIALS UINT32_C(19)
+#define BB_STORE_SLOT_REVOKE_CREDENTIAL UINT32_C(20)
+#define BB_STORE_SLOT_LIST_CREDENTIALS_SINCE UINT32_C(21)
+#define BB_STORE_SLOT_LIST_AUDIT UINT32_C(22)
+#define BB_STORE_SLOT_ADD_DENYLIST UINT32_C(23)
+#define BB_STORE_SLOT_LIST_DENYLIST UINT32_C(24)
+#define BB_STORE_SLOT_LIST_AUDIT_TAIL UINT32_C(25)
+#define BB_STORE_SLOT_UPSERT_PLANE_RECORD UINT32_C(26)
+#define BB_STORE_SLOT_GET_PLANE_RECORD UINT32_C(27)
+#define BB_STORE_SLOT_APPEND_PLANE_RECORD UINT32_C(28)
+#define BB_STORE_SLOT_LIST_PLANE_RECORDS UINT32_C(29)
+#define BB_STORE_SLOT_LIST_PLANE_RECORD_PARENTS UINT32_C(30)
+#define BB_STORE_SLOT_PURGE_PLANE_RECORDS_BEFORE UINT32_C(31)
+#define BB_STORE_SLOT_DELETE_PLANE_RECORD UINT32_C(32)
+#define BB_STORE_SLOT_REDEEM_PLANE_TOKEN UINT32_C(33)
+#define BB_STORE_SLOT_PLANE_TOKEN_LIVE UINT32_C(34)
+#define BB_STORE_SLOT_RECORD_PUT UINT32_C(35)
+#define BB_STORE_SLOT_RECORD_GET UINT32_C(36)
+#define BB_STORE_SLOT_RECORD_SCAN UINT32_C(37)
+#define BB_STORE_SLOT_ADD_USAGE_BATCH UINT32_C(38)
+#define BB_STORE_SLOT_ADD_METERING_BATCH UINT32_C(39)
 #define BB_STORE_DISPOSITION_ACTIVE UINT32_C(0) /* [`PlaneRecordRow::disposition`]: the record may still change (`PlaneDisposition::Active`). */
 #define BB_STORE_DISPOSITION_TERMINAL UINT32_C(1) /* [`PlaneRecordRow::disposition`]: the record is final (`PlaneDisposition::Terminal`). */
 #define BB_STORE_SELECT_ALL UINT32_C(0) /* [`ListPlaneRecordsIn::selector`]: every record of the kind (`PlaneSelector::All`). */
@@ -185,6 +159,7 @@ extern "C" {
 
 /* secret */
 #define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version: v1.5.5 shipped `1` (`SECRET_ABI_VERSION`), so 1.6.0 ships `2`. */
+#define BB_SECRET_LAYOUT_FINGERPRINT UINT64_C(0x7195caed69bcfcbd) /* The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_SECRET_SLOT_RESOLVE UINT32_C(9) /* `resolve`. */
 #define BB_SECRET_SLOT_CHECK UINT32_C(10) /* `check`. */
 #define BB_SECRET_SLOTS UINT32_C(11) /* How many slots the secret kind's whole table holds (the lifecycle, `resolve` and `check`). */
@@ -194,12 +169,14 @@ extern "C" {
 #define BB_SECRET_ERROR_KIND_DENIED UINT32_C(3) /* [`ResolveOut::error_kind`]: the caller is not entitled to it — OLD `SecretErrorKind::Denied`. */
 #define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed — OLD */
 #define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above — OLD */
+#define BB_SECRET_FIRST_SECRET_CAP ((size_t)4096) /* The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM */
 #define BB_SECRET_CANCEL_ABORTED UINT32_C(0) /* The pending `resolve` was aborted; no lease was granted. */
 
 /* auth */
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
 #define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0xc89280c6692621) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
 #define BB_AUTH_SLOT_BEGIN_LOGIN UINT32_C(10) /* `begin_login`. */
 #define BB_AUTH_SLOT_COMPLETE_LOGIN UINT32_C(11) /* `complete_login`. */
@@ -224,6 +201,10 @@ extern "C" {
 #define BB_AUTH_LOGIN_KIND_CREDENTIAL UINT32_C(2) /* [`AuthTail::login_kind`]: a credential form the core renders. */
 #define BB_AUTH_STYLE_NEEDS_HEADERS UINT32_C(2) /* [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style. */
 #define BB_AUTH_STYLE_CALLER_CREDENTIAL UINT32_C(4) /* [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the */
+#define BB_AUTH_STYLE_ENDPOINT_TOKEN_URL UINT32_C(32) /* [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint. */
+#define BB_AUTH_STYLE_ENDPOINT_FROM_CREDENTIAL UINT32_C(64) /* [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself. */
+#define BB_AUTH_STYLE_RANK_SHIFT UINT32_C(16) /* [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]). */
+#define BB_AUTH_STYLE_RANK_MASK UINT32_C(0xff0000) /* [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked). */
 #define BB_AUTH_AUTH_TAIL_FROZEN ((size_t)40) /* The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the */
 #define BB_AUTH_CANCEL_ABANDONED UINT32_C(1) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned, */
 #define BB_AUTH_CANCEL_CONTINUES UINT32_C(2) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is */
@@ -261,6 +242,7 @@ extern "C" {
 
 /* hook */
 #define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`. */
+#define BB_HOOK_LAYOUT_FINGERPRINT UINT64_C(0xe66698e71abe2054) /* The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_HOOK_SLOT_DECIDE UINT32_C(9) /* `decide`. */
 #define BB_HOOK_SLOT_TRANSFORM UINT32_C(10) /* `transform`. */
 #define BB_HOOK_SLOT_NOTIFY UINT32_C(11) /* `notify`. */
@@ -332,6 +314,7 @@ extern "C" {
 
 /* export */
 #define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0x95a37b669466aab6) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
 #define BB_EXPORT_SLOT_STATUS UINT32_C(11) /* `status`. */
@@ -363,6 +346,7 @@ extern "C" {
 #define BB_PLANE_MAX_SIGNALS UINT64_C(64) /* The most signals one `project` answer may carry. */
 #define BB_PLANE_MAX_TURNS UINT64_C(0x10000) /* The most prompt turns one `project` answer may carry. */
 #define BB_PLANE_ABI_VERSION UINT32_C(1) /* The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`. */
+#define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0x344ee53291ab670c) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_PLANE_SLOT_ARRIVE UINT32_C(9) /* Classify an arrival. */
 #define BB_PLANE_SLOT_ON_PIECE UINT32_C(10) /* One piece of a unit's bytes. */
 #define BB_PLANE_SLOT_REFUSAL UINT32_C(11) /* Render a refusal in the unit's dialect. */
@@ -479,6 +463,7 @@ extern "C" {
 #define BB_PLANE_PROJECT_FAULT_STATUS UINT16_C(500) /* The status a FAULT `project` answers the caller with (1.5.5 `proxy/engine/mod.rs`: the rewrite */
 #define BB_PLANE_PROJECT_FAULT_MESSAGE "request rewrite could not be applied" /* The words a FAULT `project` answers the caller with, byte for byte 1.5.5's. */
 #define BB_PLANE_PROJECT_FAULT_UNPARSEABLE UINT32_C(0x80000000) /* THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed */
+#define BB_PLANE_PROJECT_REWRITE_NOT_APPLICABLE UINT32_C(0x40000000) /* THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
@@ -501,6 +486,7 @@ extern "C" {
 #define BB_TRANSPORT_SEPARATOR ": " /* Between a field's name and its value. */
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
+#define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x715dbad81f3872c0) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_TRANSPORT_SLOT_LISTEN UINT32_C(9) /* Carrier: bind a listener. */
 #define BB_TRANSPORT_SLOT_ACCEPT UINT32_C(10) /* Carrier: accept one connection. */
 #define BB_TRANSPORT_SLOT_DIAL UINT32_C(11) /* Carrier: dial a destination. */
@@ -942,14 +928,6 @@ typedef struct bb_mech_Ticket bb_mech_Ticket;
 typedef struct bb_mech_CompletionHandle bb_mech_CompletionHandle;
 typedef struct bb_mech_HostCtx bb_mech_HostCtx;
 typedef struct bb_mech_HostTables bb_mech_HostTables;
-typedef struct bb_store_AppendBatchIn bb_store_AppendBatchIn;
-typedef struct bb_store_HeadOut bb_store_HeadOut;
-typedef struct bb_store_StreamHead bb_store_StreamHead;
-typedef struct bb_store_HeadsOut bb_store_HeadsOut;
-typedef struct bb_store_SessionPutIn bb_store_SessionPutIn;
-typedef struct bb_store_SessionRow bb_store_SessionRow;
-typedef struct bb_store_HostSessions bb_store_HostSessions;
-typedef struct bb_store_SessionsForIn bb_store_SessionsForIn;
 typedef struct bb_store_RecordPutIn bb_store_RecordPutIn;
 typedef struct bb_store_RecordGetIn bb_store_RecordGetIn;
 typedef struct bb_store_RecordEntry bb_store_RecordEntry;
@@ -967,18 +945,9 @@ typedef struct bb_store_VerdictOut bb_store_VerdictOut;
 typedef struct bb_store_StoreTail bb_store_StoreTail;
 typedef struct bb_store_Ops bb_store_Ops;
 typedef struct bb_store_OpId bb_store_OpId;
-typedef struct bb_store_UnitCell bb_store_UnitCell;
-typedef struct bb_store_CellGrant bb_store_CellGrant;
-typedef struct bb_store_ReserveIn bb_store_ReserveIn;
-typedef struct bb_store_ReserveOut bb_store_ReserveOut;
-typedef struct bb_store_ReleaseItem bb_store_ReleaseItem;
-typedef struct bb_store_SliceReleaseIn bb_store_SliceReleaseIn;
-typedef struct bb_store_SliceReleaseOut bb_store_SliceReleaseOut;
 typedef struct bb_store_UsageCell bb_store_UsageCell;
 typedef struct bb_store_AddUsageBatchIn bb_store_AddUsageBatchIn;
 typedef struct bb_store_OpBlobsIn bb_store_OpBlobsIn;
-typedef struct bb_store_WindowCap bb_store_WindowCap;
-typedef struct bb_store_WindowCapsIn bb_store_WindowCapsIn;
 typedef struct bb_store_PlaneRecordRow bb_store_PlaneRecordRow;
 typedef struct bb_store_UpsertPlaneRecordIn bb_store_UpsertPlaneRecordIn;
 typedef struct bb_store_AppendPlaneRecordIn bb_store_AppendPlaneRecordIn;
@@ -990,9 +959,7 @@ typedef struct bb_store_IdIn bb_store_IdIn;
 typedef struct bb_store_U64In bb_store_U64In;
 typedef struct bb_store_WindowIn bb_store_WindowIn;
 typedef struct bb_store_PutUsageIn bb_store_PutUsageIn;
-typedef struct bb_store_AddUsageIn bb_store_AddUsageIn;
 typedef struct bb_store_BlobIn bb_store_BlobIn;
-typedef struct bb_store_OpBlobIn bb_store_OpBlobIn;
 typedef struct bb_store_KeyWithCredentialIn bb_store_KeyWithCredentialIn;
 typedef struct bb_store_KindIdIn bb_store_KindIdIn;
 typedef struct bb_store_IdReasonIn bb_store_IdReasonIn;
@@ -1334,6 +1301,8 @@ struct bb_mech_Door {
     const bb_mech_Statement *statement;
     const bb_mech_OpsHead *ops;
     bb_mech_Op ready;
+    bb_mech_Op migrate;
+    uint64_t layout;
 };
 
 /* One metric family, declared ONCE in the Statement and validated at `open`; a per-call */
@@ -1527,81 +1496,18 @@ struct bb_mech_HostTables {
     const bb_hio_IoSlots *io;
 };
 
-/* An operation id: 16 bytes, the minting node's id (bytes 0..8) then that node's monotonic */
-struct bb_store_OpId {
-    uint8_t f0[16];
-};
-
-/* `append_batch`'s `in` (kinds.rs:302; B.1): append journal records to `stream`. THE SHIPPING */
-struct bb_store_AppendBatchIn {
-    bb_mech_InHead head;
-    bb_store_OpId op_id;
-    bb_mech_AbiStr stream;
-    const bb_mech_Blob *records;
-    size_t records_len;
-};
-
-/* `append_batch`'s `out`: where the stream has reached (`kinds.rs` `Head`). */
-struct bb_store_HeadOut {
-    bb_mech_OutHead head;
-    uint64_t seq;
-    uint64_t epoch;
-};
-
-/* One stream's head, as `heads` lists it. */
-struct bb_store_StreamHead {
-    bb_mech_AbiStr stream;
-    uint64_t seq;
-    uint64_t epoch;
-};
-
-/* `heads`' `out` (kinds.rs:319): where each stream has reached, plugin-owned under `head.lease`. */
-struct bb_store_HeadsOut {
-    bb_mech_OutHead head;
-    const bb_store_StreamHead *items;
-    size_t items_len;
-};
-
-/* `session_put`'s `in` (kinds.rs:340): register a live session in the fleet directory, an upsert */
-struct bb_store_SessionPutIn {
-    bb_mech_InHead head;
-    uint64_t session;
-    bb_mech_AbiStr node;
-    bb_mech_AbiStr principal;
-};
-
-/* One session, as `sessions_for` writes it: `node` points into [`HostSessions::bytes`]. */
-struct bb_store_SessionRow {
-    uint64_t session;
-    bb_mech_AbiStr node;
-};
-
-/* A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin */
-struct bb_store_HostBuf {
-    uint8_t *ptr;
-    size_t cap;
-};
-
-/* The host buffers `sessions_for` writes into. */
-struct bb_store_HostSessions {
-    bb_store_SessionRow *items;
-    size_t items_cap;
-    bb_store_HostBuf bytes;
-};
-
-/* `sessions_for`'s `in` (kinds.rs:351): which sessions a principal holds across the fleet. */
-struct bb_store_SessionsForIn {
-    bb_mech_InHead head;
-    bb_mech_AbiStr principal;
-    bb_store_HostSessions out;
-};
-
 /* `record_put`'s `in` (kinds.rs:355): write one of a plane's kernel-held durable records, an */
 struct bb_store_RecordPutIn {
     bb_mech_InHead head;
     bb_mech_AbiStr schema;
     bb_mech_Blob key;
     bb_mech_Blob value;
+};
+
+/* A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin */
+struct bb_store_HostBuf {
+    uint8_t *ptr;
+    size_t cap;
 };
 
 /* `record_get`'s `in` (kinds.rs:363): read one record into `value`; absent is ABSENT, never */
@@ -1710,22 +1616,15 @@ struct bb_store_Ops {
     bb_mech_Op get_key;
     bb_mech_Op list_keys;
     bb_mech_Op delete_key;
-    bb_mech_Op scrub_key;
     bb_mech_Op list_keys_since;
     bb_mech_Op get_usage;
     bb_mech_Op put_usage;
-    bb_mech_Op add_usage;
-    bb_mech_Op add_metering;
     bb_mech_Op list_metering;
-    bb_mech_Op purge_windows_before;
-    bb_mech_Op purge_metering_before;
     bb_mech_Op put_credential;
     bb_mech_Op put_key_with_credential;
     bb_mech_Op list_credentials;
-    bb_mech_Op lookup_credential_secret;
     bb_mech_Op revoke_credential;
     bb_mech_Op list_credentials_since;
-    bb_mech_Op append_audit;
     bb_mech_Op list_audit;
     bb_mech_Op add_denylist;
     bb_mech_Op list_denylist;
@@ -1739,82 +1638,16 @@ struct bb_store_Ops {
     bb_mech_Op delete_plane_record;
     bb_mech_Op redeem_plane_token;
     bb_mech_Op plane_token_live;
-    bb_mech_Op append_batch;
-    bb_mech_Op reserve;
-    bb_mech_Op slice_release;
-    bb_mech_Op heads;
-    bb_mech_Op session_put;
-    bb_mech_Op session_remove;
-    bb_mech_Op sessions_for;
     bb_mech_Op record_put;
     bb_mech_Op record_get;
     bb_mech_Op record_scan;
     bb_mech_Op add_usage_batch;
     bb_mech_Op add_metering_batch;
-    bb_mech_Op append_audit_batch;
-    bb_mech_Op window_caps;
 };
 
-/* One cell of a draw: THE fixed `bb_units[]` element (m3-inputs "store v3 money slots", */
-struct bb_store_UnitCell {
-    bb_mech_AbiStr bucket;
-    bb_mech_AbiStr pool;
-    uint32_t dimension;
-    uint32_t _r;
-    bb_mech_AbiStr class_key;
-    uint64_t amount;
-    uint64_t window_start;
-};
-
-/* What one cell drew (m3-inputs "store v3 money slots", `reserve` out, `CellGrant`). */
-struct bb_store_CellGrant {
-    uint64_t slice_id;
-    uint64_t granted;
-    uint64_t valid_until_ms;
-};
-
-/* `reserve`'s `in` (m3-inputs "store v3 money slots", `reserve`). Request path, may pend, [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call). */
-struct bb_store_ReserveIn {
-    bb_mech_InHead head;
-    bb_store_OpId op_id;
-    uint64_t epoch;
-    const bb_store_UnitCell *cells;
-    size_t cells_len;
-    bb_store_CellGrant *grants;
-    size_t grants_cap;
-};
-
-/* `reserve`'s `out` (m3-inputs "store v3 money slots", `reserve`; the grants themselves go into */
-struct bb_store_ReserveOut {
-    bb_mech_OutHead head;
-    size_t grants_len;
-    uint32_t reason;
-    uint32_t failed_cell;
-    uint64_t needed_grants;
-};
-
-/* One slice handed back (m3-inputs "store v3 money slots", `slice_release` items). */
-struct bb_store_ReleaseItem {
-    uint64_t slice_id;
-    uint64_t unspent;
-};
-
-/* `slice_release`'s `in` (m3-inputs "store v3 money slots", `slice_release`). Request-path exit, */
-struct bb_store_SliceReleaseIn {
-    bb_mech_InHead head;
-    bb_store_OpId op_id;
-    uint64_t epoch;
-    const bb_store_ReleaseItem *items;
-    size_t items_len;
-    uint64_t *released;
-    size_t released_cap;
-};
-
-/* `slice_release`'s `out` (m3-inputs "store v3 money slots", `slice_release`; the amounts go into */
-struct bb_store_SliceReleaseOut {
-    bb_mech_OutHead head;
-    size_t released_len;
-    uint64_t needed_released;
+/* An operation id: 16 bytes, the minting node's id (bytes 0..8) then that node's monotonic */
+struct bb_store_OpId {
+    uint8_t f0[16];
 };
 
 /* One cell of the token ledger and its signed delta: the fixed (bucket, window) plus the tree's */
@@ -1824,7 +1657,7 @@ struct bb_store_UsageCell {
     bb_mech_Blob delta;
 };
 
-/* `add_usage_batch`'s `in` (m3-inputs "store v3 money slots", batch ops; B.1 "Slots", "Writes"). */
+/* `add_usage_batch`'s `in`. Off path, may pend, [`DeadlineClass::WriteBehind`](crate::abi::mechanism::call::DeadlineClass::WriteBehind). */
 struct bb_store_AddUsageBatchIn {
     bb_mech_InHead head;
     bb_store_OpId op_id;
@@ -1832,32 +1665,12 @@ struct bb_store_AddUsageBatchIn {
     size_t cells_len;
 };
 
-/* `add_metering_batch`'s and `append_audit_batch`'s `in` (m3-inputs "store v3 money slots", */
+/* `add_metering_batch`'s `in`: ONE `op_id` per coalesced batch and the `MeteringDelta`s in batch */
 struct bb_store_OpBlobsIn {
     bb_mech_InHead head;
     bb_store_OpId op_id;
     const bb_mech_Blob *records;
     size_t records_len;
-};
-
-/* One window's cap (m3-inputs ARCHITECT ruling "window caps", `WindowCap`). */
-struct bb_store_WindowCap {
-    bb_mech_AbiStr bucket;
-    bb_mech_AbiStr pool;
-    uint32_t dimension;
-    uint32_t _r;
-    bb_mech_AbiStr class_key;
-    uint64_t window_start;
-    uint64_t cap;
-    uint64_t config_gen;
-};
-
-/* `window_caps`' `in` (m3-inputs ARCHITECT ruling "window caps"). Off path, may pend, */
-struct bb_store_WindowCapsIn {
-    bb_mech_InHead head;
-    bb_store_OpId op_id;
-    const bb_store_WindowCap *caps;
-    size_t caps_len;
 };
 
 /* One plane record: `records.rs` `PlaneRecord`, its sidecar fixed and its body opaque. */
@@ -1921,7 +1734,7 @@ struct bb_store_TokenIn {
     uint64_t now;
 };
 
-/* An `in` naming one id: `get_key`, `delete_key`, `scrub_key`, `list_credentials` (a key id), */
+/* An `in` naming one id: `get_key`, `delete_key`, `list_credentials` (a key id), */
 struct bb_store_IdIn {
     bb_mech_InHead head;
     bb_mech_AbiStr id;
@@ -1948,23 +1761,9 @@ struct bb_store_PutUsageIn {
     bb_mech_Blob ledger;
 };
 
-/* `add_usage`'s `in`: one additive cell, deduped on `op_id` (B.1 "Writes"). */
-struct bb_store_AddUsageIn {
-    bb_mech_InHead head;
-    bb_store_OpId op_id;
-    bb_store_UsageCell cell;
-};
-
 /* An `in` carrying one record blob: `put_key` (`VirtualKey`), `put_credential` */
 struct bb_store_BlobIn {
     bb_mech_InHead head;
-    bb_mech_Blob record;
-};
-
-/* An `in` carrying one additive or appending record, deduped on `op_id` (B.1 "Writes"): */
-struct bb_store_OpBlobIn {
-    bb_mech_InHead head;
-    bb_store_OpId op_id;
     bb_mech_Blob record;
 };
 
@@ -1975,7 +1774,7 @@ struct bb_store_KeyWithCredentialIn {
     bb_mech_Blob credential;
 };
 
-/* An `in` naming `(kind, id)`: `lookup_credential_secret` (kind, public id) and */
+/* An `in` naming `(kind, id)`: `delete_plane_record`. */
 struct bb_store_KindIdIn {
     bb_mech_InHead head;
     bb_mech_AbiStr kind;
@@ -2000,6 +1799,8 @@ struct bb_secret_Ops {
 struct bb_secret_ResolveIn {
     bb_mech_InHead head;
     bb_mech_Blob settings;
+    uint8_t *secret_buf;
+    size_t secret_cap;
 };
 
 /* `resolve`'s `out`. */
@@ -2008,6 +1809,7 @@ struct bb_secret_ResolveOut {
     bb_mech_Blob secret;
     uint32_t error_kind;
     uint32_t _reserved;
+    uint64_t needed;
 };
 
 /* `check`'s `in`: one reference's settings object and the host's reason buffer, as */
@@ -4303,7 +4105,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 308 of 308 structures are pinned by the golden ---- */
+/* ---- layout proof: 289 of 289 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4374,7 +4176,7 @@ BB_ASSERT(offsetof(bb_mech_OutHead, lease) == 16, "bb_mech_OutHead.lease: offset
 BB_ASSERT(offsetof(bb_mech_OutHead, error) == 24, "bb_mech_OutHead.error: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, envelope) == 40, "bb_mech_OutHead.envelope: offset");
 BB_ASSERT(offsetof(bb_mech_OutHead, extensions) == 72, "bb_mech_OutHead.extensions: offset");
-BB_ASSERT(sizeof(bb_mech_Door) == 48, "bb_mech_Door: size");
+BB_ASSERT(sizeof(bb_mech_Door) == 64, "bb_mech_Door: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Door) == 8, "bb_mech_Door: alignment");
 BB_ASSERT(offsetof(bb_mech_Door, magic) == 0, "bb_mech_Door.magic: offset");
 BB_ASSERT(offsetof(bb_mech_Door, mechanism_version) == 8, "bb_mech_Door.mechanism_version: offset");
@@ -4384,6 +4186,8 @@ BB_ASSERT(offsetof(bb_mech_Door, kind_abi) == 20, "bb_mech_Door.kind_abi: offset
 BB_ASSERT(offsetof(bb_mech_Door, statement) == 24, "bb_mech_Door.statement: offset");
 BB_ASSERT(offsetof(bb_mech_Door, ops) == 32, "bb_mech_Door.ops: offset");
 BB_ASSERT(offsetof(bb_mech_Door, ready) == 40, "bb_mech_Door.ready: offset");
+BB_ASSERT(offsetof(bb_mech_Door, migrate) == 48, "bb_mech_Door.migrate: offset");
+BB_ASSERT(offsetof(bb_mech_Door, layout) == 56, "bb_mech_Door.layout: offset");
 BB_ASSERT(sizeof(bb_mech_MetricFamily) == 72, "bb_mech_MetricFamily: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_MetricFamily) == 8, "bb_mech_MetricFamily: alignment");
 BB_ASSERT(offsetof(bb_mech_MetricFamily, name) == 0, "bb_mech_MetricFamily.name: offset");
@@ -4540,48 +4344,6 @@ BB_ASSERT(offsetof(bb_mech_HostTables, wake) == 16, "bb_mech_HostTables.wake: of
 BB_ASSERT(offsetof(bb_mech_HostTables, conns) == 24, "bb_mech_HostTables.conns: offset");
 BB_ASSERT(offsetof(bb_mech_HostTables, services) == 32, "bb_mech_HostTables.services: offset");
 BB_ASSERT(offsetof(bb_mech_HostTables, io) == 40, "bb_mech_HostTables.io: offset");
-BB_ASSERT(sizeof(bb_store_AppendBatchIn) == 136, "bb_store_AppendBatchIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_AppendBatchIn) == 8, "bb_store_AppendBatchIn: alignment");
-BB_ASSERT(offsetof(bb_store_AppendBatchIn, head) == 0, "bb_store_AppendBatchIn.head: offset");
-BB_ASSERT(offsetof(bb_store_AppendBatchIn, op_id) == 88, "bb_store_AppendBatchIn.op_id: offset");
-BB_ASSERT(offsetof(bb_store_AppendBatchIn, stream) == 104, "bb_store_AppendBatchIn.stream: offset");
-BB_ASSERT(offsetof(bb_store_AppendBatchIn, records) == 120, "bb_store_AppendBatchIn.records: offset");
-BB_ASSERT(offsetof(bb_store_AppendBatchIn, records_len) == 128, "bb_store_AppendBatchIn.records_len: offset");
-BB_ASSERT(sizeof(bb_store_HeadOut) == 112, "bb_store_HeadOut: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_HeadOut) == 8, "bb_store_HeadOut: alignment");
-BB_ASSERT(offsetof(bb_store_HeadOut, head) == 0, "bb_store_HeadOut.head: offset");
-BB_ASSERT(offsetof(bb_store_HeadOut, seq) == 96, "bb_store_HeadOut.seq: offset");
-BB_ASSERT(offsetof(bb_store_HeadOut, epoch) == 104, "bb_store_HeadOut.epoch: offset");
-BB_ASSERT(sizeof(bb_store_StreamHead) == 32, "bb_store_StreamHead: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_StreamHead) == 8, "bb_store_StreamHead: alignment");
-BB_ASSERT(offsetof(bb_store_StreamHead, stream) == 0, "bb_store_StreamHead.stream: offset");
-BB_ASSERT(offsetof(bb_store_StreamHead, seq) == 16, "bb_store_StreamHead.seq: offset");
-BB_ASSERT(offsetof(bb_store_StreamHead, epoch) == 24, "bb_store_StreamHead.epoch: offset");
-BB_ASSERT(sizeof(bb_store_HeadsOut) == 112, "bb_store_HeadsOut: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_HeadsOut) == 8, "bb_store_HeadsOut: alignment");
-BB_ASSERT(offsetof(bb_store_HeadsOut, head) == 0, "bb_store_HeadsOut.head: offset");
-BB_ASSERT(offsetof(bb_store_HeadsOut, items) == 96, "bb_store_HeadsOut.items: offset");
-BB_ASSERT(offsetof(bb_store_HeadsOut, items_len) == 104, "bb_store_HeadsOut.items_len: offset");
-BB_ASSERT(sizeof(bb_store_SessionPutIn) == 128, "bb_store_SessionPutIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_SessionPutIn) == 8, "bb_store_SessionPutIn: alignment");
-BB_ASSERT(offsetof(bb_store_SessionPutIn, head) == 0, "bb_store_SessionPutIn.head: offset");
-BB_ASSERT(offsetof(bb_store_SessionPutIn, session) == 88, "bb_store_SessionPutIn.session: offset");
-BB_ASSERT(offsetof(bb_store_SessionPutIn, node) == 96, "bb_store_SessionPutIn.node: offset");
-BB_ASSERT(offsetof(bb_store_SessionPutIn, principal) == 112, "bb_store_SessionPutIn.principal: offset");
-BB_ASSERT(sizeof(bb_store_SessionRow) == 24, "bb_store_SessionRow: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_SessionRow) == 8, "bb_store_SessionRow: alignment");
-BB_ASSERT(offsetof(bb_store_SessionRow, session) == 0, "bb_store_SessionRow.session: offset");
-BB_ASSERT(offsetof(bb_store_SessionRow, node) == 8, "bb_store_SessionRow.node: offset");
-BB_ASSERT(sizeof(bb_store_HostSessions) == 32, "bb_store_HostSessions: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_HostSessions) == 8, "bb_store_HostSessions: alignment");
-BB_ASSERT(offsetof(bb_store_HostSessions, items) == 0, "bb_store_HostSessions.items: offset");
-BB_ASSERT(offsetof(bb_store_HostSessions, items_cap) == 8, "bb_store_HostSessions.items_cap: offset");
-BB_ASSERT(offsetof(bb_store_HostSessions, bytes) == 16, "bb_store_HostSessions.bytes: offset");
-BB_ASSERT(sizeof(bb_store_SessionsForIn) == 136, "bb_store_SessionsForIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_SessionsForIn) == 8, "bb_store_SessionsForIn: alignment");
-BB_ASSERT(offsetof(bb_store_SessionsForIn, head) == 0, "bb_store_SessionsForIn.head: offset");
-BB_ASSERT(offsetof(bb_store_SessionsForIn, principal) == 88, "bb_store_SessionsForIn.principal: offset");
-BB_ASSERT(offsetof(bb_store_SessionsForIn, out) == 104, "bb_store_SessionsForIn.out: offset");
 BB_ASSERT(sizeof(bb_store_RecordPutIn) == 152, "bb_store_RecordPutIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_RecordPutIn) == 8, "bb_store_RecordPutIn: alignment");
 BB_ASSERT(offsetof(bb_store_RecordPutIn, head) == 0, "bb_store_RecordPutIn.head: offset");
@@ -4665,106 +4427,42 @@ BB_ASSERT(offsetof(bb_store_StoreTail, head) == 0, "bb_store_StoreTail.head: off
 BB_ASSERT(offsetof(bb_store_StoreTail, durable_plane) == 8, "bb_store_StoreTail.durable_plane: offset");
 BB_ASSERT(offsetof(bb_store_StoreTail, fork_refusal) == 9, "bb_store_StoreTail.fork_refusal: offset");
 BB_ASSERT(offsetof(bb_store_StoreTail, _reserved) == 10, "bb_store_StoreTail._reserved: offset");
-BB_ASSERT(sizeof(bb_store_Ops) == 456, "bb_store_Ops: size");
+BB_ASSERT(sizeof(bb_store_Ops) == 328, "bb_store_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_Ops) == 8, "bb_store_Ops: alignment");
 BB_ASSERT(offsetof(bb_store_Ops, head) == 0, "bb_store_Ops.head: offset");
 BB_ASSERT(offsetof(bb_store_Ops, put_key) == 80, "bb_store_Ops.put_key: offset");
 BB_ASSERT(offsetof(bb_store_Ops, get_key) == 88, "bb_store_Ops.get_key: offset");
 BB_ASSERT(offsetof(bb_store_Ops, list_keys) == 96, "bb_store_Ops.list_keys: offset");
 BB_ASSERT(offsetof(bb_store_Ops, delete_key) == 104, "bb_store_Ops.delete_key: offset");
-BB_ASSERT(offsetof(bb_store_Ops, scrub_key) == 112, "bb_store_Ops.scrub_key: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_keys_since) == 120, "bb_store_Ops.list_keys_since: offset");
-BB_ASSERT(offsetof(bb_store_Ops, get_usage) == 128, "bb_store_Ops.get_usage: offset");
-BB_ASSERT(offsetof(bb_store_Ops, put_usage) == 136, "bb_store_Ops.put_usage: offset");
-BB_ASSERT(offsetof(bb_store_Ops, add_usage) == 144, "bb_store_Ops.add_usage: offset");
-BB_ASSERT(offsetof(bb_store_Ops, add_metering) == 152, "bb_store_Ops.add_metering: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_metering) == 160, "bb_store_Ops.list_metering: offset");
-BB_ASSERT(offsetof(bb_store_Ops, purge_windows_before) == 168, "bb_store_Ops.purge_windows_before: offset");
-BB_ASSERT(offsetof(bb_store_Ops, purge_metering_before) == 176, "bb_store_Ops.purge_metering_before: offset");
-BB_ASSERT(offsetof(bb_store_Ops, put_credential) == 184, "bb_store_Ops.put_credential: offset");
-BB_ASSERT(offsetof(bb_store_Ops, put_key_with_credential) == 192, "bb_store_Ops.put_key_with_credential: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_credentials) == 200, "bb_store_Ops.list_credentials: offset");
-BB_ASSERT(offsetof(bb_store_Ops, lookup_credential_secret) == 208, "bb_store_Ops.lookup_credential_secret: offset");
-BB_ASSERT(offsetof(bb_store_Ops, revoke_credential) == 216, "bb_store_Ops.revoke_credential: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_credentials_since) == 224, "bb_store_Ops.list_credentials_since: offset");
-BB_ASSERT(offsetof(bb_store_Ops, append_audit) == 232, "bb_store_Ops.append_audit: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_audit) == 240, "bb_store_Ops.list_audit: offset");
-BB_ASSERT(offsetof(bb_store_Ops, add_denylist) == 248, "bb_store_Ops.add_denylist: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_denylist) == 256, "bb_store_Ops.list_denylist: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_audit_tail) == 264, "bb_store_Ops.list_audit_tail: offset");
-BB_ASSERT(offsetof(bb_store_Ops, upsert_plane_record) == 272, "bb_store_Ops.upsert_plane_record: offset");
-BB_ASSERT(offsetof(bb_store_Ops, get_plane_record) == 280, "bb_store_Ops.get_plane_record: offset");
-BB_ASSERT(offsetof(bb_store_Ops, append_plane_record) == 288, "bb_store_Ops.append_plane_record: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_plane_records) == 296, "bb_store_Ops.list_plane_records: offset");
-BB_ASSERT(offsetof(bb_store_Ops, list_plane_record_parents) == 304, "bb_store_Ops.list_plane_record_parents: offset");
-BB_ASSERT(offsetof(bb_store_Ops, purge_plane_records_before) == 312, "bb_store_Ops.purge_plane_records_before: offset");
-BB_ASSERT(offsetof(bb_store_Ops, delete_plane_record) == 320, "bb_store_Ops.delete_plane_record: offset");
-BB_ASSERT(offsetof(bb_store_Ops, redeem_plane_token) == 328, "bb_store_Ops.redeem_plane_token: offset");
-BB_ASSERT(offsetof(bb_store_Ops, plane_token_live) == 336, "bb_store_Ops.plane_token_live: offset");
-BB_ASSERT(offsetof(bb_store_Ops, append_batch) == 344, "bb_store_Ops.append_batch: offset");
-BB_ASSERT(offsetof(bb_store_Ops, reserve) == 352, "bb_store_Ops.reserve: offset");
-BB_ASSERT(offsetof(bb_store_Ops, slice_release) == 360, "bb_store_Ops.slice_release: offset");
-BB_ASSERT(offsetof(bb_store_Ops, heads) == 368, "bb_store_Ops.heads: offset");
-BB_ASSERT(offsetof(bb_store_Ops, session_put) == 376, "bb_store_Ops.session_put: offset");
-BB_ASSERT(offsetof(bb_store_Ops, session_remove) == 384, "bb_store_Ops.session_remove: offset");
-BB_ASSERT(offsetof(bb_store_Ops, sessions_for) == 392, "bb_store_Ops.sessions_for: offset");
-BB_ASSERT(offsetof(bb_store_Ops, record_put) == 400, "bb_store_Ops.record_put: offset");
-BB_ASSERT(offsetof(bb_store_Ops, record_get) == 408, "bb_store_Ops.record_get: offset");
-BB_ASSERT(offsetof(bb_store_Ops, record_scan) == 416, "bb_store_Ops.record_scan: offset");
-BB_ASSERT(offsetof(bb_store_Ops, add_usage_batch) == 424, "bb_store_Ops.add_usage_batch: offset");
-BB_ASSERT(offsetof(bb_store_Ops, add_metering_batch) == 432, "bb_store_Ops.add_metering_batch: offset");
-BB_ASSERT(offsetof(bb_store_Ops, append_audit_batch) == 440, "bb_store_Ops.append_audit_batch: offset");
-BB_ASSERT(offsetof(bb_store_Ops, window_caps) == 448, "bb_store_Ops.window_caps: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_keys_since) == 112, "bb_store_Ops.list_keys_since: offset");
+BB_ASSERT(offsetof(bb_store_Ops, get_usage) == 120, "bb_store_Ops.get_usage: offset");
+BB_ASSERT(offsetof(bb_store_Ops, put_usage) == 128, "bb_store_Ops.put_usage: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_metering) == 136, "bb_store_Ops.list_metering: offset");
+BB_ASSERT(offsetof(bb_store_Ops, put_credential) == 144, "bb_store_Ops.put_credential: offset");
+BB_ASSERT(offsetof(bb_store_Ops, put_key_with_credential) == 152, "bb_store_Ops.put_key_with_credential: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_credentials) == 160, "bb_store_Ops.list_credentials: offset");
+BB_ASSERT(offsetof(bb_store_Ops, revoke_credential) == 168, "bb_store_Ops.revoke_credential: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_credentials_since) == 176, "bb_store_Ops.list_credentials_since: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_audit) == 184, "bb_store_Ops.list_audit: offset");
+BB_ASSERT(offsetof(bb_store_Ops, add_denylist) == 192, "bb_store_Ops.add_denylist: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_denylist) == 200, "bb_store_Ops.list_denylist: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_audit_tail) == 208, "bb_store_Ops.list_audit_tail: offset");
+BB_ASSERT(offsetof(bb_store_Ops, upsert_plane_record) == 216, "bb_store_Ops.upsert_plane_record: offset");
+BB_ASSERT(offsetof(bb_store_Ops, get_plane_record) == 224, "bb_store_Ops.get_plane_record: offset");
+BB_ASSERT(offsetof(bb_store_Ops, append_plane_record) == 232, "bb_store_Ops.append_plane_record: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_plane_records) == 240, "bb_store_Ops.list_plane_records: offset");
+BB_ASSERT(offsetof(bb_store_Ops, list_plane_record_parents) == 248, "bb_store_Ops.list_plane_record_parents: offset");
+BB_ASSERT(offsetof(bb_store_Ops, purge_plane_records_before) == 256, "bb_store_Ops.purge_plane_records_before: offset");
+BB_ASSERT(offsetof(bb_store_Ops, delete_plane_record) == 264, "bb_store_Ops.delete_plane_record: offset");
+BB_ASSERT(offsetof(bb_store_Ops, redeem_plane_token) == 272, "bb_store_Ops.redeem_plane_token: offset");
+BB_ASSERT(offsetof(bb_store_Ops, plane_token_live) == 280, "bb_store_Ops.plane_token_live: offset");
+BB_ASSERT(offsetof(bb_store_Ops, record_put) == 288, "bb_store_Ops.record_put: offset");
+BB_ASSERT(offsetof(bb_store_Ops, record_get) == 296, "bb_store_Ops.record_get: offset");
+BB_ASSERT(offsetof(bb_store_Ops, record_scan) == 304, "bb_store_Ops.record_scan: offset");
+BB_ASSERT(offsetof(bb_store_Ops, add_usage_batch) == 312, "bb_store_Ops.add_usage_batch: offset");
+BB_ASSERT(offsetof(bb_store_Ops, add_metering_batch) == 320, "bb_store_Ops.add_metering_batch: offset");
 BB_ASSERT(sizeof(bb_store_OpId) == 16, "bb_store_OpId: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_OpId) == 1, "bb_store_OpId: alignment");
-BB_ASSERT(sizeof(bb_store_UnitCell) == 72, "bb_store_UnitCell: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_UnitCell) == 8, "bb_store_UnitCell: alignment");
-BB_ASSERT(offsetof(bb_store_UnitCell, bucket) == 0, "bb_store_UnitCell.bucket: offset");
-BB_ASSERT(offsetof(bb_store_UnitCell, pool) == 16, "bb_store_UnitCell.pool: offset");
-BB_ASSERT(offsetof(bb_store_UnitCell, dimension) == 32, "bb_store_UnitCell.dimension: offset");
-BB_ASSERT(offsetof(bb_store_UnitCell, _r) == 36, "bb_store_UnitCell._r: offset");
-BB_ASSERT(offsetof(bb_store_UnitCell, class_key) == 40, "bb_store_UnitCell.class_key: offset");
-BB_ASSERT(offsetof(bb_store_UnitCell, amount) == 56, "bb_store_UnitCell.amount: offset");
-BB_ASSERT(offsetof(bb_store_UnitCell, window_start) == 64, "bb_store_UnitCell.window_start: offset");
-BB_ASSERT(sizeof(bb_store_CellGrant) == 24, "bb_store_CellGrant: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_CellGrant) == 8, "bb_store_CellGrant: alignment");
-BB_ASSERT(offsetof(bb_store_CellGrant, slice_id) == 0, "bb_store_CellGrant.slice_id: offset");
-BB_ASSERT(offsetof(bb_store_CellGrant, granted) == 8, "bb_store_CellGrant.granted: offset");
-BB_ASSERT(offsetof(bb_store_CellGrant, valid_until_ms) == 16, "bb_store_CellGrant.valid_until_ms: offset");
-BB_ASSERT(sizeof(bb_store_ReserveIn) == 144, "bb_store_ReserveIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_ReserveIn) == 8, "bb_store_ReserveIn: alignment");
-BB_ASSERT(offsetof(bb_store_ReserveIn, head) == 0, "bb_store_ReserveIn.head: offset");
-BB_ASSERT(offsetof(bb_store_ReserveIn, op_id) == 88, "bb_store_ReserveIn.op_id: offset");
-BB_ASSERT(offsetof(bb_store_ReserveIn, epoch) == 104, "bb_store_ReserveIn.epoch: offset");
-BB_ASSERT(offsetof(bb_store_ReserveIn, cells) == 112, "bb_store_ReserveIn.cells: offset");
-BB_ASSERT(offsetof(bb_store_ReserveIn, cells_len) == 120, "bb_store_ReserveIn.cells_len: offset");
-BB_ASSERT(offsetof(bb_store_ReserveIn, grants) == 128, "bb_store_ReserveIn.grants: offset");
-BB_ASSERT(offsetof(bb_store_ReserveIn, grants_cap) == 136, "bb_store_ReserveIn.grants_cap: offset");
-BB_ASSERT(sizeof(bb_store_ReserveOut) == 120, "bb_store_ReserveOut: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_ReserveOut) == 8, "bb_store_ReserveOut: alignment");
-BB_ASSERT(offsetof(bb_store_ReserveOut, head) == 0, "bb_store_ReserveOut.head: offset");
-BB_ASSERT(offsetof(bb_store_ReserveOut, grants_len) == 96, "bb_store_ReserveOut.grants_len: offset");
-BB_ASSERT(offsetof(bb_store_ReserveOut, reason) == 104, "bb_store_ReserveOut.reason: offset");
-BB_ASSERT(offsetof(bb_store_ReserveOut, failed_cell) == 108, "bb_store_ReserveOut.failed_cell: offset");
-BB_ASSERT(offsetof(bb_store_ReserveOut, needed_grants) == 112, "bb_store_ReserveOut.needed_grants: offset");
-BB_ASSERT(sizeof(bb_store_ReleaseItem) == 16, "bb_store_ReleaseItem: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_ReleaseItem) == 8, "bb_store_ReleaseItem: alignment");
-BB_ASSERT(offsetof(bb_store_ReleaseItem, slice_id) == 0, "bb_store_ReleaseItem.slice_id: offset");
-BB_ASSERT(offsetof(bb_store_ReleaseItem, unspent) == 8, "bb_store_ReleaseItem.unspent: offset");
-BB_ASSERT(sizeof(bb_store_SliceReleaseIn) == 144, "bb_store_SliceReleaseIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_SliceReleaseIn) == 8, "bb_store_SliceReleaseIn: alignment");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, head) == 0, "bb_store_SliceReleaseIn.head: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, op_id) == 88, "bb_store_SliceReleaseIn.op_id: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, epoch) == 104, "bb_store_SliceReleaseIn.epoch: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, items) == 112, "bb_store_SliceReleaseIn.items: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, items_len) == 120, "bb_store_SliceReleaseIn.items_len: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, released) == 128, "bb_store_SliceReleaseIn.released: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseIn, released_cap) == 136, "bb_store_SliceReleaseIn.released_cap: offset");
-BB_ASSERT(sizeof(bb_store_SliceReleaseOut) == 112, "bb_store_SliceReleaseOut: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_SliceReleaseOut) == 8, "bb_store_SliceReleaseOut: alignment");
-BB_ASSERT(offsetof(bb_store_SliceReleaseOut, head) == 0, "bb_store_SliceReleaseOut.head: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseOut, released_len) == 96, "bb_store_SliceReleaseOut.released_len: offset");
-BB_ASSERT(offsetof(bb_store_SliceReleaseOut, needed_released) == 104, "bb_store_SliceReleaseOut.needed_released: offset");
 BB_ASSERT(sizeof(bb_store_UsageCell) == 48, "bb_store_UsageCell: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_UsageCell) == 8, "bb_store_UsageCell: alignment");
 BB_ASSERT(offsetof(bb_store_UsageCell, bucket) == 0, "bb_store_UsageCell.bucket: offset");
@@ -4782,22 +4480,6 @@ BB_ASSERT(offsetof(bb_store_OpBlobsIn, head) == 0, "bb_store_OpBlobsIn.head: off
 BB_ASSERT(offsetof(bb_store_OpBlobsIn, op_id) == 88, "bb_store_OpBlobsIn.op_id: offset");
 BB_ASSERT(offsetof(bb_store_OpBlobsIn, records) == 104, "bb_store_OpBlobsIn.records: offset");
 BB_ASSERT(offsetof(bb_store_OpBlobsIn, records_len) == 112, "bb_store_OpBlobsIn.records_len: offset");
-BB_ASSERT(sizeof(bb_store_WindowCap) == 80, "bb_store_WindowCap: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_WindowCap) == 8, "bb_store_WindowCap: alignment");
-BB_ASSERT(offsetof(bb_store_WindowCap, bucket) == 0, "bb_store_WindowCap.bucket: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, pool) == 16, "bb_store_WindowCap.pool: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, dimension) == 32, "bb_store_WindowCap.dimension: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, _r) == 36, "bb_store_WindowCap._r: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, class_key) == 40, "bb_store_WindowCap.class_key: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, window_start) == 56, "bb_store_WindowCap.window_start: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, cap) == 64, "bb_store_WindowCap.cap: offset");
-BB_ASSERT(offsetof(bb_store_WindowCap, config_gen) == 72, "bb_store_WindowCap.config_gen: offset");
-BB_ASSERT(sizeof(bb_store_WindowCapsIn) == 120, "bb_store_WindowCapsIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_WindowCapsIn) == 8, "bb_store_WindowCapsIn: alignment");
-BB_ASSERT(offsetof(bb_store_WindowCapsIn, head) == 0, "bb_store_WindowCapsIn.head: offset");
-BB_ASSERT(offsetof(bb_store_WindowCapsIn, op_id) == 88, "bb_store_WindowCapsIn.op_id: offset");
-BB_ASSERT(offsetof(bb_store_WindowCapsIn, caps) == 104, "bb_store_WindowCapsIn.caps: offset");
-BB_ASSERT(offsetof(bb_store_WindowCapsIn, caps_len) == 112, "bb_store_WindowCapsIn.caps_len: offset");
 BB_ASSERT(sizeof(bb_store_PlaneRecordRow) == 96, "bb_store_PlaneRecordRow: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_PlaneRecordRow) == 8, "bb_store_PlaneRecordRow: alignment");
 BB_ASSERT(offsetof(bb_store_PlaneRecordRow, kind) == 0, "bb_store_PlaneRecordRow.kind: offset");
@@ -4864,20 +4546,10 @@ BB_ASSERT(offsetof(bb_store_PutUsageIn, head) == 0, "bb_store_PutUsageIn.head: o
 BB_ASSERT(offsetof(bb_store_PutUsageIn, bucket) == 88, "bb_store_PutUsageIn.bucket: offset");
 BB_ASSERT(offsetof(bb_store_PutUsageIn, window_start) == 104, "bb_store_PutUsageIn.window_start: offset");
 BB_ASSERT(offsetof(bb_store_PutUsageIn, ledger) == 112, "bb_store_PutUsageIn.ledger: offset");
-BB_ASSERT(sizeof(bb_store_AddUsageIn) == 152, "bb_store_AddUsageIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_AddUsageIn) == 8, "bb_store_AddUsageIn: alignment");
-BB_ASSERT(offsetof(bb_store_AddUsageIn, head) == 0, "bb_store_AddUsageIn.head: offset");
-BB_ASSERT(offsetof(bb_store_AddUsageIn, op_id) == 88, "bb_store_AddUsageIn.op_id: offset");
-BB_ASSERT(offsetof(bb_store_AddUsageIn, cell) == 104, "bb_store_AddUsageIn.cell: offset");
 BB_ASSERT(sizeof(bb_store_BlobIn) == 112, "bb_store_BlobIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_BlobIn) == 8, "bb_store_BlobIn: alignment");
 BB_ASSERT(offsetof(bb_store_BlobIn, head) == 0, "bb_store_BlobIn.head: offset");
 BB_ASSERT(offsetof(bb_store_BlobIn, record) == 88, "bb_store_BlobIn.record: offset");
-BB_ASSERT(sizeof(bb_store_OpBlobIn) == 128, "bb_store_OpBlobIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_store_OpBlobIn) == 8, "bb_store_OpBlobIn: alignment");
-BB_ASSERT(offsetof(bb_store_OpBlobIn, head) == 0, "bb_store_OpBlobIn.head: offset");
-BB_ASSERT(offsetof(bb_store_OpBlobIn, op_id) == 88, "bb_store_OpBlobIn.op_id: offset");
-BB_ASSERT(offsetof(bb_store_OpBlobIn, record) == 104, "bb_store_OpBlobIn.record: offset");
 BB_ASSERT(sizeof(bb_store_KeyWithCredentialIn) == 136, "bb_store_KeyWithCredentialIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_KeyWithCredentialIn) == 8, "bb_store_KeyWithCredentialIn: alignment");
 BB_ASSERT(offsetof(bb_store_KeyWithCredentialIn, head) == 0, "bb_store_KeyWithCredentialIn.head: offset");
@@ -4898,16 +4570,19 @@ BB_ASSERT(BB_ALIGNOF(bb_secret_Ops) == 8, "bb_secret_Ops: alignment");
 BB_ASSERT(offsetof(bb_secret_Ops, head) == 0, "bb_secret_Ops.head: offset");
 BB_ASSERT(offsetof(bb_secret_Ops, resolve) == 80, "bb_secret_Ops.resolve: offset");
 BB_ASSERT(offsetof(bb_secret_Ops, check) == 88, "bb_secret_Ops.check: offset");
-BB_ASSERT(sizeof(bb_secret_ResolveIn) == 112, "bb_secret_ResolveIn: size");
+BB_ASSERT(sizeof(bb_secret_ResolveIn) == 128, "bb_secret_ResolveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_ResolveIn) == 8, "bb_secret_ResolveIn: alignment");
 BB_ASSERT(offsetof(bb_secret_ResolveIn, head) == 0, "bb_secret_ResolveIn.head: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveIn, settings) == 88, "bb_secret_ResolveIn.settings: offset");
-BB_ASSERT(sizeof(bb_secret_ResolveOut) == 128, "bb_secret_ResolveOut: size");
+BB_ASSERT(offsetof(bb_secret_ResolveIn, secret_buf) == 112, "bb_secret_ResolveIn.secret_buf: offset");
+BB_ASSERT(offsetof(bb_secret_ResolveIn, secret_cap) == 120, "bb_secret_ResolveIn.secret_cap: offset");
+BB_ASSERT(sizeof(bb_secret_ResolveOut) == 136, "bb_secret_ResolveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_ResolveOut) == 8, "bb_secret_ResolveOut: alignment");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, head) == 0, "bb_secret_ResolveOut.head: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, secret) == 96, "bb_secret_ResolveOut.secret: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, error_kind) == 120, "bb_secret_ResolveOut.error_kind: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, _reserved) == 124, "bb_secret_ResolveOut._reserved: offset");
+BB_ASSERT(offsetof(bb_secret_ResolveOut, needed) == 128, "bb_secret_ResolveOut.needed: offset");
 BB_ASSERT(sizeof(bb_secret_CheckIn) == 128, "bb_secret_CheckIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_CheckIn) == 8, "bb_secret_CheckIn: alignment");
 BB_ASSERT(offsetof(bb_secret_CheckIn, head) == 0, "bb_secret_CheckIn.head: offset");

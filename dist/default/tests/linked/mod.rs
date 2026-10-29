@@ -6,10 +6,9 @@
 //! These tests prove the kernel's behaviour against whatever planes a build links, so they live in
 //! the composition root, where a plane may be linked: core names zero plane types, its tests
 //! included. WHICH planes is data: the crate list in `[package.metadata.busbar.test-linked] planes`
-//! (crates/busbar/Cargo.toml), turned by `build.rs` into `$OUT_DIR/test_linked.rs` — one
-//! `testkit::TEST_SEAM` entry per linked crate, and one `plane_door::door` per `door:` row (a plane
-//! served through its memory-ABI door only, whose row is folded from its Statement as the
-//! composition root folds it) — and included here.
+//! (dist/default/Cargo.toml), turned by `build.rs` into `$OUT_DIR/test_linked.rs` — one door per
+//! linked crate (a plane served through its memory-ABI door, whose row is folded from its Statement
+//! as the composition root folds it) — and included here.
 //!
 //! A test then ADDRESSES a plane by what the plane declares about itself, read back from the
 //! registry: the config section it owns ([`owning`]), the fallback flag ([`fallback`]), or any
@@ -23,39 +22,25 @@
 #![allow(dead_code)]
 
 use busbar_kernel::plane_driver::registry::{plane_decls, PlaneDecl};
-use busbar_kernel::test_support::seam::{
-    register_test_plane_seam, test_plane_seams, TestPlaneSeam,
-};
+use busbar_kernel::test_support::seam::{test_plane_seams, TestPlaneSeam};
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
-/// Install every test-linked plane exactly as the composition root installs it in production
-/// (protocol declarations, plane row, ingress seams), and every test-linked DOOR plane's registry
-/// row folded from its Statement, as the root folds a door — in the list's order, which is the
-/// planes' layering order. Idempotent: each entry's own install is first-wins, each door is folded
-/// once per test binary, and the registration loop runs once per test binary.
+/// Install every test-linked door plane's registry row folded from its Statement, as the root folds
+/// a door, in the list's order (the planes' layering order), after the doors' own dialect
+/// declarations. Idempotent: each door is folded once per test binary, and the protocol
+/// registration runs once per test binary.
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        for entry in TEST_LINKED {
-            register_test_plane_seam(entry);
-        }
         // The linked doors' own dialect declarations, as the root's `register_protocols` installs
         // them in production (the door row's `protocols` axis).
         for decls in TEST_LINKED_PROTOCOLS {
-            busbar_kernel::ingress::protocols::register_test_protocols(decls);
+            busbar_kernel::test_support::protocols::register_test_protocols(decls);
         }
     });
-    let doors = door_rows();
-    let (mut seam, mut door) = (0, 0);
-    for &is_door in TEST_LINKED_ORDER {
-        if is_door {
-            busbar_kernel::plane_driver::registry::register_test_plane(doors[door]);
-            door += 1;
-        } else {
-            (TEST_LINKED[seam].install)();
-            seam += 1;
-        }
+    for &row in door_rows() {
+        busbar_kernel::test_support::planes::register_test_plane(row);
     }
     for seam in test_plane_seams() {
         (seam.install)();
@@ -88,10 +73,9 @@ fn fold_door(
         .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
 }
 
-/// How many plane crates this test binary links (the length of the Cargo.toml list: the linked
-/// planes and the door planes).
+/// How many plane crates this test binary links (the length of the Cargo.toml list).
 pub fn linked_count() -> usize {
-    TEST_LINKED.len() + TEST_LINKED_DOORS.len()
+    TEST_LINKED_DOORS.len()
 }
 
 /// The registered plane list after [`install`], in registration order.

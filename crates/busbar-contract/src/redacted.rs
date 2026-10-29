@@ -163,6 +163,86 @@ impl<T: Zeroize> Secret<T> {
     }
 }
 
+/// THE HOST'S ZEROIZING BYTE HOLDER (the credential chip, row 6: host-owned secret bytes): a secret plugin
+/// writes its resolved value straight into one ([`Secret::zeroed`], [`Secret::lend_mut`]); the
+/// loader and the kernel keep the bytes in it, never in a `String`; it reaches a consumer's `open`
+/// from here and is wiped when it drops.
+impl Secret<Vec<u8>> {
+    /// A zeroed holder of `cap` bytes, to lend a secret plugin's `resolve` as its buffer.
+    #[must_use]
+    pub fn zeroed(cap: usize) -> Self {
+        Self(vec![0; cap], PhantomData)
+    }
+
+    /// The holder's buffer as a call lends it: its address and its length. Writing through it is
+    /// the plugin's answer; reading it back is `unsafe` and reveals nothing [`Secret::expose`]
+    /// would not.
+    pub fn lend_mut(&mut self) -> (*mut u8, usize) {
+        (self.0.as_mut_ptr(), self.0.len())
+    }
+
+    /// Keep the first `n` bytes, the value a plugin wrote: the bytes past them are wiped in place
+    /// and the allocation is kept (no reallocation, so no copy of the value is left behind).
+    pub fn keep(&mut self, n: usize) {
+        let n = n.min(self.0.len());
+        self.0[n..].zeroize();
+        self.0.truncate(n);
+    }
+
+    /// The bytes as the UTF-8 text a text secret is, MOVED into a [`Secret<String>`] (the same
+    /// allocation, never a copy), its trailing newline trimmed in place.
+    ///
+    /// # Errors
+    /// [`NotText`]: the bytes are not UTF-8, or nothing is left after the trim. The bytes are
+    /// wiped either way.
+    pub fn into_text(mut self) -> Result<Secret<String>, NotText> {
+        let bytes = core::mem::take(&mut self.0);
+        let mut text = match String::from_utf8(bytes) {
+            Ok(t) => Secret::new(t),
+            Err(e) => {
+                e.into_bytes().zeroize();
+                return Err(NotText::NotUtf8);
+            }
+        };
+        let kept = text.0.trim_end_matches(['\r', '\n']).len();
+        // Cut in place: the trimmed newline stays in the allocation's spare capacity, which the
+        // holder's drop wipes whole (`Vec::zeroize` zeroes the full capacity).
+        text.0.truncate(kept);
+        if text.0.is_empty() {
+            return Err(NotText::Empty);
+        }
+        Ok(text)
+    }
+}
+
+impl Secret<String> {
+    /// The text's bytes, MOVED into a [`Secret<Vec<u8>>`] (the same allocation, never a copy).
+    #[must_use]
+    pub fn into_bytes(mut self) -> Secret<Vec<u8>> {
+        Secret(core::mem::take(&mut self.0).into_bytes(), PhantomData)
+    }
+}
+
+/// Why resolved bytes are not a text secret ([`Secret::into_text`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotText {
+    /// The bytes are not UTF-8.
+    NotUtf8,
+    /// Nothing is left once the trailing newline is trimmed.
+    Empty,
+}
+
+/// Every `Secret` wipes its value when it drops ([`Drop`] below): the marker a holder's type-level
+/// check reads.
+impl<T: Zeroize, O> zeroize::ZeroizeOnDrop for Secret<T, O> {}
+
+/// A holder can be wiped before it drops (a lend that fails part-way wipes what it lent).
+impl<T: Zeroize, O> Zeroize for Secret<T, O> {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl<T: Zeroize, O: OwnerSeal> Secret<T, O> {
     /// Wrap a secret the plugin crate owning `O` holds itself.
     pub fn held(secret: T) -> Self {

@@ -2403,13 +2403,13 @@ impl Connector {
         let due = (desc.timeout_ms != 0)
             .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
         // The exchange body: the description alone, or framed into the opener's form.
-        let body = dialled::composed_body(desc.fields, desc.body, &description)?;
+        let body = dialled::composed_body(desc.fields, &desc.body, &description)?;
         let held = self.dial_exchange(
             caller,
             need,
             &OpenDesc {
-                body: &body,
-                ..*desc
+                body: body.into(),
+                ..desc.clone()
             },
             (exchange, alpn),
             target,
@@ -2449,7 +2449,7 @@ impl Connector {
                     .iter()
                     .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                     .collect(),
-                desc.body.to_vec(),
+                desc.body.clone(),
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
@@ -2646,7 +2646,7 @@ impl Conns for Connector {
                 .get(program::member_of(desc.target))
                 .cloned()
                 .ok_or(ConnError::Refused)?;
-            let lease = member.lease(desc.body)?;
+            let lease = member.lease(&desc.body)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
             // A refused insert drops the held lease, which closes it.
@@ -2669,7 +2669,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2736,7 +2736,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -3052,6 +3052,11 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+/// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/warn_capture.rs"]
+pub mod warn_capture;
 
 #[cfg(test)]
 #[path = "tests/trust_from_tests.rs"]

@@ -31,6 +31,9 @@ pub mod hook;
 pub mod export;
 // A URL AS A LOG LINE MAY NAME IT: userinfo and secret-looking query values masked.
 pub mod mask;
+// A CONFIGURED URL'S CREDENTIAL, KEPT TO ITS ONE USE: its Basic header, the ambiguous-url refusal,
+// and the scrub of a text that may quote it.
+pub mod url;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;
@@ -87,11 +90,16 @@ pub mod secret;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
 pub use publish::{Generations, Keyed};
+// THE PLANE KIND'S SHARED PIECES: the section a dealt `validate` blob carries.
+pub mod plane;
 // TRUST ON SIGHT, PLANE SIDE: the state word a trust view answers and the last contact it is
 // derived from, one shape for every plane that sights an upstream on the kernel's trust book.
 pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
+// THE PLUGIN'S OWN CONFIG MIGRATION, ONCE FOR EVERY KIND: the door's optional `migrate` over a
+// plugin's `Migrate`, and the answer core reads (`abi::mechanism::lifecycle`, MIGRATE).
+pub mod migrate;
 // THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine slots over a plane's `PlaneLife`.
 pub mod plane_life;
 // THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read

@@ -33,6 +33,8 @@ use super::*;
 const DISPOSITION: u32 = 3;
 /// Generations retired, summed.
 static RETIRED: AtomicU64 = AtomicU64::new(0);
+/// The state of every instance closed, and whether it was handed host tables.
+static CLOSED: std::sync::Mutex<Vec<(Vec<u8>, bool)>> = std::sync::Mutex::new(Vec::new());
 
 /// The test kind's state: the bytes `resolve` answers.
 struct Echo(Vec<u8>);
@@ -85,9 +87,16 @@ impl Life for Echo {
     fn tick(&self, now_ns: u64) -> u64 {
         now_ns + self.0.len() as u64
     }
+
+    fn close(&self, host: Option<&Host>) {
+        CLOSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((self.0.clone(), host.is_some()));
+    }
 }
 
-/// `resolve`: the state's bytes, under a secret lease.
+/// `resolve`: the state's bytes, into the host's secret buffer.
 struct Resolve;
 impl SafeSlot for Resolve {
     type In = ResolveIn;
@@ -145,8 +154,12 @@ impl SafeSlot for Resolve {
                 _ => Outcome::Pending,
             };
         }
-        out.lease_secret(|o| &o.secret, h.leases(), h.life().0.clone(), BLOB_OCTETS);
-        Outcome::Ready
+        // The value goes into the host's buffer, never leased (the credential chip, row 6).
+        crate::abi::sdk::cred::resolved(
+            input,
+            &mut out,
+            crate::abi::sdk::cred::Held::new(h.life().0.clone()),
+        )
     }
 }
 
@@ -241,13 +254,21 @@ fn open(settings: &[u8], secrets: &[Blob]) -> (Outcome, *mut c_void, String) {
 }
 
 fn resolve(inst: *mut c_void) -> (Outcome, Vec<u8>, u64, u32) {
+    // The host lends the buffer a READY value is written into (row 6).
+    let mut buf = [0u8; 64];
     let mut input: ResolveIn = zeroed();
     input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
+    input.secret_buf = buf.as_mut_ptr();
+    input.secret_cap = buf.len();
     let mut out: ResolveOut = zeroed();
     out.head = out_head::<ResolveOut>();
     let o = call(table().resolve, inst, &input, &mut out);
-    // SAFETY: the plugin's leased bytes, held until `release`.
-    let bytes = unsafe { std::slice::from_raw_parts(out.secret.ptr, out.secret.len) }.to_vec();
+    let bytes = if out.secret.len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: the answer names the start of `buf`, the host's own buffer, still live here.
+        unsafe { std::slice::from_raw_parts(out.secret.ptr, out.secret.len) }.to_vec()
+    };
     (o, bytes, out.head.lease, out.secret.flags)
 }
 
@@ -305,6 +326,27 @@ fn open_holds_the_kinds_state_and_a_refused_open_answers_its_text() {
     assert_eq!(o, Outcome::Refused);
     assert!(inst.is_null());
     assert_eq!(why, "the echo refuses");
+}
+
+/// THE DRAIN: `close` runs the kind's [`Life::close`] on the instance it closes, with the host
+/// tables `open` handed it (none here), before the SDK drops the state. RED: a `close` that only
+/// drops the state never lets the instance close the host handles it holds.
+#[test]
+fn close_runs_the_kinds_close_on_its_instance() {
+    let (_, inst, _) = open(b"closing-probe", &[]);
+    assert_eq!(close(inst), Outcome::Ready);
+    let closed = CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        closed.contains(&(b"closing-probe".to_vec(), false)),
+        "the kind's close ran once on the closed instance: {closed:?}"
+    );
+    assert_eq!(
+        closed.iter().filter(|(s, _)| s == b"closing-probe").count(),
+        1
+    );
 }
 
 #[test]
@@ -369,15 +411,24 @@ fn an_unknown_lease_is_refused_in_words() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
+/// A resolved secret is written into the host's buffer and takes no lease (row 6); a leased answer
+/// (the leased-string probe) is held until its release, each its own, and an unknown lease is
+/// refused.
 #[test]
-fn a_leased_answer_is_held_until_release_and_an_unknown_lease_is_refused() {
+fn a_resolved_secret_takes_no_lease_and_a_leased_answer_is_held_until_release() {
     let secret = blob(b"s3cret");
     let (_, inst, _) = open(b"{}", &[secret]);
     let (o, bytes, lease, flags) = resolve(inst);
     assert_eq!(o, Outcome::Ready);
     assert_eq!(bytes, b"s3cret");
-    assert_ne!(lease, 0);
+    assert_eq!(lease, 0, "a resolved secret is the host's: no lease");
     assert_eq!(flags, BLOB_SECRET);
+    assert_eq!(close(inst), Outcome::Ready);
+
+    let (_, inst, _) = open(b"str", &[]);
+    let (o, _, lease, _) = resolve(inst);
+    assert_eq!(o, Outcome::Ready);
+    assert_ne!(lease, 0);
     let (_, _, second, _) = resolve(inst);
     assert_ne!(second, lease, "each answer its own lease");
     assert_eq!(release(inst, lease), Outcome::Ready);

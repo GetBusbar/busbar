@@ -1608,3 +1608,74 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
         "the new record's hash is 1.5.5's formula, so a 1.5.5 verifier walks it"
     );
 }
+
+// ── PLUGIN REFUSALS AT BOOT AND BIND ─────────────────────────────────────────────────────────────
+
+/// A held refusal named `n`.
+fn held(n: u64) -> HeldRefusal {
+    HeldRefusal {
+        ts: n,
+        refusal: PluginRefusal::Need,
+        resource: plugin_refusal_resource("export", "hook", &format!("need.{n}.refused")),
+    }
+}
+
+/// Raised before the chain opens, refusals are HELD in raise order and sealed, in that order, when it
+/// opens; one raised after is sealed at once; a second open seals nothing again.
+#[test]
+fn held_refusals_seal_in_order_once_the_chain_opens() {
+    let hold = RefusalHold::new();
+    let sealed = std::cell::RefCell::new(Vec::new());
+    hold.raise(held(1), |r| sealed.borrow_mut().push(r.clone()));
+    hold.raise(held(2), |r| sealed.borrow_mut().push(r.clone()));
+    assert!(
+        sealed.borrow().is_empty(),
+        "nothing is sealed before the chain opens"
+    );
+
+    let mut over = None;
+    hold.open(|r| sealed.borrow_mut().push(r.clone()), |n| over = Some(n));
+    assert_eq!(*sealed.borrow(), vec![held(1), held(2)]);
+    assert_eq!(over, None, "nothing was over the bound");
+
+    hold.raise(held(3), |r| sealed.borrow_mut().push(r.clone()));
+    assert_eq!(*sealed.borrow(), vec![held(1), held(2), held(3)]);
+
+    hold.open(
+        |r| sealed.borrow_mut().push(r.clone()),
+        |_| panic!("opened twice"),
+    );
+    assert_eq!(sealed.borrow().len(), 3, "a second open seals nothing");
+}
+
+/// Past the bound, a refusal is not lost silently: the count is sealed when the chain opens.
+#[test]
+fn refusals_over_the_hold_are_counted_and_sealed() {
+    let hold = RefusalHold::new();
+    for n in 0..(MAX_HELD_REFUSALS as u64 + 3) {
+        hold.raise(held(n), |_| panic!("the chain is not open"));
+    }
+    let mut sealed = 0;
+    let mut over = None;
+    hold.open(|_| sealed += 1, |n| over = Some(n));
+    assert_eq!(sealed, MAX_HELD_REFUSALS);
+    assert_eq!(over, Some(3));
+}
+
+/// Every part of a refusal's resource is clamped to host words: a `|`, a newline or a long run of
+/// plugin bytes cannot move a field boundary or carry text onto the chain.
+#[test]
+fn a_refusal_resource_is_clamped_to_host_words() {
+    assert_eq!(
+        plugin_refusal_resource("export", "hook", "need.0.refused"),
+        "plugin:export/hook#need.0.refused"
+    );
+    assert_eq!(
+        plugin_refusal_resource("auth", "oidc|x\ny", "JWKS URL/plain http"),
+        "plugin:auth/oidc_x_y#JWKS_URL_plain_http"
+    );
+    assert_eq!(plugin_refusal_resource("", "", ""), "plugin:_/_#_");
+    let long = "a".repeat(200);
+    let clamped = plugin_refusal_resource(&long, &long, &long);
+    assert_eq!(clamped.len(), "plugin:/#".len() + 3 * REFUSAL_PART_MAX);
+}

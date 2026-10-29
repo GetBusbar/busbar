@@ -195,6 +195,116 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
 
+/// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the transport table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x715dbad81f3872c0;
+
+/// The transport kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/transport/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops =>
+        head, listen, accept, dial, read, write, flush, shut, arrival, locate, begin, ingest, emit,
+        encode, refuse, finish, detach, adopt, timer
+    ),
+    crate::layout_shape!(Claim =>
+        selector_forms, egress_selector_forms, facts, facts_len, status_namespace, session,
+        session_bound, unit0_trigger, status_at, _reserved
+    ),
+    crate::layout_shape!(StatusRow => claim, lo, hi, class),
+    crate::layout_shape!(FaultRow => claim, lo, hi, fault),
+    crate::layout_shape!(route::FieldPredicate => op, _reserved, name, value),
+    crate::layout_shape!(route::RouteMatch =>
+        methods, path_form, path, fields, fields_len, rung, _reserved
+    ),
+    crate::layout_shape!(LineEntry => line, points, auth, body_limit, route),
+    crate::layout_shape!(SettingDecl => path, kind, _reserved, default),
+    crate::layout_shape!(TransportTail =>
+        head, role, framing, facts, handshake_max_steps, composes_over, composes_over_len,
+        claim_rows, claim_rows_len, upgrades_to, upgrades_to_len, handoff_from, handoff_to,
+        handoff_binding_fact, handshake_frame_kind, status_rows, status_rows_len, settings,
+        settings_len, fault_rows, fault_rows_len, frame_piece_size, _reserved
+    ),
+    crate::layout_shape!(Destination =>
+        kind, _reserved, authority, program, args, args_len, env, env_len
+    ),
+    crate::layout_shape!(ConnFacts =>
+        size, _reserved, offered_name, agreed_protocol, peer_subject, peer_issuer, peer_fingerprint,
+        claim, local_certificate
+    ),
+    crate::layout_shape!(FramePiece =>
+        stream, offset, len, code, status_class, fault, flags, retry_after_secs, declared_len
+    ),
+    crate::layout_shape!(FramerSink =>
+        wire, wire_cap, frame, frame_cap, pieces, pieces_cap, now_monotonic_ns, now_unix_ns, heads,
+        heads_cap
+    ),
+    crate::layout_shape!(FrameSpan => offset, len),
+    crate::layout_shape!(HeadSlots => stream, method, target, authority, reason),
+    crate::layout_shape!(FramerYield =>
+        wire_len, frame_len, pieces_len, flags, next_deadline_ns, heads_len, _reserved
+    ),
+    crate::layout_shape!(ListenIn => head, bind, addr_buf, addr_cap),
+    crate::layout_shape!(ListenOut => head, listener, addr_written),
+    crate::layout_shape!(AcceptIn => head, listener, peer_buf, peer_cap),
+    crate::layout_shape!(AcceptOut => head, conn, peer_written),
+    crate::layout_shape!(DialIn => head, dest, supervision_key),
+    crate::layout_shape!(ConnOut => head, conn),
+    crate::layout_shape!(ReadIn => head, conn, buf, cap),
+    crate::layout_shape!(WriteIn => head, conn, bytes, len, flags, _reserved),
+    crate::layout_shape!(IoOut => head, len, flags, _reserved),
+    crate::layout_shape!(ConnIn => head, conn),
+    crate::layout_shape!(ShutIn => head, conn, reason, _reserved),
+    crate::layout_shape!(ArrivalIn => head, conn, peer_buf, peer_cap),
+    crate::layout_shape!(ArrivalOut => head, peer_written, peer_needed, local_port, _reserved),
+    crate::layout_shape!(LocateIn =>
+        head, target, authority_buf, authority_cap, name_buf, name_cap, alpn_buf, alpn_cap, accept,
+        _accept_reserved, defaults_buf, defaults_cap
+    ),
+    crate::layout_shape!(LocateOut =>
+        head, authority_written, authority_needed, name_written, name_needed, secure, has_name,
+        alpn_written, alpn_needed, defaults_written, defaults_needed, states_length, _reserved
+    ),
+    crate::layout_shape!(FramerOut => head, yielded, framing, datagram),
+    crate::layout_shape!(KeyingMaterial => size, profile, bytes, len),
+    crate::layout_shape!(DatagramRoute => offset, len, path, lane),
+    crate::layout_shape!(DatagramLane =>
+        size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
+        routes_cap, paths, paths_len
+    ),
+    crate::layout_shape!(RendezvousTerms =>
+        role, _reserved, local_user, local_secret, remote_user, remote_secret, peer_fingerprint,
+        candidates
+    ),
+    crate::layout_shape!(DatagramYield => routes_len, request, request_from, request_to, terms),
+    crate::layout_shape!(BeginIn =>
+        head, side, scheme, _reserved, target, facts, sink, fields, fields_len, lane, lines,
+        lines_len, points, _points_reserved, auth
+    ),
+    crate::layout_shape!(IngestIn => head, framing, bytes, len, end, _reserved, sink, lane),
+    crate::layout_shape!(EmitIn =>
+        head, framing, stream, bytes, len, end_of_frame, flags, sink, deadline_ns, lane, status,
+        _status_reserved, unit, body_len, body_len_known, _body_len_reserved
+    ),
+    crate::layout_shape!(EncodeIn =>
+        head, fields, fields_len, body, body_len, sink, method, target
+    ),
+    crate::layout_shape!(RefuseIn =>
+        head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2,
+        head_sent, _reserved3
+    ),
+    crate::layout_shape!(FinishIn =>
+        head, framing, reason, _reserved, sink, final_status, _final_reserved, final_message,
+        final_details, final_bytes, final_bytes_len, lane
+    ),
+    crate::layout_shape!(FramingIn => head, framing, sink, lane),
+    crate::layout_shape!(AdoptIn => head, side, _reserved, facts, leftover, leftover_len, sink),
+    crate::layout_shape!(DatagramPath => path, _reserved, addr),
+];
+
 /// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
 /// itself, defined here and nowhere else, so a bump of the kind's version moves it and there is no
 /// second number to fall behind (THE DESIGN, the ABI folders: an ABI version constant lives under `abi/`).

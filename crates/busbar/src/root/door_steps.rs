@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KERNEL STEPS OF A UNIT SERVED THROUGH A PLANE'S DOOR (SERVE-WIRE step 33, the serving slice;
-//! `BUSBAR-1.6.0.md` Part 3 §12 "One unit, step by step", THE DESIGN §7): the steps the kernel
-//! answers around the plane's own seats (decode, route and encode are the plane driver's), one
-//! [`DoorSteps`] per unit. Generic over the plane's tail: it names no plane.
+//! `BUSBAR-1.6.0.md` Part 3 §12 "One unit, step by step", THE DESIGN §7): the deployment's plain
+//! answers at the kernel's seats, which the plane driver asks in the loop's order and stamps at each
+//! seat (decode, route and encode are the driver's own), one [`DoorSteps`] per unit. Generic over
+//! the plane's tail: it names no plane.
 //!
 //! | step | here |
 //! |---|---|
@@ -28,9 +29,8 @@ use busbar_contract::abi::plane::{
     ROUTE_SCOPE_SEPARATOR,
 };
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Authenticated, Consumption, Decode,
-    Dial, Encode, Grant, Meter, OpClassId, Outcome, Pass, PrincipalId, QuantitySource, ReasonCode,
-    Refusal, Route, SeatVerdict, UsageLine, VerifiedDestination, Verify,
+    Admittance, Authenticated, Consumption, Dial, Grant, OpClassId, Outcome, PrincipalId,
+    QuantitySource, ReasonCode, Refusal, UsageLine, VerifiedDestination,
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
@@ -44,7 +44,7 @@ use busbar_kernel::governance::{AdmitGrant, LimitBlocked, PLANE_LANE_SEP};
 use busbar_kernel::plane_driver::{DriverSteps, FeeRefund, PlaneMoney, UnitMoney};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::state::App;
-use busbar_kernel::teller::{Evidence, UnitCtx, Units};
+use busbar_kernel::teller::UnitCtx;
 
 use crate::root::linked::node::Resolve;
 
@@ -958,6 +958,298 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    /// Proceeds: the data listener's gates ran before the data door.
+    fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal> {
+        Ok(busbar_contract::ArrivalRecord {
+            source: String::new(),
+            port: 0,
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: Vec::new(),
+        })
+    }
+
+    fn authenticate(&self, ctx: &UnitCtx) -> Result<Authenticated, Refusal> {
+        match admission(self.key.as_ref(), self.open) {
+            Admission::Refused => Err(Refusal::new(ReasonCode::Unauthenticated)),
+            Admission::Keyed | Admission::Anonymous => {
+                // The unit's verified principal, on the host's unit records for its life: a host
+                // service called inside its crossings answers for it.
+                if let Some(records) = &self.records {
+                    records.admitted(
+                        ctx.key.get(),
+                        busbar_kernel::host_units::UnitRecord {
+                            principal: self.key.clone(),
+                            depth: self.depth,
+                        },
+                    );
+                    if let Some(credential) = &self.credential {
+                        records.lend(ctx.key.get(), credential.clone());
+                    }
+                    // What admitted the unit, for `ticket.take`: a ticket's record, or a key.
+                    records.ticketed(ctx.key.get(), self.ticket.clone());
+                    self.lock().recorded = Some(ctx.key.get());
+                }
+                Ok(Authenticated::Principal(self.principal.clone()))
+            }
+        }
+    }
+
+    fn verify(
+        &self,
+        trust: &Grant<Dial>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal> {
+        // A UNIT ROUTED BY SCOPE (ROUTE_SCOPE, the ARCHITECT scope-select ruling: scope seals the
+        // destinations): the one entry the principal's grant of the plane's scope kind reaches is
+        // its route, directly; zero or several seal nothing and it is refused at admission, the
+        // several named in its refusal's words.
+        let named_scope = match &self.lock().named {
+            Some((class @ (ROUTE_SCOPE | ROUTE_SCOPE_LOCAL), candidates)) => {
+                Some((*class, candidates.clone()))
+            }
+            _ => None,
+        };
+        if let Some((class, candidates)) = named_scope {
+            // The plane's candidates (the entries that would serve the unit, ARCHITECT
+            // Q-DEL-A2A-SCOPE-TRUST); none named = every entry.
+            let candidates: Option<Vec<String>> = candidates.map(|c| {
+                String::from_utf8_lossy(&c)
+                    .split(ROUTE_SCOPE_SEPARATOR)
+                    .filter(|e| !e.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            });
+            let reachable: Vec<String> = self
+                .pools
+                .entries()
+                .iter()
+                .filter(|entry| candidates.as_ref().is_none_or(|c| c.contains(entry)))
+                .filter(|entry| {
+                    self.pools.granted(
+                        self.facts.scope_kind.as_deref(),
+                        self.key.as_deref(),
+                        ROUTE_DIRECT,
+                        Some(entry.as_bytes()),
+                    )
+                })
+                .cloned()
+                .collect();
+            let mut u = self.lock();
+            match reachable.as_slice() {
+                // A UNIT THE PLANE ANSWERS AT THE ONE ENTRY (ROUTE_SCOPE_LOCAL, COORDINATOR ruling
+                // 2026-10-07): resolved as a scope's, and routed nowhere (no pool, no breaker, no
+                // egress), as predev answered its local verbs at the agent `select` chose before
+                // any pool was read (receive.rs:1257-1279, :1559-1593, before `pool_of` :1839).
+                [one] if class == ROUTE_SCOPE_LOCAL => {
+                    u.resolved = Some(one.clone());
+                    u.scope_entry = Some(one.clone());
+                }
+                // The one entry, routed as an addressed unit naming it is: over the pool of
+                // members each admitted on their own grant that it is a member of, else directly
+                // (predev's unaddressed request reached the same pool walk as an addressed one,
+                // receive.rs:1262-1268 converging at :1839 and :1916).
+                [one] => {
+                    u.scope_entry = Some(one.clone());
+                    u.named = Some(match self.pools.member_pool(one) {
+                        Some(pool) => (ROUTE_POOL, Some(pool.as_bytes().to_vec())),
+                        None => (ROUTE_DIRECT, Some(one.as_bytes().to_vec())),
+                    });
+                }
+                [] => {}
+                _ => u.reachable = reachable,
+            }
+        }
+        // An unknown route seals nothing and is refused at admission, after its grant was judged
+        // (1.5.5's order); the empty set is an answer at this step.
+        let named = self.lock().named.clone();
+        // THE PLANE SERVING THE `pools` MAP judges the route as named with the previous release's
+        // destination guard (`busbar_kernel::door::destination_guard`): the key's pool grant, its
+        // fallback pools' grants, then a rate card's coverage of the name, refused in 1.5.5's words.
+        if self.facts.plane.is_empty() {
+            if let Some(name) = named
+                .as_ref()
+                .and_then(|(_, n)| n.as_deref())
+                .and_then(|n| std::str::from_utf8(n).ok())
+            {
+                let view = DoorPoolView {
+                    pools: self.pools,
+                    key: self.key.as_deref(),
+                    app: &self.app,
+                };
+                if let Err(refusal) = busbar_kernel::door::destination_guard(&view, name) {
+                    self.lock().refused.1 = Some(refusal.message());
+                    return Err(Refusal::new(refusal.reason()));
+                }
+            }
+        }
+        let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
+        let sealed: Vec<VerifiedDestination> = routed
+            .iter()
+            .flat_map(|(_, members)| members)
+            .filter_map(|member| (self.lanes)(&plane_lane(&self.facts.plane, member)))
+            .map(|lane| VerifiedDestination::seal(trust, lane))
+            .collect();
+        self.lock().routed = routed;
+        Ok(sealed)
+    }
+
+    fn approve(
+        &self,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+    ) -> Result<busbar_contract::ScopeFacts, Refusal> {
+        let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
+        let counterparty = self.lock().counterparty.clone();
+        // A unit routed by scope that no one entry reached names its candidates, not a route: the
+        // grant was the resolution itself, and admission refuses it (no destination).
+        if class == ROUTE_SCOPE
+            || class == ROUTE_SCOPE_LOCAL
+            || self.pools.granted_to(
+                self.facts.scope_kind.as_deref(),
+                self.key.as_deref(),
+                (class, named.as_deref()),
+                counterparty.as_deref(),
+            )
+        {
+            Ok(busbar_contract::ScopeFacts::default())
+        } else {
+            Err(Refusal::new(ReasonCode::ScopeDenied))
+        }
+    }
+
+    fn admit(
+        &self,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+        _leases: &GroupLeaseSlip,
+    ) -> Result<busbar_contract::caps::Admission, Refusal> {
+        // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
+        // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
+        // is audited as every unit is.
+        // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
+        // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
+        // own ask round before it was asked; 05e053183a). So is one the plane answers
+        // AS AN ADMITTED CALL (ROUTE_COUNTED): a keyed one passes the one check-then-charge on the
+        // plane's pool, counting its request (R2, 1.5.5's rule), and keeps only the fee units the
+        // plane reports.
+        let (local, counted, estimated) = {
+            let u = self.lock();
+            let local = u
+                .named
+                .as_ref()
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL || *class == ROUTE_SCOPE_LOCAL);
+            (local, local && u.counted, !u.expected.is_empty())
+        };
+        // A UNIT ROUTED BY SCOPE that no one entry reached (the scope-select ruling): refused before
+        // anything is charged, as 1.5.5 chose the agent before its admission.
+        let unrouted_scope = {
+            let u = self.lock();
+            u.named.as_ref().is_some_and(|(class, _)| {
+                *class == ROUTE_SCOPE || (*class == ROUTE_SCOPE_LOCAL && u.resolved.is_none())
+            })
+        };
+        if unrouted_scope && !matches!(admission(self.key.as_ref(), self.open), Admission::Refused)
+        {
+            return Err(Refusal::new(ReasonCode::NoDestination));
+        }
+        match admission(self.key.as_ref(), self.open) {
+            Admission::Refused => return Err(Refusal::new(ReasonCode::Unauthenticated)),
+            Admission::Keyed if !local || counted || estimated => {
+                if let Some(key) = self.key.clone() {
+                    if let Err(refusal) = self.charge(ctx, &key) {
+                        self.lock().refused.0 = refusal.retry_after_secs();
+                        return Err(refusal);
+                    }
+                }
+            }
+            Admission::Keyed | Admission::Anonymous => {}
+        }
+        // A route its section does not hold: refused here, after its grant and its charge (1.5.5's
+        // order); the charge is refunded at the unit's end.
+        if !local && self.lock().routed.is_none() {
+            return Err(Refusal::new(ReasonCode::NoDestination));
+        }
+        // The door reserves nothing: the unit's hold opens at zero and the money steps ledger what
+        // the plane reported, at its end. A NESTED unit accrues against its parent's admission
+        // instead (zero at admission, ARCHITECT H3): one admission chain, its posting into the
+        // parent's hold. A parent that already exited, or any refusal of the accrual, leaves the
+        // child its own zero hold: it posts on its own.
+        if let Some(cell) = self.parent {
+            if let Ok(accrual) = cell.accrue_child(principal, 0, admit) {
+                return Ok(busbar_contract::caps::Admission::Accrual(accrual));
+            }
+        }
+        Ok(busbar_kernel::door::admitted_at_zero(
+            admit,
+            principal.clone(),
+        ))
+    }
+
+    fn meter(
+        &self,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        _provisional: &Outcome,
+        _destinations: &[VerifiedDestination],
+    ) -> Result<busbar_contract::caps::Usage, Refusal> {
+        // What the unit consumed: the plane's last far-end-reported cumulative counts (an estimate
+        // never bills; a fee unit says whether the fee was incurred and is no usage), one line per
+        // class, summed with checked addition. Nothing here names a rate.
+        let last = self
+            .money
+            .map(|m| m.last_counts(ctx.key))
+            .unwrap_or_default();
+        let mut by_class: BTreeMap<u32, u64> = BTreeMap::new();
+        for u in last.iter().filter(|u| units_bill(u.source)) {
+            if self.facts.fee_units.contains(&u.class) {
+                continue;
+            }
+            let n = by_class.entry(u.class).or_insert(0);
+            match n.checked_add(u.amount) {
+                Some(sum) => *n = sum,
+                None => return Err(Refusal::new(ReasonCode::Unpriced)),
+            }
+        }
+        let lines: Vec<UsageLine> = by_class
+            .into_iter()
+            .filter(|(_, quantity)| *quantity > 0)
+            .filter_map(|(class, quantity)| {
+                let class = *self.facts.meter_classes.get(class as usize)?;
+                Some(UsageLine {
+                    class,
+                    quantity,
+                    // The figure the plane reported, written as it was told.
+                    source: QuantitySource::Count,
+                    estimated: false,
+                })
+            })
+            .collect();
+        busbar_contract::caps::Usage::report(usage, lines)
+            .map_err(|_| Refusal::new(ReasonCode::Unpriced))
+    }
+
+    fn audit(&self, _ctx: &UnitCtx, outcome: &Outcome) -> busbar_contract::AuditFacts {
+        let (op, (streamed, cut)) = {
+            let u = self.lock();
+            (u.op.unwrap_or(self.facts.audit_kind), u.answered)
+        };
+        facts(op, outcome, streamed, cut)
+    }
+
+    fn audit_refused(&self, _ctx: &UnitCtx, refusal: &Refusal) -> busbar_contract::AuditFacts {
+        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
+        let step = refusal
+            .step()
+            .unwrap_or(busbar_contract::caps::StepName::Admit);
+        facts(op, &Outcome::Refused(step, refusal.reason()), false, false)
+    }
+
     fn pool_holds(&self, pool: &[u8], member: &str) -> bool {
         std::str::from_utf8(pool)
             .ok()
@@ -990,7 +1282,9 @@ impl DriverSteps for DoorSteps<'_> {
                 .map(|p| String::from_utf8_lossy(p).into_owned())
         });
         let ingress = self.facts.dialects.get(decoded.dialect as usize);
+        // 1.5.5's target: `forward` was a `#[tracing::instrument]` in `proxy::engine`.
         let span = tracing::span!(
+            target: "busbar::proxy::engine",
             busbar_kernel::observability::HOTPATH_LEVEL,
             "forward",
             pool = tracing::field::Empty,
@@ -1071,352 +1365,6 @@ impl DriverSteps for DoorSteps<'_> {
 
     fn affinity(&self, _ctx: &UnitCtx, hash: u64) {
         self.lock().affinity = Some(hash);
-    }
-}
-
-impl Units for DoorSteps<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        SeatVerdict::proceed(
-            token,
-            busbar_contract::ArrivalRecord {
-                source: String::new(),
-                port: 0,
-                alpn: None,
-                sni: None,
-                peer_cert: None,
-                transport_chain: Vec::new(),
-            },
-        )
-    }
-
-    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        // The plane driver's own seat (`arrive`): never reached through these steps.
-        SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        match admission(self.key.as_ref(), self.open) {
-            Admission::Refused => {
-                SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
-            }
-            Admission::Keyed | Admission::Anonymous => {
-                // The unit's verified principal, on the host's unit records for its life: a host
-                // service called inside its crossings answers for it.
-                if let Some(records) = &self.records {
-                    records.admitted(
-                        ctx.key.get(),
-                        busbar_kernel::host_units::UnitRecord {
-                            principal: self.key.clone(),
-                            depth: self.depth,
-                        },
-                    );
-                    if let Some(credential) = &self.credential {
-                        records.lend(ctx.key.get(), credential.clone());
-                    }
-                    // What admitted the unit, for `ticket.take`: a ticket's record, or a key.
-                    records.ticketed(ctx.key.get(), self.ticket.clone());
-                    self.lock().recorded = Some(ctx.key.get());
-                }
-                SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
-            }
-        }
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        _ctx: &UnitCtx,
-        _principal: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        // A UNIT ROUTED BY SCOPE (ROUTE_SCOPE, the ARCHITECT scope-select ruling: scope seals the
-        // destinations): the one entry the principal's grant of the plane's scope kind reaches is
-        // its route, directly; zero or several seal nothing and it is refused at admission, the
-        // several named in its refusal's words.
-        let named_scope = match &self.lock().named {
-            Some((class @ (ROUTE_SCOPE | ROUTE_SCOPE_LOCAL), candidates)) => {
-                Some((*class, candidates.clone()))
-            }
-            _ => None,
-        };
-        if let Some((class, candidates)) = named_scope {
-            // The plane's candidates (the entries that would serve the unit, ARCHITECT
-            // Q-DEL-A2A-SCOPE-TRUST); none named = every entry.
-            let candidates: Option<Vec<String>> = candidates.map(|c| {
-                String::from_utf8_lossy(&c)
-                    .split(ROUTE_SCOPE_SEPARATOR)
-                    .filter(|e| !e.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            });
-            let reachable: Vec<String> = self
-                .pools
-                .entries()
-                .iter()
-                .filter(|entry| candidates.as_ref().is_none_or(|c| c.contains(entry)))
-                .filter(|entry| {
-                    self.pools.granted(
-                        self.facts.scope_kind.as_deref(),
-                        self.key.as_deref(),
-                        ROUTE_DIRECT,
-                        Some(entry.as_bytes()),
-                    )
-                })
-                .cloned()
-                .collect();
-            let mut u = self.lock();
-            match reachable.as_slice() {
-                // A UNIT THE PLANE ANSWERS AT THE ONE ENTRY (ROUTE_SCOPE_LOCAL, COORDINATOR ruling
-                // 2026-10-07): resolved as a scope's, and routed nowhere (no pool, no breaker, no
-                // egress), as predev answered its local verbs at the agent `select` chose before
-                // any pool was read (receive.rs:1257-1279, :1559-1593, before `pool_of` :1839).
-                [one] if class == ROUTE_SCOPE_LOCAL => {
-                    u.resolved = Some(one.clone());
-                    u.scope_entry = Some(one.clone());
-                }
-                // The one entry, routed as an addressed unit naming it is: over the pool of
-                // members each admitted on their own grant that it is a member of, else directly
-                // (predev's unaddressed request reached the same pool walk as an addressed one,
-                // receive.rs:1262-1268 converging at :1839 and :1916).
-                [one] => {
-                    u.scope_entry = Some(one.clone());
-                    u.named = Some(match self.pools.member_pool(one) {
-                        Some(pool) => (ROUTE_POOL, Some(pool.as_bytes().to_vec())),
-                        None => (ROUTE_DIRECT, Some(one.as_bytes().to_vec())),
-                    });
-                }
-                [] => {}
-                _ => u.reachable = reachable,
-            }
-        }
-        // An unknown route seals nothing and is refused at admission, after its grant was judged
-        // (1.5.5's order); the empty set is an answer at this step.
-        let named = self.lock().named.clone();
-        // THE PLANE SERVING THE `pools` MAP judges the route as named with the previous release's
-        // destination guard (`busbar_kernel::door::destination_guard`): the key's pool grant, its
-        // fallback pools' grants, then a rate card's coverage of the name, refused in 1.5.5's words.
-        if self.facts.plane.is_empty() {
-            if let Some(name) = named
-                .as_ref()
-                .and_then(|(_, n)| n.as_deref())
-                .and_then(|n| std::str::from_utf8(n).ok())
-            {
-                let view = DoorPoolView {
-                    pools: self.pools,
-                    key: self.key.as_deref(),
-                    app: &self.app,
-                };
-                if let Err(refusal) = busbar_kernel::door::destination_guard(&view, name) {
-                    self.lock().refused.1 = Some(refusal.message());
-                    return SeatVerdict::refuse(token, Refusal::new(refusal.reason()));
-                }
-            }
-        }
-        let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
-        let sealed: Vec<VerifiedDestination> = routed
-            .iter()
-            .flat_map(|(_, members)| members)
-            .filter_map(|member| (self.lanes)(&plane_lane(&self.facts.plane, member)))
-            .map(|lane| VerifiedDestination::seal(trust, lane))
-            .collect();
-        self.lock().routed = routed;
-        SeatVerdict::proceed(token, sealed)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        _ctx: &UnitCtx,
-        _principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
-        let counterparty = self.lock().counterparty.clone();
-        // A unit routed by scope that no one entry reached names its candidates, not a route: the
-        // grant was the resolution itself, and admission refuses it (no destination).
-        if class == ROUTE_SCOPE
-            || class == ROUTE_SCOPE_LOCAL
-            || self.pools.granted_to(
-                self.facts.scope_kind.as_deref(),
-                self.key.as_deref(),
-                (class, named.as_deref()),
-                counterparty.as_deref(),
-            )
-        {
-            SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
-        } else {
-            SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied))
-        }
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
-        _leases: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
-        // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
-        // is audited as every unit is.
-        // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
-        // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
-        // own ask round before it was asked; 05e053183a). So is one the plane answers
-        // AS AN ADMITTED CALL (ROUTE_COUNTED): a keyed one passes the one check-then-charge on the
-        // plane's pool, counting its request (R2, 1.5.5's rule), and keeps only the fee units the
-        // plane reports.
-        let (local, counted, estimated) = {
-            let u = self.lock();
-            let local = u
-                .named
-                .as_ref()
-                .is_some_and(|(class, _)| *class == ROUTE_LOCAL || *class == ROUTE_SCOPE_LOCAL);
-            (local, local && u.counted, !u.expected.is_empty())
-        };
-        // A UNIT ROUTED BY SCOPE that no one entry reached (the scope-select ruling): refused before
-        // anything is charged, as 1.5.5 chose the agent before its admission.
-        let unrouted_scope = {
-            let u = self.lock();
-            u.named.as_ref().is_some_and(|(class, _)| {
-                *class == ROUTE_SCOPE || (*class == ROUTE_SCOPE_LOCAL && u.resolved.is_none())
-            })
-        };
-        if unrouted_scope && !matches!(admission(self.key.as_ref(), self.open), Admission::Refused)
-        {
-            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
-        }
-        match admission(self.key.as_ref(), self.open) {
-            Admission::Refused => {
-                return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
-            }
-            Admission::Keyed if !local || counted || estimated => {
-                if let Some(key) = self.key.clone() {
-                    if let Err(refusal) = self.charge(ctx, &key) {
-                        self.lock().refused.0 = refusal.retry_after_secs();
-                        return SeatVerdict::refuse(token, refusal);
-                    }
-                }
-            }
-            Admission::Keyed | Admission::Anonymous => {}
-        }
-        // A route its section does not hold: refused here, after its grant and its charge (1.5.5's
-        // order); the charge is refunded at the unit's end.
-        if !local && self.lock().routed.is_none() {
-            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
-        }
-        // The door reserves nothing: the unit's hold opens at zero and the money steps ledger what
-        // the plane reported, at its end. A NESTED unit accrues against its parent's admission
-        // instead (zero at admission, ARCHITECT H3): one admission chain, its posting into the
-        // parent's hold. A parent that already exited, or any refusal of the accrual, leaves the
-        // child its own zero hold: it posts on its own.
-        if let Some(cell) = self.parent {
-            if let Ok(accrual) = cell.accrue_child(principal, 0, admit) {
-                return SeatVerdict::proceed(
-                    token,
-                    busbar_contract::caps::Admission::Accrual(accrual),
-                );
-            }
-        }
-        SeatVerdict::proceed(
-            token,
-            busbar_kernel::door::admitted_at_zero(admit, principal.clone()),
-        )
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        _ctx: &UnitCtx,
-        _destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        // The plane driver's own seat (the route pump): never reached through these steps.
-        SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        _provisional: &Outcome,
-        _destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        // What the unit consumed: the plane's last far-end-reported cumulative counts (an estimate
-        // never bills; a fee unit says whether the fee was incurred and is no usage), one line per
-        // class, summed with checked addition. Nothing here names a rate.
-        let last = self
-            .money
-            .map(|m| m.last_counts(ctx.key))
-            .unwrap_or_default();
-        let mut by_class: BTreeMap<u32, u64> = BTreeMap::new();
-        for u in last.iter().filter(|u| units_bill(u.source)) {
-            if self.facts.fee_units.contains(&u.class) {
-                continue;
-            }
-            let n = by_class.entry(u.class).or_insert(0);
-            match n.checked_add(u.amount) {
-                Some(sum) => *n = sum,
-                None => return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unpriced)),
-            }
-        }
-        let lines: Vec<UsageLine> = by_class
-            .into_iter()
-            .filter(|(_, quantity)| *quantity > 0)
-            .filter_map(|(class, quantity)| {
-                let class = *self.facts.meter_classes.get(class as usize)?;
-                Some(UsageLine {
-                    class,
-                    quantity,
-                    // The figure the plane reported, written as it was told.
-                    source: QuantitySource::Count,
-                    estimated: false,
-                })
-            })
-            .collect();
-        match busbar_contract::caps::Usage::report(usage, lines) {
-            Ok(report) => SeatVerdict::proceed(token, report),
-            Err(_) => SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unpriced)),
-        }
-    }
-
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        let (op, (streamed, cut)) = {
-            let u = self.lock();
-            (u.op.unwrap_or(self.facts.audit_kind), u.answered)
-        };
-        SeatVerdict::proceed(token, facts(op, outcome, streamed, cut))
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        _ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> SeatVerdict<Audit> {
-        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
-        let step = refusal
-            .step()
-            .unwrap_or(busbar_contract::caps::StepName::Admit);
-        SeatVerdict::proceed(
-            token,
-            facts(op, &Outcome::Refused(step, refusal.reason()), false, false),
-        )
-    }
-
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> SeatVerdict<Encode> {
-        // The plane driver's own seat (the plane renders): never reached through these steps.
-        SeatVerdict::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
-    }
-
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
-        Evidence::default()
     }
 }
 
@@ -1957,7 +1905,11 @@ pub fn kernel_sections(
         let mut m = p.table.clone();
         opt(&mut m, "path", p.path.as_ref().map(|v| json!(v)));
         opt(&mut m, "path_base", p.path_base.as_ref().map(|v| json!(v)));
-        opt(&mut m, "auth", p.auth.map(style_word).map(|v| json!(v)));
+        opt(
+            &mut m,
+            "auth",
+            p.auth.as_ref().map(style_word).map(|v| json!(v)),
+        );
         providers.insert(name.clone(), Value::Object(m));
     }
     let mut models = Map::new();
@@ -2124,15 +2076,41 @@ impl StyleParams {
     }
 }
 
-/// The `auth:` spelling of a provider's style override, as config writes it.
-fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
-    use busbar_kernel::config::ProviderAuth as Style;
-    match auth {
-        Style::Bearer => "bearer",
-        Style::ApiKey => "api-key",
-        Style::JwtBearer => "jwt-bearer",
-        Style::OAuthClientCredentials => "oauth-client-credentials",
-    }
+/// The `auth:` spelling of a provider's style override, as config writes it: the opaque word a
+/// loaded auth plugin declares (arch-audit u29 F1).
+fn style_word(auth: &busbar_kernel::config::ProviderAuth) -> &str {
+    auth.as_str()
+}
+
+/// THE OUTBOUND STYLES this process's auth plugins declare, as a provider's `auth:` may name them
+/// (BUSBAR-1.6.0.md #50; arch-audit u29 F1): every linked auth row's styles, read off its door's
+/// `'static` Statement, then every auth row dropped into the configured `plugins.dir`
+/// (`root::boot::dropped_registry`), read off its signed Statement rendering, in the host's one
+/// listing order (`busbar_contract::auth_calls::listed_styles`), each with its declared flags.
+/// Nothing is bound or opened (Law 7); a row whose Statement a bind refuses declares none here (its
+/// load refuses it where it is used). The kernel reads it before the configuration is parsed
+/// (`busbar_kernel::preflight::install_declared_styles`).
+#[must_use]
+pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    use crate::root::loader::dispatch::kinds::auth::{rendered_facts, stated_facts};
+    let linked = crate::LINKED
+        .auths
+        .iter()
+        .filter_map(|(_, _, door)| stated_facts(*door).ok())
+        .flat_map(|facts| facts.styles);
+    let dropped = crate::root::boot::dropped_registry()
+        .map_or(&[][..], |r| r.loadable())
+        .iter()
+        .filter(|r| r.manifest.kind == "auth")
+        .filter_map(|r| r.manifest.stated_rendering().ok().flatten())
+        .filter_map(|stated| rendered_facts(&stated).ok())
+        .flat_map(|facts| facts.styles);
+    busbar_contract::auth_calls::listed_styles(linked.chain(dropped).map(|s| {
+        busbar_contract::auth_calls::DeclaredStyle {
+            name: s.name,
+            flags: s.flags,
+        }
+    }))
 }
 
 /// TRANSITIONAL (row 155 B1b; drains at B1c, where the plane states the default auth style its
@@ -2190,7 +2168,7 @@ pub fn provider_routes(
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     credential: p.api_key.clone(),
-                    style: p.auth.map(|a| style_word(a).to_string()),
+                    style: p.auth.as_ref().map(|a| style_word(a).to_string()),
                     params: StyleParams {
                         token_url: p.token_url.clone(),
                         token_uri: None,
@@ -2395,6 +2373,16 @@ impl OutboundAuths {
                 .ok()
             }
         }
+    }
+
+    /// THE FLAGS `style` IS DECLARED WITH by the row that serves it: the first row stating it, the
+    /// one [`Self::serving`] binds (`abi::auth::STYLE_*`). `None` when no row states it.
+    #[must_use]
+    pub fn style_flags(&self, style: &str) -> Option<u32> {
+        self.stating(style)
+            .next()
+            .and_then(|row| row.styles.iter().find(|s| s.name == style))
+            .map(|s| s.flags)
     }
 
     /// The rows stating the outbound `style`, in the order a serving tries them: the linked rows
@@ -2678,7 +2666,7 @@ impl busbar_contract::conn::Conns for PresentingConns {
             &busbar_contract::conn::OpenDesc {
                 target: &target,
                 fields,
-                ..*desc
+                ..desc.clone()
             },
         )
     }
@@ -3108,7 +3096,11 @@ fn token_exchange_binding(
             )
         })?;
     let handle = auth
-        .open_outbound(TOKEN_EXCHANGE_STYLE, &credential, &settings)
+        .open_outbound(
+            TOKEN_EXCHANGE_STYLE,
+            credential.expose(&busbar_kernel::seal::lend()),
+            &settings,
+        )
         .map_err(|e| format!("member '{entry}' {e}"))?;
     Ok(Some(busbar_kernel::plane_driver::AuthBinding {
         auth,
@@ -3224,18 +3216,17 @@ fn upstream_credential(
             )
         })?;
     let settings = placement_settings(header.as_deref());
-    let credential = busbar_contract::redacted::Secret::new(
-        reach
-            .secrets
-            .resolve_string_at_config(&secret, scope)
-            .map_err(|e| {
-                format!(
-                    "member '{member_name}': busbar's own upstream credential for it cannot \
-                     resolve: {e}"
-                )
-            })?
-            .into_bytes(),
-    );
+    // The text holder's bytes, moved (never copied) into the byte holder.
+    let credential = reach
+        .secrets
+        .resolve_string_at_config(&secret, scope)
+        .map_err(|e| {
+            format!(
+                "member '{member_name}': busbar's own upstream credential for it cannot \
+                 resolve: {e}"
+            )
+        })?
+        .into_bytes();
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
             "member '{member_name}': no linked or dropped-in auth plugin serves the style \
@@ -3334,7 +3325,7 @@ impl PerHop {
             self.held.store(None);
             return;
         };
-        let value = busbar_contract::redacted::Secret::new(value.into_bytes());
+        let value = value.into_bytes();
         // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
         let seal = busbar_kernel::seal::lend();
         let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
@@ -3835,25 +3826,42 @@ pub fn member_routes(
     }
     for r in resolved {
         let credential = if r.provider.credential.is_none() {
-            Vec::new()
+            busbar_kernel::config::secret::Held::default()
         } else {
             reach
                 .secrets
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
-        // A service-account credential naming its key file is read here, at configuration time,
-        // through the secret kind's file source: the serving plugin is handed the JSON and opens no
-        // file (Q128 audit ruling (a)).
-        let credential = if r.style == SERVICE_ACCOUNT_STYLE {
-            busbar_kernel::config_validate::service_account_json(credential, |file| {
-                reach.secrets.resolve_at_config(file, scope)
-            })
-            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", r.name))?
+        // A style that takes its token endpoint from its credential, as its serving row declares
+        // it (`STYLE_ENDPOINT_FROM_CREDENTIAL`), is handed the document the credential carries: a
+        // credential naming its key file is read here, at configuration time, through the secret
+        // kind's file source, so the serving plugin opens no file (Q128 audit ruling (a)). Any other
+        // style's credential is handed on unread, whatever its name (arch-audit u29 F1).
+        let from_credential = reach.auths.style_flags(&r.style).is_some_and(|flags| {
+            flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
+        });
+        let seal = busbar_kernel::seal::lend();
+        let credential = if from_credential {
+            // OWED (row 7): `service_account_json` takes and answers plain bytes.
+            busbar_contract::redacted::Secret::new(
+                busbar_kernel::config_validate::service_account_json(
+                    credential.expose(&seal).clone(),
+                    |file| {
+                        reach
+                            .secrets
+                            .resolve_at_config(file, scope)
+                            .map(|held| held.expose(&seal).clone())
+                    },
+                )
+                .map_err(|e| format!("provider '{}' ({} auth): {e}", r.name, r.style))?,
+            )
         } else {
             credential
         };
-        let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
+        let credential = credential.expose(&seal);
+        let settings =
+            sealed_params(&r.name, &r.style, from_credential, r.provider, credential)?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
@@ -3863,7 +3871,7 @@ pub fn member_routes(
         let settings = sealed_settings(r.params, &r.provider.base_url, &settings)
             .map_err(|e| format!("member '{}': {e}", r.entry))?;
         let handle = auth
-            .open_outbound(&r.style, &credential, &settings)
+            .open_outbound(&r.style, credential, &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
         // EVERY need its style names is bound (ARCHITECT Q-L5B-NEEDS): the first is its own, the
         // rest ride beside it, each opened when a far request names it.
@@ -4008,15 +4016,13 @@ fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
     })
 }
 
-/// The `auth:` style whose credential names its own token endpoint: a service account's
-/// `token_uri` (RFC 7523; `jwt-bearer`, 1.5.5's `egress_auth/jwt_bearer.rs`).
-const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
-
 /// THE PARAMETERS PROVIDER `name`'s STYLE IS OPENED WITH AT THE SEAL: those it states, and, for
-/// a service-account credential, its `token_uri` — the target of the serving plugin's mint need —
-/// judged under the provider's metadata posture with 1.5.5's check and words (v1.5.5 `main.rs`:
-/// `provider '<p>' (jwt-bearer auth): <why>`). A credential that is no service account to read
-/// fills nothing: the serving plugin refuses it in its own words at `open_outbound`.
+/// a style that takes its token endpoint from its credential (`from_credential`: its serving row
+/// declares `STYLE_ENDPOINT_FROM_CREDENTIAL`), the `token_uri` the credential names — the target of
+/// the serving plugin's mint need — judged under the provider's metadata posture with 1.5.5's check
+/// and words (v1.5.5 `main.rs`: `provider '<p>' (jwt-bearer auth): <why>`, the style's own word).
+/// A credential that is no service account to read fills nothing: the serving plugin refuses it in
+/// its own words at `open_outbound`.
 ///
 /// # Errors
 ///
@@ -4024,11 +4030,12 @@ const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
 fn sealed_params(
     name: &str,
     style: &str,
+    from_credential: bool,
     provider: &ProviderRoute,
     credential: &[u8],
 ) -> Result<StyleParams, String> {
     let mut params = provider.params.clone();
-    if style != SERVICE_ACCOUNT_STYLE || credential.is_empty() {
+    if !from_credential || credential.is_empty() {
         return Ok(params);
     }
     let Ok(text) = std::str::from_utf8(credential) else {
@@ -4038,7 +4045,7 @@ fn sealed_params(
         return Ok(params);
     };
     busbar_kernel::config_validate::vet_token_uri(&token_uri, &provider.metadata)
-        .map_err(|e| format!("provider '{name}' (jwt-bearer auth): {e}"))?;
+        .map_err(|e| format!("provider '{name}' ({style} auth): {e}"))?;
     params.token_uri = Some(token_uri);
     Ok(params)
 }
