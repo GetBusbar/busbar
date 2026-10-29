@@ -165,7 +165,7 @@ fn declared_references_are_the_references_a_path_names() {
 fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
     let mut ok =
-        json!({"dsn": {"env": "PG"}, "servers": {"a": {"env": {"K": {"env": "K"}, "L": "lit"}}}});
+        json!({"dsn": {"env": "PG"}, "servers": {"a": {"env": {"K": {"env": "K"}}, "cmd": "lit"}}});
     crate::secret_fields::resolve_declared(
         &mut ok,
         &paths(&["dsn", "servers.*.env.*"]),
@@ -183,9 +183,57 @@ fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest()
             .is_some_and(|s| s.starts_with("R:")),
         "{ok}"
     );
-    assert_eq!(ok["servers"]["a"]["env"]["L"], json!("lit"));
+    assert_eq!(ok["servers"]["a"]["cmd"], json!("lit"));
     let mut bad = json!({"base": {"env": "B"}});
     let e = crate::secret_fields::resolve_declared(&mut bad, &paths(&["dsn"]), "acme", resolve)
         .expect_err("undeclared");
     assert!(e.contains("settings.base") && e.contains("'acme'"), "{e}");
+}
+
+/// As the kernel resolves (lead ruling item 7b): a literal at a declared path is refused, at an
+/// EXACT path and at a WILDCARD path alike, naming the position and the plugin and never the value.
+/// An unset (`null`) declared position is not a literal.
+#[test]
+fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() {
+    let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
+    for (mut tree, at) in [
+        (
+            json!({"dsn": "postgres://u:pasted-7b@db/x"}),
+            "settings.dsn",
+        ),
+        (
+            json!({"servers": {"a": {"env": {"K": "pasted-7b"}}}}),
+            "settings.servers.a.env.K",
+        ),
+        (
+            json!({"servers": {"a": {"env": {"K": {"literal": "pasted-7b"}}}}}),
+            "settings.servers.a.env.K",
+        ),
+    ] {
+        let Err(e) = crate::secret_fields::resolve_declared(
+            &mut tree,
+            &paths(&["dsn", "servers.*.env.*"]),
+            "acme",
+            resolve,
+        ) else {
+            panic!("a literal at {at} refuses");
+        };
+        assert!(
+            e.starts_with(&format!("{at}: ")) && e.contains("'acme'"),
+            "{e}"
+        );
+        assert!(
+            e.contains("a secret value must be a REFERENCE, never an inline literal"),
+            "{e}"
+        );
+        assert!(!e.contains("pasted-7b"), "the value is echoed: {e}");
+    }
+    let mut unset = json!({"dsn": null, "servers": {"a": {"env": {"K": null}}}});
+    crate::secret_fields::resolve_declared(
+        &mut unset,
+        &paths(&["dsn", "servers.*.env.*"]),
+        "acme",
+        resolve,
+    )
+    .expect("an unset declared position is not a literal");
 }
