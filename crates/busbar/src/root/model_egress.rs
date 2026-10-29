@@ -278,11 +278,17 @@ impl std::fmt::Debug for ModelServing {
 const LATENCY_RESERVOIR_LEN: usize = 128;
 
 /// ONE LANE'S P95 LATENCY RESERVOIR (1.5.5's `LatencyReservoir`, moved verbatim): a ring of the
-/// last [`LATENCY_RESERVOIR_LEN`] samples in microseconds, written lock-free.
+/// last [`LATENCY_RESERVOIR_LEN`] samples in microseconds, written lock-free. The p95 is computed
+/// once per new sample, not once per read: the ranking hooks read it per member per request.
 #[derive(Debug)]
 pub struct LatencyReservoir {
     cursor: std::sync::atomic::AtomicUsize,
     samples: [std::sync::atomic::AtomicU32; LATENCY_RESERVOIR_LEN],
+    /// Bumped after each sample lands: the generation a cached p95 is tagged with.
+    written: std::sync::atomic::AtomicU32,
+    /// The last p95 computed: its `written` generation in the high half, the value + 1 in the low
+    /// half (`0` = no sample held). Generation 0 holds no sample, so the initial `0` is exact.
+    p95: std::sync::atomic::AtomicU64,
 }
 
 impl Default for LatencyReservoir {
@@ -290,6 +296,8 @@ impl Default for LatencyReservoir {
         Self {
             cursor: std::sync::atomic::AtomicUsize::new(0),
             samples: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
+            written: std::sync::atomic::AtomicU32::new(0),
+            p95: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -306,24 +314,42 @@ impl LatencyReservoir {
         let us = ((latency_ms * 1000.0).round() as u32).max(1);
         let slot = self.cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RESERVOIR_LEN;
         self.samples[slot].store(us, Ordering::Relaxed);
+        self.written.fetch_add(1, Ordering::Release);
     }
 
     /// The nearest-rank 95th percentile of the held samples, in whole milliseconds rounded UP;
-    /// `None` while the ring holds no sample.
+    /// `None` while the ring holds no sample. Answered from the cache while no sample has landed
+    /// since it was computed; a sample landing mid-compute moves `written` past the tag, so the
+    /// next read computes again.
     #[must_use]
+    // The cache's two halves are 32-bit by construction.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn p95_ms(&self) -> Option<u64> {
-        let mut held: Vec<u32> = self
-            .samples
-            .iter()
-            .map(|s| s.load(std::sync::atomic::Ordering::Relaxed))
-            .filter(|v| *v != 0)
-            .collect();
-        if held.is_empty() {
-            return None;
+        use std::sync::atomic::Ordering;
+        let generation = self.written.load(Ordering::Acquire);
+        let cached = self.p95.load(Ordering::Relaxed);
+        if (cached >> 32) as u32 == generation {
+            return (cached as u32).checked_sub(1).map(u64::from);
         }
-        held.sort_unstable();
-        let rank = (held.len() * 95).div_ceil(100);
-        Some(u64::from(held[rank - 1]).div_ceil(1000))
+        let mut held = [0u32; LATENCY_RESERVOIR_LEN];
+        let mut n = 0;
+        for s in &self.samples {
+            let v = s.load(Ordering::Relaxed);
+            if v != 0 {
+                held[n] = v;
+                n += 1;
+            }
+        }
+        let p95 = (n > 0).then(|| {
+            let held = &mut held[..n];
+            held.sort_unstable();
+            held[(n * 95).div_ceil(100) - 1].div_ceil(1000)
+        });
+        self.p95.store(
+            (u64::from(generation) << 32) | u64::from(p95.map_or(0, |v| v + 1)),
+            Ordering::Relaxed,
+        );
+        p95.map(u64::from)
     }
 }
 
