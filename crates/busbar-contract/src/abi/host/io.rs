@@ -28,7 +28,12 @@
 //!   shell — and answers ONE duplex handle: READ is its output, WRITE its input, SHUT of
 //!   [`DIR_WRITE`] closes its input. Its error output is the host's. The host spawns only the
 //!   program it ADMITTED for the dial that asked.
-//! * [`op::ENDS`] answers a handle's local port (`value`) and writes its far end's address.
+//! * [`op::ENDS`] answers a handle's local port (`value`) and writes its far end's address. On a
+//!   spawned program's handle it answers the program's OWN exit, read without waiting:
+//!   `ServiceOut::exited` is `1` once the program has exited and `value` is then its exit code
+//!   (`128` plus the signal for one a signal ended); `exited` is `0` while it runs. A descendant
+//!   still holding the program's output keeps the pipe open, so this, not the pipe's end, is where a
+//!   carrier sees the program end.
 //!
 //! THE HOST CLOSES WHAT AN INSTANCE LEAVES. Once an instance can never cross again (let go after
 //! its `close`, quarantined, or faulted), the host releases every handle it still holds, as

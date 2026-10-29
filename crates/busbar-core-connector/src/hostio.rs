@@ -34,7 +34,7 @@ use arc_swap::ArcSwapOption;
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
-use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
+use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
@@ -749,23 +749,44 @@ impl IoHost for HostIo {
         Ok(id)
     }
 
-    fn ends(&self, owner: u64, id: u64) -> IoResult<(u16, String)> {
+    fn ends(&self, owner: u64, id: u64) -> IoResult<Ends> {
         let e = self.entry(owner, id)?;
         match &e.kind {
             Kind::Stream { sock, .. } => match sock.get_ref() {
-                Sock::Tcp(s) => {
-                    let local = s.local_addr().map_err(|err| failed(&err))?.port();
-                    let peer = s.peer_addr().map_err(|err| failed(&err))?.to_string();
-                    Ok((local, peer))
-                }
-                Sock::Unix(_) => Ok((0, String::new())),
+                Sock::Tcp(s) => Ok(Ends {
+                    port: s.local_addr().map_err(|err| failed(&err))?.port(),
+                    peer: s.peer_addr().map_err(|err| failed(&err))?.to_string(),
+                    exit: None,
+                }),
+                Sock::Unix(_) => Ok(Ends::default()),
             },
-            Kind::Listener(l) => Ok((
-                l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
-                String::new(),
-            )),
-            Kind::Program(_) => Ok((0, String::new())),
+            Kind::Listener(l) => Ok(Ends {
+                port: l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
+                ..Ends::default()
+            }),
+            // The program ITSELF, without waiting: a descendant still holding its output keeps the
+            // pipe open, so its exit is read here, never from the pipe's end.
+            Kind::Program(p) => Ok(Ends {
+                exit: p
+                    .child
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .try_wait()
+                    .map_err(|err| failed(&err))?
+                    .map(exit_code),
+                ..Ends::default()
+            }),
         }
+    }
+}
+
+/// A program's exit as `io.ends` answers it: its code, or `128` plus the signal that ended it.
+fn exit_code(status: std::process::ExitStatus) -> u32 {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(code), _) => code as u32,
+        (None, Some(signal)) => 128 + signal as u32,
+        (None, None) => 0,
     }
 }
 

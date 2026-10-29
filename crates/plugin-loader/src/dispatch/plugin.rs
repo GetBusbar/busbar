@@ -135,6 +135,11 @@ pub trait EnvelopeSink: Send + Sync {
     fn diag(&self, d: Diagnostic<'_>);
     /// An entry the host dropped.
     fn dropped(&self, why: Dropped);
+    /// A refusal the host made while the instance labelled `instance` bound
+    /// ([`crate::observe::BindRefusal`]). The observer that stands before every door's sink
+    /// ([`crate::observe::EnvelopeObserver`]) hands it to the host's audit; a binder's own sink,
+    /// behind it, has nothing to do with it.
+    fn refused(&self, _instance: &str, _refusal: crate::observe::BindRefusal<'_>) {}
 }
 
 /// The sink that discards everything.
@@ -795,7 +800,8 @@ impl Instance {
             // program per member, and a re-declaration retires a member that changed or is gone.
             if busbar_contract::section::member_program(&need.target_from) {
                 let programs = doc.as_ref().map(member_programs).unwrap_or_default();
-                let _ = table.declare_member_programs(*instance, id, need, &programs);
+                let answer = table.declare_member_programs(*instance, id, need, &programs);
+                self.need_refused(id, answer.map_err(crate::observe::conn_reason));
                 continue;
             }
             // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
@@ -803,10 +809,15 @@ impl Instance {
             // with no target, which the table refuses.
             let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
             if let Some(value) = at.filter(|v| v.is_object()) {
-                let _ = match busbar_contract::conn::Program::from_settings(value) {
-                    Ok(program) => table.declare_program(*instance, id, need, &program),
-                    Err(_) => table.declare(*instance, id, need, None, None),
+                let answer = match busbar_contract::conn::Program::from_settings(value) {
+                    Ok(program) => table
+                        .declare_program(*instance, id, need, &program)
+                        .map_err(crate::observe::conn_reason),
+                    Err(_) => table
+                        .declare(*instance, id, need, None, None)
+                        .map_err(|_| "program_malformed"),
                 };
+                self.need_refused(id, answer);
                 continue;
             }
             let target = doc
@@ -818,7 +829,67 @@ impl Instance {
                     .as_ref()
                     .and_then(|d| resolve_setting(d, &need.trust_from)),
             };
-            let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
+            // A target its path does not resolve to is refused for that, whatever else holds.
+            let unresolved = target.is_none()
+                && !need.target_from.is_empty()
+                && busbar_contract::section::member_target(&need.target_from).is_none();
+            let answer = table
+                .declare(*instance, id, need, target.as_deref(), trust.as_deref())
+                .map_err(|e| {
+                    if unresolved {
+                        "target_unresolved"
+                    } else {
+                        crate::observe::conn_reason(e)
+                    }
+                });
+            self.need_refused(id, answer);
+        }
+    }
+
+    /// AUDITED ON THE PLUGIN'S BEHALF: the table's refusal of `need`, declared at `open` or
+    /// `refresh`, handed to the host's audit under the instance's label. The verdict itself is the
+    /// table's to keep (`need.admit` reads it); the plugin still learns it there.
+    fn need_refused(&self, need: NeedId, answer: Result<(), &'static str>) {
+        if let Err(reason) = answer {
+            self.refused(crate::observe::BindRefusal::Need {
+                need: need.0,
+                reason,
+            });
+        }
+    }
+
+    /// A refusal the host made while this instance bound, handed to its sink under the label the
+    /// host bound it as (its plugin name before a label is set).
+    fn refused(&self, refusal: crate::observe::BindRefusal<'_>) {
+        let label = self
+            .wake
+            .caller
+            .get()
+            .map_or(self.name.as_str(), |c| &*c.instance);
+        self.sink.refused(label, refusal);
+    }
+
+    /// AUDITED ON THE PLUGIN'S BEHALF: each diagnostic its Statement declares that an `open` or
+    /// `refresh` answered at warn or error. A log line (`DIAG_LOG`) is a log, not a declaration: it
+    /// goes to the plugin's own file alone.
+    fn open_flagged(&self, head: &OutHead) {
+        let env = head.envelope;
+        // SAFETY: as `ingest`, which read the same arrays on this crossing.
+        let Some(diags) = (unsafe { array(env.diags, env.diags_len) }) else {
+            return;
+        };
+        for d in diags {
+            if !matches!(
+                d.severity,
+                busbar_contract::abi::mechanism::call::SEVERITY_WARN | SEVERITY_ERROR
+            ) {
+                continue;
+            }
+            let Some(code) = self.diag_ids.name(d.id_idx) else {
+                continue;
+            };
+            let code = String::from_utf8_lossy(code);
+            self.refused(crate::observe::BindRefusal::Open { code: &code });
         }
     }
 
@@ -1233,6 +1304,9 @@ impl Instance {
             None
         };
         self.ingest(&head);
+        if s == slot::OPEN || s == slot::REFRESH {
+            self.open_flagged(&head);
+        }
         let error = match outcome {
             Outcome::Failed | Outcome::Refused => reason.or_else(|| copy_str(head.error)),
             _ => None,
@@ -1892,6 +1966,12 @@ impl<K: Kind> Plugin<K> {
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Called::from(Crossed::host(o));
         }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance)
+        // before anything is acquired or crossed.
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(s, frame.heads().0.cast_const(), size_of::<I>(), owner) {
+            return Called::from(Crossed::host(o));
+        }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));
@@ -1902,6 +1982,11 @@ impl<K: Kind> Plugin<K> {
             }
             return Called::from(Crossed::host(Outcome::Refused));
         };
+        // A new op on a real ticket starts a new epoch of its stored service results; a resume
+        // re-reads them (`super::services::new_op`).
+        if !ticket.is_none() && !resume {
+            super::services::new_op(inst.wake, ticket);
+        }
         let (i, o, out_size) = frame.heads();
         // SAFETY: the frame is ours for the call; its heads lead the structs.
         let crossed = inst.watched(s, || unsafe {
@@ -1910,11 +1995,7 @@ impl<K: Kind> Plugin<K> {
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
             head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
-            head.deadline_class = if ticket.is_none() {
-                DeadlineClass::Call as u8
-            } else {
-                DeadlineClass::Connection as u8
-            };
+            head.deadline_class = stamped_class::<K>(s, ticket) as u8;
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         });
@@ -1930,6 +2011,17 @@ impl<K: Kind> Plugin<K> {
             recall: token,
             ..Called::from(crossed)
         }
+    }
+}
+
+/// THE DEADLINE CLASS a crossing of `s` on `ticket` is stamped with: `Call` ticket-less (it may
+/// not pend); on a real ticket, the class the kind's contract states for the op
+/// ([`Kind::ticketed_class`]).
+pub(crate) fn stamped_class<K: Kind>(s: u32, ticket: Ticket) -> DeadlineClass {
+    if ticket.is_none() {
+        DeadlineClass::Call
+    } else {
+        K::ticketed_class(s)
     }
 }
 
