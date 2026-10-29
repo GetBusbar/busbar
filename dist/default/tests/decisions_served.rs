@@ -217,7 +217,13 @@ fn a_booted_busbar_serves_post_v1_systemone() {
         Some("{}"),
         Some(&token),
     );
-    let served = http_request(&data_addr, "POST", "/v1/systemone", Some(REQUEST), Some(&token));
+    let served = http_request(
+        &data_addr,
+        "POST",
+        "/v1/systemone",
+        Some(REQUEST),
+        Some(&token),
+    );
     let _ = Command::new("kill")
         .arg("-TERM")
         .arg(child.id().to_string())
