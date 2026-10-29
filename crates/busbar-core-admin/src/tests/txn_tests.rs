@@ -690,7 +690,7 @@ fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
         Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(delay);
-                Ok(b"resolved".to_vec())
+                Ok(busbar_contract::redacted::Secret::new(b"resolved".to_vec()))
             }),
         )),
     )

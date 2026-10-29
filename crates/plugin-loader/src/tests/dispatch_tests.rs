@@ -2300,6 +2300,48 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
     assert!(!p.is_open());
 }
 
+/// RED: a wake of a driver ticket that lands while a `tick` on it is scheduled but not yet crossed
+/// is owed to that tick's end, and runs `drive` then. Before the fix `end` cleared the latch
+/// before reading it, so the wake was dropped: a push delivery whose exchange woke the ticket
+/// behind a tick sat until its 60 s timeout (the a2a door's flaky "no delivery within a second").
+#[test]
+fn red_a_wake_behind_a_scheduled_tick_on_a_driver_ticket_still_drives() {
+    let d = Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            call: Duration::from_secs(30),
+            ..config().budgets
+        },
+        ..config()
+    });
+    let (p, sink) = opened(&d);
+    let (other, _s) = opened(&d);
+    let drv = d.driver(&p, 0).unwrap();
+    // Worker 0 is wedged in a crossing first: its runnable queue is FIFO, so the tick below
+    // cannot start before the wedge is released, and the wake is applied while it is scheduled.
+    let wedge = d.mint(0).unwrap();
+    let wedged = d.submit(
+        &other,
+        wedge,
+        TICK,
+        frame(b"hang:latched-wake"),
+        DeadlineClass::Call,
+        0,
+    );
+    let ticked = d.submit(&p, drv, TICK, frame(answer(1)), DeadlineClass::Call, 0);
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
+    assert_eq!(
+        p.call(TICK, &mut frame(b"unhang:latched-wake")).outcome,
+        Outcome::Ready
+    );
+    assert_eq!(wedged.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    assert_eq!(ticked.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    until("the wake owed behind the tick drives", || {
+        count(&p, &sink).2 >= 1
+    });
+    d.recycle(wedge);
+    d.recycle(drv);
+}
+
 #[test]
 fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
     let d = Dispatcher::new(config());
@@ -2651,6 +2693,7 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             statement: st,
             ops: std::ptr::null(),
             ready: None,
+            layout: KindCode::Transport.layout_fingerprint(),
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -2726,6 +2769,7 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
             statement: st,
             ops: std::ptr::null(),
             ready: None,
+            layout: KindCode::Plane.layout_fingerprint(),
         };
         crate::dispatch::load::statement(&door).map(|_| ())
     };
@@ -3012,7 +3056,10 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
     let latch = crate::dispatch::handle::Latch::new();
     assert!(crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some());
     std::thread::scope(|scope| {
-        let caller = scope.spawn(|| hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
+        let caller = scope.spawn(|| {
+            hung.call(TICK, &mut frame(b"hang:ticketless-revoke"))
+                .outcome
+        });
         until("the watchdog faults the ticket-less hang", || {
             hung.is_faulted()
         });
@@ -3023,7 +3070,7 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
         let releaser =
             load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
         assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
-        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless"));
+        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless-revoke"));
         let _ = caller.join();
     });
     assert_eq!(
@@ -3246,6 +3293,51 @@ fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
     );
     assert_eq!((latch.forged(), latch.unattributed()), (2, 0));
     drop(held);
+}
+
+/// RED (THE PLANE `serve` THAT DIALS): an op that must wait on an outbound dial answers PENDING
+/// (Ready|Pending(wake), BUSBAR-1.6.0.md line 1282); the dial's framing crosses the FRAMER on an
+/// inline ticket of its own, nested INSIDE the op's instance's crossing (its connection service
+/// drives the connector on its thread), and the framer's new op starts a new epoch of that ticket's
+/// stored results. That bookkeeping is the host's own: it blames neither instance, so the wake
+/// resumes the op and it answers READY. Before the fix the host resolved the framer's context as if
+/// a plugin had handed it inside the outer crossing: "another instance's handle", a forgery, and
+/// the outer instance was quarantined, so its resumed op answered FAULT.
+#[test]
+fn red_an_op_whose_dial_frames_inside_its_crossing_pends_and_resumes_ready() {
+    let d = Dispatcher::new(config());
+    let (plane, _) = opened(&d);
+    let (framer, _) = opened(&d);
+    let t = d.mint(0).expect("a ticket");
+    let serving = d.submit(
+        &plane,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the op waits on its dial", || d.is_pending(t));
+    // The dial is framed: the framer's `begin` on its own inline ticket, inside the op's crossing.
+    let side = d.inline_ticket().expect("an inline ticket");
+    let begun = crate::dispatch::plugin::with_crossing(Some(&*plane.inner), || {
+        framer.call_inline(side.ticket(), false, TICK, &mut frame(plug::COUNT))
+    });
+    assert_eq!(begun.outcome, Outcome::Ready, "the framing's begin");
+    assert!(
+        !plane.is_faulted(),
+        "the host's own framing of the dial quarantined the instance it was nested in"
+    );
+    assert!(!framer.is_faulted(), "the framer was quarantined");
+    // The dial completes: the wake resumes the op, which answers READY.
+    assert_eq!(
+        plane.call(TICK, &mut frame(plug::KICK)).outcome,
+        Outcome::Ready
+    );
+    let done = serving.wait(WAIT).expect("the op answers");
+    assert_eq!(done.outcome, Outcome::Ready, "the resumed op");
+    drop(side);
+    d.recycle(t);
 }
 
 /// RED (#74, INLINE WRAP AND LATE WAKES): an inline slot whose counter is spent is RETIRED, never
@@ -3532,6 +3624,7 @@ fn door_over<K: Kind>(kind: KindCode, statement: Statement) -> Door {
             statement: Box::leak(Box::new(statement)),
             ops: whole_table::<K>(),
             ready: None,
+            layout: kind.layout_fingerprint(),
         })
     }
 }
@@ -3671,6 +3764,95 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
             host: ANSWER_LAYOUT,
         }
     );
+}
+
+// ── R5: every kind refuses a door built against another layout of its shapes ──────────────────
+
+/// RED (R5, status row 188): a door of `kind` over the host's whole table of `K` that states
+/// another layout fingerprint than the host's for `kind` (one bit off, and `0`: a door that
+/// predates the word) is refused at load with [`LoadError::KindLayout`], naming the plugin, the
+/// kind and both numbers; the same door at the host's own fingerprint is not refused for its
+/// layout.
+fn another_layout_is_refused<K: Kind>(kind: KindCode) {
+    let host = kind.layout_fingerprint();
+    let own = door_over::<K>(
+        kind,
+        Statement {
+            size: std::mem::size_of::<Statement>() as u32,
+            kind: kind as u32,
+            kind_abi: kind.abi_version(),
+            ..busbar_contract::abi::sdk::door::statement("laid", "1.0.0", 1)
+        },
+    );
+    assert_eq!(
+        own.layout(),
+        host,
+        "{kind:?}: the door states the host's fingerprint"
+    );
+    assert!(
+        !matches!(
+            validate_door::<K>(&own).map(|_| ()),
+            Err(LoadError::KindLayout { .. })
+        ),
+        "{kind:?}: a door at the host's fingerprint is not refused for its layout"
+    );
+    for stated in [host ^ 1, 0] {
+        // SAFETY: the door's own parts, its layout word restated.
+        let other = unsafe {
+            Door::__from_parts(DoorParts {
+                layout: stated,
+                ..own.parts()
+            })
+        };
+        let refused = validate_door::<K>(&other)
+            .map(|_| ())
+            .expect_err("a door at another layout is refused");
+        assert_eq!(
+            refused,
+            LoadError::KindLayout {
+                plugin: "laid".into(),
+                kind,
+                stated,
+                host,
+            },
+            "{kind:?} at {stated:#018x}"
+        );
+    }
+}
+
+#[test]
+fn a_store_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::store::Store>(KindCode::Store);
+}
+
+#[test]
+fn a_secret_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::secret::Secret>(KindCode::Secret);
+}
+
+#[test]
+fn an_auth_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::auth::Auth>(KindCode::Auth);
+}
+
+#[test]
+fn a_hook_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::hook::Hook>(KindCode::Hook);
+}
+
+#[test]
+fn an_export_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::export::Export>(KindCode::Export);
+}
+
+#[test]
+fn a_plane_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::plane::Plane>(KindCode::Plane);
+}
+
+#[test]
+fn a_transport_door_built_against_another_layout_is_refused() {
+    another_layout_is_refused::<crate::dispatch::kinds::transport::Transport>(KindCode::Transport);
 }
 
 // ── the client-drop `cancel` names the unit its op serves ──────────────────────────────────────

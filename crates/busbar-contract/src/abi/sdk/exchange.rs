@@ -5,8 +5,10 @@
 //! `exchange()` is FRAMED). [`exchange`] opens a framed need, sends one [`Request`] through the
 //! framer ([`Connector::write_request`]: head, body, end — the framer writes its own wire head, one
 //! library per protocol) and reads the reply to its terminal piece into an [`ExchangeResponse`].
+//! [`send_and_ack`] is its form for any transport: it writes bytes and answers the transport's
+//! [`Ack`] (OWNER ruling: a plugin that sends sees what became of it).
 //!
-//! It answers PENDING until it completes. The caller parks the [`Exchange`] on its ticket across
+//! Both answer PENDING until they complete. The caller parks the [`Exchange`] on its ticket across
 //! PENDING entries (`abi::sdk::safe::Instance::park`) and passes it back each time, making the same
 //! services in the same order (the replay rule, `abi::sdk::conn`): no service runs twice.
 //!
@@ -15,7 +17,7 @@
 //! buffer the SDK holds either in is wiped when it goes: the [`Request`] [`Exchange::request`]
 //! consumes, the head it frames, the body it sends, the read buffer (after each piece is applied as
 //! well), and the reply it gathers (a body that outgrows its allocation wipes the one it leaves).
-//! [`Request`] and [`ExchangeResponse`] are [`Zeroize`]: a plugin wipes the ones it holds
+//! [`Request`], [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a plugin wipes the ones it holds
 //! (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are unchanged.
 
 use std::task::Poll;
@@ -95,6 +97,22 @@ impl Zeroize for ExchangeResponse {
     }
 }
 
+/// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ack {
+    /// The transport's result code.
+    pub code: u32,
+    /// The peer's text, exactly as sent; empty when none.
+    pub reason: Vec<u8>,
+}
+
+impl Zeroize for Ack {
+    fn zeroize(&mut self) {
+        self.code.zeroize();
+        self.reason.zeroize();
+    }
+}
+
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
 /// drop; the descriptors (`repr(C)`) hold spans and a timeout, never a byte of the request.
 #[derive(Debug)]
@@ -111,7 +129,7 @@ enum Sending {
     Raw(Zeroizing<Vec<u8>>),
 }
 
-/// An [`exchange`]'s state across its op's PENDING entries: what it sends
+/// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
 /// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
 /// them) and the reply so far. Parked on the ticket. Every byte it holds of the request or the
 /// reply wipes on drop.
@@ -130,6 +148,10 @@ pub struct Exchange {
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
+    /// The handle of the read whose piece the exchange refused, and why: a replay of that read
+    /// refuses again, so the entry that re-issues the close a failure pended on answers the same
+    /// failure (a replayed piece is not applied again, so it cannot refuse on its own).
+    refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
     /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
@@ -202,6 +224,7 @@ impl Exchange {
             head_seen: false,
             applied: 0,
             ended: None,
+            refused_at: None,
             within: String::new(),
             member: None,
             observe: false,
@@ -423,7 +446,7 @@ impl Exchange {
         Ok(ex)
     }
 
-    /// An exchange sending `bytes` as they are, over any transport.
+    /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
         Self::over(Sending::Raw(Zeroizing::new(bytes)))
@@ -554,6 +577,34 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
+    // sends once and moves on never leaves a held stream (and its connection) behind per failure.
+    match exchange_once(c, state, need, target) {
+        Poll::Ready(Err(e)) => match state.stream {
+            Some(stream) => match c.close(stream) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => {
+                    state.stream = None;
+                    Poll::Ready(Err(e))
+                }
+            },
+            None => Poll::Ready(Err(e)),
+        },
+        Poll::Ready(Ok(())) => {
+            state.stream = None;
+            Poll::Ready(Ok(()))
+        }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
+fn exchange_once(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<()> {
     // A framed request is made whole when its stream opens, so its security is its target's: a
     // sealed value that must go out secured is refused before the open when the target names a
     // scheme that is not secure. A need's own target (`None`) is the operator's, as written.
@@ -605,7 +656,10 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
             state.applied = this + 1;
         }
         let p = got.piece;
-        let applied = apply(state, p, got.len, fresh);
+        let applied = match state.refused_at {
+            Some((at, text)) if at == this => Err(text),
+            _ => apply(state, p, got.len, fresh),
+        };
         // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
         // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
         // the read this entry has yet to apply (the one that pended on the last entry).
@@ -706,6 +760,23 @@ pub fn exchange(
     let mut reply = std::mem::take(&mut *state.reply);
     reply.status = u16::try_from(state.code).unwrap_or(0);
     Poll::Ready(Ok(reply))
+}
+
+/// SEND and learn what became of it, over any transport (a pure-send one answers a single ack):
+/// establish, write the [`Exchange::send`] bytes, read to the terminal piece, close. READY with the
+/// transport's code and the peer's text, verbatim — a failure the transport acked is an [`Ack`]
+/// too, never a lost request.
+pub fn send_and_ack(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<Ack> {
+    ready!(send_and_read(c, state, need, target));
+    Poll::Ready(Ok(Ack {
+        code: state.code,
+        reason: state.reply.reason.take().unwrap_or_default(),
+    }))
 }
 
 /// What an op parks its exchange on: its instance, whatever the instance state's type.

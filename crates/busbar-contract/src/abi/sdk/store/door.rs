@@ -10,16 +10,12 @@
 //!
 //! * decodes the `in` (strings as UTF-8, records as the tree's JSON shapes); a malformed `in` is
 //!   REFUSED with its reason, and the store is not called;
-//! * CHECKS EVERY HOST CAPACITY FIRST where the answer's size is known before acting (`reserve`,
-//!   `slice_release`), so a short answer applies nothing and is never recorded under an `op_id`
-//!   (the S1 addendum); a read with no side effect is sized after it reads;
+//! * a read with no side effect is sized after it reads;
 //! * writes a request-path result into the host's buffers (M-SB on
 //!   [`OutHead`](crate::abi::mechanism::call::OutHead)), and an off-path result under a LEASE the
 //!   host hands back to `release`; a secret blob's bytes are zeroed when its lease is released;
 //! * answers an `op_id` conflict REFUSED with the diagnostic
-//!   [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT), and a cap conflict REFUSED
-//!   with [`DIAG_CAP_CONFLICT`](crate::abi::store::DIAG_CAP_CONFLICT) and an error text that
-//!   begins with the conflicting cap's index.
+//!   [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT).
 //!
 //! ERROR TEXT. A FAILED or REFUSED answer's `error` points at text the instance keeps in a
 //! bounded ring of the last [`TEXT_RING`] texts; the host copies it when the op returns.
@@ -39,10 +35,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::op::Parked;
-use super::{
-    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, Op, OpRefused, ReserveRefused, Step,
-    StoreSlots,
-};
+use super::{Op, OpRefused, Step, StoreSlots};
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
     SEVERITY_WARN,
@@ -51,24 +44,19 @@ use crate::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
 use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, LentList, Out, SafeSlot};
+use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, Out, SafeSlot};
 use crate::abi::store::{
-    AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn, BlobIn, CountOut,
-    GetPlaneRecordIn, HeadOut, HeadsOut, HostBytesOut, HostListOut, IdIn, IdReasonIn,
-    KeyWithCredentialIn, KindBeforeIn, KindIdIn, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
-    ListPlaneRecordsIn, OpBlobIn, OpBlobsIn, PlaneRecordRow, PutUsageIn, RecordEntry, RecordGetIn,
-    RecordPutIn, RecordScanIn, ReserveIn, ReserveOut, SessionPutIn, SessionRow, SessionsForIn,
-    SliceReleaseIn, SliceReleaseOut, StoreTail, StreamHead, TokenIn, U64In, UnitCell,
-    UpsertPlaneRecordIn, VerdictOut, WindowCap, WindowCapsIn, WindowIn, ABSENT, CANCEL_UNKNOWN,
-    DIAG_CAP_CONFLICT, DIAG_OPID_CONFLICT, DIM_CLASS, DIM_CONCURRENCY, DIM_NANO_UNITS,
-    DIM_REQUESTS, DISPOSITION_TERMINAL, FOUND, RESERVE_EXHAUSTED, RESERVE_NO_CAP,
-    RESERVE_NO_FAILED_CELL, RESERVE_OK, RESERVE_STALE_EPOCH, RESERVE_UNAVAILABLE, SELECT_ALL,
-    SELECT_PARENT, VERDICT_NO, VERDICT_YES,
+    AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn, HostBytesOut,
+    HostListOut, IdIn, IdReasonIn, KeyWithCredentialIn, KindBeforeIn, KindIdIn, LeasedBlobOut,
+    LeasedListOut, LeasedStrListOut, ListPlaneRecordsIn, OpBlobsIn, PlaneRecordRow, PutUsageIn,
+    RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, StoreTail, TokenIn, U64In,
+    UpsertPlaneRecordIn, VerdictOut, WindowIn, ABSENT, CANCEL_UNKNOWN, DIAG_OPID_CONFLICT,
+    DISPOSITION_TERMINAL, FOUND, SELECT_ALL, SELECT_PARENT, VERDICT_NO, VERDICT_YES,
 };
 use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
 use crate::records::{
-    AuditRecord, CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecordRef, PlaneSelector,
+    CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecordRef, PlaneSelector, Retention,
     UsageDelta, UsageLedger, VirtualKey,
 };
 
@@ -76,19 +64,13 @@ use crate::records::{
 pub const TEXT_RING: usize = 4096;
 
 /// The diagnostic ids a store's Statement declares, in `Diag::id_idx` order.
-pub const DIAG_IDS: [AbiStr; 2] = [abi_str(DIAG_OPID_CONFLICT), abi_str(DIAG_CAP_CONFLICT)];
+pub const DIAG_IDS: [AbiStr; 1] = [abi_str(DIAG_OPID_CONFLICT)];
 
 const OPID_CONFLICT_TEXT: &str =
     "STORE_OPID_CONFLICT: the op_id was already used with different value fields";
 const DIAG_OPID: &[Diag] = &[Diag {
     severity: SEVERITY_WARN,
     text: abi_str(OPID_CONFLICT_TEXT),
-    ..Diag::ZERO
-}];
-const DIAG_CAP: &[Diag] = &[Diag {
-    id_idx: 1,
-    severity: SEVERITY_WARN,
-    text: abi_str("a cap was pushed again at its config_gen with a different value"),
     ..Diag::ZERO
 }];
 
@@ -128,7 +110,6 @@ struct Leased {
     // The arrays the host reads through the `out`; held here, never read by the plugin.
     _blobs: Box<[Blob]>,
     _strs: Box<[AbiStr]>,
-    _heads: Box<[StreamHead]>,
     secret: bool,
 }
 
@@ -191,9 +172,8 @@ impl std::fmt::Write for Rendered {
     }
 }
 
-/// A FAILED or REFUSED answer's text: a fixed one, one the door rendered, or the store's own.
+/// A FAILED or REFUSED answer's text: one the door rendered, or the store's own.
 enum Text {
-    Fixed(&'static str),
     Rendered(Rendered),
     Owned(String),
 }
@@ -205,7 +185,6 @@ impl Text {
 
     fn as_str(&self) -> &str {
         match self {
-            Self::Fixed(t) => t,
             Self::Rendered(r) => r.as_str(),
             Self::Owned(t) => t.as_str(),
         }
@@ -245,12 +224,11 @@ impl<B: StoreSlots> Served<B> {
         &self.store
     }
 
-    /// Keep `text` alive in the ring (a fixed text needs no keeping), cut to [`MAX_TEXT`] on a
+    /// Keep `text` alive in the ring, cut to [`MAX_TEXT`] on a
     /// character boundary, and answer it as an [`AbiStr`]. Allocates nothing: an owned text is
     /// moved in, and the ring never grows past the capacity it was opened with.
     fn text(&self, text: Text) -> AbiStr {
         let text = match text {
-            Text::Fixed(t) => return abi_str(t),
             Text::Owned(mut t) => {
                 let mut end = t.len().min(MAX_TEXT);
                 while !t.is_char_boundary(end) {
@@ -342,10 +320,6 @@ heads!(
     HostBytesOut,
     HostListOut,
     VerdictOut,
-    HeadOut,
-    ReserveOut,
-    SliceReleaseOut,
-    HeadsOut,
     OpenOut
 );
 impl Head for OutHead {
@@ -434,6 +408,7 @@ fn op_answer<B: StoreSlots>(
         Ok(()) => Outcome::Ready,
         Err(OpRefused::Conflict) => conflict(out),
         Err(OpRefused::Failed(t)) => failed(s, out, t),
+        Err(OpRefused::Refused(t)) => refused(s, out, Text::Owned(t)),
     }
 }
 
@@ -499,7 +474,6 @@ fn lease_one<B: StoreSlots>(
                 bytes: vec![bytes],
                 _blobs: Box::new([]),
                 _strs: Box::new([]),
-                _heads: Box::new([]),
                 secret,
             });
         }
@@ -529,7 +503,6 @@ fn lease_list<B: StoreSlots>(
         bytes: records,
         _blobs: blobs,
         _strs: Box::new([]),
-        _heads: Box::new([]),
         secret,
     });
     Outcome::Ready
@@ -559,7 +532,6 @@ fn lease_strs<B: StoreSlots>(
         bytes,
         _blobs: Box::new([]),
         _strs: strs,
-        _heads: Box::new([]),
         secret: false,
     });
     Outcome::Ready
@@ -653,62 +625,6 @@ fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecordRef<'_>, Tex
     })
 }
 
-fn cell_key<'a>(
-    bucket: Lent<'a, AbiStr>,
-    pool: Lent<'a, AbiStr>,
-    dimension: u32,
-    class_key: Lent<'a, AbiStr>,
-    window_start: u64,
-) -> Result<CellKey<'a>, Text> {
-    let dimension = match dimension {
-        DIM_NANO_UNITS => Dimension::NanoUnits,
-        DIM_REQUESTS => Dimension::Requests,
-        DIM_CONCURRENCY => Dimension::Concurrency,
-        DIM_CLASS => Dimension::Class(text_of(class_key)?),
-        d => {
-            return Err(Text::render(format_args!(
-                "dimension {d} is not a store dimension"
-            )))
-        }
-    };
-    Ok(CellKey {
-        bucket: text_of(bucket)?,
-        pool: opt_text(pool)?,
-        dimension,
-        window_start,
-    })
-}
-
-fn unit_cell(c: Lent<'_, UnitCell>) -> Result<Cell<'_>, Text> {
-    if c.amount == 0 {
-        return Err(Text::Fixed("a reserve cell's amount is 0"));
-    }
-    Ok(Cell {
-        key: cell_key(
-            c.field(|c| &c.bucket),
-            c.field(|c| &c.pool),
-            c.dimension,
-            c.field(|c| &c.class_key),
-            c.window_start,
-        )?,
-        amount: c.amount,
-    })
-}
-
-fn window_cap(c: Lent<'_, WindowCap>) -> Result<Cap<'_>, Text> {
-    Ok(Cap {
-        key: cell_key(
-            c.field(|c| &c.bucket),
-            c.field(|c| &c.pool),
-            c.dimension,
-            c.field(|c| &c.class_key),
-            c.window_start,
-        )?,
-        cap: c.cap,
-        config_gen: c.config_gen,
-    })
-}
-
 /// The refusal of a record over the ceiling.
 fn over_ceiling(n: usize) -> Text {
     Text::render(format_args!("a record of {n} bytes is over the ceiling"))
@@ -720,47 +636,6 @@ fn record_slice(bytes: &[u8]) -> Result<&[u8], Text> {
         return Err(over_ceiling(bytes.len()));
     }
     Ok(bytes)
-}
-
-/// A record taken as [`RecordBytes`] (an off-path journal append keeps it), refused over the
-/// ceiling before it is copied.
-fn record_bytes(bytes: &[u8]) -> Result<RecordBytes, Text> {
-    RecordBytes::new(record_slice(bytes)?.to_vec()).map_err(over_ceiling)
-}
-
-/// The host's grants array as `reserve`'s sink: each grant goes straight into the host's memory.
-struct GrantsInto<'a>(HostBuf<'a, crate::abi::store::CellGrant>);
-
-impl Extend<Grant> for GrantsInto<'_> {
-    fn extend<I: IntoIterator<Item = Grant>>(&mut self, grants: I) {
-        for g in grants {
-            self.0.push(crate::abi::store::CellGrant {
-                slice_id: g.slice_id,
-                granted: g.granted,
-                valid_until_ms: g.valid_until_ms,
-            });
-        }
-    }
-}
-
-/// The host's released array as `slice_release`'s sink, clamping each amount to its item's
-/// `unspent` as it goes in.
-struct ReleasedInto<'a> {
-    items: LentList<'a, crate::abi::store::ReleaseItem>,
-    buf: HostBuf<'a, u64>,
-}
-
-impl Extend<u64> for ReleasedInto<'_> {
-    fn extend<I: IntoIterator<Item = u64>>(&mut self, amounts: I) {
-        for b in amounts {
-            // Never more than the item's `unspent`, whatever the store said.
-            let b = self
-                .items
-                .get(self.buf.asked())
-                .map_or(b, |it| b.min(it.unspent));
-            self.buf.push(b);
-        }
-    }
 }
 
 // ── the lifecycle ────────────────────────────────────────────────────────────────────────────
@@ -923,22 +798,13 @@ slot!(
     }
 );
 slot!(
-    /// `scrub_key` (slot 4).
-    ScrubKey(IdIn, OutHead) |s, i, o, cx| {
-        match text_of(i.field(|i| &i.id)) {
-            Ok(id) => done(s, o, step!(o, s.store.scrub_key(cx, id))),
-            Err(e) => refused(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `list_keys_since` (slot 5).
+    /// `list_keys_since` (slot 4).
     ListKeysSince(U64In, LeasedListOut) |s, i, o, cx| {
         listed(s, o, step!(o, s.store.list_keys_since(cx, i.value)), false)
     }
 );
 slot!(
-    /// `get_usage` (slot 6): an untouched cell is the empty ledger, FOUND.
+    /// `get_usage` (slot 5): an untouched cell is the empty ledger, FOUND.
     GetUsage(WindowIn, LeasedBlobOut) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match step!(o, s.store.get_usage(cx, bucket, i.window_start)) {
@@ -948,7 +814,7 @@ slot!(
     }
 );
 slot!(
-    /// `put_usage` (slot 7).
+    /// `put_usage` (slot 6).
     PutUsage(PutUsageIn, OutHead) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageLedger>(i.field(|i| &i.ledger)) {
@@ -958,52 +824,13 @@ slot!(
     }
 );
 slot!(
-    /// `add_usage` (slot 8), deduped on its `op_id`.
-    AddUsage(AddUsageIn, OutHead) |s, i, o, cx| {
-        let cell = i.field(|i| &i.cell);
-        let bucket = match text_of(cell.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match json::<UsageDelta>(cell.field(|c| &c.delta)) {
-            Ok(d) => op_answer(s, o, step!(o, s.store.add_usage_op(cx, i.op_id, bucket, cell.window_start, &d))),
-            Err(e) => refused(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `add_metering` (slot 9), deduped on its `op_id`.
-    AddMetering(OpBlobIn, OutHead) |s, i, o, cx| {
-        match json::<MeteringDelta>(i.field(|i| &i.record)) {
-            Ok(d) => op_answer(s, o, step!(o, s.store.add_metering_op(cx, i.op_id, &d))),
-            Err(e) => refused(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `list_metering` (slot 10).
+    /// `list_metering` (slot 7).
     ListMetering(U64In, LeasedListOut) |s, i, o, cx| {
         listed(s, o, step!(o, s.store.list_metering(cx, i.value)), false)
     }
 );
 slot!(
-    /// `purge_windows_before` (slot 11).
-    PurgeWindowsBefore(U64In, CountOut) |s, i, o, cx| {
-        match step!(o, s.store.purge_windows_before(cx, i.value)) {
-            Ok(n) => { o.count = n; Outcome::Ready }
-            Err(e) => failed(s, o, e.0),
-        }
-    }
-);
-slot!(
-    /// `purge_metering_before` (slot 12).
-    PurgeMeteringBefore(IdIn, CountOut) |s, i, o, cx| {
-        let bucket = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.purge_metering_before(cx, bucket)) {
-            Ok(n) => { o.count = n; Outcome::Ready }
-            Err(e) => failed(s, o, e.0),
-        }
-    }
-);
-slot!(
-    /// `put_credential` (slot 13).
+    /// `put_credential` (slot 8).
     PutCredential(BlobIn, OutHead) |s, i, o, cx| {
         match json::<CredentialSecret>(i.field(|i| &i.record)) {
             Ok(c) => done(s, o, step!(o, s.store.put_credential(cx, &c))),
@@ -1012,7 +839,7 @@ slot!(
     }
 );
 slot!(
-    /// `put_key_with_credential` (slot 14): both rows or neither.
+    /// `put_key_with_credential` (slot 9): both rows or neither.
     PutKeyWithCredential(KeyWithCredentialIn, OutHead) |s, i, o, cx| {
         let k = match json::<VirtualKey>(i.field(|i| &i.key)) { Ok(k) => k, Err(e) => return refused(s, o, e) };
         match json::<CredentialSecret>(i.field(|i| &i.credential)) {
@@ -1022,25 +849,14 @@ slot!(
     }
 );
 slot!(
-    /// `list_credentials` (slot 15): metadata, never a secret.
+    /// `list_credentials` (slot 10): metadata, never a secret.
     ListCredentials(IdIn, LeasedListOut) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         listed(s, o, step!(o, s.store.list_credentials(cx, id)), false)
     }
 );
 slot!(
-    /// `lookup_credential_secret` (slot 16): a secret blob; unknown is ABSENT.
-    LookupCredentialSecret(KindIdIn, LeasedBlobOut) |s, i, o, cx| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.lookup_credential_secret(cx, kind, id)) {
-            Ok(c) => lease_one(s, o, c.as_ref().map(to_json), true),
-            Err(e) => failed(s, o, e.0),
-        }
-    }
-);
-slot!(
-    /// `revoke_credential` (slot 17).
+    /// `revoke_credential` (slot 11).
     RevokeCredential(IdReasonIn, OutHead) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.reason)) {
@@ -1050,26 +866,17 @@ slot!(
     }
 );
 slot!(
-    /// `list_credentials_since` (slot 18): secret blobs.
+    /// `list_credentials_since` (slot 12): secret blobs.
     ListCredentialsSince(U64In, LeasedListOut) |s, i, o, cx| {
         listed(s, o, step!(o, s.store.list_credentials_since(cx, i.value)), true)
     }
 );
 slot!(
-    /// `append_audit` (slot 19), deduped on its `op_id`.
-    AppendAudit(OpBlobIn, OutHead) |s, i, o, cx| {
-        match json::<AuditRecord>(i.field(|i| &i.record)) {
-            Ok(a) => op_answer(s, o, step!(o, s.store.append_audit_op(cx, i.op_id, &a))),
-            Err(e) => refused(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `list_audit` (slot 20).
+    /// `list_audit` (slot 13).
     ListAudit(InHead, LeasedListOut) |s, i, o, cx| { listed(s, o, step!(o, s.store.list_audit(cx)), false) }
 );
 slot!(
-    /// `add_denylist` (slot 21).
+    /// `add_denylist` (slot 14).
     AddDenylist(IdReasonIn, OutHead) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.reason)) {
@@ -1079,7 +886,7 @@ slot!(
     }
 );
 slot!(
-    /// `list_denylist` (slot 22).
+    /// `list_denylist` (slot 15).
     ListDenylist(InHead, LeasedStrListOut) |s, i, o, cx| {
         match step!(o, s.store.list_denylist(cx)) {
             Ok(v) => lease_strs(s, o, v),
@@ -1088,7 +895,7 @@ slot!(
     }
 );
 slot!(
-    /// `list_audit_tail` (slot 23).
+    /// `list_audit_tail` (slot 16).
     ListAuditTail(U64In, LeasedListOut) |s, i, o, cx| {
         listed(s, o, step!(o, s.store.list_audit_tail(cx, i.value)), false)
     }
@@ -1097,7 +904,7 @@ slot!(
 // ── plane records ────────────────────────────────────────────────────────────────────────────
 
 slot!(
-    /// `upsert_plane_record` (slot 24).
+    /// `upsert_plane_record` (slot 17).
     UpsertPlaneRecord(UpsertPlaneRecordIn, OutHead) |s, i, o, cx| {
         match plane_record(i.field(|i| &i.record)) {
             Ok(r) => done(s, o, step!(o, s.store.upsert_plane_record(cx, r))),
@@ -1106,7 +913,7 @@ slot!(
     }
 );
 slot!(
-    /// `get_plane_record` (slot 25): the body into the host buffer.
+    /// `get_plane_record` (slot 18): the body into the host buffer.
     GetPlaneRecord(GetPlaneRecordIn, HostBytesOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
@@ -1117,7 +924,7 @@ slot!(
     }
 );
 slot!(
-    /// `append_plane_record` (slot 26), deduped on its `op_id`.
+    /// `append_plane_record` (slot 19), deduped on its `op_id`.
     AppendPlaneRecord(AppendPlaneRecordIn, OutHead) |s, i, o, cx| {
         match plane_record(i.field(|i| &i.record)) {
             Ok(r) => op_answer(s, o, step!(o, s.store.append_plane_record_op(cx, i.op_id, r))),
@@ -1126,7 +933,7 @@ slot!(
     }
 );
 slot!(
-    /// `list_plane_records` (slot 27): bodies into the host's blobs.
+    /// `list_plane_records` (slot 20): bodies into the host's blobs.
     ListPlaneRecords(ListPlaneRecordsIn, HostListOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let selector = match i.selector {
@@ -1150,7 +957,7 @@ slot!(
     }
 );
 slot!(
-    /// `list_plane_record_parents` (slot 28).
+    /// `list_plane_record_parents` (slot 21).
     ListPlaneRecordParents(IdIn, LeasedStrListOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match step!(o, s.store.list_plane_record_parents(cx, kind)) {
@@ -1160,17 +967,23 @@ slot!(
     }
 );
 slot!(
-    /// `purge_plane_records_before` (slot 29).
+    /// `purge_plane_records_before` (slot 22).
+    /// The rule rides the `in`; an older host's shorter `in` reads `0` there (the trampoline
+    /// zero-fills past its stated size), the age rule that host purged by. A code that names no
+    /// rule is refused, never guessed.
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before)) {
+        let Some(retention) = Retention::from_code(i.retention) else {
+            return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
+        };
+        match step!(o, s.store.purge_plane_records(cx, kind, i.before, retention)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
-    /// `delete_plane_record` (slot 30); absent is READY.
+    /// `delete_plane_record` (slot 23); absent is READY.
     DeletePlaneRecord(KindIdIn, OutHead) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.id)) {
@@ -1180,7 +993,7 @@ slot!(
     }
 );
 slot!(
-    /// `redeem_plane_token` (slot 31): YES = this call was the first redemption.
+    /// `redeem_plane_token` (slot 24): YES = this call was the first redemption.
     RedeemPlaneToken(TokenIn, VerdictOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
@@ -1191,7 +1004,7 @@ slot!(
     }
 );
 slot!(
-    /// `plane_token_live` (slot 32): spends nothing.
+    /// `plane_token_live` (slot 25): spends nothing.
     PlaneTokenLive(TokenIn, VerdictOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
@@ -1202,164 +1015,10 @@ slot!(
     }
 );
 
-// ── the ledger ops ───────────────────────────────────────────────────────────────────────────
+// ── the kernel-held records ──────────────────────────────────────────────────────────────────
 
 slot!(
-    /// `append_batch` (slot 33): the head the stream reached.
-    AppendBatch(AppendBatchIn, HeadOut) |s, i, o, cx| {
-        let stream = match text_of(i.field(|i| &i.stream)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        let mut records = Vec::with_capacity(i.records().len());
-        for r in i.records().iter() {
-            match record_bytes(r.bytes()) {
-                Ok(b) => records.push(b),
-                Err(e) => return refused(s, o, e),
-            }
-        }
-        match step!(o, s.store.append_batch(cx, i.op_id, stream, &records)) {
-            Ok(h) => { o.seq = h.seq; o.epoch = h.epoch; Outcome::Ready }
-            Err(OpRefused::Conflict) => conflict(o),
-            Err(OpRefused::Failed(t)) => failed(s, o, t),
-        }
-    }
-);
-slot!(
-    /// `reserve` (slot 34): the capacity check first, then one all-or-nothing draw.
-    Reserve(ReserveIn, ReserveOut) |s, i, o, cx| {
-        o.failed_cell = RESERVE_NO_FAILED_CELL;
-        let cells_in = i.cells();
-        let grants_buf = i.grants();
-        if grants_buf.cap() < cells_in.len() {
-            // M-SB before anything else, the replay lookup included (S1 addendum).
-            o.needed_grants = cells_in.len() as u64;
-            return Outcome::Failed;
-        }
-        // Every cell decodes before the store is called; the store then reads them in place and
-        // its grants go straight into the host's array: nothing is allocated here.
-        for c in cells_in.iter() {
-            if let Err(e) = unit_cell(c) {
-                return refused(s, o, e);
-            }
-        }
-        let mut grants = GrantsInto(grants_buf);
-        let cells = cells_in.iter().filter_map(|c| unit_cell(c).ok()); // every one decodes
-        match step!(o, s.store.reserve(cx, i.op_id, i.epoch, cells, &mut grants)) {
-            Ok(()) if grants.0.asked() == cells_in.len() => {
-                o.grants_len = grants.0.written();
-                o.reason = RESERVE_OK;
-                Outcome::Ready
-            }
-            Ok(()) => Outcome::Fault, // committed under the op_id: never FAILED (`StoreSlots::reserve`)
-            Err(r) => {
-                let (reason, cell) = match r {
-                    ReserveRefused::Exhausted { cell } => (RESERVE_EXHAUSTED, cell),
-                    ReserveRefused::StaleEpoch => (RESERVE_STALE_EPOCH, RESERVE_NO_FAILED_CELL),
-                    ReserveRefused::Unavailable => (RESERVE_UNAVAILABLE, RESERVE_NO_FAILED_CELL),
-                    ReserveRefused::NoCap { cell } => (RESERVE_NO_CAP, cell),
-                    ReserveRefused::Conflict => return conflict(o),
-                };
-                o.reason = reason;
-                o.failed_cell = cell;
-                Outcome::Failed
-            }
-        }
-    }
-);
-slot!(
-    /// `slice_release` (slot 35): the capacity check first, then the clamped release.
-    SliceRelease(SliceReleaseIn, SliceReleaseOut) |s, i, o, cx| {
-        let items_in = i.items();
-        let released_buf = i.released();
-        if released_buf.cap() < items_in.len() {
-            o.needed_released = items_in.len() as u64;
-            return Outcome::Failed;
-        }
-        // The items read in place, the amounts straight into the host's array: nothing allocated.
-        let mut released = ReleasedInto { items: items_in, buf: released_buf };
-        let items = items_in.iter().map(|it| (it.slice_id, it.unspent));
-        match step!(o, s.store.slice_release(cx, i.op_id, i.epoch, items, &mut released)) {
-            Ok(()) if released.buf.asked() == items_in.len() => {
-                o.released_len = released.buf.written();
-                Outcome::Ready
-            }
-            Ok(()) => Outcome::Fault, // committed: never FAILED (`StoreSlots::slice_release`)
-            Err(OpRefused::Conflict) => conflict(o),
-            Err(OpRefused::Failed(t)) => failed(s, o, t),
-        }
-    }
-);
-slot!(
-    /// `heads` (slot 36): under a lease.
-    Heads(InHead, HeadsOut) |s, i, o, cx| {
-        match step!(o, s.store.heads(cx)) {
-            Ok(v) if v.is_empty() => {
-                o.items = std::ptr::null();
-                o.items_len = 0;
-                Outcome::Ready
-            }
-            Ok(v) => {
-                let bytes: Vec<Box<[u8]>> = v.iter().map(|(n, _)| n.as_bytes().into()).collect();
-                let heads: Box<[StreamHead]> = bytes
-                    .iter()
-                    .zip(&v)
-                    .map(|(b, (_, h))| StreamHead {
-                        stream: AbiStr { ptr: b.as_ptr(), len: b.len() },
-                        seq: h.seq,
-                        epoch: h.epoch,
-                    })
-                    .collect();
-                o.items = heads.as_ptr();
-                o.items_len = heads.len();
-                o.head.lease = s.lease(Leased {
-                    bytes,
-                    _blobs: Box::new([]),
-                    _strs: Box::new([]),
-                    _heads: heads,
-                    secret: false,
-                });
-                Outcome::Ready
-            }
-            Err(e) => failed(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `session_put` (slot 37).
-    SessionPut(SessionPutIn, OutHead) |s, i, o, cx| {
-        let node = match text_of(i.field(|i| &i.node)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.session_put(cx, i.session, node, principal)) {
-            Ok(()) => Outcome::Ready,
-            Err(e) => failed(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `session_remove` (slot 38).
-    SessionRemove(U64In, OutHead) |s, i, o, cx| {
-        match step!(o, s.store.session_remove(cx, i.value)) {
-            Ok(()) => Outcome::Ready,
-            Err(e) => failed(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `sessions_for` (slot 39): rows into the host's sessions.
-    SessionsFor(SessionsForIn, HostListOut) |s, i, o, cx| {
-        let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.sessions_for(cx, principal)) {
-            Ok(rows) => {
-                let runs = rows.iter().map(|(_, n)| [n.as_bytes()]);
-                let host = i.field(|i| &i.out);
-                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), runs, |n, [(ptr, len)]| {
-                    SessionRow { session: rows[n].0, node: AbiStr { ptr, len } }
-                })
-            }
-            Err(e) => failed(s, o, e),
-        }
-    }
-);
-slot!(
-    /// `record_put` (slot 40).
+    /// `record_put` (slot 26).
     RecordPut(RecordPutIn, OutHead) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let value = match record_slice(i.field(|i| &i.value).bytes()) { Ok(v) => v, Err(e) => return refused(s, o, e) };
@@ -1370,7 +1029,7 @@ slot!(
     }
 );
 slot!(
-    /// `record_get` (slot 41): the value into the host buffer.
+    /// `record_get` (slot 27): the value into the host buffer.
     RecordGet(RecordGetIn, HostBytesOut) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match step!(o, s.store.record_get(cx, schema, i.field(|i| &i.key).bytes())) {
@@ -1380,7 +1039,7 @@ slot!(
     }
 );
 slot!(
-    /// `record_scan` (slot 42): entries into the host's records; `limit` 0 is nothing.
+    /// `record_scan` (slot 28): entries into the host's records; `limit` 0 is nothing.
     RecordScan(RecordScanIn, HostListOut) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match step!(o, s.store.record_scan(cx, schema, i.field(|i| &i.prefix).bytes(), i.limit)) {
@@ -1397,10 +1056,10 @@ slot!(
     }
 );
 
-// ── the money batches and caps ───────────────────────────────────────────────────────────────
+// ── the count batches ────────────────────────────────────────────────────────────────────────
 
 slot!(
-    /// `add_usage_batch` (slot 43): one `op_id`, the cells in order, atomically.
+    /// `add_usage_batch` (slot 29): one `op_id`, the cells in order, atomically.
     AddUsageBatch(AddUsageBatchIn, OutHead) |s, i, o, cx| {
         let mut cells = Vec::with_capacity(i.cells().len());
         for c in i.cells().iter() {
@@ -1414,7 +1073,7 @@ slot!(
     }
 );
 slot!(
-    /// `add_metering_batch` (slot 44).
+    /// `add_metering_batch` (slot 30).
     AddMeteringBatch(OpBlobsIn, OutHead) |s, i, o, cx| {
         let mut rows = Vec::with_capacity(i.records().len());
         for r in i.records().iter() {
@@ -1424,42 +1083,6 @@ slot!(
             }
         }
         op_answer(s, o, step!(o, s.store.add_metering_batch(cx, i.op_id, &rows)))
-    }
-);
-slot!(
-    /// `append_audit_batch` (slot 45).
-    AppendAuditBatch(OpBlobsIn, OutHead) |s, i, o, cx| {
-        let mut rows = Vec::with_capacity(i.records().len());
-        for r in i.records().iter() {
-            match json::<AuditRecord>(r) {
-                Ok(d) => rows.push(d),
-                Err(e) => return refused(s, o, e),
-            }
-        }
-        op_answer(s, o, step!(o, s.store.append_audit_batch(cx, i.op_id, &rows)))
-    }
-);
-slot!(
-    /// `window_caps` (slot 46): atomic per push; a conflict names its index first.
-    WindowCaps(WindowCapsIn, OutHead) |s, i, o, cx| {
-        let mut caps = Vec::with_capacity(i.caps().len());
-        for c in i.caps().iter() {
-            match window_cap(c) {
-                Ok(c) => caps.push(c),
-                Err(e) => return refused(s, o, e),
-            }
-        }
-        match step!(o, s.store.window_caps(cx, i.op_id, &caps)) {
-            Ok(()) => Outcome::Ready,
-            Err(CapsRefused::CapConflict { index }) => {
-                o.error = s.text(Text::render(format_args!("{index}: {DIAG_CAP_CONFLICT}")));
-                o.envelope.diags = DIAG_CAP.as_ptr();
-                o.envelope.diags_len = DIAG_CAP.len();
-                Outcome::Refused
-            }
-            Err(CapsRefused::Conflict) => conflict(o),
-            Err(CapsRefused::Failed(t)) => failed(s, o, t),
-        }
     }
 );
 
@@ -1540,13 +1163,13 @@ macro_rules! store_door {
         $ext:expr, $refs:expr, $refs_len:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
-        const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 2] =
+        const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 1] =
             $crate::abi::sdk::store::door::DIAG_IDS;
         $crate::plugin_door! {
             ops: $crate::abi::store::Ops,
             statement: $crate::abi::mechanism::door::Statement {
                 diag_ids: __BUSBAR_STORE_DIAGS.as_ptr(),
-                diag_ids_len: 2,
+                diag_ids_len: 1,
                 kind_tail: ::core::ptr::from_ref(&__BUSBAR_STORE_TAIL)
                     .cast::<$crate::abi::mechanism::door::KindTailHead>(),
                 marks: $crate::abi::sdk::store::door::marks::<$store>(),
@@ -1573,22 +1196,15 @@ macro_rules! store_door {
                 get_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::GetKey<$store>>,
                 list_keys: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListKeys<$store>>,
                 delete_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::DeleteKey<$store>>,
-                scrub_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ScrubKey<$store>>,
                 list_keys_since: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListKeysSince<$store>>,
                 get_usage: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::GetUsage<$store>>,
                 put_usage: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PutUsage<$store>>,
-                add_usage: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AddUsage<$store>>,
-                add_metering: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AddMetering<$store>>,
                 list_metering: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListMetering<$store>>,
-                purge_windows_before: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PurgeWindowsBefore<$store>>,
-                purge_metering_before: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PurgeMeteringBefore<$store>>,
                 put_credential: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PutCredential<$store>>,
                 put_key_with_credential: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PutKeyWithCredential<$store>>,
                 list_credentials: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListCredentials<$store>>,
-                lookup_credential_secret: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::LookupCredentialSecret<$store>>,
                 revoke_credential: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::RevokeCredential<$store>>,
                 list_credentials_since: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListCredentialsSince<$store>>,
-                append_audit: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AppendAudit<$store>>,
                 list_audit: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListAudit<$store>>,
                 add_denylist: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AddDenylist<$store>>,
                 list_denylist: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListDenylist<$store>>,
@@ -1602,20 +1218,11 @@ macro_rules! store_door {
                 delete_plane_record: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::DeletePlaneRecord<$store>>,
                 redeem_plane_token: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::RedeemPlaneToken<$store>>,
                 plane_token_live: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PlaneTokenLive<$store>>,
-                append_batch: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AppendBatch<$store>>,
-                reserve: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Reserve<$store>>,
-                slice_release: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::SliceRelease<$store>>,
-                heads: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Heads<$store>>,
-                session_put: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::SessionPut<$store>>,
-                session_remove: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::SessionRemove<$store>>,
-                sessions_for: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::SessionsFor<$store>>,
                 record_put: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::RecordPut<$store>>,
                 record_get: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::RecordGet<$store>>,
                 record_scan: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::RecordScan<$store>>,
                 add_usage_batch: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AddUsageBatch<$store>>,
                 add_metering_batch: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AddMeteringBatch<$store>>,
-                append_audit_batch: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AppendAuditBatch<$store>>,
-                window_caps: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::WindowCaps<$store>>,
             },
         }
     };

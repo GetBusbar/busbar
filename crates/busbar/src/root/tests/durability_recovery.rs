@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE THREE DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE. Each cell boots a node's book over the build's linked ephemeral
+//! THE TWO DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE. Each cell boots a node's book over the build's linked ephemeral
 //! store, opened through its door on the store axis exactly as boot opens the configured store,
 //! runs one verb through the verb store the boot binds ([`node_verb_store`]), boots a SECOND book
 //! over the SAME store, and reads the effect back from the store and the chain — never from the
 //! first node's memory.
 //!
 //! RED before the fix: the verbs answered `Ok` from the loader adapter's node-memory `Recovery`
-//! counters, so the restarted node found no operator break on its chain and no floor in its store,
-//! and a restore that restored nothing was acknowledged.
+//! counters, so the restarted node found no operator break on its chain, and a restore that
+//! restored nothing was acknowledged.
 
 use super::*;
-use crate::root::durability::{build_on_store, DurabilityConfig, JournalLane};
+use crate::root::durability::{build_on_store, wait_for, DurabilityConfig, JournalLane};
 use busbar_contract::caps::AdminVerb;
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
@@ -27,7 +27,7 @@ const NODE: u64 = 31;
 /// One opened store: the 1.5.5 op set and the v3 slots of ONE instance.
 struct Opened {
     records: Arc<dyn busbar_contract::records::RecordStore>,
-    calls: Arc<dyn StoreCalls>,
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
 }
 
 /// The build's linked ephemeral store, opened through its door on the store axis, as boot opens it.
@@ -187,13 +187,10 @@ fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + S
         )
         .expect("the store reads the chain back"),
     ));
-    let adapter = StoreAdapter::native(Arc::clone(&store.records));
     let verbs = node_verb_store(
         Arc::clone(&book),
         busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
-        Arc::clone(&store.calls),
         STORE,
-        &adapter,
     )
     .expect("a node over a configured store binds the verb store");
     (book, verbs)
@@ -330,82 +327,6 @@ fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
             .expect("the chain verifies")
             .is_empty(),
         "and broke nothing"
-    );
-    assert_eq!(
-        epoch_floor(store.calls.as_ref(), STORE).expect("the store answers"),
-        None,
-        "and resealed nothing"
-    );
-}
-
-/// **`reseal_epoch_floor` IS KEPT BY THE STORE, AND SURVIVES A RESTART.** The verb puts the floor
-/// in the store; a node booted again over the same store reads it back through `record_get`.
-#[test]
-fn a_resealed_epoch_floor_is_read_back_after_a_restart_over_the_same_store() {
-    let store = ephemeral_store();
-    {
-        let (book, verbs) = boot(&store);
-        verbs
-            .reseal_epoch_floor(&admin())
-            .expect("the floor is resealed in the store");
-        stop(book);
-    }
-
-    let (_book, _verbs) = boot(&store);
-    let floor = epoch_floor(store.calls.as_ref(), STORE)
-        .expect("the store answers")
-        .expect("the floor the verb resealed is in the store after the restart");
-    assert_eq!(floor.floor, 0, "resealed to the node's one slice epoch");
-}
-
-/// **THE BOOT READS THE FLOOR BACK, AND A NODE BELOW IT DOES NOT BOOT.** The floor a reseal left is
-/// what the boot's reading answers; a floor above the node's slice epoch refuses the boot, naming
-/// both.
-#[test]
-fn the_boot_reads_the_floor_back_and_a_node_below_it_does_not_boot() {
-    let store = ephemeral_store();
-    {
-        let (book, verbs) = boot(&store);
-        verbs
-            .reseal_epoch_floor(&admin())
-            .expect("the floor is resealed in the store");
-        stop(book);
-    }
-    let (book, _verbs) = boot(&store);
-    let read = boot_recovery(
-        &book.lock().unwrap_or_else(|p| p.into_inner()),
-        store.calls.as_ref(),
-        STORE,
-        0,
-    )
-    .expect("a node at the floor boots");
-    assert_eq!(
-        read.map(|f| f.floor),
-        Some(0),
-        "the boot read the floor back"
-    );
-
-    let above = RecordBytes::new(encode_floor(EpochFloor {
-        floor: 5,
-        resealed_at: 1,
-    }))
-    .expect("a small record");
-    wait_for(
-        store
-            .calls
-            .record_put(EPOCH_FLOOR_SCHEMA, &floor_key(STORE), &above),
-    )
-    .expect("the store takes the floor");
-    let refused = boot_recovery(
-        &book.lock().unwrap_or_else(|p| p.into_inner()),
-        store.calls.as_ref(),
-        STORE,
-        0,
-    )
-    .expect_err("a node below the floor does not boot");
-    assert!(
-        refused.contains("below the epoch floor 5"),
-        "the refusal names the floor: {refused}"
     );
 }
 
