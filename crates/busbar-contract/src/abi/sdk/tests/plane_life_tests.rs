@@ -111,6 +111,71 @@ mod plugin {
     }
 }
 
+/// The echo plane's own migration: it renames `old` to `new`.
+struct EchoMigration;
+
+impl crate::abi::sdk::migrate::Migrate for EchoMigration {
+    fn migrate(mut settings: serde_json::Value, _: &str) -> crate::abi::sdk::migrate::Migrated {
+        if let Some(v) = settings.as_object_mut().and_then(|m| m.remove("old")) {
+            settings["new"] = v;
+        }
+        crate::abi::sdk::migrate::Migrated::unchanged(settings)
+    }
+}
+
+/// The same plane, its door stating `migrate:` after `lifecycle: plane_life(P)`.
+mod migrating {
+    use super::*;
+    crate::plugin_door! {
+        ops: crate::abi::plane::Ops,
+        statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
+        lifecycle: plane_life(Echo),
+        migrate: crate::abi::sdk::migrate::Migrator<super::EchoMigration>,
+    }
+}
+
+/// `lifecycle: plane_life(P)` takes `migrate:` as the other lifecycle forms do: the door states it
+/// on its tail, and the host's call answers the plane's own migration. A door naming none states
+/// none.
+#[test]
+fn a_plane_life_door_states_migrate_when_it_names_one() {
+    use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
+    use crate::abi::sdk::migrate::read_answer;
+    assert!(plugin::door().migrate().is_none(), "no migrate: none");
+    let op = migrating::door()
+        .migrate()
+        .expect("the door states migrate");
+    let settings = br#"{"old": 1}"#;
+    let from = b"1.5.5";
+    let mut buf = vec![0u8; 4096];
+    let mut input = ValidateIn::default();
+    input.head.size = size_of::<ValidateIn>() as u32;
+    input.head.op = slot::MIGRATE;
+    input.head.extensions = Blob {
+        ptr: from.as_ptr(),
+        len: from.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    input.settings = Blob {
+        ptr: settings.as_ptr(),
+        len: settings.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    input.err_buf = buf.as_mut_ptr();
+    input.err_cap = buf.len();
+    let mut out = out_head::<OutHead>();
+    let raw = op(
+        ptr::null_mut(),
+        ptr::from_ref(&input).cast(),
+        ptr::from_mut(&mut out).cast(),
+    );
+    assert_eq!(raw.outcome(), Outcome::Ready);
+    let m = read_answer(raw.outcome(), &buf[..out.error.len]).expect("a migration");
+    assert_eq!(m.settings, serde_json::json!({"new": 1}));
+}
+
 fn table() -> &'static Ops {
     // SAFETY: the macro's `'static` door and its plane table.
     unsafe { &*plugin::door().ops.cast::<Ops>() }
