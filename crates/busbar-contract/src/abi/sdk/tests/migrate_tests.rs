@@ -236,3 +236,16 @@ fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
         vec!["signing-secret -> signing_secret (renamed after 1.5.5)"]
     );
 }
+
+/// A host the plugin cannot judge itself (its `migrate` reads nothing but its arguments) is raised
+/// as its own need, for core to resolve: its own word on the wire, read back as written.
+#[test]
+fn the_allow_if_private_need_is_its_own_word_on_the_wire() {
+    let need = MigrateNeed::AllowDestinationIfPrivate("ollama.internal".into());
+    let wire = serde_json::to_value(&need).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"allow_destination_if_private": "ollama.internal"})
+    );
+    assert_eq!(serde_json::from_value::<MigrateNeed>(wire).unwrap(), need);
+}
