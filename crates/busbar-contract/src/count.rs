@@ -190,12 +190,6 @@ impl Count {
         self.0 < 0
     }
 
-    /// Whether this quantity is a whole number of units.
-    #[must_use]
-    pub const fn is_whole(self) -> bool {
-        self.0 % SCALE_FACTOR == 0
-    }
-
     /// Whether this quantity's mantissa fits a signed 64-bit store column.
     ///
     /// See [`MAX_ACROSS_A_64_BIT_COLUMN`]. A quantity that does not fit cannot be written down, and
@@ -227,29 +221,6 @@ impl Count {
         Err(CountError::UnknownScale)
     }
 
-    /// The value to persist, which is the mantissa — see [`Count::micros`].
-    ///
-    /// A record that writes this MUST also write [`SCALE_MICRO_UNITS`] in its scale field. The two
-    /// are one fact and a row carrying only half of it is a row nobody can read.
-    #[must_use]
-    pub const fn stored_value(self) -> i128 {
-        self.0
-    }
-
-    /// The whole-unit count, for a destination that has no place to put a fraction.
-    ///
-    /// # Errors
-    /// [`CountError::NotWhole`] when the quantity has a fraction. Truncating it would be inventing
-    /// a smaller measurement than the one that was taken, which is the one thing a count may never
-    /// do (#81/#42) — so the fraction that cannot be carried is a refusal, and the refusal names
-    /// itself rather than arriving as a quietly smaller number.
-    pub const fn whole_units(self) -> Result<i128, CountError> {
-        if self.0 % SCALE_FACTOR != 0 {
-            return Err(CountError::NotWhole);
-        }
-        Ok(self.0 / SCALE_FACTOR)
-    }
-
     /// `self + rhs`, exactly.
     ///
     /// # Errors
@@ -268,17 +239,6 @@ impl Count {
     /// [`CountError::Overflow`] when the difference leaves the range.
     pub const fn checked_sub(self, rhs: Count) -> Result<Count, CountError> {
         match self.0.checked_sub(rhs.0) {
-            Some(m) => Ok(Count(m)),
-            None => Err(CountError::Overflow),
-        }
-    }
-
-    /// `self * n` for a whole multiplier, exactly.
-    ///
-    /// # Errors
-    /// [`CountError::Overflow`] when the product leaves the range.
-    pub const fn checked_mul_integer(self, n: i128) -> Result<Count, CountError> {
-        match self.0.checked_mul(n) {
             Some(m) => Ok(Count(m)),
             None => Err(CountError::Overflow),
         }
