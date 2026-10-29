@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A NEED'S `trust_from` (ARCHITECT ruling 2026-10-02; `BUSBAR-1.6.0.md` section 5, the host
+//! A NEED'S `trust_from`(`BUSBAR-1.6.0.md` section 5, the host
 //! connector: "`trust_from` (an extra trusted root added on top of the public roots, as in 1.5.5)").
 //! Through the connector, over a real TLS far end whose certificate chains to a private CA: the
 //! need is refused without the operator's CA and served with it, a CA PEM that does not parse
@@ -222,12 +222,11 @@ fn a_refresh_with_a_changed_ca_re_declares_the_trust() {
     });
 }
 
-/// THE OWNED NAMESPACE (`owned.<section>.<key>`, ARCHITECT ruling 2026-10-14): an anchor named in
-/// a plane's other owned sections is OPTIONAL. Absent, the need is declared, not refused, and its
-/// connections trust the public roots alone, so a private CA's far end is refused as it is over a
-/// need naming no anchor.
-/// RED before the fix: a `trust_from` that resolved to nothing refused the need whatever its
-/// namespace, so a deployment that wrote no `agent_push:` section lost push delivery entirely.
+/// THE OWNED NAMESPACE (`owned.<section>.<key>`): an anchor named in a plane's other owned sections
+/// is OPTIONAL. Absent, the need is declared, not refused, and its connections trust the public
+/// roots alone, so a private CA's far end is refused as it is over a need naming no anchor. RED
+/// before the fix: a `trust_from` that resolved to nothing refused the need whatever its namespace,
+/// so a deployment that wrote no `agent_push:` section lost push delivery entirely.
 #[test]
 fn an_absent_owned_trust_anchor_declares_the_need_over_the_public_roots_alone() {
     let (_, leaf, key) = private_ca();

@@ -646,65 +646,16 @@ impl LaneSpec {
         self
     }
 
-    /// Emit this lane's NEUTRAL [`LaneInput`] — the carrier field the LLM plane's `build_runtime`
-    /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `PlaneBuildInput` to the
-    /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
-    /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
+    /// Emit this lane's NEUTRAL [`LaneInput`] row, the one the route tables are built over.
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
-        let auth_style = match self.auth.as_deref() {
-            None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
-            Some(style) => {
-                busbar_kernel::plane_driver::route_input::AuthStyleInput::Named(style.to_string())
-            }
-        };
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
-            protocol: self.protocol.to_string(),
-            // As `appbuild` seats it: the userinfo stripped, its Basic held opaque beside it.
-            // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
             base_url: busbar_kernel_egress::trust::net::strip_userinfo(
                 self.base_url.trim_end_matches('/'),
             )
             .into_owned(),
-            url_userinfo: busbar_kernel::bound_credential::UrlUserinfo::of(&self.base_url),
-            path: self.path.clone(),
-            path_base: self.path_base.clone(),
-            upstream_model: self.upstream_model.clone(),
-            api_key: self.api_key.clone(),
-            auth_style,
-            scope: None,
-            token_url: None,
-            token_userinfo: None,
-            subject: None,
-            error_map: self.error_map.clone(),
-            health: self.health.as_ref().map(|h| {
-                busbar_kernel::plane_driver::route_input::HealthInput {
-                    mode: match h.mode {
-                        crate::config::HealthMode::None => {
-                            busbar_kernel::plane_driver::route_input::HealthModeInput::None
-                        }
-                        crate::config::HealthMode::Dead => {
-                            busbar_kernel::plane_driver::route_input::HealthModeInput::Dead
-                        }
-                        crate::config::HealthMode::Active => {
-                            busbar_kernel::plane_driver::route_input::HealthModeInput::Active
-                        }
-                    },
-                    interval_secs: h.interval_secs,
-                    timeout_secs: h.timeout_secs,
-                }
-            }),
-            allow_metadata_hosts: Vec::new(),
-            context_max: self.context_max,
-            lane_default_max_tokens: self.default_max_tokens,
-            attempt_timeout_ms: None,
-            reasoning: false,
-            prompt_caching: false,
-            lane_caps: self.lane_caps,
             max_concurrent: self.max,
-            limited: self.limited,
-            budget: self.budget,
         }
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
@@ -809,21 +760,6 @@ pub struct TestApp {
     mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
-    /// Per-pool NEUTRAL overrides the `PoolInput` carrier fields the fixture assembles: the pool's
-    /// own `failover:` / `affinity:` / resolved `breaker:` / `upstream_credentials:` override, plus its
-    /// per-member `(tier, cost_per_mtok, tags)` routing metadata. Keyed by pool name; absent ⇒ the
-    /// carrier default (`None` / no metadata). The former `.pool_runtime(PoolRuntime{…})` fixture method
-    /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
-    pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
-    pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
-    pool_breaker:
-        std::collections::HashMap<String, busbar_kernel::plane_driver::route_input::BreakerInput>,
-    pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
-    #[allow(clippy::type_complexity)]
-    pool_member_meta: std::collections::HashMap<
-        String,
-        std::collections::HashMap<usize, (Option<String>, Option<f64>, Vec<String>)>,
-    >,
     /// The pool-hook facade maps (money-path Phase 3-4 C) the built `App` carries — the resolved
     /// per-pool routing policy / decision gates / rewrite chains the engine reads via `App::pool_*`.
     /// Set by the routing-policy fixtures (`.pool_policy_resolved`/`.pool_gates_resolved`/
@@ -950,11 +886,6 @@ impl TestApp {
             mint_policy: None,
             governance: None,
             cost: None,
-            pool_failover: std::collections::HashMap::new(),
-            pool_affinity: std::collections::HashMap::new(),
-            pool_breaker: std::collections::HashMap::new(),
-            pool_upstream_creds: std::collections::HashMap::new(),
-            pool_member_meta: std::collections::HashMap::new(),
             pool_orderings: std::collections::HashMap::new(),
             pool_decision_gates: std::collections::HashMap::new(),
             pool_rewrite_chains: std::collections::HashMap::new(),
@@ -1417,52 +1348,6 @@ impl TestApp {
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
     }
-    /// Set a pool's own `failover:` override (deadline / exclusions / hop cap) — the granular successor
-    /// to the former `.pool_runtime(PoolRuntime{ failover: … })` (the fixture is plane-agnostic now, so
-    /// it fills the neutral `PoolInput.failover` the registered `build_runtime` reconstructs from).
-    pub fn pool_failover(mut self, name: &str, f: crate::config::FailoverCfg) -> Self {
-        self.pool_failover.insert(name.into(), f);
-        self
-    }
-    /// Set a pool's own `affinity:` block (session-stickiness header).
-    pub fn pool_affinity(mut self, name: &str, a: crate::config::AffinityCfg) -> Self {
-        self.pool_affinity.insert(name.into(), a);
-        self
-    }
-    /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
-    /// neutral carrier the plane reconstructs it from).
-    pub fn pool_breaker(mut self, name: &str, b: &busbar_kernel::store::BreakerCfg) -> Self {
-        self.pool_breaker.insert(name.into(), b.to_breaker_input());
-        self
-    }
-    /// Set a pool's own `upstream_credentials:` override (the 1.5.3 per-pool egress-credential mode).
-    pub fn pool_upstream_creds(mut self, name: &str, uc: crate::auth::UpstreamCreds) -> Self {
-        self.pool_upstream_creds.insert(name.into(), uc);
-        self
-    }
-    /// Set a pool member's routing metadata `(tier, cost_per_mtok, tags)` keyed by lane index — the
-    /// projection the routing `Candidate` reads inside the policy arm.
-    pub fn pool_member_meta(
-        mut self,
-        name: &str,
-        lane_idx: usize,
-        tier: Option<&str>,
-        cost_per_mtok: Option<f64>,
-        tags: &[&str],
-    ) -> Self {
-        self.pool_member_meta
-            .entry(name.into())
-            .or_default()
-            .insert(
-                lane_idx,
-                (
-                    tier.map(str::to_string),
-                    cost_per_mtok,
-                    tags.iter().map(|t| (*t).to_string()).collect(),
-                ),
-            );
-        self
-    }
     /// Install a pre-resolved pool ROUTING POLICY (the `route:`/base-hook order) read by the engine
     /// through the `App::pool_policy` facade — the successor to the former `.pool_runtime(PoolRuntime{
     /// policy: … })`. The plane's tests build the `ResolvedPolicy` (a core-owned type they name at
@@ -1629,22 +1514,6 @@ impl TestApp {
         if fallback.is_some() {
             // Assemble the neutral lane and pool rows exactly as production `appbuild` does, and build
             // the kernel's own route tables over them.
-            let member_input = |pool: &str, idx: usize, weight: u32| {
-                let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
-                busbar_kernel::plane_driver::route_input::PoolMemberInput {
-                    model: lane_inputs
-                        .get(idx)
-                        .map(|l| l.model.clone())
-                        .unwrap_or_default(),
-                    lane_idx: idx,
-                    weight,
-                    reasoning: None,
-                    attempt_timeout_ms: None,
-                    tier: meta.and_then(|m| m.0.clone()),
-                    cost_per_mtok: meta.and_then(|m| m.1),
-                    tags: meta.map(|m| m.2.clone()).unwrap_or_default(),
-                }
-            };
             // Primary pools ∪ fallback-only pools: production's `fallback_pools` IS `pools.clone()`, so a
             // fallback target is itself a pool. Dedup by name (a primary definition wins), stable order.
             let mut pool_map: std::collections::BTreeMap<String, Vec<(usize, u32)>> =
@@ -1657,20 +1526,13 @@ impl TestApp {
                 .map(|(name, members)| busbar_kernel::plane_driver::route_input::PoolInput {
                     members: members
                         .iter()
-                        .map(|(idx, w)| member_input(&name, *idx, *w))
+                        .map(
+                            |&(lane_idx, weight)| busbar_kernel::plane_driver::route_input::PoolMemberInput {
+                                lane_idx,
+                                weight,
+                            },
+                        )
                         .collect(),
-                    failover: self.pool_failover.get(&name).map(|f| {
-                        busbar_kernel::plane_driver::route_input::FailoverInput {
-                            timeout_secs: f.timeout_secs,
-                            exclusions: f.exclusions.clone(),
-                            max_hops: f.max_hops,
-                        }
-                    }),
-                    affinity: self.pool_affinity.get(&name).map(|a| {
-                        busbar_kernel::plane_driver::route_input::AffinityInput {
-                            header_name: a.header_name.clone(),
-                        }
-                    }),
                     on_exhausted: match self.on_exhausted_cfgs.get(&name) {
                         Some(crate::config::OnExhausted::FallbackPool(p)) => {
                             busbar_kernel::plane_driver::route_input::OnExhaustedInput::FallbackPool(p.clone())
@@ -1683,8 +1545,6 @@ impl TestApp {
                         }
                         _ => busbar_kernel::plane_driver::route_input::OnExhaustedInput::Status503,
                     },
-                    upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
-                    breaker: self.pool_breaker.get(&name).cloned(),
                     name,
                 })
                 .collect();

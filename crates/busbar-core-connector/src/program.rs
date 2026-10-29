@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS (ARCHITECT round 5 Q-L3B-PROGRAM (A)): ONE long-lived program connection
+//! MEMBER PROGRAMS: ONE long-lived program connection
 //! per (instance, need, member), for a need whose `target_from` is the member-program path
 //! (`busbar_contract::section::MEMBER_PROGRAM`). Each member's program is spawned on the first open
 //! that names it ([`Member::lease`]) and kept: every later open on the member is a LEASE on the
