@@ -169,16 +169,10 @@ pub(crate) fn lane_token_endpoint(
     )
 }
 
-fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
-    match auth {
-        None => AuthStyleInput::Default,
-        Some(config::ProviderAuth::Bearer) => AuthStyleInput::Bearer,
-        Some(config::ProviderAuth::ApiKey) => AuthStyleInput::ApiKey,
-        Some(config::ProviderAuth::JwtBearer) => AuthStyleInput::JwtBearer,
-        Some(config::ProviderAuth::OAuthClientCredentials) => {
-            AuthStyleInput::OAuthClientCredentials
-        }
-    }
+fn auth_style_of(auth: Option<&config::ProviderAuth>) -> AuthStyleInput {
+    auth.map_or(AuthStyleInput::Default, |style| {
+        AuthStyleInput::Named(style.as_str().to_string())
+    })
 }
 
 /// Mirror a provider `health:` block into the neutral [`HealthInput`] carrier field.
@@ -839,7 +833,7 @@ pub fn build_app_from_config(
     // read the same env var (or call the same secret plugin) twice. An entry exists IFF the
     // provider's reference resolved or was declared `none`: an unresolvable reference returns Err
     // from this loop, so no App is built at all.
-    let mut provider_api_keys: HashMap<String, String> = HashMap::new();
+    let mut provider_api_keys: HashMap<String, config::secret::HeldText> = HashMap::new();
     // Build lanes in a DETERMINISTIC order (sorted by model name) rather than `cfg.models`'
     // HashMap iteration order, which is randomized per process start. Lane index is assigned here
     // (`by_model` → `lanes_data.len()`), so a random iteration order gave each lane a different
@@ -905,7 +899,7 @@ pub fn build_app_from_config(
             provider_api_keys.entry(mc.provider.clone())
         {
             let resolved = if provider_cfg.api_key.is_none() {
-                String::new()
+                config::secret::HeldText::default()
             } else {
                 secret_resolver
                     .resolve_string_at_config(
@@ -1032,9 +1026,10 @@ pub fn build_app_from_config(
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as
         // the empty-key warning); no second read of the secret-bearing env var. This PLAINTEXT is
         // carried into the neutral carrier because the plane cannot re-resolve a secret ref.
+        // OWED (row 7): the lane carrier takes the key as a plain `String`.
         let api_key = provider_api_keys
             .get(&ld.route)
-            .cloned()
+            .map(|k| k.expose(&crate::seal::lend()).clone())
             .unwrap_or_default();
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
         // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
@@ -1060,7 +1055,7 @@ pub fn build_app_from_config(
             path_base: provider_cfg.path_base.clone(),
             upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
-            auth_style: auth_style_of(provider_cfg.auth),
+            auth_style: auth_style_of(provider_cfg.auth.as_ref()),
             scope: provider_cfg.scope.clone(),
             token_url,
             token_userinfo,
@@ -1819,7 +1814,8 @@ pub fn build_app_from_config(
                             reference,
                             &busbar_contract::config_time::ConfigScope::config_time(),
                         )
-                        .map(|value| (path.clone(), value))
+                        // OWED (row 7): the authorization-server plane's seam takes plain text.
+                        .map(|value| (path.clone(), value.expose(&crate::seal::lend()).clone()))
                         .map_err(|e| format!("{path}: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;

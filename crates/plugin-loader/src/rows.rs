@@ -54,6 +54,7 @@ fn skipped(s: &SkippedPlugin) -> Skipped {
         name: s.manifest.name.clone(),
         alias: s.manifest.alias.clone(),
         reason: s.reason.clone(),
+        code: s.kind.code(),
     }
 }
 

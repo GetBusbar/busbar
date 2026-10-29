@@ -247,7 +247,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
 
@@ -942,7 +942,7 @@ pub(super) mod session_door {
             &[],
             Arc::new(|_, _| {}),
             busbar_core_connector::pool::PoolPosture::NONE,
-            busbar_kernel::config::secret::resolve_linked_string_at_config,
+            busbar_core_connector::spawn_env::linked_spawn_secret,
         )
         .expect("the connector builds")
     }
@@ -4624,7 +4624,7 @@ async fn serve_configured(
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -7537,11 +7537,11 @@ mod pools_door_refusals {
     }
 
     /// A SPENT BUDGET ON CONVERSE (F25 row 145; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_bedrock_envelope`): 429,
-    /// `x-amzn-errortype: ThrottlingException`, an `x-amzn-requestid`, body `__type:
-    /// ThrottlingException` (#958: an error Converse declares; 1.5.5's 400
-    /// `ServiceQuotaExceededException` is one it does not). RED: a 400, or either field missing or
-    /// another value.
+    /// `forward_pool_integration_tests::test_budget_over_quota_bedrock_envelope`): 1.5.5's 400,
+    /// `x-amzn-errortype: ServiceQuotaExceededException`, an `x-amzn-requestid`, body `__type:
+    /// ServiceQuotaExceededException` (OWNER 2026-10-27: a spent budget is the non-retryable quota
+    /// refusal the plane declares in its refusal table, not the `ThrottlingException` every AWS SDK
+    /// retries). RED: a 429 throttle, or either field missing or another value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_converse() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7555,13 +7555,13 @@ mod pools_door_refusals {
                 Some(body_word("converse_body")),
             )
             .await;
-        assert_eq!(status, 429, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
         assert_eq!(
             field(&head, "x-amzn-errortype"),
-            Some("ThrottlingException")
+            Some("ServiceQuotaExceededException")
         );
         assert!(head.contains_key("x-amzn-requestid"));
-        assert_eq!(json_of(&body)["__type"], "ThrottlingException");
+        assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
     }
 
     /// THE REQUESTS-A-MINUTE LIMIT (F25 row 146; legacy
@@ -7776,7 +7776,7 @@ mod pools_door_refusals {
     /// GOVERNANCE REFUSALS LEAK NO INTERNAL VOCABULARY (F25 row 427; legacy
     /// `ingress_integration_tests::test_governance_rejection_bodies_leak_no_internal_vocab`): a key
     /// restricted to another pool is refused 403; a key whose group has a zero all-time budget is
-    /// refused 429 on chat and 429 `ThrottlingException` on converse (#958); a key whose group
+    /// refused 429 on chat and 400 `ServiceQuotaExceededException` on converse (OWNER 2026-10-27); a key whose group
     /// allows no request a minute is refused 429 with a `Retry-After`; and none of those bodies
     /// says `virtual key`, the key's id, the pool's name or the product's name. RED: a refusal of
     /// another status, or any of those words on the wire.
@@ -7831,8 +7831,8 @@ mod pools_door_refusals {
             .send("POST", &converse_on_pool, Some(body_word("converse_body")))
             .await;
         let text = String::from_utf8_lossy(&body);
-        assert_eq!(status, 429, "a zero budget on converse: {text}");
-        assert!(text.contains("ThrottlingException"), "{text}");
+        assert_eq!(status, 400, "a zero budget on converse: {text}");
+        assert!(text.contains("ServiceQuotaExceededException"), "{text}");
         assert_leak_free(&text, &broke.key_id, pool);
         drop(broke);
         drop(published);
@@ -7929,8 +7929,9 @@ mod pools_door_refusals {
     /// A SPENT BUDGET ON EVERY CALLER DIALECT (F25 row 469; legacy
     /// `ingress_integration_tests::test_governance_over_budget_native_envelope_all_ingress`): a key
     /// over its group's all-time budget is refused 429 on chat, messages, the second chat surface,
-    /// the respond surface and generate, and 429 with body `__type: ThrottlingException` on
-    /// converse (#958: an error Converse declares). RED: any dialect answered otherwise.
+    /// the respond surface and generate, and 400 with body `__type: ServiceQuotaExceededException` on
+    /// converse (OWNER 2026-10-27: the plane's declared quota refusal). RED: any dialect answered
+    /// otherwise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7939,9 +7940,11 @@ mod pools_door_refusals {
         let (rig, far) = over_budget(instance).await;
         for (path, request) in every_dialect() {
             let (status, _, body) = rig.send("POST", path, Some(request)).await;
-            assert_eq!(status, 429, "{path}: {}", String::from_utf8_lossy(&body));
             if path == door_word("converse_path") {
-                assert_eq!(json_of(&body)["__type"], "ThrottlingException");
+                assert_eq!(status, 400, "{path}: {}", String::from_utf8_lossy(&body));
+                assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
+            } else {
+                assert_eq!(status, 429, "{path}: {}", String::from_utf8_lossy(&body));
             }
         }
         assert_eq!(far.served(), 0);
