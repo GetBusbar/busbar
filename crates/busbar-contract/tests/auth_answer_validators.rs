@@ -17,6 +17,9 @@ use busbar_contract::abi::auth::{
     CAP_OUTBOUND, DECISION_CONTINUE, DECISION_STOP, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY,
     POINT_PEER, STRIP_FIELD, STRIP_QUERY,
 };
+use busbar_contract::abi::auth::{
+    ranked, style_rank, STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL, STYLE_RANK_MASK,
+};
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 
@@ -581,6 +584,46 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
     );
 }
 
+/// RED (arch-audit u29 F1): a style STATES where its token endpoint is — the provider entry's
+/// `token_url`, or the credential document — so the host judges that endpoint by the bit, never by
+/// the style's name; and it states its LIST RANK, where the host lists it among the outbound styles a
+/// provider's `auth:` may name. Each bit is in the vocabulary alone and with the others; a rank
+/// spells and reads back.
+#[test]
+fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
+    let head = POINT_HEAD;
+    for flags in [
+        STYLE_ENDPOINT_TOKEN_URL,
+        STYLE_ENDPOINT_FROM_CREDENTIAL,
+        ranked(1),
+        ranked(255),
+        STYLE_ENDPOINT_FROM_CREDENTIAL | ranked(3),
+        STYLE_CALLER_CREDENTIAL | STYLE_ENDPOINT_TOKEN_URL | ranked(4),
+    ] {
+        assert_eq!(
+            check_style_decl(flags, head),
+            Ok(AuthPoints::HEAD),
+            "{flags:#x}"
+        );
+    }
+    assert_eq!(style_rank(ranked(7) | STYLE_ENDPOINT_TOKEN_URL), 7);
+    assert_eq!(style_rank(STYLE_CALLER_CREDENTIAL), 0);
+    assert_eq!(ranked(255), STYLE_RANK_MASK);
+}
+
+/// RED (arch-audit u29 F1): a style takes its token endpoint from ONE place: both endpoint bits
+/// together contradict each other and refuse the load.
+#[test]
+fn a_style_decl_stating_both_token_endpoints_is_fault() {
+    assert_eq!(
+        check_style_decl(
+            STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL,
+            POINT_HEAD
+        ),
+        red(Rule::Contradiction, "style.endpoints")
+    );
+}
+
 /// RED: a style needs at least one point, and a valid set (THE DESIGN, "Auth points and guest
 /// lists", step 1).
 #[test]
@@ -917,4 +960,32 @@ fn a_target_is_a_span_in_the_buffer_or_absent() {
             red(Rule::Contradiction, "target.target.unexpected")
         );
     }
+}
+
+/// RED (arch-audit u29 F1): THE ONE ORDER the host lists the outbound styles a provider's `auth:`
+/// may name in: ranked styles first, by rank, whichever row states them; then the unranked ones in
+/// the order the rows state them; a name stated twice listed once, at its first place.
+#[test]
+fn the_declared_styles_list_ranked_first_then_in_registration_order() {
+    use busbar_contract::auth_calls::{listed_styles, DeclaredStyle};
+    let style = |name: &str, flags: u32| DeclaredStyle {
+        name: name.to_string(),
+        flags,
+    };
+    let listed = listed_styles([
+        style("h1", ranked(2)),
+        style("h2", 0),
+        style("h3", ranked(1) | STYLE_CALLER_CREDENTIAL),
+        style("o1", ranked(4) | STYLE_ENDPOINT_TOKEN_URL),
+        style("o2", 0),
+        style("o3", ranked(3) | STYLE_ENDPOINT_FROM_CREDENTIAL),
+        style("h2", ranked(1)),
+    ]);
+    let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["h3", "h1", "o3", "o1", "h2", "o2"]);
+    assert_eq!(listed[3].flags, ranked(4) | STYLE_ENDPOINT_TOKEN_URL);
+    assert_eq!(
+        listed[4].flags, 0,
+        "a name stated twice keeps its first statement"
+    );
 }

@@ -213,6 +213,8 @@ impl LoginMethods {
         for (name, mc) in &cfg.methods {
             let mut resolved = crate::config::secret::resolve_settings(
                 &mc.settings,
+                &registry.secret_slots(&mc.module),
+                &mc.module,
                 secret_resolver,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
@@ -289,9 +291,10 @@ impl LoginMethods {
                     .map_err(|e| {
                         format!("identity-providers.{name} browser_login.client_secret: {e}")
                     })?;
+                // OWED (row 7): the client secret is lent inline, as a JSON string.
                 resolved.insert(
                     CLIENT_SECRET_SLOT.to_string(),
-                    serde_json::Value::String(secret),
+                    serde_json::Value::String(secret.expose(&crate::seal::lend()).clone()),
                 );
             }
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the

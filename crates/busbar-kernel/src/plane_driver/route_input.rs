@@ -19,19 +19,14 @@ use std::collections::HashMap;
 /// (`None` ⇒ [`AuthStyleInput::Default`], the protocol's native auth). The plane maps it to the style
 /// its lane's credential is bound under, on the auth plugin that serves that style
 /// (`busbar_kernel::bound_credential`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum AuthStyleInput {
     /// No `auth:` override — the protocol's native auth (its declared egress scheme).
     #[default]
     Default,
-    /// `auth: bearer`.
-    Bearer,
-    /// `auth: api-key`.
-    ApiKey,
-    /// `auth: jwt-bearer` (RFC 7523).
-    JwtBearer,
-    /// `auth: oauth-client-credentials` (RFC 6749 §4.4).
-    OAuthClientCredentials,
+    /// `auth: <style>`: the opaque style word a loaded auth plugin declares (arch-audit u29 F1);
+    /// the kernel names none.
+    Named(String),
 }
 
 /// Active health-probe mode — a neutral mirror of `busbar_kernel::config::HealthMode`.
@@ -79,11 +74,6 @@ pub struct LaneInput {
     pub path: Option<String>,
     /// Optional path-BASE override (URL-model protocols).
     pub path_base: Option<String>,
-    /// The provider's configured tenant (`organization`, `project`), set on every upstream request
-    /// under the header its dialect declares; `None` sends nothing.
-    pub organization: Option<String>,
-    /// See `organization`.
-    pub project: Option<String>,
     /// Optional upstream model-name override (the wire model), else the config key.
     pub upstream_model: Option<String>,
     /// The PRE-RESOLVED provider credential — the resolved secret, carried because the plane cannot
@@ -283,10 +273,6 @@ pub struct PoolInput {
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 pub struct LegacyLaneKeys {
-    /// The provider's configured tenant (`LaneInput::organization`).
-    pub organization: Option<String>,
-    /// See `organization`.
-    pub project: Option<String>,
     /// The provider-level lane capabilities, read off the same table.
     #[serde(flatten)]
     provider_caps: crate::ir::lane_caps::ProviderLaneCaps,

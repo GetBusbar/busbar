@@ -231,15 +231,27 @@ summary = "A model has a `rate_card` entry present but every tier (input, output
 action = "If the model is intentionally free, ignore this. Otherwise fill in the model's `rate_card` rates (micro-units per token) so its usage prices and counts against any `budget:` limit."
 
 [[diagnostic]]
+name = "CONFIG_PROVIDER_DESTINATION_REFUSED"
+doc = "A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade)."
+code = 3025
+class = "Config"
+slug = "config-provider-destination-refused"
+title = "A provider URL names a private or loopback host the destination guard refuses"
+severity = "Actionable"
+summary = "A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host."
+action = "Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it."
+
+[[diagnostic]]
 name = "CONFIG_METADATA_ENTRY_NAMES_NO_HOST"
-doc = "A metadata host-list entry names no host the guard judges; it boots, matches nothing and is dropped."
+doc = "RETIRED: a metadata host-list entry that names no host is refused at startup, not warned about."
 code = 3024
 class = "Config"
 slug = "config-metadata-entry-names-no-host"
-title = "A metadata host-list entry names no host (it matches nothing and is dropped)"
+title = "A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED"
 severity = "Actionable"
-summary = "An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` names no host a URL client would dial: UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or its last label reads as a number but it is no IPv4 address (`1.2.3.4.5`, `999.1.1.1`). It could never match a destination, so it is dropped from matching and the configuration boots, as it did on 1.5.5. The built-in cloud-metadata denylist still blocks every real target. Emitted once per entry at config load, naming the key and the entry."
-action = "Fix the named entry as the line says (write the host in ASCII or punycode, decoded, or as a dotted-quad address), or remove it. Nothing else changes until you do."
+summary = "RETIRED. Nothing emits this code: a metadata host-list entry that names no host is refused at startup by config validation, naming the key and the entry."
+action = "Nothing emits this code. Fix the entry config validation names."
+retired = true
 
 [[diagnostic]]
 name = "CONFIG_AUTH_CHAIN_FULL_SCOPE"
@@ -989,6 +1001,39 @@ title = "auth.chain is empty — OPEN RELAY (every request admitted unauthentica
 severity = "Actionable"
 summary = "The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development."
 action = "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot."
+
+[[diagnostic]]
+name = "CREDENTIAL_AT_REST_UNOPENABLE"
+doc = "A stored recoverable credential opens under neither at-rest key, so it does not authenticate."
+code = 8023
+class = "Governance"
+slug = "credential-at-rest-unopenable"
+title = "A stored recoverable credential opens under neither at-rest key (it does not authenticate)"
+severity = "Actionable"
+summary = "A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid."
+action = "Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it."
+
+[[diagnostic]]
+name = "CREDENTIAL_AT_REST_REWRAP_PENDING"
+doc = "Recoverable credentials still need re-sealing under the current at-rest key."
+code = 8024
+class = "Governance"
+slug = "credential-at-rest-rewrap-pending"
+title = "Recoverable credentials are not yet re-sealed under the current at-rest key"
+severity = "Actionable"
+summary = "A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under."
+action = "Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes."
+
+[[diagnostic]]
+name = "CREDENTIAL_AT_REST_LEGACY_PLAIN"
+doc = "A recoverable credential written before 1.6.0 is stored in the clear."
+code = 8025
+class = "Governance"
+slug = "credential-at-rest-legacy-plain"
+title = "A recoverable credential written before 1.6.0 is stored in the clear"
+severity = "Actionable"
+summary = "A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key."
+action = "Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear."
 
 [[diagnostic]]
 name = "STORE_SECRET_REF_UNRESOLVED"
