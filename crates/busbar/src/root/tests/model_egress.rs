@@ -369,10 +369,7 @@ fn a_keyless_lane_is_not_probed() {
         lanes: [("m-keyed".to_string(), 0), ("m-local".to_string(), 1)]
             .into_iter()
             .collect(),
-        app: {
-            let app = TestApp::new().build();
-            Arc::new(move || Arc::clone(&app))
-        },
+        app: LiveApp::fixed(TestApp::new().build()),
     };
     let (_, members) = serving.probe_members();
     let probed: Vec<&str> = members.iter().map(|(_, m)| m.name.as_str()).collect();
