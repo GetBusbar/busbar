@@ -24,7 +24,7 @@
 //!
 //! The operator's binding config is the source of truth for whether a binding is TLS.
 //! [`prepare`] reconciles it against the transport's declared
-//! [`busbar_contract::transport::TransportMeta::WRAPPABLE_BYTE_STREAM`] capability:
+//! wrappable-byte-stream capability:
 //!
 //! * config plaintext (`tls: None`) ⇒ the [`Identity`] wrap (a byte-for-byte no-op).
 //! * config TLS + a capable transport ⇒ the material is resolved and a [`Tls`] wrap is built and
@@ -103,7 +103,9 @@ fn load_cert_chain(
 ) -> Result<Vec<CertificateDer<'static>>, String> {
     let src = secret.describe();
     let bytes = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
-    let certs = CertificateDer::pem_slice_iter(&bytes)
+    let seal = busbar_kernel::seal::lend();
+    let bytes = bytes.expose(&seal);
+    let certs = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
     if certs.is_empty() {
@@ -124,11 +126,13 @@ fn load_private_key(
 ) -> Result<PrivateKeyDer<'static>, String> {
     let src = secret.describe();
     let bytes = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
+    let seal = busbar_kernel::seal::lend();
+    let bytes = bytes.expose(&seal);
     // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1, and SEC1 sections, picking the first
     // private-key section it finds. `NoItemsFound` means none was present; any other variant is a
     // genuine parse error. Neither path echoes key material - error messages name only the source.
     use rustls::pki_types::pem::Error as PemError;
-    PrivateKeyDer::from_pem_slice(&bytes).map_err(|e| match e {
+    PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
         PemError::NoItemsFound => {
             format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
         }
@@ -166,7 +170,9 @@ fn load_client_roots(
 ) -> Result<RootCertStore, String> {
     let src = secret.describe();
     let bytes = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
-    let cas = CertificateDer::pem_slice_iter(&bytes)
+    let seal = busbar_kernel::seal::lend();
+    let bytes = bytes.expose(&seal);
+    let cas = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
     if cas.is_empty() {
@@ -376,7 +382,7 @@ impl ConnectionSecurity for Tls {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailClosed {
     /// The binding's `tls:` config demands TLS but the transport it would be served over has not
-    /// declared [`busbar_contract::transport::TransportMeta::WRAPPABLE_BYTE_STREAM`]. Serving it in
+    /// declared a wrappable byte stream. Serving it in
     /// plaintext instead would be exactly the silent downgrade this seam exists to rule out.
     IncapableTransport {
         /// The label (listener address, or similar) the caller passed to [`prepare`], for the

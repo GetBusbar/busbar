@@ -78,8 +78,12 @@ echo "gate: ephemeral release pubkey $PUB"
 # ── 1. Build busbar with the ephemeral PUBLIC key embedded ───────────────────────────────────────
 # option_env!("BUSBAR_RELEASE_PUBKEY") is COMPILE-time; cargo tracks env-var deps of env!/option_env!
 # in dep-info, but touch the crate anyway so a cached no-key build can never be reused.
+# The binary is the DEFAULT DISTRIBUTION's (dist/default: core plus the standard plugins, the llm
+# plane among them): core alone links no plugin, so it serves no provider lane and refuses the
+# config below before any plugin is judged. Built into the same target dir the gate reads.
 touch "$BUSBAR_DIR/crates/plugin-loader/src/sign.rs"
-(cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q --bin busbar)
+(cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q \
+  --manifest-path dist/default/Cargo.toml --target-dir "$TARGET_DIR" --bin busbar)
 BUSBAR_VERSION=$("$BUSBAR" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 echo "gate: busbar $BUSBAR_VERSION built with embedded ephemeral key"
 
@@ -201,7 +205,6 @@ cat > "$WORK/providers.yaml" <<'EOF'
 mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 EOF
 # The reference must be written in the CURRENT config grammar, per kind. 1.5.3 made two of these
 # DEFINE-ONCE maps, and the pre-1.5.3 spellings are now fail-closed boot refusals — which this gate

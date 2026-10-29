@@ -27,22 +27,116 @@
 //!   where the SDK writes back a credential the plugin itself supplied.
 //!
 //! Every [`Secret::expose`] call site is an audit point where the secret escapes on purpose.
+//!
+//! **A PLUGIN'S OWN SECRET** (Part 2 #54, coordinator ruling on #1192: "the same type, not a new
+//! one"). A plugin that holds secret material of its own (a minted token, a signing key) holds it
+//! as the same `Secret`, under an OWNER: `Secret<T, Own>`, where `Own` is the plugin crate's own
+//! seal, minted once by [`own_seal!`](crate::own_seal) as a crate-private type no other crate can
+//! name or construct. [`Secret::held`] wraps the value and [`Secret::expose_own`] reads it under
+//! that seal, so a plugin reads its own secret and no other: another crate's seal is another type
+//! (a compile error), and the kernel's secrets ([`Kernel`], the default owner) offer no
+//! `expose_own` at all. Everything else (the redaction, no serde, the zeroize on drop, the
+//! constant-time equality) holds for every owner alike.
 
 use core::fmt;
+use core::marker::PhantomData;
 
 use zeroize::Zeroize;
 
 /// A resolved secret held in memory. `Debug`/`Display` print `"[REDACTED]"`; the value never
 /// serializes; the backing memory is zeroized on drop; the value is read only through
-/// [`Secret::expose`], under a kernel seal. See the module docs. `Default` is an EMPTY secret (what
-/// a `#[derive(Default)]` on a struct with a `Secret` field fills in): no material.
-#[derive(Default)]
-pub struct Secret<T: Zeroize>(pub(crate) T);
+/// [`Secret::expose`], under a kernel seal, or, for a plugin's own secret, [`Secret::expose_own`]
+/// under its owner's seal. See the module docs. `Default` is an EMPTY secret (what a
+/// `#[derive(Default)]` on a struct with a `Secret` field fills in): no material.
+pub struct Secret<T: Zeroize, O = Kernel>(pub(crate) T, PhantomData<fn() -> O>);
+
+/// The default OWNER of a [`Secret`]: the kernel. Uninhabited, and no [`OwnerSeal`]: a
+/// kernel-owned secret is read only through [`Secret::expose`], under a kernel seal.
+#[derive(Debug)]
+pub enum Kernel {}
+
+/// The supertrait that closes [`OwnerSeal`]: implemented only by [`own_seal!`](crate::own_seal)'s
+/// expansion. Not part of the API.
+#[doc(hidden)]
+pub mod __owner {
+    /// The closing supertrait.
+    pub trait Minted {}
+}
+
+/// A plugin crate's OWN SEAL over the secrets it holds ([`Secret::held`], [`Secret::expose_own`]):
+/// minted once per crate by [`own_seal!`](crate::own_seal), as a crate-private type with a private
+/// constructor, so no other crate can name it, construct it, or read a secret it owns.
+pub trait OwnerSeal: __owner::Minted {}
+
+/// MINT THIS CRATE'S OWN SEAL ([`OwnerSeal`]): `busbar_contract::own_seal!(Own);` declares the
+/// crate-private `Own`, its one constructor `Own::here()` (crate-private too), and its seal. A
+/// secret the crate holds is then `Secret<T, Own>`: wrapped with [`Secret::held`], read with
+/// [`Secret::expose_own`]`(&Own::here())`.
+///
+/// Another owner's seal cannot read it (a mismatched type):
+///
+/// ```compile_fail,E0308
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+///     pub(crate) fn key() -> busbar_contract::Secret<String, Own> {
+///         busbar_contract::Secret::held(String::from("sk-own"))
+///     }
+/// }
+/// mod b {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let key = a::key();
+/// let _ = key.expose_own(&b::Own::here());
+/// ```
+///
+/// A kernel-owned secret offers no owner read:
+///
+/// ```compile_fail,E0599
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let key = busbar_contract::Secret::new(String::from("sk-live"));
+/// let _ = key.expose_own(&a::Own::here());
+/// ```
+///
+/// and the seal is constructed only through its crate-private `here()`, never by its field:
+///
+/// ```compile_fail
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let _ = a::Own(());
+/// ```
+#[macro_export]
+macro_rules! own_seal {
+    ($name:ident) => {
+        /// This crate's own seal over the secrets it holds (`busbar_contract::OwnerSeal`).
+        #[derive(Debug)]
+        pub(crate) struct $name(());
+
+        impl $name {
+            /// The crate's seal: constructed only inside this crate.
+            #[allow(dead_code)]
+            pub(crate) const fn here() -> Self {
+                Self(())
+            }
+        }
+
+        impl $crate::redacted::__owner::Minted for $name {}
+        impl $crate::redacted::OwnerSeal for $name {}
+    };
+}
+
+impl<T: Zeroize + Default, O> Default for Secret<T, O> {
+    fn default() -> Self {
+        Self(T::default(), PhantomData)
+    }
+}
 
 impl<T: Zeroize> Secret<T> {
     /// Wrap a resolved secret value.
     pub fn new(secret: T) -> Self {
-        Self(secret)
+        Self(secret, PhantomData)
     }
 
     /// Borrow the underlying secret: THE ONE RAW ACCESSOR, sealed (#54). `seal` is a kernel-minted
@@ -69,36 +163,130 @@ impl<T: Zeroize> Secret<T> {
     }
 }
 
+/// THE HOST'S ZEROIZING BYTE HOLDER (the credential chip, row 6: host-owned secret bytes): a secret plugin
+/// writes its resolved value straight into one ([`Secret::zeroed`], [`Secret::lend_mut`]); the
+/// loader and the kernel keep the bytes in it, never in a `String`; it reaches a consumer's `open`
+/// from here and is wiped when it drops.
+impl Secret<Vec<u8>> {
+    /// A zeroed holder of `cap` bytes, to lend a secret plugin's `resolve` as its buffer.
+    #[must_use]
+    pub fn zeroed(cap: usize) -> Self {
+        Self(vec![0; cap], PhantomData)
+    }
+
+    /// The holder's buffer as a call lends it: its address and its length. Writing through it is
+    /// the plugin's answer; reading it back is `unsafe` and reveals nothing [`Secret::expose`]
+    /// would not.
+    pub fn lend_mut(&mut self) -> (*mut u8, usize) {
+        (self.0.as_mut_ptr(), self.0.len())
+    }
+
+    /// Keep the first `n` bytes, the value a plugin wrote: the bytes past them are wiped in place
+    /// and the allocation is kept (no reallocation, so no copy of the value is left behind).
+    pub fn keep(&mut self, n: usize) {
+        let n = n.min(self.0.len());
+        self.0[n..].zeroize();
+        self.0.truncate(n);
+    }
+
+    /// The bytes as the UTF-8 text a text secret is, MOVED into a [`Secret<String>`] (the same
+    /// allocation, never a copy), its trailing newline trimmed in place.
+    ///
+    /// # Errors
+    /// [`NotText`]: the bytes are not UTF-8, or nothing is left after the trim. The bytes are
+    /// wiped either way.
+    pub fn into_text(mut self) -> Result<Secret<String>, NotText> {
+        let bytes = core::mem::take(&mut self.0);
+        let mut text = match String::from_utf8(bytes) {
+            Ok(t) => Secret::new(t),
+            Err(e) => {
+                e.into_bytes().zeroize();
+                return Err(NotText::NotUtf8);
+            }
+        };
+        let kept = text.0.trim_end_matches(['\r', '\n']).len();
+        // Cut in place: the trimmed newline stays in the allocation's spare capacity, which the
+        // holder's drop wipes whole (`Vec::zeroize` zeroes the full capacity).
+        text.0.truncate(kept);
+        if text.0.is_empty() {
+            return Err(NotText::Empty);
+        }
+        Ok(text)
+    }
+}
+
+impl Secret<String> {
+    /// The text's bytes, MOVED into a [`Secret<Vec<u8>>`] (the same allocation, never a copy).
+    #[must_use]
+    pub fn into_bytes(mut self) -> Secret<Vec<u8>> {
+        Secret(core::mem::take(&mut self.0).into_bytes(), PhantomData)
+    }
+}
+
+/// Why resolved bytes are not a text secret ([`Secret::into_text`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotText {
+    /// The bytes are not UTF-8.
+    NotUtf8,
+    /// Nothing is left once the trailing newline is trimmed.
+    Empty,
+}
+
+/// Every `Secret` wipes its value when it drops ([`Drop`] below): the marker a holder's type-level
+/// check reads.
+impl<T: Zeroize, O> zeroize::ZeroizeOnDrop for Secret<T, O> {}
+
+/// A holder can be wiped before it drops (a lend that fails part-way wipes what it lent).
+impl<T: Zeroize, O> Zeroize for Secret<T, O> {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl<T: Zeroize, O: OwnerSeal> Secret<T, O> {
+    /// Wrap a secret the plugin crate owning `O` holds itself.
+    pub fn held(secret: T) -> Self {
+        Self(secret, PhantomData)
+    }
+
+    /// Borrow a secret the caller's own crate holds, under that crate's seal: the owner reads its
+    /// own secret and no other (another crate's seal is another type). AUDIT POINT, like
+    /// [`Secret::expose`].
+    pub fn expose_own(&self, _seal: &O) -> &T {
+        &self.0
+    }
+}
+
 impl<T: Zeroize> From<T> for Secret<T> {
     fn from(secret: T) -> Self {
-        Self(secret)
+        Self(secret, PhantomData)
     }
 }
 
 /// `Debug` NEVER reveals the secret — this is the core guarantee that makes redaction structural for
 /// any struct that embeds a `Secret` field and derives `Debug`.
-impl<T: Zeroize> fmt::Debug for Secret<T> {
+impl<T: Zeroize, O> fmt::Debug for Secret<T, O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
     }
 }
 
 /// `Display` NEVER reveals the secret either (a `{}`-format into a log/message is just as leaky).
-impl<T: Zeroize> fmt::Display for Secret<T> {
+impl<T: Zeroize, O> fmt::Display for Secret<T, O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
     }
 }
 
-impl<T: Zeroize> Drop for Secret<T> {
+impl<T: Zeroize, O> Drop for Secret<T, O> {
     fn drop(&mut self) {
         self.0.zeroize();
     }
 }
 
-impl<T: Zeroize + Clone> Clone for Secret<T> {
+impl<T: Zeroize + Clone, O> Clone for Secret<T, O> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), PhantomData)
     }
 }
 
@@ -110,13 +298,13 @@ impl<T: Zeroize + Clone> Clone for Secret<T> {
 /// compare credentials, here over its byte form — closes that channel for every secret comparison,
 /// structurally. The bound is `AsRef<[u8]>`, satisfied by both shapes a secret is wrapped in: a
 /// `String` (a token, a key) and a `Vec<u8>` (DER key material, a raw credential).
-impl<T: Zeroize + AsRef<[u8]>> PartialEq for Secret<T> {
+impl<T: Zeroize + AsRef<[u8]>, O> PartialEq for Secret<T, O> {
     fn eq(&self, other: &Self) -> bool {
         constant_time_eq(&self.0, &other.0)
     }
 }
 
-impl<T: Zeroize + AsRef<[u8]>> Eq for Secret<T> {}
+impl<T: Zeroize + AsRef<[u8]>, O> Eq for Secret<T, O> {}
 
 // ── The constant-time primitive `Secret`'s `PartialEq` is built on ───────────────────────────
 //
