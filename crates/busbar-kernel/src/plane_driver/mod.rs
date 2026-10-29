@@ -129,7 +129,8 @@ use busbar_contract::ids::RecordSchemaId;
 /// The capacities of the host buffers the driver hands a plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferCaps {
-    /// Reply bytes per `on_piece` (the backpressure window).
+    /// Reply bytes per `on_piece` (the backpressure window); a caller's piece's window adds its
+    /// arrival's body length.
     pub reply: usize,
     /// Unit counts.
     pub units: usize,
