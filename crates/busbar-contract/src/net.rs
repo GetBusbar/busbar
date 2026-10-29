@@ -339,6 +339,25 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(addr))
 }
 
+/// Whether `s` is a SOCKET LITERAL: `v4:port` or `[v6]:port`, exactly the grammar
+/// `std::net::SocketAddr`'s parser accepts (no named zone, no alternate v4 spelling, a port in
+/// `0..=65535`, never a bare host). A plugin whose source may not name the system's network module
+/// tells a pinned literal from a name here, and accepts exactly what the parser accepts.
+#[must_use]
+pub fn is_socket_literal(s: &str) -> bool {
+    s.parse::<std::net::SocketAddr>().is_ok()
+}
+
+/// Whether `s` is a bare IP LITERAL, v4 or v6: exactly the grammar `std::net::IpAddr`'s parser
+/// accepts (a dotted quad with no leading zeros or alternate spelling, or an IPv6 address with no
+/// brackets, no zone and no port). An IP literal is not a name: a plugin whose source may not name
+/// the system's network module tells one from a name here, and accepts exactly what the parser
+/// accepts.
+#[must_use]
+pub fn is_ip_literal(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok()
+}
+
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
 /// canonical v4 or v6 literal (a v6 zone suffix `%…` is ignored), or an alternate IPv4 spelling
 /// ([`expand_alternate_ipv4`]). `None` for a DNS name.
@@ -582,8 +601,7 @@ pub struct UrlParts {
     /// The host, unbracketed, through [`normalize_host`]. An ASCII host keeps its case as written. A
     /// non-ASCII one is read as `url` 2.5.8 read it: under a special scheme ([`is_special_scheme`])
     /// its UTS #46 punycode name ([`url_host_to_ascii`]), under any other its opaque spelling,
-    /// percent-encoded. The host is always ASCII. The authority and `Host` a dial sends are
-    /// [`dial_authority`]'s.
+    /// percent-encoded. The host is always ASCII.
     pub host: String,
     /// The port the authority spelled, if it spelled one (an empty `:` is none, as WHATWG reads it).
     pub port: Option<u16>,
@@ -686,7 +704,7 @@ pub fn url_host_to_ascii(host: &str) -> Result<Cow<'_, str>, UrlRefusal> {
 /// `url` 2.5.8's IPv4 READING of a host already mapped to ASCII ([`url_host_to_ascii`]), the step
 /// its host parser takes after the mapping (`Host::parse_cow`: the WHATWG ends-in-a-number check,
 /// then the IPv4 parser, `url/src/host.rs` `ends_in_a_number`, `parse_ipv4number`,
-/// `parse_ipv4addr`), the same reading [`dial_authority`] serialises a special host by.
+/// `parse_ipv4addr`).
 /// `Ok(Some(addr))`: `url` dials the host as `addr` (`127.1`, `0x7f.1`, `017700000001` and `0x` all
 /// read as an address; one trailing root dot is allowed). `Ok(None)`: the host is a domain to
 /// `url`.
@@ -773,7 +791,7 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
 }
 
 /// [`parse_url`], and the host exactly as the authority spelled it (the IPv6 literal without its
-/// brackets): [`dial_authority`] serialises the host from that spelling as `url` did.
+/// brackets).
 fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
     let cleaned = strip_whatwg_removed(url);
     let s = cleaned.as_ref();
@@ -890,19 +908,6 @@ pub fn is_special_scheme(scheme: &str) -> bool {
     UrlFamily::of(scheme) == UrlFamily::Web || scheme == "ftp"
 }
 
-/// The port `url` 2.5.8 elides for a (lower-case) scheme (`url::parser::default_port`): an explicit
-/// port equal to it is dropped from the URL, and so from the authority and `Host` a client sends.
-#[must_use]
-pub fn scheme_default_port(scheme: &str) -> Option<u16> {
-    // The secured web schemes take 443, the other two of [`UrlFamily::Web`]'s list 80.
-    match scheme {
-        "https" | "wss" => Some(443),
-        "ftp" => Some(21),
-        s if UrlFamily::of(s) == UrlFamily::Web => Some(80),
-        _ => None,
-    }
-}
-
 /// `url`'s opaque host serialisation (`Host::parse_opaque`): every byte outside printable ASCII
 /// (the C0 controls, DEL and every non-ASCII byte, `percent_encoding::CONTROLS`) as `%XX`, upper-case
 /// hex; every other byte as written.
@@ -916,106 +921,6 @@ fn opaque_host(raw: &str) -> String {
         }
     }
     out
-}
-
-/// WHERE A DIAL GOES AND WHAT IT CALLS THE PLACE, as busbar 1.5.5's client stack wrote them: the
-/// authority a dial target names and the `Host` value a request to it carries. Read by
-/// [`dial_authority`]; every framer takes these bytes from here rather than spelling its own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DialAuthority {
-    /// The host as `url` 2.5.8 serialised it: a special-scheme or bare host through UTS #46 (so
-    /// lower-case, punycode for an IDN, a root dot kept), an IPv4 host in any spelling `url` reads
-    /// as its dotted quad, an IPv6 host compressed and in brackets, and any other scheme's host
-    /// opaque ([`parse_url`]). Never a userinfo.
-    pub host: String,
-    /// The port the authority carries: the one spelled, `None` when none was or when it is the
-    /// scheme's [`scheme_default_port`] (which `url` elides).
-    pub port: Option<u16>,
-    /// The port the connection is made to: [`DialAuthority::port`], else the scheme's
-    /// [`scheme_default_port`]; `None` when neither names one (a bare host, a scheme with no default).
-    pub dial_port: Option<u16>,
-    /// `host[:port]`: the authority of the URL `url` serialised.
-    pub authority: String,
-    /// The `Host` header value: the host, and the port when the URL kept one. busbar 1.5.5's
-    /// `hyper-util` 0.1.20 legacy client wrote `uri.host()` plus `:port` for a port other than 443
-    /// (`https`/`wss`) or 80 (otherwise) over the URI reqwest 0.12.28 built from `url`'s string, in
-    /// which the default port was already elided: the same bytes as [`DialAuthority::authority`].
-    pub host_header: String,
-}
-
-/// READ A DIAL TARGET'S AUTHORITY AND `Host`, the bytes busbar 1.5.5 dialled and sent for it.
-///
-/// `target` is a URL (read by [`parse_url`]'s rules) or a bare `host`, `host:port` or `[v6]:port`
-/// authority, chosen as [`target_host`] chooses. The host is serialised from its spelling as `url`
-/// 2.5.8 serialised it ([`DialAuthority::host`]); a bare authority's host is read as a special
-/// scheme's (UTS #46) and its port is kept as written. A userinfo is dropped, never repeated.
-///
-/// # Errors
-///
-/// What [`parse_url`] refuses, and [`UrlRefusal::NoHost`] for a special-scheme host `url` refused:
-/// one UTS #46 refuses, or one that ends in a number and is no IPv4 address (`1.2.3.4.5`, `1.256`).
-/// [`UrlRefusal::NoHost`] too wherever [`target_host`], the destination check's reader, reads no
-/// host (`ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi`, an opaque `%25` or `%40` host): the authority a
-/// dial would take is never one the destination check refuses to read.
-pub fn dial_authority(target: &str) -> Result<DialAuthority, UrlRefusal> {
-    let trimmed = strip_whatwg_removed(target);
-    let web_scheme = trimmed
-        .split_once(':')
-        .is_some_and(|(s, _)| UrlFamily::of(&s.to_ascii_lowercase()) == UrlFamily::Web);
-    let bare = !web_scheme && !trimmed.contains("://");
-    let (parts, raw) = if bare {
-        parse_url_raw(&format!("http://{trimmed}"))?
-    } else {
-        parse_url_raw(&trimmed)?
-    };
-    // One reader decides whether the target names a host at all: the destination check's.
-    if target_host(&trimmed).is_none() {
-        return Err(UrlRefusal::NoHost);
-    }
-    let host = if parts.host.contains(':') {
-        let v6: Ipv6Addr = parts.host.parse().map_err(|_| UrlRefusal::Bracket)?;
-        format!("[{}]", url_ipv6(&v6))
-    } else if bare || is_special_scheme(&parts.scheme) {
-        special_host(&raw)?
-    } else {
-        // `url`'s opaque host is the spelling itself (its non-printable bytes encoded): no decode,
-        // no case fold, the root dot kept.
-        opaque_host(&raw)
-    };
-    let default = if bare {
-        None
-    } else {
-        scheme_default_port(&parts.scheme)
-    };
-    let port = parts.port.filter(|p| Some(*p) != default);
-    let authority = match port {
-        Some(p) => format!("{host}:{p}"),
-        None => host.clone(),
-    };
-    Ok(DialAuthority {
-        host,
-        port,
-        dial_port: port.or(default),
-        host_header: authority.clone(),
-        authority,
-    })
-}
-
-/// `url`'s special host (`Host::parse`): the spelling percent-decoded, through UTS #46 with the
-/// WHATWG deny list (ASCII lower-cased too), and read as an IPv4 address when it ends in a number.
-fn special_host(raw: &str) -> Result<String, UrlRefusal> {
-    let decoded = percent_decode_host(raw);
-    let mapped = idna::domain_to_ascii_cow(decoded.as_bytes(), idna::AsciiDenyList::URL)
-        .map_err(|_| UrlRefusal::NoHost)?;
-    if mapped.is_empty() {
-        return Err(UrlRefusal::NoHost);
-    }
-    if ends_in_a_number(&mapped) {
-        return url_ipv4(&mapped)
-            .map(|v4| v4.to_string())
-            .ok_or(UrlRefusal::NoHost);
-    }
-    Ok(mapped.into_owned())
 }
 
 /// `url`'s ends-in-a-number check (WHATWG): the last label, or the one before an empty last label,
@@ -1088,43 +993,28 @@ fn url_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(ipv4))
 }
 
-/// `url`'s IPv6 serialiser (WHATWG): lower-case hex pieces, the first longest run of two or more
-/// zero pieces compressed to `::`, no embedded IPv4 form.
-fn url_ipv6(addr: &Ipv6Addr) -> String {
-    let pieces = addr.segments();
-    let (mut best, mut best_len, mut start) = (None::<usize>, 1_usize, None::<usize>);
-    // A non-zero sentinel after the eighth piece closes a run that reaches the end.
-    for (i, piece) in pieces.iter().copied().chain([1]).enumerate() {
-        if piece == 0 {
-            start.get_or_insert(i);
-        } else if let Some(s) = start.take() {
-            if i - s > best_len {
-                best = Some(s);
-                best_len = i - s;
-            }
-        }
-    }
-    let mut out = String::new();
-    let mut i = 0;
-    while i < 8 {
-        if best == Some(i) {
-            out.push_str(if i == 0 { "::" } else { ":" });
-            i += best_len;
-            continue;
-        }
-        out.push_str(&format!("{:x}", pieces[i]));
-        if i < 7 {
-            out.push(':');
-        }
-        i += 1;
-    }
-    out
-}
-
 /// The host of a URL of any scheme, read by [`parse_url`]; `None` when it reads no host.
 #[must_use]
 pub fn url_host(url: &str) -> Option<String> {
     parse_url(url).ok().map(|p| p.host)
+}
+
+/// The host of a URL of any scheme as SPELLED, read as [`parse_url`] reads the authority but not
+/// normalised: an IPv6 literal unbracketed (as [`Ipv6Addr`] displays it), any other host exactly
+/// as written, a trailing root dot KEPT (`example.com.` is not `example.com` here). For a caller
+/// whose rule compares the host a URL reader serialised, byte for byte; `None` when it reads no
+/// host.
+#[must_use]
+pub fn url_host_verbatim(url: &str) -> Option<String> {
+    // The spelling [`parse_url_raw`] keeps beside the host it serialised; only a bracketed literal
+    // parses as an IPv6 address here (an unbracketed host holds no `:`), and it is shown as
+    // `Ipv6Addr` displays it.
+    let (_, spelled) = parse_url_raw(url).ok()?;
+    Some(
+        spelled
+            .parse::<Ipv6Addr>()
+            .map_or(spelled, |addr| addr.to_string()),
+    )
 }
 
 /// The host of a DIAL TARGET, which may be spelled as a URL or as a bare `host`, `host:port`,

@@ -302,3 +302,42 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         "no cell is kept under the model's own name"
     );
 }
+
+/// A KEYLESS LANE IS NOT PROBED (security.md: "`api_key: none` ... the lane sends no auth header
+/// and is skipped by the health prober"): two providers configure the same active `health:` block,
+/// one keyed and one declaring `api_key: none`; only the keyed provider's model is in the probe set.
+/// RED: the keyless lane's model is probed like any other.
+#[test]
+fn a_keyless_lane_is_not_probed() {
+    busbar_kernel::test_support::register_neutral_test_plane();
+    let mut defs = std::collections::HashMap::new();
+    for name in ["keyed", "local"] {
+        let def: busbar_kernel::config::ProviderDef =
+            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+                .expect("a def");
+        defs.insert(name.to_owned(), def);
+    }
+    let yaml = "providers:\n  \
+                keyed:\n    api_key: { env: BUSBAR_TEST_KEY }\n    health: { mode: active }\n  \
+                local:\n    api_key: none\n    health: { mode: active }\n\
+                models:\n  m-keyed:\n    provider: keyed\n  m-local:\n    provider: local\n";
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let serving = ModelServing {
+        pools: ModelPools::of(&cfg),
+        lanes: [("m-keyed".to_string(), 0), ("m-local".to_string(), 1)]
+            .into_iter()
+            .collect(),
+        app: {
+            let app = TestApp::new().build();
+            Arc::new(move || Arc::clone(&app))
+        },
+    };
+    let (_, members) = serving.probe_members();
+    let probed: Vec<&str> = members.iter().map(|(_, m)| m.name.as_str()).collect();
+    assert_eq!(
+        probed,
+        vec!["m-keyed"],
+        "the keyed lane is probed and the keyless one is not"
+    );
+}

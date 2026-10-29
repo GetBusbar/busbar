@@ -214,8 +214,12 @@ impl HookEnv {
             .axis
             .as_ref()
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
-        let settings = serde_json::Value::Object(settings.clone());
-        let calls = axis.open(module, name, &settings, policy_timeout(timeout_ms))?;
+        let calls = axis.open(
+            module,
+            name,
+            settings.as_value(),
+            policy_timeout(timeout_ms),
+        )?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
             calls, name,
         ))
@@ -226,10 +230,13 @@ impl HookEnv {
     /// FAIL-CLOSED: an unresolvable ref is an `Err`, never a dangling reference handed to the plugin.
     fn resolve_hook_settings(
         &self,
+        module: &str,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    ) -> Result<ResolvedSettings, String> {
         crate::config::secret::resolve_settings(
             settings,
+            &self.registry.secret_slots(module),
+            module,
             self.secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
@@ -252,7 +259,7 @@ impl HookEnv {
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
         for (name, hook) in hooks {
-            self.resolve_hook_settings(&hook.settings)
+            self.resolve_hook_settings(&hook.plugin, &hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
         }
         Ok(())
@@ -301,7 +308,7 @@ impl HookEnv {
             // An open failure here is a hard boot/reload error — the gate would otherwise be silently
             // dropped and its admission/rewrite decision lost.
             let resolved = self
-                .resolve_hook_settings(&hook.settings)
+                .resolve_hook_settings(&hook.plugin, &hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
             self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
                 .map_err(|e| {
@@ -328,7 +335,7 @@ impl HookEnv {
 /// ZERO-COST default path: `route: weighted` (the default / absent case) AND the explicit
 /// `route: native, policy.name: weighted` form both resolve to `None`, because `weighted` Abstains
 /// and thus converges with today's inline SWRR — so the hot path constructs no policy object, builds
-/// no projections, and takes the unchanged `select_weighted_in` branch.
+/// no projections, and takes the weighted floor.
 ///
 /// This resolves the BASE only. A pool's GATES are resolved separately (`resolve_pool_gates`) and
 /// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
@@ -862,7 +869,7 @@ fn gate_transport_uncached(
     // a gate whose secret failed to resolve — by the time we get here the secret has ALREADY resolved.
     // A residual `Err` here (e.g. a race where the secret was rotated away after the pre-resolve pass)
     // is still treated conservatively as absent, but the pre-resolve pass is the real gate.
-    let resolved = match env.resolve_hook_settings(&hook.settings) {
+    let resolved = match env.resolve_hook_settings(&hook.plugin, &hook.settings) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(
@@ -887,8 +894,9 @@ fn gate_transport_uncached(
 
 /// A hook's `settings:` map with every `SecretRef` already substituted for its resolved value —
 /// i.e. the bag that crosses the ABI. Produced ONLY by [`gate_transport_named`] (and its offloaded
-/// wrapper), so a caller cannot obtain one without having gone through the offload.
-type ResolvedSettings = serde_json::Map<String, serde_json::Value>;
+/// wrapper), so a caller cannot obtain one without having gone through the offload. Kept beside the
+/// transport for its `configure` re-pushes, in the holder that wipes it when the last copy drops.
+type ResolvedSettings = crate::config::secret::ResolvedSettings;
 
 /// A resolved hook transport together with the settings bag it was opened against.
 type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
@@ -1413,7 +1421,7 @@ pub async fn fetch_status(
 ///
 /// 1. NEITHER BAG MAY GO ON THE WIRE. The endpoint used to serialize `reported.settings` verbatim,
 ///    which is the hook's ECHO of the SECRET-RESOLVED bag: `configure_hook` pushes
-///    `resolve_hook_settings(&hook.settings)`, so the plugin receives — and echoes back — the
+///    `resolve_hook_settings(&hook.plugin, &hook.settings)`, so the plugin receives — and echoes back — the
 ///    PLAINTEXT of every `SecretRef`. That is resolved secret material, at READ-ONLY admin scope.
 ///    So the comparison happens in here rather than at the endpoint, and the caller gets
 ///    KEY NAMES (which it is already free to serve) and a boolean.

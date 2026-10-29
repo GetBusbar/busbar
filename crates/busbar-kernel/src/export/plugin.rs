@@ -135,6 +135,8 @@ pub(super) struct PluginSink {
     /// it serves `/metrics/hooks` for the process's life ([`route_decls`]).
     scrape: bool,
     pub(super) projection: Projection,
+    /// It takes each `traces` line's full span record (`ExportCalls::takes_span_records`).
+    pub(super) span_record: bool,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
 }
@@ -202,9 +204,11 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             false,
             &mut errors,
         );
+        let span_record = sink.takes_span_records();
         opened.push(PluginSink {
             name: name.clone(),
             module: module.to_string(),
+            span_record,
             sink,
             scrape: p.scrape,
             projection,
@@ -230,8 +234,18 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
 /// Hand `stream`'s payload — built by `f` to each sink's own projection — to every opened, live
 /// sink subscribed to it ([`deliver_to`]).
 pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
+    deliver_to(stream, op, |projection, _| f(projection));
+}
+
+/// [`deliver`], `f` told also whether the sink takes full span records
+/// ([`PluginSink::span_record`]).
+pub(super) fn deliver_to(
+    stream: ExportStream,
+    op: &str,
+    mut f: impl FnMut(Projection, bool) -> Arc<Value>,
+) {
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
-        deliver_to(s, stream, op, &mut f);
+        deliver_one(s, stream, op, &mut f);
     }
 }
 
@@ -240,12 +254,13 @@ pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projecti
 /// at a default that would then hold for the life of the process. A sink at its in-flight bound, or
 /// whose queue refuses it, sheds it (counted on its gate and on its declared shed counter); a sink
 /// that errors is logged. Neither reaches the caller. The access amendment records what the sink
-/// QUEUED: a shed line never reached it, so it is never audited as read.
-fn deliver_to(
+/// QUEUED: a shed line never reached it, so it is never audited as read. `f` is told whether the
+/// sink takes full span records ([`PluginSink::span_record`]).
+fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
     op: &str,
-    f: &mut impl FnMut(Projection) -> Arc<Value>,
+    f: &mut impl FnMut(Projection, bool) -> Arc<Value>,
 ) {
     let Some(admission) = s.admission.get() else {
         s.sink.shed();
@@ -258,7 +273,7 @@ fn deliver_to(
         s.sink.shed();
         return;
     };
-    let payload = f(s.projection);
+    let payload = f(s.projection, s.span_record);
     let line = serde_json::to_vec(&*payload).unwrap_or_default();
     match s.sink.deliver(stream as u8, line, Box::new(permit)) {
         Delivered::Queued => crate::audit::amend::export_read(&s.module, op, &payload),

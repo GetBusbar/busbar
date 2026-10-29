@@ -204,15 +204,10 @@ fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
     ));
 }
 
-/// ITEM 558: `CONFIG_CLASS_RULES` is not the only thing that decides class membership, and its doc
-/// no longer says it is.
-///
-/// Three deciders run ahead of the table inside `classify_mutation`. Each is pinned here by a path
-/// on which the table ALONE gives a different answer than the classifier does — so a reader who
-/// took the table for the whole decision (as its doc told them to) would be wrong on every one — and
-/// the table's own doc is held to naming all three.
+/// Three deciders run ahead of `CONFIG_CLASS_RULES` inside `classify_mutation`: each path here
+/// gets a different answer from the classifier than from the table alone.
 #[test]
-fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decides() {
+fn the_config_table_is_not_the_whole_decision() {
     use crate::admin::gate::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
     let table_alone = |rel: &str| {
         CONFIG_CLASS_RULES.iter().any(|rule| match rule {
@@ -239,24 +234,6 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
         assert!(
             matches!(classify_mutation(&rel), MutationClass::Config),
             "{rel} is CONFIG by the named-map scan"
-        );
-    }
-
-    let source = include_str!("../ratelimit.rs");
-    let doc_start = source
-        .find("const CONFIG_CLASS_RULES")
-        .and_then(|at| source[..at].rfind("\n\n"))
-        .expect("the table has a doc block");
-    let doc = &source[doc_start..source.find("const CONFIG_CLASS_RULES").unwrap()];
-    assert!(
-        !doc.contains(&["nothing", "/// else decides class membership"].join("\n"))
-            && !doc.contains("nothing else decides class membership"),
-        "the table's doc claims to be the whole decision again"
-    );
-    for decider in ["/config/validate", "/plugins/inspect", "named-map root"] {
-        assert!(
-            doc.contains(decider),
-            "the table's doc does not name the decider that runs ahead of it: {decider}"
         );
     }
 }

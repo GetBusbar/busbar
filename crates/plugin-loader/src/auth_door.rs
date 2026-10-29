@@ -43,11 +43,9 @@ use busbar_contract::abi::auth::{
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
+    Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as lc, OpenIn, OpenOut, RefreshIn, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as lc, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
@@ -55,6 +53,7 @@ use busbar_contract::auth_calls::{
 };
 
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
+use crate::dispatch::lifecycle::{lend, lend_opt, open_frame, validate_call, why};
 use crate::dispatch::{
     in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, Metric,
     Plugin, Reply,
@@ -65,25 +64,6 @@ pub const VERIFY_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The most bytes a short answer may ask the identity buffer to grow to.
 const IDENTITY_BUF_MAX: u64 = 1024 * 1024;
-
-/// A string the host lends for a call.
-fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
-
-/// An optional string the host lends; `None` is absent (NULL).
-fn lend_opt(s: Option<&str>) -> AbiStr {
-    s.map_or(
-        AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        lend,
-    )
-}
 
 /// Bytes the host lends for a call, as a blob of `fmt` with `flags`; empty is absent.
 fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
@@ -131,14 +111,6 @@ fn identify_out() -> IdentifyOut {
         needed_strip: 0,
         _reserved: 0,
     }
-}
-
-/// A plugin's error text, or the outcome's name.
-fn why(outcome: Outcome, error: Option<Vec<u8>>) -> String {
-    error.map_or_else(
-        || format!("{outcome:?}"),
-        |e| String::from_utf8_lossy(&e).into_owned(),
-    )
 }
 
 /// Overwrite secret bytes before their allocation is freed.
@@ -587,7 +559,8 @@ pub struct AuthInstance {
     // opened over, re-sent on `refresh`. No `Serialize`; the hand-written `Debug` below prints the
     // plugin and the label only (`an_instance_debug_never_shows_its_settings_or_secrets`).
     settings: Vec<u8>,
-    secrets: Vec<Vec<u8>>,
+    /// The service credentials `refresh` re-lends, in the holder that wipes them on drop.
+    secrets: KeptSecrets,
     generation: AtomicU64,
     label: String,
     lifecycle: Mutex<()>,
@@ -605,10 +578,12 @@ impl std::fmt::Debug for AuthInstance {
     }
 }
 
-/// THE SERVICE CREDENTIALS OUT OF THE SETTINGS: each key `plugin`'s Statement names as a secret-ref
-/// is taken out of the `settings` object (its value already resolved by the kernel, as 1.5.5
-/// resolved a provider's secret-refs) and handed to `open` as `secrets`, in the Statement's order —
-/// a missing or non-string one as empty bytes, which the plugin refuses. The settings the plugin
+/// THE SERVICE CREDENTIALS OUT OF THE SETTINGS: each exact path `plugin`'s Statement names as a
+/// secret-ref is taken out of the `settings` object (its value already resolved by the kernel, as
+/// 1.5.5 resolved a provider's secret-refs) and handed to `open` as `secrets`, in the Statement's
+/// order — a missing or non-string one as empty bytes, which the plugin refuses. Then each
+/// wildcard path's string matches follow, in document order, each replaced in the settings by its
+/// `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`). The settings the plugin
 /// sees no longer carry them.
 pub fn split_secrets(
     plugin: &Plugin<Auth>,
@@ -619,30 +594,53 @@ pub fn split_secrets(
         .map(|f| f.secret_refs.clone())
         .unwrap_or_default();
     let mut settings = settings.clone();
-    let secrets = refs
-        .iter()
-        .map(|key| {
-            let taken = settings.as_object_mut().and_then(|o| o.remove(key));
-            match taken {
-                Some(serde_json::Value::String(s)) => s.into_bytes(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut settings,
+        &refs,
+        false,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
     (settings, secrets)
 }
 
-/// The secrets list the host lends `open`/`refresh`.
-fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
-    secrets
-        .iter()
-        .map(|s| Blob {
-            ptr: s.as_ptr(),
-            len: s.len(),
-            fmt: BLOB_OCTETS,
-            flags: BLOB_SECRET,
-        })
-        .collect()
+/// THE SECRETS AN AUTH INSTANCE KEEPS: the one copy of its resolved service credentials busbar
+/// must hold past `open`, because `refresh` re-lends them (security.md:318). Each is a zeroising
+/// buffer, overwritten with zeroes (its whole allocation) when the instance drops; `Debug` shows
+/// how many there are and no byte of any.
+pub(crate) struct KeptSecrets(Vec<zeroize::Zeroizing<Vec<u8>>>);
+
+impl KeptSecrets {
+    /// Take `secrets` into the holder (moved: no copy of a byte is made).
+    fn new(secrets: Vec<Vec<u8>>) -> Self {
+        Self(secrets.into_iter().map(zeroize::Zeroizing::new).collect())
+    }
+
+    /// The secrets list the host lends `open`/`refresh`, over the bytes held here.
+    fn blobs(&self) -> Vec<Blob> {
+        self.0
+            .iter()
+            .map(|s| Blob {
+                ptr: s.as_ptr(),
+                len: s.len(),
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            })
+            .collect()
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for KeptSecrets {}
+
+impl std::fmt::Debug for KeptSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KeptSecrets([REDACTED; {}])", self.0.len())
+    }
 }
 
 impl AuthInstance {
@@ -659,43 +657,20 @@ impl AuthInstance {
         settings: &[u8],
         secrets: Vec<Vec<u8>>,
     ) -> Result<Self, String> {
+        // Held from the first line, so a refusal below wipes them too.
+        let secrets = KeptSecrets::new(secrets);
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
-        let mut v = Frame::new(
-            ValidateIn {
-                head: in_head(),
-                settings: blob(settings, BLOB_JSON, 0),
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            out_head(),
-        );
-        let called = plugin.call(lc::VALIDATE, &mut v);
+        let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
-        let blobs = secret_blobs(&secrets);
-        let mut f = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings, BLOB_JSON, 0),
-                secrets: if blobs.is_empty() {
-                    std::ptr::null()
-                } else {
-                    blobs.as_ptr()
-                },
-                secrets_len: blobs.len(),
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let blobs = secrets.blobs();
+        let mut f = open_frame(blob(settings, BLOB_JSON, 0));
+        if !blobs.is_empty() {
+            f.input.secrets = blobs.as_ptr();
+            f.input.secrets_len = blobs.len();
+        }
         let called = plugin.call(lc::OPEN, &mut f);
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
@@ -746,6 +721,12 @@ impl AuthInstance {
             .is_none_or(tokio::task::JoinHandle::is_finished)
     }
 
+    /// The secrets this instance keeps for `refresh`, as a test reads their holder.
+    #[cfg(test)]
+    pub(crate) fn kept_secrets(&self) -> &KeptSecrets {
+        &self.secrets
+    }
+
     /// The dispatcher instance this auth instance serves on, held weakly: a test reads whether
     /// anything still keeps it once this instance is dropped.
     #[cfg(test)]
@@ -759,9 +740,7 @@ impl Drop for AuthInstance {
         if let Some(schedule) = self.schedule.take() {
             schedule.abort();
         }
-        for s in &mut self.secrets {
-            zero(s);
-        }
+        // `secrets` wipes itself as it drops (`KeptSecrets`).
     }
 }
 
@@ -875,7 +854,7 @@ impl AuthCalls for AuthInstance {
         };
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.sink.0.flushed.store(0, Ordering::Release);
-        let blobs = secret_blobs(&self.secrets);
+        let blobs = self.secrets.blobs();
         let mut f = Frame::new(
             RefreshIn {
                 head: in_head(),

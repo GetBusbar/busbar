@@ -15,7 +15,9 @@ use crate::diagnostics::{
     PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{build_secret_resolver, resolve_admin_token, resolve_signing_key};
+use crate::preflight::{
+    build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
+};
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -167,16 +169,10 @@ pub(crate) fn lane_token_endpoint(
     )
 }
 
-fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
-    match auth {
-        None => AuthStyleInput::Default,
-        Some(config::ProviderAuth::Bearer) => AuthStyleInput::Bearer,
-        Some(config::ProviderAuth::ApiKey) => AuthStyleInput::ApiKey,
-        Some(config::ProviderAuth::JwtBearer) => AuthStyleInput::JwtBearer,
-        Some(config::ProviderAuth::OAuthClientCredentials) => {
-            AuthStyleInput::OAuthClientCredentials
-        }
-    }
+fn auth_style_of(auth: Option<&config::ProviderAuth>) -> AuthStyleInput {
+    auth.map_or(AuthStyleInput::Default, |style| {
+        AuthStyleInput::Named(style.as_str().to_string())
+    })
 }
 
 /// Mirror a provider `health:` block into the neutral [`HealthInput`] carrier field.
@@ -499,6 +495,36 @@ pub fn load_config_from_disk_judged(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+/// RE-WRAP the stored recoverable credentials under the at-rest `key` just installed (boot, or a
+/// reload that changed the keys). Never fatal: a row it does not reach still opens under the key it
+/// was sealed under, so a store hiccup here costs a later pass, never a credential.
+fn rewrap_at_rest(gs: &governance::GovState) {
+    match gs.rewrap_credentials(busbar_kernel::store::now()) {
+        Ok(pass) if pass.pending > 0 => diag_warn!(
+            crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+            resealed = pass.resealed,
+            pending = pass.pending,
+            "{} recoverable credential(s) are still sealed under credentials.at_rest.previous (or \
+             stored in the clear): another node holds their re-wrap, or the store keeps no claims. \
+             They still authenticate; keep credentials.at_rest.previous configured until a boot \
+             or reload re-seals them all",
+            pass.pending
+        ),
+        Ok(pass) if pass.resealed > 0 => tracing::info!(
+            resealed = pass.resealed,
+            "recoverable credentials re-sealed under credentials.at_rest.key"
+        ),
+        Ok(_) => {}
+        Err(e) => diag_warn!(
+            crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+            error = %e,
+            "the recoverable credentials could not be re-sealed under credentials.at_rest.key; \
+             they still open under the key they were sealed under, and the next boot or reload \
+             retries"
+        ),
+    }
+}
+
 /// The operational limits a build resolved, still PROVISIONAL: nothing has published them.
 ///
 /// `build_app_from_config` reads its candidate's limits through a build-scoped view
@@ -807,7 +833,7 @@ pub fn build_app_from_config(
     // read the same env var (or call the same secret plugin) twice. An entry exists IFF the
     // provider's reference resolved or was declared `none`: an unresolvable reference returns Err
     // from this loop, so no App is built at all.
-    let mut provider_api_keys: HashMap<String, String> = HashMap::new();
+    let mut provider_api_keys: HashMap<String, config::secret::HeldText> = HashMap::new();
     // Build lanes in a DETERMINISTIC order (sorted by model name) rather than `cfg.models`'
     // HashMap iteration order, which is randomized per process start. Lane index is assigned here
     // (`by_model` → `lanes_data.len()`), so a random iteration order gave each lane a different
@@ -873,7 +899,7 @@ pub fn build_app_from_config(
             provider_api_keys.entry(mc.provider.clone())
         {
             let resolved = if provider_cfg.api_key.is_none() {
-                String::new()
+                config::secret::HeldText::default()
             } else {
                 secret_resolver
                     .resolve_string_at_config(
@@ -1000,9 +1026,10 @@ pub fn build_app_from_config(
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as
         // the empty-key warning); no second read of the secret-bearing env var. This PLAINTEXT is
         // carried into the neutral carrier because the plane cannot re-resolve a secret ref.
+        // OWED (row 7): the lane carrier takes the key as a plain `String`.
         let api_key = provider_api_keys
             .get(&ld.route)
-            .cloned()
+            .map(|k| k.expose(&crate::seal::lend()).clone())
             .unwrap_or_default();
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
         // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
@@ -1028,7 +1055,7 @@ pub fn build_app_from_config(
             path_base: provider_cfg.path_base.clone(),
             upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
-            auth_style: auth_style_of(provider_cfg.auth),
+            auth_style: auth_style_of(provider_cfg.auth.as_ref()),
             scope: provider_cfg.scope.clone(),
             token_url,
             token_userinfo,
@@ -1236,6 +1263,8 @@ pub fn build_app_from_config(
     if let Some(store_cfg) = cfg.store.as_ref() {
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
+            &plugin_registry.secret_slots(&store_cfg.module),
+            &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
         ) {
@@ -1326,7 +1355,15 @@ pub fn build_app_from_config(
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
             };
-            if admin_token.is_some() || signer.is_some() {
+            // The AT-REST KEYS, on the same rule: re-resolved when this config declares
+            // `credentials.at_rest`, fail-closed. A rotation re-wraps the stored credentials under
+            // the new key once the swap commits; one that cannot completes at the next boot or
+            // reload, and until then every row still opens under `previous`.
+            let at_rest = match cfg.credentials.at_rest {
+                Some(_) => resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?,
+                None => None,
+            };
+            if admin_token.is_some() || signer.is_some() || at_rest.is_some() {
                 rotate_gov_credentials = Some(Box::new(move || {
                     if let Some(token) = admin_token {
                         gs.set_admin_token(
@@ -1337,6 +1374,11 @@ pub fn build_app_from_config(
                     }
                     if let Some(signer) = signer {
                         gs.set_signing_key(signer);
+                    }
+                    if let Some(keys) = at_rest {
+                        if gs.set_at_rest_keys(Some(keys)) {
+                            rewrap_at_rest(&gs);
+                        }
                     }
                 }));
             }
@@ -1385,12 +1427,17 @@ pub fn build_app_from_config(
             true => Default::default(),
             false => config::secret::resolve_settings(
                 &g.settings,
+                &plugin_registry.secret_slots(&g.module),
+                &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
             .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
-        let cfg_json = serde_json::Value::Object(resolved).to_string();
+        // The resolved bag's text is a copy of its secrets too: held in a zeroising buffer and
+        // wiped, with the bag, once the store's `open` has answered (security.md:318).
+        let cfg_json = zeroize::Zeroizing::new(resolved.as_value().to_string());
+        drop(resolved);
         // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
         // loaded through the root's one dispatcher and opened through the store v3 table, on the
         // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
@@ -1400,9 +1447,9 @@ pub fn build_app_from_config(
         let axis = crate::preflight::root_rows()
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let opened = axis()
-            .open(door, &g.module, cfg_json.as_bytes())
-            .map_err(load_failed)?;
+        let opened = axis().open(door, &g.module, cfg_json.as_bytes());
+        drop(cfg_json);
+        let opened = opened.map_err(load_failed)?;
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
@@ -1415,6 +1462,9 @@ pub fn build_app_from_config(
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
         // provide it (shared) so every node verifies the same tokens.
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
+        // The AT-REST KEYS (`credentials.at_rest`): what a recoverable credential is sealed under.
+        // FAIL-CLOSED like the signing key; absent, the node mints no recoverable credential.
+        let at_rest = resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?;
         match governance::GovState::new_with_signer(
             store,
             admin_token
@@ -1428,6 +1478,11 @@ pub fn build_app_from_config(
                 // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
                 if let Some(calls) = store_calls {
                     gs.attach_store_calls(calls);
+                }
+                // Installed, then every stored credential not yet sealed under `key` (sealed under
+                // `previous`, or a pre-1.6.0 `v1:plain` row) is re-sealed under it.
+                if gs.set_at_rest_keys(at_rest) {
+                    rewrap_at_rest(&gs);
                 }
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
@@ -1762,7 +1817,8 @@ pub fn build_app_from_config(
                             reference,
                             &busbar_contract::config_time::ConfigScope::config_time(),
                         )
-                        .map(|value| (path.clone(), value))
+                        // OWED (row 7): the authorization-server plane's seam takes plain text.
+                        .map(|value| (path.clone(), value.expose(&crate::seal::lend()).clone()))
                         .map_err(|e| format!("{path}: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;

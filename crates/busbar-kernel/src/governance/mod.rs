@@ -96,9 +96,13 @@ pub fn binding_generation(generation_hash: &str) -> Option<&str> {
 /// Whether a presented token's generation claim matches the binding row's CURRENT generation —
 /// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
 /// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
-/// rotation can never be defeated by simply omitting the claim.
+/// rotation can never be defeated by simply omitting the claim. The two generations are compared
+/// with the contract's timing-safe primitive: it is stored key material on the bearer path.
 pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
-    binding_generation(generation_hash) == presented
+    match (binding_generation(generation_hash), presented) {
+        (Some(held), Some(claimed)) => busbar_contract::redacted::constant_time_eq(held, claimed),
+        (held, claimed) => held.is_none() && claimed.is_none(),
+    }
 }
 
 /// THE ONE 128-bit random hex draw: 128 bits of OS CSPRNG as 32 lowercase hex chars. Fails closed on
@@ -165,6 +169,8 @@ struct BudgetCell {
     /// The fee base split by the card era each billable request was admitted under, so each fee
     /// prices at the card in force when that request was admitted.
     fee_eras: busbar_kernel_ledger::usage::FeeEras,
+    /// The fee eras' flush baseline (twin of `flushed_billable_requests`, per dated era).
+    flushed_fee_eras: busbar_kernel_ledger::usage::FeeEras,
     /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
     /// a newer window moves what the old window held past its last acknowledged flush here
     /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
@@ -229,20 +235,44 @@ impl BudgetCell {
     /// the eras of one model are one delta on the wire (the durable row is per model and carries no
     /// era — Q14's wire step), byte-identical to an undated cell's.
     fn unflushed(&self) -> UsageDelta {
-        let deltas = self.models.iter().map(|m| {
-            // The UNION of unit keys in cur+flushed (freshly accrued, or refunded away).
-            let keys = m.cur.keys().chain(m.flushed.keys());
-            let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
-                signed(side.get(k).copied().unwrap_or(0))
-            };
-            let d = keys.map(|k| (k.clone(), at(&m.cur, k) - at(&m.flushed, k)));
-            (&*m.model, d.collect())
-        });
+        let deltas = (self.models.iter()).map(|m| (&*m.model, units_delta(&m.cur, &m.flushed)));
         UsageDelta {
             requests: signed(self.requests) - signed(self.flushed_requests),
             billable_requests: signed(self.billable_requests)
                 - signed(self.flushed_billable_requests),
             models: model_deltas(deltas),
+        }
+    }
+
+    /// The DATED part of [`Self::unflushed`], for the bucket's card-era row ([`era_bucket`]): each
+    /// dated (model, era) segment under `"<era>\u{1f}<model>"`, each dated fee era under `"<era>"`
+    /// with unit [`ERA_FEE_UNIT`]. Era zero is not written: it is the plain row minus these.
+    fn unflushed_eras(&self) -> UsageDelta {
+        let mut rows: Vec<(String, std::collections::BTreeMap<String, i64>)> = (self.models.iter())
+            .filter(|m| m.era != 0)
+            .map(|m| {
+                (
+                    format!("{}\u{1f}{}", m.era, m.model),
+                    units_delta(&m.cur, &m.flushed),
+                )
+            })
+            .collect();
+        let fees =
+            |f: &busbar_kernel_ledger::usage::FeeEras| -> std::collections::BTreeMap<String, u64> {
+                let fee = f.dated().iter();
+                fee.map(|(era, n)| (era.to_string(), *n)).collect()
+            };
+        let (cur, flushed) = (fees(&self.fee_eras), fees(&self.flushed_fee_eras));
+        for (era, n) in units_delta(&cur, &flushed) {
+            rows.push((
+                era,
+                std::collections::BTreeMap::from([(ERA_FEE_UNIT.into(), n)]),
+            ));
+        }
+        UsageDelta {
+            requests: 0,
+            billable_requests: 0,
+            models: model_deltas(rows.iter().map(|(m, d)| (m.as_str(), d.clone()))),
         }
     }
 
@@ -349,6 +379,31 @@ impl BudgetCell {
             acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
         })
     }
+}
+
+/// `cur - flushed` per unit, over the UNION of their units (freshly accrued, or taken back).
+fn units_delta(
+    cur: &std::collections::BTreeMap<String, u64>,
+    flushed: &std::collections::BTreeMap<String, u64>,
+) -> std::collections::BTreeMap<String, i64> {
+    let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
+        signed(side.get(k).copied().unwrap_or(0))
+    };
+    let keys = cur.keys().chain(flushed.keys());
+    keys.map(|k| (k.clone(), at(cur, k) - at(flushed, k)))
+        .collect()
+}
+
+/// The unit a card-era row counts a dated fee era's billable requests under.
+const ERA_FEE_UNIT: &str = "billable_requests";
+
+/// THE CARD-ERA ROW of `bucket` (owner 2026-10-27, #79, Q14): a sibling usage row holding the
+/// bucket's dated counts, so a restart (or another node) prices each count at the card in force when
+/// it was ledgered. `"e:" ++ hex(SHA-256(bucket)[..16])`, 34 bytes whatever the bucket's length; the
+/// plain row stays exactly the 1.5.5 row.
+fn era_bucket(bucket: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bucket.as_bytes());
+    format!("e:{}", hex::encode(&digest.as_ref()[..16]))
 }
 
 /// Clamp a u64 counter into the signed delta domain.
@@ -760,6 +815,11 @@ pub struct GovState {
     /// secret and reloading silently kept minting and accepting tokens under the old key. Read as an
     /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
     signing: RwLock<Option<Arc<SigningMaterial>>>,
+    /// The AT-REST KEYS a recoverable credential is sealed under (`credentials.at_rest`, see
+    /// [`at_rest`]): `None` until boot resolves them, and on a node that configures none (which
+    /// then refuses to mint one). RE-SETTABLE (`set_at_rest_keys`) for the same reason as
+    /// `signing`: a reload that rotates them must take effect.
+    at_rest: RwLock<Option<Arc<at_rest::AtRestKeys>>>,
     /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
     /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL (see
     /// [`REVOCATION_SYNC_TTL_SECS`]). A verified token whose `sub` is present is rejected - the ONLY
@@ -840,6 +900,8 @@ pub struct RotatedCredential {
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
 
 pub mod revocation;
+// A recoverable credential at rest: sealed before the store sees it (CHIP-DESIGN v4.1 change 1).
+pub mod at_rest;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
 // core governance/config infrastructure read on the hot mint path, not admin-API surface.
 pub mod mint_policy;
@@ -854,6 +916,14 @@ pub mod group_provision;
 // `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
 // busbar-core reaches them through this crate.
 mod state;
+pub use state::{
+    metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
+    ADJUST_UP_BUCKET,
+};
+// TICKETS (row 132): short-lived single-use credentials minted for a unit's principal through the
+// same token stamp, and admitted once on a route that takes them.
+mod tickets;
+pub use tickets::{TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1052,11 +1122,22 @@ pub(crate) fn granting_bindings<'a>(
     principal: &crate::auth::Principal,
     table: &'a std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
 ) -> Vec<&'a crate::config::RoleBindingCfg> {
-    principal
+    let ungoverned = crate::config::auth::UNGOVERNED_ROLE;
+    let named = |role: &&String| role.as_str() != ungoverned;
+    let granting: Vec<_> = principal
         .roles
         .iter()
+        .filter(named)
         .filter_map(|role| table.get(role))
-        .collect()
+        .collect();
+    // The ungoverned role binds a principal that asserts no roles, and every principal of a
+    // provider whose table names no other role: exactly the principals 1.5.5 admitted with no grant.
+    let roleless = !principal.roles.iter().any(|r| named(&r));
+    let only_ungoverned = table.keys().all(|r| r == ungoverned);
+    match table.get(ungoverned) {
+        Some(binding) if granting.is_empty() && (roleless || only_ungoverned) => vec![binding],
+        _ => granting,
+    }
 }
 
 /// The pool union across granting bindings. OMITTED `allowed_pools` on any granting binding widens

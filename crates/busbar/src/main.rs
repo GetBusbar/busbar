@@ -294,6 +294,9 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
+    // The outbound styles a provider's `auth:` may name: every linked and dropped-in auth row's,
+    // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
+    busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles);
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
@@ -1082,6 +1085,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
+    // under its mint ceiling, once the swap handle exists.
+    if let Some(kernel) = late_services.kernel() {
+        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
+            std::sync::Arc::clone(&app_handle),
+        )));
+    }
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
@@ -1174,53 +1184,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. The node plane's exit arm settles onto it (its root unit's book step,
-    // below) and the administrative ledger views read it; no other plane binds an exit arm to it.
-    // It is ONE book, and that matters: a mount that opened its own would post
-    // onto books nothing serves and serve books nothing posts to, and both halves of that would look
-    // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
-    // STORE (committed-before-ack, and onto this node's own disk as well when a data directory was
-    // resolved) and its OPENING BALANCES are SEALED at start-of-book from the rows the previous
-    // release left in that store — see `root::boot::book`. A configuration that named no data
-    // directory still probes nothing and opens nothing; the branch that decides is unchanged.
-    //
-    // It is built HERE — before either listener binds — because the first accepted connection can
-    // settle, and it must settle against a book whose opening is ALREADY sealed. `root::boot::book`
-    // returns only after the seal, so there is no window in which a settlement could be measured
-    // from a checkpoint that was not written yet.
-    // Opened for the admin surface and for every root unit that settles onto it; a build with
-    // neither opens nothing.
-    // (Opened above, before the routers: Q-SW7.)
+    // THE PROCESS'S ONE JOURNAL (opened above, before the routers: Q-SW7). The node's units seal
+    // their audit records onto it and the administrative chain reads read it. It carries no money:
+    // the ledger is the store's usage counts, priced by the card in core.
 
-    // THE CHECKPOINT CADENCE (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): armed on the one book once its
-    // opening is sealed, so every serving append checks the entry half and this tick checks the
-    // interval half — whichever comes first. The tick runs for the process lifetime; each pass
-    // holds the book's lock only for the check (and the seal, when one is due).
-    if let Some(book) = &book {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        book.durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .arm_checkpoints(now);
-        let durability = Arc::clone(&book.durability);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
-                root::durability::CHECKPOINT_TICK_SECS,
-            ));
-            loop {
-                tick.tick().await;
-                durability
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .seal_on_cadence();
-            }
-        });
-    }
-
-    // THE ROOT UNITS' BOOK STEP, once the book is open and before either listener binds: the
-    // root-driven exit arm is bound to the book, so a posting the loop hands back has somewhere to go.
+    // THE ROOT UNITS' JOURNAL STEP, once the journal is open and before either listener binds: the
+    // node is bound to the journal its units' audit records are sealed onto.
     if let Some(book) = &book {
         let app = app_handle.load();
         let ctx = root::linked::BookCtx { book, app: &app };
@@ -1387,6 +1356,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         };
         let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
+        // The admin socket is BOUND before any data worker serves, as 1.5.5 bound both listeners
+        // before either served: once the data door's `/healthz` answers, a connection to the admin
+        // surface is queued, never refused (a client that waits on `/healthz` and then calls the
+        // admin API must not race the admin bind). It is served below, after the data workers start.
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener =
+            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
+                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
+            );
         let data_handles = serve_thread_per_core(
             data_workers,
             listen.clone(),
@@ -1397,13 +1377,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
-        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
-        let admin_via = root::connector::the().address_via();
-        let admin_listener =
-            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
-                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
-            );
         tracing::debug!(
             listen = %admin_listen,
             carrier = %root::connector::carrier_name(admin_via.as_ref()),

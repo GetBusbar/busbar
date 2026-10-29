@@ -45,8 +45,7 @@
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
 //! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
-//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
-//! plane's `trust.due` sees the marks.
+//! answer.
 //!
 //! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
 //! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
@@ -60,7 +59,6 @@ mod cancel;
 mod close;
 pub mod dispatch;
 pub mod door;
-mod epoch;
 mod far_end;
 mod govern;
 pub(crate) mod hooks;
@@ -99,7 +97,6 @@ use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
-pub use epoch::FlushEpoch;
 pub use far_end::{
     AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, MemberSignals, MemberStanding,
     ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
@@ -114,7 +111,7 @@ pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
+pub use money::{EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
@@ -131,7 +128,8 @@ use busbar_contract::ids::RecordSchemaId;
 /// The capacities of the host buffers the driver hands a plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferCaps {
-    /// Reply bytes per `on_piece` (the backpressure window).
+    /// Reply bytes per `on_piece` (the backpressure window); a caller's piece's window adds its
+    /// arrival's body length.
     pub reply: usize,
     /// Unit counts.
     pub units: usize,
@@ -409,6 +407,8 @@ impl PlaneDriver {
             trust: trust.into_iter().collect(),
             scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
             record_chains: d.record_chains.clone(),
+            record_retentions: d.record_retentions.clone(),
+            ticket_prefix: d.ticket_prefix.map(str::to_string),
         };
         // The instance's own work bounds (its section's reserved `work:`), the host's where it
         // states none; a section that misstates them refuses the instance.
@@ -454,7 +454,6 @@ impl PlaneDriver {
         let mut at = 0;
         let mut cause = Cause::Timer;
         loop {
-            self.services.mark_due();
             let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
                 return;
             };
@@ -748,9 +747,10 @@ pub trait DriverSteps {
         Evidence::default()
     }
 
-    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]).
-    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
-        Ok(accrual.amount())
+    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]): nothing refused,
+    /// by default.
+    fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
+        Ok(())
     }
 
     /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
@@ -977,6 +977,16 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             && st.declined_flags & busbar_contract::abi::plane::REFUSED_UNSUPPORTED_ACTION != 0
     }
 
+    /// The plane's `arrive` refused the arrival about the entry it named, to be rendered AFTER
+    /// that entry's admission (`REFUSED_AFTER_ADMISSION`; abi/plane "A refused arrival", rule 6).
+    /// Only a held refusal (one that decoded as its entry) reaches admission at all.
+    fn declined_after_admission(&self) -> bool {
+        let st = self.lock();
+        st.declined.is_some()
+            && st.decoded.is_some()
+            && st.declined_flags & busbar_contract::abi::plane::REFUSED_AFTER_ADMISSION != 0
+    }
+
     /// The status a refusal for `reason` goes out under, as [`Self::render`] chooses it.
     fn status_for(&self, reason: ReasonCode) -> u32 {
         let st = self.lock();
@@ -1055,7 +1065,8 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         }
         // A REFUSAL ABOUT AN ENTRY (abi/plane "A refused arrival", rule 6; ARCHITECT
         // Q-DEL-A2A-GATE) decodes as the entry it names: the caller's grant over it is judged
-        // first, and the refusal is rendered at admission, before anything is charged.
+        // first, and the refusal is rendered at admission, before anything is charged; one the
+        // plane states REFUSED_AFTER_ADMISSION is rendered once that admission has passed.
         let held = outcome == AbiOutcome::Refused && pool.is_some();
         (outcome == AbiOutcome::Ready || held).then(|| Decoded {
             op_class: o.op_class,
@@ -1670,7 +1681,11 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
     /// named (abi/plane "A refused arrival", rule 6): that refusal is rendered here, after the
     /// caller's identity and grant were judged and before anything is charged (ARCHITECT
-    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged").
+    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged"). A refusal the plane
+    /// states `REFUSED_AFTER_ADMISSION` waits for the entry's admission instead (the previous
+    /// release's order: the governance guard, then the refusal through the admitted finish): a
+    /// refusal there is the caller's answer, and one it passes is refused at the route leg, before
+    /// any walk, hook or tap ([`RouteAwait::route_leg`]).
     fn admitted(
         &self,
         admit: &Grant<Admittance>,
@@ -1679,7 +1694,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
     ) -> Result<Admission, Refusal> {
-        if self.lock().declined.is_some() {
+        let declined = self.lock().declined.is_some();
+        if declined && !self.declined_after_admission() {
             return Err(Refusal::new(ReasonCode::DecodeFailed));
         }
         self.steps
@@ -1706,7 +1722,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
         self.steps.evidence(ctx)
     }
 
-    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
+    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<(), Refusal> {
         self.steps.at_parent_exit(ctx, accrual)
     }
 
@@ -1821,13 +1837,21 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C>
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUnits<'_, S, F, C> {
     /// The unit's route leg: one request's pump, or, for an arrival its `arrive` stated
-    /// `ROUTE_SESSION`, the duplex session (K6).
+    /// `ROUTE_SESSION`, the duplex session (K6). A unit whose `arrive` refused it after its
+    /// admission (`REFUSED_AFTER_ADMISSION`) has passed that admission: it is refused here with the
+    /// plane's refusal, before any walk, hook or tap, and its end settles through the admitted
+    /// finish, which gives back what admission held (the money steps refund the fee on the
+    /// refusal's status, `PlaneMoney::settle_end`; the hold settles at zero spend).
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
+        if self.declined_after_admission() {
+            self.driver.money.finished(ctx);
+            return Box::pin(std::future::ready(failed(token, ReasonCode::DecodeFailed)));
+        }
         let session = self
             .lock()
             .decoded
@@ -1869,8 +1893,11 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
             let Some(binder) = self.driver.hooks.as_ref() else {
                 return Ok(());
             };
+            // A unit its `arrive` refused after admission runs no hook: its refusal is rendered
+            // once the door has passed it.
             if binder.order() != hooks::HookOrder::Gated
                 || self.arrival.claim == busbar_contract::abi::plane::CLAIM_PROBE
+                || self.declined_after_admission()
             {
                 return Ok(());
             }

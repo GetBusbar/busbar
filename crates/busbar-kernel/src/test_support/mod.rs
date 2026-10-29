@@ -137,7 +137,6 @@ impl Default for MockResponse {
 #[derive(Debug, Default)]
 pub struct MockServerState {
     queued_replies: Mutex<Vec<MockResponse>>,
-    last_auth_header: std::sync::Mutex<Option<String>>,
     last_request_body: std::sync::Mutex<Option<Vec<u8>>>,
     last_request_headers: std::sync::Mutex<Option<axum::http::HeaderMap>>,
     last_request_path: std::sync::Mutex<Option<String>>,
@@ -152,21 +151,6 @@ impl MockServerState {
     }
     pub fn next_response(&self) -> Option<MockResponse> {
         self.queued_replies.lock().unwrap().pop()
-    }
-
-    /// Record the last seen Authorization header for testing passthrough token forwarding
-    pub fn record_auth_header(&self, header: &str) {
-        *self.last_auth_header.lock().unwrap() = Some(header.to_string());
-    }
-
-    /// Get the recorded Authorization header (for assertions in tests)
-    pub fn get_last_auth_header(&self) -> Option<String> {
-        self.last_auth_header.lock().unwrap().clone()
-    }
-
-    /// Clear the recorded Authorization header
-    pub fn clear_auth_header(&self) {
-        *self.last_auth_header.lock().unwrap() = None;
     }
 
     /// Record the received request path (for translation / on-the-wire assertions).
@@ -309,15 +293,6 @@ async fn mock_handler(
 
     // Record the full header set the upstream received (indistinguishability assertions).
     state.record_request_headers(&parts.headers);
-
-    // Record the Authorization header for passthrough token forwarding tests
-    if let Some(auth_header) = parts
-        .headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        state.record_auth_header(auth_header);
-    }
 
     // Record the received request body for translation / on-the-wire assertions.
     let body_bytes = axum::body::to_bytes(body, usize::MAX)
@@ -678,9 +653,9 @@ impl LaneSpec {
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
             None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
-            Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
+            Some(style) => {
+                busbar_kernel::plane_driver::route_input::AuthStyleInput::Named(style.to_string())
+            }
         };
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
@@ -1377,7 +1352,7 @@ impl TestApp {
             .get_or_insert_with(Default::default)
             .entry("test-idp-module".to_string())
             .or_default()
-            .entry(crate::auth::TEST_IDP_ROLE.to_string())
+            .entry(auth_modules::TEST_IDP_ROLE.to_string())
             .or_default();
         self
     }
@@ -1892,6 +1867,14 @@ impl TestApp {
                 let mut chain = self
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
+                // The admin group module answers under its own name in every fixture, so a chain
+                // that names it (set here, after the build, or by `PUT /admin-auth`) reaches it.
+                if let Some(module) = auth_modules::open(auth_modules::TEST_SCOPE_MODULE) {
+                    chain
+                        .modules
+                        .entry(auth_modules::TEST_SCOPE_MODULE.to_string())
+                        .or_insert_with(|| crate::auth::AdminModule::in_process(module));
+                }
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
                 let reg = crate::preflight::linked().expect("the linked registry");
                 chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
@@ -2023,15 +2006,6 @@ pub mod ranking_double;
 /// The store double (R-FIX3): the door that stands in for the root's linked store row in a test
 /// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
 pub mod store_double;
-
-/// The manifest `needs` a dropped-in hook declares, built from its two axes so a caller names no field
-/// of the value (the value's type is the kernel kit's to change).
-pub fn hook_needs(
-    prompt: busbar_contract::plugin_rows::NeedLevel,
-    user: busbar_contract::plugin_rows::NeedLevel,
-) -> HookNeeds {
-    HookNeeds { prompt, user }
-}
 
 /// Install a test build's linked auth rows and the operator credential's words, as boot does
 /// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
@@ -2165,6 +2139,8 @@ pub mod warn_capture;
 /// are handed to a dependent crate's tests, which never name the seal or a constructor.
 pub mod tokens;
 
+/// The test auth modules a test chain names, answered in process by the test build's auth axis.
+pub mod auth_modules;
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
@@ -2218,6 +2194,9 @@ pub mod durable_store;
 /// re-exported at the `test_support` root below, so `busbar_kernel::test_support::TestAppSeam`
 /// resolves exactly where the fixture it is a view onto does.
 pub mod seam;
+
+/// A test binary's plane registrations, published as the process plane list.
+pub mod planes;
 pub use seam::{
     build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
 };
@@ -2226,10 +2205,6 @@ pub use seam::{
 /// test binary binds in one line so its tests build and drive the whole fixture naming no other item
 /// of this crate.
 pub mod engine_kit;
-
-/// The WIDENED engine test-kit seam and its implementation, on the same fixture types as
-/// `engine_kit`.
-pub mod engine_kit_plus;
 
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
@@ -2311,7 +2286,23 @@ pub fn install_root_hook_names(names: &'static [&'static str]) {
 /// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
 /// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
 pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
+    if ROOT_AUTH_AXIS.set(open).is_ok() {
+        let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(root_auth_axis_with_test_modules);
+    }
+}
+
+/// The root test binary's own auth-axis opener ([`install_root_auth_axis`]).
+static ROOT_AUTH_AXIS: std::sync::OnceLock<crate::preflight::AuthAxisOpener> =
+    std::sync::OnceLock::new();
+
+/// The root test binary's auth axis with the test auth modules answered ahead of its rows.
+fn root_auth_axis_with_test_modules(
+    registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+) -> std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    let open = ROOT_AUTH_AXIS
+        .get()
+        .expect("installed before the opener is reported");
+    auth_modules::around(open(registry))
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,

@@ -109,8 +109,12 @@ pub struct Skipped {
     pub name: String,
     /// The alias its manifest states.
     pub alias: String,
-    /// Why it was skipped, in the trust evaluator's words.
+    /// Why it was skipped, in the trust evaluator's words. They embed manifest bytes, so nothing
+    /// may parse them or put them on the audit chain: [`Skipped::code`] is the structured why.
     pub reason: String,
+    /// Why it was skipped, as the trust evaluator's category: `unsigned`, `tampered`,
+    /// `unknown_publisher`, `anti_downgrade`, `untrusted_floored`, `egress_grant` or `retired_key`.
+    pub code: &'static str,
 }
 
 /// One build's plugin rows (see the module doc).

@@ -337,6 +337,7 @@ fn establish_as(
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
     let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
     out
@@ -1126,6 +1127,7 @@ fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
 fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let _: RawOutcome =
         f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
     out
@@ -1560,6 +1562,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
@@ -1877,19 +1880,35 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
     );
 }
 
-/// Whether THIS thread holds the connector's lock: a lock another thread holds (a test running
-/// beside this one) is let go within the bound; one this thread holds never is.
+/// Whether THIS thread holds the connector's lock (any instance's streams lock): a lock another
+/// thread holds (a test running beside this one) is let go within the bound; one this thread holds
+/// never is.
 fn held_here() -> bool {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < until {
-        match super::held_conns_lock().try_lock() {
-            Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return false,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+    let mut id = 1;
+    while let Some(w) = crate::dispatch::handle::supplier_of(InstanceId(id)) {
+        loop {
+            match w.conn_state.streams.try_lock() {
+                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => break,
+                Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => return true,
             }
         }
+        id += 1;
     }
-    true
+    false
+}
+
+/// The streams the connector holds for instance `id`.
+fn streams_of(
+    id: InstanceId,
+) -> std::sync::MutexGuard<'static, std::collections::HashMap<u64, super::Stream>> {
+    crate::dispatch::handle::supplier_of(id)
+        .expect("a minted instance")
+        .conn_state
+        .streams()
 }
 
 /// A member binding's auth instance that answers one bearer field, recording whether any of its
@@ -2160,16 +2179,14 @@ fn a_stream_closed_while_it_opens_leaves_nothing_open() {
     recorded.slab.declare(id, NeedId(0));
     let conn = recorded.slab.insert(id, NeedId(0), ()).expect("a slot");
     let table: Arc<dyn DeclaredConns> = recorded.clone();
+    let st = super::ConnState::default();
     // The stream is gone (its close ran while the open was being made).
-    super::install(id, stream, &table, super::Conn::Open(conn));
+    super::install(&st, id, stream, &table, super::Conn::Open(conn));
     assert!(
         recorded.slab.get(id, conn).is_err(),
         "the orphaned open is closed on the table"
     );
-    assert!(
-        super::held_conns().get(&(id, stream)).is_none(),
-        "nothing is held"
-    );
+    assert!(st.streams().get(&stream).is_none(), "nothing is held");
 }
 
 /// RED (THE DESIGN §11.12 "on resume the plugin re-issues the SAME handle and receives the stored
@@ -2293,9 +2310,8 @@ fn the_connector_serves_no_random_of_its_own() {
     assert!(CONN_SLOTS.random.is_none());
 }
 
-/// RED (bounded memory): an instance that is dropped takes what it held on the connector's
-/// process-wide maps with it, and a connection one of its held streams had open is closed on the
-/// table.
+/// RED (bounded memory): an instance that is dropped takes what it held on the connector's maps
+/// with it, and a connection one of its held streams had open is closed on the table.
 #[test]
 fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     let table = Arc::new(Scripted {
@@ -2305,14 +2321,14 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     let p = bound_over(&table);
     let id = p.instance();
     let stream = whole_request(&p, 0);
-    let conn = match super::held_conns().get(&(id, stream)).map(|s| &s.conn) {
+    let conn = match streams_of(id).get(&stream).map(|s| &s.conn) {
         Some(super::Conn::Open(c)) => *c,
         other => panic!("the whole request is open on the table: {other:?}"),
     };
     assert!(table.slab.get(id, conn).is_ok());
     drop(p);
     assert!(
-        !super::held_conns().keys().any(|(i, _)| *i == id),
+        streams_of(id).is_empty(),
         "a dropped instance's stream entries stayed on the connector's map"
     );
     assert!(
@@ -2576,6 +2592,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
             kind: auth as u32,
             kind_abi: auth.abi_version(),
+            layout: auth.layout_fingerprint(),
             statement: st,
             ..real.parts()
         })
@@ -2649,7 +2666,7 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     let stream = whole_request(&p, 0);
     assert!(
         matches!(
-            super::held_conns().get(&(id, stream)).map(|s| &s.conn),
+            streams_of(id).get(&stream).map(|s| &s.conn),
             Some(super::Conn::Open(_))
         ),
         "the whole request is open on the table"
@@ -2686,6 +2703,65 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     );
     let t = minted.expect("a ticket");
     d.recycle(t);
+}
+
+/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
+/// a write past what the caller stated shows.
+#[repr(C, align(8))]
+struct LentOut([u8; 96]);
+
+impl LentOut {
+    fn stating(size: u32) -> Self {
+        let mut b = [0xAA_u8; 96];
+        b[..4].copy_from_slice(&size.to_ne_bytes());
+        Self(b)
+    }
+
+    fn out(&mut self) -> *mut busbar_contract::abi::host::service::ServiceOut {
+        self.0.as_mut_ptr().cast()
+    }
+
+    /// Whether every byte from `from` on is still the caller's.
+    fn untouched_from(&self, from: usize) -> bool {
+        self.0[from..].iter().all(|b| *b == 0xAA)
+    }
+}
+
+/// RED (Q128 kernel-scope MEDIUM, the connector service frame): the host writes a caller's `out` only as far
+/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
+/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
+/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// `ServiceOut` over whatever the caller lent.
+#[test]
+fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_stated() {
+    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
+    let mut lent = LentOut::stating(32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
+    assert!(lent.untouched_from(4), "a short `out` was written");
+    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
+    assert!(
+        lent.untouched_from(SERVICE_OUT_V1),
+        "the host wrote past the `out` stated"
+    );
+    assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
 
 /// THE AUTH CALL SIGNS THE AUTHORITY THE SOCKET DIALS. A member binding is asked for its fields over
@@ -2742,4 +2818,179 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
         assert_eq!(asked.path, path, "{target}");
         assert_eq!(asked.query.as_deref(), query, "{target}");
     }
+}
+
+// ── AUDITED ON THE PLUGIN'S BEHALF (BIND-AUDIT): every refusal the host makes while an instance
+// binds reaches the host's audit, once; nothing the plugin says at run time becomes its words. ──
+
+/// [`bind_as`] under the instance label `label`, over `table`: the label every refusal is
+/// recorded under ([`crate::observe::testing::refused`] reads a test's own by it).
+fn bound_labelled(needs: &'static [Need], table: &Arc<Recording>, label: &str) -> Plugin<TestKind> {
+    // SAFETY: the real door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement() };
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
+        ..st
+    }));
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
+    }));
+    let v = validate_door::<TestKind>(door).expect("the door validates");
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    Plugin::bind(
+        v,
+        None,
+        Bind {
+            instance: Arc::from(label),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: Adopter::unwatched(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the instance binds")
+}
+
+/// The refusals the host's audit was handed for `label`, rendered.
+fn refused_for(label: &str) -> Vec<String> {
+    crate::observe::testing::refused(label)
+        .into_iter()
+        .map(|(_, _, refusal)| refusal)
+        .collect()
+}
+
+/// RED: a need the table refuses at `open` or `refresh` is handed to the host's audit once per
+/// refusal, under the instance's label: its Statement index and why in a host word. An admitted
+/// declaration is not.
+#[test]
+fn a_need_refused_at_open_is_audited_once() {
+    let label = "bind-audit-need-refused";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(NEEDS)), &table, label);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    assert!(
+        refused_for(label).is_empty(),
+        "an admitted need is not a refusal"
+    );
+
+    // Its target path resolves to nothing: the table refuses it.
+    assert_eq!(
+        refresh_with(&p, br#"{"other":"127.0.0.3:9"}"#),
+        Outcome::Ready
+    );
+    let refused = refused_for(label);
+    assert_eq!(
+        refused,
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "target_unresolved"
+            }
+        )],
+        "one record for the one refusal"
+    );
+}
+
+/// RED: a need refused for anything else is recorded in the table's own word.
+#[test]
+fn a_need_refused_by_the_table_is_audited_in_its_word() {
+    let label = "bind-audit-trust-refused";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "refused"
+            }
+        )]
+    );
+}
+
+/// RED: an `open` that answers with a diagnostic its Statement declares, at warn, is handed to the
+/// host's audit once, by that declared id. A log line at warn, a declared id at info and an id the
+/// Statement does not declare are not.
+#[test]
+fn a_declared_open_warning_is_audited_once() {
+    let label = "bind-audit-open-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, plug::FLAG_OPEN), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Open { code: "m1.note" }
+        )]
+    );
+}
+
+/// `tick` with `mode` as its extensions, ticket-less.
+fn tick_with(p: &Plugin<TestKind>, mode: &'static [u8]) -> Outcome {
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: mode.as_ptr(),
+        len: mode.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        busbar_contract::abi::mechanism::lifecycle::TickIn {
+            head,
+            now_ns: crate::dispatch::now_ns(),
+        },
+        busbar_contract::abi::mechanism::lifecycle::TickOut {
+            head: out_head(),
+            next_tick_ns: 0,
+        },
+    );
+    p.call(slot::TICK, &mut f).outcome
+}
+
+/// RED (security item 3, owner rule: every refusal audited): an op other than `open` or `refresh`
+/// that answers with a diagnostic its Statement declares, at ERROR, is handed to the host's audit,
+/// by that declared id, as an op's refusal. A declared id at warn (a retrying op's warning), a log
+/// line at error and an id the Statement does not declare are not; an op's ordinary envelope (its
+/// declared id at warn) hands the audit nothing.
+#[test]
+fn a_declared_error_an_op_raises_is_audited() {
+    let label = "op-audit-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert_eq!(tick_with(&p, b"answer:1"), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "a declared warning at an op is a log, not a record"
+    );
+    assert_eq!(tick_with(&p, plug::FLAG_OP), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Op { code: "m1.note" }
+        )]
+    );
+}
+
+/// An `open` with nothing to flag hands the host's audit nothing.
+#[test]
+fn a_quiet_open_is_not_audited() {
+    let label = "bind-audit-open-quiet";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert!(refused_for(label).is_empty());
 }

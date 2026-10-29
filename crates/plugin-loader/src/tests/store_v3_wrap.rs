@@ -9,14 +9,12 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use busbar_contract::abi::sdk::conn::Host;
-use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell, Grant, Op, OpResult, ReserveRefused, Scanned, Step, StoreSlots, Tail,
-};
+use busbar_contract::abi::sdk::store::{Op, OpResult, Scanned, Step, StoreSlots, Tail};
 use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::{Head, RecordBytes};
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 use crate::both_ways::store_fixture::MemoryStore;
@@ -38,34 +36,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         let _ = (inner, cx);
         Step::Ready(Ok(()))
     }
-    fn add_usage_op(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        bucket: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> Step<OpResult<()>> {
-        <MemoryStore as StoreSlots>::add_usage_op(inner, cx, op, bucket, window_start, delta)
-    }
-
-    fn add_metering_op(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        delta: &MeteringDelta,
-    ) -> Step<OpResult<()>> {
-        <MemoryStore as StoreSlots>::add_metering_op(inner, cx, op, delta)
-    }
-
-    fn append_audit_op(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        entry: &AuditRecord,
-    ) -> Step<OpResult<()>> {
-        <MemoryStore as StoreSlots>::append_audit_op(inner, cx, op, entry)
-    }
 
     fn append_plane_record_op(
         inner: &MemoryStore,
@@ -74,46 +44,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         record: PlaneRecordRef<'_>,
     ) -> Step<OpResult<()>> {
         <MemoryStore as StoreSlots>::append_plane_record_op(inner, cx, op, record)
-    }
-
-    fn append_batch(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        stream: &str,
-        records: &[RecordBytes],
-    ) -> Step<OpResult<Head>> {
-        <MemoryStore as StoreSlots>::append_batch(inner, cx, op, stream, records)
-    }
-
-    fn heads(inner: &MemoryStore, cx: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
-        <MemoryStore as StoreSlots>::heads(inner, cx)
-    }
-
-    fn session_put(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        session: u64,
-        node: &str,
-        principal: &str,
-    ) -> Step<Result<(), String>> {
-        <MemoryStore as StoreSlots>::session_put(inner, cx, session, node, principal)
-    }
-
-    fn session_remove(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        session: u64,
-    ) -> Step<Result<(), String>> {
-        <MemoryStore as StoreSlots>::session_remove(inner, cx, session)
-    }
-
-    fn sessions_for(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        principal: &str,
-    ) -> Step<Result<Vec<(u64, String)>, String>> {
-        <MemoryStore as StoreSlots>::sessions_for(inner, cx, principal)
     }
 
     fn record_put(
@@ -145,28 +75,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::record_scan(inner, cx, schema, prefix, limit)
     }
 
-    fn reserve<'c>(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        epoch: u64,
-        cells: impl Iterator<Item = Cell<'c>> + Clone,
-        grants: &mut impl Extend<Grant>,
-    ) -> Step<Result<(), ReserveRefused>> {
-        <MemoryStore as StoreSlots>::reserve(inner, cx, op, epoch, cells, grants)
-    }
-
-    fn slice_release(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        epoch: u64,
-        items: impl Iterator<Item = (u64, u64)> + Clone,
-        released: &mut impl Extend<u64>,
-    ) -> Step<OpResult<()>> {
-        <MemoryStore as StoreSlots>::slice_release(inner, cx, op, epoch, items, released)
-    }
-
     fn add_usage_batch(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -183,24 +91,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         deltas: &[MeteringDelta],
     ) -> Step<OpResult<()>> {
         <MemoryStore as StoreSlots>::add_metering_batch(inner, cx, op, deltas)
-    }
-
-    fn append_audit_batch(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        entries: &[AuditRecord],
-    ) -> Step<OpResult<()>> {
-        <MemoryStore as StoreSlots>::append_audit_batch(inner, cx, op, entries)
-    }
-
-    fn window_caps(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        op: OpId,
-        caps: &[Cap<'_>],
-    ) -> Step<Result<(), CapsRefused>> {
-        <MemoryStore as StoreSlots>::window_caps(inner, cx, op, caps)
     }
 
     fn put_key(
@@ -225,10 +115,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
 
     fn delete_key(inner: &MemoryStore, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
         <MemoryStore as StoreSlots>::delete_key(inner, cx, id)
-    }
-
-    fn scrub_key(inner: &MemoryStore, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
-        <MemoryStore as StoreSlots>::scrub_key(inner, cx, id)
     }
 
     fn list_keys_since(
@@ -266,22 +152,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::list_metering(inner, cx, bucket)
     }
 
-    fn purge_windows_before(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        before: u64,
-    ) -> Step<RecordStoreResult<u64>> {
-        <MemoryStore as StoreSlots>::purge_windows_before(inner, cx, before)
-    }
-
-    fn purge_metering_before(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        bucket: &str,
-    ) -> Step<RecordStoreResult<u64>> {
-        <MemoryStore as StoreSlots>::purge_metering_before(inner, cx, bucket)
-    }
-
     fn put_credential(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -305,15 +175,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         key_id: &str,
     ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
         <MemoryStore as StoreSlots>::list_credentials(inner, cx, key_id)
-    }
-
-    fn lookup_credential_secret(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        kind: &str,
-        public_id: &str,
-    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
-        <MemoryStore as StoreSlots>::lookup_credential_secret(inner, cx, kind, public_id)
     }
 
     fn revoke_credential(
@@ -404,6 +265,16 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::purge_plane_records_before(inner, cx, kind, before)
     }
 
+    fn purge_plane_records(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        <MemoryStore as StoreSlots>::purge_plane_records(inner, cx, kind, before, retention)
+    }
+
     fn delete_plane_record(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -455,35 +326,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::connect(&self.0, cx)
     }
 
-    fn add_usage_op(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        bucket: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> Step<OpResult<()>> {
-        H::add_usage_op(&self.0, cx, op, bucket, window_start, delta)
-    }
-
-    fn add_metering_op(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        delta: &MeteringDelta,
-    ) -> Step<OpResult<()>> {
-        H::add_metering_op(&self.0, cx, op, delta)
-    }
-
-    fn append_audit_op(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        entry: &AuditRecord,
-    ) -> Step<OpResult<()>> {
-        H::append_audit_op(&self.0, cx, op, entry)
-    }
-
     fn append_plane_record_op(
         &self,
         cx: &mut Op<'_>,
@@ -491,42 +333,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         record: PlaneRecordRef<'_>,
     ) -> Step<OpResult<()>> {
         H::append_plane_record_op(&self.0, cx, op, record)
-    }
-
-    fn append_batch(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        stream: &str,
-        records: &[RecordBytes],
-    ) -> Step<OpResult<Head>> {
-        H::append_batch(&self.0, cx, op, stream, records)
-    }
-
-    fn heads(&self, cx: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
-        H::heads(&self.0, cx)
-    }
-
-    fn session_put(
-        &self,
-        cx: &mut Op<'_>,
-        session: u64,
-        node: &str,
-        principal: &str,
-    ) -> Step<Result<(), String>> {
-        H::session_put(&self.0, cx, session, node, principal)
-    }
-
-    fn session_remove(&self, cx: &mut Op<'_>, session: u64) -> Step<Result<(), String>> {
-        H::session_remove(&self.0, cx, session)
-    }
-
-    fn sessions_for(
-        &self,
-        cx: &mut Op<'_>,
-        principal: &str,
-    ) -> Step<Result<Vec<(u64, String)>, String>> {
-        H::sessions_for(&self.0, cx, principal)
     }
 
     fn record_put(
@@ -558,28 +364,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::record_scan(&self.0, cx, schema, prefix, limit)
     }
 
-    fn reserve<'c>(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        epoch: u64,
-        cells: impl Iterator<Item = Cell<'c>> + Clone,
-        grants: &mut impl Extend<Grant>,
-    ) -> Step<Result<(), ReserveRefused>> {
-        H::reserve(&self.0, cx, op, epoch, cells, grants)
-    }
-
-    fn slice_release(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        epoch: u64,
-        items: impl Iterator<Item = (u64, u64)> + Clone,
-        released: &mut impl Extend<u64>,
-    ) -> Step<OpResult<()>> {
-        H::slice_release(&self.0, cx, op, epoch, items, released)
-    }
-
     fn add_usage_batch(
         &self,
         cx: &mut Op<'_>,
@@ -598,24 +382,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::add_metering_batch(&self.0, cx, op, deltas)
     }
 
-    fn append_audit_batch(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        entries: &[AuditRecord],
-    ) -> Step<OpResult<()>> {
-        H::append_audit_batch(&self.0, cx, op, entries)
-    }
-
-    fn window_caps(
-        &self,
-        cx: &mut Op<'_>,
-        op: OpId,
-        caps: &[Cap<'_>],
-    ) -> Step<Result<(), CapsRefused>> {
-        H::window_caps(&self.0, cx, op, caps)
-    }
-
     fn put_key(&self, cx: &mut Op<'_>, key: &VirtualKey) -> Step<RecordStoreResult<()>> {
         H::put_key(&self.0, cx, key)
     }
@@ -630,10 +396,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
 
     fn delete_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
         H::delete_key(&self.0, cx, id)
-    }
-
-    fn scrub_key(&self, cx: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
-        H::scrub_key(&self.0, cx, id)
     }
 
     fn list_keys_since(
@@ -671,14 +433,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::list_metering(&self.0, cx, bucket)
     }
 
-    fn purge_windows_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
-        H::purge_windows_before(&self.0, cx, before)
-    }
-
-    fn purge_metering_before(&self, cx: &mut Op<'_>, bucket: &str) -> Step<RecordStoreResult<u64>> {
-        H::purge_metering_before(&self.0, cx, bucket)
-    }
-
     fn put_credential(
         &self,
         cx: &mut Op<'_>,
@@ -702,15 +456,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         key_id: &str,
     ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
         H::list_credentials(&self.0, cx, key_id)
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        cx: &mut Op<'_>,
-        kind: &str,
-        public_id: &str,
-    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
-        H::lookup_credential_secret(&self.0, cx, kind, public_id)
     }
 
     fn revoke_credential(
@@ -796,6 +541,16 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         before: u64,
     ) -> Step<RecordStoreResult<u64>> {
         H::purge_plane_records_before(&self.0, cx, kind, before)
+    }
+
+    fn purge_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        H::purge_plane_records(&self.0, cx, kind, before, retention)
     }
 
     fn delete_plane_record(

@@ -247,7 +247,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
 
@@ -295,7 +295,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     gov.hydrate_budgets(&CostModel::flat(1), 0)
         .expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+    let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -375,7 +375,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the composition sealed its egress"
     );
     let money_steps = Arc::clone(&composed.money);
-    let plane_key = composed.facts.plane.clone();
     served.post = Some(Arc::clone(&post));
     let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
@@ -424,8 +423,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
 
     // THE MONEY RECORD: the request admitted on the governance ledger, the unit's facts closed on
-    // the money steps and the node, and its one line on the node's book carrying the decision the
-    // far end reported, under the (plane key, entry) it was served by.
+    // the money steps and the node, and its one audit record carrying the decision the far end
+    // reported.
     let usage = gov
         .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
         .expect("a read")
@@ -437,18 +436,23 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "its money facts closed at its end"
     );
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
-    let rows = book.durability.lock().expect("unpoisoned").read_back();
-    let lane = format!("{plane_key}{PLANE_LANE_SEP}m");
-    let line = rows
+    // ITS ONE AUDIT RECORD carries the decision the far end reported, by class.
+    let records = book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .audit_records
+        .clone();
+    let decided: Vec<u64> = records
         .iter()
-        .find(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
-        .unwrap_or_else(|| panic!("the unit's one line on the node's book: {rows:?}"));
-    let counts = line.counts.as_ref().expect("its counts");
-    assert_eq!(line.refusal, None, "its classes resolve: {line:?}");
+        .flat_map(|r| r.usage.lines.iter())
+        .filter(|l| l.class.as_str() == "decision")
+        .map(|l| l.quantity)
+        .collect();
     assert_eq!(
-        counts.classes.get("decision").copied(),
-        Some(1),
-        "the decision the far end reported: {counts:?}"
+        decided,
+        vec![1],
+        "the decision the far end reported: {records:?}"
     );
 }
 
@@ -942,7 +946,7 @@ pub(super) mod session_door {
             &[],
             Arc::new(|_, _| {}),
             busbar_core_connector::pool::PoolPosture::NONE,
-            busbar_kernel::config::secret::resolve_linked_string_at_config,
+            busbar_core_connector::spawn_env::linked_spawn_secret,
         )
         .expect("the connector builds")
     }
@@ -1114,7 +1118,7 @@ pub(super) mod session_door {
             .expect("mint");
         gov.hydrate_budgets(&cost, 0).expect("hydrate");
         let node = Arc::new(Node::new());
-        let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+        let book = crate::root::durability::node_book();
         node.bind_book(Arc::clone(&book.durability));
         let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
         let money = Arc::new(PlaneMoney::new(
@@ -1280,11 +1284,25 @@ pub(super) mod session_door {
                 .requests
         }
 
-        /// The node book's lines for the session door's catalog route.
+        /// The units SERVED on the session door's route (`m-cap`), by their one audit record: the
+        /// units whose counts the ledger took.
         fn lines(&self) -> usize {
-            let rows = self.book.durability.lock().expect("unpoisoned").read_back();
-            rows.iter()
-                .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane.ends_with("m-cap")))
+            let records = self
+                .book
+                .durability
+                .lock()
+                .expect("unpoisoned")
+                .audit_records
+                .clone();
+            records
+                .iter()
+                .filter(|r| {
+                    r.outcome.unit_end.is_completed()
+                        && r.what
+                            .destination
+                            .as_deref()
+                            .is_some_and(|lane| lane.ends_with("m-cap"))
+                })
                 .count()
         }
 
@@ -1443,7 +1461,7 @@ pub(super) mod session_door {
         );
         assert_eq!(s.money.open_units(), 0, "its money facts closed");
         assert_eq!(s.post.open_units(), 0, "its node facts closed");
-        assert_eq!(s.lines(), 1, "its one line on the node's book");
+        assert_eq!(s.lines(), 1, "its one record carries its counts");
     }
 
     /// ADMIT, at the session door (its root leg): a key whose group budget is already spent is
@@ -1469,7 +1487,7 @@ pub(super) mod session_door {
         assert_eq!(s.requests(), 0, "the refusal charged nothing");
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
-        assert_eq!(s.lines(), 0, "no line on the node's book");
+        assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
     /// BREAKER-TRIP, at the session door: a provider failing every mint records each failure into
@@ -1591,7 +1609,7 @@ pub(super) mod session_door {
             0,
             "the refused unit's node facts closed"
         );
-        assert_eq!(s.lines(), 0, "no line on the node's book");
+        assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
     /// AUDIT-CHAIN, at the session door: every mint, served or refused, seals ONE record on the
@@ -1712,7 +1730,7 @@ pub(super) mod session_door {
         assert_eq!(s.requests(), 0, "the refusal charged nothing");
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
-        assert_eq!(s.lines(), 0, "no line on the node's book");
+        assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
     // ── a live session through the door's session route, on a real listener ──────────────────────
@@ -4624,7 +4642,7 @@ async fn serve_configured(
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -4700,7 +4718,7 @@ async fn serve_configured(
         .expect("mint");
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+    let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -5125,6 +5143,57 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     );
 }
 
+/// A FAILOVER LANE PRESENTS ITS OWN CREDENTIAL (security use case: every lane is reached with its
+/// own key): the primary member, configured with its own key, answers 500, the walk fails over to
+/// the second member, configured with a different key, and the caller is served. Each far end saw
+/// exactly its own member's key; the failover hop never carries the primary's, nor the caller's.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
+    const PRIMARY_KEY: &str = "sk-primary-6c2f81";
+    const FAILOVER_KEY: &str = "sk-failover-0d94e3";
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failover-credential";
+    let _published = Withdrawn(instance);
+    let primary = seat_far_end(
+        500,
+        r#"{"error":{"message":"upstream down","type":"server_error"}}"#,
+    )
+    .await;
+    let failover = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(primary.port, 100), (failover.port, 1)],
+            member_keys: &[PRIMARY_KEY, FAILOVER_KEY],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        (primary.served(), failover.served()),
+        (1, 1),
+        "the primary failed and the walk failed over"
+    );
+    assert_eq!(
+        primary.authorizations.lock().unwrap().clone(),
+        vec![format!("Bearer {PRIMARY_KEY}")],
+        "the primary is reached with its own key"
+    );
+    let seen = failover.authorizations.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![format!("Bearer {FAILOVER_KEY}")],
+        "the failover lane presents its own key"
+    );
+    assert!(
+        !seen[0].contains(PRIMARY_KEY) && !seen[0].contains(&rig.token),
+        "never the primary's key, never the caller's token"
+    );
+}
+
 /// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5446,6 +5515,76 @@ async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
     let text = String::from_utf8_lossy(&payload);
     assert!(text.contains(REWRITTEN), "{text}");
     assert!(!text.contains("the original prompt"), "{text}");
+}
+
+/// A HOOK NEVER SEES A CREDENTIAL (hooks.md: "Never the secret/token, under any configuration";
+/// guardrails: caller secrets are excluded from the hook payload): a keyed caller whose request also
+/// carries `x-api-key`, `proxy-authorization` and `cookie` fields reaches the far end, and the
+/// request-stage tap, which holds the prompt grant, is delivered a projection that carries none of
+/// the caller's credentials, no auth field name, and not the provider's own key.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hook_payload_never_carries_auth_headers() {
+    const CALLER_API_KEY: &str = "caller-x-api-key-5b1e0c";
+    const PROXY_SECRET: &str = "Basic cHJveHk6c2VjcmV0LTkxZDM=";
+    const COOKIE: &str = "session=cookie-secret-3a7f";
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-tap-no-auth";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            no_rewrite: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let bearer = format!("Bearer {}", rig.token);
+    let (status, _, body) = rig
+        .send_bare(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "the caller's prompt"}]})),
+            &[
+                ("authorization", bearer.as_str()),
+                ("x-api-key", CALLER_API_KEY),
+                ("proxy-authorization", PROXY_SECRET),
+                ("cookie", COOKIE),
+            ],
+        )
+        .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let payload = rig
+        .request_tap_payload(2_000)
+        .await
+        .expect("the request-stage tap is delivered");
+    let text = String::from_utf8_lossy(&payload);
+    assert!(
+        text.contains("the caller's prompt"),
+        "the tap holds the prompt grant, so the payload is the full projection: {text}"
+    );
+    for secret in [
+        rig.token.as_str(),
+        CALLER_API_KEY,
+        PROXY_SECRET,
+        COOKIE,
+        "sk-seats",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "a credential reached the hook: {text}"
+        );
+    }
+    let lower = text.to_ascii_lowercase();
+    for field in ["authorization", "x-api-key", "cookie"] {
+        assert!(
+            !lower.contains(field),
+            "an auth field name reached the hook ({field}): {text}"
+        );
+    }
 }
 
 /// CATALOGUE: what a restricted key may SEE is the one catalogue walk's answer: the pool it may
@@ -7537,11 +7676,11 @@ mod pools_door_refusals {
     }
 
     /// A SPENT BUDGET ON CONVERSE (F25 row 145; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_bedrock_envelope`): 429,
-    /// `x-amzn-errortype: ThrottlingException`, an `x-amzn-requestid`, body `__type:
-    /// ThrottlingException` (#958: an error Converse declares; 1.5.5's 400
-    /// `ServiceQuotaExceededException` is one it does not). RED: a 400, or either field missing or
-    /// another value.
+    /// `forward_pool_integration_tests::test_budget_over_quota_bedrock_envelope`): 1.5.5's 400,
+    /// `x-amzn-errortype: ServiceQuotaExceededException`, an `x-amzn-requestid`, body `__type:
+    /// ServiceQuotaExceededException` (OWNER 2026-10-27: a spent budget is the non-retryable quota
+    /// refusal the plane declares in its refusal table, not the `ThrottlingException` every AWS SDK
+    /// retries). RED: a 429 throttle, or either field missing or another value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_converse() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7555,13 +7694,13 @@ mod pools_door_refusals {
                 Some(body_word("converse_body")),
             )
             .await;
-        assert_eq!(status, 429, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
         assert_eq!(
             field(&head, "x-amzn-errortype"),
-            Some("ThrottlingException")
+            Some("ServiceQuotaExceededException")
         );
         assert!(head.contains_key("x-amzn-requestid"));
-        assert_eq!(json_of(&body)["__type"], "ThrottlingException");
+        assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
     }
 
     /// THE REQUESTS-A-MINUTE LIMIT (F25 row 146; legacy
@@ -7776,7 +7915,7 @@ mod pools_door_refusals {
     /// GOVERNANCE REFUSALS LEAK NO INTERNAL VOCABULARY (F25 row 427; legacy
     /// `ingress_integration_tests::test_governance_rejection_bodies_leak_no_internal_vocab`): a key
     /// restricted to another pool is refused 403; a key whose group has a zero all-time budget is
-    /// refused 429 on chat and 429 `ThrottlingException` on converse (#958); a key whose group
+    /// refused 429 on chat and 400 `ServiceQuotaExceededException` on converse (OWNER 2026-10-27); a key whose group
     /// allows no request a minute is refused 429 with a `Retry-After`; and none of those bodies
     /// says `virtual key`, the key's id, the pool's name or the product's name. RED: a refusal of
     /// another status, or any of those words on the wire.
@@ -7831,8 +7970,8 @@ mod pools_door_refusals {
             .send("POST", &converse_on_pool, Some(body_word("converse_body")))
             .await;
         let text = String::from_utf8_lossy(&body);
-        assert_eq!(status, 429, "a zero budget on converse: {text}");
-        assert!(text.contains("ThrottlingException"), "{text}");
+        assert_eq!(status, 400, "a zero budget on converse: {text}");
+        assert!(text.contains("ServiceQuotaExceededException"), "{text}");
         assert_leak_free(&text, &broke.key_id, pool);
         drop(broke);
         drop(published);
@@ -7929,8 +8068,9 @@ mod pools_door_refusals {
     /// A SPENT BUDGET ON EVERY CALLER DIALECT (F25 row 469; legacy
     /// `ingress_integration_tests::test_governance_over_budget_native_envelope_all_ingress`): a key
     /// over its group's all-time budget is refused 429 on chat, messages, the second chat surface,
-    /// the respond surface and generate, and 429 with body `__type: ThrottlingException` on
-    /// converse (#958: an error Converse declares). RED: any dialect answered otherwise.
+    /// the respond surface and generate, and 400 with body `__type: ServiceQuotaExceededException` on
+    /// converse (OWNER 2026-10-27: the plane's declared quota refusal). RED: any dialect answered
+    /// otherwise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7939,9 +8079,11 @@ mod pools_door_refusals {
         let (rig, far) = over_budget(instance).await;
         for (path, request) in every_dialect() {
             let (status, _, body) = rig.send("POST", path, Some(request)).await;
-            assert_eq!(status, 429, "{path}: {}", String::from_utf8_lossy(&body));
             if path == door_word("converse_path") {
-                assert_eq!(json_of(&body)["__type"], "ThrottlingException");
+                assert_eq!(status, 400, "{path}: {}", String::from_utf8_lossy(&body));
+                assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
+            } else {
+                assert_eq!(status, 429, "{path}: {}", String::from_utf8_lossy(&body));
             }
         }
         assert_eq!(far.served(), 0);
@@ -11319,6 +11461,76 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     assert_eq!(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
+    );
+}
+
+/// A VIRTUAL KEY EXPIRES (governance guide: "a virtual key is a signed, expiring bearer token"):
+/// end to end on the data plane through the `keys` chain, a key minted on the same governance book
+/// whose token `exp` has passed is refused 401 and never reaches the far end, while the rig's live
+/// key is admitted on the same app.
+/// RED: an expired virtual key is admitted.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_virtual_key_is_refused() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-key-token-expired";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // Minted an hour ago with a ten-minute lifetime: signed by the book's own key, and expired.
+    let now = busbar_kernel::store::now();
+    let (_, expired) = rig
+        .gov
+        .mint_signed(
+            NewKeySpec {
+                name: "expired".to_string(),
+                allowed_pools: Some(vec!["p".to_string()]),
+                ..Default::default()
+            },
+            now - 3_000,
+            now - 3_600,
+        )
+        .expect("mint");
+    let expired = expired.expose(&busbar_kernel::seal::lend()).to_string();
+
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let bearer = format!("Bearer {expired}");
+    let (refused, _, body) = rig
+        .send_bare(
+            "POST",
+            path,
+            Some(ask.clone()),
+            &[("authorization", bearer.as_str())],
+        )
+        .await;
+    assert_eq!(
+        refused,
+        401,
+        "an expired virtual key is refused: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(far.served(), 0, "the expired key never reached the far end");
+
+    let (admitted, _, body) = rig.send("POST", path, Some(ask)).await;
+    assert_eq!(
+        admitted,
+        200,
+        "the live key is admitted on the same app: {}",
+        String::from_utf8_lossy(&body)
     );
 }
 

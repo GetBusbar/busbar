@@ -108,7 +108,7 @@ pub(super) fn install_door_seams() {
             .expect("the door serving the `pools` map binds");
         busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
     });
-    busbar_kernel::plane_driver::registry::register_test_plane(row);
+    busbar_kernel::test_support::planes::register_test_plane(row);
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -499,6 +499,9 @@ pub(crate) struct RigOpts<'a> {
     /// Every provider's `api_key`, a secret reference as written (YAML) (`None`: a credential file
     /// of the rig's own, gone once the door composed).
     pub api_key: Option<&'a str>,
+    /// Each member's provider `api_key` VALUE, by member, written to a credential file of the
+    /// rig's own (gone once the door composed); a member past the end takes [`Self::api_key`].
+    pub member_keys: &'a [&'a str],
     /// More fields of every provider entry, as written (YAML, one level below the provider's name:
     /// `error_map:`, `health:`).
     pub provider_yaml: &'a str,
@@ -561,8 +564,6 @@ pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durabilit
             &crate::root::durability::DurabilityConfig { data_dir: None },
             0,
             lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
             None,
         )
         .expect("the store reads back"),
@@ -850,7 +851,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
 
@@ -891,11 +892,26 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if opts.api_key.is_none() {
         std::fs::write(&key_file, "sk-seats").expect("the credential file");
     }
+    let member_key_files: Vec<std::path::PathBuf> = opts
+        .member_keys
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let file = key_file.with_extension(format!("m{i}"));
+            std::fs::write(&file, value).expect("the member's credential file");
+            file
+        })
+        .collect();
     let mut yaml = String::from("providers:\n");
     for (i, _) in opts.members.iter().enumerate() {
+        let member_key = member_key_files
+            .get(i)
+            .map(|file| format!("{{ file: '{}' }}", file.display()));
         yaml.push_str(&format!(
             "  oai{i}:\n    api_key: {}\n",
-            opts.api_key.unwrap_or(&own_key)
+            member_key
+                .as_deref()
+                .unwrap_or(opts.api_key.unwrap_or(&own_key))
         ));
         yaml.push_str(&indented(opts.provider_yaml, 4));
     }
@@ -1033,7 +1049,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let pin = opts.pin.unwrap_or(card_pin);
-    let book = crate::root::durability::node_book_over(Box::new(pin));
+    let book = crate::root::durability::node_book();
     let durability = if opts.full_journal {
         full_journal_book()
     } else {
@@ -1207,6 +1223,9 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &busbar_contract::config_time::ConfigScope::config_time(),
     );
     let _ = std::fs::remove_file(&key_file);
+    for file in &member_key_files {
+        let _ = std::fs::remove_file(file);
+    }
     let mut served = served?;
     served.post = Some(Arc::clone(&post));
     let appliers = served.appliers();
@@ -1635,4 +1654,121 @@ async fn a_served_units_usage_is_accrued_exactly_once() {
         "no second posting once the unit has ended"
     );
     assert_eq!(far.served(), 1, "one far-end request served");
+}
+
+/// A far end on loopback answering every request with 200 and `body` (JSON), keeping each request's
+/// body as it arrived.
+async fn far_end_keeping_bodies(body: &'static str) -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port");
+    let port = listener.local_addr().expect("its address").port();
+    let bodies: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&bodies);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let kept = Arc::clone(&kept);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut got = Vec::new();
+                let request = loop {
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    let Some(at) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&got[..at]).to_string();
+                    let length = head
+                        .lines()
+                        .find_map(|l| {
+                            let (n, v) = l.split_once(':')?;
+                            n.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if got.len() >= at + 4 + length {
+                        break got[at + 4..at + 4 + length].to_vec();
+                    }
+                };
+                kept.lock().unwrap().push(request);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (port, bodies)
+}
+
+/// A RERANK UNDER THE GLOBAL REWRITE IS SERVED, ITS BODY UNMODIFIED (ruling (A) on #1709): the
+/// plane projects a rerank's query and documents into one turn so the gates screen them, but a
+/// rerank has no conversation a hook's messages could be framed into, and the plane says so
+/// (`PROJECT_REWRITE_NOT_APPLICABLE`). The rewrite seat runs, the caller is answered 200, and the
+/// far end receives exactly the bytes it receives from the same rerank with no rewrite seat
+/// installed: nothing of the rewrite reaches it.
+///
+/// RED before: the kernel read the plane's READY answer with no rewritten body as a failed splice
+/// and refused the rerank, 500 "request rewrite could not be applied", nothing sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() {
+    let _one = PUBLISHING.lock().await;
+    let request: serde_json::Value =
+        serde_json::from_str(word("rerank_body")).expect("the rerank body is JSON");
+    let mut forwarded = Vec::new();
+    for (instance, no_rewrite) in [
+        ("serve-hook-seats-rerank-rewrite", false),
+        ("serve-hook-seats-rerank-bare", true),
+    ] {
+        let _published = Published(instance);
+        // An answer billing no search units: the rig's card prices none, and this cell is about the
+        // request, not its price.
+        let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_unbilled")).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port, 1)],
+                dialect: Some(word("rerank_dialect")),
+                no_rewrite,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, answered) = rig
+            .send("POST", word("rerank_path"), Some(request.clone()))
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "{instance}: the rerank is served: {}",
+            String::from_utf8_lossy(&answered)
+        );
+        let log = rig.log.lock().unwrap().clone();
+        assert_eq!(
+            log.iter().any(|e| e.starts_with("rewrite:")),
+            !no_rewrite,
+            "{instance}: the rewrite seat ran exactly where it is installed; log: {log:?}"
+        );
+        let sent = bodies.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{instance}: dialled once");
+        forwarded.push(sent[0].clone());
+    }
+    let text = String::from_utf8_lossy(&forwarded[0]).to_string();
+    assert!(
+        !text.contains(REWRITTEN),
+        "nothing of the rewrite reaches the far end: {text}"
+    );
+    assert_eq!(
+        forwarded[0], forwarded[1],
+        "the rerank under the rewrite seat is forwarded byte for byte as with no seat installed"
+    );
 }

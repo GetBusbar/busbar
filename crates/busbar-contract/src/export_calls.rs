@@ -261,6 +261,14 @@ pub trait ExportCalls: Send + Sync {
     /// class. `hold` is dropped when the line's batch has answered (or the line was shed).
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered;
 
+    /// Whether this instance takes each `traces` line's full span record as its reserved `span`
+    /// member (status row 173; K9e-2: everything the previous release's exporter sent for a span,
+    /// whatever `fields:` selected). An instance that takes none is handed the projected line
+    /// alone, byte for byte as before.
+    fn takes_span_records(&self) -> bool {
+        false
+    }
+
     /// Render `families` as this instance's exposition text, through `scrape`, on the calling
     /// thread (request path). `Err` names why the instance did not render.
     ///

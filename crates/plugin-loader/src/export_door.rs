@@ -39,16 +39,17 @@ use busbar_contract::abi::export::{
     ScrapeOut, ScrapeSample, ServeIn, ServeOut, StatusOut, SCRAPE_FLAG_HOOK_FAMILIES,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, InHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
+    AbiStr, Blob, DeadlineClass, InHead, Outcome, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as lc, OpenIn, OpenOut, ReleaseIn, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::slot as lc;
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
+use crate::dispatch::lifecycle::{
+    self, copy_blob, lend, lend_opt, open_frame, release, validate_call, why,
+};
 use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
 
 /// The most lines one instance may hold queued; past it a line is shed.
@@ -66,25 +67,6 @@ const SCRAPE_BUF: usize = 64 * 1024;
 /// The most request headers a `serve` lends (64 name/value pairs).
 const MAX_SERVE_HEADERS: usize = 64;
 
-/// A string the host lends for a call.
-fn lend(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
-
-/// An optional string the host lends; `None` is absent (NULL).
-fn lend_opt(s: Option<&str>) -> AbiStr {
-    s.map_or(
-        AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        lend,
-    )
-}
-
 /// A list the host lends; empty is NULL.
 fn lend_list<T>(l: &[T]) -> *const T {
     if l.is_empty() {
@@ -96,24 +78,7 @@ fn lend_list<T>(l: &[T]) -> *const T {
 
 /// Bytes the host lends for a call, as a blob of `fmt`.
 fn blob(b: &[u8], fmt: u32) -> Blob {
-    if b.is_empty() {
-        return NO_BLOB;
-    }
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt,
-        flags: 0,
-    }
-}
-
-/// A plugin-owned blob's bytes, copied (the dispatcher's checks bounded them).
-fn copy_blob(b: Blob) -> Vec<u8> {
-    if b.len == 0 || b.ptr.is_null() || b.fmt == BLOB_ABSENT {
-        return Vec::new();
-    }
-    // SAFETY: a checked plugin-owned blob, live under its lease until `release`.
-    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+    lifecycle::blob(b, fmt, 0)
 }
 
 /// A plugin-owned string, copied.
@@ -123,45 +88,13 @@ fn copy_str(s: AbiStr) -> String {
         .unwrap_or_default()
 }
 
-/// A plugin's error text, or the outcome's name.
-fn why(outcome: Outcome, error: Option<Vec<u8>>) -> String {
-    error.map_or_else(
-        || format!("{outcome:?}"),
-        |e| String::from_utf8_lossy(&e).into_owned(),
-    )
-}
-
-/// Hand a lease back (ticket-less); `0` is none.
-fn release(plugin: &Plugin<Export>, lease: u64) {
-    if lease == 0 {
-        return;
-    }
-    let mut f = Frame::new(
-        ReleaseIn {
-            head: in_head(),
-            lease,
-        },
-        out_head(),
-    );
-    let _ = plugin.call(lc::RELEASE, &mut f);
-}
-
 /// `validate` the instance's `settings` (ticket-less): `Ok` when READY, else the plugin's words —
 /// a refusal the host renders line by line (`abi::mechanism::lifecycle::refusal_lines`).
 ///
 /// # Errors
 /// The plugin's refusal, verbatim.
 pub fn validate(plugin: &Plugin<Export>, settings: &[u8]) -> Result<(), String> {
-    let mut f = Frame::new(
-        ValidateIn {
-            head: in_head(),
-            settings: blob(settings, BLOB_JSON),
-            err_buf: std::ptr::null_mut(),
-            err_cap: 0,
-        },
-        out_head(),
-    );
-    let called = plugin.call(lc::VALIDATE, &mut f);
+    let called = validate_call(plugin, blob(settings, BLOB_JSON));
     match called.outcome {
         Outcome::Ready => Ok(()),
         o => Err(why(o, called.error)),
@@ -467,23 +400,7 @@ impl ExportInstance {
         settings: &[u8],
     ) -> Result<Self, String> {
         validate(&plugin, settings)?;
-        let mut f = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: blob(settings, BLOB_JSON),
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let mut f = open_frame(blob(settings, BLOB_JSON));
         let called = plugin.call(lc::OPEN, &mut f);
         if called.outcome != Outcome::Ready {
             return Err(called.open_failure(plugin.name()));

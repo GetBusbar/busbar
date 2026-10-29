@@ -13,7 +13,9 @@
 
 use busbar_kernel::snapshot::observe::{Grants, KernelPluginObserver};
 
-use crate::root::loader::observe::{first_party, first_party_series, PluginObserver};
+use busbar_kernel::audit::auditlog::{record_plugin_refusal, PluginRefusal};
+
+use crate::root::loader::observe::{first_party, first_party_series, BindRefusal, PluginObserver};
 
 /// The loader's observer: every plugin response's back-channel, into the kernel's fold.
 struct Observer;
@@ -31,6 +33,24 @@ impl PluginObserver for Observer {
 
     fn dropped(&self, observations: u64) {
         KernelPluginObserver.dropped(observations);
+    }
+
+    /// A refusal made while a plugin bound, onto the kernel's audit chain (BIND-AUDIT).
+    fn refused(&self, kind: &str, instance: &str, refusal: BindRefusal<'_>) {
+        match refusal {
+            BindRefusal::Need { need, reason } => record_plugin_refusal(
+                PluginRefusal::Need,
+                kind,
+                instance,
+                &format!("need.{need}.{reason}"),
+            ),
+            BindRefusal::Open { code } => {
+                record_plugin_refusal(PluginRefusal::Open, kind, instance, code);
+            }
+            BindRefusal::Op { code } => {
+                record_plugin_refusal(PluginRefusal::Op, kind, instance, code);
+            }
+        }
     }
 }
 

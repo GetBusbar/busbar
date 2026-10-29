@@ -35,22 +35,6 @@
 //! than being folded silently into a nearby arm, which is how two refusals become one wording that
 //! is wrong for one of them.
 //!
-//! ## THIS IS NOT THE OTHER CROSS-PLANE REFUSAL, and the two must not be merged
-//!
-//! [`crate::plane_driver::dispatch::PlaneSections::resolve`] also refuses a cross-plane reference, with
-//! [`crate::plane_driver::dispatch::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
-//! one. They answer different questions at different moments:
-//!
-//!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses a
-//!     dotted reference like `sectionname.entryname` written where a bare name belongs — a SHAPE
-//!     that names a plane, whether or not any entry by that name exists anywhere.
-//!   * [`crate::plane_driver::dispatch::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
-//!     bare name that resolves on a sibling plane — a name whose shape is legal and whose
-//!     BINDING crosses the boundary.
-//!
-//! Neither subsumes the other: this one fires on a name nothing defines, and that one fires on a
-//! name with no dot in it. Collapsing them would not deduplicate a check, it would delete one.
-//!
 //! ## THE SECTION SPLIT lives in the contract
 //!
 //! The section-map split a plane reads its own section with ([`busbar_contract::section`]: the
@@ -387,6 +371,11 @@ pub fn validate_plane_section(
 ) -> Result<(), String> {
     for (name, entry) in crate::trust::section::registrations(value) {
         validate_plane_entry(section, name, entry, trust_keys, sections)?;
+        refuse_registration_forwarding_caller_credential(
+            &format!("`{section}.{name}`"),
+            entry,
+            caller_credential_refusal,
+        )?;
     }
     let models = value
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
@@ -428,6 +417,29 @@ pub fn refuse_forwarded_caller_credential(
     match default {
         Some(Ok(busbar_contract::config::UpstreamCreds::Passthrough)) => Err(refusal.to_string()),
         _ => Ok(()),
+    }
+}
+
+/// A REGISTRATION'S OWN `upstream_credentials: passthrough`, on a plane that refuses a forwarded
+/// caller credential, is refused as the section default is, at `at`. The key is reserved and
+/// stripped before the section crosses to a door plane, so the plane's own validator never sees
+/// it: without this judgement a registration that spells it would boot and lend the caller's
+/// credential upstream, while the same word as the section default is refused.
+///
+/// # Errors
+///
+/// The plane's `refusal`, worded at `at`.
+pub fn refuse_registration_forwarding_caller_credential(
+    at: &str,
+    entry: &serde_yaml::Value,
+    refusal: Option<&str>,
+) -> Result<(), String> {
+    match refuse_forwarded_caller_credential(entry, refusal) {
+        Ok(()) => Ok(()),
+        Err(refusal) => Err(format!(
+            "{at}: `upstream_credentials: passthrough` on this registration is refused, as it is \
+             as the section default: {refusal}"
+        )),
     }
 }
 
@@ -580,6 +592,13 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
     /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
+
+    /// The refusal for the first secret reference this section holds at a position its plane did
+    /// NOT declare secret (OWNER RULING, CHIP-REVIEW-v4 change 2), or `None`. A section with no
+    /// declared paths of its own to police (a raw-captured or typed in-tree section) answers `None`.
+    fn undeclared_secret_ref(&self) -> Option<String> {
+        None
+    }
 
     /// Is `name` a REGISTRATION in this section (a `tools:` server / an `agents:` agent)? The
     /// membership check the config resolver and the admin write path consult without naming the

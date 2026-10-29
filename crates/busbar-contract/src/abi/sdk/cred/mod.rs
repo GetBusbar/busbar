@@ -15,7 +15,9 @@
 //! * [`record`] is a `Cred`'s one serde path: a field a plane keeps in a host record it writes
 //!   ([`record::to_vec`]) and reads back. Serialized anywhere else it refuses.
 //! * [`Held`] is the zeroizing holder for material that is not a configured credential (SRTP keys,
-//!   a presented assertion): no getter outside this crate either.
+//!   a presented assertion, a secret plugin's resolved value): no getter outside this crate either.
+//! * [`resolved`] is a secret plugin's `resolve` answer: its [`Held`] value written into the host's
+//!   buffer and wiped.
 //!
 //! None of these types implements `Debug`, so a struct that holds one cannot derive it: printing a
 //! credential does not compile.
@@ -50,6 +52,7 @@ mod floor;
 mod form;
 mod form_body;
 pub mod record;
+mod resolved;
 mod settings;
 pub(crate) mod write;
 
@@ -58,7 +61,9 @@ use zeroize::{Zeroize, Zeroizing};
 pub use floor::{AuthFloor, PgAuth, RequireAuth};
 pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use form_body::{FormBody, FormValue};
+pub use resolved::resolved;
 pub use settings::{settings, SettingsError};
+pub use settings::{settings_lent, SECRET_MARKER};
 pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
@@ -181,15 +186,6 @@ impl Cred {
     pub fn require_secure(mut self) -> Self {
         self.secure = true;
         self
-    }
-
-    /// A credential derived from this one (a signing key from a secret): it carries the requirement.
-    pub(crate) fn derived(&self, bytes: Bytes) -> Self {
-        Self {
-            held: std::sync::Arc::new(Held::new(bytes)),
-            secure: self.secure,
-            floor: self.floor,
-        }
     }
 
     /// A seal of `bytes` this credential made: it carries the credential's requirement.
