@@ -371,6 +371,11 @@ pub fn validate_plane_section(
 ) -> Result<(), String> {
     for (name, entry) in crate::trust::section::registrations(value) {
         validate_plane_entry(section, name, entry, trust_keys, sections)?;
+        refuse_registration_forwarding_caller_credential(
+            &format!("`{section}.{name}`"),
+            entry,
+            caller_credential_refusal,
+        )?;
     }
     let models = value
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
@@ -412,6 +417,29 @@ pub fn refuse_forwarded_caller_credential(
     match default {
         Some(Ok(busbar_contract::config::UpstreamCreds::Passthrough)) => Err(refusal.to_string()),
         _ => Ok(()),
+    }
+}
+
+/// A REGISTRATION'S OWN `upstream_credentials: passthrough`, on a plane that refuses a forwarded
+/// caller credential, is refused as the section default is, at `at`. The key is reserved and
+/// stripped before the section crosses to a door plane, so the plane's own validator never sees
+/// it: without this judgement a registration that spells it would boot and lend the caller's
+/// credential upstream, while the same word as the section default is refused.
+///
+/// # Errors
+///
+/// The plane's `refusal`, worded at `at`.
+pub fn refuse_registration_forwarding_caller_credential(
+    at: &str,
+    entry: &serde_yaml::Value,
+    refusal: Option<&str>,
+) -> Result<(), String> {
+    match refuse_forwarded_caller_credential(entry, refusal) {
+        Ok(()) => Ok(()),
+        Err(refusal) => Err(format!(
+            "{at}: `upstream_credentials: passthrough` on this registration is refused, as it is \
+             as the section default: {refusal}"
+        )),
     }
 }
 
