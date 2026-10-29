@@ -101,6 +101,8 @@ emit "docker:staged-armv8-digest" "docker.io :<version>-armv8.0 is the compat DI
 emit "docker:label"           "the pulled image's org.opencontainers.image.version label matches"
 emit "docker:boot-bare"       "the bare documented docker run boots (by digest) and answers ok on /healthz"
 emit "docker:boot-ro-mount"   "the documented read-only config mount boots (by digest) and answers ok (#50)"
+emit "docker:user"           "the image (by digest) is configured to run as uid 65532, not root"
+emit "docker:no-shell"        "the image (by digest) ships no shell: /bin/sh and sh cannot be executed in it"
 
 # ── Downstream channels ─────────────────────────────────────────────────────────────────────────
 emit "helm:appversion"        "GetBusbar/helm-charts' published busbar chart appVersion == version"

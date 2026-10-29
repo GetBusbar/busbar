@@ -1126,6 +1126,92 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
 }
 
+/// EVERY REFUSED APPROVAL IS AUDITED AS REJECTED, AND NONE PINS AN UNVERIFIED SIGHTING (a2a.md
+/// 249-250 and 265). A malformed body (`400`), an unknown key (`404`) and a counterparty whose last
+/// sighting failed its verification (the plane sights it as `"unverified"`, `409`, explained) each
+/// seal one `rejected` row on the operator's ring, and the placeholder is never pinned.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_rejected_approval_is_audited() {
+    let _one = crate::root::PUBLISHING.lock().await;
+    use busbar_contract::services::{Caller, HostServices, Later};
+    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+
+    let kernel = Arc::new(KernelServices::new());
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "peer".to_string(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .expect("admitted");
+    let desk = Arc::clone(&kernel);
+    let (node, _) = a_q71_node_trusting(
+        a_door_that_identifies_the_operator(),
+        Arc::new(move || Some(Arc::clone(&desk))),
+    );
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+    let before = the_operators_rows_for(&node, "/api/v1/admin/trust/approve")
+        .await
+        .len();
+    let approve = |body: &'static str| {
+        let node = node.clone();
+        async move { over_as(&node, "POST", "/api/v1/admin/trust/approve", body, op).await }
+    };
+    let caller = Caller {
+        instance: Arc::from("inst"),
+        plugin: Arc::from("the-plane"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let later: Later = Box::new(|_| {});
+    let _ = kernel.trust_sight(&caller, "peer", "unverified", later);
+
+    assert_eq!(approve("not json").await.0, 400, "malformed");
+    assert_eq!(
+        approve(r#"{"key":"inst/stranger"}"#).await.0,
+        404,
+        "unknown"
+    );
+    // RED: the generic approve used to pin the placeholder and answer 200.
+    assert_eq!(
+        approve(r#"{"key":"inst/peer"}"#).await,
+        (
+            409,
+            r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was last sighted unverified: its document failed verification, so there is nothing to approve"}}"#
+                .to_string()
+        ),
+        "an unverified sighting is never approved"
+    );
+    assert!(
+        kernel.trust_rows().iter().all(|r| r.approved.is_none()),
+        "nothing was pinned"
+    );
+
+    let rows = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
+    assert_eq!(rows.len() - before, 3, "one row per refusal: {rows:?}");
+    // Newest first: this test's three rows lead the page.
+    assert!(
+        rows[..3]
+            .iter()
+            .all(|(verb, outcome)| verb == "trust_approve" && outcome == "rejected"),
+        "every refused approval is audited as rejected: {rows:?}"
+    );
+}
+
 /// THE VERBS UNIT'S MUTATION BUDGET OUTLIVES THE REQUEST (finding 5). The route step builds one
 /// `Verbs` per request, and each used to build its own limiter, so every call saw an empty window
 /// and none was ever refused. Walked over the real mount, which is the production construction: a
