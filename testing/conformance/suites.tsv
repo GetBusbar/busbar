@@ -4,3 +4,7 @@ sbom	bash testing/sbom/sbom.sh
 oidf-oauth2	python3 -I testing/oidf-conformance/oidf.py
 fapi2	python3 -I testing/oidf-conformance/oidf.py
 slsa-verifier	bash testing/conformance/slsa-verifier.sh
+h2	bash testing/h2-conformance/h2spec.sh
+evidence-audit-trail	python3 -I testing/evidence-conformance/evidence.py audit
+evidence-rbac	python3 -I testing/evidence-conformance/evidence.py rbac
+evidence-tls	python3 -I testing/evidence-conformance/evidence.py tls
