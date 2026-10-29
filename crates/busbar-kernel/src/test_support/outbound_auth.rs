@@ -89,12 +89,13 @@ pub fn axis() -> Arc<dyn AuthAxis> {
 }
 
 /// A test build's AUTH AXIS over `registry` (installed in place of the root's opener,
-/// [`crate::test_support::install_root_auth_axis`]): the build's linked auth rows answered in process, the
-/// registry's dropped-in auth rows refused at their open, and this double for every outbound style
-/// (see the module doc).
+/// [`crate::test_support::install_root_auth_axis`]): the test auth modules
+/// ([`super::auth_modules`]) and the build's linked auth rows answered in process, the registry's
+/// dropped-in auth rows refused at their open, and this double for every outbound style (see the
+/// module doc).
 #[must_use]
 pub fn stand_in(registry: Arc<dyn PluginRows>) -> Arc<dyn AuthAxis> {
-    Arc::new(StandIn { registry })
+    super::auth_modules::around(Arc::new(StandIn { registry }))
 }
 
 /// The auth kind's word in a row (`kind: auth`).
