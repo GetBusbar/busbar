@@ -1198,10 +1198,11 @@ pub(super) mod session_door {
         // THE ADMIN TABLE the door is published into, lent to the App built below as the root
         // lends the boot generation its own.
         let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
+        let services = composed_services();
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
-            &composed_services(),
+            &services,
             &sections,
             Some(PUBLIC),
             &move || Arc::clone(&one),
@@ -1241,6 +1242,13 @@ pub(super) mod session_door {
         };
         let app = app.governance(Arc::clone(&gov)).cost(cost).build();
         let _ = live_app.set(Arc::clone(&app));
+        // THE TICKET PRESS (R10, row 132): the mint door asks `ticket.mint` for busbar's own ticket,
+        // stamped by this generation's governance, as boot attaches it once the swap handle exists.
+        if let Some(kernel) = services.kernel() {
+            kernel.attach_tickets(Arc::new(crate::root::serve::LiveTickets(Arc::new(
+                busbar_kernel::state::AppHandle::new(Arc::clone(&app)),
+            ))));
+        }
         // The door's claims as production mounts them: its request routes, and its session routes
         // (an upgrade line's claim, mounted as a GET session route).
         // No transport is dropped into a plugins directory here: the linked rows alone carry the

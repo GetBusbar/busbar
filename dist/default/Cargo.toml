@@ -248,12 +248,17 @@ plane-a2a = ["plane-a2a-door", "busbar-kernel/plane-a2a"]
 # loader beside every dropped-in plane door and binds it through the one load on the one dispatcher,
 # so the compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE
 # DESIGN section 11.4), and the serve row hands it its arrivals. It carries the ws wire its live
-# sessions arrive over and leave on.
-plane-streaming = ["dep:busbar-plane-streaming", "transport-ws", "busbar-kernel/duplex-ws"]
-# THE WS WIRE, the one optional transport: the streaming plane's edge and nothing else's, so `plane-streaming`
-# carries it and `--no-default-features` drops the crate edge and its linked row together.
+# sessions arrive over and leave on, and the webrtc wire busbar terminates a browser's media on
+# (R10, row 132: no broker; the SDP door is a datagram session on the webrtc carrier, and busbar
+# places its own call to the provider).
+plane-streaming = ["dep:busbar-plane-streaming", "transport-ws", "transport-webrtc", "busbar-kernel/duplex-ws"]
+# THE WS WIRE: the streaming plane's edge and nothing else's, so `plane-streaming` carries it and
+# `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
-# THE WEBRTC WIRE, optional and never in `default`: on, the crate edge and its linked row together.
+# THE WEBRTC WIRE: the streaming plane's media edge (R10, an owner-set product row: busbar terminates
+# the browser's WebRTC media itself), so `plane-streaming` carries it as it carries ws; it is
+# compiled in with the plane and dialled only when a `streams:` configuration asks for it. Alone, on:
+# the crate edge and its linked row together.
 transport-webrtc = ["dep:busbar-transport-webrtc"]
 # THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
 # the build links no `tcp` row and the wire is served only when its tarball is dropped into
@@ -955,13 +960,13 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # head), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "f536805c3a47d57ab2fa0bc18569c37f61560dab" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "3071e3d8ffc5108097fe19a69145715dbc38019d" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "f536805c3a47d57ab2fa0bc18569c37f61560dab" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "3071e3d8ffc5108097fe19a69145715dbc38019d" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
