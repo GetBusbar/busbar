@@ -1,4 +1,4 @@
-use super::*;
+use crate::operation::OpVerb;
 use busbar_contract::codec::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler,
 };

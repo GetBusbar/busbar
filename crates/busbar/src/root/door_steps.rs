@@ -1328,7 +1328,7 @@ impl DriverSteps for DoorSteps<'_> {
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
         // The unit's dialect is the ingress protocol its tap read the body as (row 155).
         if let Some(protocol) = self.facts.translations.0.get(dialect as usize) {
-            busbar_kernel::handlers::usage_tap_fault(protocol, reason);
+            busbar_kernel::snapshot::usage_tap_fault(protocol, reason);
         }
     }
 

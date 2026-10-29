@@ -286,7 +286,7 @@ fn test_validate_rejects_bad_protocol() {
 #[test]
 fn test_error_map_invalid_class_message_lists_full_valid_set() {
     // The invalid-StatusClass diagnostic must enumerate EVERY class that
-    // breaker::status_class_from_str accepts; `context_length` was historically
+    // StatusClass::parse accepts; `context_length` was historically
     // omitted from the message even though it is a valid mapping target, so an
     // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
@@ -306,7 +306,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
     assert!(
             msg.contains("context_length"),
-            "valid-values list must include 'context_length' (it is accepted by status_class_from_str); got: {msg}"
+            "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
         );
 
     // Guard against drift in the other direction: every class the breaker accepts
@@ -323,7 +323,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         "context_length",
     ] {
         assert!(
-            crate::config::status_class_from_str(class).is_some(),
+            busbar_contract::upstream::StatusClass::parse(class).is_some(),
             "test invariant: '{class}' should be a real StatusClass"
         );
         assert!(

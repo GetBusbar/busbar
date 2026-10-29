@@ -16,7 +16,7 @@
 //! line between them. Nothing in a plane reaches it: a plane reports what it consumed and never what
 //! it cost, and this seam carries a price.
 
-use crate::billing::RawTierRates;
+use busbar_contract::billing::RawTierRates;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
 ///

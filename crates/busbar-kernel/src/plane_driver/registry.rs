@@ -878,10 +878,6 @@ plane_behaviour! {
     /// `None` for a plane whose section is not a 1.5.3 named-definition map (the LLM plane — `pools:`
     /// predates the generic path and keeps its own richer validation — and the residual `proto`
     /// plane, which owns no config section of its own).
-    // Read only through the named-definition write path, which exists only when at least one plane
-    // section (`plane-mcp`/`plane-a2a`) is compiled in; a build with neither never resolves a decl
-    // to call it, so the field is genuinely unread there rather than dead.
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     config_validate:
         Option<fn(&PlaneDecl, name: &str, def: &serde_json::Value) -> Result<(), String>>,
@@ -895,9 +891,6 @@ plane_behaviour! {
     /// Handed the neutral [`crate::plane_driver::slots::PlaneSlots`] seam (NOT `&App`), so a plane crate reads
     /// its own per-generation runtime object off the snapshot without the callback naming a core type;
     /// an in-core plane (A2A) recovers its snapshot through the seam's `as_any` hatch.
-    // Read only through the admin named-def surface, which the two plane sections drive; with neither
-    // plane compiled in nothing resolves a decl to call it, so the field is genuinely unread there.
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     named_def_list:
         Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
@@ -907,7 +900,6 @@ plane_behaviour! {
     /// `None` (the fn returns `None`) when the plane has no entry by that name; the FIELD is `None` for
     /// a plane with no named-definition map. Handed the same neutral [`crate::plane_driver::slots::PlaneSlots`]
     /// seam as [`Self::named_def_list`].
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     named_def_get:
         Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
@@ -915,7 +907,6 @@ plane_behaviour! {
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
     /// check the admin write path consults so it names no plane registry type. `None` for a plane with
     /// no named-definition map.
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     registry_contains: Option<fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool>,
 
@@ -923,7 +914,6 @@ plane_behaviour! {
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
     /// its own gate field back, so `admin::v1::service::reresolve_plane_gates` names no plane registry
     /// type. `None` for a plane with no per-registration hook gates (the LLM plane).
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     reresolve_gates: Option<fn(&PlaneDecl, &mut dyn crate::plane_driver::slots::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
@@ -958,7 +948,6 @@ plane_behaviour! {
     /// own typed config, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] — the seam
     /// `DeployCfg`'s `tools:`/`agents:` field deserializes through, so core names no plane config type.
     /// `None` for a plane with no registry section (the LLM / `proto` planes).
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_section:
         Option<fn(&PlaneDecl, &serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
@@ -967,7 +956,6 @@ plane_behaviour! {
     /// `serde_yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
     /// `DeployCfg`'s `mcp:` field deserializes through. `None` for a plane with no endpoint block
     /// (every plane but MCP).
-    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_endpoint: Option<
         fn(&PlaneDecl, &serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
@@ -977,7 +965,6 @@ plane_behaviour! {
     /// `Arc<dyn Any>` — the seam `config::resolve` derives `RootCfg::mcp` through, so core derives the
     /// validated resource without naming the plane's resource type. An `Err` is collected into the
     /// resolve error list verbatim. `None` for a plane with no endpoint block.
-    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     lower_endpoint: Option<
         fn(
@@ -1026,7 +1013,6 @@ plane_behaviour! {
     /// ABSENT, so the default is the plane's own `Default` (byte-identical to the pre-seam
     /// `ToolsCfg::default()`) rather than a re-parse of an empty document. `None` for a plane with no
     /// registry section (the LLM / `proto` planes).
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     default_section: Option<fn(&PlaneDecl) -> Box<dyn crate::config::plane_sections::PlaneCfg>>,
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])

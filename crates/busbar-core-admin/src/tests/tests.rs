@@ -664,7 +664,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         )
         .unwrap();
     // Two responses metered against one model (split preserved), one against another model.
-    let usage = busbar_kernel::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 700,
         output: 200,
         cache_read: Some(100),

@@ -483,7 +483,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_500;
-    let usage = crate::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 11,
         output: 22,
         cache_read: Some(5),
@@ -1121,7 +1121,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     });
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_000;
-    let per = crate::billing::TokenUsage {
+    let per = busbar_contract::billing::TokenUsage {
         input: 3,
         output: 5,
         cache_read: Some(1),
@@ -1222,7 +1222,7 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
     for t in 0..threads {
         let gov = gov.clone();
         handles.push(std::thread::spawn(move || {
-            let usage = crate::billing::TokenUsage {
+            let usage = busbar_contract::billing::TokenUsage {
                 input: 2,
                 output: 3,
                 ..Default::default()
@@ -1298,7 +1298,7 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
     for t in 0..threads {
         let gov = gov.clone();
         handles.push(std::thread::spawn(move || {
-            let usage = crate::billing::TokenUsage {
+            let usage = busbar_contract::billing::TokenUsage {
                 input: 1,
                 ..Default::default()
             };
@@ -3733,7 +3733,7 @@ mod metering_fanout {
         for i in 0..n {
             let gov = gov.clone();
             handles.push(tokio::spawn(async move {
-                let usage = crate::billing::TokenUsage {
+                let usage = busbar_contract::billing::TokenUsage {
                     input: 1,
                     output: 1,
                     ..Default::default()
@@ -3771,7 +3771,7 @@ mod metering_fanout {
         let store = std::sync::Arc::new(CountingStore::new(1)); // fail exactly once
         let gov = GovState::new(store.clone(), None).unwrap();
         let now = 1_700_200_000u64;
-        let usage = crate::billing::TokenUsage {
+        let usage = busbar_contract::billing::TokenUsage {
             input: 10,
             output: 5,
             ..Default::default()
