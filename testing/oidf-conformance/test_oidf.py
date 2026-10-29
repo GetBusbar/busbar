@@ -72,5 +72,26 @@ class ShippedPin(unittest.TestCase):
         self.assertEqual(oidf.oidc_pin(str(checkout(pins="# empty until tagged\n")))["rev"], REV)
 
 
+class Subject(unittest.TestCase):
+    def test_the_subject_is_the_shipped_binary(self):
+        # The root workspace's `busbar` is core alone (no transport, so no listener); the binary busbar
+        # ships is the distribution's, dist/default.
+        argv = oidf.subject_builds("/c")[0]
+        self.assertIn("--manifest-path", argv)
+        self.assertEqual(argv[argv.index("--manifest-path") + 1], "/c/dist/default/Cargo.toml")
+        self.assertEqual(argv[argv.index("--bin") + 1], "busbar")
+        self.assertIn("--locked", argv)
+
+    def test_a_subject_that_did_not_boot_is_not_reported_as_unbuilt(self):
+        record = {"control": {"ok": True}, "subject_error": "busbar exited during boot (2): x"}
+        status, armed, reason = oidf.decide(record, signoff={})
+        self.assertEqual((status, armed), ("fail", True))
+        self.assertNotIn("could not be built", reason)
+        self.assertIn("busbar exited during boot", reason)
+        status, _, reason = oidf.decide({"control": {"ok": True}, "build_error": "cargo exited 101"}, signoff={})
+        self.assertEqual(status, "fail")
+        self.assertIn("the subject could not be built: cargo exited 101", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
