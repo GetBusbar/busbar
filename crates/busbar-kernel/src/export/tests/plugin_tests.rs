@@ -177,6 +177,7 @@ fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
         sink: double,
         scrape: false,
         projection: Projection::for_test(&[ExportStream::Logs], &[]),
+        span_record: false,
         admission: OnceLock::new(),
     }
 }
@@ -199,7 +200,7 @@ fn reads_under(op: &str) -> usize {
         .count()
 }
 
-fn payload(_: Projection) -> Arc<Value> {
+fn payload(_: Projection, _: bool) -> Arc<Value> {
     Arc::new(serde_json::json!({ "path": "/v1/x" }))
 }
 
@@ -211,7 +212,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let shedding = double(Delivered::Shed, None);
     let s = opened("q128b-u31-36-shed", Arc::clone(&shedding));
     start_one(&s);
-    deliver_to(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
+    deliver_one(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
     assert_eq!(
         reads_under("q128b-u31-36-shed"),
         0,
@@ -222,7 +223,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let queueing = double(Delivered::Queued, None);
     let s = opened("q128b-u31-36-queued", Arc::clone(&queueing));
     start_one(&s);
-    deliver_to(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
+    deliver_one(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
     assert_eq!(
         reads_under("q128b-u31-36-queued"),
         1,
@@ -239,7 +240,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
 fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     let paused = double(Delivered::Queued, Some((false, 1, String::new())));
     let s = opened("q128b-u31-37", Arc::clone(&paused));
-    deliver_to(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
+    deliver_one(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
     assert_eq!(
         reads_under("q128b-u31-37-early"),
         0,
@@ -247,7 +248,7 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     );
     assert_eq!(paused.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
     start_one(&s);
-    deliver_to(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
+    deliver_one(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(
         reads_under("q128b-u31-37-late"),
         0,

@@ -168,6 +168,7 @@ slot_structs!(Lifecycle {
     lc::slot::RELEASE => ReleaseIn, OutHead;
     lc::slot::CLOSE => InHead, OutHead;
     lc::slot::READY => ReadyIn, OutHead;
+    lc::slot::MIGRATE => ValidateIn, OutHead;
 });
 
 /// The `in`/`out` of slot `INDEX` (its ABSOLUTE index, the number `InHead::op` carries). A kind
@@ -631,6 +632,7 @@ pub const unsafe fn door<T: KindOps>(
             statement,
             ops: ptr::from_ref(ops).cast::<OpsHead>(),
             ready,
+            layout: T::KIND.layout_fingerprint(),
         })
     }
 }
@@ -655,6 +657,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     };
 /// }
 /// ```
@@ -673,6 +676,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     });
 /// }
 /// ```
@@ -690,6 +694,7 @@ pub const unsafe fn door<T: KindOps>(
 ///             statement: core::ptr::null(),
 ///             ops: core::ptr::null(),
 ///             ready: None,
+///             layout: 0,
 ///         })
 ///     };
 /// }
@@ -1065,6 +1070,12 @@ impl MacroDoor {
 ///   `ready` the door states none and the plugin is opened exactly as before.
 /// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a raw [`Slot`] or a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) one reading `ReadyIn` and writing `OutHead`.
+/// * `migrate: S` (optional, after `ready`) — the door's `migrate` (`abi::mechanism::lifecycle`,
+///   MIGRATE), a raw [`Slot`] reading `ValidateIn` and writing `OutHead`: in practice
+///   [`Migrator<M>`](crate::abi::sdk::migrate::Migrator) over the plugin's own
+///   [`Migrate`](crate::abi::sdk::migrate::Migrate). It runs with no instance, so it cannot be a
+///   [`Safe`](crate::abi::sdk::safe::Safe) slot. Without it the door states none, and
+///   `busbar --migrate-config` passes the plugin's settings section through unchanged.
 #[macro_export]
 macro_rules! plugin_door {
     // The door's `ready` entry: none, or the trampoline over the named slot (kind-neutral: the
@@ -1078,10 +1089,21 @@ macro_rules! plugin_door {
             { $crate::abi::mechanism::lifecycle::slot::READY },
         >()
     };
+    // The door's `migrate` entry, likewise (the mechanism's own `ValidateIn`/`OutHead`).
+    (@migrate $capture:ty) => { ::core::option::Option::None };
+    (@migrate $capture:ty, $migrate:ty) => {
+        $crate::abi::sdk::door::kind_op::<
+            $crate::abi::sdk::door::Lifecycle,
+            $migrate,
+            $capture,
+            { $crate::abi::mechanism::lifecycle::slot::MIGRATE },
+        >()
+    };
     (
         ops: $ops:ty,
         statement: $statement:expr,
         lifecycle: life($life:ty, ready)
+        $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
         $(,)?
     ) => {
@@ -1090,6 +1112,7 @@ macro_rules! plugin_door {
             statement: $statement,
             lifecycle: life($life),
             ready: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Ready<$life>>
+            $(, migrate: $migrate)?
             $(, kind_ops: { $($field : $slot),* })?
         }
     };
@@ -1098,6 +1121,7 @@ macro_rules! plugin_door {
         statement: $statement:expr,
         lifecycle: life($life:ty)
         $(, ready: $ready:ty)?
+        $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
         $(,)?
     ) => {
@@ -1116,6 +1140,7 @@ macro_rules! plugin_door {
                 close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<$life>>,
             }
             $(, ready: $ready)?
+            $(, migrate: $migrate)?
             $(, kind_ops: { $($field : $slot),* })?
         }
     };
@@ -1134,6 +1159,7 @@ macro_rules! plugin_door {
             close: $close:ty $(,)?
         }
         $(, ready: $ready:ty)?
+        $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
         $(,)?
     ) => {
@@ -1165,6 +1191,13 @@ macro_rules! plugin_door {
                         $($(|| <$slot as __sdk::Entry>::SAFE)*)?),
                 "a Safe slot reads the state a Safe open installs: name open as Safe<_> too"
             );
+            // `migrate` runs with no instance: it reads none.
+            $(
+                const _: () = ::core::assert!(
+                    !<$migrate as __sdk::Entry>::SAFE,
+                    "migrate runs with no instance: name it as a raw Slot (Migrator<_>), never Safe<_>"
+                );
+            )?
             /// THIS PLUGIN IMAGE'S CALL CAPTURE: one slot per thread, the image's own (compiled in
             /// or dropped in, each image holds its own). Its first use on a thread makes
             /// `tracing-log`'s `LogTracer` the image's `log` logger, if nothing is yet, and opens
@@ -1207,14 +1240,16 @@ macro_rules! plugin_door {
                 )*)?
                 ..__sdk::absent_table::<__Ops>()
             };
-            // SAFETY: the Statement and table are the `const` items laid out just above; the
-            // Statement's content is the caller's own `const` data (see `MACRO_DOOR` below).
+            // SAFETY: the Statement and table are the `const` items laid out just above, and
+            // `migrate`, when named, is the SDK's trampoline over its `ValidateIn`/`OutHead` slot;
+            // the Statement's content is the caller's own `const` data (see `MACRO_DOOR` below).
             const __DOOR: &$crate::abi::mechanism::door::Door = &unsafe {
                 __sdk::door::<__Ops>(
                     __STATEMENT,
                     __OPS,
                     $crate::plugin_door!(@ready __Capture $(, $ready)?),
                 )
+                .__with_migrate($crate::plugin_door!(@migrate __Capture $(, $migrate)?))
             };
             __DOOR
         }
