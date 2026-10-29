@@ -67,7 +67,9 @@ use busbar_core_connector::registry::{Entry, Transports};
 use busbar_core_connector::test_support::{
     private_ca, ClientTls, ServerTls, StdClientSession, StdServerSession, TestCa,
 };
-use busbar_core_connector::{Connector, Judged, Verdict};
+use busbar_core_connector::{Connector, DialJudge, Judged, Verdict};
+use busbar_kernel::config::sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES;
+use busbar_kernel::config::Destinations;
 use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
 use busbar_plugin_loader::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
@@ -104,6 +106,16 @@ pub fn host(
     wake: busbar_contract::conn::ConnWake,
     anchors: Option<&str>,
 ) -> Arc<dyn DeclaredConns> {
+    judged_host(doors, wake, anchors, Arc::new(loopback))
+}
+
+/// The host connector over `doors`, every dial judged by `judge`.
+fn judged_host(
+    doors: Doors,
+    wake: busbar_contract::conn::ConnWake,
+    anchors: Option<&str>,
+    judge: Arc<dyn DialJudge>,
+) -> Arc<dyn DeclaredConns> {
     // The reactor a socket a plugin opens from a dispatcher worker registers on, as the root
     // installs it (`root::connector::io_reactor`): the connector's own I/O thread.
     busbar_core_connector::io::install_process_reactor(io_reactor());
@@ -115,12 +127,7 @@ pub fn host(
         .unwrap_or_else(|e| panic!("the host's connection security does not build: {e}"));
     let view = Transports::new(entries(doors))
         .unwrap_or_else(|e| panic!("the host's transport doors do not compose: {e}"));
-    Arc::new(Connector::serving(
-        view,
-        Arc::new(loopback),
-        Some(Arc::new(tls)),
-        wake,
-    ))
+    Arc::new(Connector::serving(view, judge, Some(Arc::new(tls)), wake))
 }
 
 /// THE GUARDED HOST CONNECTOR over `doors`: [`host`], every dial judged by the production
@@ -133,14 +140,58 @@ pub fn guarded_host(
     wake: busbar_contract::conn::ConnWake,
     anchors: Option<&str>,
 ) -> Arc<dyn DeclaredConns> {
-    host(doors, wake, anchors)
+    judged_host(doors, wake, anchors, production_judge())
 }
 
 /// THE GUARDED STREAM HOST: [`stream_host`], every dial judged by the production destination
 /// guard at the deployment default, the address it pinned dialled exactly.
 #[must_use]
 pub fn guarded_stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
-    stream_host(wake, anchors)
+    Arc::new(stream_table(wake, anchors).judged(Arc::new(StreamGuard(production_judge()))))
+}
+
+/// THE PRODUCTION DIAL JUDGE: the deployment's one destination guard
+/// ([`process::dest_judge`](busbar_core_connector::process::dest_judge)) at the default
+/// configuration (`advanced.block_private_addresses` at its owner-signed default, nothing allowed,
+/// no metadata carve-out), joined to a dial as the process's connector joins it
+/// ([`process::judge`](busbar_core_connector::process::judge)), the system resolver answering names.
+fn production_judge() -> Arc<dyn DialJudge> {
+    let d = Destinations {
+        block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+        ..Destinations::default()
+    };
+    let dest = busbar_core_connector::process::dest_judge(&d)
+        .unwrap_or_else(|e| panic!("the deployment default guard does not build: {e}"));
+    busbar_core_connector::process::judge(dest, &[])
+}
+
+/// The production judge as the stream table's ([`crate::tcp_conns::DialGuard`]): a pended
+/// judgement waited for, and its verdict answered as the connector answers it (a name that did not
+/// resolve FAILS, every other verdict is the guard's REFUSAL).
+struct StreamGuard(Arc<dyn DialJudge>);
+
+impl crate::tcp_conns::DialGuard for StreamGuard {
+    fn judge(&self, target: &str, class: u32) -> Result<SocketAddr, ConnError> {
+        use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
+        let (tx, rx) = std::sync::mpsc::channel();
+        let answered = self.0.judge_dial(
+            target,
+            class,
+            Box::new(move |v| {
+                let _ = tx.send(v);
+            }),
+        );
+        let verdict = match answered {
+            Some(v) => v,
+            None => rx
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|_| ConnError::Timeout)?,
+        };
+        verdict.map_err(|v| match v {
+            DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => ConnError::Fault,
+            _ => ConnError::Refused,
+        })
+    }
 }
 
 /// THE STREAM HOST (`conformance::Host`, for plain stream needs): the test kit's stream table,
@@ -150,16 +201,19 @@ pub fn guarded_stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn Dec
 /// The anchors do not parse, or the connector's client TLS does not build.
 #[must_use]
 pub fn stream_host(wake: ConnWake, anchors: Option<&str>) -> Arc<dyn DeclaredConns> {
+    Arc::new(stream_table(wake, anchors))
+}
+
+/// The stream table [`stream_host`] and [`guarded_stream_host`] serve: each connection upgraded
+/// with the connector's client TLS.
+fn stream_table(wake: ConnWake, anchors: Option<&str>) -> crate::tcp_conns::TcpConns {
     let trust = EgressTrust {
         extra_anchors: anchors.map(pem_certs).unwrap_or_default(),
         ..EgressTrust::default()
     };
     let tls = ClientTls::new(&trust)
         .unwrap_or_else(|e| panic!("the host's connection security does not build: {e}"));
-    Arc::new(crate::tcp_conns::TcpConns::with_tls(
-        wake,
-        Arc::new(StreamTls(tls)),
-    ))
+    crate::tcp_conns::TcpConns::with_tls(wake, Arc::new(StreamTls(tls)))
 }
 
 /// The connector's client TLS as the stream table's dial: the handshake runs to completion on the

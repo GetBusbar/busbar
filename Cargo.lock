@@ -696,6 +696,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "hex",
  "ring",
