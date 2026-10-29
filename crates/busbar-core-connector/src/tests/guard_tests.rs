@@ -135,6 +135,160 @@ fn a_name_entry_never_admits_a_metadata_answer() {
     );
 }
 
+/// RED (security.md:208, "the denylist takes precedence over every private-range allowance, so
+/// `100.100.100.200` is blocked even when `100.64.0.0/10` is allowlisted"; a2a: metadata refused
+/// for a push callback): an IP/CIDR allowlist entry WIDER than one address never admits a
+/// cloud-metadata address inside it, in any class, as an answer or as a literal, with
+/// `block_private_addresses` either way. The range still admits its other, private addresses. The
+/// refusal is the metadata one, naming the address.
+#[test]
+fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
+    for (entry, meta, private) in [
+        ("100.64.0.0/10", "100.100.100.200", Some("100.64.0.1")),
+        ("169.254.0.0/16", "169.254.169.254", None),
+        ("169.254.0.0/16", "169.254.170.2", None),
+        ("169.254.0.0/16", "::ffff:169.254.169.254", None),
+        ("0.0.0.0/0", "168.63.129.16", Some("10.0.0.5")),
+        ("192.0.0.0/24", "192.0.0.192", None),
+        ("fd00::/8", "fd00:ec2::254", Some("fd12::1")),
+        ("fd00:ec2::/32", "fd00:ec2::23", None),
+    ] {
+        for block in [true, false] {
+            let g = guard(block, &[entry]);
+            for class in [
+                EGRESS_DEFAULT,
+                EGRESS_PROVIDER,
+                EGRESS_OPEN_WEB,
+                EGRESS_LOOPBACK_ALLOWED,
+                EGRESS_OPERATOR_INFRASTRUCTURE,
+            ] {
+                let r = g.judge_answer("svc.test", &[ip(meta)], class).unwrap_err();
+                assert_eq!(
+                    (r.verdict, r.addr),
+                    (DEST_METADATA, Some(ip(meta))),
+                    "{entry} {meta} class {class} block {block}"
+                );
+                assert_eq!(
+                    r.to_string(),
+                    format!(
+                        "host `svc.test` resolves to the cloud-metadata address {}; that is \
+                         refused unconditionally",
+                        ip(meta)
+                    )
+                );
+                let literal = if meta.contains(':') {
+                    format!("[{meta}]")
+                } else {
+                    meta.to_owned()
+                };
+                assert_eq!(
+                    g.judge_name(&literal, class).unwrap_err().verdict,
+                    DEST_METADATA,
+                    "{entry} literal {literal} class {class} block {block}"
+                );
+                assert_eq!(
+                    verdict(g.judge_answer_with("svc.test", &[ip(meta)], class, true, true)),
+                    Some(DEST_METADATA),
+                    "{entry} {meta} strict, reach, class {class}"
+                );
+                if let Some(p) = private {
+                    assert_eq!(
+                        g.judge_answer("svc.test", &[ip(p)], class),
+                        Ok(()),
+                        "{entry} still admits {p}, class {class}"
+                    );
+                }
+            }
+        }
+    }
+    // An address `security.blocked_metadata_hosts` adds to the denylist is held the same way.
+    let g = Guard::from_config(&Destinations {
+        allow: vec!["203.0.113.0/24".into()],
+        blocked: vec!["203.0.113.9".into()],
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        verdict(g.judge_answer("x.test", &[ip("203.0.113.9")], C)),
+        Some(DEST_METADATA)
+    );
+    assert_eq!(g.judge_answer("x.test", &[ip("203.0.113.8")], C), Ok(()));
+}
+
+/// RED (security.md:171, "only an IP or CIDR entry naming the address does"; :230-239, the 1.5.5
+/// carve-outs and `allow_all_metadata`): the deliberate carve-outs still admit a metadata address.
+/// An allowlist entry that names exactly that address (a bare IP, or a /32 or /128 equal to it)
+/// admits it, its mapped spelling too; `allow_all_metadata` and an `allow_metadata_hosts` address
+/// entry admit it for a provider dial. A CIDR of the same base wider than one address does not.
+#[test]
+fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
+    for (entry, meta) in [
+        ("100.100.100.200", "100.100.100.200"),
+        ("100.100.100.200/32", "100.100.100.200"),
+        ("169.254.169.254/32", "169.254.169.254"),
+        ("169.254.169.254", "::ffff:169.254.169.254"),
+        ("fd00:ec2::254", "fd00:ec2::254"),
+        ("fd00:ec2::254/128", "fd00:ec2::254"),
+        ("fd00:ec2::23/128", "fd00:ec2::23"),
+    ] {
+        let g = guard(true, &[entry]);
+        for class in [C, EGRESS_PROVIDER, EGRESS_OPERATOR_INFRASTRUCTURE] {
+            assert_eq!(
+                g.judge_answer("svc.test", &[ip(meta)], class),
+                Ok(()),
+                "{entry} admits {meta}, class {class}"
+            );
+        }
+    }
+    for wider in [
+        "100.100.100.200/31",
+        "169.254.169.254/24",
+        "fd00:ec2::254/127",
+    ] {
+        let g = guard(true, &[wider]);
+        let meta = if wider.contains(':') {
+            "fd00:ec2::254"
+        } else if wider.starts_with("100.") {
+            "100.100.100.200"
+        } else {
+            "169.254.169.254"
+        };
+        assert_eq!(
+            verdict(g.judge_answer("svc.test", &[ip(meta)], C)),
+            Some(DEST_METADATA),
+            "{wider} does not name {meta}"
+        );
+    }
+    let all = Guard::from_config(&Destinations {
+        allow: vec!["100.64.0.0/10".into()],
+        allow_all_metadata: true,
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        all.judge_answer("x.test", &[ip("100.100.100.200")], EGRESS_PROVIDER),
+        Ok(())
+    );
+    assert_eq!(
+        verdict(all.judge_answer("x.test", &[ip("100.100.100.200")], C)),
+        Some(DEST_METADATA)
+    );
+    let carved = Guard::from_config(&Destinations {
+        allow: vec!["169.254.0.0/16".into()],
+        legacy_allow: vec!["169.254.169.254".into()],
+        ..Destinations::default()
+    })
+    .unwrap();
+    assert_eq!(
+        carved.judge_answer("x.test", &[ip("169.254.169.254")], EGRESS_PROVIDER),
+        Ok(())
+    );
+    assert_eq!(
+        verdict(carved.judge_answer("x.test", &[ip("169.254.169.254")], C)),
+        Some(DEST_METADATA)
+    );
+}
+
 /// RED (owner Q1, Q8): `block_private_addresses: false` admits private answers and names, never
 /// cloud metadata.
 #[test]
