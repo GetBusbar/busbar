@@ -11,7 +11,7 @@
 //! [`HostIo`] implements the contract's [`IoHost`]: the loader's `io` slots dispatch every carrier
 //! instance's `io.*` call into it, and a handle belongs to the instance whose call made it.
 //!
-//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5, OWNER ruling 2026-10-02): the connector
+//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5): the connector
 //!   judges and pins every address before it asks a carrier to dial, and ADMITS exactly what it
 //!   judged for the dial's ticket ([`HostIo::admit`]); `open` reaches only an admitted address,
 //!   `listen` binds only an admitted bind, `spawn` starts only the admitted program. Anything else is
@@ -715,9 +715,9 @@ impl IoHost for HostIo {
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         // The command (and the child's ends of the pipes it holds) is dropped with this statement,
-        // so the child sees the end of its input when the host closes its end.
-        // The held values are revealed into the child's environment under the kernel's seal (Part
-        // 2 #54): the one place a program's secret leaves the host's records.
+        // so the child sees the end of its input when the host closes its end. The held values are
+        // revealed into the child's environment under the kernel's seal: the one place a program's
+        // secret leaves the host's records.
         let seal = busbar_kernel::seal::lend();
         let child = tokio::process::Command::new(spawn.program)
             .args(spawn.args)
