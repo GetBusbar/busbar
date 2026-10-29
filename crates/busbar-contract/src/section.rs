@@ -116,6 +116,12 @@ pub const ENTRY_TIMEOUT_KEY: &str = "timeout";
 /// for the walk's whole budget.
 pub const DEFAULT_ENTRY_TIMEOUT_MS: u64 = 30_000;
 
+/// THE DECLARING SECTION OF THE PLANE THAT RELAYS TOOL CALLS (`tools:`, one registration per tool
+/// server): the one section whose registrations [`DEFAULT_ENTRY_TIMEOUT_MS`] bounds where they write
+/// no [`ENTRY_TIMEOUT_KEY`]. A plane is known here by the section its Statement declares, never by
+/// its name.
+pub const TOOL_CALL_SECTION_KEY: &str = "tools";
+
 /// [`ENTRY_TIMEOUT_KEY`] as written, in milliseconds: THE ONE READING of the value, the kernel's
 /// judgement and every reader's. `0` is refused rather than read as "no deadline": a zero budget
 /// would refuse every call before it was sent, and there is deliberately no spelling for
