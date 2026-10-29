@@ -6,35 +6,12 @@
 //! double-run, a cleared/expired reservation frees the key for a fresh mint, and the 600 s TTL is
 //! honoured exactly.
 
-use std::sync::{Arc, Mutex};
-
-use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
+use crate::idempotency::durable::{self, Refused, Settled};
+use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
+use busbar_kernel::governance::MemoryStore;
 
 fn key(actor: &str, header: &str) -> (String, String) {
     (actor.to_string(), header.to_string())
-}
-
-/// One journalled claim: the `(actor, header)` key and the unix-seconds `now` it was journalled at.
-type JournalCall = ((String, String), u64);
-
-/// A [`ClaimJournal`] fake that records every `(key, now)` it is called with, for asserting the
-/// writer side of item 271: the cache journals a claim exactly once per first sighting, never on a
-/// replay or an in-flight refusal.
-#[derive(Default, Clone)]
-struct RecordingJournal {
-    calls: Arc<Mutex<Vec<JournalCall>>>,
-}
-
-impl RecordingJournal {
-    fn calls(&self) -> Vec<JournalCall> {
-        self.calls.lock().unwrap().clone()
-    }
-}
-
-impl ClaimJournal for RecordingJournal {
-    fn journal_claim(&self, key: &(String, String), now: u64) {
-        self.calls.lock().unwrap().push((key.clone(), now));
-    }
 }
 
 #[test]
@@ -156,81 +133,6 @@ fn create_and_rotate_scoped_keys_never_replay_each_other() {
     };
 }
 
-#[test]
-fn first_sighting_journals_the_claim_exactly_once() {
-    let journal = RecordingJournal::default();
-    let cache: IdempotencyCache<String> = IdempotencyCache::with_journal(Arc::new(journal.clone()));
-    let k = key("alice", "idem-journal-1");
-
-    let reservation = match cache.probe(k.clone(), 1_000) {
-        Probe::Reserved(r) => r,
-        _ => panic!("first sighting must reserve"),
-    };
-    assert_eq!(
-        journal.calls(),
-        vec![(k.clone(), 1_000)],
-        "the claim must be journalled exactly once, under the same (key, now) probe used"
-    );
-    reservation.commit("first-response".to_string(), 1_000);
-
-    // A replay of an already-committed key never re-journals — a completed claim is not taken
-    // again.
-    match cache.probe(k, 1_100) {
-        Probe::Replay(v) => assert_eq!(v, "first-response"),
-        _ => panic!("expected a replay"),
-    }
-    assert_eq!(
-        journal.calls().len(),
-        1,
-        "a replay of a committed key must never journal a second claim"
-    );
-}
-
-#[test]
-fn in_flight_refusal_never_journals_a_second_claim() {
-    let journal = RecordingJournal::default();
-    let cache: IdempotencyCache<String> = IdempotencyCache::with_journal(Arc::new(journal.clone()));
-    let k = key("alice", "idem-journal-2");
-
-    let _first = match cache.probe(k.clone(), 1_000) {
-        Probe::Reserved(r) => r,
-        _ => panic!("first sighting must reserve"),
-    };
-    match cache.probe(k, 1_005) {
-        Probe::InFlight => {}
-        _ => panic!("a concurrent retry against a live reservation must be InFlight"),
-    }
-    assert_eq!(
-        journal.calls().len(),
-        1,
-        "a concurrent in-flight probe must never journal a second claim for the same key"
-    );
-}
-
-#[test]
-fn a_dropped_and_retried_reservation_journals_the_fresh_claim() {
-    let journal = RecordingJournal::default();
-    let cache: IdempotencyCache<String> = IdempotencyCache::with_journal(Arc::new(journal.clone()));
-    let k = key("alice", "idem-journal-3");
-
-    {
-        let _reservation = match cache.probe(k.clone(), 1_000) {
-            Probe::Reserved(r) => r,
-            _ => panic!("first sighting must reserve"),
-        };
-        // Dropped without commit/clear/leak.
-    }
-    match cache.probe(k.clone(), 1_001) {
-        Probe::Reserved(_) => {}
-        _ => panic!("a dropped (uncommitted) reservation must free the key"),
-    }
-    assert_eq!(
-        journal.calls(),
-        vec![(k.clone(), 1_000), (k, 1_001)],
-        "a fresh reservation after a dropped one is a NEW claim and must be journalled again"
-    );
-}
-
 /// The sentinel's own bound -- what the replay window is, and is not, a bound on.
 #[path = "sentinel_tests.rs"]
 mod sentinel_tests;
@@ -270,67 +172,64 @@ fn a_reservation_marked_in_flight_survives_a_drop_and_still_commits() {
     assert!(matches!(cache.probe(key, 21), Probe::InFlight));
 }
 
-/// A journal whose durable write cannot finish until another task on the runtime has run: it
-/// announces it started, then waits (bounded) for that task's word, and records whether it came.
-struct WaitsForTheRuntime {
-    started: Arc<tokio::sync::Notify>,
-    word: Mutex<std::sync::mpsc::Receiver<()>>,
-    heard: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl ClaimJournal for WaitsForTheRuntime {
-    fn journal_claim(&self, _key: &(String, String), _now: u64) {
-        self.started.notify_one();
-        let heard = self
-            .word
-            .lock()
-            .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .is_ok();
-        self.heard.store(heard, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// THE CLAIM'S DURABLE WRITE RUNS OFF THE ASYNC WORKER. On a durable node the claim journal is an
-/// append and a sync on the node's journal under its process-wide lock; a mint or rotate carrying
-/// an `Idempotency-Key` used to make it inline in the async handler, holding a runtime worker
-/// through it. On a one-worker runtime that worker is the only one, so a sibling task can run while
-/// the write is in progress only if the write is on a blocking thread.
-///
-/// RED while `POST /keys` journalled the claim on the worker: the sibling never ran, and the write
-/// waited out its bound without hearing it.
-#[tokio::test(flavor = "current_thread")]
-async fn a_mints_claim_journal_write_runs_off_the_async_worker() {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let (tell, word) = std::sync::mpsc::channel();
-    let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let journal = Arc::new(WaitsForTheRuntime {
-        started: Arc::clone(&started),
-        word: Mutex::new(word),
-        heard: Arc::clone(&heard),
-    });
-    // The sibling: it runs once the write has started, and gives the write its word.
-    let sibling = tokio::spawn(async move {
-        started.notified().await;
-        let _ = tell.send(());
-    });
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
-        crate::new_test_app().build(),
-    ));
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert("idempotency-key", "claim-off-worker".parse().unwrap());
-    let _ = crate::keys::create_key(
-        axum::extract::State(handle),
-        axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
-        headers,
-        axum::Extension(Arc::new(crate::keys::KeyReplayCache::with_journal(journal))),
-        axum::body::Bytes::from(r#"{"name":"claim-off-worker"}"#),
-    )
-    .await;
-    sibling.await.expect("the sibling task runs");
-    assert!(
-        heard.load(std::sync::atomic::Ordering::SeqCst),
-        "the claim's journal write held the async worker: no other task ran while it was in \
-         progress"
+/// THE CLAIM OUTLIVES THE PROCESS. A key claimed and settled as applied by one process is refused
+/// to the next process on the same store, naming what was made: never run a second time.
+#[test]
+fn an_applied_claim_is_refused_after_a_restart_not_run_again() {
+    let store = MemoryStore::new();
+    let k = key("alice", "restart-1");
+    let claim = durable::claim(&store, &k, 1_000).expect("the first claim is granted");
+    durable::settle(&store, &claim, 1_001, &Settled::Applied("key:vk_1".into())).unwrap();
+    // A fresh process: a fresh cache, the same store.
+    let cache: IdempotencyCache<String> = IdempotencyCache::new();
+    assert!(matches!(cache.probe(k.clone(), 1_002), Probe::Reserved(_)));
+    assert_eq!(
+        durable::claim(&store, &k, 1_002),
+        Err(Refused::Applied("key:vk_1".into())),
     );
+}
+
+/// An answer settled in the store replays to the next claimer, byte for byte.
+#[test]
+fn a_settled_answer_is_handed_to_the_next_claimer() {
+    let store = MemoryStore::new();
+    let k = key("alice", "answer-1");
+    let claim = durable::claim(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &claim, 1_000, &Settled::Answer(b"first".to_vec())).unwrap();
+    assert_eq!(
+        durable::claim(&store, &k, 1_010),
+        Err(Refused::Answer(b"first".to_vec()))
+    );
+}
+
+/// A claim released with nothing done opens the next generation, once.
+#[test]
+fn a_released_claim_frees_the_key_for_exactly_one_retry() {
+    let store = MemoryStore::new();
+    let k = key("alice", "released-1");
+    let first = durable::claim(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_001, &Settled::Released).unwrap();
+    let second = durable::claim(&store, &k, 1_002).expect("a released claim frees the key");
+    assert_ne!(first, second);
+    assert_eq!(durable::claim(&store, &k, 1_003), Err(Refused::InFlight));
+}
+
+/// A claim nobody settled (its holder died) is in flight until it lapses with the replay window.
+#[test]
+fn an_unsettled_claim_is_in_flight_until_it_lapses() {
+    let store = MemoryStore::new();
+    let k = key("alice", "unsettled-1");
+    durable::claim(&store, &k, 1_000).unwrap();
+    assert_eq!(durable::claim(&store, &k, 1_001), Err(Refused::InFlight));
+    // A store may extend a claim on every attempt that loses it: the claim lapses one window after
+    // the LAST attempt, never before.
+    assert!(durable::claim(&store, &k, 1_001 + IDEMPOTENCY_TTL_SECS).is_ok());
+}
+
+/// Two principals presenting the same header never share a claim.
+#[test]
+fn claims_are_scoped_to_the_principal() {
+    let store = MemoryStore::new();
+    durable::claim(&store, &key("alice", "same"), 1_000).unwrap();
+    assert!(durable::claim(&store, &key("bob", "same"), 1_000).is_ok());
 }

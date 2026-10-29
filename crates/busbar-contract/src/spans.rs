@@ -45,6 +45,47 @@ pub fn resolve<'a>(
     arena.alloc_spans(&found[..len])
 }
 
+/// THE JSON NESTING-DEPTH GUARD: does `bytes` nest `{`/`[` deeper than `max`?
+///
+/// A security floor, not a tunable: a parser that builds a tree iteratively still hands back a
+/// tree that is re-serialized and dropped recursively, and a body some thousands of levels deep
+/// overflows the stack on that walk and aborts the process. Every parse boundary calls this with
+/// [`MAX_JSON_DEPTH`] first and refuses on `true`, so no such tree is ever built.
+///
+/// One pass, string-aware: brackets inside a string literal, and a `\`-escaped quote, do not count.
+/// It answers `true` as soon as `max` is exceeded. It does not validate: an unbalanced closer
+/// floors at zero, and unterminated input is judged on what it holds. O(n), no allocation.
+#[must_use]
+pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &b in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > max {
+                    return true;
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
+
 // ══ BYTE-LEVEL OBJECT MEMBERS, AND THE SPLICES OVER THEM ═════════════════════════════════════════
 //
 // The one way a plane walks the members of a JSON object it relays and edits it in place (promoted

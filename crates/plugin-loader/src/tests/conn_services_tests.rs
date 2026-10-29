@@ -337,6 +337,7 @@ fn establish_as(
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
     let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
     out
@@ -1126,6 +1127,7 @@ fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
 fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let _: RawOutcome =
         f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
     out
@@ -1560,6 +1562,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
@@ -2589,6 +2592,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
             kind: auth as u32,
             kind_abi: auth.abi_version(),
+            layout: auth.layout_fingerprint(),
             statement: st,
             ..real.parts()
         })
@@ -2699,6 +2703,65 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     );
     let t = minted.expect("a ticket");
     d.recycle(t);
+}
+
+/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
+/// a write past what the caller stated shows.
+#[repr(C, align(8))]
+struct LentOut([u8; 96]);
+
+impl LentOut {
+    fn stating(size: u32) -> Self {
+        let mut b = [0xAA_u8; 96];
+        b[..4].copy_from_slice(&size.to_ne_bytes());
+        Self(b)
+    }
+
+    fn out(&mut self) -> *mut busbar_contract::abi::host::service::ServiceOut {
+        self.0.as_mut_ptr().cast()
+    }
+
+    /// Whether every byte from `from` on is still the caller's.
+    fn untouched_from(&self, from: usize) -> bool {
+        self.0[from..].iter().all(|b| *b == 0xAA)
+    }
+}
+
+/// RED (Q128 kernel-scope MEDIUM, the connector service frame): the host writes a caller's `out` only as far
+/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
+/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
+/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// `ServiceOut` over whatever the caller lent.
+#[test]
+fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_stated() {
+    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
+    let mut lent = LentOut::stating(32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
+    assert!(lent.untouched_from(4), "a short `out` was written");
+    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
+    assert!(
+        lent.untouched_from(SERVICE_OUT_V1),
+        "the host wrote past the `out` stated"
+    );
+    assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
 
 /// THE AUTH CALL SIGNS THE AUTHORITY THE SOCKET DIALS. A member binding is asked for its fields over
