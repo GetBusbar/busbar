@@ -4829,7 +4829,7 @@ fn declaring(declares: &'static str) -> crate::root::linked::Linked {
         plane_door_declares: vec![(
             "busbar-plane-decisions",
             decisions_door as busbar_contract::abi::mechanism::door::DoorFn,
-            declares,
+            Some(declares),
         )]
         .leak(),
         ..crate::LINKED

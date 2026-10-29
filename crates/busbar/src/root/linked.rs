@@ -63,14 +63,15 @@ pub struct Linked {
     /// `[package.metadata.busbar.linked-declares]`), read as a dropped-in copy's signed `declares`
     /// is — its disk need (THE DESIGN §11.11 R4). A door with no row declares none.
     pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
-    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
-    /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
-    /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
-    /// first-party.
+    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: `Some` its manifest
+    /// `declares` section as JSON (the crate's `declares.json`, named by
+    /// `[package.metadata.busbar.linked-declares]`), `None` for a row naming none, whose door's own
+    /// Statement states it ([`plane_door_declares`]). Read as every default-linked plugin's is,
+    /// beside the door it belongs to. A linked door is first-party.
     pub plane_door_declares: &'static [(
         &'static str,
         busbar_contract::abi::mechanism::door::DoorFn,
-        &'static str,
+        Option<&'static str>,
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols:
@@ -721,16 +722,51 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
     DROPPED.get().copied()
 }
 
-/// EVERY LINKED PLANE DOOR'S `declares`, `(row, door, declares)`, off its `linked-declares` row
-/// ([`Linked::plane_door_declares`]).
+/// EVERY LINKED PLANE DOOR'S `declares`, `(row, door, declares)` ([`Linked::plane_door_declares`]):
+/// the document its `linked-declares` row names, else the one its door's own Statement states under
+/// `EXT_DECLARES` (ARCHITECT ruling 2026-10-21: the declaration rides the Statement, so a linked
+/// door and its dropped-in twin state one document). A door stating none declares nothing.
+///
+/// # Errors
+///
+/// A door whose Statement does not read, or whose stated document is not UTF-8.
 pub fn plane_door_declares(
     linked: &Linked,
-) -> Vec<(
-    &'static str,
-    busbar_contract::abi::mechanism::door::DoorFn,
-    &'static str,
-)> {
-    linked.plane_door_declares.to_vec()
+) -> Result<
+    Vec<(
+        &'static str,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        String,
+    )>,
+    String,
+> {
+    let mut rows = Vec::new();
+    for (row, door, named) in linked.plane_door_declares {
+        let json = match named {
+            Some(json) => (*json).to_string(),
+            None => {
+                let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
+                    .map_err(|e| format!("plugin '{row}': {e}"))?;
+                let read = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
+                    .map_err(|e| {
+                        format!(
+                            "plugin '{row}': its Statement rendering does not read back at byte {}",
+                            e.at
+                        )
+                    })?;
+                let Some(bytes) =
+                    busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
+                else {
+                    continue;
+                };
+                String::from_utf8(bytes.to_vec()).map_err(|_| {
+                    format!("plugin '{row}' states a `declares` document that is not UTF-8")
+                })?
+            }
+        };
+        rows.push((*row, *door, json));
+    }
+    Ok(rows)
 }
 
 /// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
@@ -748,7 +784,7 @@ pub fn door_breaker(
     dropped: Option<&crate::root::loader::PluginRegistry>,
     plane: &str,
 ) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
-    for (row, door, json) in &plane_door_declares(linked) {
+    for (row, door, json) in &plane_door_declares(linked)? {
         let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
             .map_err(|e| format!("plugin '{row}': {e}"))?;
         let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
@@ -855,7 +891,11 @@ pub fn register_diagnostics(linked: &Linked) {
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
-    match door_declared_diagnostics(&plane_door_declares(linked), &installed) {
+    let declares = plane_door_declares(linked).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    match door_declared_diagnostics(&declares, &installed) {
         Ok(declared) => installed.extend(declared),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -908,7 +948,7 @@ pub fn door_declared_diagnostics(
     doors: &[(
         &'static str,
         busbar_contract::abi::mechanism::door::DoorFn,
-        &'static str,
+        String,
     )],
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
