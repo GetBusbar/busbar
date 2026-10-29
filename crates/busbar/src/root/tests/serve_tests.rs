@@ -11343,6 +11343,76 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     );
 }
 
+/// A VIRTUAL KEY EXPIRES (governance guide: "a virtual key is a signed, expiring bearer token"):
+/// end to end on the data plane through the `keys` chain, a key minted on the same governance book
+/// whose token `exp` has passed is refused 401 and never reaches the far end, while the rig's live
+/// key is admitted on the same app.
+/// RED: an expired virtual key is admitted.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_virtual_key_is_refused() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-key-token-expired";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // Minted an hour ago with a ten-minute lifetime: signed by the book's own key, and expired.
+    let now = busbar_kernel::store::now();
+    let (_, expired) = rig
+        .gov
+        .mint_signed(
+            NewKeySpec {
+                name: "expired".to_string(),
+                allowed_pools: Some(vec!["p".to_string()]),
+                ..Default::default()
+            },
+            now - 3_000,
+            now - 3_600,
+        )
+        .expect("mint");
+    let expired = expired.expose(&busbar_kernel::seal::lend()).to_string();
+
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let bearer = format!("Bearer {expired}");
+    let (refused, _, body) = rig
+        .send_bare(
+            "POST",
+            path,
+            Some(ask.clone()),
+            &[("authorization", bearer.as_str())],
+        )
+        .await;
+    assert_eq!(
+        refused,
+        401,
+        "an expired virtual key is refused: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(far.served(), 0, "the expired key never reached the far end");
+
+    let (admitted, _, body) = rig.send("POST", path, Some(ask)).await;
+    assert_eq!(
+        admitted,
+        200,
+        "the live key is admitted on the same app: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
 // ── THE MODEL PLANE'S `/metrics` ON THE DOOR: COUNTED ONCE, v1.5.4-SHAPED ──────────────────────────
 //
 // MOVED HERE from `crates/busbar/tests/plane_integration.rs`, assertions unchanged (DEV-GREEN row
