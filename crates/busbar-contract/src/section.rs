@@ -105,15 +105,17 @@ pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 /// THE RESERVED PER-ENTRY `timeout:` of any plane's section: an entry's wall-clock bound on ONE attempt to reach it,
 /// `<n><s|m|h|d>`. Core-owned: the kernel judges it ([`entry_timeout_ms`]) and holds every attempt
 /// its walk makes to that entry's member to it (`Member::attempt_timeout_ms`), for every plane alike;
-/// a plane names none of it. A registration that writes none is bounded at
-/// [`DEFAULT_ENTRY_TIMEOUT_MS`]; a model-serving section's entry ([`RESERVED_MODELS_KEY`]) that
-/// writes none is bounded by its walk's own budget, as the previous release bounded a model.
+/// a plane names none of it. A tool-server registration (an entry of [`TOOL_CALL_SECTION_KEY`]) that
+/// writes none is bounded at [`DEFAULT_ENTRY_TIMEOUT_MS`] ([`default_entry_timeout_ms`]); any other
+/// section's entry that writes none, a model or another plane's registration, is bounded by its
+/// walk's own budget (the pool's), as the previous release bounded it.
 pub const ENTRY_TIMEOUT_KEY: &str = "timeout";
 
-/// THE CORE'S DEFAULT [`ENTRY_TIMEOUT_KEY`], in milliseconds: the attempt bound of a registration
-/// (an entry of a section with no [`RESERVED_MODELS_KEY`] map) that writes no `timeout:`. Without
-/// it, an upstream that takes a call and never answers holds its caller, and a concurrency slot,
-/// for the walk's whole budget.
+/// THE CORE'S DEFAULT [`ENTRY_TIMEOUT_KEY`] OF A TOOL CALL, in milliseconds: the attempt bound of a
+/// tool-server registration (an entry of [`TOOL_CALL_SECTION_KEY`]) that writes no `timeout:`.
+/// Without it, a tool server that takes a call and never answers holds its caller, and a
+/// concurrency slot, for the walk's whole budget. Scoped to tool calls (lead ruling W11b): another
+/// plane's registration, an agent whose task may run long, keeps its walk's budget.
 pub const DEFAULT_ENTRY_TIMEOUT_MS: u64 = 30_000;
 
 /// THE DECLARING SECTION OF THE PLANE THAT RELAYS TOOL CALLS (`tools:`, one registration per tool
@@ -121,6 +123,15 @@ pub const DEFAULT_ENTRY_TIMEOUT_MS: u64 = 30_000;
 /// no [`ENTRY_TIMEOUT_KEY`]. A plane is known here by the section its Statement declares, never by
 /// its name.
 pub const TOOL_CALL_SECTION_KEY: &str = "tools";
+
+/// The core's default attempt bound, in milliseconds, of an entry that writes no
+/// [`ENTRY_TIMEOUT_KEY`] in the section `declared` (the key its plane's Statement declares):
+/// [`DEFAULT_ENTRY_TIMEOUT_MS`] for a tool-server registration; `None` (its walk's own budget) for
+/// every other section's.
+#[must_use]
+pub fn default_entry_timeout_ms(declared: &str) -> Option<u64> {
+    (declared == TOOL_CALL_SECTION_KEY).then_some(DEFAULT_ENTRY_TIMEOUT_MS)
+}
 
 /// [`ENTRY_TIMEOUT_KEY`] as written, in milliseconds: THE ONE READING of the value, the kernel's
 /// judgement and every reader's. `0` is refused rather than read as "no deadline": a zero budget
