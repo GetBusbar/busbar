@@ -45,6 +45,7 @@ const KEYS: &[TrustKeyDecl] = &[
 
 /// The plane's own parse: it accepts any section, so nothing it could refuse hides the kernel's rule.
 fn accept_anything(
+    _: &crate::plane_driver::registry::PlaneDecl,
     _: &serde_yaml::Value,
 ) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String> {
     Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())

@@ -77,6 +77,11 @@ pub struct App {
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
+    /// THE PUBLISHED INSTANCES' ADMIN TABLE ([`crate::plane_driver::serve::ServeTables`]): the one
+    /// the composition root publishes its door planes into, created with the boot generation and
+    /// carried onto every generation built after it (a clone shares the one table). The admin
+    /// router's fallback and every stated admin route answer off it.
+    pub serve_tables: crate::plane_driver::serve::ServeTables,
     /// The composition root's rules this generation was built under
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
