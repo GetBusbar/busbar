@@ -149,3 +149,195 @@ fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
         .expect("mint");
     assert_eq!(exp, NOW + 300);
 }
+
+/// A store serving the RULE-CARRYING purge only: every verb is the memory store's, except the
+/// age-only `purge_plane_records_before`, left at the contract's default (it purges nothing). The
+/// rule-carrying `purge_plane_records` is the purge the store ABI carries (slot 22 passes the rule
+/// with every purge), so a store is complete without the age-only verb.
+struct RuleCarryingOnly(Arc<MemoryStore>);
+
+mod rule_carrying_only {
+    use super::RuleCarryingOnly;
+    use busbar_contract::records::{
+        AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+        PlaneSelector, RecordStore, RecordStoreResult, Retention, UsageDelta, UsageLedger,
+        VirtualKey,
+    };
+
+    impl RecordStore for RuleCarryingOnly {
+        fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+            self.0.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+            self.0.get_key(id)
+        }
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+            self.0.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+            self.0.delete_key(id)
+        }
+        fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
+            self.0.list_keys_since(since)
+        }
+        fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
+            self.0.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &UsageLedger,
+        ) -> RecordStoreResult<()> {
+            self.0.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            delta: &UsageDelta,
+        ) -> RecordStoreResult<()> {
+            self.0.add_usage(bucket_id, window_start, delta)
+        }
+        fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+            self.0.add_metering(delta)
+        }
+        fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+            self.0.list_metering(bucket)
+        }
+        fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
+            self.0.put_credential(secret)
+        }
+        fn put_key_with_credential(
+            &self,
+            key: &VirtualKey,
+            secret: &CredentialSecret,
+        ) -> RecordStoreResult<()> {
+            self.0.put_key_with_credential(key, secret)
+        }
+        fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+            self.0.list_credentials(key_id)
+        }
+        fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
+            self.0.revoke_credential(id, reason)
+        }
+        fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+            self.0.list_credentials_since(since)
+        }
+        fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
+            self.0.append_audit(entry)
+        }
+        fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
+            self.0.list_audit()
+        }
+        fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
+            self.0.add_denylist(sub, reason)
+        }
+        fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+            self.0.list_denylist()
+        }
+        fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+            self.0.list_audit_tail(limit)
+        }
+        fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            self.0.upsert_plane_record(record)
+        }
+        fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+            self.0.get_plane_record(kind, id)
+        }
+        fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            self.0.append_plane_record(record)
+        }
+        fn list_plane_records(
+            &self,
+            kind: &str,
+            selector: &PlaneSelector<'_>,
+        ) -> RecordStoreResult<Vec<Vec<u8>>> {
+            self.0.list_plane_records(kind, selector)
+        }
+        fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
+            self.0.list_plane_record_parents(kind)
+        }
+        fn purge_plane_records(
+            &self,
+            kind: &str,
+            before: u64,
+            retention: Retention,
+        ) -> RecordStoreResult<u64> {
+            self.0.purge_plane_records(kind, before, retention)
+        }
+        fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
+            self.0.delete_plane_record(kind, id)
+        }
+        fn redeem_plane_token(
+            &self,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> RecordStoreResult<bool> {
+            self.0.redeem_plane_token(kind, token, expires_at, now)
+        }
+        fn plane_token_live(
+            &self,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> RecordStoreResult<bool> {
+            self.0.plane_token_live(kind, token, expires_at, now)
+        }
+    }
+}
+
+/// How many ticket records `store` holds.
+fn ticket_records(store: &MemoryStore) -> usize {
+    use busbar_contract::records::{PlaneSelector, RecordStore};
+    store
+        .list_plane_records(super::TICKET_RECORD_KIND, &PlaneSelector::All)
+        .expect("list")
+        .len()
+}
+
+/// **A LAPSED TICKET'S RECORD GOES AT THE NEXT MINT, THROUGH THE RULE-CARRYING PURGE, BY AGE.** The
+/// kernel's ticket kind is purged under `Retention::Age` on the purge that carries the rule, so a
+/// store that serves only that purge (the one the store ABI carries) drops a lapsed ticket's record
+/// as every other store does. The timing is the one tickets always had: a record whose ticket
+/// lapsed before the mint's instant goes; one lapsing at that instant or later stays.
+///
+/// RED while ticket expiry called the age-only `purge_plane_records_before`: on a store serving
+/// only the rule-carrying purge, every lapsed ticket's record was kept, without bound.
+#[test]
+fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint() {
+    let memory = Arc::new(MemoryStore::new());
+    let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
+    let g = GovState::new_with_signer(
+        Arc::new(RuleCarryingOnly(Arc::clone(&memory))),
+        None,
+        Some(signer),
+    )
+    .expect("gov");
+    let (id, _) = key(&g, NOW + 86_400);
+    // They lapse at NOW + 10 and at NOW + 20.
+    g.mint_ticket(&id, PREFIX, 10, None, b"{}", NOW)
+        .expect("mint");
+    g.mint_ticket(&id, PREFIX, 20, None, b"{}", NOW)
+        .expect("mint");
+    assert_eq!(ticket_records(&memory), 2);
+    // At NOW + 20 the first has lapsed and goes; the second lapses at this very instant and stays.
+    g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 20)
+        .expect("mint");
+    assert_eq!(
+        ticket_records(&memory),
+        2,
+        "the record of the ticket lapsed before the mint goes; the one lapsing at it stays"
+    );
+    // At NOW + 21 the second has lapsed too.
+    g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 21)
+        .expect("mint");
+    assert_eq!(
+        ticket_records(&memory),
+        2,
+        "only the two live tickets' records stay"
+    );
+}

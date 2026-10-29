@@ -238,6 +238,9 @@ pub struct Yielded {
     /// The streams the framer says are writable again (`PIECE_WRITABLE` pieces), in order. Such a
     /// piece is a signal to the host and never a frame: it is not among [`Yielded::pieces`].
     pub writable: Vec<u64>,
+    /// The protocol the framer last stated it agreed on an accepted connection
+    /// (`FramerYield::agreed`): a 1-based position in its accepting offer; `0` = not stated.
+    pub agreed: u32,
 }
 
 /// The host's buffers a framer op writes into.
@@ -555,6 +558,9 @@ impl Buffers {
         into.ended |= y.flags & YIELD_ENDED != 0;
         into.full |= y.flags & YIELD_STREAM_FULL != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
+        if y.agreed != 0 {
+            into.agreed = y.agreed;
+        }
         Ok(y.flags & YIELD_MORE == 0)
     }
 }
@@ -1835,6 +1841,9 @@ fn merge(into: &mut Yielded, y: Yielded) {
     into.pieces.extend(y.pieces);
     into.ended |= y.ended;
     into.deadline_ns = y.deadline_ns.or(into.deadline_ns);
+    if y.agreed != 0 {
+        into.agreed = y.agreed;
+    }
 }
 
 /// A final status whose message or details no `Span` can carry.
