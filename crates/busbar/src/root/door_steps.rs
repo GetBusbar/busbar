@@ -64,8 +64,8 @@ pub struct DoorPools {
     /// The pools whose members the plane admits each on its own grant (`member_granted`): the
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
-    /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
-    /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
+    /// Each entry's reserved `timeout:`, in milliseconds (`busbar_contract::section::ENTRY_TIMEOUT_KEY`),
+    /// a registration that writes none at the core's default: its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
@@ -172,15 +172,22 @@ impl DoorPools {
             .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
+        // A REGISTRATION that writes none is held to the core's default; a model entry that writes
+        // none keeps the walk's budget (1.5.5's bound on a model).
         let timeouts = entries
             .iter()
             .filter_map(|entry| {
                 let written = models
                     .unwrap_or(map)
-                    .get(entry.as_str())?
-                    .get(busbar_contract::section::ENTRY_TIMEOUT_KEY)?
-                    .as_str()?;
-                let ms = busbar_contract::section::entry_timeout_ms(written).ok()?;
+                    .get(entry.as_str())
+                    .and_then(|e| e.get(busbar_contract::section::ENTRY_TIMEOUT_KEY))
+                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok());
+                let ms = match (written, models) {
+                    (Some(ms), _) => ms,
+                    (None, None) => busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS,
+                    (None, Some(_)) => return None,
+                };
                 Some((entry.clone(), ms))
             })
             .collect();
@@ -201,8 +208,9 @@ impl DoorPools {
         self.breakers.get(pool)
     }
 
-    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
-    /// walk's own budget bounds it.
+    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`, else, for a
+    /// registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = a model entry that
+    /// writes none, which the walk's own budget bounds.
     #[must_use]
     pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
         self.timeouts.get(entry).copied()
