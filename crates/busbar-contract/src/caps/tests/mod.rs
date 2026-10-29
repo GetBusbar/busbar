@@ -26,9 +26,7 @@ mod lint {
 /// they are.
 mod what_the_record_reads;
 
-/// The posting's arithmetic at the edges: the width the priced total does not share with the
-/// reservation, the line between spending the reservation and spending past it, and a unit that
-/// runs past the end more than once.
+/// The posting's flags: distinct bits, every one the type declares.
 mod the_posting_arithmetic;
 
 /// Where a reported quantity came from, and the three questions the crate asks about it.
@@ -218,11 +216,11 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
     let expected = lint::expected();
     assert_eq!(
         expected.len(),
-        10,
+        9,
         "the escapes the scan must keep: {expected:?}"
     );
     assert_eq!(lint::hold_escapes().len(), 9, "the hold-escape list");
-    assert_eq!(lint::seal_sites().len(), 3, "the seal-site list");
+    assert_eq!(lint::seal_sites().len(), 2, "the seal-site list");
     for expected in expected {
         assert!(
             symbols.contains(&expected),

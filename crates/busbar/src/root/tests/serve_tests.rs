@@ -295,7 +295,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     gov.hydrate_budgets(&CostModel::flat(1), 0)
         .expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+    let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -375,7 +375,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the composition sealed its egress"
     );
     let money_steps = Arc::clone(&composed.money);
-    let plane_key = composed.facts.plane.clone();
     served.post = Some(Arc::clone(&post));
     let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
@@ -424,8 +423,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
 
     // THE MONEY RECORD: the request admitted on the governance ledger, the unit's facts closed on
-    // the money steps and the node, and its one line on the node's book carrying the decision the
-    // far end reported, under the (plane key, entry) it was served by.
+    // the money steps and the node, and its one audit record carrying the decision the far end
+    // reported.
     let usage = gov
         .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
         .expect("a read")
@@ -437,18 +436,23 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "its money facts closed at its end"
     );
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
-    let rows = book.durability.lock().expect("unpoisoned").read_back();
-    let lane = format!("{plane_key}{PLANE_LANE_SEP}m");
-    let line = rows
+    // ITS ONE AUDIT RECORD carries the decision the far end reported, by class.
+    let records = book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .audit_records
+        .clone();
+    let decided: Vec<u64> = records
         .iter()
-        .find(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
-        .unwrap_or_else(|| panic!("the unit's one line on the node's book: {rows:?}"));
-    let counts = line.counts.as_ref().expect("its counts");
-    assert_eq!(line.refusal, None, "its classes resolve: {line:?}");
+        .flat_map(|r| r.usage.lines.iter())
+        .filter(|l| l.class.as_str() == "decision")
+        .map(|l| l.quantity)
+        .collect();
     assert_eq!(
-        counts.classes.get("decision").copied(),
-        Some(1),
-        "the decision the far end reported: {counts:?}"
+        decided,
+        vec![1],
+        "the decision the far end reported: {records:?}"
     );
 }
 
@@ -1114,7 +1118,7 @@ pub(super) mod session_door {
             .expect("mint");
         gov.hydrate_budgets(&cost, 0).expect("hydrate");
         let node = Arc::new(Node::new());
-        let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+        let book = crate::root::durability::node_book();
         node.bind_book(Arc::clone(&book.durability));
         let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
         let money = Arc::new(PlaneMoney::new(
@@ -1280,11 +1284,25 @@ pub(super) mod session_door {
                 .requests
         }
 
-        /// The node book's lines for the session door's catalog route.
+        /// The units SERVED on the session door's route (`m-cap`), by their one audit record: the
+        /// units whose counts the ledger took.
         fn lines(&self) -> usize {
-            let rows = self.book.durability.lock().expect("unpoisoned").read_back();
-            rows.iter()
-                .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane.ends_with("m-cap")))
+            let records = self
+                .book
+                .durability
+                .lock()
+                .expect("unpoisoned")
+                .audit_records
+                .clone();
+            records
+                .iter()
+                .filter(|r| {
+                    r.outcome.unit_end.is_completed()
+                        && r.what
+                            .destination
+                            .as_deref()
+                            .is_some_and(|lane| lane.ends_with("m-cap"))
+                })
                 .count()
         }
 
@@ -1443,7 +1461,7 @@ pub(super) mod session_door {
         );
         assert_eq!(s.money.open_units(), 0, "its money facts closed");
         assert_eq!(s.post.open_units(), 0, "its node facts closed");
-        assert_eq!(s.lines(), 1, "its one line on the node's book");
+        assert_eq!(s.lines(), 1, "its one record carries its counts");
     }
 
     /// ADMIT, at the session door (its root leg): a key whose group budget is already spent is
@@ -1469,7 +1487,7 @@ pub(super) mod session_door {
         assert_eq!(s.requests(), 0, "the refusal charged nothing");
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
-        assert_eq!(s.lines(), 0, "no line on the node's book");
+        assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
     /// BREAKER-TRIP, at the session door: a provider failing every mint records each failure into
@@ -1591,7 +1609,7 @@ pub(super) mod session_door {
             0,
             "the refused unit's node facts closed"
         );
-        assert_eq!(s.lines(), 0, "no line on the node's book");
+        assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
     /// AUDIT-CHAIN, at the session door: every mint, served or refused, seals ONE record on the
@@ -1712,7 +1730,7 @@ pub(super) mod session_door {
         assert_eq!(s.requests(), 0, "the refusal charged nothing");
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
-        assert_eq!(s.lines(), 0, "no line on the node's book");
+        assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
     // ── a live session through the door's session route, on a real listener ──────────────────────
@@ -4700,7 +4718,7 @@ async fn serve_configured(
         .expect("mint");
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+    let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
