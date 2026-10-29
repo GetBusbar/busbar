@@ -133,6 +133,36 @@ plane = "streaming"
 public = "true"
 
 [[suite]]
+id = "voice-transcribe"
+standard = "OpenAI Audio API: POST /v1/audio/transcriptions"
+plan = "busbar's request to the provider and answer to the caller held to the openai-openapi document; control: known-good captures; negative control: planted defects refused"
+tier = "spec-conformant"
+label = "One-shot speech-to-text"
+verdict = "conformance-verdict-voice-transcribe"
+plane = "llm"
+public = "true"
+
+[[suite]]
+id = "voice-tts"
+standard = "OpenAI Audio API: POST /v1/audio/speech"
+plan = "busbar's request to the provider and answer to the caller held to the openai-openapi document; control: known-good captures; negative control: planted defects refused"
+tier = "spec-conformant"
+label = "One-shot text-to-speech"
+verdict = "conformance-verdict-voice-tts"
+plane = "llm"
+public = "true"
+
+[[suite]]
+id = "voice-twilio"
+standard = "Twilio Media Streams"
+plan = "spec battery + replay"
+tier = "spec-conformant"
+label = "Voice Twilio"
+verdict = "conformance-verdict-voice-twilio"
+plane = "streaming"
+public = "true"
+
+[[suite]]
 id = "webrtc-browser"
 repo = "GetBusbar/busbar-transport-webrtc"
 standard = "WebRTC (browser interop: ICE, DTLS-SRTP, SCTP data channels)"
