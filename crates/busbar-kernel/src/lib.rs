@@ -236,8 +236,8 @@ pub mod host_verify;
 pub mod host_work;
 pub mod ingress;
 pub mod ir;
-// The host's depth-guarded JSON parse/serialize seam (sonic-rs, MAX_JSON_DEPTH = 128). The LLM plane
-// keeps its own copy of the same seam (#83a O6); both are held to one shared fixture of verdicts.
+// The host's depth-guarded JSON parse/serialize seam (sonic-rs; the depth floor is the contract's
+// `spans::exceeds_max_depth`, 128).
 pub mod host_services;
 pub mod json;
 pub mod limits;
@@ -342,9 +342,6 @@ pub use vocabulary::{Registration, MAX_VOCABULARY};
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
-#[cfg(test)]
-#[path = "tests/license_tests.rs"]
-mod license_header_tests;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;
