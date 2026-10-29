@@ -867,9 +867,11 @@ busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", 
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "b5240b33d1da15007fac3f74a1ead87f06289fe4" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-# 2399f89 (r5-1845) is 12b0783 with its busbar pin on #1845's contract: the dropped-in door this
-# checkout builds states the transport layout fingerprint; the behaviour is 12b0783's.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "2399f89e628faeb7644beb2373c9fa33550d356e" }
+# The pin is transport-http's dev head on busbar e171 (cc05f7d539: #45 the framer states its own head
+# lines at locate and adds none after the auth; #46 the accepted side is this door's), moved past
+# 12b0783's behaviour in its own PR with its own oracle verdict (FLEET.md transport-http rule). The
+# door claims `https` again (the transport fold's row).
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "cc05f7d53908afdb32acc37e6a14ca1ae2bafdbe" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "7789b68211cfb6bf480f09f23c507f7ddeb4b9c5" }
