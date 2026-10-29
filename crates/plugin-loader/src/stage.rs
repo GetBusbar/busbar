@@ -317,7 +317,19 @@ pub(crate) fn load_library_from_bytes(
             }
         }
     }
+    load_via_staged_file(bytes, display, &mut |_| {})
+}
+
+/// The staging-file load (macOS, Windows, any non-Linux unix, and Linux's memfd fallback).
+/// `before_load` runs after the bytes are staged and immediately before the `dlopen`: production
+/// passes a no-op; the tests use it to tamper with the staged file inside that window.
+fn load_via_staged_file(
+    bytes: &[u8],
+    display: &str,
+    before_load: &mut dyn FnMut(&std::path::Path),
+) -> Result<(Library, Staged), String> {
     let path = stage_temp_file(bytes)?;
+    before_load(&path);
     // SAFETY: running an operator-trusted plugin's init code - the same trust as compiling it in.
     // The file was created by us, in a directory we created 0700, from already-verified bytes.
     let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path)).map_err(|e| {
