@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TEST ONLY: THE COMPOSITION ROOT'S DOOR FIXTURES (`BUSBAR-1.6.0.md` l.272-274). A door is built by the contract's door macro, whose expansion
-//! writes `unsafe`; the root is `forbid(unsafe_code)` and must hold no such expansion, so the doors
-//! its tests drive are built HERE, in the loader's reviewed allow-list, and the root's tests reach
-//! them by path (the `test-support` feature, which only the root's `[dev-dependencies]` edge turns
-//! on). Moved verbatim from `crates/busbar/src/root/tests/doors_refresh.rs` (the held-down carrier)
+//! TEST ONLY: THE COMPOSITION ROOT'S DOOR FIXTURES (`BUSBAR-1.6.0.md` l.272-274). A door is built
+//! by the contract's door macro, whose expansion writes `unsafe`; the root is `forbid(unsafe_code)`
+//! and must hold no such expansion, so the doors its tests drive are built HERE, in the test kit
+//! (a dev-dependency only), and the root's tests reach them as `busbar_test_kit::root_door_fixtures`.
+//! Moved verbatim from `crates/busbar/src/root/tests/doors_refresh.rs` (the held-down carrier)
 //! and `crates/busbar/src/root/tests/linked_door_root.rs` (the door-root crates in miniature).
 
 /// The carrier under test: a member's program it holds down once it ended, until its `refresh`.

@@ -614,7 +614,7 @@ pub(crate) fn hook_env(
 ) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::test_support::test_hook_env(
         aliases,
-        crate::root::loader::sign::HookNeeds { prompt, user },
+        busbar_kernel::test_support::hook_needs(prompt, user),
     )
 }
 

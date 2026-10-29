@@ -41,6 +41,10 @@ pub enum ConnFailure {
     /// (empty = none), verbatim: a driver may prefix it with its own words.
     Failed(String),
     /// The host refused the call (the egress class, an undeclared need), with its text, verbatim.
+    /// The request's auth refusing it is a refusal too, told apart by its cause
+    /// (`CAUSE_AUTH_REFUSED`, read through the connector's `cause`), as an auth call's failure is
+    /// a [`ConnFailure::Failed`] whose cause is `CAUSE_AUTH_FAILED`: either is the auth's outcome,
+    /// never the far end's.
     Refused(String),
     /// The host refused the request because the credential it is sent with, re-resolved for this
     /// request, is unavailable (`CAUSE_CREDENTIAL_UNAVAILABLE`): nothing was sent.
