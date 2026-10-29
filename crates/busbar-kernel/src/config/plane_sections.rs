@@ -35,22 +35,6 @@
 //! than being folded silently into a nearby arm, which is how two refusals become one wording that
 //! is wrong for one of them.
 //!
-//! ## THIS IS NOT THE OTHER CROSS-PLANE REFUSAL, and the two must not be merged
-//!
-//! [`crate::plane_driver::dispatch::PlaneSections::resolve`] also refuses a cross-plane reference, with
-//! [`crate::plane_driver::dispatch::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
-//! one. They answer different questions at different moments:
-//!
-//!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses a
-//!     dotted reference like `sectionname.entryname` written where a bare name belongs — a SHAPE
-//!     that names a plane, whether or not any entry by that name exists anywhere.
-//!   * [`crate::plane_driver::dispatch::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
-//!     bare name that resolves on a sibling plane — a name whose shape is legal and whose
-//!     BINDING crosses the boundary.
-//!
-//! Neither subsumes the other: this one fires on a name nothing defines, and that one fires on a
-//! name with no dot in it. Collapsing them would not deduplicate a check, it would delete one.
-//!
 //! ## THE SECTION SPLIT lives in the contract
 //!
 //! The section-map split a plane reads its own section with ([`busbar_contract::section`]: the
@@ -580,6 +564,13 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
     /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
+
+    /// The refusal for the first secret reference this section holds at a position its plane did
+    /// NOT declare secret (OWNER RULING, CHIP-REVIEW-v4 change 2), or `None`. A section with no
+    /// declared paths of its own to police (a raw-captured or typed in-tree section) answers `None`.
+    fn undeclared_secret_ref(&self) -> Option<String> {
+        None
+    }
 
     /// Is `name` a REGISTRATION in this section (a `tools:` server / an `agents:` agent)? The
     /// membership check the config resolver and the admin write path consult without naming the

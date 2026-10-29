@@ -546,7 +546,7 @@ fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) ->
             ..
         } => {
             f.input.out_buf = full;
-            let again = submit_verify(p, d, ticket, *f, &lend);
+            let again = submit_verify(p, d, ticket, f, &lend);
             submitted_answer(&lend, &again)
         }
         other => submitted_answer(&lend, &other),
@@ -582,9 +582,9 @@ fn undeclared<I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
     called(&p.call(s, &mut f))
 }
 
-/// The secret `records.secret` answers, not live, for an id the host does not hold: busbar's root
-/// answers the kernel's `auth::DUMMY_SECRET`, these bytes.
-const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
+/// The secret `records.secret` answers, not live, for an id the host does not hold: EMPTY, as
+/// busbar's root answers it. The verifying auth swaps in its own dummy when the answer is not live.
+const NOT_HELD: &str = "";
 
 /// One host-held credential: kind, id, secret, live.
 type HeldCredential = (String, String, String, bool);
@@ -724,7 +724,7 @@ impl HostServices for CredentialHost {
             .held
             .iter()
             .find(|(k, i, _, _)| k == kind && i == id)
-            .map_or((DUMMY_SECRET, false), |(_, _, s, live)| (s.as_str(), *live));
+            .map_or((NOT_HELD, false), |(_, _, s, live)| (s.as_str(), *live));
         Ran::Now(Stored {
             bytes: secret.as_bytes().to_vec(),
             spans: vec![ItemSpan {

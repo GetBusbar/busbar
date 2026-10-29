@@ -12,12 +12,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::sdk::store::{Cap, Cell, Grant};
 use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::{Head, RecordBytes};
-use busbar_contract::records::{
-    AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta,
-};
+use busbar_contract::kinds::RecordBytes;
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 
 /// The rows the double keeps: `(schema, key)` to the bytes.
@@ -141,17 +138,6 @@ fn not_this<'a, T: Send + 'a>() -> StoreCall<'a, T> {
 }
 
 impl StoreCalls for RecordSlots {
-    fn reserve<'a>(&'a self, _: OpId, _: u64, _: &'a [Cell<'a>]) -> StoreCall<'a, Vec<Grant>> {
-        not_this()
-    }
-    fn slice_release<'a>(
-        &'a self,
-        _: OpId,
-        _: u64,
-        _: &'a [(u64, u64)],
-    ) -> StoreCall<'a, Vec<u64>> {
-        not_this()
-    }
     fn add_usage_batch<'a>(
         &'a self,
         _: OpId,
@@ -160,32 +146,6 @@ impl StoreCalls for RecordSlots {
         not_this()
     }
     fn add_metering_batch<'a>(&'a self, _: OpId, _: &'a [MeteringDelta]) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn append_audit_batch<'a>(&'a self, _: OpId, _: &'a [AuditRecord]) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn window_caps<'a>(&'a self, _: OpId, _: &'a [Cap<'a>]) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn append_batch<'a>(
-        &'a self,
-        _: OpId,
-        _: &'a str,
-        _: &'a [RecordBytes],
-    ) -> StoreCall<'a, Head> {
-        not_this()
-    }
-    fn heads(&self) -> StoreCall<'_, Vec<(String, Head)>> {
-        not_this()
-    }
-    fn session_put<'a>(&'a self, _: u64, _: &'a str, _: &'a str) -> StoreCall<'a, ()> {
-        not_this()
-    }
-    fn session_remove(&self, _: u64) -> StoreCall<'_, ()> {
-        not_this()
-    }
-    fn sessions_for<'a>(&'a self, _: &'a str) -> StoreCall<'a, Vec<(u64, String)>> {
         not_this()
     }
     fn record_put<'a>(

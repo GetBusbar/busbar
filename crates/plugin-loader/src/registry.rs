@@ -147,6 +147,28 @@ impl LoadablePlugin {
                 }
             )
     }
+
+    /// THIS PLUGIN MIGRATES ITS OWN SETTINGS (`busbar --migrate-config`): its door's optional
+    /// `migrate` over `settings` (its section as written; `null` for none), from the busbar version
+    /// `from`, through the linked door or the verified dropped-in library alike. `None` when the
+    /// plugin states no `migrate` (its section passes through unchanged).
+    ///
+    /// # Errors
+    /// The door does not load, or its `migrate` refused, faulted or answered no migration.
+    pub fn migrate(
+        &self,
+        settings: &serde_json::Value,
+        from: &str,
+    ) -> Result<Option<busbar_contract::abi::sdk::migrate::Migrated>, String> {
+        use crate::dispatch::migrate::{migrate_door, migrate_library};
+        match &self.entry {
+            Some(LinkedEntry::Store { door }) => {
+                migrate_door(crate::dispatch::load::raw(*door), settings, from)
+            }
+            Some(LinkedEntry::Door(door)) => migrate_door(*door, settings, from),
+            None => migrate_library(&self.lib_bytes, &self.file, settings, from),
+        }
+    }
 }
 
 /// The refusal of a `kind: secret` plugin that states no door ([`PluginRegistry::kind_refusal`]'s

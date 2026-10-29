@@ -25,7 +25,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
@@ -37,7 +37,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
@@ -190,7 +190,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     // Every app build reads the plane registry, so holding it isolated keeps every other test's
     // commit out of this one's window.
-    let _registry = busbar_kernel::plane_driver::registry::TestRegistryIsolation::seeded(&[
+    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
     let boot = deployment(
@@ -327,7 +327,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             &[],
             Arc::new(|_, _| {}),
             PoolPosture::NONE,
-            busbar_kernel::config::secret::resolve_linked_string_at_config,
+            busbar_core_connector::spawn_env::linked_spawn_secret,
         )
         .expect("the linked doors build a connector");
         let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({

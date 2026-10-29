@@ -653,9 +653,9 @@ impl LaneSpec {
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
             None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
-            Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
+            Some(style) => {
+                busbar_kernel::plane_driver::route_input::AuthStyleInput::Named(style.to_string())
+            }
         };
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
@@ -2184,6 +2184,9 @@ pub mod durable_store;
 /// re-exported at the `test_support` root below, so `busbar_kernel::test_support::TestAppSeam`
 /// resolves exactly where the fixture it is a view onto does.
 pub mod seam;
+
+/// A test binary's plane registrations, published as the process plane list.
+pub mod planes;
 pub use seam::{
     build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
 };
@@ -2351,6 +2354,9 @@ pub fn fetch_stand_in(
 /// THE PLUGIN-ROWS DOUBLE a test build reads its registry through, and its registry build
 /// ([`rows::registry_stand_in`], `preflight::RootInstall`'s `registry_build` in a test build).
 pub mod rows;
+
+/// A test binary's protocol registrations, published as the process protocol registry.
+pub mod protocols;
 pub use rows::registry_stand_in;
 
 /// THE STAND-IN STORE AXIS: the store double's door opened in process.

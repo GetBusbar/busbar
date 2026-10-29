@@ -88,8 +88,8 @@ pub struct BootCtx {
     /// `None` in the start phase (a start hook restores nothing).
     pub store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
 
-    /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
-    /// write-through sink (`demotion_record`) and restores them. `None` in the start
+    /// HYDRATE phase — the freshly-built `App` a hydrate hook restores its durable state into (the
+    /// kernel's trust record is attached by `boot::hydrate_all` itself). `None` in the start
     /// phase, where the app has been moved into the router builder and only the handle remains.
     pub app: Option<std::sync::Arc<crate::state::App>>,
 
@@ -137,19 +137,6 @@ impl BootCtx {
 impl PlaneBootCtx for BootCtx {
     fn has_store(&self) -> bool {
         self.store.is_some()
-    }
-
-    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINK — the upstream-demotion record — to the
-    /// plane-narrowed store, in the hydrate phase. Named HERE, core
-    /// side, so the plane's own hydrate hook attaches them without its own code naming an `App` field:
-    /// the sink field (`demotion_record`) is core-owned and the store is the
-    /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
-    /// (hydrate phase) and a configured store are present — byte-identical to the old inline
-    /// `app.demotion_record.set_sink(store)`.
-    fn attach_durable_sinks(&self) {
-        if let (Some(app), Some(store)) = (self.app.as_ref(), &self.store) {
-            app.demotion_record.set_sink(store.clone());
-        }
     }
 
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
@@ -249,11 +236,19 @@ pub fn default_section_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any 
     std::sync::Arc::new(())
 }
 
-/// The process plane list, folded on first read from the built-ins plus anything installed. Under the
-/// test-support surface `plane_decls` folds a growable test registration set instead (see below), so
-/// this memo is the production path only.
-#[cfg(not(any(test, feature = "test-support")))]
-static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
+/// The process plane list: null until first read, then the fold of the built-ins plus anything
+/// installed ([`plane_decls`]), or a list [`publish_planes`] set. Every pointer stored here comes from
+/// `Box::leak` and is never freed or written through, so a reader holds it for `'static`.
+static PLANES: std::sync::atomic::AtomicPtr<&'static [&'static PlaneDecl]> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// The list behind a non-null [`PLANES`] pointer.
+#[allow(unsafe_code)]
+fn planes_at(ptr: *mut &'static [&'static PlaneDecl]) -> &'static [&'static PlaneDecl] {
+    // SAFETY: `ptr` is non-null and was stored in `PLANES` from `Box::leak`, which is never freed
+    // or mutated; the Acquire load that read it pairs with the Release/AcqRel store that wrote it.
+    unsafe { *ptr }
+}
 
 /// Declarations the COMPOSITION ROOT installed before the plane list was first read.
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
@@ -273,21 +268,8 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
         INSTALLED.set(decls).is_ok(),
         "install_planes called twice: there is one composition root, and it registers once"
     );
-    // The "install before first read" invariant is enforced by the production memo.
-    #[cfg(not(any(test, feature = "test-support")))]
     assert!(
-        PLANES.get().is_none(),
-        "install_planes called after the plane list was first read; register in main before any \
-         config load or validation touches a plane"
-    );
-    // Under the test-support surface `plane_decls` re-folds on every read (no frozen `PLANES` memo),
-    // so the FIRST-READ witness is `TEST_MEMO` being populated instead: it is set the first time the
-    // process plane list is folded, so a non-empty memo means a layer has already resolved against the
-    // built-ins-only set — the same invariant the production `PLANES` memo enforces, spelled on the
-    // structure that stands in for it here.
-    #[cfg(any(test, feature = "test-support"))]
-    assert!(
-        TEST_MEMO.lock().unwrap().is_empty(),
+        PLANES.load(std::sync::atomic::Ordering::Acquire).is_null(),
         "install_planes called after the plane list was first read; register in main before any \
          config load or validation touches a plane"
     );
@@ -384,72 +366,43 @@ fn canonical_key_order(
     order
 }
 
-/// The process plane list, in fold order. One acquire-load once initialised.
-#[cfg(not(any(test, feature = "test-support")))]
+/// The process plane list, in fold order. One acquire-load once set.
 pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    PLANES.get_or_init(|| {
-        let installed = INSTALLED.get().copied().unwrap_or(&[]);
-        merged_boot_plane_decls(installed, builtin_plane_decls())
-    })
-}
-
-// ── TEST-SUPPORT PLANE REGISTRATION ──────────────────────────────────────────────────────────────
-// The extracted plane crates can't be hard-coded into `BUILTIN_PLANE_DECLS` (core cannot name them),
-// so under the test-support surface each plane's `testkit` REGISTERS its `&'static PlaneDecl` through
-// the NEUTRAL seam [`busbar_kernel::plane_driver::registry::register_test_plane`] — the storage lives on
-// the substrate so a plane crate names no `busbar_kernel::` implementation to register itself, exactly
-// as production's composition root `install_planes`. `plane_decls()` folds the registered set ahead of
-// the built-ins on every read, recomputing (and leaking once) only for a registration set it has not
-// folded before — so a plane registered by any test before it reads the list is visible regardless of
-// test order, and the `&'static` contract holds.
-// Keyed on the IDENTITY of the set — the address of every `&'static PlaneDecl` in `installed` then the
-// registered set, in fold order — never on its size. A size key (a sum, or even the pair
-// `(installed_len, registered_len)`) aliases any two DISTINCT sets of equal length: a
-// `TestRegistryIsolation::seeded(&[&A])` followed by a `seeded(&[&B])` (or an isolation's restore to a
-// same-length snapshot) would hand back the fold of the OTHER set, and every reader resolves against a
-// plane list that is not the registered one (item 117). Every folded set is kept, so a suite that
-// alternates between isolations re-uses its fold instead of leaking again: at most one leak per
-// distinct registration set the process ever folds.
-/// The memo: every registration set folded so far (its decl addresses, in fold order) and the leaked
-/// slice it produced.
-#[cfg(any(test, feature = "test-support"))]
-type TestMemoEntry = (Vec<usize>, &'static [&'static PlaneDecl]);
-#[cfg(any(test, feature = "test-support"))]
-static TEST_MEMO: std::sync::Mutex<Vec<TestMemoEntry>> = std::sync::Mutex::new(Vec::new());
-
-// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
-// from the neutral substrate ([`busbar_kernel::plane_driver::registry::register_test_plane`], which owns
-// the storage) so core's own test-support callers keep one stable path; the plane crates call the
-// substrate function directly.
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    let reg = busbar_kernel::plane_driver::registry::test_registered_planes();
-    let installed = INSTALLED.get().copied().unwrap_or(&[]);
-    // Fold explicit `install_planes` registrations (registry's own tests) AND `register_test_plane`
-    // registrations ahead of the built-ins.
-    let mut all: Vec<&'static PlaneDecl> = installed.to_vec();
-    all.extend(reg.iter().copied());
-    let want = test_memo_key(&all);
-    let mut memo = TEST_MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, slice)) = memo.iter().find(|(k, _)| *k == want) {
-        return slice;
+    use std::sync::atomic::Ordering;
+    let ptr = PLANES.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        return planes_at(ptr);
     }
-    // A set not folded before: fold it and leak ONCE for it.
-    let merged = merged_boot_plane_decls(&all, builtin_plane_decls());
-    let leaked: &'static [&'static PlaneDecl] = Box::leak(merged.into_boxed_slice());
-    memo.push((want, leaked));
-    leaked
+    let installed = INSTALLED.get().copied().unwrap_or(&[]);
+    let folded: &'static [&'static PlaneDecl] =
+        Box::leak(merged_boot_plane_decls(installed, builtin_plane_decls()).into_boxed_slice());
+    let fresh: *mut &'static [&'static PlaneDecl] = Box::leak(Box::new(folded));
+    match PLANES.compare_exchange(
+        std::ptr::null_mut(),
+        fresh,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => planes_at(fresh),
+        // Another reader (or a publish) set the list first: that one stands.
+        Err(set) => planes_at(set),
+    }
 }
 
-/// The [`TEST_MEMO`] key for a registration set: each decl's ADDRESS, in fold order. Two sets share a
-/// key only when they are the same `&'static` decls in the same order — which is exactly when they
-/// fold to the same list — so no two distinct sets can alias, whatever their sizes.
-#[cfg(any(test, feature = "test-support"))]
-fn test_memo_key(set: &[&'static PlaneDecl]) -> Vec<usize> {
-    set.iter()
-        .map(|d| std::ptr::from_ref::<PlaneDecl>(*d) as usize)
-        .collect()
+/// Set the process plane list to the fold of the installed declarations plus `registered` (ahead of
+/// the built-ins), replacing any list set before. The composition root never calls this: it installs
+/// once through [`install_planes`]. A test binary that registers planes as it goes publishes each
+/// registration set through it.
+#[doc(hidden)]
+pub fn publish_planes(registered: &[&'static PlaneDecl]) {
+    let mut all: Vec<&'static PlaneDecl> = INSTALLED.get().copied().unwrap_or(&[]).to_vec();
+    all.extend_from_slice(registered);
+    let folded: &'static [&'static PlaneDecl] =
+        Box::leak(merged_boot_plane_decls(&all, builtin_plane_decls()).into_boxed_slice());
+    PLANES.store(
+        Box::leak(Box::new(folded)),
+        std::sync::atomic::Ordering::Release,
+    );
 }
 
 /// THE SCOPE-KIND at ABI scope-kind index `idx`, DERIVED FROM REGISTRY DATA rather than a hard-coded
@@ -684,11 +637,6 @@ pub trait PlaneBootCtx {
     /// ephemeral by design (`store: memory`). `true` iff a plane-narrowed store is present.
     fn has_store(&self) -> bool;
 
-    /// ATTACH THE CALLING PLANE'S DURABLE WRITE-THROUGH SINKS (today only the MCP plane has durable task state to attach) — the spent-approval ledger and the
-    /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. A no-op unless
-    /// BOTH the freshly-built app and a configured store are present.
-    fn attach_durable_sinks(&self);
-
     /// THE PLANE-NARROWED DURABLE STORE for this deployment, or `None` under `store: memory`. A plane
     /// that OWNS its durable subsystem (the A2A task set) drives its own `PlaneRecord` reads/writes off
     /// this handle at boot — attaching it as its registry's sink and running its own rehydrate — rather
@@ -800,8 +748,7 @@ plane_behaviour! {
     /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
-    /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
-    /// the superset-IR rule remains a rule rather than a fact about today's planes.
+    /// `Plane::wire_formats` stays DERIVED from this list.
     wire_format_names: fn() -> &'static [&'static str],
 
     /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
@@ -1098,156 +1045,10 @@ plane_behaviour! {
     >,
 }
 
-// ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────
-// A plane's `testkit` registers its `&'static PlaneDecl` here — a SUBSTRATE type — exactly as
-// production's composition root `install_planes` does, so the extracted plane crates reach the neutral
-// ABI (`busbar_kernel::plane_driver::registry::register_test_plane`) rather than back into
-// `busbar_kernel::plane_driver::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
-// its built-ins on every read, so a plane registered by any test before it reads the list is visible
-// regardless of test order.
+/// The test registration's former path, which the pinned plane repos' root tests still name; it
+/// goes when they are re-pinned onto [`crate::test_support::planes`].
 #[cfg(any(test, feature = "test-support"))]
-static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// THE PROCESS-WIDE TEST-REGISTRY SERIAL LOCK. Held by [`TestRegistryIsolation`] for the whole body of
-/// a test that asserts against the BUILT-IN plane set, and taken briefly by every [`register_test_plane`]
-/// call, so a sibling test's registration (which the composition-root-shaped plane test-kits perform
-/// whenever they build a plane) cannot race — or leak into — that assertion. A separate lock from
-/// `TEST_REGISTERED`'s own so the guard can hold it across reads that themselves lock `TEST_REGISTERED`
-/// without self-deadlocking; the lock ORDER is always serial-then-registered.
-#[cfg(any(test, feature = "test-support"))]
-static TEST_REGISTRY_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// THE THREAD THAT CURRENTLY HOLDS A [`TestRegistryIsolation`], if any. The isolating test reads the
-/// process plane list (`plane_decl_for` → [`test_registered_planes`]) ON ITS OWN THREAD while holding
-/// the guard, and `std`'s `Mutex` is not reentrant, so that thread MUST NOT re-take
-/// [`TEST_REGISTRY_SERIAL`] on the read path or it would self-deadlock. Every OTHER thread's reader
-/// takes the serial lock and so blocks for the guard's whole lifetime — the fix for the reader gap
-/// where a concurrent reader could observe the emptied set. Recorded under its own tiny mutex,
-/// consulted first on every read; `None` outside an isolation.
-#[cfg(any(test, feature = "test-support"))]
-static TEST_ISOLATION_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
-    std::sync::Mutex::new(None);
-
-/// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry, the way
-/// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
-/// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
-/// fixture registry matches a shipped "busbar with this plane" binary. The storage lives HERE, on the
-/// neutral substrate, so a plane crate names no `busbar_kernel::` implementation to register itself.
-///
-/// Takes the [`TEST_REGISTRY_SERIAL`] lock around the mutation so a concurrent [`TestRegistryIsolation`]
-/// either observes this registration in full or excludes it for its whole lifetime — never a torn view.
-#[cfg(any(test, feature = "test-support"))]
-pub fn register_test_plane(decl: &'static PlaneDecl) {
-    let _serial = TEST_REGISTRY_SERIAL
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-    if !reg.iter().any(|d| d.key == decl.key) {
-        reg.push(decl);
-    }
-}
-
-/// TEST-SUPPORT SEAM — ISOLATE THE PROCESS PLANE REGISTRY for one test. RAII: construction takes the
-/// process [`TEST_REGISTRY_SERIAL`] lock and snapshots-then-clears the registered planes, so a test that
-/// asserts against the built-in plane set sees a registry with no sibling's [`register_test_plane`]
-/// leaked into it. While the guard is alive that lock is held, so any parallel registration BLOCKS
-/// rather than mutating the set mid-assertion. On drop it restores the snapshot and releases the lock —
-/// so the isolation is scoped to exactly the test that asked for it and the suite stays order-independent.
-///
-/// `busbar-core`'s `plane_decls()` re-folds on every read and memoises by the registered set's IDENTITY
-/// (its decl addresses, not its count), so clearing or seeding the set here makes that memo resolve
-/// against exactly the set installed, with nothing else to do.
-#[cfg(any(test, feature = "test-support"))]
-#[must_use = "the registry stays isolated only while the guard is alive"]
-pub struct TestRegistryIsolation {
-    _serial: std::sync::MutexGuard<'static, ()>,
-    saved: Vec<&'static PlaneDecl>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl TestRegistryIsolation {
-    /// Take the serial lock, snapshot the registered planes, and clear them for the guard's lifetime.
-    pub fn empty() -> Self {
-        Self::seeded(&[])
-    }
-
-    /// Take the serial lock, snapshot the registered planes, and install EXACTLY `decls` (first-wins
-    /// dedup by key) for the guard's lifetime — the isolated-AND-seeded combination [`Self::empty`]
-    /// alone cannot express: `std::sync::Mutex` is not reentrant, so a caller that took `empty()`'s
-    /// guard and then called [`register_test_plane`] on the SAME thread would re-lock
-    /// [`TEST_REGISTRY_SERIAL`] it already holds and self-deadlock. This seeds the set atomically,
-    /// under the one lock acquisition, instead.
-    pub fn seeded(decls: &[&'static PlaneDecl]) -> Self {
-        let serial = TEST_REGISTRY_SERIAL
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Record this thread as the isolation owner BEFORE clearing, so this thread's own reads take
-        // the reentrant fast path (no re-lock of the serial it now holds) while every other thread's
-        // reader blocks on the serial for the guard's lifetime.
-        *TEST_ISOLATION_OWNER
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
-        let saved = {
-            let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-            let saved = std::mem::take(&mut *reg);
-            for decl in decls {
-                if !reg.iter().any(|d| d.key == decl.key) {
-                    reg.push(decl);
-                }
-            }
-            saved
-        };
-        Self {
-            _serial: serial,
-            saved,
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Drop for TestRegistryIsolation {
-    fn drop(&mut self) {
-        {
-            let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-            *reg = std::mem::take(&mut self.saved);
-        }
-        // Clear the owner while the serial is still held (`_serial` drops after this body), so a
-        // foreign reader unblocking on serial release always sees the restored set, never the owner.
-        *TEST_ISOLATION_OWNER
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-    }
-}
-
-/// TEST-SUPPORT SEAM — the planes registered through [`register_test_plane`], snapshot in registration
-/// order. `busbar-core`'s test-support `plane_decls()` reads this to fold the extracted planes into the
-/// process registry.
-#[cfg(any(test, feature = "test-support"))]
-pub fn test_registered_planes() -> Vec<&'static PlaneDecl> {
-    // If THIS thread owns the active isolation it already holds the serial lock exclusively and sees
-    // the (emptied) set it installed — read straight through, since re-taking the non-reentrant serial
-    // would self-deadlock. EVERY OTHER thread takes the serial lock, so a reader concurrent with an
-    // isolation blocks for the guard's whole lifetime and never observes the emptied set (the reader
-    // gap this closes) — releasing only after the guard restores the snapshot.
-    let owned_by_us = *TEST_ISOLATION_OWNER
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        == Some(std::thread::current().id());
-    let _serial = if owned_by_us {
-        None
-    } else {
-        Some(
-            TEST_REGISTRY_SERIAL
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        )
-    };
-    TEST_REGISTERED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-}
+pub use crate::test_support::planes::{register_test_plane, TestRegistryIsolation};
 
 #[cfg(test)]
 #[path = "tests/registry_memo_tests.rs"]

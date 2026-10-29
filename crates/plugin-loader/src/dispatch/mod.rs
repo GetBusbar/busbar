@@ -44,6 +44,7 @@ macro_rules! c_entry {
 }
 
 pub mod answer;
+pub mod auth_handle;
 pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
@@ -52,8 +53,10 @@ pub(crate) mod held;
 pub mod inline;
 pub mod io_slots;
 pub mod kinds;
+pub(crate) mod lifecycle;
 pub mod load;
 pub mod log_file;
+pub mod migrate;
 pub mod plane_calls;
 pub mod plugin;
 pub mod ready;
@@ -115,6 +118,17 @@ pub trait Kind: Send + Sync + 'static {
         lifecycle_name(slot)
     }
 
+    /// THE DEADLINE CLASS a crossing of `slot` on a REAL ticket is stamped with
+    /// (`InHead::deadline_class`): the class the kind's op contract states for it, so a pending
+    /// service call inside the op runs under that class's deadline. The default is
+    /// [`DeadlineClass::Connection`](busbar_contract::abi::mechanism::call::DeadlineClass), for a
+    /// kind whose ticketed ops are its carrier I/O. A ticket-less crossing is always
+    /// `DeadlineClass::Call`.
+    fn ticketed_class(slot: u32) -> busbar_contract::abi::mechanism::call::DeadlineClass {
+        let _ = slot;
+        busbar_contract::abi::mechanism::call::DeadlineClass::Connection
+    }
+
     /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
     /// and the host reads an absent one as a pass (the plane's `catalog`, ARCHITECT ruling
     /// 2026-10-16, 3b C, a door that states no catalog claim is never asked it; the secret `check`;
@@ -139,6 +153,19 @@ pub trait Kind: Send + Sync + 'static {
     fn credential_kinds(context: Option<&Context>) -> Vec<String> {
         let _ = context;
         Vec::new()
+    }
+
+    /// THE KIND'S ADMISSION OF AN `in`, before the crossing: `Some(outcome)` refuses the call
+    /// with that outcome and never crosses. `owner` is the called instance's identity on the
+    /// instance table, the owner its kernel-MAC'd refs are verified for. The default admits all.
+    fn admit(
+        slot: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+        owner: u64,
+    ) -> Option<Outcome> {
+        let _ = (slot, input, in_size, owner);
+        None
     }
 
     /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every

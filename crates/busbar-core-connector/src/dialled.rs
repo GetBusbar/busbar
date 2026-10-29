@@ -76,9 +76,52 @@ enum Phase {
     Over,
 }
 
+/// Where the leg's association is. IT IS CROSSED WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no
+/// plugin code runs under a host lock): a drive, a write or a line frame takes the association out,
+/// crosses its framer with nothing held, and puts it back. One that finds it out does not wait: a
+/// drive is woken when it is back, a write answers PENDING (re-offered after the next read or
+/// wait), a line frame is handed to the holder, who emits it on the way back. A close never waits:
+/// an association at home is taken and finished with no lock held; one that is out is finished by
+/// its holder as it brings it back.
+#[derive(Default)]
+struct Held {
+    /// The association while nobody has it out; `None` while one does, and once it is closed.
+    framing: Option<DatagramFraming>,
+    /// A drive, write or line frame has it out.
+    out: bool,
+    /// The leg is closed: the association is finished, or will be as it is brought back.
+    closing: bool,
+    /// The keying-material item had been presented when it was last at home.
+    presented: bool,
+    /// Line frames that arrived while it was out, in order, for its holder to emit.
+    lines: Vec<(Across, Instant)>,
+    /// The drives that found it out, woken when it is back.
+    missed: Vec<Waker>,
+}
+
+/// An association out of its slot. Only an unwind drops it still holding the association: the
+/// leg is then closed, and the association finished with no lock held.
+struct Taken<'l> {
+    leg: &'l UpstreamLeg,
+    framing: Option<DatagramFraming>,
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        if let Some(f) = self.framing.take() {
+            {
+                let mut held = lock(&self.leg.framing);
+                held.closing = true;
+                held.out = false;
+            }
+            drop(f);
+        }
+    }
+}
+
 /// The upstream association and its own port: the [`LegSink`] the caller's line frames cross into.
 pub(crate) struct UpstreamLeg {
-    framing: Mutex<Option<DatagramFraming>>,
+    framing: Mutex<Held>,
     port: ReadyPort,
     /// Channel messages for the reader: the bytes and whether they end the message.
     ready: Mutex<VecDeque<(Vec<u8>, bool)>>,
@@ -90,6 +133,100 @@ pub(crate) struct UpstreamLeg {
 }
 
 impl UpstreamLeg {
+    /// THE HAND-OFF: take the association out, `run` it on `arg` with no lock held, and bring it
+    /// back. Found out, `out` answers under the lock that saw it out; closed, `closed` answers.
+    fn turn<A, R>(
+        &self,
+        arg: A,
+        out: impl FnOnce(&mut Held, A) -> R,
+        closed: impl FnOnce(A) -> R,
+        run: impl FnOnce(&mut DatagramFraming, A) -> R,
+    ) -> R {
+        let f = {
+            let mut held = lock(&self.framing);
+            if held.closing {
+                drop(held);
+                return closed(arg);
+            }
+            match held.framing.take() {
+                Some(f) => {
+                    held.out = true;
+                    f
+                }
+                None if held.out => return out(&mut held, arg),
+                None => {
+                    drop(held);
+                    return closed(arg);
+                }
+            }
+        };
+        let mut taken = Taken {
+            leg: self,
+            framing: Some(f),
+        };
+        let r = run(taken.framing.as_mut().expect("the association is out"), arg);
+        let f = taken.framing.take().expect("the association is out");
+        self.bring_back(f);
+        r
+    }
+
+    /// Bring the association `f` back: the line frames handed to it meanwhile are emitted first
+    /// (no lock held), then it is put back, or, the leg closed meanwhile, finished here with no
+    /// lock held; the drives that found it out are woken.
+    fn bring_back(&self, mut f: DatagramFraming) {
+        loop {
+            let lines = {
+                let mut held = lock(&self.framing);
+                if held.closing {
+                    held.out = false;
+                    held.lines.clear();
+                    let missed = std::mem::take(&mut held.missed);
+                    drop(held);
+                    drop(f);
+                    wake(missed);
+                    return;
+                }
+                let lines = std::mem::take(&mut held.lines);
+                if lines.is_empty() {
+                    held.out = false;
+                    held.presented = f.presented();
+                    held.framing = Some(f);
+                    let missed = std::mem::take(&mut held.missed);
+                    drop(held);
+                    wake(missed);
+                    return;
+                }
+                lines
+            };
+            for (across, now) in lines {
+                self.emit_line(&mut f, &across, now);
+            }
+        }
+    }
+
+    /// A line frame's emit yields no channel message the reader waits on; a failed emit drops the
+    /// frame (a line is never queued) and the next read meets the failure.
+    fn emit_line(&self, f: &mut DatagramFraming, across: &Across, now: Instant) {
+        let _ = f.emit(
+            across.stream,
+            &across.bytes,
+            across.end_of_frame,
+            false,
+            now,
+        );
+        self.flush(f);
+    }
+
+    /// Whether the association has presented its keying-material item (`false` once closed).
+    fn presented(&self) -> bool {
+        let held = lock(&self.framing);
+        !held.closing
+            && held
+                .framing
+                .as_ref()
+                .map_or(held.out && held.presented, DatagramFraming::presented)
+    }
+
     /// Send what the association owes the port; a send that would block drops the datagram.
     fn flush(&self, f: &mut DatagramFraming) {
         while let Some((to, d)) = f.poll_send() {
@@ -131,80 +268,125 @@ impl UpstreamLeg {
         due: Option<Instant>,
     ) -> Result<(), ConnError> {
         let now = Instant::now();
-        let mut pieces = Vec::new();
-        {
-            let mut held = lock(&self.framing);
-            let f = held.as_mut().ok_or(ConnError::Closed)?;
-            let mut buf = lock(&self.recv);
-            // BACK-PRESSURE: at the queue's bound the port is not drained; the reader's next read
-            // takes a message and drives again.
-            let room = MAX_READY.saturating_sub(lock(&self.ready).len());
-            for _ in 0..READS_PER_DRIVE {
-                if pieces.len() >= room {
-                    break;
+        let missed = cx.waker().clone();
+        // BACK-PRESSURE: at the queue's bound the port is not drained; the reader's next read
+        // takes a message and drives again.
+        let room = MAX_READY.saturating_sub(lock(&self.ready).len());
+        let pieces = self.turn(
+            (),
+            |held, ()| {
+                held.miss(&missed);
+                Ok(Vec::new())
+            },
+            |()| Err(ConnError::Closed),
+            |f, ()| {
+                let mut pieces = Vec::new();
+                // The buffer is the holder's while it has the association: no lock is held
+                // across the framer's crossings.
+                let mut buf = std::mem::take(&mut *lock(&self.recv));
+                let read = self.read_port(f, cx, &mut buf, room, now, &mut pieces);
+                *lock(&self.recv) = buf;
+                read?;
+                if f.deadline().is_some_and(|d| d <= now) {
+                    let y = f.timeout(now).map_err(|_| ConnError::Fault)?;
+                    pieces.extend(y.pieces);
                 }
-                match self.port.poll_recv_from(cx, &mut buf) {
-                    Poll::Ready(Ok((n, from))) => {
-                        let y = f
-                            .datagram(from, &buf[..n], now)
-                            .map_err(|_| ConnError::Fault)?;
-                        pieces.extend(y.pieces);
-                    }
-                    // A per-datagram error (an unreachable far end reported back): the port stands.
-                    Poll::Ready(Err(_)) => {}
-                    Poll::Pending => break,
-                }
-            }
-            if f.deadline().is_some_and(|d| d <= now) {
-                let y = f.timeout(now).map_err(|_| ConnError::Fault)?;
-                pieces.extend(y.pieces);
-            }
-            self.flush(f);
-            let wake = [f.deadline(), due.filter(|_| !f.presented())]
-                .into_iter()
-                .flatten()
-                .min();
-            let mut timer = lock(&self.timer);
-            match wake {
-                Some(at) => {
-                    let _entered = crate::io::enter_process_runtime();
-                    if tokio::runtime::Handle::try_current().is_ok() {
-                        let at = tokio::time::Instant::from_std(at);
-                        let t = timer.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(at)));
-                        t.as_mut().reset(at);
-                        if t.as_mut().poll(cx).is_ready() {
-                            cx.waker().wake_by_ref();
+                self.flush(f);
+                let wake = [f.deadline(), due.filter(|_| !f.presented())]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                let mut timer = lock(&self.timer);
+                match wake {
+                    Some(at) => {
+                        let _entered = crate::io::enter_process_runtime();
+                        if tokio::runtime::Handle::try_current().is_ok() {
+                            let at = tokio::time::Instant::from_std(at);
+                            let t =
+                                timer.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(at)));
+                            t.as_mut().reset(at);
+                            if t.as_mut().poll(cx).is_ready() {
+                                cx.waker().wake_by_ref();
+                            }
                         }
                     }
+                    None => *timer = None,
                 }
-                None => *timer = None,
+                Ok(pieces)
+            },
+        )?;
+        self.take(pairing, pieces, now)
+    }
+}
+
+impl UpstreamLeg {
+    /// Read up to `room` datagrams waiting on the port into `f`, their pieces into `pieces`.
+    fn read_port(
+        &self,
+        f: &mut DatagramFraming,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+        room: usize,
+        now: Instant,
+        pieces: &mut Vec<Got>,
+    ) -> Result<(), ConnError> {
+        for _ in 0..READS_PER_DRIVE {
+            if pieces.len() >= room {
+                break;
+            }
+            match self.port.poll_recv_from(cx, buf) {
+                Poll::Ready(Ok((n, from))) => {
+                    let y = f
+                        .datagram(from, &buf[..n], now)
+                        .map_err(|_| ConnError::Fault)?;
+                    pieces.extend(y.pieces);
+                }
+                // A per-datagram error (an unreachable far end reported back): the port stands.
+                Poll::Ready(Err(_)) => {}
+                Poll::Pending => break,
             }
         }
-        self.take(pairing, pieces, now)
+        Ok(())
+    }
+}
+
+impl Held {
+    /// `waker`'s drive found the association out: it is woken when it is back.
+    fn miss(&mut self, waker: &Waker) {
+        if !self.missed.iter().any(|w| w.will_wake(waker)) {
+            self.missed.push(waker.clone());
+        }
+    }
+}
+
+/// Wake every drive in `missed`.
+fn wake(missed: Vec<Waker>) {
+    for w in missed {
+        w.wake();
     }
 }
 
 impl LegSink for UpstreamLeg {
     fn line(&self, across: Across, now: Instant) {
-        let mut held = lock(&self.framing);
-        let Some(f) = held.as_mut() else {
-            return;
-        };
-        // A line frame's emit yields no channel message the reader waits on; a failed emit drops
-        // the frame (a line is never queued) and the next read meets the failure.
-        let _ = f.emit(
-            across.stream,
-            &across.bytes,
-            across.end_of_frame,
-            false,
-            now,
+        self.turn(
+            across,
+            // Out: handed to its holder, emitted in order as it brings the association back.
+            |held, across| held.lines.push((across, now)),
+            |_| {},
+            |f, across| self.emit_line(f, &across, now),
         );
-        self.flush(f);
     }
 
     fn close(&self) {
-        // Dropping the association finishes its framing.
-        drop(lock(&self.framing).take());
+        // Dropping the association finishes its framing: here, with no lock held, or by the
+        // holder that has it out, as it brings it back.
+        let framing = {
+            let mut held = lock(&self.framing);
+            held.closing = true;
+            held.lines.clear();
+            held.framing.take()
+        };
+        drop(framing);
         lock(&self.ready).clear();
     }
 }
@@ -231,7 +413,10 @@ impl Dialled {
     ) -> Self {
         Dialled {
             leg: Arc::new(UpstreamLeg {
-                framing: Mutex::new(Some(framing)),
+                framing: Mutex::new(Held {
+                    framing: Some(framing),
+                    ..Held::default()
+                }),
                 port,
                 ready: Mutex::new(VecDeque::new()),
                 channel: Mutex::new(None),
@@ -313,15 +498,19 @@ impl Dialled {
     /// The far end's description settles the association; its lines must mirror the caller's.
     fn settle(&self, description: &[u8]) -> Result<(), ConnError> {
         let now = Instant::now();
-        let pieces = {
-            let mut held = lock(&self.leg.framing);
-            let f = held.as_mut().ok_or(ConnError::Closed)?;
-            let y = f
-                .rendezvous(description, now)
-                .map_err(|_| ConnError::Fault)?;
-            self.leg.flush(f);
-            y.pieces
-        };
+        let pieces = self.leg.turn(
+            (),
+            // Out: nothing else drives the association while its exchange is in flight.
+            |_, ()| Err(ConnError::Pending),
+            |()| Err(ConnError::Closed),
+            |f, ()| {
+                let y = f
+                    .rendezvous(description, now)
+                    .map_err(|_| ConnError::Fault)?;
+                self.leg.flush(f);
+                Ok(y.pieces)
+            },
+        )?;
         self.leg.take(&self.pairing, pieces, now)?;
         let leg: Arc<dyn LegSink> = Arc::clone(&self.leg) as Arc<dyn LegSink>;
         if self.pairing.attach(leg).is_err() {
@@ -359,9 +548,7 @@ impl Dialled {
                     declared_len: None,
                 });
             }
-            let keyed = lock(&self.leg.framing)
-                .as_ref()
-                .is_some_and(DatagramFraming::presented);
+            let keyed = self.leg.presented();
             if !keyed && self.due.is_some_and(|d| Instant::now() >= d) {
                 return Err(ConnError::Timeout);
             }
@@ -402,15 +589,24 @@ impl Dialled {
         drop(gather);
         let stream = (*lock(&self.leg.channel)).ok_or(ConnError::Pending)?;
         let now = Instant::now();
-        let pieces = {
-            let mut held = lock(&self.leg.framing);
-            let f = held.as_mut().ok_or(ConnError::Closed)?;
-            let y = f
-                .emit(stream, &message, true, text, now)
-                .map_err(|_| ConnError::Fault)?;
-            self.leg.flush(f);
-            y.pieces
-        };
+        let pieces = self.leg.turn(
+            message,
+            // Out: nothing is taken; the gathered message is as it was before these bytes, and the
+            // caller re-offers them after its next read or wait.
+            |_, mut message| {
+                message.truncate(message.len() - bytes.len());
+                *lock(&self.gather) = message;
+                Err(ConnError::Pending)
+            },
+            |_| Err(ConnError::Closed),
+            |f, message| {
+                let y = f
+                    .emit(stream, &message, true, text, now)
+                    .map_err(|_| ConnError::Fault)?;
+                self.leg.flush(f);
+                Ok(y.pieces)
+            },
+        )?;
         self.leg.take(&self.pairing, pieces, now)?;
         Ok(bytes.len())
     }
