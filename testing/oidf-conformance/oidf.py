@@ -77,7 +77,6 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
 import urllib.request
 import zipfile
 
@@ -404,11 +403,13 @@ def oidc_pin(checkout):
     commit must be the lock's rev: the rig never judges a module other than the one released."""
     lock_path = os.path.join(checkout, "dist", "default", "Cargo.lock")
     try:
-        with open(lock_path, "rb") as f:
-            lock = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as e:
+        with open(lock_path) as f:
+            lock = f.read()
+    except OSError as e:
         raise Refused(f"dist/default/Cargo.lock could not be read: {e}")
-    pkg = next((p for p in lock.get("package", []) if p.get("name") == "busbar-auth-oidc-plugin"), None)
+    # Each `[[package]]` table's flat `key = "value"` lines (the runner's python predates tomllib).
+    packages = [dict(re.findall(r'^(\w+) = "([^"]*)"$', block, re.M)) for block in lock.split("[[package]]")[1:]]
+    pkg = next((p for p in packages if p.get("name") == "busbar-auth-oidc-plugin"), None)
     if not pkg:
         raise Refused("dist/default/Cargo.lock pins no busbar-auth-oidc-plugin")
     m = re.fullmatch(r"git\+(https://[^?#]+)\?rev=([0-9a-f]{40})#([0-9a-f]{40})", pkg.get("source", ""))
