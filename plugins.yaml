@@ -538,15 +538,13 @@ plugins:
     description: "First-party signed kind:transport plugin cdylib: the ws transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-ws/declares.json"
     # THE AUTOBAHN SUITE (status row 97): the RFC 6455 conformance suite runs against THIS repo's ws
-    # door on every CI run, through busbar's ws-conformance-subject (busbar at the pin, its
-    # busbar-transport-ws dependency patched to this checkout), and fails on any non-OK case.
+    # door on every CI run, through the repo's own harness (testing/ws-conformance, moved out of
+    # busbar by 7f43d8a777): its subject is built from this checkout against busbar at the pin
+    # ($BUSBAR_CHECKOUT), and the suite fails on any non-OK case.
     busbar_checkout: true
     extra_test: |-
       set -euo pipefail
-      B="$GITHUB_WORKSPACE/busbar"
-      mkdir -p "$B/.cargo"
-      printf '\n[patch."https://github.com/GetBusbar/busbar-transport-ws"]\nbusbar-transport-ws = { path = "%s/transport-ws" }\n' "$PWD" >> "$B/.cargo/config.toml"
-      bash "$B/testing/ws-conformance/scripts/run.sh" --subject
+      bash testing/ws-conformance/scripts/run.sh --subject
     # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false

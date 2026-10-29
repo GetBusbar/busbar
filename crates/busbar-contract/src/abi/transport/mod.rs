@@ -1575,8 +1575,7 @@ pub struct EmitIn {
     /// emit, the one carrying the answer's head (its bytes `encode` rendered), the status the answer
     /// carries, in the numbering of the claim the stream arrived on; a status that asks the far end
     /// to switch protocols hands the connection to the claimed upgrade framer ([`slot::DETACH`]).
-    /// `0` on every other emit, where a stated status is refused
-    /// ([`check::check_emit_status`]). Never a `:status` field. A tail addition (pre-tag v1).
+    /// `0` on every other emit, where a stated status is refused. Never a `:status` field. A tail addition (pre-tag v1).
     pub status: u32,
     /// Alignment padding.
     pub _status_reserved: u32,
