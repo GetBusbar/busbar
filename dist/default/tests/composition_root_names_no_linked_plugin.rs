@@ -249,6 +249,78 @@ door = "unit"
     assert!(off.contains("plane_doors: &[],"), "{off}");
 }
 
+/// A PLANE WHOSE DOOR IS ITS CRATE'S ONE PUBLIC ITEM (`pub use <module>::door`): its plane-door row's
+/// `linked-entry` is the crate root, and the test-linked roster reads `<crate>::door` and, when the
+/// row fills the protocol axis, `<crate>::PROTOCOLS` there, never a `plane_door` module the crate does
+/// not export (E0433).
+#[test]
+fn a_test_linked_plane_whose_entry_is_its_crate_root_reads_the_root_door() {
+    let manifest = r#"
+[package.metadata.busbar.linked]
+door = "busbar-plane-door"
+
+[package.metadata.busbar.linked-axes]
+door = "plane-door protocols"
+
+[package.metadata.busbar.linked-entry]
+door = "busbar_plane_door"
+
+[package.metadata.busbar.test-linked]
+planes = ["busbar-plane-door"]
+"#;
+    let out = generator::test_linked_source(manifest);
+    assert!(
+        out.contains(r#"("busbar_plane_door", busbar_plane_door::door),"#),
+        "{out}"
+    );
+    assert!(out.contains("    busbar_plane_door::PROTOCOLS,\n"), "{out}");
+}
+
+/// A PLANE DOOR ROW WITH NO `linked-declares` ROW is still a row of the declares table, with no
+/// named document: the root reads its door's own Statement for it (`root::linked::plane_door_declares`).
+/// A row naming one keeps its document.
+#[test]
+fn a_plane_door_row_with_no_declares_row_is_read_off_its_door() {
+    let manifest = |declares: &str| {
+        format!(
+            r#"
+[dependencies]
+busbar-plane-door = {{ path = "../busbar-plane-door", optional = true }}
+
+[features]
+door = ["dep:busbar-plane-door"]
+
+[package.metadata.busbar.linked]
+door = "busbar-plane-door"
+
+[package.metadata.busbar.linked-axes]
+door = "plane-door"
+
+[package.metadata.busbar.linked-entry]
+door = "busbar_plane_door"
+{declares}
+[package.metadata.busbar.root-units]
+door = "unit"
+"#
+        )
+    };
+    let (none, _) = linked_source(&manifest(""), &|f: &str| f == "door");
+    assert!(
+        none.contains(
+            r#"plane_door_declares: &[("busbar-plane-door", busbar_plane_door::door, None), ],"#
+        ),
+        "{none}"
+    );
+    let named = manifest(
+        "\n[package.metadata.busbar.linked-declares]\ndoor = \"busbar_plane_door::DECLARES\"\n",
+    );
+    let (some, _) = linked_source(&named, &|f: &str| f == "door");
+    assert!(
+        some.contains(r#"plane_door_declares: &[("busbar-plane-door", busbar_plane_door::door, Some(busbar_plane_door::DECLARES)), ],"#),
+        "{some}"
+    );
+}
+
 /// A PLANE IS SERVED THROUGH ITS DOOR (#2, #30; BUSBAR-1.6.0.md Part 3 §12 "The switch"): this
 /// manifest has a build that links a plane's memory-ABI door on the `plane-door` axis, so the
 /// compiled-in plane is bound through the loader's one load, the same table its dropped-in build is.

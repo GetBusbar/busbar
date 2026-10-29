@@ -530,6 +530,36 @@ fn every_linked_section_row_is_a_linked_doors_declaring_section() {
     }
 }
 
+/// A LINKED PLANE DOOR DECLARES WHAT ITS OWN STATEMENT STATES (ARCHITECT ruling 2026-10-21: the
+/// plane's `declares` document rides its Statement under `EXT_DECLARES`, and a build that links the
+/// plane reads it there). A door whose crate's `declares.json` is private states it nowhere else, so
+/// the root reading only `linked-declares` rows would drop the plane's breaker fact and leave its
+/// members on the host's default bench. Every linked plane door that states a document: the breaker
+/// fact the root finds by its Statement name is the one that document states.
+#[test]
+fn every_linked_plane_door_declares_what_its_statement_states() {
+    for door in crate::LINKED.plane_doors {
+        let row = crate::root::loader::dispatch::LinkedRow::of(*door)
+            .expect("a linked door states its Statement");
+        let read = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .expect("its Statement reads");
+        let Some(stated) =
+            busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
+        else {
+            continue;
+        };
+        let declares = crate::root::loader::sign::Declares::from_declares_json(stated)
+            .expect("the stated document reads");
+        assert_eq!(
+            crate::root::linked::door_breaker(&crate::LINKED, None, &read.name)
+                .expect("the root reads the door's declares"),
+            declares.breaker,
+            "plane '{}': the root reads the breaker fact its Statement states",
+            read.name
+        );
+    }
+}
+
 /// THE LINKED SCRAPE SINK RENDERS THE RECORDER'S BYTES BACK. The build's linked export rows,
 /// registered as boot registers them (`linked_exports` through the one admission) and opened on the
 /// process's one dispatcher through the root's export rows, answer the frozen scrape module word
