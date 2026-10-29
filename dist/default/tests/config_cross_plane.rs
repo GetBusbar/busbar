@@ -101,13 +101,15 @@ other:
         ))
         .expect("yaml")
     };
+    // The section is judged by the door that declares it: the binary's `tools:` door.
+    let door = linked::owning("tools").door;
     let section =
-        busbar_kernel::plane_driver::door::DoorSection::new("tools", effective("foo_bar"));
+        busbar_kernel::plane_driver::door::DoorSection::new(door, "tools", effective("foo_bar"));
     let refused = section
         .validate_registry()
         .expect_err("an effective registry whose published names collide is refused");
     assert!(refused.contains("published as `foo_bar`"), "{refused}");
-    busbar_kernel::plane_driver::door::DoorSection::new("tools", effective("other_name"))
+    busbar_kernel::plane_driver::door::DoorSection::new(door, "tools", effective("other_name"))
         .validate_registry()
         .expect("distinct published names pass");
 }

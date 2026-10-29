@@ -50,7 +50,7 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::loader::sign::BreakerDecl;
 
-pub(crate) use super::planes_tests::{Published, PUBLISHING};
+pub(crate) use super::planes_tests::PUBLISHING;
 pub(crate) use super::with_pools;
 pub(crate) use crate::root::door_steps::Rules;
 pub(crate) use crate::root::durability::Durability;
@@ -395,6 +395,7 @@ impl EgressRig {
                 crate::LINKED.auths,
                 None,
                 ConnTable::Host(table),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns,
             stream_ceiling_secs: 600,
@@ -532,6 +533,7 @@ impl<'a> DoorCompose<'a> {
             self.money,
             egress,
             self.hooks.as_ref(),
+            &busbar_kernel::plane_driver::serve::ServeTables::default(),
         )
     }
 }

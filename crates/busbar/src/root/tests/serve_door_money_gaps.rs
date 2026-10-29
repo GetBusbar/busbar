@@ -19,7 +19,7 @@ use busbar_kernel::test_support::{MockResponse, MockServer, MockServerState};
 use super::super::hook_seat_tests::{
     far_end_answering, far_end_scripted, rig, word, DoorRig, RigOpts, Script, ANSWER,
 };
-use super::super::planes_tests::{Published, PUBLISHING};
+use super::super::planes_tests::PUBLISHING;
 use super::{frame, stream_pausing, streamed_chat, STREAM_HEAD};
 
 /// The store's clock.
@@ -124,7 +124,6 @@ fn card_of(entry: &str) -> BTreeMap<String, busbar_kernel::config::RateEntryCfg>
 async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-pre-routing-refusal";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -178,7 +177,6 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
     const WIRE: &str = "m0-on-the-wire";
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-aliased-lane";
-    let _published = Published(instance);
     let answered = || MockResponse::Ok {
         status: StatusCode::OK,
         body: serde_json::json!({
@@ -272,7 +270,6 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
         ),
     ];
     for (instance, label, pieces, relayed) in cases {
-        let _published = Published(instance);
         let far = far_end_scripted(Script {
             head: STREAM_HEAD.to_string(),
             pieces,
@@ -345,7 +342,6 @@ const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.com
 async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its_first_frame() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-cut-stream-plane-ledger";
-    let _published = Published(instance);
     let far = far_end_scripted(Script {
         head: STREAM_HEAD.to_string(),
         pieces: vec![(0, frame(FIRST_FRAME_WITH_USAGE)), (50, Vec::new())],
@@ -464,7 +460,6 @@ async fn the_pools_door_prices_a_reranks_search_units() {
             0,
         ),
     ] {
-        let _published = Published(instance);
         let far = far_end_answering(200, answer).await;
         let rig = rig(
             instance,
@@ -521,7 +516,6 @@ async fn the_pools_door_prices_a_reranks_search_units() {
 async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-strong-client-fee";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -554,7 +548,6 @@ async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
 async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-strong-hang-up";
-    let _published = Published(instance);
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let (_state, server) = mock(vec![MockResponse::Gated {
@@ -599,7 +592,6 @@ async fn served_streamed(
     instance: &'static str,
     rate_card: Option<&BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
 ) -> (u16, i64, Vec<String>) {
-    let _published = Published(instance);
     let far = far_end_scripted(stream_pausing(0)).await;
     let rig = rig(
         instance,
@@ -660,7 +652,6 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
     );
 
     let instance = "door-strong-billing-off-governed";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -698,7 +689,6 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
 async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_none() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-strong-identity";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -804,7 +794,6 @@ async fn the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing() 
         ("door-strong-gate-veto", true),
         ("door-strong-gate-pass", false),
     ] {
-        let _published = Published(instance);
         let far = far_end_answering(200, ANSWER).await;
         let rig = rig(
             instance,
@@ -882,7 +871,6 @@ async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
             "served: the whole walk, exactly once",
         ),
     ] {
-        let _published = Published(instance);
         let far = far_end_answering(200, ANSWER).await;
         let members = [(far.port, 1)];
         let opts = match opts_of {

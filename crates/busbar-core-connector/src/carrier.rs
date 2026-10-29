@@ -10,7 +10,7 @@
 //! A connection is full-duplex, so it holds TWO sides (`abi::transport`: "TWO TICKETS PER
 //! CONNECTION"), each an inline ticket ([`Side`]) with at most one op in flight: `read` on the read
 //! side; `dial`, `write`, `flush` and `shut` on the write side. Every op is crossed INLINE on the
-//! task that polls the connection — no thread handoff (#30). An op that answers PENDING registered
+//! task that polls the connection — no thread handoff. An op that answers PENDING registered
 //! the task's waker on its side's ticket; the next call on that side RESUMES it (`FLAG_RESUME`, the
 //! same op on the same ticket) before anything else is asked of it.
 //!

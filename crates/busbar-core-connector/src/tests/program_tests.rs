@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS through the connection table (ARCHITECT round 5 Q-L3B-PROGRAM (A)): one
+//! MEMBER PROGRAMS through the connection table: one
 //! long-lived program per (instance, need, member), every open on the member a lease on it.
 
 use std::sync::Arc;
@@ -240,7 +240,7 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
     });
 }
 
-/// RED (finding 13): a lease opened while the program is part way through one frame does not read
+/// RED: a lease opened while the program is part way through one frame does not read
 /// that frame's rest as though it began there (on one shared child, another exchange's answer
 /// taken as its own): its first body bytes begin a frame. The lease already reading the frame reads
 /// it whole.
@@ -397,10 +397,10 @@ fn a_members_program_inherits_only_its_stated_environment() {
     });
 }
 
-/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): an `env` entry written as a secret
-/// reference stays the reference in the declared program; the need's DECLARATION resolves it (config
-/// time) and the spawn hands the held value: the child's environment carries it, a template's
-/// `${VAR}` filled in place. The first lease's spawn resolves nothing.
+/// THE HELD ENVIRONMENT: an `env` entry written as a secret reference stays the reference in the
+/// declared program; the need's DECLARATION resolves it (config time) and the spawn hands the held
+/// value: the child's environment carries it, a template's `${VAR}` filled in place. The first
+/// lease's spawn resolves nothing.
 #[test]
 fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
@@ -622,9 +622,9 @@ fn open_bounded(c: &Connector, target: &str) -> ConnId {
     .unwrap()
 }
 
-/// RED (ARCHITECT timeout ruling, step 2): a lease's bound runs past its head, which the host serves
-/// the instant the lease opens, to the program's own first bytes: a program that takes the request
-/// and never answers is a timeout once the bound passes.
+/// A lease's bound runs past its head, which the host serves the instant the lease opens, to the
+/// program's own first bytes: a program that takes the request and never answers is a timeout once
+/// the bound passes.
 ///
 /// The bound is moved by the test's own hand, never raced on the wall clock. The earlier form opened
 /// with a live 300ms bound, took its `started` only after `open` returned, and polled the head and
@@ -811,10 +811,10 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
     });
 }
 
-/// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (row 159; BUSBAR-1.6.0.md Part 0, no
-/// process-global static seam): a connector the root handed no resolver resolves no reference,
-/// whatever another connector in the same process was handed, so its member is not spawned
-/// (fail-closed); the connector handed one spawns the same member with the value.
+/// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (BUSBAR-1.6.0.md Part 0, no process-global
+/// static seam): a connector the root handed no resolver resolves no reference, whatever another
+/// connector in the same process was handed, so its member is not spawned (fail-closed); the
+/// connector handed one spawns the same member with the value.
 #[test]
 fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_OWN_RESOLVER";
@@ -850,9 +850,9 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     });
 }
 
-/// RED (audit row 159, connector HIGH 5): an instance that is gone (replaced by a reload, closed or
-/// quarantined) leaves no member program running. Its needs are dropped, its open lease is closed,
-/// and every member program it held is killed, even the one a lease was still holding.
+/// An instance that is gone (replaced by a reload, closed or quarantined) leaves no member program
+/// running. Its needs are dropped, its open lease is closed, and every member program it held is
+/// killed, even the one a lease was still holding.
 #[test]
 fn a_forgotten_instance_leaves_no_member_program_running() {
     worker().block_on(async {

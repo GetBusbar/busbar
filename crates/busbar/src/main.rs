@@ -335,12 +335,13 @@ fn register_planes() {
     root::linked::seal(ROOT_UNITS);
 }
 
-/// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_kernel::diagnostics::install_diagnostics`). The neutral
-/// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
-/// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
-fn register_diagnostics() {
-    root::linked::register_diagnostics(&LINKED);
+/// FOLD THE LINKED PLANES' DIAGNOSTICS — the composition root's one fold of the diagnostics axis
+/// (`root::linked::register_diagnostics`), lent by value (`busbar_kernel::diagnostics::Catalogue`).
+/// The neutral `REGISTRY ∪ folded` catalogue makes these codes resolve through `by_code` and land in
+/// a rendered catalog. Folded BEFORE any reader is lent it; a build with a plane compiled out
+/// contributes nothing.
+fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
+    root::linked::register_diagnostics(&LINKED)
 }
 
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.
@@ -383,10 +384,10 @@ fn main() {
     // to the transport doors before any linked row binds.
     root::doors::install_plugin_logs(root::boot::plugin_logs());
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
-    // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
-    // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
-    // nothing and the catalog is the neutral built-ins alone.
-    register_diagnostics();
+    // lookup must see every linked plane's owned codes, so the catalogue is folded before any
+    // reader is lent it. Each linked entry contributes its owned diagnostics; a no-planes build
+    // folds nothing and the catalog is the neutral built-ins alone.
+    let catalogue = register_diagnostics();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
@@ -508,7 +509,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, catalogue));
     }
     #[cfg(not(unix))]
     {
@@ -517,13 +518,18 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, catalogue));
     }
 }
 
-async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
-    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
-    root::observe::install();
+async fn run(
+    data_workers: usize,
+    late_services: std::sync::Arc<root::serve::LateServices>,
+    catalogue: busbar_kernel::diagnostics::Catalogue,
+) {
+    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`), resolving a
+    // plugin's reported codes against the catalogue folded above.
+    root::observe::install(catalogue);
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.
@@ -954,6 +960,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 )
             })
         }),
+        &app.serve_tables,
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());

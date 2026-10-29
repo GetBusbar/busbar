@@ -19,6 +19,10 @@
 //! many. Every control character in a text is escaped, so a record is one line and nothing raw
 //! reaches a terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}`.
 //!
+//! BUSBAR'S OWN LOG keeps a copy of every WARN and ERROR record, written when the record is handed
+//! over, so it lands among the host's own lines in the order 1.5.5 printed it ([`mirror`]); those
+//! are the rare lines, and the host's subscriber decides how it writes them.
+//!
 //! OFF THE DISPATCH WORKER (§11.2: no blocking on the hot path; §11.11 R4: the bounded disk lane is
 //! the SQLite store's and the file export sink's alone, so plugin logging may not claim it). The
 //! sink is fed inside the crossing, where the reply's records are still plugin memory, so there it
@@ -709,7 +713,6 @@ impl Writer {
 /// every control character in it escaped so a record is one line and writes nothing raw to a
 /// terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}` (ESC is `\u{1b}`).
 fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
-    use std::fmt::Write as _;
     let mut line = format!(
         "{} {} {} {} ",
         busbar_contract::civil::rfc3339_from_secs(at),
@@ -717,6 +720,14 @@ fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
         tag.instance,
         tag.kind
     );
+    escape_into(&mut line, text);
+    line.push('\n');
+    line
+}
+
+/// `text` appended to `line` with every control character escaped (see [`render`]).
+fn escape_into(line: &mut String, text: &[u8]) {
+    use std::fmt::Write as _;
     for c in String::from_utf8_lossy(text).chars() {
         match c {
             '\n' => line.push_str("\\n"),
@@ -727,9 +738,45 @@ fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
             c => line.push(c),
         }
     }
-    line.push('\n');
-    line
 }
+
+/// THE HOST LOG'S COPY of a plugin's WARN or ERROR line (1.5.5 printed its plugins' and planes'
+/// warnings in busbar's own log, and a log pipeline that watches only that log must still see
+/// them): one host line at the same level, written as 1.5.5 wrote it, the record's message and
+/// fields without the module path the plugin's file leads with, escaped as the file holds it. The
+/// line carries no field 1.5.5's never did, so it reads byte for byte as 1.5.5's; the plugin's own
+/// file names the instance. Lines below WARN stay in the plugin's file alone.
+fn mirror(level: LogLevel, text: &[u8]) {
+    if !matches!(level, LogLevel::Error | LogLevel::Warn) {
+        return;
+    }
+    let text = String::from_utf8_lossy(text);
+    let said_raw = text
+        .split_once(": ")
+        .map_or(text.as_ref(), |(_, rest)| rest);
+    let mut said = String::new();
+    escape_into(&mut said, without_diag_field(said_raw).as_bytes());
+    match level {
+        LogLevel::Error => tracing::error!(target: MIRROR_TARGET, "{said}"),
+        _ => tracing::warn!(target: MIRROR_TARGET, "{said}"),
+    }
+}
+
+/// `text` without its ` diag=<code>` field: 1.5.5 printed a plugin's line with no code (the code
+/// is the plugin's own file's, and a declared diagnostic reaches busbar's log under it through the
+/// host's observer).
+fn without_diag_field(text: &str) -> std::borrow::Cow<'_, str> {
+    const FIELD: &str = " diag=";
+    let Some(at) = text.find(FIELD) else {
+        return std::borrow::Cow::Borrowed(text);
+    };
+    let rest = &text[at + FIELD.len()..];
+    let end = rest.find(' ').map_or(text.len(), |i| at + FIELD.len() + i);
+    std::borrow::Cow::Owned([&text[..at], &text[end..]].concat())
+}
+
+/// The target a mirrored plugin line carries in busbar's own log ([`mirror`]).
+pub const MIRROR_TARGET: &str = "busbar::plugin";
 
 /// Every log file in the process, by its path with the directory resolved: ONE state per file,
 /// whichever writers, of whichever configuration, write it.
@@ -863,6 +910,11 @@ impl EnvelopeSink for PluginLogSink {
     fn diag(&self, d: Diagnostic<'_>) {
         let level = LogLevel::of_severity(d.severity);
         if d.id == DIAG_LOG {
+            // Busbar's own log gets its copy HERE, in the order the plugin logged it among the
+            // host's own lines, as 1.5.5 printed them; only WARN and ERROR, whatever the file's
+            // level. A declared diagnostic is not copied: the host's observer already writes it
+            // to busbar's log under its code.
+            mirror(level, d.text);
             return self.line(level, d.text.to_vec());
         }
         let mut text = Vec::with_capacity(d.name.len() + 2 + d.text.len());
