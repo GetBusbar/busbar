@@ -176,7 +176,7 @@ pub enum Permit {
 // ── The RESOLVED runtime breaker configuration the FSM evaluates. Neutral DATA (no serde, no config
 //    grammar attached — the serialized `config::BreakerCfg` grammar and the config->runtime lowering
 //    stay in core). Relocated DOWN here so the LLM plane names the breaker cfg in its money-path
-//    signatures and reconstructs it via `from_breaker_input` without reaching into `busbar-core`; core's `store`
+//    signatures without reaching into `busbar-core`; core's `store`
 //    re-exports `BreakerCfg`/`TripConfig`/`TripMode` at their historical `crate::store::*` paths (the
 //    breaker FSM, `appbuild`, and the store tests are untouched), and core owns the
 //    `config::BreakerCfg -> BreakerCfg` lowering as an inherent `to_runtime` method.
@@ -233,63 +233,6 @@ impl Default for BreakerCfg {
             trip: TripConfig::default(),
             // The LLM plane's pools, which is what every `Default` here builds, DO fail over.
             bench_below_trip_threshold: true,
-        }
-    }
-}
-
-impl BreakerCfg {
-    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the LLM plane's
-    /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
-    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
-    /// carried anyway so a future divergence cannot silently drop.
-    pub fn to_breaker_input(&self) -> crate::plane_driver::route_input::BreakerInput {
-        crate::plane_driver::route_input::BreakerInput {
-            base_cooldown_secs: self.base_cooldown_secs,
-            max_cooldown_secs: self.max_cooldown_secs,
-            honor_retry_after: self.honor_retry_after,
-            bench_below_trip_threshold: self.bench_below_trip_threshold,
-            trip: crate::plane_driver::route_input::TripInput {
-                mode: match self.trip.mode {
-                    TripMode::ErrorRate => {
-                        crate::plane_driver::route_input::TripModeInput::ErrorRate
-                    }
-                    TripMode::Consecutive => {
-                        crate::plane_driver::route_input::TripModeInput::Consecutive
-                    }
-                },
-                window_s: self.trip.window_s,
-                threshold: self.trip.threshold,
-                min_requests: self.trip.min_requests,
-                consecutive_n: self.trip.consecutive_n,
-            },
-        }
-    }
-
-    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_breaker_input`],
-    /// called IN-PLANE by the LLM plane's `build_runtime` (the allowed plane->core edge; the plane
-    /// names only this pub constructor and the neutral input type).
-    ///
-    /// [`to_breaker_input`]: Self::to_breaker_input
-    pub fn from_breaker_input(i: &crate::plane_driver::route_input::BreakerInput) -> Self {
-        Self {
-            base_cooldown_secs: i.base_cooldown_secs,
-            max_cooldown_secs: i.max_cooldown_secs,
-            honor_retry_after: i.honor_retry_after,
-            bench_below_trip_threshold: i.bench_below_trip_threshold,
-            trip: TripConfig {
-                mode: match i.trip.mode {
-                    crate::plane_driver::route_input::TripModeInput::ErrorRate => {
-                        TripMode::ErrorRate
-                    }
-                    crate::plane_driver::route_input::TripModeInput::Consecutive => {
-                        TripMode::Consecutive
-                    }
-                },
-                window_s: i.trip.window_s,
-                threshold: i.trip.threshold,
-                min_requests: i.trip.min_requests,
-                consecutive_n: i.trip.consecutive_n,
-            },
         }
     }
 }
@@ -469,10 +412,8 @@ pub trait LaneRuntime: Send + Sync + 'static {
     fn is_ready_any_cell(&self, lane: usize, now: u64) -> bool;
     /// Side-effect-FREE, POOL-AWARE readiness: would this lane admit a request right now in THIS
     /// pool's breaker cell, WITHOUT the Open→HalfOpen transition or single-flight probe CAS that
-    /// `usable_in` performs. This is the EXACT predicate `select_weighted_in` uses to filter its
-    /// healthy candidate set (lane-admissible + `cell_ready_breaker`), exposed for the routing-policy
-    /// ordered walk so it filters the policy's ranked order by health identically to SWRR — the walk
-    /// only ORDERS; the unchanged `acquire_for_dispatch_in` (called once on the chosen lane) still
+    /// `usable_in` performs (lane-admissible + `cell_ready_breaker`), exposed for the routing-policy
+    /// ordered walk so it filters the policy's ranked order by health — the walk only ORDERS; the unchanged `acquire_for_dispatch_in` (called once on the chosen lane) still
     /// owns the HalfOpen probe race. Using `usable_in` here instead would steal recovery probes for
     /// every ranked lane the walk merely peeks at.
     // ROUTING-POLICY SIGNAL ACCESSORS: read per-request by `proxy::decide_policy_order` (and
@@ -671,12 +612,6 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// per-cell `cell_record_success` touches no `ok`/`err` counter at all, so the single lane-global
     /// `ok` bump is applied explicitly, once.
     ///
-    /// If a per-cell success push wins a HalfOpen→Closed CAS (possible when this push races a peer that
-    /// re-armed the cell after the caller's `recover_lane`), the implementation MUST reset that cell's
-    /// SWRR accumulator — the matching `reset_swrr_for` bumps the cell's stripe generation so every
-    /// worker's stripe rejoins from 0, holding the per-stripe `Σ == 0` invariant. Gating the reset
-    /// on the recovered-bool mirrors `record_success_for`/`recover_lane`.
-    ///
     /// At the caller's `now`, as every write below: the prober and the walk record on one clock.
     fn record_probe_success_all_cells(&self, lane: usize, now: u64);
     fn record_client_fault(&self, lane: usize);
@@ -796,23 +731,6 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// budget and stealthily removes capacity. A no-op for an unlimited lane. Never raises the budget
     /// above the configured `max_requests` ceiling (a refund is only ever the inverse of a spend).
     fn refund_budget(&self, lane: usize);
-
-    // weighted member selection (SWRR algorithm)
-    /// Select a candidate from the given list using smooth weighted round-robin over healthy members.
-    /// `candidates` are indices into the store's lane array.
-    /// `weights` is the per-member weight for each candidate (must match candidates length).
-    /// Returns None if no healthy members or all candidates are unusable.
-    #[cfg(test)]
-    fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize> {
-        self.select_weighted_in("", candidates, weights, now)
-    }
-    fn select_weighted_in(
-        &self,
-        pool: &str,
-        candidates: &[usize],
-        weights: &[u32],
-        now: u64,
-    ) -> Option<usize>;
 
     // stats snapshot for /stats
     fn snapshot(&self, lane: usize, now: u64) -> LaneSnapshot;
