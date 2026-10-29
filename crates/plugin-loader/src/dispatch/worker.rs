@@ -688,14 +688,12 @@ impl Driven {
     }
 
     /// How many `drive` crossings have answered so far.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn answers(&self) -> u64 {
         self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
     }
 
     /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
     /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
         let until = Instant::now() + timeout;
         let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
@@ -713,7 +711,6 @@ impl Driven {
     }
 
     /// Every name held now, taken (none when none is); never waits.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn drain(&self) -> Vec<u64> {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
@@ -2381,6 +2378,16 @@ impl Dispatcher {
             return Reply::settled(Outcome::Refused, frame);
         }
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
+            return Reply::settled(o, frame);
+        }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance).
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(
+            s,
+            std::ptr::addr_of!(frame.input).cast(),
+            size_of::<I>(),
+            owner,
+        ) {
             return Reply::settled(o, frame);
         }
         let lifecycle = is_lifecycle(s);

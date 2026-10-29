@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
     check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
-    check_verify_lookup, check_verify_store, ContentScanIn, EntitlementCheckIn, HookCallIn,
-    ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
-    DEST_METADATA, DEST_RESOLVE,
+    check_ticket_mint, check_ticket_take, check_verify_lookup, check_verify_store, ContentScanIn,
+    EntitlementCheckIn, HookCallIn, ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn,
+    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
@@ -216,6 +216,29 @@ impl busbar_contract::services::double::ServicesDouble for Provider {
         let arg = format!("{unit:?} {target}");
         self.saw(c, "entitlement.check", arg.as_bytes());
         Stored::ready(svc::ENTITLED)
+    }
+
+    /// The ticket double: a ticket naming the unit, expiring `1_700_000_000 + ttl`.
+    fn ticket_mint(&self, c: &Caller, unit: Option<u64>, ttl_secs: u64, record: &[u8]) -> Stored {
+        let arg = format!("{unit:?} {ttl_secs} {}", String::from_utf8_lossy(record));
+        self.saw(c, "ticket.mint", arg.as_bytes());
+        Stored {
+            bytes: format!("tk_{}", unit.unwrap_or(0)).into_bytes(),
+            ..Stored::ready(1_700_000_000 + ttl_secs)
+        }
+    }
+
+    /// The take double: unit 7 was admitted by a ticket whose record is `rec`; any other by a key.
+    fn ticket_take(&self, c: &Caller, unit: Option<u64>) -> Stored {
+        self.saw(c, "ticket.take", format!("{unit:?}").as_bytes());
+        if unit == Some(7) {
+            Stored {
+                bytes: b"rec".to_vec(),
+                ..Stored::ready(svc::TICKET_TAKEN)
+            }
+        } else {
+            Stored::ready(svc::TICKET_NONE)
+        }
     }
 
     /// Every fill's bytes differ from the last one's: all `n`, the fill's ordinal.
@@ -444,7 +467,9 @@ fn head(service: u32, ticket: Ticket, seq: u32, size: usize) -> ServiceHead {
 
 fn blank() -> ServiceOut {
     // SAFETY: every field of `ServiceOut` is valid zeroed.
-    unsafe { std::mem::zeroed() }
+    let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
+    out
 }
 
 fn judge_in(dest: &'static str, ticket: Ticket, seq: u32, flags: u32) -> DestJudgeIn {
@@ -570,6 +595,11 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.trust_decide,
         HOST_SLOTS.trust_state,
         HOST_SLOTS.session_emit,
+        HOST_SLOTS.auth_call,
+        HOST_SLOTS.unit_hand_in,
+        HOST_SLOTS.unit_refuse,
+        HOST_SLOTS.ticket_mint,
+        HOST_SLOTS.ticket_take,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     // The room a READ service is handed, so its well-formed call can be answered whole.
@@ -616,6 +646,14 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             // An emit naming no session and nothing to write is refused before the provider.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), EMIT_NOTHING, "service {service}");
+        } else if matches!(service, op::UNIT_HAND_IN | op::UNIT_REFUSE) {
+            // The auth handle's `in` has one exact size; this one states the buffer's.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), NOT_EXACT, "service {service}");
+        } else if service == op::TICKET_MINT {
+            // A mint asking no lifetime is refused before the provider.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), MINT_OUT_OF_RANGE, "service {service}");
         } else if service == op::VERIFY_STORE {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
@@ -637,6 +675,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                         | op::RANDOM_FILL
                         | op::TRUST_VERIFY
                         | op::SNAPSHOT_READ
+                        | op::TICKET_TAKE
                 ),
                 "service {service}"
             );
@@ -1368,7 +1407,7 @@ fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
         ),
         counterparty: text("peer"),
         payload: blob(b"doc"),
-        signatures: blob(b""),
+        signatures: no_blob(),
         into: bufs(&mut [], &mut []),
     };
     i.signatures.ptr = std::ptr::null();
@@ -1475,6 +1514,94 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
         d.route.provider.filled.load(Ordering::SeqCst),
         2,
         "a refused fill never reaches the kernel"
+    );
+}
+
+fn mint_in(ttl_secs: u64, record: &[u8], buf: &mut [u8]) -> TicketMintIn {
+    TicketMintIn {
+        head: head(op::TICKET_MINT, Ticket::NONE, 0, size_of::<TicketMintIn>()),
+        ttl_secs,
+        record: Blob {
+            ptr: record.as_ptr(),
+            len: record.len(),
+            fmt: 0,
+            flags: 0,
+        },
+        into: bufs(buf, &mut []),
+    }
+}
+
+fn take_in(buf: &mut [u8]) -> TicketTakeIn {
+    TicketTakeIn {
+        head: head(op::TICKET_TAKE, Ticket::NONE, 0, size_of::<TicketTakeIn>()),
+        into: bufs(buf, &mut []),
+    }
+}
+
+#[test]
+fn tickets_reach_the_kernel_with_the_unit_their_crossing_serves() {
+    let d = double();
+    let mint = |ttl: u64, record: &[u8], buf: &mut [u8]| {
+        let i = mint_in(ttl, record, buf);
+        let mut o = blank();
+        let ret = HOST_SLOTS.ticket_mint.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (check_ticket_mint(&i, ret, &o), ret.outcome(), o)
+    };
+    let take = |buf: &mut [u8]| {
+        let i = take_in(buf);
+        let mut o = blank();
+        let ret = HOST_SLOTS.ticket_take.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (check_ticket_take(&i, ret, &o), ret.outcome(), o)
+    };
+    let mut buf = [0u8; 16];
+    {
+        let _unit = serving(Some(7));
+        let (checked, outcome, o) = mint(600, b"{\"m\":1}", &mut buf[..]);
+        assert_eq!((checked, outcome), (Ok(Filled::Written), Outcome::Ready));
+        assert_eq!(
+            (&buf[..o.len as usize], o.value),
+            (&b"tk_7"[..], 1_700_000_600)
+        );
+        let (checked, outcome, o) = take(&mut buf[..]);
+        assert_eq!((checked, outcome), (Ok(Filled::Written), Outcome::Ready));
+        assert_eq!(
+            (o.value, &buf[..o.len as usize]),
+            (svc::TICKET_TAKEN, &b"rec"[..])
+        );
+    }
+    {
+        // A unit a key admitted: NONE, nothing written.
+        let _unit = serving(Some(8));
+        let (checked, outcome, o) = take(&mut buf[..]);
+        assert_eq!((checked.is_ok(), outcome), (true, Outcome::Ready));
+        assert_eq!((o.value, o.len), (svc::TICKET_NONE, 0));
+    }
+    // Out of range: refused before the kernel, nothing written.
+    let over = vec![b'x'; svc::MAX_TICKET_RECORD as usize + 1];
+    for (ttl, record) in [(0, &b"{}"[..]), (600, &over[..])] {
+        let mut out = [0u8; 16];
+        let (_, outcome, o) = mint(ttl, record, &mut out[..]);
+        assert_eq!(outcome, Outcome::Refused, "ttl {ttl}");
+        assert_eq!(error(&o), MINT_OUT_OF_RANGE, "ttl {ttl}");
+        assert!(out.iter().all(|x| *x == 0), "nothing written");
+    }
+    let seen: Vec<(&'static str, String)> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, what, _)| what.starts_with("ticket."))
+        .map(|(_, what, arg)| (*what, String::from_utf8(arg.clone()).unwrap()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("ticket.mint", "Some(7) 600 {\"m\":1}".to_string()),
+            ("ticket.take", "Some(7)".to_string()),
+            ("ticket.take", "Some(8)".to_string()),
+        ]
     );
 }
 
@@ -2275,6 +2402,369 @@ fn oversize_service_lengths_child() {
     };
     assert!(blob_of(blob, "test.blob").is_none(), "a blob over the cap");
     assert_eq!(bytes_of(over(&b), "test.bytes"), Some(b.to_vec()));
+}
+
+/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
+/// a write past what the caller stated shows.
+#[repr(C, align(8))]
+struct LentOut([u8; 96]);
+
+impl LentOut {
+    fn stating(size: u32) -> Self {
+        let mut b = [0xAA_u8; 96];
+        b[..4].copy_from_slice(&size.to_ne_bytes());
+        Self(b)
+    }
+
+    fn out(&mut self) -> *mut busbar_contract::abi::host::service::ServiceOut {
+        self.0.as_mut_ptr().cast()
+    }
+
+    /// Whether every byte from `from` on is still the caller's.
+    fn untouched_from(&self, from: usize) -> bool {
+        self.0[from..].iter().all(|b| *b == 0xAA)
+    }
+}
+
+/// RED (Q128 kernel-scope MEDIUM, the host service frame): the host writes a caller's `out` only as far
+/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
+/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
+/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// `ServiceOut` over whatever the caller lent.
+#[test]
+fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated() {
+    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
+    let mut lent = LentOut::stating(32);
+    let raw: RawOutcome = framed(std::ptr::null(), lent.out(), 0, 0, |_| {
+        unreachable!("a NULL `in` never reaches the body")
+    });
+    assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
+    assert!(lent.untouched_from(4), "a short `out` was written");
+    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let raw: RawOutcome = framed(std::ptr::null(), lent.out(), 0, 0, |_| {
+        unreachable!("a NULL `in` never reaches the body")
+    });
+    assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
+    assert!(
+        lent.untouched_from(SERVICE_OUT_V1),
+        "the host wrote past the `out` stated"
+    );
+    assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
+}
+
+// ── the host auth handle ──────────────────────────────────────────────────────────────────────
+
+use busbar_contract::abi::auth::{FieldSpan, POINT_HEAD};
+use busbar_contract::abi::host::service::{
+    AuthAnswer, AuthCallIn, AuthRef, HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
+    LINE_NONE, REFUSE_NO_ROUTE,
+};
+
+use crate::dispatch::auth_handle::{
+    generation, mint_auth_ref, mint_unit_ref, verify_auth_ref, verify_unit_ref, RefRefused,
+    REF_NOT_MINTED,
+};
+
+/// The owner a double's refs are minted for: its instance identity.
+fn owner(d: &Double) -> u64 {
+    crate::dispatch::handle::instance_id(d.ctx).0
+}
+
+fn get_view() -> HeadView {
+    HeadView {
+        method: text("GET"),
+        target: text("/v1"),
+        authority: text("a.example"),
+        query: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        fields: std::ptr::null(),
+        fields_len: 0,
+        scheme: busbar_contract::abi::host::service::SCHEME_SECURE,
+        _scheme_reserved: [0; 7],
+    }
+}
+
+fn no_blob() -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+fn answer_slot() -> AuthAnswer {
+    AuthAnswer {
+        size: 0,
+        flow: 0,
+        unit: UnitRef::NONE,
+    }
+}
+
+fn auth_call_in(auth: AuthRef, answer: &mut AuthAnswer) -> AuthCallIn {
+    AuthCallIn {
+        head: head(op::AUTH_CALL, TICKET, 0, size_of::<AuthCallIn>()),
+        auth,
+        unit: UnitRef::NONE,
+        point: POINT_HEAD,
+        _reserved: 0,
+        conn: 1,
+        stream: 1,
+        request: get_view(),
+        body: no_blob(),
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut::<FieldSpan>(),
+        spans_cap: 0,
+        answer,
+    }
+}
+
+fn call_auth(ctx: HostCtx, i: &AuthCallIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.auth_call.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+/// RED (#65, #74): a ref minted for owner A, presented by owner B, is refused before anything
+/// else; the same ref presented by A passes the ref check (and reaches "not yet served").
+#[test]
+fn an_auth_ref_minted_for_another_owner_is_refused() {
+    let (a, b) = (double(), double());
+    assert_ne!(owner(&a), owner(&b));
+    let r = mint_auth_ref(owner(&a), generation(), 5).expect("minted");
+    let mut slot = answer_slot();
+    let i = auth_call_in(r, &mut slot);
+    let (ret, o) = call_auth(b.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+    let (ret, o) = call_auth(a.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(
+        error(&o),
+        AUTH_HANDLE_NOT_SERVED,
+        "the owner's own ref passes"
+    );
+    assert_eq!(
+        verify_auth_ref(owner(&b), generation(), &r),
+        Err(RefRefused::NotMinted)
+    );
+}
+
+/// RED (#74): a ref of an older generation is refused against the current one.
+#[test]
+fn an_auth_ref_of_an_older_generation_is_refused() {
+    let d = double();
+    let stale = mint_auth_ref(owner(&d), generation().wrapping_sub(1), 5).expect("minted");
+    let mut slot = answer_slot();
+    let (ret, o) = call_auth(d.ctx, &auth_call_in(stale, &mut slot));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+    let r = mint_auth_ref(owner(&d), 4, 5).expect("minted");
+    assert_eq!(verify_auth_ref(owner(&d), 4, &r), Ok(5));
+    assert_eq!(
+        verify_auth_ref(owner(&d), 5, &r),
+        Err(RefRefused::NotMinted)
+    );
+}
+
+/// RED (#74): a ref with any one bit of its mac flipped is refused; the ref as minted passes.
+#[test]
+fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
+    assert_eq!(verify_auth_ref(owner(&d), generation(), &r), Ok(5));
+    for bit in 0..64 {
+        let forged = AuthRef {
+            mac: r.mac ^ (1 << bit),
+            ..r
+        };
+        assert_eq!(
+            verify_auth_ref(owner(&d), generation(), &forged),
+            Err(RefRefused::NotMinted),
+            "bit {bit}"
+        );
+    }
+    let forged = AuthRef {
+        mac: r.mac ^ 1,
+        ..r
+    };
+    let mut slot = answer_slot();
+    let (ret, o) = call_auth(d.ctx, &auth_call_in(forged, &mut slot));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+    // Another id under the same mac is no better.
+    let moved = AuthRef { id: 6, ..r };
+    assert_eq!(
+        verify_auth_ref(owner(&d), generation(), &moved),
+        Err(RefRefused::NotMinted)
+    );
+    assert_eq!(
+        verify_auth_ref(owner(&d), generation(), &AuthRef::NONE),
+        Err(RefRefused::Absent)
+    );
+}
+
+/// RED (exact sizes): each auth-handle `in` presented one field short (or longer) is refused
+/// before any field of it is read; a ticketless `auth.call` is refused as a may-pend service.
+#[test]
+fn an_auth_handle_in_one_field_short_is_refused() {
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
+    let mut slot = answer_slot();
+    let exact = size_of::<AuthCallIn>() as u32;
+    for size in [exact - 8, exact + 8] {
+        let mut i = auth_call_in(r, &mut slot);
+        i.head.size = size;
+        let (ret, o) = call_auth(d.ctx, &i);
+        assert_eq!(ret.outcome(), Outcome::Refused, "{size}");
+        assert_eq!(error(&o), NOT_EXACT, "{size}");
+    }
+    let mut i = auth_call_in(r, &mut slot);
+    i.head.handle.ticket = Ticket::NONE;
+    assert_eq!(error(&call_auth(d.ctx, &i).1), UNTICKETED);
+
+    let mut hand = UnitHandInIn {
+        head: head(
+            op::UNIT_HAND_IN,
+            Ticket::NONE,
+            0,
+            size_of::<UnitHandInIn>() - 8,
+        ),
+        auth: r,
+        unit: UnitRef::NONE,
+        line: 1,
+        _reserved: 0,
+        conn: 1,
+        stream: 1,
+        request: get_view(),
+        answer: &mut slot,
+    };
+    let mut o = blank();
+    let f = HOST_SLOTS.unit_hand_in.unwrap();
+    assert_eq!(
+        f(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o).outcome(),
+        Outcome::Refused
+    );
+    assert_eq!(error(&o), NOT_EXACT);
+    hand.head.size = size_of::<UnitHandInIn>() as u32;
+    let mut o = blank();
+    f(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o);
+    assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED, "the exact size passes");
+
+    let mut refusal = RefusalAnswer {
+        size: 0,
+        status: 0,
+        _reserved: 0,
+        fields: std::ptr::null(),
+        fields_len: 0,
+        body: no_blob(),
+    };
+    let mut refuse = UnitRefuseIn {
+        head: head(
+            op::UNIT_REFUSE,
+            Ticket::NONE,
+            0,
+            size_of::<UnitRefuseIn>() - 8,
+        ),
+        unit: UnitRef::NONE,
+        cause: REFUSE_NO_ROUTE,
+        line: LINE_NONE,
+        conn: 1,
+        stream: 1,
+        answer: &mut refusal,
+        request: get_view(),
+    };
+    let f = HOST_SLOTS.unit_refuse.unwrap();
+    let mut o = blank();
+    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    assert_eq!(error(&o), NOT_EXACT);
+    refuse.head.size = size_of::<UnitRefuseIn>() as u32;
+    let mut o = blank();
+    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED, "the exact size passes");
+    // A unit the host cannot verify is refused, fail closed.
+    refuse.cause = svc::REFUSE_STOPPED;
+    refuse.line = 1;
+    refuse.unit = UnitRef { id: 3, mac: 9 };
+    let mut o = blank();
+    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    assert_eq!(error(&o), UNIT_UNVERIFIED);
+    // A malformed `in` of the exact size is refused after its refs.
+    refuse.unit = UnitRef::NONE;
+    refuse.cause = 0;
+    let mut o = blank();
+    f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    assert_eq!(error(&o), AUTH_IN_MALFORMED);
+}
+
+/// RED (#74): a unit verifies only for its own request's secret, generation, owner and line, with
+/// the mac as minted; a replayed (another request's secret) or cross-line unit is refused.
+#[test]
+fn a_unit_ref_verifies_only_for_its_own_request() {
+    let (secret, other) = ([1, 2], [1, 3]);
+    let u = mint_unit_ref(secret, 7, 40, 2, 99).expect("minted");
+    assert_eq!(verify_unit_ref(secret, 7, 40, 2, &u), Ok(99));
+    assert_eq!(
+        verify_unit_ref(other, 7, 40, 2, &u),
+        Err(RefRefused::NotMinted),
+        "another request's"
+    );
+    assert_eq!(
+        verify_unit_ref(secret, 8, 40, 2, &u),
+        Err(RefRefused::NotMinted)
+    );
+    assert_eq!(
+        verify_unit_ref(secret, 7, 41, 2, &u),
+        Err(RefRefused::NotMinted)
+    );
+    assert_eq!(
+        verify_unit_ref(secret, 7, 40, 3, &u),
+        Err(RefRefused::NotMinted)
+    );
+    let flipped = UnitRef {
+        mac: u.mac ^ (1 << 63),
+        ..u
+    };
+    assert_eq!(
+        verify_unit_ref(secret, 7, 40, 2, &flipped),
+        Err(RefRefused::NotMinted)
+    );
+    assert_eq!(
+        verify_unit_ref(secret, 7, 40, 2, &UnitRef::NONE),
+        Err(RefRefused::Absent)
+    );
+    assert!(mint_unit_ref(secret, 7, 40, 2, 0).is_none());
+    assert!(mint_auth_ref(40, 7, 0).is_none());
+}
+
+/// RED (the upstream's scheme, rule 1: a zero never grants): an `auth.call` whose request view
+/// declares no scheme (a zeroed view's code) is REFUSED with its declared refusal, before the
+/// auth would run, and never read as plain; the same call with the scheme declared passes.
+#[test]
+fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
+    use busbar_contract::abi::host::service::{
+        SCHEME_PLAIN, SCHEME_UNDECLARED, SCHEME_UNDECLARED_REFUSED,
+    };
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
+    let mut slot = answer_slot();
+    let mut i = auth_call_in(r, &mut slot);
+    i.request.scheme = SCHEME_UNDECLARED;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), SCHEME_UNDECLARED_REFUSED);
+    i.request.scheme = SCHEME_PLAIN;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(
+        error(&o),
+        AUTH_HANDLE_NOT_SERVED,
+        "a declared scheme passes"
+    );
 }
 
 /// Whether `d`'s instance is still served: a ticketless `clock.now` through its context. A
