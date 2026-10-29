@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE STREAM, FRAMED BY ITS CLAIM'S FRAMER (ARCHITECT 4l, 2026-10-05).
+//! ONE STREAM, FRAMED BY ITS CLAIM'S FRAMER.
 //!
 //! One listener port carries the streams of every claim, so the host's own framer keeps the
 //! connection and each stream's head, and a stream whose claim another framer answers is framed

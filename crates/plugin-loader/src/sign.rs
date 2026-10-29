@@ -750,6 +750,9 @@ pub enum RejectKind {
     /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
     /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
     EgressGrant,
+    /// An older build of a plugin whose newer build is in the same directory (the registry's
+    /// supersede pass): not loaded, the newer build is.
+    Superseded,
     /// A first-party manifest signed by a RETIRED release key ([`RETIRED_RELEASE_KEYS`]) the
     /// operator does not name under `plugins.trust.publishers`, and `allow_unsigned` is off.
     RetiredKey,
@@ -766,6 +769,7 @@ impl RejectKind {
             Self::Tampered => "tampered",
             Self::UnknownPublisher => "unknown_publisher",
             Self::EgressGrant => "egress_grant",
+            Self::Superseded => "superseded",
             Self::RetiredKey => "retired_key",
         }
     }

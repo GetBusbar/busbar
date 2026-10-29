@@ -115,8 +115,8 @@ fn main() {
     }
     out.push_str(
         "/// The host's built-in diagnostics, in `catalog.toml`'s order. Plane-contributed ones are \
-         not here: each registers its own through [`install_diagnostics`], and the full runtime \
-         catalog is [`all`].\npub static REGISTRY: &[&Diagnostic] = &[",
+         not here: the composition root folds them into the [`Catalogue`] it lends, and the full \
+         runtime catalog is [`Catalogue::all`].\npub static REGISTRY: &[&Diagnostic] = &[",
     );
     for name in &names {
         write!(out, "&{name},").unwrap();
