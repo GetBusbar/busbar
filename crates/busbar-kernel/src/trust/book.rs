@@ -35,7 +35,9 @@
 //!   by [`TrustBook::judge`]; a plane judges none. Item-less facts need the counterparty approved (pinned); an item needs itself
 //!   approved at the digest offered. An item's approval is the operator's: the configured one
 //!   ([`TrustEntry::approved`], re-read at every admit) under the core-admin decision
-//!   ([`TrustBook::decide`]), which wins.
+//!   ([`TrustBook::decide`]), which wins. An item sighted at another digest than its approval is
+//!   DEMOTED: refused at any digest, a revert included, until the operator decides it again, and
+//!   the demotion is kept durably with the operator's decisions.
 //! * **Unreachable.** A sighting the plane could not make ([`TrustBook::last_verdict`]) answers
 //!   the last verdict and changes nothing: an upstream that stopped answering is neither drifted
 //!   nor cleared by it.
@@ -105,6 +107,10 @@ struct Subject {
     granted: BTreeMap<String, Option<String>>,
     /// Each item's last SIGHTING: the digest the plane's live re-fetch reported it offered at.
     items: BTreeMap<String, String>,
+    /// THE ITEMS DEMOTED BY DRIFT: sighted at another digest than the one they were approved at.
+    /// Refused ([`Distrust::Changed`]) whatever they are offered at after, a revert included,
+    /// until the operator decides the item again; kept durably ([`RulingRow::demoted`]).
+    demoted: std::collections::BTreeSet<String>,
 }
 
 /// THE TRUST FACTS a plane states for one unit, as the kernel's Approve reads them: neutral words
@@ -202,6 +208,13 @@ impl Subject {
     fn item_state(&self, entry: &TrustEntry, item: &str) -> KeyState {
         if self.quarantined {
             return KeyState::Quarantined;
+        }
+        if self.demoted.contains(item) {
+            // Still offered at what moved: drifted; back at its approval: held, quarantined.
+            return match (self.approval(entry, item), self.items.get(item)) {
+                (Some(at), Some(seen)) if at == seen => KeyState::Quarantined,
+                _ => KeyState::Drifted,
+            };
         }
         match (self.approval(entry, item), self.items.get(item)) {
             _ if self.revoked || self.pending => KeyState::New,
@@ -315,6 +328,11 @@ pub struct RulingRow {
     /// registration.
     #[serde(default)]
     pub declared: Option<DeclaredPin>,
+    /// THE KERNEL DEMOTED THE ITEM: a sighting moved from its approval (`approved` = the approval
+    /// it moved from). Replays as the item's demotion; only the operator's next decision about the
+    /// item replaces it. `false` for every operator decision, and for a row kept before the field.
+    #[serde(default)]
+    pub demoted: bool,
 }
 
 fn declared_pin(entry: &TrustEntry) -> Option<String> {
@@ -602,6 +620,7 @@ impl TrustBook {
             item: item.map(str::to_string),
             approved,
             declared: entry.pin.clone(),
+            demoted: false,
         })
     }
 
@@ -649,6 +668,7 @@ impl TrustBook {
             }
             (Some(item), at) => {
                 s.granted.insert(item.clone(), at.clone());
+                s.demoted.remove(item);
             }
         }
         Ok(row_of(
@@ -679,8 +699,12 @@ impl TrustBook {
                 continue;
             }
             match (&row.item, &row.approved) {
+                (Some(item), _) if row.demoted => {
+                    s.demoted.insert(item.clone());
+                }
                 (Some(item), at) => {
                     s.granted.insert(item.clone(), at.clone());
+                    s.demoted.remove(item);
                 }
                 (None, Some(at)) => {
                     s.pinned = Some(at.clone());
@@ -735,13 +759,46 @@ impl TrustBook {
         item: &str,
         digest: &str,
     ) -> Result<Sight, Unjudged> {
+        self.sight_item_kept(instance, counterparty, item, digest)
+            .map(|(sight, _)| sight)
+    }
+
+    /// [`Self::sight_item`], and THE ITEM'S DEMOTION to keep durably when this sighting moved it
+    /// from its approval (configured or the operator's): the item is refused from now on, at any
+    /// digest, a revert included, until the operator decides it again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::sight_item`].
+    pub fn sight_item_kept(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Result<(Sight, Option<RulingRow>), Unjudged> {
         let mut map = self.lock();
         let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
-        let (_, s) = book
+        let (entry, s) = book
             .subject_mut(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
         let before = s.items.insert(item.to_string(), digest.to_string());
-        Ok(if s.quarantined {
+        let moved = s
+            .approval(entry, item)
+            .filter(|at| *at != digest && !s.demoted.contains(item))
+            .map(str::to_string);
+        let demotion = moved.map(|at| {
+            s.demoted.insert(item.to_string());
+            RulingRow {
+                instance: instance.to_string(),
+                counterparty: counterparty.to_string(),
+                item: Some(item.to_string()),
+                approved: Some(at),
+                declared: entry.pin.clone(),
+                demoted: true,
+            }
+        });
+        let sight = if s.quarantined {
             Sight::Quarantined
         } else {
             match before {
@@ -749,7 +806,8 @@ impl TrustBook {
                 Some(d) if d == digest => Sight::Same,
                 Some(_) => Sight::Drifted,
             }
-        })
+        };
+        Ok((sight, demotion))
     }
 
     /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
@@ -781,6 +839,10 @@ impl TrustBook {
                 (None, Some(_)) => Err(Distrust::NotApproved),
             };
         };
+        if s.demoted.contains(item) {
+            // Moved from its approval once: refused at any digest until the operator decides it.
+            return Err(Distrust::Changed);
+        }
         let offered = facts
             .digest
             .or_else(|| s.items.get(item).map(String::as_str));

@@ -774,6 +774,7 @@ fn a_kept_approval_never_replays_onto_a_rootless_registration() {
         item: item.map(Into::into),
         approved: approved.map(Into::into),
         declared: rootless.pin.clone(),
+        demoted: false,
     };
     b.sight_item(&i, "cp", "t", "d1").unwrap();
     b.admit_decided(&i, [&row(None, Some("h1")), &row(Some("t"), Some("d1"))]);

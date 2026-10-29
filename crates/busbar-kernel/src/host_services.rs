@@ -2069,9 +2069,23 @@ impl HostServices for KernelServices {
     ) -> Stored {
         match self
             .trust
-            .sight_item(&caller.instance, counterparty, item, digest)
+            .sight_item_kept(&caller.instance, counterparty, item, digest)
         {
-            Ok(sight) => Stored::ready(sight_code(sight)),
+            Ok((sight, demotion)) => {
+                // The item's drift demotion is kept with the operator's decisions, so a restart
+                // never lets a reverted item serve without a person's approval.
+                if let (Some(fact), Some(d)) = (demotion, self.demotions.get()) {
+                    if let Err(why) = d.record.keep_decision(&fact, (self.wall_ms)() / 1000) {
+                        tracing::error!(
+                            counterparty,
+                            item,
+                            error = %why,
+                            "an item's drift demotion could not be kept; it holds in this process"
+                        );
+                    }
+                }
+                Stored::ready(sight_code(sight))
+            }
             Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
         }
