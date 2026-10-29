@@ -286,7 +286,7 @@ fn test_validate_rejects_bad_protocol() {
 #[test]
 fn test_error_map_invalid_class_message_lists_full_valid_set() {
     // The invalid-StatusClass diagnostic must enumerate EVERY class that
-    // breaker::status_class_from_str accepts; `context_length` was historically
+    // StatusClass::parse accepts; `context_length` was historically
     // omitted from the message even though it is a valid mapping target, so an
     // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
@@ -306,7 +306,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
     assert!(
             msg.contains("context_length"),
-            "valid-values list must include 'context_length' (it is accepted by status_class_from_str); got: {msg}"
+            "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
         );
 
     // Guard against drift in the other direction: every class the breaker accepts
@@ -323,7 +323,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         "context_length",
     ] {
         assert!(
-            crate::config::status_class_from_str(class).is_some(),
+            busbar_contract::upstream::StatusClass::parse(class).is_some(),
             "test invariant: '{class}' should be a real StatusClass"
         );
         assert!(
@@ -1685,6 +1685,41 @@ fn test_validate_rejects_unknown_failover_exclusion() {
     );
 }
 
+/// W9 — A ROLE BINDING'S PLANE GRANT NAMES A DECLARED KIND, OR IT IS REFUSED. `allowed_{kind}s`
+/// beside `allowed_pools` is a role-binding key, and a kind no installed plane declares is refused
+/// at validation naming the binding and the field, never left to sit inert while the operator
+/// believes it granted. A key that is not a grant field at all stays refused at parse.
+#[test]
+fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
+    let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
+        .expect("`allowed_{kind}s` is a role-binding key");
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    auth.chain = vec![config::AuthChainEntry::bare("keys")];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an undeclared kind must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings.keys.ops") && e.contains("allowed_widgets")),
+        "expected the undeclared-kind error naming the binding and field; got: {errs:?}"
+    );
+    for not_a_grant in [
+        "grop: x\n",
+        "allowed_widgets: x\n",
+        "allowed_widgets: [1]\n",
+    ] {
+        assert!(
+            serde_yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
+            "`{not_a_grant}` is not a role-binding grant"
+        );
+    }
+}
+
 #[test]
 fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
@@ -1706,6 +1741,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -1810,6 +1846,7 @@ fn validate_admin_scope_mint_now_errors() {
                 group: None,
                 admin_scope: Some("mint".to_string()),
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -5409,6 +5446,7 @@ fn test_validate_role_binding_group_must_exist() {
         group: Some("squad".to_string()),
         admin_scope: None,
         verbs: None,
+        plane_grants: Default::default(),
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -6683,12 +6721,12 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
+        wire_format_names: |_| &[],
         // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-        provider_dialects: crate::ingress::protocols::known_protocols,
+        provider_dialects: |_| crate::ingress::protocols::known_protocols(),
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -6709,6 +6747,7 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// One declared billable class in `family`.

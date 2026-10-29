@@ -95,9 +95,39 @@ pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
     )
 }
 
+/// The first position (`.`-joined) a declared path names, EXACT or WILDCARD, whose value in `tree` is
+/// set and is not a secret reference: a literal written where the plugin declared a secret (a
+/// string, a number, a `{ literal: … }` wrapper, any object that is not a reference). `null` is
+/// unset. EVERY SECRET IS A REFERENCE, NEVER A LITERAL (security.md:316): a wildcard path names
+/// secret positions exactly as an exact one does (lead ruling, item 7b).
+#[must_use]
+pub fn declared_literal(tree: &Value, declared: &[String]) -> Option<String> {
+    declared.iter().find_map(|path| {
+        let segs: Vec<&str> = path.split('.').collect();
+        let mut found = Vec::new();
+        named(tree, &segs, &mut Vec::new(), &mut found);
+        found
+            .into_iter()
+            .find(|at| at_mut_ref(tree, at).is_some_and(|v| !v.is_null() && !is_reference(v)))
+            .map(|at| at.join("."))
+    })
+}
+
+/// The refusal for a literal at `field` (the operator's path to it), a position `plugin` declares
+/// secret: the core secret fields' own non-echoing words
+/// ([`crate::secret_ref::INLINE_LITERAL_REFUSAL`]), never a byte of the value.
+#[must_use]
+pub fn declared_literal_refusal(field: &str, plugin: &str) -> String {
+    format!(
+        "{field}: the plugin '{plugin}' declares this setting secret; {}",
+        crate::secret_ref::INLINE_LITERAL_REFUSAL
+    )
+}
+
 /// RESOLVE a plugin's settings `tree` as the kernel does before they cross the ABI: a reference
-/// at a position `declared` does not name is refused ([`undeclared_refusal`], naming `plugin`), and
-/// each reference at a declared position, exact or wildcard, is replaced in place by the string
+/// at a position `declared` does not name is refused ([`undeclared_refusal`], naming `plugin`), a
+/// literal at a declared position, exact or wildcard, is refused ([`declared_literal_refusal`]), and
+/// each reference at a declared position is replaced in place by the string
 /// `resolve(field, reference)` answers. Everything else is left as written.
 ///
 /// # Errors
@@ -110,6 +140,9 @@ pub fn resolve_declared(
 ) -> Result<(), String> {
     if let Some(at) = undeclared_reference(tree, declared) {
         return Err(undeclared_refusal(&format!("settings.{at}"), plugin));
+    }
+    if let Some(at) = declared_literal(tree, declared) {
+        return Err(declared_literal_refusal(&format!("settings.{at}"), plugin));
     }
     for path in declared {
         for at in declared_references(tree, path) {
@@ -221,15 +254,22 @@ fn take_path(v: &mut Value, path: &str) -> Option<Value> {
 /// Every position under `v` that `segs` names and that holds a string or a reference, in
 /// document order.
 fn matches(v: &Value, segs: &[&str], at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+    let mut found = Vec::new();
+    named(v, segs, at, &mut found);
+    out.extend(found.into_iter().filter(|p| {
+        at_mut_ref(v, &p[at.len()..]).is_some_and(|x| x.is_string() || is_reference(x))
+    }));
+}
+
+/// Every position under `v` that `segs` names, whatever it holds, in document order.
+fn named(v: &Value, segs: &[&str], at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
     let Some((head, rest)) = segs.split_first() else {
-        if v.is_string() || is_reference(v) {
-            out.push(at.clone());
-        }
+        out.push(at.clone());
         return;
     };
     let mut step = |k: String, item: &Value| {
         at.push(k);
-        matches(item, rest, at, out);
+        named(item, rest, at, out);
         at.pop();
     };
     match v {

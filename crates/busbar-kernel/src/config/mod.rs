@@ -55,8 +55,6 @@ pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
 
-// Re-export status_class_from_str for config validation
-pub use crate::breaker::status_class_from_str;
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
@@ -2213,11 +2211,11 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane_driver::registry::plane_decls()
+            let decl = crate::plane_driver::registry::plane_decls()
                 .iter()
-                .find(|d| d.config_section == section)
-                .and_then(|d| d.parse_section)?;
-            parse(value)
+                .find(|d| d.config_section == section)?;
+            let parse = decl.parse_section?;
+            parse(decl, value)
                 .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
                 .ok()
                 .map(|cfg| (section, cfg))
