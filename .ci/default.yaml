@@ -216,6 +216,25 @@ checks:
       cargo clippy -p busbar-kernel --no-default-features --locked -- -D warnings
     scope: affected
     baseline: target
+  windows-compile:
+    # W23: the plugin loader's Windows staging path (on_windows: verify the staged bytes, open them
+    # read-only) is published for x86_64-pc-windows-msvc but ModernCI has no Windows runner
+    # (ModernCI #3115). Until it has one, this check only COMPILES the loader and its tests for that
+    # target, cross from Linux with cargo-xwin. It runs nothing; the manual Windows run before
+    # 1.6.0 is an owner action. cargo-xwin fetches the MSVC CRT and Windows SDK headers (Microsoft's
+    # licence, accepted by XWIN_ACCEPT_LICENSE, an owner approval) and needs clang + lld on the backend.
+    requires: [cc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      _xwin=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/xwin-0.23.1
+      if [ ! -x "$_xwin/bin/cargo-xwin" ]; then
+        cargo install --locked --quiet cargo-xwin --version =0.23.1 --root "$_xwin" || exit 1
+      fi
+      PATH="$_xwin/bin:$PATH"; export PATH
+      rustup target add x86_64-pc-windows-msvc || exit 1
+      XWIN_ACCEPT_LICENSE=1 XWIN_CACHE_DIR=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/xwin-sdk \
+        cargo xwin check --locked --target x86_64-pc-windows-msvc -p busbar-plugin-loader --tests
+    needs: [fmt]
   test:
     # Every behaviour test: the workspace suites (with the cdylibs and the dropped-in plugins they
     # dlopen built first), the feature-gated suites, the loom models, then the doctests.
