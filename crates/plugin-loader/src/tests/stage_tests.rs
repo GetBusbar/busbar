@@ -38,9 +38,12 @@ fn staging_dir_is_private_and_pid_named() {
 /// field order; here we assert the removal half).
 #[test]
 fn temp_file_staging_cleans_up_on_drop() {
-    let path = stage_temp_file(b"pretend library bytes").expect("stage");
+    let (path, pin) = stage_temp_file(b"pretend library bytes").expect("stage");
     assert!(path.exists());
-    drop(Staged::TempFile { path: path.clone() });
+    drop(Staged::TempFile {
+        path: path.clone(),
+        pin: Some(pin),
+    });
     assert!(!path.exists(), "staged file must be removed on drop");
 }
 
@@ -55,8 +58,10 @@ fn temp_file_staging_cleans_up_on_drop() {
 fn sweep_removes_dead_pid_dirs_only() {
     // Our own live dir must survive the sweep: hold a real staged file so the shared state
     // keeps the directory alive for the duration of this test.
+    let (path, pin) = stage_temp_file(b"keepalive bytes").expect("stage keepalive");
     let held = Staged::TempFile {
-        path: stage_temp_file(b"keepalive bytes").expect("stage keepalive"),
+        path,
+        pin: Some(pin),
     };
     let own = {
         let state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
@@ -417,4 +422,259 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
 
     crate::dlclose_on_worker(lib_b);
     drop(staged_b);
+}
+
+/// W23, the website's "verified in memory ... the bytes that were verified are exactly the bytes
+/// that load" (plugins.astro:179). Linux stages into a SEALED memfd, so nothing can change the
+/// bytes between the verify and the `dlopen`. macOS, Windows and Linux's memfd fallback stage
+/// into a file, and a file has a window: between the write and the load something can rewrite it
+/// in place, or rename another library over its name. These tests open that window with the
+/// loader's `before_load` seam and tamper inside it; the load of the tampered file must not
+/// happen. `the_staged_bytes_are_the_verified_bytes` is the in-place rewrite (same file, other
+/// bytes); `a_staged_file_swapped_between_verify_and_load_is_refused` is the rename (other file,
+/// same name).
+mod staged_file_pin {
+    use super::*;
+
+    /// Two DIFFERENT real libraries: `verified` is what the loader is handed; `other` is a LOADABLE
+    /// replacement, so a loader that maps whatever sits at the staged name succeeds on it (garbage
+    /// would fail the `dlopen` and let the defect pass as a refusal).
+    pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
+        let verified = std::fs::read(crate::both_ways::example_cdylib("dispatch_test_plugin"))
+            .expect("read the verified fixture library");
+        let other = std::fs::read(crate::both_ways::example_cdylib("neutral_frame_door"))
+            .expect("read the replacement fixture library");
+        assert_ne!(verified, other, "the two fixtures must differ");
+        (verified, other)
+    }
+
+    /// Release a load the way every holder does: the library first (on the FFI worker), then its
+    /// staged backing.
+    pub(super) fn release(loaded: (Library, Staged)) {
+        let (lib, staged) = loaded;
+        crate::dlclose_on_worker(lib);
+        drop(staged);
+    }
+
+    /// Stage `verified`, run `tamper` on the staged file inside the staged-to-loaded window, and
+    /// return what the OS said to the tamper and what the loader then did.
+    pub(super) fn tamper_then_load(
+        verified: &[u8],
+        tamper: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+    ) -> (std::io::Result<()>, Result<(Library, Staged), String>) {
+        let mut tamper = Some(tamper);
+        let mut outcome = None;
+        let loaded = load_via_staged_file(verified, "w23-tamper", &mut |path| {
+            if let Some(t) = tamper.take() {
+                outcome = Some(t(path));
+            }
+        });
+        (
+            outcome.expect("the loader ran its before-load window"),
+            loaded,
+        )
+    }
+
+    /// The untampered path loads, and the file it loads from holds exactly the verified bytes.
+    pub(super) fn clean_load_holds_the_verified_bytes(verified: &[u8]) {
+        let mut seen = None;
+        let loaded = load_via_staged_file(verified, "w23-clean", &mut |path| {
+            seen = Some(std::fs::read(path).expect("read the staged file"));
+        })
+        .expect("the verified bytes load");
+        assert_eq!(
+            seen.as_deref(),
+            Some(verified),
+            "the staged file must hold exactly the verified bytes"
+        );
+        release(loaded);
+    }
+
+    /// A refusal from the loader's own staged-file check (not a `dlopen` failure: both fixtures
+    /// load).
+    pub(super) fn assert_refused(what: &str, loaded: Result<(Library, Staged), String>) {
+        match loaded {
+            Ok(l) => {
+                release(l);
+                panic!(
+                    "{what}: the loader mapped a staged file that no longer holds the verified \
+                     bytes (the bytes that loaded are not the bytes that were verified)"
+                );
+            }
+            Err(e) => assert!(
+                e.contains("refusing to load"),
+                "{what}: refused, but not by the staged-file check: {e}"
+            ),
+        }
+    }
+}
+
+/// Unix staging file (macOS, any non-Linux unix, and Linux's memfd fallback). The same uid can
+/// always chmod and rewrite its own file, and rename inside its own `0700` directory, so the OS
+/// lets both tampers happen; the loader must notice and refuse.
+#[cfg(unix)]
+mod on_unix {
+    use super::staged_file_pin::*;
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn the_staged_bytes_are_the_verified_bytes() {
+        let (verified, other) = two_libraries();
+        clean_load_holds_the_verified_bytes(&verified);
+
+        // In place: the SAME file, rewritten with another loadable library's bytes.
+        let (tampered, loaded) = tamper_then_load(&verified, |path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            f.write_all(&other)?;
+            f.flush()
+        });
+        tampered.expect("the owning uid can rewrite its own staged file in place");
+        assert_refused("staged file rewritten in place", loaded);
+
+        // A quieter rewrite: one byte flipped in place, same length, and the mode put back to the
+        // staged 0400, so only the bytes themselves differ from what was verified.
+        let (tampered, loaded) = tamper_then_load(&verified, |path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+            let last = verified.len() as u64 - 1;
+            std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(last))?;
+            f.write_all(&[verified[verified.len() - 1] ^ 0xff])?;
+            f.flush()?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))
+        });
+        tampered.expect("the owning uid can flip a byte of its own staged file");
+        assert_refused("staged file with one byte flipped", loaded);
+    }
+
+    #[test]
+    fn a_staged_file_swapped_between_verify_and_load_is_refused() {
+        let (verified, other) = two_libraries();
+        // The swap: another library renamed over the staged name (same directory, same uid).
+        let (swapped, loaded) = tamper_then_load(&verified, |path| {
+            let decoy = path.with_extension("decoy");
+            std::fs::write(&decoy, &other)?;
+            std::fs::rename(&decoy, path)
+        });
+        swapped.expect("the owning uid can rename inside its own staging directory");
+        assert_refused("staged file swapped by rename", loaded);
+    }
+}
+
+/// Windows staging file. The loader holds the staged file open READ-ONLY with a share mode that
+/// grants no write and no delete, so the OS should refuse both tampers outright (a sharing
+/// violation). Either way the tampered bytes must never load: if a tamper does land, the loader
+/// must refuse; if the OS refuses it, the verified bytes load and the file still holds them.
+#[cfg(windows)]
+mod on_windows {
+    use super::staged_file_pin::*;
+    use super::*;
+
+    /// One tamper's outcome, judged: (OS refused, verified loaded) and (tamper landed, loader
+    /// refused) are both safe; a landed tamper that loads is the defect.
+    fn judge(
+        what: &str,
+        verified: &[u8],
+        tampered: std::io::Result<()>,
+        loaded: Result<(Library, Staged), String>,
+    ) {
+        match (tampered, loaded) {
+            (Ok(()), loaded) => assert_refused(what, loaded),
+            (Err(_), Ok(l)) => {
+                let Staged::TempFile { path, .. } = &l.1 else {
+                    panic!("{what}: Windows stages into a file");
+                };
+                let now = std::fs::read(path).expect("read the staged file");
+                assert!(
+                    now == verified,
+                    "{what}: the OS refused the tamper, yet the staged file changed"
+                );
+                release(l);
+            }
+            (Err(t), Err(e)) => {
+                panic!("{what}: the OS refused the tamper ({t}) yet the verified bytes did not load: {e}")
+            }
+        }
+    }
+
+    #[test]
+    fn the_staged_bytes_are_the_verified_bytes() {
+        let (verified, other) = two_libraries();
+        clean_load_holds_the_verified_bytes(&verified);
+
+        // In place: the SAME file opened for write and rewritten with another library's bytes.
+        let (tampered, loaded) = tamper_then_load(&verified, |path| {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            f.write_all(&other)?;
+            f.flush()
+        });
+        judge(
+            "staged file rewritten in place",
+            &verified,
+            tampered,
+            loaded,
+        );
+    }
+
+    #[test]
+    fn a_staged_file_swapped_between_verify_and_load_is_refused() {
+        let (verified, other) = two_libraries();
+        // The swap: another library renamed over the staged name (MoveFileEx, replace existing).
+        let (swapped, loaded) = tamper_then_load(&verified, |path| {
+            let decoy = path.with_extension("decoy");
+            std::fs::write(&decoy, &other)?;
+            let r = std::fs::rename(&decoy, path);
+            if r.is_err() {
+                let _ = std::fs::remove_file(&decoy);
+            }
+            r
+        });
+        judge("staged file swapped by rename", &verified, swapped, loaded);
+    }
+}
+
+/// Linux's primary path for the same claim: the memfd the loader mapped holds exactly the verified
+/// bytes and is sealed against any further write, grow or shrink.
+#[cfg(target_os = "linux")]
+mod on_linux_memfd {
+    use super::staged_file_pin::*;
+    use super::*;
+    use std::os::fd::AsRawFd as _;
+
+    #[test]
+    fn the_staged_bytes_are_the_verified_bytes() {
+        let (verified, other) = two_libraries();
+        let loaded =
+            load_library_from_bytes(&verified, "w23-memfd").expect("the verified bytes load");
+        let Staged::Memfd { fd: Some(fd) } = &loaded.1 else {
+            panic!("Linux stages a verified library into a memfd");
+        };
+        let name = memfd_name(fd);
+        assert!(
+            std::fs::read(&name).expect("read the memfd") == verified,
+            "the memfd must hold exactly the verified bytes"
+        );
+        // SAFETY: plain fcntl on an fd the guard owns; no pointers.
+        let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+        let want = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        assert_eq!(
+            seals & want,
+            want,
+            "the memfd must be sealed (got {seals:#x})"
+        );
+        // A write through a reopen of its name is refused by the seal.
+        let rewrite = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&name)
+            .and_then(|mut f| f.write_all(&other));
+        assert!(rewrite.is_err(), "a sealed memfd must refuse a rewrite");
+        release(loaded);
+    }
 }
