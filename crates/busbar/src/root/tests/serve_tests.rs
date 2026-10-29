@@ -3547,7 +3547,7 @@ mod tools_door {
     /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
     /// attributed to the server it called (R-11) and to this plane, counting one request.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
+    async fn a_served_call_writes_one_metering_row_naming_its_server_and_plane() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-meter-row";
         let _published = Published(instance);

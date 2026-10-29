@@ -578,6 +578,60 @@ fn the_linked_plane_doors_declared_diagnostics_join_the_catalogue() {
     }
 }
 
+/// A ROW-LESS PLANE DOOR'S STATED CODES ARE REGISTERED, AND A COLLISION THERE IS REFUSED: the
+/// codes a linked plane door with no `linked-declares` row states in its Statement (`EXT_DECLARES`)
+/// are the ones the catalogue registers for it, and one the catalogue already holds is refused
+/// naming the door's row, exactly as a row-named or dropped-in declaration's would be.
+#[test]
+fn a_row_less_plane_doors_stated_codes_register_and_a_collision_is_refused() {
+    let declares =
+        crate::root::linked::plane_door_declares(&crate::LINKED).expect("the doors' declares read");
+    for (row, door, json) in &declares {
+        let named = crate::LINKED
+            .plane_door_declares
+            .iter()
+            .find(|(r, _, _)| r == row)
+            .and_then(|(_, _, named)| *named);
+        if named.is_some() {
+            continue;
+        }
+        let stated = {
+            let linked = crate::root::loader::dispatch::LinkedRow::of(*door)
+                .expect("a linked door states its Statement");
+            let read = busbar_contract::abi::mechanism::rendering::read(&linked.statement)
+                .expect("its Statement reads");
+            busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
+                .expect("a row-less door in the table states a declares document")
+                .to_vec()
+        };
+        assert_eq!(
+            json.as_bytes(),
+            &stated[..],
+            "{row}: the Statement's document"
+        );
+        let one = [(*row, *door, json.clone())];
+        let registered = crate::root::linked::door_declared_diagnostics(&one, &[])
+            .expect("its stated codes register");
+        let codes = crate::root::loader::sign::Declares::from_declares_json(&stated)
+            .expect("the stated document reads")
+            .diagnostics;
+        assert_eq!(
+            registered.len(),
+            codes.len(),
+            "{row}: every stated code, once"
+        );
+        if registered.is_empty() {
+            continue;
+        }
+        let refused = crate::root::linked::door_declared_diagnostics(&one, &registered)
+            .expect_err("a stated code the catalogue already holds");
+        assert!(
+            refused.contains(row),
+            "the refusal names the door's row: {refused}"
+        );
+    }
+}
+
 /// THE LINKED SCRAPE SINK RENDERS THE RECORDER'S BYTES BACK. The build's linked export rows,
 /// registered as boot registers them (`linked_exports` through the one admission) and opened on the
 /// process's one dispatcher through the root's export rows, answer the frozen scrape module word
