@@ -17,6 +17,36 @@
     },
     {
       "claim": null,
+      "plan": "an independent verifier written from docs/audit-chain-digest-v4.md over /audit/range of the shipped binary: the live chain verifies; tampered, deleted, reordered and truncated records are each refused",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Audit trail: hash-chained, Ed25519-signed, tamper-evident action log",
+      "status": "not-run",
+      "suite": "evidence-audit-trail",
+      "tier": "evidence-only"
+    },
+    {
+      "claim": null,
+      "plan": "every admin operation the node's OpenAPI document lists, against principals lacking its scope (refused) and holding it (admitted), plus the data plane's key gate and plane separation",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "Scope-based RBAC: least-privilege admin scopes, per-verb grants, admin/data-plane separation",
+      "status": "not-run",
+      "suite": "evidence-rbac",
+      "tier": "evidence-only"
+    },
+    {
+      "claim": null,
+      "plan": "the testssl subject (the tls suite) plus certless and rogue-CA clients refused on an mTLS data listener and on admin_tls with client_ca",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "TLS / mutual TLS: native termination, client-certificate enforcement, admin plane isolation",
+      "status": "not-run",
+      "suite": "evidence-tls",
+      "tier": "evidence-only"
+    },
+    {
+      "claim": null,
       "plan": "OIDF FAPI2 conformance suite (self-hosted)",
       "public": true,
       "reason": "no verdict artifact for this commit",
@@ -27,7 +57,7 @@
     },
     {
       "claim": null,
-      "plan": "h2spec over TLS (ALPN h2) against the tls: listener",
+      "plan": "h2spec over TLS (ALPN h2) against the tls: listener of the shipped binary",
       "public": true,
       "reason": "no verdict artifact for this commit",
       "standard": "HTTP/2 (RFC 9113)",

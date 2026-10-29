@@ -9,3 +9,4 @@ mod config;
 mod credential_typecheck;
 mod secrets;
 mod walk;
+mod workflows;
