@@ -16,6 +16,13 @@ const REFUSED: &[(&str, &str)] = &[
     ("secrets.BUSBAR_SIGN_KEY", "reads the plugin-signing secret"),
     ("--bin busbar-plugin-pack", "builds the plugin packer"),
     ("pack --lib", "packs a plugin tarball"),
+    // W27 (security.astro:8-9): no GitHub workflow publishes or provenance-signs a release either.
+    ("gh release create", "publishes a GitHub release"),
+    ("gh release upload", "uploads release assets to GitHub"),
+    (
+        "slsa-framework/slsa-github-generator",
+        "signs release provenance on GitHub",
+    ),
 ];
 
 /// Every workflow file, by its repo-relative path.
