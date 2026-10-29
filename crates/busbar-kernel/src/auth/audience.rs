@@ -75,35 +75,72 @@ pub enum Binding {
 /// identifier; treating it as a namespace is how `https://gw.example.com/resource` begins admitting
 /// tokens minted for `https://gw.example.com/resource-staging`.
 pub fn inspect_bearer(token: &str, expected_aud: &str) -> Binding {
-    if token.starts_with(crate::governance::signing::TOKEN_PREFIX) {
-        return Binding::Deferred;
-    }
-    // A JWS compact serialization is exactly three `.`-separated segments. Anything else is not a
-    // JWT, and guessing at a fourth shape is how a parser starts accepting things.
-    let mut parts = token.split('.');
-    let (Some(_header), Some(payload), Some(_sig), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Binding::Opaque;
-    };
-    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
-        return Binding::Opaque;
-    };
-    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Binding::Opaque;
-    };
-    match claims.get("aud") {
-        Some(serde_json::Value::String(s)) if s == expected_aud => Binding::Bound,
-        Some(serde_json::Value::Array(vs)) => {
-            if vs.iter().any(|v| v.as_str() == Some(expected_aud)) {
-                Binding::Bound
-            } else {
-                Binding::Mismatch
-            }
+    Bearer::read(token).binding(expected_aud)
+}
+
+/// What the kernel reads of a bearer, its JWT payload decoded ONCE per request: the audience
+/// pre-filter ([`Bearer::binding`]) and the DPoP binding check (`auth::dpop`) both read it.
+#[derive(Debug)]
+pub enum Bearer {
+    /// A busbar-signed token: never parsed here.
+    Busbar,
+    /// Not a three-segment JWS with a JSON payload: nothing to read.
+    Opaque,
+    /// A JWT's payload.
+    Jwt(serde_json::Value),
+}
+
+impl Bearer {
+    /// Read `token`'s payload.
+    #[must_use]
+    pub fn read(token: &str) -> Bearer {
+        if token.starts_with(crate::governance::signing::TOKEN_PREFIX) {
+            return Bearer::Busbar;
         }
-        // A JWT with a present-but-wrong `aud`, an `aud` of some other JSON type, or no `aud` at
-        // all. All three are "this was not minted for us", which is the only question being asked.
-        _ => Binding::Mismatch,
+        // A JWS compact serialization is exactly three `.`-separated segments. Anything else is not
+        // a JWT, and guessing at a fourth shape is how a parser starts accepting things.
+        let mut parts = token.split('.');
+        let (Some(_header), Some(payload), Some(_sig), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Bearer::Opaque;
+        };
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .map_or(Bearer::Opaque, Bearer::Jwt)
+    }
+
+    /// Its RFC 8707 binding to `expected_aud` ([`inspect_bearer`]).
+    #[must_use]
+    pub fn binding(&self, expected_aud: &str) -> Binding {
+        let claims = match self {
+            Bearer::Busbar => return Binding::Deferred,
+            Bearer::Opaque => return Binding::Opaque,
+            Bearer::Jwt(claims) => claims,
+        };
+        match claims.get("aud") {
+            Some(serde_json::Value::String(s)) if s == expected_aud => Binding::Bound,
+            Some(serde_json::Value::Array(vs)) => {
+                if vs.iter().any(|v| v.as_str() == Some(expected_aud)) {
+                    Binding::Bound
+                } else {
+                    Binding::Mismatch
+                }
+            }
+            // A JWT with a present-but-wrong `aud`, an `aud` of some other JSON type, or no `aud`
+            // at all. All three are "this was not minted for us", which is the only question being
+            // asked.
+            _ => Binding::Mismatch,
+        }
+    }
+
+    /// Whether it is bound to a DPoP key (RFC 9449 s6: a string `cnf.jkt`): a busbar-signed or
+    /// opaque token never is.
+    #[must_use]
+    pub fn dpop_bound(&self) -> bool {
+        matches!(self, Bearer::Jwt(claims) if claims["cnf"]["jkt"].is_string())
     }
 }
 

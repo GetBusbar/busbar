@@ -736,7 +736,7 @@ fn compute_layout() -> String {
             flags,
             next_deadline_ns,
             heads_len,
-            _reserved
+            agreed
         ]
     );
     record!(s, tkind::ListenIn, [head, bind, addr_buf, addr_cap]);
