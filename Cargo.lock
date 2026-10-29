@@ -359,6 +359,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-stub-transport-plugin",
+ "busbar-test-kit",
  "crc32fast",
  "dimpl",
  "futures",
@@ -696,12 +697,15 @@ version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-core-connector",
  "busbar-plugin-loader",
  "hex",
  "ring",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]

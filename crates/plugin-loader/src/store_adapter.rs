@@ -3,11 +3,11 @@
 
 //! The store adapter: the unit-side store seams over ONE loaded store plugin.
 //!
-//! Two crates bind to a store and neither may name one — `busbar-kernel` (slices) and the admin
-//! verb-execution unit (the sealed new-verb replay cache, which the composition root's
-//! `busbar_contract::verb_store::Store` answers through this adapter). The composition root binds
-//! both to a single adapter over the store this crate loaded, so there is exactly one store handle
-//! in the process and one place that says what this adapter answers itself.
+//! The admin verb-execution unit binds to a store without naming one: the sealed new-verb replay
+//! cache, which the composition root's `busbar_contract::verb_store::Store` answers through this
+//! adapter. The composition root binds it to a single adapter over the store this crate loaded, so
+//! there is exactly one store handle in the process and one place that says what this adapter
+//! answers itself.
 //!
 //! The disaster-recovery verbs are not here (status row 187). They act on the node's journal and on
 //! the store's record slots, both of which the composition root holds (`durability::recovery`), and
@@ -30,19 +30,11 @@
 //!   this module touches their wire; the oracle's store-persist cell is what proves it
 //!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
 //!   store, read the money back).
-//! - **Slices and the sealed replay cache are answered from this node's
-//!   memory.** The store v3 table carries slots for the ledger operations behind them (`reserve`,
-//!   `slice_release`, `heads`, `append_batch`), and every store this binary loads speaks store ABI
-//!   v3, which has no table without them; routing these seams to those slots is separate work, and
-//!   until it lands what is said below is what they answer.
+//! - **The sealed replay cache is answered from this node's memory.** No money is held here:
+//!   money is counts x the rate card, derived in core.
 //!
 //! # Those answers, stated rather than implied
 //!
-//! - **Slices.** A node whose slices are answered here has exactly one generation of leases and
-//!   nothing that can advance it, so [`epoch`](busbar_contract::slice::SliceStore::epoch) is
-//!   constant and a reservation is granted in full, stamped with that epoch — a request carrying
-//!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
-//!   there is no fleet for it to be stale against. The grant never expires for the same reason.
 //! - **The sealed replay cache.** Node-local. Nothing but its TTL clears it — no restore and no
 //!   other verb: dropping a committed replay slot is precisely how a credential-minting verb
 //!   re-mints, which is the one thing the sealed cache exists to prevent. It is not
@@ -71,7 +63,6 @@ use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
-use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::StoreError as VerbStoreError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -83,12 +74,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// than an absence of errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ShimState {
-    /// Slices reserved and not yet released.
-    pub slices_outstanding: usize,
-    /// Units granted and NOT given back — granted minus the unspent part every `release` returned.
-    /// A net figure, not a running total: it describes what the outstanding reservations above are
-    /// holding.
-    pub slices_granted: u64,
     /// Keys the sealed replay cache is holding, reserved or committed.
     pub replay_slots: usize,
     /// Of those, the ones with a committed response.
@@ -150,27 +135,12 @@ fn system_clock() -> ShimClock {
 ///
 /// # The lock order, stated once
 ///
-/// The three mutexes below are independent, and every one of them is on the request path: a slice
-/// draw takes `slices` on every reserve and release. No thread holds two at once: every reader and
-/// writer — the diagnostics read included — takes one lock, copies what it wants out, drops it,
-/// and only then takes the next. A thread that ever needs more than one takes them in the order
-/// they are declared here — slices, then replay — and in no other order.
+/// The one mutex below, `replay`, is taken by every reader and writer — the diagnostics read
+/// included — which copies what it wants out and drops it before doing anything else.
 #[derive(Default)]
 struct Shim {
-    slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
 }
-
-#[derive(Default)]
-struct Slices {
-    next_id: u64,
-    granted_total: u64,
-    outstanding: HashMap<u64, u64>,
-}
-
-/// The one epoch a node-local shim has. There is no fleet to advance it and nothing that could
-/// observe it advancing, so it is a constant and the code says which one.
-const SHIM_EPOCH: Epoch = Epoch(0);
 
 impl StoreAdapter {
     /// Bind the seams to `store`, whose signed manifest declares payload schema `abi_version`.
@@ -221,18 +191,8 @@ impl StoreAdapter {
     /// What the node-local shim is holding.
     ///
     /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
-    /// on [`Shim`]. This is a diagnostics read on a path every slice draw also walks.
-    ///
-    /// What that costs is that the two groups below are read at two instants rather than one, so a
-    /// caller reading while the shim is being written can see one group's figures beside a slightly
-    /// older other group's. Each group is still internally whole — the two slice figures come out
-    /// under one guard, and so do the two replay ones — which is what the figures actually have to
-    /// promise.
+    /// on [`Shim`].
     pub fn shim_state(&self) -> ShimState {
-        let (slices_outstanding, slices_granted) = {
-            let slices = self.inner.shim.slices();
-            (slices.outstanding.len(), slices.granted_total)
-        };
         let (replay_slots, replay_committed) = {
             let replay = self.inner.shim.replay();
             (
@@ -241,8 +201,6 @@ impl StoreAdapter {
             )
         };
         ShimState {
-            slices_outstanding,
-            slices_granted,
             replay_slots,
             replay_committed,
         }
@@ -567,64 +525,8 @@ impl MigrationLedgerRows for MigrationStoreRows {
 }
 
 impl Shim {
-    /// A poisoned shim lock is recovered from, never propagated: a panic somewhere else must not
-    /// turn every later slice draw into an error, which is exactly what the appendix forbids.
-    fn slices(&self) -> MutexGuard<'_, Slices> {
-        self.slices.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
     fn replay(&self) -> MutexGuard<'_, ReplaySlots> {
         self.replay.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-impl SliceStore for StoreAdapter {
-    /// Draw a slice. The shim grants what was asked for, in full, at its own epoch.
-    ///
-    /// It is not pretending to be a fleet-wide window: a node whose store cannot hold one has no
-    /// fleet to share a cap with, so the bucket's own cap — enforced by the caps unit, not here —
-    /// is the whole of the limit, and a slice draw against it is bookkeeping the node already did.
-    fn reserve(&self, request: &SliceRequest) -> Result<SliceGrant, SliceError> {
-        let mut slices = self.inner.shim.slices();
-        slices.next_id += 1;
-        let id = slices.next_id;
-        slices.granted_total = slices.granted_total.saturating_add(request.wanted);
-        slices.outstanding.insert(id, request.wanted);
-        Ok(SliceGrant {
-            id: SliceId(id),
-            granted: request.wanted,
-            // Nothing expires a lease that no other node can take, so the grant is open-ended.
-            valid_until: busbar_contract::Millis::MAX,
-            // The shim's epoch, not the requested one: stamping is not refusing.
-            epoch: SHIM_EPOCH,
-        })
-    }
-
-    /// Give back what was not spent. An id the shim never granted (a slice drawn before a restore,
-    /// say) is accepted and forgotten rather than refused.
-    fn release(&self, id: SliceId, unspent: u64) -> Result<(), SliceError> {
-        let mut slices = self.inner.shim.slices();
-        if let Some(granted) = slices.outstanding.remove(&id.0) {
-            slices.granted_total = slices.granted_total.saturating_sub(unspent.min(granted));
-        }
-        Ok(())
-    }
-
-    fn epoch(&self) -> Epoch {
-        SHIM_EPOCH
-    }
-}
-
-/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter (status row 187,
-/// ARCHITECT 2026-10-20): the slice epoch this node serves at, which `reseal_epoch_floor` puts in
-/// the store as the floor and the boot compares with the floor the store holds. It is the door the
-/// root reads it through, so the money-slice seam stays named only here and in its defining module.
-impl StoreAdapter {
-    /// This node's slice epoch, as a number: the value the epoch floor is resealed to and checked
-    /// against.
-    #[must_use]
-    pub fn recovery_epoch(&self) -> u64 {
-        SliceStore::epoch(self).0
     }
 }
 

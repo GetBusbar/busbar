@@ -1659,7 +1659,7 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
 fn a_settings_derived_target_is_declared_without_its_userinfo() {
     const USER: &str = "the-user";
     const SECRET: &str = "s3cret-pw";
-    let cap = busbar_contract::testkit::WarnCapture::capturing_debug();
+    let cap = crate::warn_capture::WarnCapture::capturing_debug();
     let mut said: Vec<String> = Vec::new();
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
@@ -4251,6 +4251,139 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
         assert!(
             wakes.load(Ordering::SeqCst) > before,
             "the landing wait that found the dial crossing is woken once it came to its end"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
+/// does not come back until the test lets it.
+struct HangingRead {
+    inner: TestDoor,
+    gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl FramerDoor for HangingRead {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Read(..)) {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// RED before a read had the connection's rest out of its lock (`BUSBAR-1.6.0.md` §11: no plugin
+/// code runs under a host lock): the rest's mutex was held across the read's whole drive, so a
+/// second read of the same connection beside one whose carrier read hung waited on the plugin for
+/// as long as it hung. Now the second answers PENDING at once, and is woken once the first read
+/// puts the rest back.
+#[test]
+fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() {
+    let rt = worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let (l, far) = far_end().await;
+        let (accepted_tx, mut accepted) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            // Held open and silent: every read of the connection pends.
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(s);
+        });
+        let door = Arc::new(HangingRead {
+            inner: TestDoor::identity("bytes"),
+            gate: std::sync::Mutex::new(None),
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&wakes);
+        let c = Arc::new(Connector::serving(
+            Transports::new(vec![Entry {
+                door: Arc::clone(&door) as Arc<dyn FramerDoor>,
+                alpn: Vec::new(),
+            }])
+            .unwrap(),
+            loopback_literals(),
+            None,
+            Arc::new(move |_, _| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        // Driven by its own reads until the far end has the connection, and a read past that.
+        loop {
+            assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
+            if accepted.try_recv().is_ok() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
+
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *door.gate.lock().unwrap() = Some((entered_tx, held_back));
+        let reading = Arc::clone(&c);
+        let on = handle.clone();
+        let first = std::thread::spawn(move || {
+            let _rt = on.enter();
+            let mut buf = [0_u8; 64];
+            reading.read(OWNER, id, 7, &mut buf).map(|p| p.len)
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the first read reaches the carrier");
+        let (beside_tx, beside) = std::sync::mpsc::channel();
+        let also = Arc::clone(&c);
+        let second = std::thread::spawn(move || {
+            let mut buf = [0_u8; 64];
+            beside_tx
+                .send(also.read(OWNER, id, 8, &mut buf).map(|p| p.len))
+                .unwrap();
+        });
+        let answered = beside
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a read beside a hung carrier read returned while it still hangs");
+        assert_eq!(answered, Err(ConnError::Pending));
+        let before = wakes.load(Ordering::SeqCst);
+        release.send(()).unwrap();
+        assert_eq!(
+            first.join().unwrap(),
+            Err(ConnError::Pending),
+            "nothing was sent"
+        );
+        second.join().unwrap();
+        assert!(
+            wakes.load(Ordering::SeqCst) > before,
+            "the read that found the rest out is woken once it is back"
         );
         c.close(OWNER, id).unwrap();
     });

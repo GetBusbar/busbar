@@ -825,8 +825,8 @@ pub struct MeteringDelta {
     #[serde(default)]
     pub billable_requests: u64,
     /// The key's `group` AT THE TIME this response was served, denormalized onto the row so
-    /// group-level rollups stay correct even if the key is later regrouped or PII-scrubbed (see
-    /// [`RecordStore::scrub_key`]). Empty string = no group, matching `VirtualKey::group`'s `None`.
+    /// group-level rollups stay correct even if the key is later regrouped or PII-scrubbed. Empty
+    /// string = no group, matching `VirtualKey::group`'s `None`.
     #[serde(default)]
     pub key_group_at_use: String,
     /// Which price table was in force when this usage occurred, so a later price-table correction
@@ -1004,6 +1004,17 @@ impl Retention {
             _ => None,
         }
     }
+
+    /// Whether a purge under this rule drops a row of `disposition` written at `ts`, against the
+    /// cutoff `before`: a row at or after the cutoff is always kept.
+    #[must_use]
+    pub fn drops(self, ts: u64, before: u64, disposition: PlaneDisposition) -> bool {
+        ts < before
+            && match self {
+                Retention::Age => true,
+                Retention::TerminalOnly => disposition == PlaneDisposition::Terminal,
+            }
+    }
 }
 
 /// One durable PLANE RECORD — the neutral envelope the eight kind-tagged verbs read and write. Only
@@ -1177,25 +1188,8 @@ pub trait RecordStore: Send + Sync + 'static {
     /// stale id — where returning `Ok(())` tells an operator a key was revoked when nothing was
     /// touched. Same reasoning [`RecordStore::revoke_credential`] gives for its own default; the two are
     /// deliberately settled the same way.
-    ///
-    /// PII erasure (nulling `name`/`labels`) is a SEPARATE, explicit operation — see
-    /// [`RecordStore::scrub_key`] — so "this key is gone" and "this key's personal data is gone" stay
-    /// independently auditable.
     fn delete_key(&self, id: &str) -> RecordStoreResult<()>;
-    /// PII-erasure-only: null `name` and `labels` on an ALREADY-tombstoned key (`deleted_at` set).
-    /// Every other field, and every attribution that reads this row by id, is untouched — this
-    /// exists to satisfy "erase personal data" without touching financial/billing records, which is
-    /// what a right-to-erasure request actually needs. Errors if `id` is unknown or not yet
-    /// tombstoned (scrubbing a live key would be silent, un-auditable data loss on an active
-    /// principal — go through `delete_key` first).
-    ///
-    /// DEFAULTED to an error so a backend that has not implemented it fails loud rather than
-    /// silently no-op-ing a compliance-relevant request.
-    fn scrub_key(&self, _id: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support scrub_key".to_string(),
-        ))
-    }
+
     /// Every key with `revision > since` — the INCREMENTAL hydration delta, used instead of a full
     /// [`RecordStore::list_keys`] reload on each staleness tick. UNLIKE `list_keys`, this does NOT filter
     /// tombstones: a hydrator needs to observe a newly-tombstoned key (via its `deleted_at` now
@@ -1220,6 +1214,7 @@ pub trait RecordStore: Send + Sync + 'static {
             .filter(|k| k.revision == 0 || k.revision > since)
             .collect())
     }
+
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
     /// key id) OR a budget-group bucket - same shape either way. An untouched (bucket, window)
     /// reads as the empty ledger. NO dollar field crosses this seam: spend is derived at read time
@@ -1266,31 +1261,6 @@ pub trait RecordStore: Send + Sync + 'static {
     /// by-model / by-key aggregations.
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
 
-    /// Retention sweep for the (bucket_id, window_start) token ledger: purge every window whose
-    /// `window_start < before`. Returns the number of windows purged. Called only from a background
-    /// sweeper on a config interval — NEVER from the request path.
-    ///
-    /// DEFAULTED to `Ok(0)` (a no-op that reports nothing purged): a backend has no obligation to
-    /// bound its own storage this way (e.g. an in-memory store already self-sweeps via a different
-    /// mechanism — see `MemoryStore`'s amortized eviction), and an in-tree default that silently did
-    /// nothing real would be misleading if it claimed to purge. Real durable backends (Postgres,
-    /// MySQL, Valkey, SQLite) each override this with whatever's idiomatic for their storage shape
-    /// (a native TTL, a partition drop, a chunked `DELETE`, …).
-    fn purge_windows_before(&self, _before: u64) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
-
-    /// Retention purge for the DURABLE billing ledger (`MeteringRow`/`MeteringDelta`): purge every
-    /// row in `bucket`. Unlike [`RecordStore::purge_windows_before`], this must NEVER be wired to an
-    /// automatic sweeper — billing evidence is opt-in-purge-only, exactly like [`RecordStore::delete_key`]
-    /// tombstones rather than removes for the same reason. The engine's admin surface is the only
-    /// intended caller, and only behind an explicit, audit-logged operator action.
-    ///
-    /// DEFAULTED to `Ok(0)`, same reasoning as `purge_windows_before`.
-    fn purge_metering_before(&self, _bucket: &str) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
-
     /// Persist a row-looked-up credential (today: only the request-signing auth's kind) — see
     /// [`CredentialSecret`] and the [`RecordStore::list_credentials`] doc for the
     /// generalized-from-AWS-specific rationale.
@@ -1322,27 +1292,12 @@ pub trait RecordStore: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Every credential row for `key_id`, metadata only (never the secret — see
-    /// [`RecordStore::lookup_credential_secret`] for the one place that returns it). The admin/listing
+    /// Every credential row for `key_id`, metadata only, never the secret. The admin/listing
     /// surface.
     ///
     /// DEFAULTED to empty: a store with no credential support simply has none to list.
     fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
         Ok(Vec::new())
-    }
-
-    /// Resolve `(kind, public_id)` to its full secret material — the verify-path / hydration
-    /// lookup. `None` for an unknown `(kind, public_id)` pair (never an error: an unrecognized
-    /// AccessKeyId is a normal, expected outcome of the SigV4 admit path, not a store failure).
-    ///
-    /// DEFAULTED to `Ok(None)`: a store with no credential support resolves nothing, so that
-    /// credential kind's ingress is simply unavailable — never an auth bypass.
-    fn lookup_credential_secret(
-        &self,
-        _kind: &str,
-        _public_id: &str,
-    ) -> RecordStoreResult<Option<CredentialSecret>> {
-        Ok(None)
     }
 
     /// Revoke ONE credential by id (independent of the owning key — see
@@ -1382,30 +1337,12 @@ pub trait RecordStore: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// Append one admin AUDIT record for DURABLE persistence (design: the audit log's durable home is
-    /// the configured store — an ephemeral store keeps it for the process, a durable one for good;
-    /// this face names neither). The engine keeps the hot in-memory hash-chained ring for reads and
-    /// write-THROUGHs each appended entry here, so a hard crash loses ~0 entries and the ring's
-    /// size bound stops pruning HISTORY (the store keeps it all). Append-only, ordered by `seq`; a
-    /// store never rewrites or recomputes the digest.
+    /// Append one 1.5.5 admin AUDIT row. No production path writes these rows any more (1.6.0's
+    /// admin audit is plane records); the store ABI carries no slot for it, so a loaded store
+    /// refuses it. In-process test stores that seed 1.5.5 rows for the migration read keep it.
     ///
     /// A record arriving on a `seq` that ALREADY HAS ONE is settled by comparing the two:
-    /// - byte-identical to the stored record → `Ok(())`. This is the write-through retrying after a
-    ///   timeout or a reconnect, and it is the common case; failing it would make a healthy engine
-    ///   look broken.
-    /// - DIFFERENT from the stored record → error. Two different records claiming one chain
-    ///   position is a forked or tampered log, and it is the single most important thing an audit
-    ///   store can tell an operator.
-    ///
-    /// Overwriting is never correct: it is how the second case gets destroyed instead of reported,
-    /// and it contradicts "a store never rewrites the digest" directly. Silently keeping the first
-    /// is not correct either — it collapses both cases into one and drops a genuinely different
-    /// record on the floor, which is the same silent-loss shape, just quieter.
-    ///
-    /// DEFAULTED to `Ok(())` (a no-op) so this is BACKWARD-COMPATIBLE: every existing store plugin —
-    /// including already-signed dynamic-library artifacts that predate this method — keeps working
-    /// unchanged, simply providing no durable audit (the RAM default's behavior). A backend that wants
-    /// durable audit overrides this + [`RecordStore::list_audit`].
+    /// byte-identical is `Ok(())`, different is an error (a forked log). DEFAULTED to `Ok(())`.
     fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         Ok(())
     }

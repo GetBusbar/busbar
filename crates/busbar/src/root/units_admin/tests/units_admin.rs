@@ -3,7 +3,6 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use std::collections::HashMap;
 
 /// A key no other request in this binary is walking. The unit key names one live unit, so two
 /// fixtures sharing a literal would be two requests claiming one entry in the units table.
@@ -343,22 +342,22 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
     }
 }
 
-/// THE SIX VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS AT THE ROUTE STEP
+/// THE VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS AT THE ROUTE STEP
 /// (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "no verb carries dual control,
 /// escrow or operator signatures. Each verb is a plain scoped verb authorized by the per-verb
 /// allow-list on the admin token").
 ///
 /// A binding as `AdminBinding::new` builds it — no operator key anywhere, because there is none to
-/// configure — walks each of `chain_break`, `store_restore`, `commit_upgrade`,
-/// `reseal_epoch_floor`, `adjust` and `amend_rate_history` past authorization under a grant that
+/// configure — walks each of `chain_break`, `store_restore`, `commit_upgrade`, `adjust` and
+/// `amend_rate_history` past authorization under a grant that
 /// covers it (`full`): whatever the verb's own effect then answers over this fixture's refusing
 /// store and empty bodies, it is never the scope refusal. Under a grant that does NOT cover it
 /// (`read-only`) every one is refused at scope. RED before the fix: under the default unsealed
-/// posture every one of the six was refused `OperatorUnset`, which this step says as
+/// posture every one of them was refused `OperatorUnset`, which this step says as
 /// `ScopeDenied`, whatever the grant.
 #[test]
 #[cfg(feature = "root-admin")]
-fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
+fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
@@ -367,7 +366,7 @@ fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
         request.method = "POST".to_string();
         request.path = path.to_string();
         // `store_restore` refuses a body naming no backup before it reaches authorization, so every
-        // body names one; the other five read nothing from it that would change the assertion.
+        // body names one; the others read nothing from it that would change the assertion.
         request.body = b"{\"backup_ref\":\"backup-1\"}".to_vec();
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).expect("the plane's table declares this operation");
@@ -379,7 +378,6 @@ fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
         "/api/v1/admin/chain-break",
         "/api/v1/admin/store-restore",
         "/api/v1/admin/commit-upgrade",
-        "/api/v1/admin/reseal-epoch-floor",
         "/api/v1/admin/adjust",
         "/api/v1/admin/ledger/amend-rate-history",
     ] {
@@ -708,89 +706,83 @@ fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
     }
 }
 
-/// A store that holds one replay slot, so the root's own adapter can be driven over it.
-#[derive(Default)]
-struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
-
-impl busbar_contract::verb_store::Store for ReplaySlots {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn replay_new_verb(
-        &self,
-        key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("no test panics under this lock")
-            .get(key)
-            .cloned())
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.0
-            .lock()
-            .expect("no test panics under this lock")
-            .insert(key.clone(), response.to_vec());
-        Ok(())
-    }
-}
-
-/// A replayed idempotency key answers with the FIRST answer's bytes, through a store's replay
-/// slot. Byte-identical is the property: a re-render would mint a second one-time secret over one
-/// identity.
+/// A replayed idempotency key answers with the FIRST answer — status, headers and body, byte for
+/// byte — through the claim the configured store keeps (`durable::claim`). Byte-identical is the
+/// property: a re-render would mint a second one-time secret over one identity. Asked of the same
+/// process, of a restarted one and of another node over the same store, the answer is the first
+/// one and the effect that minted it ran once.
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
-    use busbar_contract::verb_store::Store;
-
-    let answer = AdminAnswer {
-        status: 201,
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: br#"{"id":"vk_1","secret":"once"}"#.to_vec(),
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
+        Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let held = Arc::clone(&store);
+    let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
+    let request = AdminRequest {
+        method: "POST".to_string(),
+        path: "/api/v1/admin/commit-upgrade".to_string(),
+        credential: None,
+        headers: vec![("idempotency-key".to_string(), "idem-1".to_string())],
+        body: br#"{"version":"once"}"#.to_vec(),
+        at: 1_700_000_000,
+        unit: a_fresh_unit(),
     };
-    let first = answer.body.clone();
-    let key = ("idem-1".to_string(), "POST /api/v1/admin/keys".to_string());
+    let minted = std::sync::atomic::AtomicUsize::new(0);
+    // Every run mints a fresh one-time secret, so a second run is told apart from a replay.
+    let mint = || {
+        let n = minted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(AdminAnswer {
+            status: 201,
+            headers: vec![
+                ("content-type".to_string(), "application/json".to_string()),
+                ("location".to_string(), format!("/api/v1/admin/keys/vk_{n}")),
+            ],
+            body: format!(r#"{{"id":"vk_{n}","secret":"once-{n}"}}"#).into_bytes(),
+        })
+    };
+    let first_answer = AdminAnswer {
+        status: 201,
+        headers: vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            (
+                "location".to_string(),
+                "/api/v1/admin/keys/vk_0".to_string(),
+            ),
+        ],
+        body: br#"{"id":"vk_0","secret":"once-0"}"#.to_vec(),
+    };
+    let node = bound::ReplayCache::new();
+    let ask = |cache: &bound::ReplayCache| {
+        bound::replayable(
+            cache,
+            Some(&replay_store),
+            KernelVerb::CommitUpgrade,
+            "operator",
+            &request,
+            &request.body,
+            mint,
+        )
+        .expect("the write answers")
+    };
 
-    let store = ReplaySlots::default();
+    let first = ask(&node);
+    assert_eq!(first, first_answer, "the first call runs and answers");
+    let again = ask(&node);
+    let restarted = ask(&bound::ReplayCache::new());
+    let sibling = ask(&bound::ReplayCache::new());
+    for (who, replayed) in [
+        ("the same node", &again),
+        ("a restarted node", &restarted),
+        ("another node", &sibling),
+    ] {
+        assert_eq!(replayed.status, first.status, "{who}: the first status");
+        assert_eq!(replayed.headers, first.headers, "{who}: the first headers");
+        assert_eq!(replayed.body, first.body, "{who}: the first body's bytes");
+    }
     assert_eq!(
-        store.replay_new_verb(&key).expect("the slot reads"),
-        None,
-        "a key never seen has nothing to replay"
+        minted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the one-time secret was minted once"
     );
-    store
-        .commit_new_verb_replay(&key, &first)
-        .expect("the slot commits");
-
-    let replayed = store
-        .replay_new_verb(&key)
-        .expect("the slot reads")
-        .expect("a committed key replays");
-    assert_eq!(replayed, first);
-    assert_eq!(replayed, answer.body);
 }
 
 /// The dispatch a test drives the loop against: it answers, and its answer is recognisable, so a
@@ -1413,7 +1405,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
 /// stop passing.
 const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
 
-/// Each of the three recovery verbs reaches the STORE, and a refusing store's answer is the
+/// Each of the two recovery verbs reaches the STORE, and a refusing store's answer is the
 /// caller's.
 ///
 /// The three used to travel `Verbs::execute`, which sends every new verb to the governance seam
@@ -1453,32 +1445,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
                 .push(format!("store_restore:{backup_ref}"));
             Err(busbar_contract::verb_store::StoreError::Failed)
         }
-
-        fn reseal_epoch_floor(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push("reseal_epoch_floor".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
-        }
-
-        fn replay_new_verb(
-            &self,
-            _key: &(String, String),
-        ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-            Ok(None)
-        }
-
-        fn commit_new_verb_replay(
-            &self,
-            _key: &(String, String),
-            _response: &[u8],
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            Ok(())
-        }
     }
 
     /// A dispatch that must never be asked. If a recovery verb still travelled the governance
@@ -1499,11 +1465,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             "/api/v1/admin/store-restore",
             "{\"backup_ref\":\"nightly-2026-09-05\"}",
             "store_restore:nightly-2026-09-05",
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
@@ -1651,13 +1612,13 @@ fn either_carrier_reaches_the_loop_as_the_credential_itself() {
     );
 }
 
-/// These three verbs and no others land on the store.
+/// These two verbs and no others land on the store.
 ///
 /// Written from this side as well as the verbs unit's, because the split is a fact two crates
 /// have to agree about: a verb added to the unit's store methods without a row here would go
 /// back to the governance seam and its 404, silently.
 #[test]
-fn exactly_three_verbs_land_on_the_store() {
+fn exactly_two_verbs_land_on_the_store() {
     let landing: Vec<KernelVerb> = NEW_VERBS
         .iter()
         .copied()
@@ -1665,11 +1626,7 @@ fn exactly_three_verbs_land_on_the_store() {
         .collect();
     assert_eq!(
         landing,
-        vec![
-            KernelVerb::ChainBreak,
-            KernelVerb::StoreRestore,
-            KernelVerb::ResealEpochFloor
-        ]
+        vec![KernelVerb::ChainBreak, KernelVerb::StoreRestore]
     );
     for verb in LEGACY_VERBS
         .iter()
@@ -5499,108 +5456,6 @@ fn an_adjust_naming_no_pool_or_an_unknown_pool_is_refused_and_seals_nothing() {
     assert_eq!(sealed(), 1);
 }
 
-/// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to
-/// [`RootClaimJournal`] over a node with a data directory journals EXACTLY ONE claim for a key it
-/// sees first and then sees again in flight: the restart's recovery finds that one claim, with no
-/// hold behind it, and voids it — once.
-#[cfg(feature = "root-admin")]
-#[test]
-fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
-    use busbar_core_admin::idempotency::{ClaimJournal, IdempotencyCache, Probe};
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-units-admin-claims-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-    let cfg = crate::root::durability::DurabilityConfig {
-        data_dir: Some(dir.clone()),
-    };
-    let boot = || {
-        crate::root::durability::build_priced(
-            &cfg,
-            3,
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
-        )
-        .expect("the directory is writable")
-    };
-    {
-        let book = Arc::new(Mutex::new(boot()));
-        let journal: Arc<dyn ClaimJournal> = Arc::new(RootClaimJournal::new(
-            Arc::clone(&book),
-            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
-        ));
-        let cache: IdempotencyCache<Vec<u8>> = IdempotencyCache::with_journal(journal);
-        let key = ("admin".to_string(), "create_key:idem-271".to_string());
-        let first = cache.probe(key.clone(), 1_700_000_000);
-        assert!(matches!(first, Probe::Reserved(_)), "a first sighting");
-        assert!(
-            matches!(cache.probe(key, 1_700_000_001), Probe::InFlight),
-            "the same key in flight is refused and takes no second claim"
-        );
-        drop(first);
-    }
-    let restarted = boot();
-    assert_eq!(
-        restarted.voided_claims,
-        vec!["admin:create_key:idem-271".to_string()],
-        "exactly one claim was journalled, and the restart voids it"
-    );
-    assert!(
-        restarted.restart_findings.is_empty(),
-        "{:?}",
-        restarted.restart_findings
-    );
-    drop(restarted);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP.** The composition `main.rs` boots the admin
-/// listener through ([`crate::root::kernel::ProductionUnits::admin_only_sharing`]) binds the admin
-/// unit's idempotency claims to the node journal on a node WITH a data directory, and binds nothing
-/// on a memory-buffered node — which keeps the previous release's shape and ships nothing new to its
-/// store.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
-    let compose = |data_dir: Option<std::path::PathBuf>| {
-        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-        let durability = crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(rows.clone()),
-        )
-        .expect("the journal opens");
-        crate::root::kernel::ProductionUnits::admin_only_sharing(
-            Arc::new(AnsweringDispatch),
-            open_door(),
-            Arc::new(Mutex::new(durability)),
-            Arc::new(rows),
-            None,
-        )
-    };
-    assert!(
-        compose(None).admin.claims.is_none(),
-        "a memory-buffered node binds no claim journal"
-    );
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-units-admin-claims-bound-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-    let bound = compose(Some(dir.clone())).admin.claims.is_some();
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        bound,
-        "a node with a data directory binds the admin claims to its journal"
-    );
-}
-
 /// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); BUSBAR-1.6.0.md THE DESIGN, §2,
 /// PB-13; architect ruling 2026-09-26): a node bound to its keyset seals a SIGNED record and a
 /// SIGNED checkpoint, and both verify against the key the served read publishes — parsed off the
@@ -6111,17 +5966,9 @@ const ADJUST_ACK_PHASE: &str = "BUSBAR_TEST_ADJUST_ACK_PHASE";
 
 /// THE CHILD HALF of [`an_adjust_answers_only_once_the_store_kept_its_correction`], run only in a
 /// process of its own: it binds the node amendment journal's sink — one per process — to its book,
-/// as the production boot does (`root::boot`, `bind_amendments`). Ignored so the default run never
-/// counts it as a pass.
+/// as the production boot does (`root::boot`, `bind_amendments`).
 #[cfg(feature = "root-admin")]
-#[test]
-#[ignore = "child process of an_adjust_answers_only_once_the_store_kept_its_correction"]
 fn adjust_ack_phase() {
-    assert!(
-        std::env::var(ADJUST_ACK_PHASE).is_ok(),
-        "adjust_ack_phase is the child half of an_adjust_answers_only_once_the_store_kept_its_\
-         correction: run that, not this"
-    );
     let slots = crate::root::store_double::RecordSlots::new();
     let (book, digest) =
         a_store_kept_book_with_one_recorded_unit(&slots, "vk_adjust_h3_ack", "adjust-h3-ack");
@@ -6167,9 +6014,16 @@ fn adjust_ack_phase() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_adjust_answers_only_once_the_store_kept_its_correction() {
+    if std::env::var_os(ADJUST_ACK_PHASE).is_some() {
+        adjust_ack_phase();
+        return;
+    }
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-        .args(["--exact", "root::units_admin::tests::adjust_ack_phase"])
-        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .args([
+            "--exact",
+            "root::units_admin::tests::an_adjust_answers_only_once_the_store_kept_its_correction",
+        ])
+        .args(["--test-threads", "1", "--nocapture"])
         .env(ADJUST_ACK_PHASE, "1")
         .output()
         .expect("the test binary runs");
@@ -6549,6 +6403,65 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
         outcome,
         Err(ReasonCode::ScopeDenied),
         "a unit with no recorded grant reached the verb"
+    );
+}
+
+/// **A KEYED WRITE RETRIED AFTER A RESTART REPLAYS ITS FIRST ANSWER AND RUNS NOTHING AGAIN.**
+/// Contract D-3's replay cache is process memory; the claim and the first answer are kept in the
+/// configured store. A fresh cache over the same store (a restart, or a sibling node) answers the
+/// first answer's bytes, and the effect runs once.
+///
+/// RED while the claim lived only in the process: the second cache ran the effect again.
+#[test]
+fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
+        Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let held = Arc::clone(&store);
+    let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
+    let request = AdminRequest {
+        method: "POST".to_string(),
+        path: "/api/v1/admin/plane-records".to_string(),
+        credential: None,
+        headers: vec![("idempotency-key".to_string(), "restart-d3".to_string())],
+        body: br#"{"record":1}"#.to_vec(),
+        at: 1_700_000_000,
+        unit: a_fresh_unit(),
+    };
+    let ran = std::sync::atomic::AtomicUsize::new(0);
+    let effect = || {
+        let n = ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(AdminAnswer {
+            status: 201,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: format!(r#"{{"run":{n}}}"#).into_bytes(),
+        })
+    };
+    let first = bound::replayable(
+        &bound::ReplayCache::new(),
+        Some(&replay_store),
+        KernelVerb::PlaneRecordWrite,
+        "operator",
+        &request,
+        &request.body,
+        effect,
+    )
+    .expect("the first write answers");
+    // The restart: a fresh cache, the same store.
+    let retried = bound::replayable(
+        &bound::ReplayCache::new(),
+        Some(&replay_store),
+        KernelVerb::PlaneRecordWrite,
+        "operator",
+        &request,
+        &request.body,
+        effect,
+    )
+    .expect("the retry answers");
+    assert_eq!(retried, first, "the retry answers the first answer's bytes");
+    assert_eq!(
+        ran.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the effect ran once across the restart"
     );
 }
 
