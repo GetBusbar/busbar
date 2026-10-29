@@ -28,7 +28,7 @@ impl ArrivalDoor for TestDoor {
         principal: PrincipalId,
         token: &Grant<busbar_contract::caps::Admittance>,
     ) -> Hold {
-        Hold::open(token, principal, 0)
+        Hold::open(token, principal)
     }
 }
 
