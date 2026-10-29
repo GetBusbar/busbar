@@ -837,8 +837,10 @@ busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev 
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "ea92a077b0b43038196261fc78b5cd26569def07" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "ea92a077b0b43038196261fc78b5cd26569def07" }
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab" }
+# auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
+# token exchange in the default class named per request (a private IdP refused unless allowlisted).
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "a19d1133275dde33ac49f16801865c1bfe406d5a" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "a19d1133275dde33ac49f16801865c1bfe406d5a" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "51e744af4a46222e7bb5ecb8d5c86b97a450f929" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "51e744af4a46222e7bb5ecb8d5c86b97a450f929" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "6e7c9327103382e5ee9e5b223c5306eea82ef51f" }
