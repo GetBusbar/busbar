@@ -187,6 +187,8 @@ fn rig() -> Rig {
             )],
             scope_kinds: vec!["group".into(), "item".into()],
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
     )
     .unwrap();
@@ -741,6 +743,8 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             trust: Vec::new(),
             scope_kinds: Vec::new(),
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
     )
     .unwrap();
@@ -2052,6 +2056,77 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     );
 }
 
+/// RED/GREEN, THE DECLARED RETENTION RULE: a purge of a record kind the instance declared
+/// terminal-only keeps its active rows past the cutoff and drops its terminal ones; a kind it
+/// declared no rule for is purged by age, every older row gone. The kinds' names carry nothing: the
+/// rule is the declaration's.
+#[test]
+fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
+    use busbar_contract::abi::plane::RecordRetention;
+    use busbar_contract::ids::RecordSchemaId;
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore, Retention};
+    let s = KernelServices::new();
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![RecordSchemaId::new("kept"), RecordSchemaId::new("aged")],
+            record_retentions: vec![RecordRetention {
+                kind: 0,
+                rule: Retention::TerminalOnly.code(),
+            }],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(s.record_retention("inst", "kept"), Retention::TerminalOnly);
+    assert_eq!(s.record_retention("inst", "aged"), Retention::Age);
+    assert_eq!(s.record_retention("other", "kept"), Retention::Age);
+
+    let store = MemoryStore::new();
+    let rows = [
+        ("old-active", 10, PlaneDisposition::Active),
+        ("old-terminal", 10, PlaneDisposition::Terminal),
+        ("new-terminal", 200, PlaneDisposition::Terminal),
+    ];
+    for kind in ["kept", "aged"] {
+        for (id, ts, disposition) in rows {
+            let row = PlaneRecord {
+                kind: kind.into(),
+                id: id.into(),
+                parent: None,
+                seq: 0,
+                ts,
+                disposition,
+                body: b"{}".to_vec(),
+            };
+            store.upsert_plane_record(row.view()).unwrap();
+        }
+    }
+    let held = |kind: &str, id: &str| store.get_plane_record(kind, id).unwrap().is_some();
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "kept", 100).unwrap(),
+        1
+    );
+    assert!(
+        held("kept", "old-active"),
+        "an active row outlives the cutoff"
+    );
+    assert!(!held("kept", "old-terminal"), "an older terminal row goes");
+    assert!(held("kept", "new-terminal"), "a row after the cutoff stays");
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "aged", 100).unwrap(),
+        2
+    );
+    assert!(
+        !held("aged", "old-active"),
+        "by age, an older active row goes"
+    );
+    assert!(!held("aged", "old-terminal"));
+    assert!(held("aged", "new-terminal"));
+}
+
 /// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
 /// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
 /// again inside its window finds the claim taken, so the second redemption is refused.
@@ -2224,6 +2299,153 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
         k.trust_judge("inst", &whole),
         Ok(()),
         "kept, it is in force"
+    );
+}
+
+/// What one mint was handed: the key id, the prefix, the lifetime and the record.
+type Minted = (String, String, u64, Vec<u8>);
+
+/// A press that mints `<prefix><key>:<ttl>` and expires at `now + ttl`, keeping what it was handed.
+#[derive(Default)]
+struct Press(Mutex<Vec<Minted>>);
+
+impl TicketPress for Press {
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        self.0.lock().unwrap().push((
+            key_id.to_string(),
+            prefix.to_string(),
+            ttl_secs,
+            record.to_vec(),
+        ));
+        Ok((format!("{prefix}{key_id}:{ttl_secs}"), now + ttl_secs))
+    }
+}
+
+/// THE TICKET SERVICES (row 132): a mint is for the unit's principal, under the instance's declared
+/// prefix, through the attached press; a take hands back what admitted the unit, once.
+#[test]
+fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
+    let r = rig();
+    r.s.admit(
+        "minter",
+        InstanceFacts {
+            ticket_prefix: Some("tk_".into()),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let principal = Arc::new(VirtualKey {
+        id: "vk_caller".into(),
+        ..VirtualKey::default()
+    });
+    r.s.units().admitted(
+        7,
+        UnitRecord {
+            principal: Some(Arc::clone(&principal)),
+            depth: 0,
+        },
+    );
+    // RED: no press attached.
+    let no_press = r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{}");
+    assert_eq!(
+        (no_press.outcome, no_press.error),
+        (Outcome::Refused, TICKET_NO_PRESS)
+    );
+    let press = Arc::new(Press::default());
+    assert!(r
+        .s
+        .attach_tickets(Arc::clone(&press) as Arc<dyn TicketPress>));
+    let minted =
+        r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{\"m\":1}");
+    assert_eq!(minted.outcome, Outcome::Ready);
+    assert_eq!(minted.bytes, b"tk_vk_caller:600");
+    assert_eq!(
+        minted.value,
+        1_000 + 600,
+        "the wall clock's seconds plus the lifetime"
+    );
+    assert_eq!(
+        press.0.lock().unwrap().as_slice(),
+        &[(
+            "vk_caller".to_string(),
+            "tk_".to_string(),
+            600,
+            b"{\"m\":1}".to_vec()
+        )]
+    );
+    // RED: no unit, a unit with no principal, an instance that declares no prefix.
+    let none = r.s.ticket_mint(&caller("minter"), None, 600, b"{}");
+    assert_eq!(none.error, TICKET_NO_PRINCIPAL);
+    r.s.units().admitted(
+        8,
+        UnitRecord {
+            principal: None,
+            depth: 0,
+        },
+    );
+    let anonymous = r.s.ticket_mint(&caller("minter"), Some(8), 600, b"{}");
+    assert_eq!(anonymous.error, TICKET_NO_PRINCIPAL);
+    let unprefixed = r.s.ticket_mint(&caller("inst"), Some(7), 600, b"{}");
+    assert_eq!(unprefixed.error, TICKET_NO_PREFIX);
+    assert_eq!(
+        press.0.lock().unwrap().len(),
+        1,
+        "a refused mint never reaches the press"
+    );
+    assert_eq!(r.s.ticket_prefix_of("minter").as_deref(), Some("tk_"));
+    assert_eq!(r.s.ticket_prefix_of("inst"), None);
+}
+
+#[test]
+fn a_take_hands_back_what_admitted_the_unit_once() {
+    let r = rig();
+    let admit = |unit: u64| {
+        r.s.units().admitted(
+            unit,
+            UnitRecord {
+                principal: None,
+                depth: 0,
+            },
+        );
+    };
+    admit(7);
+    assert!(r.s.units().ticketed(7, Some(b"record".to_vec())));
+    admit(8);
+    assert!(r.s.units().ticketed(8, None));
+    let taken = r.s.ticket_take(&caller("inst"), Some(7));
+    assert_eq!(
+        (taken.outcome, taken.value, taken.bytes.as_slice()),
+        (Outcome::Ready, svc::TICKET_TAKEN, &b"record"[..])
+    );
+    let keyed = r.s.ticket_take(&caller("inst"), Some(8));
+    assert_eq!(
+        (keyed.outcome, keyed.value, keyed.bytes.len()),
+        (Outcome::Ready, svc::TICKET_NONE, 0)
+    );
+    // RED: a second take, a unit not in flight, and no unit.
+    for unit in [Some(7), Some(8), Some(9), None] {
+        let again = r.s.ticket_take(&caller("inst"), unit);
+        assert_eq!(
+            (again.outcome, again.error),
+            (Outcome::Refused, TICKET_NOT_HELD),
+            "unit {unit:?}"
+        );
+    }
+    // RED: a unit not in flight holds no ticket; its end drops what it held.
+    assert!(!r.s.units().ticketed(9, Some(b"x".to_vec())));
+    admit(10);
+    assert!(r.s.units().ticketed(10, Some(b"x".to_vec())));
+    r.s.units().ended(10);
+    assert_eq!(
+        r.s.ticket_take(&caller("inst"), Some(10)).error,
+        TICKET_NOT_HELD
     );
 }
 
