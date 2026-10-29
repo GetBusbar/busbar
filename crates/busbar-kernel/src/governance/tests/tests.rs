@@ -698,6 +698,9 @@ fn test_refresh_updates_both_indices_atomically() {
         crate::governance::signing::DEFAULT_KID,
     );
     let gov = GovState::new_with_signer(store, None, Some(signer)).unwrap();
+    gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+        &[3u8; 32], None,
+    )));
     let (key, _token, akid, _secret) = gov
         .mint_signed_with_credential(
             NewKeySpec {
@@ -2999,9 +3002,13 @@ mod signed_token {
     fn gov() -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
-        Arc::new(
-            GovState::new_with_signer(store, Some("admintok".into()), Some(signer)).expect("gov"),
-        )
+        let g =
+            GovState::new_with_signer(store, Some("admintok".into()), Some(signer)).expect("gov");
+        // `credentials.at_rest`: a recoverable credential is minted only with an at-rest key.
+        g.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        Arc::new(g)
     }
 
     fn spec(name: &str, group: Option<&str>, pools: Option<Vec<&str>>) -> NewKeySpec {
@@ -3258,8 +3265,8 @@ mod signed_token {
     /// The two one-time secrets `mint_signed_with_credential` hands back (the bearer token and the AWS
     /// secret access key) are sealed: a `{:?}` or `{}` of either, or a `{:?}` of the whole returned
     /// tuple, never carries the plaintext (DESIGN #54: secret material Debug/Display => REDACTED).
-    /// The stored credential row still holds the exact plaintext, so SigV4 verification and the
-    /// admin response bytes are unchanged.
+    /// The stored credential row holds it sealed under the at-rest key, and the read opens it, so
+    /// SigV4 verification and the admin response bytes are unchanged.
     #[test]
     fn mint_with_aws_secrets_never_print() {
         let g = gov();
@@ -3293,7 +3300,13 @@ mod signed_token {
         let (_, cred) = g
             .lookup_credential(&crate::governance::tests::signed_kind(), &minted.2)
             .expect("akid resolves");
-        assert_eq!(cred.secret, format!("v1:plain:{aws_secret}"));
+        // At rest it is sealed (CHIP-DESIGN v4.1 change 1), and the read opens it.
+        assert!(cred.secret.starts_with("v1:aead:"), "stored in the clear");
+        assert!(!cred.secret.contains(&aws_secret));
+        let (read, live) =
+            g.credential_secret(&crate::governance::tests::signed_kind(), &minted.2, 1_500);
+        assert!(live);
+        assert_eq!(read.expose(&crate::seal::lend()), &aws_secret);
     }
 
     /// Minting without a signer fails closed (no token can be issued).
@@ -5624,8 +5637,8 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 /// Reading the finer clock made the same script answer 277,530,000 exactly.
 ///
 /// Behavioural: `record_metered_request_dated` is driven with a wall-clock double and a rate-dater
-/// double (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
-/// dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
+/// double (the governance's own dater, `GovState::effective_from_at`, is not touched, so no other
+/// accrual is dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
 /// inside the same second as both. The cell must carry the SECOND card's start. An accrual that
 /// lifts `now * 1_000` into milliseconds asks the dater for `T0` and dates the cell at the first
 /// card, which is the RED arm: this test fails against that implementation.
@@ -5891,6 +5904,44 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
     assert_eq!(rows.len(), 3, "nothing else was written");
 }
 
+/// SPEND IS ALWAYS ATTRIBUTED (ORACLE-116 review, LEDGER-SIMPLE): a served pools unit's open class
+/// (a provider-stated total's `unitemized_tokens`, LEDGER-100) lands on the SAME `(model,
+/// provider)` metering row its request meters on, so the usage report shows one row for the
+/// serving provider and never a second `(model, "")` row with no provider to bill it to.
+/// RED: before, the class mirrored onto `(m, "")` beside the request's `(m, p)` row.
+#[test]
+fn a_served_units_open_class_lands_on_its_providers_row() {
+    use busbar_contract::records::RecordStore as _;
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let units: std::collections::BTreeMap<String, u64> = [
+        ("input".to_string(), 18),
+        ("output".to_string(), 7),
+        ("unitemized_tokens".to_string(), 3),
+    ]
+    .into_iter()
+    .collect();
+    gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
+    gov.record_lane_metering(&k.id, "m", Some("p"), &units, AT);
+    gov.flush_metering();
+    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
+    assert_eq!(
+        mine.iter()
+            .map(|r| (r.model.as_str(), r.provider.as_str()))
+            .collect::<Vec<_>>(),
+        [("m", "p")],
+        "one row, attributed to the serving provider: {mine:?}"
+    );
+    let row = mine[0];
+    assert_eq!(row.requests, 1);
+    assert_eq!(
+        row.usage_units.get("unitemized_tokens"),
+        Some(&3),
+        "the open class rides its provider's row"
+    );
+}
+
 #[test]
 fn a_plane_without_fees_bills_no_fee() {
     let (_store, gov, k) = team_gov();
@@ -6126,7 +6177,8 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     let (got, live) = gov.credential_secret(&signed_kind(), "AKIAdoesnotexist0000", now);
     assert_eq!(
         (got.expose(&crate::seal::lend()).as_str(), live),
-        (crate::auth::DUMMY_SECRET, false)
+        ("", false),
+        "an unknown pair answers an empty secret, not live: the verifier swaps in its own dummy"
     );
     gov.revoke(&key.id, "test").unwrap();
     assert!(

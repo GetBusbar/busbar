@@ -105,8 +105,8 @@ use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DES
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
-    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
-    Piece, PieceKind, PollConns, Ticket, NO_TICKET,
+    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId, NeedId,
+    OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -525,14 +525,123 @@ struct Redial {
     mark: u64,
 }
 
+/// A HELD CONNECTION'S DIAL, CROSSING WITH NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
+/// runs under a host lock): its judgement is spent under the judgement's lock, which is let go
+/// before the carrier's `dial`, the ride and the early writes cross. Meanwhile the connection is
+/// neither judging nor dialled: a caller finds it still settling (`Pending`), woken once the dial
+/// came to its end, however it ends.
+struct Crossing<'h> {
+    held: &'h Held,
+}
+
+impl<'h> Crossing<'h> {
+    /// The dial of `held` begins crossing; `judging` (its spent judgement's lock) is let go.
+    fn begin(held: &'h Held, judging: std::sync::MutexGuard<'_, Option<Judging>>) -> Self {
+        *held.crossing.lock().expect("crossing") = Some(Vec::new());
+        drop(judging);
+        Self { held }
+    }
+}
+
+impl Drop for Crossing<'_> {
+    fn drop(&mut self) {
+        let waiting = self
+            .held
+            .crossing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default();
+        for w in waiting {
+            w.wake();
+        }
+    }
+}
+
+/// A piece a short caller buffer left, and its unread bytes.
+type Left = (Piece, Vec<u8>);
+
+/// What a short caller buffer left of a piece (the piece and its unread bytes), and whether the
+/// end was answered.
+#[derive(Default)]
+struct Rest {
+    piece: Option<Left>,
+    ended: bool,
+    /// A read (or an upgrade) has the rest out.
+    reading: bool,
+    /// The reads that found it out, woken when it is back.
+    missed: Vec<Waker>,
+}
+
+/// ONE READ HAS THE REST (`BUSBAR-1.6.0.md` §11: no plugin code runs under a host lock): taken
+/// under the lock, the read crosses into the line (and a dial) with none held, and what it left is
+/// put back as it ends, however it ends. Another read of the same connection meanwhile answers
+/// PENDING and is woken when the rest is back, so no read takes a piece out of order.
+struct Reading<'h> {
+    rest: &'h Mutex<Rest>,
+    /// The end was answered.
+    ended: bool,
+    /// What a short buffer left, for the next read.
+    left: Option<Left>,
+}
+
+impl<'h> Reading<'h> {
+    /// Take the rest for one read: what a short buffer left, and whether the end was answered.
+    /// `None` while another read has it, `waker` woken once it is back.
+    fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<Left>)> {
+        let mut r = rest.lock().expect("rest");
+        if r.reading {
+            if !r.missed.iter().any(|w| w.will_wake(waker)) {
+                r.missed.push(waker.clone());
+            }
+            return None;
+        }
+        r.reading = true;
+        let kept = r.piece.take();
+        let ended = r.ended;
+        Some((
+            Self {
+                rest,
+                ended,
+                left: None,
+            },
+            kept,
+        ))
+    }
+}
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        let missed = {
+            let mut r = self
+                .rest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            r.reading = false;
+            r.ended |= self.ended;
+            if let Some(left) = self.left.take() {
+                r.piece = Some(left);
+            }
+            std::mem::take(&mut r.missed)
+        };
+        for w in missed {
+            w.wake();
+        }
+    }
+}
+
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
 /// there (a dialled exchange's own; an accepted connection's every stream).
 struct Held {
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// The judgement the dial waits on; `None` once dialled.
     judging: Mutex<Option<Judging>>,
-    /// The piece a short caller buffer left, and whether the end was answered.
-    rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
+    /// THE DIAL IS CROSSING (`Some`, with the callers waiting on it): its judgement is spent and
+    /// its carrier's `dial` (and the early writes' framing) cross with no lock held ([`Crossing`]).
+    crossing: Mutex<Option<Vec<Waker>>>,
+    /// The piece a short caller buffer left, and whether the end was answered: the reading
+    /// caller's while it reads ([`Reading`]).
+    rest: Mutex<Rest>,
     /// The far end's reason phrase, held until its head's last piece is read.
     reason: Mutex<Option<Vec<u8>>>,
     /// Where a dialled connection goes back to when its exchange finished whole: its pool shard
@@ -573,7 +682,8 @@ impl Held {
         Held {
             line: Mutex::new(line),
             judging: Mutex::new(judging),
-            rest: Mutex::new((None, Vec::new(), false)),
+            crossing: Mutex::new(None),
+            rest: Mutex::new(Rest::default()),
             reason: Mutex::new(None),
             pooled,
             whole: AtomicBool::new(false),
@@ -1441,7 +1551,18 @@ impl Connector {
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let mut judging = held.judging.lock().expect("judging");
         let Some(j) = judging.as_mut() else {
-            return Ok(true);
+            drop(judging);
+            // Judged: dialled, unless its dial is still crossing.
+            let mut crossing = held.crossing.lock().expect("crossing");
+            return Ok(match crossing.as_mut() {
+                Some(waiting) => {
+                    if let Some(w) = waker.filter(|w| !waiting.iter().any(|x| x.will_wake(w))) {
+                        waiting.push(w.clone());
+                    }
+                    false
+                }
+                None => true,
+            });
         };
         let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
@@ -1493,6 +1614,7 @@ impl Connector {
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
             let early = std::mem::take(&mut j.early);
             *judging = None;
+            let _crossing = Crossing::begin(held, judging);
             let connect = proxy::connect_request(planned.authority(), &spec);
             let conn = planned
                 .dial_through(proxy_addr, connect)
@@ -1519,6 +1641,7 @@ impl Connector {
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
+        let _crossing = Crossing::begin(held, judging);
         let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
         let line = self.ride(held, conn);
         for (bytes, end, text) in early {
@@ -1741,11 +1864,13 @@ impl Connector {
         if let Some((member, lease)) = &held.lease {
             return member.read(*lease, waker, buf);
         }
-        let mut rest = held.rest.lock().expect("rest");
-        let (piece, bytes) = match rest.0.take() {
-            Some(p) => (p, std::mem::take(&mut rest.1)),
+        let Some((mut reading, kept)) = Reading::begin(&held.rest, waker) else {
+            return Err(ConnError::Pending);
+        };
+        let (piece, bytes) = match kept {
+            Some(kept) => kept,
             None => {
-                if rest.2 {
+                if reading.ended {
                     return Err(ConnError::Closed);
                 }
                 let got = loop {
@@ -1760,7 +1885,7 @@ impl Connector {
                         Poll::Ready(Err(_) | Ok(None)) if self.redial(held)? => {}
                         Poll::Ready(Err(f)) => return Err(map(&f)),
                         Poll::Ready(Ok(None)) => {
-                            rest.2 = true;
+                            reading.ended = true;
                             return Ok(completion(0));
                         }
                         Poll::Ready(Ok(Some(got))) => break (got, stream),
@@ -1774,14 +1899,14 @@ impl Connector {
                     // A DIALLED exchange's stream ending whole is the exchange's completion
                     // (`busbar_contract::abi::transport`, "streams end by flag"): the caller
                     // has the whole answer, and the line may carry the next one.
-                    rest.2 = true;
+                    reading.ended = true;
                     held.whole.store(true, Ordering::Release);
                     return Ok(completion(got.stream));
                 }
                 if dialled && got.stream == stream && got.failed {
                     // Its stream FAILED (the framer's reason is never the caller's payload): the
                     // exchange fails, and the line is not kept.
-                    rest.2 = true;
+                    reading.ended = true;
                     return Err(ConnError::Fault);
                 }
                 // The far end's head (and its trailers) arrive as the framer's field block: a
@@ -1819,8 +1944,7 @@ impl Connector {
             // The caller's buffer is short: this piece does not end its frame yet, and the rest
             // is the next read's.
             out.end = false;
-            rest.0 = Some(piece);
-            rest.1 = bytes[n..].to_vec();
+            reading.left = Some((piece, bytes[n..].to_vec()));
         } else if out.kind == PieceKind::Fields && out.end {
             // The head's last piece: its reason phrase follows the field block in the caller's
             // buffer, where the buffer holds it too.
@@ -2064,24 +2188,28 @@ impl DeclaredConns for Connector {
         };
         // What a short read left of a clear piece is the far end's clear bytes, unread: the line
         // refuses the upgrade over it and fails the connection, and the rest is never read, the
-        // failure is. Held across the upgrade, so no read takes a piece meanwhile.
-        let mut rest = held.rest.lock().expect("rest");
+        // failure is. The rest is out across the upgrade (no lock held as it crosses), so no read
+        // takes a piece meanwhile.
+        let Some((mut reading, kept)) = Reading::begin(&held.rest, &waker) else {
+            return Err(ConnError::Pending);
+        };
         let answer = line.upgrade_secure(
             &config,
             &name,
             DEFAULT_OPEN_TIMEOUT,
-            rest.0.is_some(),
+            kept.is_some(),
             &mut Context::from_waker(&waker),
         );
+        let over_clear = matches!(
+            &answer,
+            Poll::Ready(Err(Failure::Refused(t))) if t == compose::UPGRADE_OVER_CLEAR_BYTES
+        );
+        if !over_clear {
+            reading.left = kept;
+        }
         match answer {
             Poll::Ready(Ok(())) => Ok(()),
-            Poll::Ready(Err(f)) => {
-                if matches!(&f, Failure::Refused(t) if t == compose::UPGRADE_OVER_CLEAR_BYTES) {
-                    rest.0 = None;
-                    rest.1.clear();
-                }
-                Err(map(&f))
-            }
+            Poll::Ready(Err(f)) => Err(map(&f)),
             Poll::Pending => Err(ConnError::Pending),
         }
     }
@@ -2353,13 +2481,13 @@ impl Connector {
         let due = (desc.timeout_ms != 0)
             .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
         // The exchange body: the description alone, or framed into the opener's form.
-        let body = dialled::composed_body(desc.fields, desc.body, &description)?;
+        let body = dialled::composed_body(desc.fields, &desc.body, &description)?;
         let held = self.dial_exchange(
             caller,
             need,
             &OpenDesc {
-                body: &body,
-                ..*desc
+                body: body.into(),
+                ..desc.clone()
             },
             (exchange, alpn),
             target,
@@ -2399,7 +2527,7 @@ impl Connector {
                     .iter()
                     .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                     .collect(),
-                desc.body.to_vec(),
+                desc.body.clone(),
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
@@ -2596,7 +2724,7 @@ impl Conns for Connector {
                 .get(program::member_of(desc.target))
                 .cloned()
                 .ok_or(ConnError::Refused)?;
-            let lease = member.lease(desc.body)?;
+            let lease = member.lease(&desc.body)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
             // A refused insert drops the held lease, which closes it.
@@ -2619,7 +2747,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2686,7 +2814,7 @@ impl Conns for Connector {
                         .iter()
                         .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
                         .collect(),
-                    desc.body.to_vec(),
+                    desc.body.clone(),
                 )),
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
@@ -2748,6 +2876,8 @@ impl Conns for Connector {
                     .push((bytes[..take].to_vec(), end && take == bytes.len(), text));
                 return Ok(take);
             }
+            // Its dial is crossing: re-offered after the caller's next read or wait.
+            return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         match line.emit(stream, bytes, end, text) {
@@ -2787,7 +2917,7 @@ impl Conns for Connector {
                 }
                 continue;
             }
-            if held.rest.lock().expect("rest").0.is_some() {
+            if held.rest.lock().expect("rest").piece.is_some() {
                 return Ok(at);
             }
             match self.settle(&held, Some(&waker)) {
@@ -2855,6 +2985,24 @@ impl Conns for Connector {
 }
 
 impl PollConns for Connector {
+    /// The framer the need rides, located at `target`: its own head lines, and whether its head
+    /// states the body's length. A carrier carried as itself, a need nobody declared, or a target
+    /// the framer refuses states neither.
+    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| Arc::clone(&n.door));
+        door.and_then(|door| self.located(&door, target))
+            .map(|located| HeadDefaults {
+                lines: located.defaults,
+                states_length: located.states_length,
+            })
+            .unwrap_or_default()
+    }
+
     fn poll_read(
         &self,
         caller: InstanceId,
@@ -2982,6 +3130,11 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+/// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/warn_capture.rs"]
+pub mod warn_capture;
 
 #[cfg(test)]
 #[path = "tests/trust_from_tests.rs"]

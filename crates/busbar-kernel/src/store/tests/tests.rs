@@ -1993,54 +1993,6 @@ fn test_zero_weight_member_is_never_selected() {
     );
 }
 
-/// ZERO-COST-DEFAULT PERF GATE (routing-policy feature). An in-crate, deterministic micro-bench
-/// of the default selection seam (`select_weighted_in`) — the hot path a `route: weighted`
-/// (default) pool takes. Captured as a BASELINE before the routing-policy seam refactor and
-/// re-run afterwards to prove the default path shows no regression. `#[ignore]` so it never
-/// runs in the normal suite (timing is environment-sensitive); invoke explicitly with
-/// `cargo test --release bench_select_weighted_in_seam -- --ignored --nocapture`. (criterion
-/// would require restructuring this binary-only crate into a lib+bin to reach `pub(crate)`
-/// internals; an `Instant`-based in-crate bench measures the EXACT same code with no crate
-/// surgery — the honest, low-risk way to gate the default path.)
-#[test]
-#[ignore = "a timing bench: run with --release --ignored --nocapture"]
-fn bench_select_weighted_in_seam() {
-    let store = Arc::new(HealthState::new(vec![
-        make_lane_data(0, 100),
-        make_lane_data(1, 100),
-        make_lane_data(2, 100),
-        make_lane_data(3, 100),
-    ]));
-    set_now_for_test(1000);
-    let cands = [0usize, 1, 2, 3];
-    let weights = [5u32, 3, 1, 1];
-    // Warm up.
-    for _ in 0..100_000 {
-        std::hint::black_box(store.select_weighted_in(
-            std::hint::black_box("bench-pool"),
-            std::hint::black_box(&cands),
-            std::hint::black_box(&weights),
-            std::hint::black_box(1000),
-        ));
-    }
-    let iters = 2_000_000u64;
-    let start = std::time::Instant::now();
-    for _ in 0..iters {
-        std::hint::black_box(store.select_weighted_in(
-            std::hint::black_box("bench-pool"),
-            std::hint::black_box(&cands),
-            std::hint::black_box(&weights),
-            std::hint::black_box(1000),
-        ));
-    }
-    let elapsed = start.elapsed();
-    let per = elapsed.as_nanos() as f64 / iters as f64;
-    println!(
-        "BENCH select_weighted_in_seam: {iters} iters in {elapsed:?} => {per:.2} ns/iter \
-             (4 candidates, weighted 5:3:1:1)"
-    );
-}
-
 /// Per-lane latency EWMA (routing `fastest` signal): `None` before any sample; the first sample
 /// seeds the EWMA exactly; subsequent samples fold in at α; non-finite/non-positive samples are
 /// ignored (never poison the signal).

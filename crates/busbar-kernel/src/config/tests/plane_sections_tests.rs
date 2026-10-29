@@ -3,7 +3,7 @@
 
 //! THE ONE PARSE-TIME PLANE-BOUNDARY RULE, and the proof that it is one.
 //!
-//! Three questions are asked here, and each of them used to be unanswerable because the rule
+//! Two questions are asked here, and each of them used to be unanswerable because the rule
 //! existed twice:
 //!
 //!   1. Is the section list DERIVED, and is there exactly one of it? A list written twice agrees
@@ -11,16 +11,11 @@
 //!   2. Does a plane busbar does not have cost anything? The rule takes its sections as a
 //!      PARAMETER, so the answer is a section name and nothing else — no config module, no
 //!      validator, no refusal type.
-//!   3. Are the two cross-plane refusals still TWO? [`crate::config::plane_sections`] refuses a SHAPE at
-//!      parse time; [`crate::plane_driver::dispatch::PlaneSections::resolve`] refuses a BINDING at resolve time.
-//!      Merging them would delete a check rather than deduplicate one, so both are exercised on
-//!      inputs the other cannot see.
 
 use crate::config::plane_sections::{
     config_sections, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
     HookRefError,
 };
-use crate::plane_driver::dispatch::{PlaneSections, RefError};
 
 // ══ 1. THE SECTION LIST EXISTS ONCE, AND IS DERIVED ══════════════════════════════════════════════
 
@@ -124,7 +119,7 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
 /// THE PARSE-TIME REFUSAL, on a string, before anything is known to exist.
 ///
 /// The input is deliberately one NOTHING DEFINES: no `planner` exists on any plane in this test, so
-/// [`PlaneSections::resolve`] could not refuse this and would never see it. Only a SHAPE rule can.
+/// only a SHAPE rule can refuse it.
 #[test]
 fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     let sections = config_sections();
@@ -134,27 +129,7 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
         err.contains("reaches onto the `agents:` plane"),
         "got: {err}"
     );
-
-    // The proof that this check is not the resolve-time one: an EMPTY container — nothing defined
-    // anywhere — cannot produce a `CrossPlane` for the same name. The resolve-time rule answers
-    // `Unknown`, because there is nothing there to have crossed a boundary.
-    let empty: PlaneSections<u8> = PlaneSections::default();
-    assert_eq!(
-        empty.resolve("tools", "agents.planner"),
-        Err(RefError::Unknown {
-            name: "agents.planner".to_string(),
-            plane: "tools"
-        }),
-        "the resolve-time rule cannot see a shape violation; only the parse-time rule can"
-    );
 }
-
-// `the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary` MOVED to
-// `crates/busbar/tests/plane_config_cross_plane.rs`: it asserts `RefError::CrossPlane`'s rendered PROSE contains
-// the real A2A plane's own config-section name (`"agents"`), which needs the real roster registered
-// — naming that real plane's key/section here (even behind a synthetic `#[cfg(test)]` decl) is
-// exactly what `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) exists to
-// forbid. See that file for the relocated test.
 
 // ══ THE REMAINING SENTENCES, so the total `From` has a reader for every arm ═══════════════════════
 

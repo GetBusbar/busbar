@@ -1,256 +1,13 @@
-//! The closed 66+12+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
+//! The pure `(method, path) -> verb` match over the closed verb table in [`crate::verb`].
 //!
-//! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
-//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 8 are the
-//! 1.6.0-additive money-governance verbs the design names by name only (`verify`, `plane_facts`,
-//! `plane_record_write`, `chain_break`, `store_restore`, `reseal_epoch_floor`, `commit_upgrade`,
-//! `adjust`) with no HTTP method or path of their own — they are new admin-API surface, not part
-//! of the 1.5.5 tag. Five more the design once named (`set_operator_key`, `set_escrow`,
-//! `set_dual_control`, `export_keyset`, `approve`) left 1.6.0 by the owner's 2026-09-08 ruling, and
-//! four (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) by
-//! #77(9) (owner answer Q71(1)); none has a row: their paths are unmounted.
-//!
-//! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 8. This
-//! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
-//! other mutating admin operation in the 1.5.5 table uses — purely so the table has *something*
-//! coherent to resolve against in the closed-loop tests below. `verify` and `plane_facts` are bound
-//! `GET` and read-only, as BUSBAR-1.6.0.md binds them in its HTTP-binding paragraph (CG-56), so
-//! the (method, path) gate agrees with the row without a carve-out; every other 1.6.0 verb is
-//! marked `full`, because every one of them mutates.
-//! If the real HTTP binding differs, only this table's literals need to change — the match logic
-//! (`find_verb`, path-pattern matching) does not know these are synthetic.
+//! The rows (the 66 of the pinned 1.5.5 `openapi-1.5.5.json` fixture, the 11 new 1.6.0 verbs, the
+//! five ledger views and the three audit-chain reads) live in [`crate::verb::TABLE`]; this module
+//! only matches request lines against them. Five verbs the design once named left 1.6.0 by the
+//! owner's 2026-09-08 ruling, and four more by #77(9) (owner answer Q71(1)); none has a row: their
+//! paths are unmounted.
 
-use crate::admin_codec::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
-use crate::verb::KernelVerb;
+use crate::verb::{admin_rows, VerbRow, VerbScope};
 use busbar_contract::ids::OpClassId;
-
-/// One row of the closed verb table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct VerbEntry {
-    pub(crate) method: &'static str,
-    pub(crate) path: &'static str,
-    pub(crate) verb: &'static str,
-    pub(crate) read_only: bool,
-}
-
-/// A read-only `GET` row.
-const fn get_row(path: &'static str, verb: &'static str) -> VerbEntry {
-    VerbEntry {
-        method: "GET",
-        path,
-        verb,
-        read_only: true,
-    }
-}
-
-/// A mutating `POST` row.
-const fn post_row(path: &'static str, verb: &'static str) -> VerbEntry {
-    VerbEntry {
-        method: "POST",
-        path,
-        verb,
-        read_only: false,
-    }
-}
-
-/// The 12 1.6.0-additive kernel verbs: the 9 money-governance verbs (the first eight carry the
-/// synthetic HTTP binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
-/// design's own binding under `/ledger/`) and the three trust verbs, under the ruling's own paths.
-const NEW_VERBS_1_6_0: &[VerbEntry] = &[
-    // `GET`, not `POST`: BUSBAR-1.6.0.md (CG-56) binds the two read-only verbs as `GET`
-    // (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, section 1, "The verify GET-vs-POST resolution"). A `POST`
-    // here made the live admin gate — the (method, path) matrix, under which every non-dry-run
-    // `POST` is `full` — demand `full` of a verb `verbs::required_scope` answers `read-only` for
-    // (1.6.0 item 149).
-    get_row("/api/v1/admin/verify", "verify"),
-    get_row("/api/v1/admin/plane-facts", "plane_facts"),
-    post_row("/api/v1/admin/plane-record-write", "plane_record_write"),
-    post_row("/api/v1/admin/chain-break", "chain_break"),
-    post_row("/api/v1/admin/store-restore", "store_restore"),
-    post_row("/api/v1/admin/reseal-epoch-floor", "reseal_epoch_floor"),
-    post_row("/api/v1/admin/commit-upgrade", "commit_upgrade"),
-    post_row("/api/v1/admin/adjust", "adjust"),
-    // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The
-    // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
-    // under the `/ledger/` prefix the five views share, because it is the one write among them — and
-    // `full`, because it corrects what the past cost.
-    post_row(
-        "/api/v1/admin/ledger/amend-rate-history",
-        "amend_rate_history",
-    ),
-    // The operator's trust decisions over the kernel's trust book (ARCHITECT 2026-10-06): one
-    // generic verb set, counterparty-phrased, its paths the ruling's own.
-    get_row("/api/v1/admin/trust", "get_trust"),
-    post_row("/api/v1/admin/trust/approve", "trust_approve"),
-    post_row("/api/v1/admin/trust/revoke", "trust_revoke"),
-];
-
-/// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
-///
-/// Unlike the 8 above, these paths are NOT a judgment call. `/api/v1/admin/ledger/*` is the prefix
-/// the design names for them, and `/api/v1/admin/ledger/openapi.json` is the path it names for the
-/// document that describes the 1.6.0 operations — a document beside the 1.5.5 one rather than
-/// inside it, because the 1.5.5 document's bytes are pinned and an additive path is not a byte.
-///
-/// Every one is a `GET` and every one is read-only, which is what puts them on the same rung as the
-/// legacy `GET /usage`: the same credential that may read what a bucket spent may read what the
-/// ledger posted for it, and neither may write anything.
-const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
-    get_row("/api/v1/admin/ledger/totals", "get_ledger_totals"),
-    get_row("/api/v1/admin/ledger/checkpoints", "get_ledger_checkpoints"),
-    get_row(
-        "/api/v1/admin/ledger/reconciliation",
-        "get_ledger_reconciliation",
-    ),
-    get_row("/api/v1/admin/ledger/migration", "get_ledger_migration"),
-    get_row(
-        "/api/v1/admin/ledger/openapi.json",
-        "get_ledger_openapi_json",
-    ),
-];
-
-/// THE THREE AUDIT-CHAIN READS, and their paths are not a judgment call either.
-///
-/// A chain that is signed but that nobody outside can fetch is a chain only we can check, which is
-/// a claim rather than evidence. These three are how somebody else checks it: where the chain is
-/// now, what is in a window of it, and which keys signed it.
-///
-/// PULL, NEVER PUSH. The node ANSWERS these; it opens no outbound connection, holds no cloud
-/// credential and phones nobody. That is what lets an airgapped operator `curl` their own evidence
-/// and a firewalled node be audited at all. The counter-signing and publishing half is a separate
-/// product, definitionally — a node cannot anchor to itself.
-///
-/// All three are `GET` and all three are read-only, which puts them on the same rung as the legacy
-/// `GET /audit` they sit beside: the credential that may read what the admin chain recorded may
-/// read what the record chain sealed, and neither may write anything. A full-scope gate here would
-/// mean the only party who can check the evidence is the party the evidence is about.
-///
-/// The range read takes its window as a query string (`?from=&to=`) rather than as path segments,
-/// because a query names ARGUMENTS to an operation and `from`/`to` are arguments — the same reason
-/// `GET /audit?limit=4` and `GET /audit` are one row here (see [`operation_target`]).
-const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
-    get_row("/api/v1/admin/audit/head", "get_audit_head"),
-    get_row("/api/v1/admin/audit/range", "get_audit_range"),
-    get_row("/api/v1/admin/audit/keys", "get_audit_keys"),
-];
-
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 12 1.6.0 kernel
-/// verbs (the nine money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
-/// and the 3 audit-chain reads.
-pub(crate) const VERB_COUNT: usize = 66 + 12 + 5 + 3;
-
-// ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
-//
-// A 1.6.0 row is declared HERE, as a string; the verb it names is declared in [`crate::verb`], as
-// an enumeration variant; and the two are joined by [`crate::verb::verb_name`]. Until 1.6.0 that
-// join ran through a `_ => ""` arm in the composition root, so a row nobody wrote a name for
-// resolved to the empty string, matched nothing, and the verb REFUSED — with no compile error and
-// no test naming the cause. `docs/design/BUSBAR-1.6.0.md:2064` names the shape: "a list that must
-// agree with code, with nothing forcing the agreement", and `:2020` names the rule it breaks — A
-// GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT.
-//
-// So the agreement is forced, at compile time, in BOTH directions and over all three tables: every
-// row has a verb that names it, every verb has a row that carries its name, and the two lists are
-// the same length (which is what catches a row added twice with one of its pair missing). A table
-// and a name list that disagree do not produce a red test; they produce no binary at all.
-
-/// Two `&str`s compared where `==` is not available — a `const` context.
-const fn str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
-/// Whether any verb in `verbs` is the one [`crate::verb::verb_name`] spells `name`.
-const fn some_verb_is_named(verbs: &[KernelVerb], name: &str) -> bool {
-    let mut i = 0;
-    while i < verbs.len() {
-        if let Some(spelling) = crate::verb::verb_name(verbs[i]) {
-            if str_eq(spelling, name) {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
-}
-
-/// Whether any row in `rows` carries `name`.
-const fn some_row_carries(rows: &[VerbEntry], name: &str) -> bool {
-    let mut i = 0;
-    while i < rows.len() {
-        if str_eq(rows[i].verb, name) {
-            return true;
-        }
-        i += 1;
-    }
-    false
-}
-
-/// Whether one table's rows and one list's verbs name exactly each other.
-const fn rows_and_names_agree(rows: &[VerbEntry], verbs: &[KernelVerb]) -> bool {
-    if rows.len() != verbs.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < rows.len() {
-        if !some_verb_is_named(verbs, rows[i].verb) {
-            return false;
-        }
-        i += 1;
-    }
-    let mut j = 0;
-    while j < verbs.len() {
-        match crate::verb::verb_name(verbs[j]) {
-            None => return false,
-            Some(name) => {
-                if !some_row_carries(rows, name) {
-                    return false;
-                }
-            }
-        }
-        j += 1;
-    }
-    true
-}
-
-const _: () = assert!(
-    rows_and_names_agree(NEW_VERBS_1_6_0, crate::verb::NEW_VERBS),
-    "NEW_VERBS_1_6_0 and crate::verb::NEW_VERBS disagree: a row here has no `verb_name` arm in \
-     crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
-);
-
-const _: () = assert!(
-    rows_and_names_agree(LEDGER_VERBS_1_6_0, crate::verb::LEDGER_VERBS),
-    "LEDGER_VERBS_1_6_0 and crate::verb::LEDGER_VERBS disagree: a row here has no `verb_name` arm \
-     in crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
-);
-
-const _: () = assert!(
-    rows_and_names_agree(AUDIT_VERBS_1_6_0, crate::verb::AUDIT_VERBS),
-    "AUDIT_VERBS_1_6_0 and crate::verb::AUDIT_VERBS disagree: a row here has no `verb_name` arm in \
-     crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
-);
-
-/// The declared count is the count of what is actually declared. A row added without bumping this
-/// used to be a runtime assertion in one test; it is now a condition of the crate existing.
-const _: () = assert!(
-    VERB_COUNT
-        == VERB_TABLE_1_5_5.len()
-            + NEW_VERBS_1_6_0.len()
-            + LEDGER_VERBS_1_6_0.len()
-            + AUDIT_VERBS_1_6_0.len(),
-    "VERB_COUNT does not equal the number of rows the closed table declares"
-);
 
 /// The operation class every read-only verb prices under.
 ///
@@ -261,32 +18,6 @@ const _: () = assert!(
 pub(crate) const OP_READ: OpClassId = OpClassId::new("admin_read");
 /// The operation class every mutating verb prices under. See [`OP_READ`].
 pub(crate) const OP_WRITE: OpClassId = OpClassId::new("admin_write");
-
-/// Every verb the admin surface declares, generated rows first, then the 1.6.0 additions.
-///
-/// A `const fn`-free concatenation would need `[T; N]` const generics arithmetic this table does not
-/// need to pay for: the table is built once, at first use, by `std::sync::LazyLock`, which keeps the
-/// combined list a single flat slice for every lookup while declaring its true source in one place.
-pub(crate) fn all_verbs() -> &'static [VerbEntry] {
-    static TABLE: std::sync::OnceLock<Vec<VerbEntry>> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut v = Vec::with_capacity(VERB_COUNT);
-        v.extend(
-            VERB_TABLE_1_5_5
-                .iter()
-                .map(|&(method, path, verb, ro)| VerbEntry {
-                    method,
-                    path,
-                    verb,
-                    read_only: ro,
-                }),
-        );
-        v.extend_from_slice(NEW_VERBS_1_6_0);
-        v.extend_from_slice(LEDGER_VERBS_1_6_0);
-        v.extend_from_slice(AUDIT_VERBS_1_6_0);
-        v
-    })
-}
 
 /// Whether a concrete path segment satisfies a template segment, capturing the template's `{name}`
 /// against the concrete value when it is a variable segment.
@@ -349,14 +80,14 @@ fn operation_target(target: &str) -> &str {
 
 /// Find the verb a method and concrete path resolve to, and the path parameters it carries.
 ///
-/// Total over the closed table: a linear scan of at most [`VERB_COUNT`] rows, each a handful of segment
+/// Total over the closed table: a linear scan of its rows, each a handful of segment
 /// comparisons. This is a cost paid once per admin unit, not a hot per-byte path.
 pub(crate) fn find_verb<'p>(
     method: &str,
     path: &'p str,
-) -> Option<(&'static VerbEntry, Vec<(&'static str, &'p str)>)> {
+) -> Option<(&'static VerbRow, Vec<(&'static str, &'p str)>)> {
     let path = operation_target(path);
-    all_verbs().iter().find_map(|entry| {
+    admin_rows().find_map(|entry| {
         if entry.method != method {
             return None;
         }
@@ -366,8 +97,8 @@ pub(crate) fn find_verb<'p>(
 
 /// One row of the closed table, as the composition root reads it.
 ///
-/// This module's own [`VerbEntry`] stays crate-private because the table is entitled to change how
-/// it stores a row; what a root binds against is what a row MEANS. Four fields, all `&'static`: the
+/// The table's own [`VerbRow`] is entitled to change how it stores a row; what a root binds against
+/// is what a row MEANS. Four fields, all `&'static`: the
 /// operation's name, the method and templated path it was extracted under, and which side of the
 /// closed read-only/full split it falls on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,12 +116,12 @@ pub struct ResolvedVerb {
 
 impl ResolvedVerb {
     /// The row a table entry resolves to.
-    fn of(entry: &VerbEntry) -> Self {
+    fn of(entry: &VerbRow) -> Self {
         Self {
-            verb: entry.verb,
+            verb: entry.name,
             method: entry.method,
             template: entry.path,
-            read_only: entry.read_only,
+            read_only: entry.scope == VerbScope::ReadOnly,
         }
     }
 
@@ -430,15 +161,13 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
 #[must_use]
 pub fn named_rung(name: &str) -> Option<busbar_contract::authz::Scope> {
     use busbar_contract::authz::Scope;
-    (all_verbs().iter())
-        .find(|entry| entry.verb == name)
-        .map(|entry| {
-            if entry.read_only {
-                Scope::ReadOnly
-            } else {
-                Scope::Full
-            }
-        })
+    admin_rows().find(|entry| entry.name == name).map(|entry| {
+        if entry.scope == VerbScope::ReadOnly {
+            Scope::ReadOnly
+        } else {
+            Scope::Full
+        }
+    })
 }
 
 /// The operation NAME a request line resolves to — [`resolve`]'s row, by the name an allow-list
@@ -454,9 +183,7 @@ pub fn name_at(method: &str, path: &str) -> Option<&'static str> {
 /// 66, the 9 and the 5 as three runs rather than as one undifferentiated list.
 #[must_use]
 pub fn table() -> Vec<ResolvedVerb> {
-    let mut rows = Vec::with_capacity(VERB_COUNT);
-    rows.extend(all_verbs().iter().map(ResolvedVerb::of));
-    rows
+    admin_rows().map(ResolvedVerb::of).collect()
 }
 
 #[cfg(test)]

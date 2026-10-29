@@ -23,7 +23,7 @@ use busbar_contract::caps::{
 
 use crate::registry::Generation;
 use crate::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
-use crate::teller::{run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx, Units};
+use crate::teller::{run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx};
 
 fn principal() -> PrincipalId {
     PrincipalId::new("acct:teller-fixture")
@@ -87,7 +87,7 @@ struct Fixture {
     audited_seen: Mutex<Vec<busbar_contract::caps::AuditFacts>>,
 }
 
-impl Units for Fixture {
+impl crate::teller::DoorSeats for Fixture {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         SeatVerdict::proceed(token, arrival_record())
     }
@@ -142,7 +142,9 @@ impl Units for Fixture {
             Admission::Own(Hold::open(admit, principal.clone(), 1_000)),
         )
     }
+}
 
+impl crate::teller::UnitEnds for Fixture {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -232,6 +234,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
 
     // RED before the fix: `Units::route`/`Units::meter` had no `destinations` parameter to record
