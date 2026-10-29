@@ -801,6 +801,10 @@ pub fn mount_node(
             units.admin.pools = Arc::new(move |pool: &str| {
                 busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
             });
+            // THE ONE LEDGER (MONEY-DESIGN §3): the ledger views and `adjust` read and correct the
+            // live governance state's usage counts, priced by the card in core.
+            units.admin.ledger = Arc::new(super::CountsLedger::new(Arc::clone(app)));
+            units.admin.adjuster = super::live_adjuster(Arc::clone(app));
             // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
             // live snapshot (Law 7) and write through the configured store's plane-facing seam.
             units.admin.planes = live_planes(Arc::clone(app));
