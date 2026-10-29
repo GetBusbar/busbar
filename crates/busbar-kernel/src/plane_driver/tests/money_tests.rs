@@ -261,6 +261,63 @@ fn fee_reported(amount: u64) -> UnitCount {
     }
 }
 
+/// The key bucket's admitted requests (what a `requests` cap reads).
+fn requests(r: &Rig) -> u64 {
+    r.gov
+        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .expect("usage")
+        .requests
+}
+
+/// How unit 1 ended: `caller_status`, refused by its plane's first answer with nothing spent or not.
+fn ended(caller_status: u32, refused_unspent: bool) -> UnitEnd {
+    UnitEnd {
+        caller_status,
+        cut: false,
+        refused_unspent,
+    }
+}
+
+/// A REFUSED, UNSPENT UNIT IS NOT COUNTED (R10 grant ruling): its plane's first answer was an
+/// audited refusal, nothing was dialled and no units were reported, so the end releases the request
+/// count admission took, beside the fee. RED: the end refunded the fee and kept the count.
+#[test]
+fn a_refused_unspent_end_releases_its_request_count() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    admit(&r);
+    assert_eq!(requests(&r), 1, "admission counted the request");
+    r.money.settle_end_as(UnitKey::new(1), ended(403, true));
+    assert_eq!(requests(&r), 0, "the refusal counts against no cap");
+    assert_eq!(usage(&r).1, 0, "and its fee came back");
+}
+
+/// 1.5.5's RULE STANDS for every other failed end: a failed request still consumed its slot under
+/// a `requests` cap (a caller cannot escape the cap by hammering failures).
+#[test]
+fn a_failed_end_keeps_its_request_count() {
+    for rule in [FeeRefund::CallerStatus, plane_fees()] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, rule);
+        admit(&r);
+        r.money.settle_end_as(UnitKey::new(1), ended(503, false));
+        assert_eq!(requests(&r), 1, "a failure is counted");
+        assert_eq!(usage(&r).1, 0, "its fee refunded, as before");
+    }
+}
+
+/// A refusal after the plane reported units spent something: its count stands.
+#[test]
+fn a_refused_end_that_reported_units_keeps_its_request_count() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    admit(&r);
+    let _ = r.money.checkpoint(&ctx(1), &reported(10));
+    r.money.settle_end_as(UnitKey::new(1), ended(403, true));
+    assert_eq!(
+        requests(&r),
+        1,
+        "units were reported: the unit was not unspent"
+    );
+}
+
 /// The plane reported no fee unit: the fee charged at admission is refunded, whatever the status.
 /// RED: under the caller-status rule a 200 end keeps the fee.
 #[test]
