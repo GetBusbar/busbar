@@ -60,12 +60,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
-    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
-    WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
+    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
@@ -117,19 +117,27 @@ pub const fn ticket_of(n: u64) -> Ticket {
 
 /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
 /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can tell
-/// it from the target's, the egress rules' or the far end's.
+/// it from the target's, the egress rules' or the far end's; an auth's refusal and an auth call's
+/// failure name theirs ([`CAUSE_AUTH_REFUSED`], [`CAUSE_AUTH_FAILED`]).
 const fn refusal(e: ConnError) -> Answered {
     let outcome = match e {
         ConnError::Pending => Outcome::Pending,
-        ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
+        ConnError::Timeout | ConnError::Closed | ConnError::Fault | ConnError::AuthFailed => {
+            Outcome::Failed
+        }
         ConnError::NotOwner
         | ConnError::UndeclaredNeed
         | ConnError::Refused
         | ConnError::Unarmed
-        | ConnError::CredentialUnavailable => Outcome::Refused,
+        | ConnError::CredentialUnavailable
+        | ConnError::AuthRefused => Outcome::Refused,
+        // A cause this host does not name is the host failing the call.
+        _ => Outcome::Fault,
     };
     let value = match e {
         ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+        ConnError::AuthRefused => CAUSE_AUTH_REFUSED,
+        ConnError::AuthFailed => CAUSE_AUTH_FAILED,
         _ => CAUSE_NONE,
     };
     Answered {
@@ -222,7 +230,7 @@ fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
 /// `in`, then `body` with the caller's identity, table and connector state. A panic answers FAULT;
-/// the whole `out` is written.
+/// the `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot<R: Into<Kept>>(
     ctx: HostCtx,
     input: *const c_void,
@@ -231,6 +239,18 @@ fn slot<R: Into<Kept>>(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, &ConnState, ServiceHead) -> R,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
@@ -257,8 +277,9 @@ fn slot<R: Into<Kept>>(
         held(wake, head.handle, || st.kept(head.handle, replay, run))
     }))
     .unwrap_or_else(|_| Answered::fault());
-    // SAFETY: the caller's `out`, as the call shape lends it.
-    unsafe { write_out(out, &a) }
+    // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
+    // stated.
+    unsafe { write_out(out, &a, lent) }
 }
 
 /// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL or over the hard
