@@ -726,17 +726,17 @@ impl IrFacts for DoorFacts<'_> {
 /// no projected content is dropped), `None` when the plane stated no body or one that is not JSON
 /// (nothing a content gate can screen).
 fn read_projected(projected: Option<&[u8]>) -> Option<busbar_contract::ir::invoke::InvokeReq> {
-    let doc: serde_json::Value = serde_json::from_slice(projected?).ok()?;
+    let mut doc: serde_json::Value = serde_json::from_slice(projected?).ok()?;
     let named = doc
         .get("tool")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
     let (name, arguments) = match named {
+        // The document is dropped here: its arguments are taken out of it, not copied.
         Some(name) => (
             name,
-            doc.get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
+            doc.get_mut("arguments")
+                .map_or(serde_json::Value::Null, serde_json::Value::take),
         ),
         None => (String::new(), doc),
     };

@@ -827,28 +827,6 @@ impl Connector<'_> {
     }
 }
 
-/// NOT BEFORE `until_mono_ns` (the host's monotonic clock): a backoff with no plugin timer. READY
-/// once the host's clock has reached it; else PENDING with the op's `wake_at_ns` set to it, so the
-/// host resumes the op then without a wake (its timer never fires early) — and a resume that comes
-/// sooner (a latched or spurious wake) answers PENDING again with the same instant. The op computes
-/// `until_mono_ns` ONCE (`clock_now().mono_ns + delay`) and parks it on its ticket.
-pub fn not_before<T: crate::abi::sdk::door::AbiOut>(
-    c: &mut Connector<'_>,
-    out: &mut crate::abi::sdk::out::Out<'_, T>,
-    until_mono_ns: u64,
-) -> Answer<()> {
-    let now = match c.clock_now() {
-        Poll::Ready(Ok(r)) => r.mono_ns,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        Poll::Pending => return Poll::Pending,
-    };
-    if now >= until_mono_ns {
-        return Poll::Ready(Ok(()));
-    }
-    out.wake_at(until_mono_ns);
-    Poll::Pending
-}
-
 #[cfg(test)]
 #[path = "tests/conn_tests.rs"]
 mod tests;
