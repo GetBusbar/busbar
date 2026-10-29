@@ -82,8 +82,6 @@ pub mod auth_door;
 pub mod auth_outbound;
 // THE AUTH KIND'S SHARED PLUGIN PIECES: the withheld decode error and a completed login's identity.
 pub mod auth_kit;
-// THE AUTH LOGIN KIT's shared checks: the id-token nonce binding v1.5.5's core ran for every login.
-pub mod login;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 // THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the
