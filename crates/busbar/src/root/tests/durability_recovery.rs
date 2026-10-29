@@ -177,15 +177,8 @@ fn admin() -> Grant<AdminVerb> {
 fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + Sync>) {
     let lane = JournalLane::start(Arc::clone(&store.calls), STORE).expect("the lane starts");
     let book = Arc::new(Mutex::new(
-        build_on_store(
-            &DurabilityConfig { data_dir: None },
-            NODE,
-            lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
-            None,
-        )
-        .expect("the store reads the chain back"),
+        build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
+            .expect("the store reads the chain back"),
     ));
     let verbs = node_verb_store(
         Arc::clone(&book),
