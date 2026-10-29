@@ -923,6 +923,34 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.put(pick, s);
     }
 
+    /// Set the blob field `pick` names to the first `len` bytes of `buf`, the host's secret buffer
+    /// lent for this call, flagged secret (the credential chip, row 6: host-owned secret bytes): the SDK's writer for a resolved
+    /// value the host owns ([`crate::abi::sdk::cred::resolved`]). `len` is at most what was written.
+    pub(crate) fn host_secret(
+        &mut self,
+        pick: impl FnOnce(&T) -> &crate::abi::mechanism::call::Blob,
+        buf: &HostBuf<'_, u8>,
+        len: usize,
+    ) {
+        use crate::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
+        let blob = if len == 0 {
+            Blob {
+                ptr: ptr::null(),
+                len: 0,
+                fmt: 0,
+                flags: 0,
+            }
+        } else {
+            Blob {
+                ptr: buf.as_ptr().cast_const(),
+                len,
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            }
+        };
+        self.put(pick, blob);
+    }
+
     /// Point the field `pick` names at the rows of `buf`, a host buffer lent for this call; the
     /// count is a field of its own, set beside it (a prompt view's `message_count`).
     pub fn host_rows<E: Copy>(&mut self, pick: impl FnOnce(&T) -> &*const E, buf: &HostBuf<'_, E>) {

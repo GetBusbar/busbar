@@ -381,7 +381,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         kind: &str,
     ) -> Step<RecordStoreResult<Vec<String>>>;
 
-    /// `purge_plane_records_before` (slot 22).
+    /// `purge_plane_records_before` (slot 22) under the age rule.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -392,7 +392,9 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         before: u64,
     ) -> Step<RecordStoreResult<u64>>;
 
-    /// RETENTION, with the predicate named (no slot of its own yet).
+    /// RETENTION, with the predicate named: slot 22 under the rule its `in` carries
+    /// (`KindBeforeIn::retention`); the door calls this, so a store that honours the terminal-only
+    /// rule overrides it ([`Retention::drops`]).
     ///
     /// DEFAULTED: [`Retention::Age`] is [`StoreSlots::purge_plane_records_before`];
     /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the

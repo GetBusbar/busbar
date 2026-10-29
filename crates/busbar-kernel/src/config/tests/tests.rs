@@ -2031,7 +2031,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         SecretResolver::builtins_only()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
-        b"s3cr3t-value".to_vec()
+        busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
@@ -2059,9 +2059,12 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
         SecretResolver::builtins_only().resolve(&sref).unwrap(),
-        b"file-secret\n".to_vec()
+        busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(&sref).unwrap(),
+        busbar_contract::redacted::Secret::new("file-secret".to_string())
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
@@ -4157,7 +4160,11 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
 /// section words are refused as pool names, in 1.5.5's sentence.
 #[test]
 fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
-    crate::test_support::register_neutral_test_plane();
+    // Seeded, not registered: a registration is visible to the next read only until a sibling
+    // test's `TestRegistryIsolation` swaps the list, so the reader holds the isolation itself.
+    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
     let pools: crate::config::PoolsCfg = serde_yaml::from_str(
         "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
          breaker:\n  members: [{model: m}]\n",
