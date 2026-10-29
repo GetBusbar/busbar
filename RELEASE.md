@@ -23,6 +23,10 @@ him:
 ```
 cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 modernci call artifact --check candidate ...            # the judged candidate's outputs -> ./candidate
+# The signed version tag (G-15), with K2 at the release commit, then on GitHub (touch the key):
+git -c gpg.format=ssh -c user.signingkey=<sk handle> tag -s v<V> -m "busbar <V>" <release commit>
+git -c gpg.ssh.allowedSignersFile="$PWD/release/allowed_signers" verify-tag v<V>
+git push <GitHub remote of GetBusbar/busbar> v<V>
 G=scripts/release/publish_gate.py; T=~/.config/busbar-release/trust.json; P=target/release/busbar-plugin-pack
 python3 $G verify --candidate candidate --trust $T --pack $P --out out    # every rule; nothing signed
 python3 $G sign   --candidate candidate --trust $T --pack $P --out out --k1-sign-cmd <release signer cmd> --k2-key <sk handle>
@@ -30,7 +34,13 @@ python3 $G upload --candidate candidate --trust $T --pack $P --out out    # draf
 ```
 
 `verify` refuses, one named line per rule, on:
-- any missing or undeclared artifact;
+- a version tag `v<V>` that is missing, lightweight, unsigned, not signed by K2 under the `git`
+  namespace (`release/allowed_signers` carries the K2 key once more, limited to `namespaces="git"`),
+  or not at the release commit (G-15); `upload` also refuses unless GitHub holds that same tag
+  object, and creates the release on it (`gh release create --verify-tag`);
+- any missing or undeclared artifact, `plugin-index.json` included (the release index
+  `busbar --migrate-config` fetches from this release; `candidate.py assemble` renders it and the
+  gate refuses any other bytes);
 - a digest mismatch;
 - a plugin tarball that is not an unsigned first-party build (`sign` then seals every plugin with ONE
   release-manifest signature and refuses any tarball that does not verify through the chain to the
@@ -51,7 +61,8 @@ the branch file's `BUSBAR_ORACLE_*` env and fetched from its `dev-bin` release b
 soak and the plugin fleet generator. The 1.5.5 golden the oracle reads stays in this tree, in
 `testing/shadow-oracle/golden/1.5.5`.
 
-**The tag is an OUTPUT of a green release, never an input.** Nobody tags by hand; no workflow is
+**The tag is an OUTPUT of a green release, never an input.** The only `v*` tag is the one the owner
+signs with K2 in the publish run above, at the judged candidate's commit; no workflow is
 triggered by a `v*` tag (`cargo xtask gate workflow-rules`, rule R1). Docker Hub tag immutability
 makes a published `X.Y.Z` impossible to overwrite, so a broken one is permanent.
 

@@ -4,11 +4,18 @@
 #
 #   ssh-keygen -Y verify -f allowed_signers -I busbar-release -n busbar-release -s FILE.sig < FILE
 #
-# Each line is limited to namespaces="busbar-release" and nothing else (publish gate rule G-14). The
-# same key signs ModernCI release STATEMENTS under "busbar-release-statement", which is checked from
-# a separate, statements-only list, so the two signature kinds can never stand in for each other.
+# Each line is limited to ONE namespace (publish gate rule G-14): "busbar-release" for the files
+# above, or "git" for the signed version tag v<V> (`git tag -s` with gpg.format=ssh; rule G-15). The
+# K2 key therefore appears twice, once per namespace, and every "git" line must name a key that also
+# has a "busbar-release" line. Users verify the tag with:
+#
+#   git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag v<V>
+#
+# The same key signs ModernCI release STATEMENTS under "busbar-release-statement", which is checked
+# from a separate, statements-only list, so no two signature kinds can stand in for each other.
 #
 # EMPTY UNTIL THE KEY CEREMONY. The publish gate (scripts/release/publish_gate.py, rule G-14) refuses
 # a release while this file differs from the owner's own trust file, so an empty file means nothing
 # can be published. Format of each line:
 #   busbar-release namespaces="busbar-release",valid-after="YYYYMMDD" sk-ssh-ed25519@openssh.com AAAA... busbar-release-2026a
+#   busbar-release namespaces="git",valid-after="YYYYMMDD" sk-ssh-ed25519@openssh.com AAAA... busbar-release-2026a

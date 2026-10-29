@@ -11,13 +11,15 @@ installer (`install.sh`) runs the binary check below for you.
 
 | Key | Signs | Where it lives | Where you get it |
 |---|---|---|---|
-| **Release key** `busbar-release-2026a`, plus backup `-2026b` | `SHA256SUMS`, `SHA256SUMS.plugins`, `IMAGES`, `release-evidence.json` (OpenSSH signatures, namespace `busbar-release`) | A FIDO2 hardware key the founder holds; it needs a physical touch. The backup is in a safe | [`release/allowed_signers`](../release/allowed_signers), `https://getbusbar.com/keys/allowed_signers`, and SECURITY.md. All three must match |
+| **Release key** `busbar-release-2026a`, plus backup `-2026b` | `SHA256SUMS`, `SHA256SUMS.plugins`, `IMAGES`, `release-evidence.json` (OpenSSH signatures, namespace `busbar-release`), and the version tag `v<V>` (namespace `git`) | A FIDO2 hardware key the founder holds; it needs a physical touch. The backup is in a safe | [`release/allowed_signers`](../release/allowed_signers), `https://getbusbar.com/keys/allowed_signers`, and SECURITY.md. All three must match |
 | **Plugin root keys** `busbar-plugins-root` and `busbar-plugins-2026a` (ECDSA P-256) | Plugin **keys documents** only: each names the current plugin release signer, with an expiry and a version that only rises, and carries signed revocations | `busbar-plugins-root`: Cloud KMS at the HSM protection level, non-exportable. `busbar-plugins-2026a`: PIV slot 9C of the founder's YubiKey (PIN and touch on every signature) | **Compiled into the busbar binary** (`BUSBAR_RELEASE_PUBKEY` in [`.cargo/config.toml`](../.cargo/config.toml), embedded verbatim, so `strings busbar \| grep busbar-plugins-` shows it) |
 | **Plugin release signer** (named by the current keys document) | One **release manifest** per release, listing every first-party plugin artefact (name, version, target, SHA-256) | 1.6.0: an interim P-256 key in our CI's secret store, vouched for by a keys document that expires after 90 days. It is replaced by our CI's release-signing feature through a new keys document, with no new busbar binary | Inside every plugin tarball, in the keys document a root signed ([design](design/release-trust.md)) |
 
-**One key, two namespaces, never interchangeable.** The release key signs release *files* only
-under the OpenSSH signature namespace `busbar-release`. Every line of `allowed_signers` is limited to
-that namespace (`namespaces="busbar-release"`), and the publish gate refuses any other line. Release
+**One key, separate namespaces, never interchangeable.** The release key signs release *files* only
+under the OpenSSH signature namespace `busbar-release`, and the version tag only under `git` (the
+namespace git uses for SSH-signed tags). Every line of `allowed_signers` is limited to exactly one of
+the two (`namespaces="busbar-release"` or `namespaces="git"`), each `git` line names the same release
+key, and the publish gate refuses any other line. Release
 *statements* arrive with our CI's next phase. The same hardware key signs them under the separate
 namespace `busbar-release-statement`, and they are verified against a list restricted to that
 namespace. A file signature can therefore never be replayed as a statement, nor a statement as a file
@@ -51,6 +53,35 @@ sha256sum -c SHA256SUMS --ignore-missing          # macOS: shasum -a 256 -c SHA2
 
 Each release has a CycloneDX SBOM per target, `busbar-v<V>-<target>.cdx.json`, listed in the same
 `SHA256SUMS`.
+
+## The version tag
+
+Each release is cut under an annotated version tag that the release key signed. The publish gate
+refuses to publish unless `v<V>` is such a tag, verifies against `allowed_signers`, and names the
+release commit, and the GitHub Release is created on that same tag object.
+
+```sh
+git fetch origin tag v$V
+git -c gpg.ssh.allowedSignersFile="$PWD/allowed_signers" verify-tag v$V
+# Good "git" signature for busbar-release with ED25519-SK key SHA256:...
+```
+
+Releases up to 1.5.5 were tagged without a signature.
+
+## The release index
+
+`busbar --migrate-config` reads `plugin-index.json` to rewrite a 1.5.5 configuration's
+`plugins.fetch` pins and to find the release of a plugin built for this core. Each release publishes
+it as an asset of its own GitHub Release, the URL the binary fetches by default:
+
+```
+https://github.com/GetBusbar/busbar/releases/download/v<V>/plugin-index.json
+```
+
+It is listed in that release's `SHA256SUMS`, so the release key's signature covers it:
+`sha256sum -c SHA256SUMS --ignore-missing` checks it like any binary. To read an index from
+somewhere else (a mirror, an offline copy, a path), set `BUSBAR_PLUGIN_INDEX` to its path or
+`https` URL.
 
 ## A container image
 
@@ -144,7 +175,8 @@ documents every rule it applies:
 
 ```
 candidate.json   {"version","commit","repo","test_kit":{"tag","commit"},"plugins":[{"repo","version","tag","commit"}]}
-artifacts/       busbar-<target>.<archive> per published target in .github/release-targets.json; busbar-openapi-v<V>.json
+artifacts/       busbar-<target>.<archive> per published target in .github/release-targets.json; busbar-openapi-v<V>.json;
+                 plugin-index.json (rendered from candidate.json's plugins and their tarballs' manifests)
 plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, per plugins.yaml entry and plugin target
 sboms/           busbar-v<V>-<target>.cdx.json per published target and image platform
 internal/        busbar-<musl target>.tar.gz (the binaries inside the image)

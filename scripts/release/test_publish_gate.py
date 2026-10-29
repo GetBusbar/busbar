@@ -75,6 +75,12 @@ class FakeNet(pg.Net):
     def repo_file(self, repo, path, ref):
         return f"{self.kit} {VERSION}\n"
 
+    def repo_full_name(self, repo):
+        return None
+
+    def remote_tag(self, repo, tag):
+        return None
+
 
 class World:
     """A release commit plus a candidate, built fresh per test."""
@@ -110,8 +116,9 @@ class World:
         sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "busbar-release-2026a", "-f", str(self.keys / "k2"))
         pub = (self.keys / "k2.pub").read_text().split()
         self.signer = f'busbar-release namespaces="busbar-release" {pub[0]} {pub[1]} busbar-release-2026a'
+        self.tag_signer = f'busbar-release namespaces="git" {pub[0]} {pub[1]} busbar-release-2026a'
         self.trust = {"k1": self.k1_list, "release_signer": self.release_signer,
-                      "keys_doc": str(self.keys / "keys.json"), "k2_allowed_signers": [self.signer],
+                      "keys_doc": str(self.keys / "keys.json"), "k2_allowed_signers": [self.signer, self.tag_signer],
                       "cosign": {"identity": "release@getbusbar.com", "issuer": "https://accounts.google.com"}}
         self._repo()
         self._candidate()
@@ -134,7 +141,7 @@ class World:
             {"target": "image-linux-arm64", "kind": "image", "published": False, "archive": "oci"},
         ]}))
         (r / "release").mkdir()
-        (r / "release" / "allowed_signers").write_text("# K2\n" + self.signer + "\n")
+        (r / "release" / "allowed_signers").write_text("# K2\n" + self.signer + "\n" + self.tag_signer + "\n")
         self.plugin_commit = "c" * 40
         (r / "release" / "plugin-pins.tsv").write_text(f"# pins\n{PLUGIN}\tv{PVER}\t{self.plugin_commit}\n")
         sh("git", "init", "-q", cwd=r)
@@ -147,6 +154,9 @@ class World:
         sh("git", "add", "-A", cwd=r)
         sh("git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "release", cwd=r)
         self.commit = sh("git", "rev-parse", "HEAD", cwd=r).decode().strip()
+        # The version tag, signed by K2 under the git namespace (G-15).
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "gpg.format=ssh",
+           "-c", f"user.signingkey={self.keys / 'k2'}", "tag", "-s", f"v{VERSION}", "-m", f"busbar {VERSION}", cwd=r)
 
     def binary(self, tag: str) -> bytes:
         return b"\x7fELF busbar " + tag.encode() + b" key=" + self.k1_list.encode() + b" end"
@@ -191,6 +201,8 @@ class World:
             "version": VERSION, "commit": self.commit, "repo": "GetBusbar/busbar",
             "test_kit": {"tag": f"test-kit-v{VERSION}", "commit": self.kit},
             "plugins": [{"repo": PLUGIN, "version": PVER, "tag": f"v{PVER}", "commit": self.plugin_commit}]}))
+        (c / "artifacts" / "plugin-index.json").write_bytes(pg.render_plugin_index(
+            self.root, c, json.loads((c / "candidate.json").read_text())["plugins"], FakeNet(self.kit)))
         self.sums()
 
     @staticmethod

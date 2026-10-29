@@ -33,7 +33,9 @@ by the gate, which refuses by rule name; a mistake is never shipped.
   candidate.py assemble --kit-tag TAG --kit-commit SHA --out OUT DIR...
       merges the slices (the owner runs it locally from the `artifact` downloads), joins the
       per-platform images into one multi-platform index (OUT/oci/busbar.oci.tar), copies the
-      OpenAPI document, and writes SHA256SUMS, IMAGES and candidate.json.
+      OpenAPI document, renders OUT/artifacts/plugin-index.json (the release index
+      `busbar --migrate-config` fetches from this release's GitHub Release; read-only GitHub lookups
+      for renamed repos), and writes SHA256SUMS (which lists it), IMAGES and candidate.json.
 
 Tools: git, cargo (rust-toolchain.toml), python3; cargo-cyclonedx (CYCLONEDX=<path>, pinned by the
 caller); docker buildx for `image`; a C compiler for C plugins.
@@ -346,6 +348,12 @@ def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None
                     sys.exit(f"candidate: slices disagree on {r['repo']}'s tag")
     v = version()
     shutil.copy(ROOT / "crates/busbar-core-admin/src/v1/json/openapi.json", out / "artifacts" / f"busbar-openapi-v{v}.json")
+    released = sorted(plugins.values(), key=lambda r: r["repo"])
+    try:
+        index = pg.render_plugin_index(ROOT, out, released, pg.Net())
+    except (OSError, ValueError, KeyError, tarfile.TarError, pg.CannotRun) as e:
+        sys.exit(f"candidate: cannot render {pg.INDEX}: {e}")
+    (out / "artifacts" / pg.INDEX).write_bytes(index)
     files = [f for sub in ("artifacts", "sboms") for f in (out / sub).iterdir()]
     pg.write_sums(out / "SHA256SUMS", files)
     if len(parts) != 2:
@@ -356,7 +364,7 @@ def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None
     (out / "candidate.json").write_text(json.dumps({
         "version": v, "commit": commit, "repo": pg.REPO,
         "test_kit": {"tag": kit_tag, "commit": kit_commit},
-        "plugins": sorted(plugins.values(), key=lambda r: r["repo"])}, indent=2) + "\n")
+        "plugins": released}, indent=2) + "\n")
     print(f"candidate: assembled {v} at {commit} with {len(plugins)} plugins")
 
 
