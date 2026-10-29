@@ -518,9 +518,10 @@ pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
 
 /// THE RECORD KINDS THE KERNEL KEEPS ITS OWN RECORDS UNDER, which no instance may declare: a minted
 /// ticket's record ([`crate::governance::TICKET_RECORD_KIND`]). An instance's declared kind names
-/// the store rows the admin record write lands under and the rows its retention rule governs, so an
-/// instance declaring one of these would write beside, and purge under its own rule, the kernel's
-/// own rows. [`KernelServices::admit`] refuses it ([`AdmitRefused::KindReserved`]).
+/// the rows its retention rule governs, so an instance declaring one of these would purge the
+/// kernel's own rows under its own rule. [`KernelServices::admit`] refuses it
+/// ([`AdmitRefused::KindReserved`]). (The admin record write never reaches a kernel kind's rows,
+/// declared or not: see [`crate::store::plane_view::KERNEL_RECORD_KINDS`].)
 pub const RESERVED_RECORD_KINDS: &[&str] = &[crate::governance::TICKET_RECORD_KIND];
 
 /// Why an instance was not admitted.
@@ -554,8 +555,7 @@ pub enum AdmitRefused {
     /// instance's trust stands on.
     TrustUnread(String),
     /// The instance declares a record kind the kernel keeps its own records under
-    /// ([`RESERVED_RECORD_KINDS`]): its rows, its retention rule and the admin record write would
-    /// all land beside the kernel's own.
+    /// ([`RESERVED_RECORD_KINDS`]): its retention rule would govern the kernel's own rows.
     KindReserved {
         /// The instance refused.
         instance: String,

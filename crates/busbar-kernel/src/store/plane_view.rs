@@ -53,6 +53,36 @@ pub const KIND_DEMOTION: &str = "demotion";
 /// trust key, replayed at admit: core-neutral, every plane's.
 pub const KIND_TRUST_DECISION: &str = "trust_decision";
 
+/// EVERY KIND THE KERNEL KEEPS ITS OWN ROWS UNDER in the store's plane records. The kernel is the
+/// only writer of these rows: a plane keeps its own records on the host record leg, scoped by its
+/// instance label, and an operator's `plane_record_write` lands under [`plane_owned_kind`]. A plane
+/// may still DECLARE one of these (plane-mcp declares `demotion`, naming the plane whose instance
+/// the kernel's unprefixed 1.5.5 demotion rows replay to), but nothing written in a plane's name
+/// ever lands on them.
+pub const KERNEL_RECORD_KINDS: &[&str] = &[
+    KIND_AUDIT,
+    KIND_RESIDUAL,
+    KIND_DEMOTION,
+    KIND_TRUST_DECISION,
+    crate::governance::TICKET_RECORD_KIND,
+];
+
+/// The label every plane-owned kind in the store's plane records begins with. It opens with a
+/// control character, which no kernel kind, plane key or declared kind holds, so a plane-owned kind
+/// is never a kernel kind (nor the authorization server's, which opens `"\u{1}oauth_as\u{1}"`).
+const PLANE_OWNED_LABEL: &str = "\u{1}plane\u{1}";
+
+/// THE STORE KIND OF THE ROWS PLANE `plane` KEEPS UNDER ITS DECLARED KIND `kind` in the store's
+/// plane records: `"\u{1}plane\u{1}<plane>\u{1}<kind>"`. Two planes declaring one kind keep two
+/// kinds' rows, and no plane's rows are a kernel kind's ([`KERNEL_RECORD_KINDS`]). `None` when
+/// either name is empty or holds a control character: only names without one keep the scope
+/// unambiguous.
+#[must_use]
+pub fn plane_owned_kind(plane: &str, kind: &str) -> Option<String> {
+    let fit = |s: &str| !s.is_empty() && !s.chars().any(char::is_control);
+    (fit(plane) && fit(kind)).then(|| format!("{PLANE_OWNED_LABEL}{plane}\u{1}{kind}"))
+}
+
 /// Serialize a typed plane row into an opaque [`PlaneRecord::body`](busbar_contract::records::PlaneRecord::body). `serde_json`, matching the store
 /// plugins' decode, so the bytes round-trip identically across the plugin ABI. Generic over any
 /// `Serialize`, so this names no plane type — the caller supplies whatever neutral or plane-owned row

@@ -1391,9 +1391,10 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     {
         let kept = kept.lock().expect("the sink");
         assert_eq!(kept.len(), 1, "exactly one record written");
+        // The record lands in the plane's own rows: its declared kind, keyed by the plane.
         assert_eq!(
             (kept[0].kind.as_str(), kept[0].id.as_str(), kept[0].ts),
-            ("note", "n-1", at)
+            ("\u{1}plane\u{1}example\u{1}note", "n-1", at)
         );
         assert_eq!(kept[0].body, br#"{"text":"hello"}"#.to_vec());
         assert_eq!(
