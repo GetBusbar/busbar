@@ -581,6 +581,12 @@ pub(crate) fn admissions(
         .collect()
 }
 
+/// THE NODE'S BOOK with no store behind it (memory-buffered over the null shipper): its journal and
+/// audit chain, which a cell binds its node to and reads a unit's audit record back from.
+pub(crate) fn node_book() -> NodeBook {
+    crate::root::durability::node_book()
+}
+
 /// THE NODE'S ADMIN SURFACE over `admin`, as boot mounts it: the generic verbs over `book` and the
 /// kernel's services in `late`, the default breaker policy.
 pub(crate) fn mount_node_admin(
