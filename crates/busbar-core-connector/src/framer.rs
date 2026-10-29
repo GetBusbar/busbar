@@ -858,9 +858,9 @@ pub struct Located {
     /// The framer's own head lines on a request to the target (`LocateIn::defaults_buf`), in order:
     /// each one a request that does not state it carries, added before the auth signs the head.
     pub defaults: Vec<crate::compose::HeadWords>,
-    /// The framer's head states its body's length (`LocateOut::states_length`): `content-length` is
-    /// the framer's own line, written by the framer from the body length the host hands it,
-    /// before its auth call; the host adds no line of that name.
+    /// The framer's head states its body's length (`LocateOut::states_length`): it renders no
+    /// length of its own, so the host states `content-length` for a non-empty body, last, before
+    /// the auth signs the head (`busbar_contract::conn::HeadDefaults::completing`).
     pub states_length: bool,
 }
 

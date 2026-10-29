@@ -438,6 +438,41 @@ impl Connection {
     }
 }
 
+/// THE HEAD THE FRAMER WAS PROMISED (THE DESIGN section 6, step 5): the dial's opening completed
+/// with the lines the framer located leaves to the host
+/// ([`busbar_contract::conn::HeadDefaults::completing`]): each of its own lines the opening does
+/// not carry, then `content-length` for a non-empty body where it states the length. The opener's
+/// auth call was handed the same lines (the walk reads them through `head_defaults`), so the head
+/// the framer renders is the head the auth signed. The opener's own fields never state the length
+/// (the connector refuses one, `head_is_refused`); this line is the host's. An opening with nothing
+/// to send stays as it is.
+fn complete_opening(dial: &mut Dial, located: &framer::Located) {
+    let Some((fields, body)) = dial.opening.as_mut() else {
+        return;
+    };
+    let (method, target) = &dial.head_words;
+    if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
+        return;
+    }
+    let head = busbar_contract::conn::HeadDefaults {
+        lines: located.defaults.clone(),
+        states_length: located.states_length,
+    };
+    let added = head.completing(
+        |name| {
+            fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        body.len(),
+    );
+    fields.extend(
+        added
+            .into_iter()
+            .map(|(n, v)| (String::from_utf8_lossy(&n).into_owned(), v)),
+    );
+}
+
 /// Where a dial over a carrier CARRIED AS ITSELF goes: its target is an authority, `host:port`, or
 /// `<claim>://host:port` (`claim` the carrier's own); nothing is offered and no connection security
 /// is asked for at the dial.
@@ -490,11 +525,12 @@ impl Planned {
     ///
     /// [`Failure::Refused`]: the target or the authority names no host, or the entry locates
     /// nothing.
-    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
+    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, mut dial: Dial) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
         endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        complete_opening(&mut dial, &located);
         Ok(Self {
             door: Some(door),
             via,

@@ -2812,12 +2812,74 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
             None,
         ),
     ] {
-        let asked = super::auth_request(&binding, &head, target, b"", None)
+        let asked = super::auth_request(&binding, &head, target, b"", None, &[])
             .expect("a non-passthrough binding asks");
         assert_eq!(asked.authority, authority, "{target}");
         assert_eq!(asked.path, path, "{target}");
         assert_eq!(asked.query.as_deref(), query, "{target}");
     }
+}
+
+/// THE AUTH SIGNS THE HEAD THAT GOES OUT (THE DESIGN section 6, step 5): a style that reads the
+/// head is handed the plugin's fields and then the lines the connector completes the request with at
+/// its open (the framer's own lines the head lacks, then the body's length), in that order. RED
+/// before: the auth was handed the plugin's fields alone, and the length the http door needs was
+/// stated nowhere.
+#[test]
+fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
+    let binding = busbar_contract::conn::ConnAuth {
+        auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
+        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    };
+    let head = super::Head {
+        method: b"POST".to_vec(),
+        target: b"/x".to_vec(),
+        fields: vec![("content-type".to_owned(), b"application/json".to_vec())],
+        timeout_ms: 0,
+    };
+    let located = busbar_contract::conn::HeadDefaults {
+        lines: vec![
+            (b"accept".to_vec(), b"*/*".to_vec()),
+            (b"host".to_vec(), b"svc.example".to_vec()),
+        ],
+        states_length: true,
+    };
+    let added = located.completing(
+        |name| {
+            head.fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        2,
+    );
+    let asked = super::auth_request(
+        &binding,
+        &head,
+        "https://svc.example/x",
+        b"{}",
+        None,
+        &added,
+    )
+    .expect("a non-passthrough binding asks");
+    let signed: Vec<(&[u8], &[u8])> = asked
+        .headers
+        .iter()
+        .map(|(n, v)| (n.as_slice(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        signed,
+        [
+            (&b"content-type"[..], &b"application/json"[..]),
+            (b"accept", b"*/*"),
+            (b"host", b"svc.example"),
+            (b"content-length", b"2"),
+        ]
+    );
 }
 
 // ── AUDITED ON THE PLUGIN'S BEHALF (BIND-AUDIT): every refusal the host makes while an instance
