@@ -461,17 +461,6 @@ pub fn check_keying(k: &KeyingMaterial) -> Result<(), Fault> {
     Ok(())
 }
 
-/// [`check_keying`] over the keying item a call lends (status rows 159 and 194): the same rules,
-/// read where it is lent. #1471 seals the `Lent` and keeps this name, so a transport checks the
-/// item it was lent with `check_keying_lent(&k)` before and after.
-///
-/// # Errors
-///
-/// As [`check_keying`].
-pub fn check_keying_lent(k: &crate::abi::sdk::Lent<'_, KeyingMaterial>) -> Result<(), Fault> {
-    check_keying(k.get())
-}
-
 /// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
 /// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
@@ -748,24 +737,6 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
     Ok(())
 }
 
-/// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
-/// the emit that carries an ACCEPTED stream's answer head (`answers_head`), and on no other. The
-/// framer refuses the emit that breaks it, before any byte of it reaches the wire.
-///
-/// # Errors
-///
-/// The rule the emit breaks.
-pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
-    if i._status_reserved != 0 {
-        return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
-    }
-    match (answers_head, i.status) {
-        (true, 0) => Err(fault(Rule::Missing, "emit.status")),
-        (false, s) if s != 0 => Err(fault(Rule::Contradiction, "emit.status")),
-        _ => Ok(()),
-    }
-}
-
 /// An `emit`'s OPENING BODY LENGTH ([`EmitIn::body_len`]): `body_len_known` is `0` or `1`, its
 /// padding is zero, and a length rides only with `body_len_known` `1` (a streamed body states
 /// none). The host stamps it; a framer refuses the emit that breaks it, before any byte of it
@@ -1002,26 +973,6 @@ pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
     }
     if i.scheme > SCHEME_SECURE {
         return Err(fault(Rule::UnknownCode, "begin.scheme"));
-    }
-    Ok(())
-}
-
-/// Every field predicate's shape: a known op and well-formed strings.
-///
-/// # Errors
-///
-/// The rule the first bad predicate breaks.
-pub fn check_route_fields(fields: &[super::route::FieldPredicate]) -> Result<(), Fault> {
-    use super::route::{FIELD_PRESENT, FIELD_VALUE_PREFIX};
-    for f in fields {
-        code(
-            u64::from(f.op),
-            u64::from(FIELD_PRESENT),
-            u64::from(FIELD_VALUE_PREFIX),
-            "route.field.op",
-        )?;
-        text(f.name, "route.field.name")?;
-        text(f.value, "route.field.value")?;
     }
     Ok(())
 }
