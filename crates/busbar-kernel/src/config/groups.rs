@@ -420,6 +420,19 @@ impl AdmissionMode {
     }
 }
 
+/// Read the value of a non-metric limit key into its `slot`, refusing the key written twice.
+fn once<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
+    map: &mut A,
+    slot: &mut Option<T>,
+    key: &'static str,
+) -> Result<Option<LimitMetric>, A::Error> {
+    if slot.is_some() {
+        return Err(de::Error::duplicate_field(key));
+    }
+    *slot = Some(map.next_value()?);
+    Ok(None)
+}
+
 impl<'de> Deserialize<'de> for LimitCfg {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -468,50 +481,14 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         "tokens_cache_write" => Some(LimitMetric::TokensCacheWrite),
                         "budget" => Some(LimitMetric::Budget),
                         "concurrent" => Some(LimitMetric::Concurrent),
-                        "per" => {
-                            if per.is_some() {
-                                return Err(de::Error::duplicate_field("per"));
-                            }
-                            per = Some(map.next_value()?);
-                            None
-                        }
-                        "pool" => {
-                            if pool.is_some() {
-                                return Err(de::Error::duplicate_field("pool"));
-                            }
-                            pool = Some(map.next_value()?);
-                            None
-                        }
-                        "on_exhaust" => {
-                            if on_exhaust.is_some() {
-                                return Err(de::Error::duplicate_field("on_exhaust"));
-                            }
-                            on_exhaust = Some(map.next_value()?);
-                            None
-                        }
-                        "downgrade_to" => {
-                            if downgrade_to.is_some() {
-                                return Err(de::Error::duplicate_field("downgrade_to"));
-                            }
-                            downgrade_to = Some(map.next_value()?);
-                            None
-                        }
+                        "per" => once(&mut map, &mut per, "per")?,
+                        "pool" => once(&mut map, &mut pool, "pool")?,
+                        "on_exhaust" => once(&mut map, &mut on_exhaust, "on_exhaust")?,
+                        "downgrade_to" => once(&mut map, &mut downgrade_to, "downgrade_to")?,
                         // 1.6.0-additive (`BUSBAR-1.6.0.md` §7): parsed, and deliberately NOT named in the
                         // frozen `expected one of` list below, as the `tokens_*` metrics are not.
-                        "admission" => {
-                            if admission.is_some() {
-                                return Err(de::Error::duplicate_field("admission"));
-                            }
-                            admission = Some(map.next_value()?);
-                            None
-                        }
-                        "on_exhaustion" => {
-                            if on_exhaustion.is_some() {
-                                return Err(de::Error::duplicate_field("on_exhaustion"));
-                            }
-                            on_exhaustion = Some(map.next_value()?);
-                            None
-                        }
+                        "admission" => once(&mut map, &mut admission, "admission")?,
+                        "on_exhaustion" => once(&mut map, &mut on_exhaustion, "on_exhaustion")?,
                         other => {
                             // FROZEN (PB-40): the `expected one of` list serde builds from this
                             // slice is 1.5.5's EIGHT keys. The four 1.6.0 `tokens_*` metrics are

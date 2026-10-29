@@ -1276,7 +1276,10 @@ pub fn build_app_from_config(
             )
             .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
-        let cfg_json = serde_json::Value::Object(resolved).to_string();
+        // The resolved bag's text is a copy of its secrets too: held in a zeroising buffer and
+        // wiped, with the bag, once the store's `open` has answered (security.md:318).
+        let cfg_json = zeroize::Zeroizing::new(resolved.as_value().to_string());
+        drop(resolved);
         // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
         // loaded through the root's one dispatcher and opened through the store v3 table, on the
         // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
@@ -1286,9 +1289,9 @@ pub fn build_app_from_config(
         let axis = crate::preflight::root_rows()
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let opened = axis()
-            .open(door, &g.module, cfg_json.as_bytes())
-            .map_err(load_failed)?;
+        let opened = axis().open(door, &g.module, cfg_json.as_bytes());
+        drop(cfg_json);
+        let opened = opened.map_err(load_failed)?;
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
