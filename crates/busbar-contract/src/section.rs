@@ -105,8 +105,16 @@ pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 /// THE RESERVED PER-ENTRY `timeout:` of any plane's section: an entry's wall-clock bound on ONE attempt to reach it,
 /// `<n><s|m|h|d>`. Core-owned: the kernel judges it ([`entry_timeout_ms`]) and holds every attempt
 /// its walk makes to that entry's member to it (`Member::attempt_timeout_ms`), for every plane alike;
-/// a plane names none of it. An entry that writes none is bounded by its walk's own budget.
+/// a plane names none of it. A registration that writes none is bounded at
+/// [`DEFAULT_ENTRY_TIMEOUT_MS`]; a model-serving section's entry ([`RESERVED_MODELS_KEY`]) that
+/// writes none is bounded by its walk's own budget, as the previous release bounded a model.
 pub const ENTRY_TIMEOUT_KEY: &str = "timeout";
+
+/// THE CORE'S DEFAULT [`ENTRY_TIMEOUT_KEY`], in milliseconds: the attempt bound of a registration
+/// (an entry of a section with no [`RESERVED_MODELS_KEY`] map) that writes no `timeout:`. Without
+/// it, an upstream that takes a call and never answers holds its caller, and a concurrency slot,
+/// for the walk's whole budget.
+pub const DEFAULT_ENTRY_TIMEOUT_MS: u64 = 30_000;
 
 /// [`ENTRY_TIMEOUT_KEY`] as written, in milliseconds: THE ONE READING of the value, the kernel's
 /// judgement and every reader's. `0` is refused rather than read as "no deadline": a zero budget

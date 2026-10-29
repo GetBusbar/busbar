@@ -254,8 +254,8 @@ fn a_final_status_past_the_claims_numbering_never_crosses() {
     );
 }
 
-/// RED (Q128 framer L1): a refusal after the stream's response head went out is told so, and its
-/// block is closing lines with no head line in them; one before the head is the whole answer.
+/// A refusal after the stream's response head went out is told so, and its block is closing lines
+/// with no head line in them; one before the head is the whole answer.
 #[test]
 fn a_refusal_after_the_head_is_told_the_head_went_out() {
     for head_sent in [false, true] {
