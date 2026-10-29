@@ -343,7 +343,7 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
     });
 }
 
-/// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478): THE LISTENER'S PROTOCOL OFFER IS THE ENTRY'S
+/// RED (`BUSBAR-1.6.0.md` l.477-478): THE LISTENER'S PROTOCOL OFFER IS THE ENTRY'S
 /// OFFER FOR ITS ACCEPTING SIDE. An entry that dials offering `x-two, x-one` and listens offering
 /// `x-one` alone answers the two apart, and a TLS client offering `x-two, x-one` to the need's
 /// listener (bound through the connector) agrees `x-one`: never the dial offer, never the server
@@ -379,7 +379,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     );
 }
 
-/// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
+/// RED (`BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
 /// LISTENS WITH THE TRANSPORT'S REGISTERED PROTOCOL LIST (the registry's `Entry::alpn`, the
 /// operator's settings dealt at boot), as a dial whose `locate` answers no offer dials with it
 /// (`compose`, "the registration's stands only for an entry that answers none"). A TLS listener

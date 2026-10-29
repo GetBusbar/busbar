@@ -2,14 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PROCESS'S ONE CONNECTOR, AS THE BOOT PATH BUILDS IT (`BUSBAR-1.6.0.md` THE DESIGN, section 5
-//! "Connections"; section 8: the connector is the sole holder of TLS trust roots; OWNER ruling
-//! DESTINATION GUARD: one destination check, in the connector, for every outbound connection).
-//! [`dest_judge`] builds the deployment's one destination judge ([`GuardJudge`]: the one
-//! [`Guard`], the system resolver, each egress class's scheme rule); the root hands that same judge
-//! to [`build_with_secrets`] (the connector's dial judge, [`judge`]) and to the kernel
-//! (`dest.judge` and the kernel's own clients), so every dial of every kind is judged by one guard.
-//! The root hands in the deployment's values and holds what it returns; nothing here keeps a
-//! second.
+//! "Connections"; section 8: the connector is the sole holder of TLS trust roots; one destination
+//! check, in the connector, for every outbound connection). [`dest_judge`] builds the deployment's
+//! one destination judge ([`GuardJudge`]: the one [`Guard`], the system resolver, each egress
+//! class's scheme rule); the root hands that same judge to [`build_with_secrets`] (the connector's
+//! dial judge, [`judge`]) and to the kernel (`dest.judge` and the kernel's own clients), so every
+//! dial of every kind is judged by one guard. The root hands in the deployment's values and holds
+//! what it returns; nothing here keeps a second.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -52,8 +51,8 @@ pub fn build_with_secrets(
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
-    // THE PROXY ENVIRONMENT, read once (row 130 E5a): a set variable that does not parse refuses
-    // the boot, as the kernel engine's install did.
+    // THE PROXY ENVIRONMENT, read once: a set variable that does not parse refuses the boot, as the
+    // kernel engine's install did.
     let proxy = crate::proxy::from_env().map_err(|e| format!("its proxy environment: {e}"))?;
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
     Ok(Arc::new(
@@ -135,9 +134,9 @@ impl GuardJudge {
     }
 }
 
-/// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only
-/// to a host WRITTEN as loopback ([`names_loopback`]), as 1.5.5's collector and webrequest guards
-/// ruled on the URL's host, never on what a name resolved to (ARCHITECT parity ruling A3).
+/// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only to
+/// a host WRITTEN as loopback ([`names_loopback`]), as 1.5.5's collector and webrequest guards
+/// ruled on the URL's host, never on what a name resolved to.
 fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64> {
     if class == EGRESS_LOOPBACK_ALLOWED && !https && !names_loopback(host) {
         return Err(DEST_PLAINTEXT);
@@ -149,7 +148,7 @@ fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64>
 /// refused), or a bare `host[:port]` authority (secure, port 443 unless named). The scheme is read
 /// without case, as RFC 3986 reads it and as 1.5.5 read every URL it judged (`scheme_is`: v1.5.5
 /// `crates/busbar/src/observability.rs:180-183`, `config_validate/mod.rs:1857`; `HTTP://` and
-/// `HTTPS://` were accepted wherever their lower-case spelling was; ARCHITECT parity ruling A3).
+/// `HTTPS://` were accepted wherever their lower-case spelling was).
 fn split(dest: &str) -> Result<(String, u16, bool), u64> {
     if let Some((scheme, rest)) = dest.split_once("://") {
         let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
