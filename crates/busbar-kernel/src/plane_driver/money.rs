@@ -32,6 +32,12 @@ pub struct UnitEnd {
     /// `DriverSteps::answered`, on a unit whose caller asked for a stream). It never changes the
     /// bill: what the plane ledgered for the unit is final, cut or not.
     pub cut: bool,
+    /// THE UNIT WAS REFUSED WITH NOTHING SPENT (R10 grant ruling): the plane's first answer to it
+    /// was a refusal it audited (an `AUDIT_REJECTED` `RECORD_AUDIT` row written with the answer that
+    /// carried the caller's head), and nothing was dialled for it before that answer
+    /// ([`super::PlaneUnits::refused_unspent`]). With no units reported, its end releases the
+    /// request count admission took ([`crate::governance::GovState::release_request`]).
+    pub refused_unspent: bool,
 }
 
 /// One unit's money facts, as the composition root knows them when it admits the unit.
@@ -690,12 +696,13 @@ impl PlaneMoney {
             UnitEnd {
                 caller_status,
                 cut: false,
+                refused_unspent: false,
             },
         );
     }
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
-        let UnitEnd { caller_status, .. } = end;
+        let UnitEnd { caller_status, refused_unspent, .. } = end;
         let removed = {
             let mut all = self.shard(key);
             all.remove(&key)
@@ -704,6 +711,10 @@ impl PlaneMoney {
             return;
         };
         let m = &open.money;
+        // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
+        if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
+            self.gov.release_request(&m.charge);
+        }
         if !open.ledgered {
             let delivered = (200..=299).contains(&caller_status);
             self.bill(m, open.provider.as_deref(), &reported(&open.last), |_| {

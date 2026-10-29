@@ -1888,6 +1888,28 @@ impl GovState {
         }
     }
 
+    pub fn release_request(&self, charge: &FeeCharge) {
+        for (bucket_id, window) in &charge.cells {
+            let mut map = self.budget.write(bucket_id);
+            let Some(cell) = map.get_mut(bucket_id) else {
+                continue; // swept: nothing in memory holds the count any more
+            };
+            if cell.window_start == *window {
+                cell.requests = cell.requests.saturating_sub(1);
+                cell.dirty = true;
+            } else if cell.window_start > *window {
+                cell.park(
+                    *window,
+                    UsageDelta {
+                        requests: -1,
+                        ..UsageDelta::default()
+                    },
+                );
+                cell.dirty = true;
+            }
+        }
+    }
+
     pub fn refund_fee_unit(
         &self,
         cost: &crate::cost::CostModel,

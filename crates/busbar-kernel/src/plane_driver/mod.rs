@@ -733,6 +733,12 @@ pub(crate) struct UnitState {
     route_policy: Option<std::sync::Arc<str>>,
     /// Why the kernel's Approve did not trust the unit's stated facts, for the plane's rendering.
     distrust: Option<Distrust>,
+    /// A request left for a far end on the unit's behalf (an attempt's send began).
+    dialled: bool,
+    /// THE PLANE'S FIRST ANSWER to the unit (the one carrying the caller's head): `Some(true)` when
+    /// it was a refusal the plane audited (an `AUDIT_REJECTED` `RECORD_AUDIT` row on that answer)
+    /// with nothing dialled before it and nothing sent on to a far end ([`PlaneUnits::refused_unspent`]).
+    first_answer_refused: Option<bool>,
 }
 
 pub struct PlaneUnits<'d, S, F, C> {
@@ -790,6 +796,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
 
     pub fn decoded(&self) -> Option<Decoded> {
         self.lock().decoded.clone()
+    }
+
+    pub fn refused_unspent(&self) -> bool {
+        self.lock().first_answer_refused == Some(true)
     }
 
     pub fn declined_status(&self) -> Option<u32> {

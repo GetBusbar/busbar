@@ -5299,6 +5299,7 @@ impl DataRoutes {
             busbar_kernel::plane_driver::UnitEnd {
                 caller_status: status,
                 cut: steps.stream_cut(),
+                refused_unspent: units.refused_unspent(),
             },
         );
 
