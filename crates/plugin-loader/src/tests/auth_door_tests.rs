@@ -1226,3 +1226,41 @@ fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
     );
     drop(buf);
 }
+
+/// "Busbar … overwriting its own copies with zeroes once the plugin has them" (security.md:318):
+/// the one copy an auth instance must keep is the secrets it re-lends `refresh`, and it keeps them
+/// in a holder that wipes them when the instance drops and whose `Debug` shows no byte of them.
+#[test]
+fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
+    use crate::auth_door::{AuthInstance, AuthSink};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+    let d = dispatcher();
+    let sink = AuthSink::new("keyed");
+    let bind = Bind {
+        instance: Arc::from("keyed-z"),
+        max_inflight_cap: 8,
+        sink: sink.bind(),
+        dispatcher: d.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(keyed::door).unwrap();
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
+    let a = AuthInstance::open(
+        p,
+        sink,
+        d.clone(),
+        "keyed-z",
+        b"{}",
+        vec![b"kept-for-refresh".to_vec()],
+    )
+    .expect("the keyed plugin opens over its credential");
+    let kept = a.kept_secrets();
+    wiped_when_dropped(kept);
+    let shown = format!("{kept:?}");
+    assert!(
+        !shown.contains("kept-for-refresh") && !shown.contains("107, 101, 112, 116"),
+        "the kept secrets print: {shown}"
+    );
+    assert!(a.refresh().is_ok(), "refresh is still lent the kept secret");
+}
