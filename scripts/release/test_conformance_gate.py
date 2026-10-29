@@ -131,14 +131,15 @@ class World:
         kt, kb = (self.tmp / "k2.pub").read_text().split()[:2]
         self.signers = [f'busbar-release namespaces="busbar-release" {kt} {kb}']
 
-    def build(self):
+    def build(self, testkit=None):
         if self.cand.exists():
             shutil.rmtree(self.cand)
-        cg.build_manifest(self.mci, self.root, commit=T, release="1.6.0", out=self.cand)
+        cg.build_manifest(self.mci, self.root, commit=T, release="1.6.0", out=self.cand, testkit=testkit)
         return json.loads((self.cand / "conformance-manifest.json").read_text())
 
-    def gate(self):
-        return cg.gate_c(self.root, self.cand, commit=T, release="1.6.0", allowed_signers=self.signers, client=self.mci)
+    def gate(self, testkit=None):
+        return cg.gate_c(self.root, self.cand, commit=T, release="1.6.0", allowed_signers=self.signers, client=self.mci,
+                         testkit=testkit)
 
     def except_(self, doc, sign=True):
         f = self.root / "release" / "conformance-exceptions.json"
@@ -246,6 +247,31 @@ class GateC(unittest.TestCase):
         self.w.mci.reruns[(WS, P, T)] = [verdict("ws", WS, P, OLD_CORE)]
         self.assertEqual(status(self.w.build(), "ws"), "not-run")
         self.assertRefused(self.w.gate(), "ws")
+
+    def test_a_plugin_verdict_on_the_released_test_kit_counts(self):
+        # Lead's ruling (KICKOFF: plugins test against a released core test kit): a plugin's verdict
+        # counts when its core pin is the released test-kit commit the release names (the plugins'
+        # .busbar-ref), not T. Core suites still need T.
+        kit = "7" * 40
+        self.w.mci.outputs[(WS, P)] = [verdict("ws", WS, P, kit)]
+        m = self.w.build(testkit=kit)
+        ws = next(s for s in m["suites"] if s["suite"] == "ws")
+        self.assertEqual((ws["status"], ws["core_pin"]), ("pass", kit))
+        self.assertEqual(self.w.mci.rerun_calls, [])
+        self.assertEqual(self.w.gate(testkit=kit), [])
+        # The test-kit commit not named: the T rule holds and the tag is refused.
+        self.assertEqual(status(self.w.build(), "ws"), "not-run")
+        self.assertRefused(self.w.gate(), "ws")
+        # Named, a plugin verdict on any other core still does not count.
+        self.w.mci.outputs[(WS, P)] = [verdict("ws", WS, P, OLD_CORE)]
+        self.assertEqual(status(self.w.build(testkit=kit), "ws"), "not-run")
+        self.assertIn((WS, P, kit), self.w.mci.rerun_calls)
+        self.assertRefused(self.w.gate(testkit=kit), "ws")
+        # Core suites are never judged on the test kit: tls stamped on it is not used.
+        self.w.mci.outputs[(WS, P)] = [verdict("ws", WS, P, kit)]
+        self.w.mci.outputs[(CORE, T)] = [verdict("tls", CORE, T, kit)]
+        self.assertEqual(status(self.w.build(testkit=kit), "tls"), "not-run")
+        self.assertRefused(self.w.gate(testkit=kit), "tls")
 
     def test_a_stale_plugin_pin_is_refused(self):
         self.w.build()
