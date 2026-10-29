@@ -155,6 +155,9 @@ pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
 // Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub use store_chain::ACK_DEADLINE;
+// The admin record sink's one wait on the store (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
+pub(crate) use store_chain::{off_runtime, wait_for};
 // What the tests read the store's rows back by.
 #[cfg(test)]
 pub use store_chain::{part_key, JOURNAL_SCHEMA};
@@ -197,11 +200,11 @@ mod audit;
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
 
-/// The three disaster-recovery verbs over the node's journal and the configured store (status row
-/// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
-/// A private child module, as `replay` is; its public items are re-exported here.
+/// The two disaster-recovery verbs over the node's journal and the configured store (status row
+/// 187): the operator's chain break on the chain, the restore refused. A private child module, as
+/// `replay` is; its public items are re-exported here.
 mod recovery;
-pub use recovery::{boot_recovery, node_verb_store};
+pub use recovery::{node_verb_store, report_operator_breaks};
 
 /// The first-party anti-downgrade floor the store keeps per host.
 mod plugin_floor;

@@ -15,7 +15,7 @@ BUSBAR"). A branch file is named for the branch being moved and says what the mo
 `.ci/qa.yaml` is not written yet: until it lands, nothing is published from `main`. The
 busbar-release hop (`promote.yml`, the engine pin) is deleted and no move is decided by it.
 busbar-release remains the tools repo: the home of the oracle (`busbar-oracle`, pinned by
-`testing/shadow-oracle/oracle-rust.pin` and fetched from its `dev-bin` release by `bin/oracle`), the
+the branch file's `BUSBAR_ORACLE_*` env and fetched from its `dev-bin` release by `bin/oracle`), the
 soak and the plugin fleet generator. The 1.5.5 golden the oracle reads stays in this tree, in
 `testing/shadow-oracle/golden/1.5.5`.
 

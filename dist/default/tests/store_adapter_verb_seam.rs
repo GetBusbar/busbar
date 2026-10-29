@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store adapter's node-memory seams — the kernel's slices and the sealed new-verb replay cache
-//! the root's verb store answers through it — against a store at the PUBLISHED payload schema, from
+//! The store adapter's node-memory seam — the sealed new-verb replay cache the root's verb store
+//! answers through it — against a store at the PUBLISHED payload schema, from
 //! `busbar-plugin-loader`'s `src/tests/store_adapter_tests.rs` (whose module doc states the three
 //! things that file and this one prove together).
 //!
@@ -13,7 +13,6 @@
 //! It lives in the composition root's integration suite (ARCHITECT C4B-1, 2026-10-03), beside the
 //! root that binds the adapter.
 
-use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use std::sync::Arc;
 
@@ -79,16 +78,6 @@ fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
     Arc::new(busbar_kernel::governance::MemoryStore::new())
 }
 
-/// A slice draw for one bucket's request axis.
-fn slice_request(wanted: u64, epoch: u64) -> SliceRequest {
-    SliceRequest {
-        bucket: bucket_all("team-a"),
-        dimension: CapDimension::Requests,
-        wanted,
-        epoch: Epoch(epoch),
-    }
-}
-
 /// A clock the test moves by hand, so the replay window can be watched closing without waiting it
 /// out in real time.
 #[derive(Clone, Default)]
@@ -111,19 +100,6 @@ fn adapter_at(clock: &TestClock) -> StoreAdapter {
 
 fn replay_key(name: &str) -> (String, String) {
     ("set_operator_key".to_string(), name.to_string())
-}
-
-/// `epoch` is the one generation a node-local shim has, and it stays put.
-#[test]
-fn the_slice_seam_epoch_is_constant() {
-    let adapter = adapter_over_published_schema();
-    assert_eq!(adapter.epoch(), Epoch(0));
-    adapter.reserve(&slice_request(1, 0)).expect("reserve");
-    assert_eq!(
-        adapter.epoch(),
-        Epoch(0),
-        "nothing on a node-local shim can advance the epoch"
-    );
 }
 
 /// A committed sealed replay slot answers its bytes for the window and is gone after it.
@@ -157,17 +133,6 @@ fn a_committed_slot_answers_inside_the_window_and_expires_after_it() {
 fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
     let mut note = |what: &str, err: String| failures.push(format!("{what}: {err}"));
 
-    match adapter.reserve(&slice_request(3, 0)) {
-        Ok(grant) => {
-            if let Err(e) = adapter.release(grant.id, 1) {
-                note("release", format!("{e:?}"));
-            }
-        }
-        Err(e) => note("reserve", format!("{e:?}")),
-    }
-    if adapter.epoch() != Epoch(0) {
-        note("epoch", format!("{:?}", adapter.epoch()));
-    }
     let key = ("export_keyset".to_string(), "sweep".to_string());
     if let Err(e) = adapter.replay_new_verb(&key) {
         note("replay_new_verb", format!("{e:?}"));

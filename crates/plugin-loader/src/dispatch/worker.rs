@@ -274,7 +274,7 @@ pub struct Done<I, O> {
     /// A lease for `release`; `0` = none.
     pub lease: u64,
     /// The frame, back to its owner; `None` when the op was faulted mid-crossing or detached.
-    pub frame: Option<Box<Frame<I, O>>>,
+    pub frame: Option<Frame<I, O>>,
     /// A WriteBehind op whose caller stopped waiting at its deadline; it runs on.
     pub detached: bool,
     /// A FAILED answer the kind calls SHORT: re-submit ONCE on the same ticket with bigger
@@ -419,7 +419,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
             outcome,
             error: None,
             lease: 0,
-            frame: Some(Box::new(frame)),
+            frame: Some(frame),
             detached: false,
             short: false,
             disposition: None,
@@ -477,8 +477,10 @@ pub(crate) trait Job: Send {
     fn finish(self: Box<Self>, c: Crossed) -> bool;
 }
 
+/// Boxed once at submit, the frame inline: its address is stable from the first crossing to the
+/// last (a PENDING op's `in`/`out` stay where the plugin saw them).
 struct JobOf<I, O> {
-    frame: Box<Frame<I, O>>,
+    frame: Frame<I, O>,
     reply: Arc<ReplySlot<Done<I, O>>>,
     /// The memory the frame's pointers lend the plugin ([`Lent`]): held with the frame, so it is
     /// dropped only when the job is — after the op's last crossing returned (an answer, a `cancel`
@@ -686,14 +688,12 @@ impl Driven {
     }
 
     /// How many `drive` crossings have answered so far.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn answers(&self) -> u64 {
         self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
     }
 
     /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
     /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
         let until = Instant::now() + timeout;
         let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
@@ -711,7 +711,6 @@ impl Driven {
     }
 
     /// Every name held now, taken (none when none is); never waits.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn drain(&self) -> Vec<u64> {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
@@ -798,6 +797,9 @@ impl Entry {
 #[derive(Default)]
 pub(crate) struct WorkerState {
     pub(crate) dead: bool,
+    /// The instance of the crossing this worker is inside, for the watchdog's breach: set before
+    /// the lock is let go for the crossing, cleared once it is taken back.
+    pub(crate) crossing: Option<Arc<Instance>>,
     pub(crate) entries: Vec<Entry>,
     free: Vec<u32>,
     runnable: VecDeque<u32>,
@@ -820,13 +822,6 @@ pub(crate) enum Msg {
     Stop,
 }
 
-/// The crossing a worker is inside, for the watchdog.
-pub(crate) struct CrossingRecord {
-    pub(crate) started: Instant,
-    pub(crate) budget: Duration,
-    pub(crate) instance: Arc<Instance>,
-}
-
 /// One worker incarnation. The watchdog replaces a wedged one with a fresh incarnation at the same
 /// index.
 pub(crate) struct Worker {
@@ -835,7 +830,11 @@ pub(crate) struct Worker {
     key: super::handle::TicketKey,
     tx: Sender<Msg>,
     pub(crate) state: Mutex<WorkerState>,
-    pub(crate) crossing: Mutex<Option<CrossingRecord>>,
+    /// When the crossing this worker is inside began ([`now_ns`], never 0); 0 = none. Read by the
+    /// watchdog without a lock; its instance is [`WorkerState::crossing`].
+    pub(crate) crossing_since: AtomicU64,
+    /// That crossing's watch budget, in nanoseconds.
+    pub(crate) crossing_budget: AtomicU64,
 }
 
 pub(crate) struct WorkerSlot {
@@ -966,7 +965,8 @@ impl Worker {
             key,
             tx,
             state: Mutex::new(state),
-            crossing: Mutex::new(None),
+            crossing_since: AtomicU64::new(0),
+            crossing_budget: AtomicU64::new(0),
         });
         (w, rx)
     }
@@ -1184,6 +1184,9 @@ impl Worker {
         let Some(cur) = e.current.take() else {
             return;
         };
+        // A wake latched behind this op on a driver ticket is owed a `drive`; on any other ticket
+        // it was this op's and goes with it.
+        let owed = e.driver.is_some() && std::mem::take(&mut e.latched);
         e.latched = false;
         // THE ONE RE-CALL: a short answer may be re-asked once on this ticket; short twice is FAULT.
         let recall = e.short_slot.take() == Some(cur.meta.slot);
@@ -1200,7 +1203,6 @@ impl Worker {
             }
         }
         drop(cur.meta);
-        let owed = e.driver.is_some() && std::mem::take(&mut e.latched);
         if !e.queue.is_empty() {
             Self::schedule(st, idx, Action::Start);
         } else if e.recycle_when_idle {
@@ -1269,34 +1271,29 @@ impl Worker {
         Duration::from_nanos(next.saturating_sub(now)).min(Duration::from_millis(100))
     }
 
-    fn begin_crossing(&self, instance: Arc<Instance>, budget: Duration) {
-        *self.crossing.lock().unwrap_or_else(|e| e.into_inner()) = Some(CrossingRecord {
-            started: Instant::now(),
-            budget,
-            instance,
-        });
-    }
-
-    fn end_crossing(&self) {
-        *self.crossing.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
     /// One crossing with the state unlocked; `None` when the watchdog replaced this worker
-    /// meanwhile (the caller exits).
+    /// meanwhile (the caller exits). The crossing is recorded for the watchdog with no lock of its
+    /// own: its instance under the state lock this already holds, its start and budget in atomics
+    /// (the start cleared before the state lock is taken back, as the watchdog's re-check expects).
     fn cross<'a>(
         &'a self,
-        st: MutexGuard<'a, WorkerState>,
+        mut st: MutexGuard<'a, WorkerState>,
         instance: &Arc<Instance>,
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
         budget: Duration,
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
-        self.begin_crossing(instance.clone(), budget);
+        st.crossing = Some(instance.clone());
+        let budget = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
+        self.crossing_budget.store(budget, Ordering::Relaxed);
+        self.crossing_since
+            .store(now_ns().max(1), Ordering::Release);
         drop(st);
         // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
         let crossed = unsafe { instance.cross(s, heads.0, heads.1, heads.2) };
-        self.end_crossing();
-        let st = self.lock();
+        self.crossing_since.store(0, Ordering::Release);
+        let mut st = self.lock();
+        st.crossing = None;
         (!st.dead).then_some((st, crossed))
     }
 
@@ -2383,6 +2380,16 @@ impl Dispatcher {
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Reply::settled(o, frame);
         }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance).
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(
+            s,
+            std::ptr::addr_of!(frame.input).cast(),
+            size_of::<I>(),
+            owner,
+        ) {
+            return Reply::settled(o, frame);
+        }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
@@ -2425,7 +2432,7 @@ impl Dispatcher {
             reply: slot.clone(),
         };
         let job = Box::new(JobOf {
-            frame: Box::new(frame),
+            frame,
             reply: slot.clone(),
             lent,
         });
