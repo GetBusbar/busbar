@@ -738,6 +738,13 @@ name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
 
+# Boots the real binary with the webhook sink at a target the host refuses, and reads the audit
+# chain through the admin API: it needs the operator credential's row and the webhook sink linked.
+[[test]]
+name = "bind_refusal_audited"
+path = "tests/bind_refusal_audited.rs"
+required-features = ["auth-admin-tokens", "export-webhook"]
+
 [[test]]
 name = "admin_bound_before_healthz"
 path = "tests/admin_bound_before_healthz.rs"
@@ -908,7 +915,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "254cddb5b7c9783f7697ac07a08cc72024761703" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "26d7a653bc1dc47e5ed6568fddb83394ea3480b8" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
