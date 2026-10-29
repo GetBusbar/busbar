@@ -420,37 +420,8 @@ pub struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
-/// The node's claim journal (item 271), read by the node's key replay cache ([`CellJournal`]) and set at
-/// most once, right after `AdminNode`'s own `units.admin.claims` is known (see [`mount`]) — before
-/// the router this dispatch drives is reachable by any real request. A `OnceLock` rather than a
-/// plain field because the replay cache is built BEFORE `AdminBinding::claims` is resolved (the
-/// binding is built from the very `dispatch` this type becomes), so there is one moment between
-/// construction and first use where the answer is not yet known — never a moment where it is asked
-/// twice.
-#[cfg(feature = "root-admin")]
-pub(crate) type ClaimJournalCell =
-    std::sync::Arc<std::sync::OnceLock<Option<std::sync::Arc<dyn ClaimJournal>>>>;
-
-#[cfg(feature = "root-admin")]
-use busbar_core_admin::idempotency::ClaimJournal;
 #[cfg(feature = "root-admin")]
 use busbar_core_admin::keys::KeyReplayCache;
-
-/// The node's claim journal as the replay cache sees it: the cell, read at the moment a claim is
-/// taken. The cache is built before the journal is known (see [`ClaimJournalCell`]); every claim it
-/// takes comes from a real request, which cannot arrive until the cell is set, so a claim is never
-/// dropped for a cell that was merely early.
-#[cfg(feature = "root-admin")]
-struct CellJournal(ClaimJournalCell);
-
-#[cfg(feature = "root-admin")]
-impl ClaimJournal for CellJournal {
-    fn journal_claim(&self, key: &(String, String), now: u64) {
-        if let Some(journal) = self.0.get().and_then(Option::as_ref) {
-            journal.journal_claim(key, now);
-        }
-    }
-}
 
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
@@ -670,29 +641,13 @@ pub fn mount(
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
     busbar_core_admin::restart::drain_released_at_exit();
-    // Item 271: the claim journal `build_units` binds onto `units.admin.claims` (root/kernel.rs,
-    // `ProductionUnits::admin_only_sharing`) is not known until `build_units` runs — and
-    // `build_units` needs `dispatch`, which needs the router `RouterDispatch` drives, before either
-    // exists. The cell breaks the cycle: `RouterDispatch` is handed an empty one now and reads it on
-    // every call after, and it is filled exactly once, below, the instant the answer is known — long
-    // before the router this dispatch drives can see a real request.
-    let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
     // THE NODE'S KEY REPLAY CACHE, built here once: this function runs once per process, so the
     // cache lives as long as the node does and a mint's in-flight sentinel outlives every config
-    // reload. Its journal is the cell.
-    let replays = Arc::new(KeyReplayCache::with_journal(Arc::new(CellJournal(
-        Arc::clone(&claims),
-    ))));
+    // reload. What outlives the process is the key's claim in the store.
+    let replays = Arc::new(KeyReplayCache::new());
     let dispatch: Arc<dyn AdminDispatch> =
         Arc::new(RouterDispatch::new(inner.clone(), &runtime, replays));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
-    let _ = claims.set(
-        node.units
-            .admin
-            .claims
-            .clone()
-            .map(|j| j as std::sync::Arc<dyn ClaimJournal>),
-    );
 
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
@@ -850,6 +805,8 @@ pub fn mount_node(
             // live snapshot (Law 7) and write through the configured store's plane-facing seam.
             units.admin.planes = live_planes(Arc::clone(app));
             units.admin.records = Some(live_records(Arc::clone(app)));
+            // An `Idempotency-Key` is claimed in the same configured store.
+            units.admin.replay_store = Some(live_replay_store(Arc::clone(app)));
             // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
             // book — the composed services, reached through the late install.
             let late = Arc::clone(late);

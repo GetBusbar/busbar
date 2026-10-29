@@ -17,17 +17,11 @@
 //! { "settings": <the settings the store opens over>,
 //!   <store>: {        (the section under the kind's config root key, `Kind::Store`)
 //!     "node": <this node's id: the high half of the op ids the bridge mints>,
-//!     "caps":  { "bucket": "<the capped bucket>", "window_start": <ms>,
-//!                "requests": <its requests cap>, "input": <its `input` class cap> },
-//!     "draw":  { "requests": <one reserve's requests>, "input": <its `input`> },
 //!     "usage": { "bucket": "<the usage bucket>", "window": <its window start> },
-//!     "stream": "<the stream `append_batch` writes>",
 //!     "schema": "<the schema the record ops write under>",
 //!     "keys":  { "grouped": "<a key id>", "group": "<its group>", "plain": "<another>",
 //!                "absent": "<an id never written>" } } }
 //! ```
-//!
-//! A draw must fit its cap once and not twice (the second reserve is the EXHAUSTED one).
 //!
 //! THE PINS (M6/contract): every op is ONE crossing — a replay, a refusal and a conflict
 //! included: the `op_id` dedupe (H4) is the store's to answer, so the host crosses to ask — but:
@@ -35,7 +29,7 @@
 //! * a bridge READ answered under a LEASE is TWO, the read and its lease's `release`
 //!   ([`LEASED`]). The SDK leases a found record, a non-empty list and every ledger (a window
 //!   never written answers the zero ledger); an absent record and an empty list hold no lease
-//!   (one crossing). The typed `heads` is leased the same way. The request-path reads
+//!   (one crossing). The request-path reads
 //!   (`record_get`, `get_plane_record`, the lists into host buffers) write into the host's
 //!   buffers and hold none;
 //! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus one `ready` crossing when
@@ -47,15 +41,14 @@
 use std::fmt::{Debug, Display};
 use std::sync::{Arc, PoisonError};
 
-use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension, Grant};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, ModelTokensDelta,
-    PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore, ScopeRef, SecretForm, UsageDelta,
-    UsageLedger, VirtualKey,
+    CredentialMeta, CredentialSecret, MeteringDelta, ModelTokensDelta, PlaneDisposition,
+    PlaneRecord, PlaneSelector, RecordStore, ScopeRef, SecretForm, UsageDelta, UsageLedger,
+    VirtualKey,
 };
-use busbar_contract::store_calls::{StoreCalls, StoreFailure};
+use busbar_contract::store_calls::StoreCalls;
 
 use super::{crossings_of, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
 use crate::dispatch::kinds::hook::Hook;
@@ -105,9 +98,9 @@ fn block<T>(rt: &tokio::runtime::Runtime, f: impl std::future::Future<Output = T
     rt.block_on(f)
 }
 
-/// THE TABLE THIS SCRIPT DRIVES: 47 kind slots, every one of them stepped below. A slot added to
+/// THE TABLE THIS SCRIPT DRIVES: 31 kind slots, every one of them stepped below. A slot added to
 /// the store table fails the build here until the script drives it.
-const _: () = assert!(busbar_contract::abi::store::KIND_SLOTS == 47);
+const _: () = assert!(busbar_contract::abi::store::KIND_SLOTS == 31);
 
 /// THE HOST'S OP-ID ALLOCATORS, ONE PER FOLD RUNNING. The bridge's mint is a plain `fn() -> OpId`
 /// (`OpIdMint`), so a fold's allocator is one of [`FOLDS`] static slots, each with its own node
@@ -241,19 +234,6 @@ fn meter(key_id: &str, provider: &str, input: u64) -> MeteringDelta {
     }
 }
 
-fn audit(seq: u64, action: &str) -> AuditRecord {
-    AuditRecord {
-        seq,
-        ts: seq * 10,
-        action: action.into(),
-        resource: "r".into(),
-        outcome: "ok".into(),
-        principal: "p".into(),
-        prev_hash: format!("prev{seq}"),
-        hash: format!("hash{seq}{action}"),
-    }
-}
-
 /// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
 /// schemas hold, 1.5.5's `PutCredential` "today only" kind; a store whose schema
 /// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
@@ -329,15 +309,8 @@ pub(super) struct Inputs<'a> {
     /// The credential kind the shipped store schemas hold (`store.credential_kind`, Q-P4-7).
     pub(super) credential_kind: &'a str,
     node: u64,
-    cap_bucket: &'a str,
-    window_start: u64,
-    cap_requests: u64,
-    cap_input: u64,
-    draw_requests: u64,
-    draw_input: u64,
     usage_bucket: &'a str,
     window: u64,
-    stream: &'a str,
     schema: &'a str,
     grouped: &'a str,
     group: &'a str,
@@ -358,31 +331,17 @@ impl<'a> Inputs<'a> {
                 .as_u64()
                 .unwrap_or_else(|| panic!("conformance.json: store.{path} must be a number"))
         };
-        let i = Self {
+        Self {
             credential_kind: s("credential_kind"),
             node: n("node"),
-            cap_bucket: s("caps.bucket"),
-            window_start: n("caps.window_start"),
-            cap_requests: n("caps.requests"),
-            cap_input: n("caps.input"),
-            draw_requests: n("draw.requests"),
-            draw_input: n("draw.input"),
             usage_bucket: s("usage.bucket"),
             window: n("usage.window"),
-            stream: s("stream"),
             schema: s("schema"),
             grouped: s("keys.grouped"),
             group: s("keys.group"),
             plain: s("keys.plain"),
             absent: s("keys.absent"),
-        };
-        assert!(
-            i.draw_requests <= i.cap_requests
-                && i.draw_input <= i.cap_input
-                && i.draw_requests * 2 > i.cap_requests,
-            "conformance.json: store.draw must fit store.caps once and not twice"
-        );
-        i
+        }
     }
 }
 
@@ -442,7 +401,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     ready_step(&mut r, s, st.plugin(), &d);
     let b: &dyn RecordStore = &st;
 
-    // ── keys: put_key, get_key, list_keys, delete_key, scrub_key, list_keys_since ──
+    // ── keys: put_key, get_key, list_keys, delete_key, list_keys_since ──
     let keys = |r: Result<Vec<VirtualKey>, busbar_contract::records::RecordStoreError>| {
         ans(r.map(|mut ks| {
             ks.sort_by(|a, b| a.id.cmp(&b.id));
@@ -465,11 +424,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("delete plain", 1, || ans(b.delete_key(i.plain)));
     r.line("delete absent", 1, || ans(b.delete_key(i.absent)));
     r.line("relive plain", 1, || ans(b.put_key(&key(i.plain, None))));
-    r.line("scrub plain", 1, || ans(b.scrub_key(i.plain)));
-    r.line("scrub grouped (live)", 1, || ans(b.scrub_key(i.grouped)));
     r.line("keys since 0", LEASED, || keys(b.list_keys_since(0)));
 
-    // ── usage: get_usage, add_usage, put_usage, purge_windows_before ──
+    // ── usage: get_usage, add_usage, put_usage ──
     let (ub, w) = (i.usage_bucket, i.window);
     r.line("usage untouched", LEASED, || ans(b.get_usage(ub, w)));
     r.line("add usage", 1, || ans(b.add_usage(ub, w, &delta(2, 30))));
@@ -478,11 +435,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     set.apply_delta(&delta(9, 1));
     r.line("put usage", 1, || ans(b.put_usage("j", w * 2, &set)));
     r.line("usage j", LEASED, || ans(b.get_usage("j", w * 2)));
-    // Strictly before every window written: every store answers 0, whatever it purges.
-    r.line("purge windows before", 1, || ans(b.purge_windows_before(w)));
-    r.line("usage after purge", LEASED, || ans(b.get_usage(ub, w)));
+    r.line("usage again", LEASED, || ans(b.get_usage(ub, w)));
 
-    // ── metering: add_metering, list_metering, purge_metering_before ──
+    // ── metering: add_metering, list_metering ──
     // Metering names a key the script has PUT (the grouped key, still live): a store whose metering
     // rows reference its keys (a metering -> keys foreign key) holds them.
     r.line("meter p 3", 1, || {
@@ -500,7 +455,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             v
         }))
     });
-    r.line("purge metering", 1, || ans(b.purge_metering_before("a")));
 
     // ── credentials ──
     r.line("put k1", 1, || ans(b.put_key(&key("k1", None))));
@@ -521,16 +475,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .list_credentials("k1")
             .map(|v| v.into_iter().map(|c| c.id).collect::<Vec<_>>()))
     });
-    r.line("lookup pub2", LEASED, || {
-        ans(b
-            .lookup_credential_secret(i.credential_kind, "pub2")
-            .map(|c| c.map(|c| (c.meta.id, c.secret))))
-    });
-    r.line("lookup absent", 1, || {
-        ans(b
-            .lookup_credential_secret(i.credential_kind, "pub-absent")
-            .map(|c| c.map(|c| c.meta.id)))
-    });
     r.line("revoke c1", 1, || ans(b.revoke_credential("c1", "rotated")));
     r.line("revoke absent", 1, || ans(b.revoke_credential("zz", "x")));
     r.line("creds since", LEASED, || {
@@ -543,13 +487,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
 
     // ── audit and denylist ──
-    r.line("audit 1", 1, || ans(b.append_audit(&audit(1, "a"))));
-    r.line("audit 2", 1, || ans(b.append_audit(&audit(2, "b"))));
-    r.line("audit 2 forked", 1, || {
-        ans(b.append_audit(&audit(2, "forked")))
-    });
-    r.line("audit", LEASED, || ans(b.list_audit()));
-    r.line("audit tail 1", LEASED, || ans(b.list_audit_tail(1)));
+    // No 1.5.5 audit row is written (no slot appends one), so both reads are empty lists, which hold
+    // no lease: one crossing each.
+    r.line("audit", 1, || ans(b.list_audit()));
+    r.line("audit tail 1", 1, || ans(b.list_audit_tail(1)));
     r.line("deny x", 1, || ans(b.add_denylist("x", "why")));
     r.line("deny", LEASED, || {
         ans(b.list_denylist().map(|mut v| {
@@ -593,7 +534,28 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
     r.line("purge ev", 1, || {
-        ans(b.purge_plane_records_before("ev", 100))
+        ans(b.purge_plane_records("ev", 100, busbar_contract::records::Retention::Age))
+    });
+    // THE KIND'S RETENTION RULE (coordinator ruling (b)): the rule is the one the purge is handed,
+    // never one the store infers from the kind's name. Under `TerminalOnly` an old ACTIVE row is
+    // kept and an old TERMINAL one goes; under `Age` every old row goes.
+    r.line("append rt1", 1, || {
+        ans(b.append_plane_record(plane("rt", "r", Some("p"), 1, b"active").view()))
+    });
+    r.line("append rt2", 1, || {
+        ans(b.append_plane_record(plane("rt", "r", Some("p"), 2, b"terminal").view()))
+    });
+    r.line("purge rt terminal-only", 1, || {
+        ans(b.purge_plane_records("rt", 100, busbar_contract::records::Retention::TerminalOnly))
+    });
+    r.line("list rt kept", 1, || {
+        bodies(b.list_plane_records("rt", &PlaneSelector::Parent("p".into())))
+    });
+    r.line("purge rt age", 1, || {
+        ans(b.purge_plane_records("rt", 100, busbar_contract::records::Retention::Age))
+    });
+    r.line("list rt aged", 1, || {
+        bodies(b.list_plane_records("rt", &PlaneSelector::Parent("p".into())))
     });
     r.line("delete t1", 1, || ans(b.delete_plane_record("task", "t1")));
     r.line("get t1 after", 1, || {
@@ -614,152 +576,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
 
     // ── the typed surface: every v3 addition, submitted and awaited ──
-    let cell_key = |dimension| CellKey {
-        bucket: i.cap_bucket,
-        pool: None,
-        dimension,
-        window_start: i.window_start,
-    };
-    let caps = [
-        Cap {
-            key: cell_key(Dimension::Requests),
-            cap: i.cap_requests,
-            config_gen: 1,
-        },
-        Cap {
-            key: cell_key(Dimension::Class("input")),
-            cap: i.cap_input,
-            config_gen: 1,
-        },
-    ];
-    let conflict = [Cap {
-        key: cell_key(Dimension::Requests),
-        cap: i.cap_requests + 1,
-        config_gen: 1,
-    }];
-    let draw = [
-        Cell {
-            key: cell_key(Dimension::Requests),
-            amount: i.draw_requests,
-        },
-        Cell {
-            key: cell_key(Dimension::Class("input")),
-            amount: i.draw_input,
-        },
-    ];
-    let uncapped = [Cell {
-        key: CellKey {
-            bucket: "uncapped",
-            pool: None,
-            dimension: Dimension::NanoUnits,
-            window_start: i.window_start,
-        },
-        amount: 1,
-    }];
-    // Grants by what they grant: a slice id and its validity are the store's own.
-    let granted = |g: &Result<Vec<Grant>, StoreFailure>| match g {
-        Ok(g) => format!("= {:?}", g.iter().map(|x| x.granted).collect::<Vec<_>>()),
-        Err(e) => format!("! {e}"),
-    };
-    r.line("caps", 1, || ans(block(&rt, st.window_caps(op(1), &caps))));
-    r.line("caps conflict", 1, || {
-        ans(block(&rt, st.window_caps(op(2), &conflict)))
-    });
-    r.line("caps op reused", 1, || {
-        ans(block(&rt, st.window_caps(op(1), &conflict)))
-    });
-    let g = r.step("reserve", 1, || {
-        let g = block(&rt, StoreCalls::reserve(&st, op(3), 0, &draw));
-        (granted(&g), g)
-    });
-    let slices: Vec<u64> = g
-        .as_ref()
-        .map(|g| g.iter().map(|x| x.slice_id).collect())
-        .unwrap_or_default();
-    r.line("reserve replay", 1, || {
-        let again = block(&rt, StoreCalls::reserve(&st, op(3), 0, &draw));
-        let same = again
-            .as_ref()
-            .ok()
-            .map(|a| a.iter().map(|x| x.slice_id).collect::<Vec<_>>());
-        format!(
-            "{} same_slices={}",
-            granted(&again),
-            same.as_ref() == Some(&slices)
-        )
-    });
-    r.line("reserve over", 1, || {
-        granted(&block(&rt, StoreCalls::reserve(&st, op(4), 0, &draw)))
-    });
-    r.line("reserve no cap", 1, || {
-        granted(&block(&rt, StoreCalls::reserve(&st, op(5), 0, &uncapped)))
-    });
-    let items: Vec<(u64, u64)> = slices
-        .iter()
-        .zip([1, 100])
-        .map(|(s, unspent)| (*s, unspent))
-        .collect();
-    r.line("release", 1, || {
-        ans(block(&rt, st.slice_release(op(6), 0, &items)))
-    });
-    r.line("release replay", 1, || {
-        ans(block(&rt, st.slice_release(op(6), 0, &items)))
-    });
-    r.line("release unknown", 1, || {
-        ans(block(&rt, st.slice_release(op(7), 0, &[(u64::MAX, 1)])))
-    });
-    // A release on window 0 is FINAL (`abi::store` slice life (e)): the partial release takes back
-    // what it names, the slice closes, and the spent rest stays counted against the cap.
-    let window_zero = CellKey {
-        bucket: "window-0",
-        pool: None,
-        dimension: Dimension::NanoUnits,
-        window_start: 0,
-    };
-    let window_zero_cap = [Cap {
-        key: window_zero,
-        cap: 10,
-        config_gen: 1,
-    }];
-    let window_zero_draw = |amount| {
-        [Cell {
-            key: window_zero,
-            amount,
-        }]
-    };
-    r.line("caps window 0", 1, || {
-        ans(block(&rt, st.window_caps(op(14), &window_zero_cap)))
-    });
-    let zero = r.step("reserve window 0", 1, || {
-        let g = block(
-            &rt,
-            StoreCalls::reserve(&st, op(15), 0, &window_zero_draw(6)),
-        );
-        (granted(&g), g)
-    });
-    let zero_slice = zero
-        .as_ref()
-        .ok()
-        .and_then(|g| g.first())
-        .map_or(u64::MAX, |g| g.slice_id);
-    r.line("release window 0", 1, || {
-        ans(block(&rt, st.slice_release(op(16), 0, &[(zero_slice, 2)])))
-    });
-    r.line("release window 0 again", 1, || {
-        ans(block(&rt, st.slice_release(op(17), 0, &[(zero_slice, 4)])))
-    });
-    r.line("reserve window 0 rest", 1, || {
-        granted(&block(
-            &rt,
-            StoreCalls::reserve(&st, op(18), 0, &window_zero_draw(6)),
-        ))
-    });
-    r.line("reserve window 0 over", 1, || {
-        granted(&block(
-            &rt,
-            StoreCalls::reserve(&st, op(19), 0, &window_zero_draw(1)),
-        ))
-    });
     let batch = [(ub, w, delta(1, 5)), (ub, w, delta(1, 5))];
     r.line("usage batch", 1, || {
         ans(block(&rt, st.add_usage_batch(op(8), &batch)))
@@ -776,46 +592,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             st.add_metering_batch(op(9), &[meter(i.grouped, "p", 1)]),
         ))
     });
-    r.line("audit batch fork", 1, || {
-        ans(block(
-            &rt,
-            st.append_audit_batch(op(10), &[audit(3, "c"), audit(1, "forked")]),
-        ))
-    });
-    r.line("audit batch", 1, || {
-        ans(block(&rt, st.append_audit_batch(op(11), &[audit(3, "c")])))
-    });
     let rec = |v: &[u8]| RecordBytes::new(v.to_vec()).expect("a record");
-    r.line("append batch", 1, || {
-        ans(block(
-            &rt,
-            st.append_batch(op(12), i.stream, &[rec(b"1"), rec(b"2")]),
-        )
-        .map(|h| h.seq))
-    });
-    r.line("heads", LEASED, || {
-        ans(block(&rt, StoreCalls::heads(&st)).map(|mut v| {
-            v.sort_by(|x, y| x.0.cmp(&y.0));
-            v.into_iter().map(|(n, h)| (n, h.seq)).collect::<Vec<_>>()
-        }))
-    });
-    let sessions = || {
-        ans(block(&rt, st.sessions_for("alice")).map(|mut v| {
-            v.sort();
-            v
-        }))
-    };
-    r.line("session put 1", 1, || {
-        ans(block(&rt, st.session_put(1, "n1", "alice")))
-    });
-    r.line("session put 2", 1, || {
-        ans(block(&rt, st.session_put(2, "n2", "alice")))
-    });
-    r.line("sessions", 1, sessions);
-    r.line("session remove 1", 1, || {
-        ans(block(&rt, st.session_remove(1)))
-    });
-    r.line("sessions after", 1, sessions);
     let shown = |v: Option<RecordBytes>| v.map(|v| text_of(v.as_slice()));
     r.line("record put a/1", 1, || {
         ans(block(&rt, st.record_put(i.schema, b"a/1", &rec(b"one"))))
@@ -838,7 +615,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     };
     r.line("record scan", 1, scan);
-    // AN EMPTY PUT REMOVES THE ROW (slot 40; ARCHITECT 2026-10-21): the host's strike.
+    // AN EMPTY PUT REMOVES THE ROW (slot 26; ARCHITECT 2026-10-21): the host's strike.
     r.line("record put a/1 empty", 1, || {
         ans(block(&rt, st.record_put(i.schema, b"a/1", &rec(b""))))
     });
@@ -936,8 +713,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: the op_id
 /// dedupe (H4: a replay answers the original and applies nothing, a different body under a used
-/// op_id is `STORE_OPID_CONFLICT`), whole-or-nothing reserves against pushed caps, tombstones and
-/// forks refused, a token redeemed once, the ledger counting each write once, and a key handed
+/// op_id is `STORE_OPID_CONFLICT`), tombstones and forks refused, a token redeemed once, the ledger counting each write once, and a key handed
 /// back byte-identically whatever scope kinds it carries.
 fn contract(fold: &Fold, i: &Inputs<'_>) {
     let at = |label: &str| {
@@ -956,27 +732,19 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         "put grouped",
         "put plain",
         "delete plain",
-        "scrub plain",
         "add usage",
         "put usage",
         "meter p 3",
         "cred c1",
         "key+cred k2",
         "revoke c1",
-        "audit 1",
-        "audit 2",
         "deny x",
         "upsert t1",
         "append e1",
         "append e2",
         "delete t1",
-        "caps",
-        "release",
         "usage batch",
         "metering batch",
-        "audit batch",
-        "session put 1",
-        "session remove 1",
         "record put a/1",
         "record put a/1 empty",
         "typed upsert",
@@ -992,19 +760,13 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     );
     for label in [
         "get absent",
-        "lookup absent",
         "get t1 after",
         "record get absent",
         "record get emptied",
     ] {
         assert_eq!(at(label), "= None", "{label}");
     }
-    for label in [
-        "delete absent",
-        "relive plain",
-        "audit 2 forked",
-        "audit batch fork",
-    ] {
+    for label in ["delete absent", "relive plain"] {
         assert!(
             at(label).starts_with("! "),
             "refused: {label}: {}",
@@ -1012,91 +774,33 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         );
     }
     assert!(
-        at("scrub grouped (live)").starts_with("! "),
-        "a live key is not scrubbed"
-    );
-    assert!(
         at("cred c9 (live slot)").starts_with("! "),
         "a live slot is not taken twice"
     );
-    assert!(
-        at("lookup pub2").contains("\"c2\""),
-        "{}",
-        at("lookup pub2")
-    );
-    assert_eq!(
-        at("purge windows before"),
-        "= 0",
-        "nothing lies before the first window"
-    );
-    assert!(
-        at("caps conflict").contains("STORE_CAP_CONFLICT"),
-        "{}",
-        at("caps conflict")
-    );
-    assert_eq!(
-        at("caps op reused"),
-        "! STORE_OPID_CONFLICT",
-        "a used op_id with another body"
-    );
-    assert_eq!(
-        at("reserve"),
-        format!("= {:?}", [i.draw_requests, i.draw_input]),
-        "a reserve within its caps grants every cell whole"
-    );
-    assert_eq!(
-        at("reserve replay"),
-        format!("{} same_slices=true", at("reserve")),
-        "a replayed reserve answers the ORIGINAL grants"
-    );
-    assert!(
-        at("reserve over").contains("Exhausted"),
-        "{}",
-        at("reserve over")
-    );
-    assert!(
-        at("reserve no cap").contains("NoCap"),
-        "{}",
-        at("reserve no cap")
-    );
-    assert_eq!(
-        at("release replay"),
-        at("release"),
-        "a replayed release answers the original"
-    );
-    assert_eq!(at("caps window 0"), "= ()", "the window-0 cap is pushed");
-    assert_eq!(at("reserve window 0"), "= [6]");
-    assert_eq!(
-        at("release window 0"),
-        "= [2]",
-        "a window-0 release takes back the unspent it names"
-    );
-    assert_eq!(
-        at("release window 0 again"),
-        "= [0]",
-        "a window-0 slice stayed open after its release: a release on window 0 is final"
-    );
-    assert_eq!(
-        at("reserve window 0 rest"),
-        "= [6]",
-        "the returned 2 are drawable"
-    );
-    assert!(
-        at("reserve window 0 over").contains("Exhausted"),
-        "the spent part of a released window-0 slice was not counted: {}",
-        at("reserve window 0 over")
-    );
     assert_eq!(at("usage batch replay"), at("usage batch"));
     assert_eq!(at("usage batch conflict"), "! STORE_OPID_CONFLICT");
-    assert!(
-        at("append batch").starts_with("= "),
-        "{}",
-        at("append batch")
+    for label in ["append rt1", "append rt2"] {
+        assert!(at(label).starts_with("= "), "{label}: {}", at(label));
+    }
+    assert_eq!(
+        at("purge rt terminal-only"),
+        "= 1",
+        "a terminal-only purge drops the old TERMINAL row and only it"
     );
-    assert!(
-        at("heads").contains(&format!("({:?}, ", i.stream)),
-        "{}",
-        at("heads")
+    assert_eq!(
+        at("list rt kept"),
+        r#"= ["active"]"#,
+        "a terminal-only purge keeps an ACTIVE row however old"
+    );
+    assert_eq!(
+        at("purge rt age"),
+        "= 1",
+        "an age purge drops the old ACTIVE row"
+    );
+    assert_eq!(
+        at("list rt aged"),
+        "= []",
+        "nothing old survives an age purge"
     );
     assert_eq!(at("redeem"), "= true");
     assert_eq!(at("redeem again"), "= false", "a token is redeemed once");
@@ -1110,12 +814,11 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         "= [(\"a/2\", \"two\")]",
         "an empty put removes the row: the scan never returns it"
     );
-    assert_eq!(at("sessions after"), "= [(2, \"n2\")]");
     // add_usage 2, then one batch of two cells of 1 applied once (its replay applied nothing).
     assert!(
-        tail("usage after purge").contains("UsageLedger { requests: 2,"),
+        tail("usage again").contains("UsageLedger { requests: 2,"),
         "{}",
-        at("usage after purge")
+        at("usage again")
     );
     assert!(
         tail("usage at the end").contains("UsageLedger { requests: 4,"),
