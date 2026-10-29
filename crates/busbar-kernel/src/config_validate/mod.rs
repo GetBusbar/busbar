@@ -2307,6 +2307,24 @@ pub fn metadata_denylist_entries() -> Vec<String> {
     .collect()
 }
 
+/// EVERY entry the guard enforces as metadata, as `--print-metadata-blocklist` prints it (the
+/// security doc calls that list the ground truth): [`metadata_denylist_entries`] with the two
+/// enforced entries 1.5.5 never listed beside AWS IMDSv6, the EC2 task-metadata endpoint
+/// `fd00:ec2::23` and IPv6 link-local `fe80::/10`. The boot line's count stays on
+/// [`metadata_denylist_entries`] (1.5.5's displayed list).
+pub fn metadata_enforced_entries() -> Vec<String> {
+    let mut entries = metadata_denylist_entries();
+    let at = entries
+        .iter()
+        .position(|e| e == "fd00:ec2::254")
+        .map_or(entries.len(), |i| i + 1);
+    entries.splice(
+        at..at,
+        ["fd00:ec2::23".to_string(), "fe80::/10".to_string()],
+    );
+    entries
+}
+
 pub mod deal;
 /// Enumerating every secret reference in the resolved config, and the two-layer guard that makes
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
