@@ -159,6 +159,17 @@ pub fn is_door(decl: &PlaneDecl) -> bool {
         .any(|f| std::ptr::eq(&f.decl, decl))
 }
 
+/// The sections a folded door's Statement CONSUMES (`PlaneRegistration::consumes`): sections
+/// another owner declares that the plane reads. Empty for a row no door folded.
+#[must_use]
+pub fn consumed_sections(decl: &PlaneDecl) -> &'static [&'static str] {
+    DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find(|f| std::ptr::eq(&f.decl, decl))
+        .map_or(&[], |f| f.reg.consumes.as_slice())
+}
+
 /// THE PROVIDER-KEY DESCRIPTOR a folded door states (`PlaneRegistration::provider_keys`, row 155
 /// B1c): the `providers:` entry keys its plane owns, per form, in their frozen order and the neutral
 /// shape vocabulary; the first folded door that states one, `None` when none does. The kernel names

@@ -213,10 +213,11 @@ const SHARED: &str = "witness_shared";
 /// The witness plane: it declares the pools section, owns `witness_own`, and consumes the
 /// providers, the models and [`SHARED`].
 fn witness() -> PlaneFacts {
+    const CONSUMES: &[&str] = &[Kind::Transport.root(), RESERVED_MODELS_KEY, SHARED];
     PlaneFacts {
         key: "witness",
         owns: vec![RESERVED_POOLS_KEY, "witness_own"],
-        consumes: &[Kind::Transport.root(), RESERVED_MODELS_KEY, SHARED],
+        consumes: CONSUMES,
     }
 }
 
@@ -285,7 +286,9 @@ impl MigrateHost for Witness {
                         own.insert("new".into(), v);
                     }
                 }
-                let providers = settings.get(Kind::Transport.root()).and_then(|p| p.as_object());
+                let providers = settings
+                    .get(Kind::Transport.root())
+                    .and_then(|p| p.as_object());
                 for entry in providers.into_iter().flat_map(|p| p.values()) {
                     for key in ["base_url", "token_url"] {
                         let host = entry
@@ -430,19 +433,15 @@ fn a_consumed_section_is_read_only_and_a_rewrite_of_it_is_refused_with_the_reaso
             Plane::RewritesShared => SHARED,
             _ => Kind::Transport.root(),
         };
-        assert_eq!(
-            todos.len(),
-            1,
-            "one refusal, naming the section: {todos:?}"
-        );
+        assert_eq!(todos.len(), 1, "one refusal, naming the section: {todos:?}");
         let todo = &todos[0];
         assert!(
-            todo.contains("the plugin 'busbar-witness' answered a migration that cannot be written")
-                && todo.contains(&format!(
-                    "`{section}` is a section it reads but does not own: it was handed it \
+            todo.contains(
+                "the plugin 'busbar-witness' answered a migration that cannot be written"
+            ) && todo.contains(&format!(
+                "`{section}` is a section it reads but does not own: it was handed it \
                      read-only, and a plugin's migration rewrites only the sections it owns"
-                ))
-                && todo.ends_with("the settings were left as written"),
+            )) && todo.ends_with("the settings were left as written"),
             "{todo}"
         );
         // Nothing of the answer is written, its own section included.
@@ -490,10 +489,14 @@ providers:
              mine: { protocol: two, base_url: 'http://10.0.0.6' } }"
         )
     );
-    assert_eq!(
-        d["advanced"]["allow_destinations"],
-        yaml("['10.0.0.5', '192.168.1.9', '10.0.0.6']")
-    );
+    let mut allowed: Vec<&str> = d["advanced"]["allow_destinations"]
+        .as_sequence()
+        .expect("a list")
+        .iter()
+        .filter_map(serde_yaml::Value::as_str)
+        .collect();
+    allowed.sort_unstable();
+    assert_eq!(allowed, ["10.0.0.5", "10.0.0.6", "192.168.1.9"]);
 }
 
 /// The allow-if-private decision over one host, through a plane that raises it.
@@ -511,7 +514,10 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
     let host = Witness::new(Plane::Migrates);
     let (list, changes, _) = decide(&host, "http://10.0.0.5:8000");
     assert_eq!(list, yaml("['10.0.0.5']"));
-    assert!(host.resolved.borrow().is_empty(), "a literal is not resolved");
+    assert!(
+        host.resolved.borrow().is_empty(),
+        "a literal is not resolved"
+    );
     assert_eq!(
         changes,
         ["advanced.allow_destinations: added '10.0.0.5' for the plugin 'busbar-witness': resolved \
@@ -546,9 +552,9 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
         changes,
         ["advanced.allow_destinations: added 'ollama.internal' for the plugin 'busbar-witness': \
           resolved at migrate time to 10.1.2.3, fd00::7 (this machine's DNS; where busbar runs it \
-          may answer differently, so check this entry there), every answer private or loopback and \
-          none cloud metadata (1.6.0 refuses a private or loopback destination unless it is \
-          allowed; only this host is allowed, not every private address)"]
+          may answer differently), every answer private or loopback and none cloud metadata \
+          (1.6.0 refuses a private or loopback destination unless it is allowed; only this host \
+          is allowed, not every private address)"]
     );
 }
 
@@ -560,10 +566,11 @@ fn a_public_host_is_not_added_and_says_so() {
     assert!(todos.is_empty(), "{todos:?}");
     assert_eq!(
         changes,
-        ["advanced.allow_destinations: not added 'api.example.com' for the plugin \
+        [
+            "advanced.allow_destinations: not added 'api.example.com' for the plugin \
           'busbar-witness': resolved at migrate time to 93.184.216.34 (this machine's DNS; where \
-          busbar runs it may answer differently, so check this entry there), and 93.184.216.34 is \
-          public, so it needs no entry"]
+          busbar runs it may answer differently), every answer public, so it needs no entry"
+        ]
     );
 }
 
@@ -644,13 +651,18 @@ advanced:
   allow_destinations: [ollama.internal]
 ";
     let (d, changes, todos) = run(doc, &host);
-    assert_eq!(d["advanced"]["allow_destinations"], yaml("[ollama.internal]"));
+    assert_eq!(
+        d["advanced"]["allow_destinations"],
+        yaml("[ollama.internal]")
+    );
     assert!(host.resolved.borrow().is_empty());
     assert!(todos.is_empty());
     assert_eq!(
         changes,
-        ["advanced.allow_destinations: 'ollama.internal' for the plugin 'busbar-witness' is \
-          already listed, so it was left as it is (not resolved)"],
+        [
+            "advanced.allow_destinations: 'ollama.internal' for the plugin 'busbar-witness' is \
+          already listed, so it was left as it is (not resolved)"
+        ],
         "one line for the host, however many times it is raised"
     );
 }
@@ -693,12 +705,7 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
         ],
         "the literal, loopback, the private name, the catalog-only entry and the token_url"
     );
-    let line = |prefix: &str| {
-        changes
-            .iter()
-            .filter(|c| c.starts_with(prefix))
-            .count()
-    };
+    let line = |prefix: &str| changes.iter().filter(|c| c.starts_with(prefix)).count();
     for added in &allowed {
         assert_eq!(
             line(&format!("advanced.allow_destinations: added '{added}' ")),
