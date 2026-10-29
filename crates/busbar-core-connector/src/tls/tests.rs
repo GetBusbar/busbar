@@ -748,3 +748,174 @@ async fn an_http1_connection_is_handed_its_bytes_unscreened() {
         assert_eq!(got, INVALID_PREFACE);
     }
 }
+
+// ── KEY ENCODINGS AND REFUSAL HYGIENE (security.md: "PKCS#8, PKCS#1, SEC1 keys accepted"; "a bad
+// cert/key/CA is fatal and names the file, never the bytes") ─────────────────────────────────
+
+/// A 2048-bit RSA key in PKCS#1 form (`BEGIN RSA PRIVATE KEY`) and its self-signed `localhost`
+/// certificate (valid 100 years), made with `openssl genrsa -traditional` / `req -x509`. rcgen
+/// writes only PKCS#8, so these two encodings need fixtures.
+const PKCS1_KEY: &str = r#"
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAs9oZ0in3QFiWrn6yJWWSIzADITGmavfgWaH3H6iZ6Ot9ac5Z
+mDqjP3gjFxAoyxAr1FfqsLP+rDkvnP9pu3N8gc8+dZbF1eUqG+8sybOMynzt5ZOV
+vcaYEfZByugaq3ICJPqiJZ6CKfB8B3raNru+llshBUncgbuegQjGWa/3SO6Ekqf/
+IAwPwaVH9489maeqzYjSYqkVdP3RYOBXfmAcPhWX805LCsdscuu7/ccCD9dRptET
+WC5nl26afZ4g4qsdAg0aQ4SLXiLECMy+k1hor855pkQEia+fzCj/Tebvpmok3qT1
+xImL33hgdIYGD5Lucnz4+c2THOpuMO2Q6IdJdQIDAQABAoIBAACttRSI6/ewYMiN
+PMHDsjOOisU1PpwzxAb/oqHxaiCxnFRxqnr1v0BCXnT6MoYsJl7o+oy+ByqRoVS0
+n58WvxMpB2pXw5GmGPJ/dRHgeH77YUl7xIA1Yo7bCG5cgDXdOoIlTHlXWGfbtSA1
+EX7BCSeahWnPre/TyjfNG1NRgt2WITf3lBzHIbqv2TGjJeJ+SpNi0JfxBLDCPJo8
+rZCadDnlPBE/skhd9xmF86pS0akY0sv9tKASbwecKdC5HrFU+f6AkUbnrB7qAOlj
+BS8lVHFH7LerHH8jjNsvZi4x0bT/MGM4WiElPFgElaFadJ+B+4Wo0nsRvBoxUePY
+qm47AfsCgYEA7kH8CDiP/0jw1r1YiHPfN3PTw2QGun8VbRN8SatzPbdwdVZMlvyQ
+8xIGncD0bI4EmyCPVB7yfpL7xdzRXA2j5WrDhDcny+9yy4T5gKi9Ot3m9cq1SNXH
+8lM2hRDTWcfl4obajqGAwV24WOKy5fX4TILMNYnP/HAA6/ffMFHMc/cCgYEAwT6z
+QVD2uy30BURWu9tKUQQG748LfulGyM5lBx3X+lKepdammzg7s3bt5V5gzimNTA8c
+GkhvxtYw4VuzsZYyubEHdS5Ai/+iXLKEo1nIZGwbMMKWlBmioKXImzHMO18uYaOQ
+F57uNlhQ342YKnHMVIeYJWwozUODAEk0Db36+vMCgYBkvwITd9dr2yv7oZUOHfEF
+QbUJqgIuWg51UQf9HsJcFnU3KIa6UZH5NmYVzsGMJYFNFzeEGpHvc7eCsxzUD/B9
+0edawPfTBC1GYbQe8zsQ6UQAKvb9FWi2zvj+y16TWDOc1ekU5rXLDhYlf7amBpw3
+vhcbjGqmE7ZQEUAO7ofFgQKBgQC7RiBB9EyoKWiKkifb9jCXQufV0TK60yeeAyc1
+Nl7QYLEO1m6vjleNHHyABG6cXPhp9VquvfRVJc5JF62VNJIEEuO/VAuJoTufygFw
+rNnfOEVBg9KZxB4uwXsfq6rY/uzcAr7ppUQFtqDphTcqKw5x/NYdriv8gKi75jVj
++/D2sQKBgQCIfxSmQXNqJnY0Zu/zCXPpqSX0T4nwGr9RO7JtHnttLkOzi7RNskMj
+XzNgxXGrqXQeVdQYkRInAd66oZ1GK9Loi1aS2ub+Z8aam8tPoPI2NAkPyELegsKb
+Uf7KmswvCv4AmC0Gsu4UkU9y5awTSarcGLhLFEjOwR1BEHa4F8ns/g==
+-----END RSA PRIVATE KEY-----
+"#;
+
+const PKCS1_CERT: &str = r#"
+-----BEGIN CERTIFICATE-----
+MIIDADCCAeigAwIBAgIUdbNCjZ6s73xWu8PxqXRgWkB7akEwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAyOTA0NTYxNloYDzIxMjYx
+MDA1MDQ1NjE2WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQCz2hnSKfdAWJaufrIlZZIjMAMhMaZq9+BZofcfqJno
+631pzlmYOqM/eCMXECjLECvUV+qws/6sOS+c/2m7c3yBzz51lsXV5Sob7yzJs4zK
+fO3lk5W9xpgR9kHK6BqrcgIk+qIlnoIp8HwHeto2u76WWyEFSdyBu56BCMZZr/dI
+7oSSp/8gDA/BpUf3jz2Zp6rNiNJiqRV0/dFg4Fd+YBw+FZfzTksKx2xy67v9xwIP
+11Gm0RNYLmeXbpp9niDiqx0CDRpDhIteIsQIzL6TWGivznmmRASJr5/MKP9N5u+m
+aiTepPXEiYvfeGB0hgYPku5yfPj5zZMc6m4w7ZDoh0l1AgMBAAGjSDBGMB0GA1Ud
+DgQWBBRwt7BE9RfnoqgHERHu60zOVZKA4zAPBgNVHRMBAf8EBTADAQH/MBQGA1Ud
+EQQNMAuCCWxvY2FsaG9zdDANBgkqhkiG9w0BAQsFAAOCAQEAIvuAoxcIUawWG+om
+rwIOR3MXtc3wuh3ewVfXa2fRKnc7XZhVqDQC41GdOPW09N9B1H6Lpr09sZzNFor+
+GbS9vYXghECueG7TqKRsvwTiD0mMMSwBlhEeovEVJqRmDnhkdIwW4iCLGfW+RRJm
+Zw9Cyky2T3KzThMxkn0uB2IIJYIU5fB2Fo0HsO4Mw49VFqMfdZjO86B5UsJ8cxh2
+uQ5ft4Z1e8ynzVSyGl9TqYoKHT5Uhhq+j6lrh2PZQrH5sgP51kZlONxWbg5KW5La
+aQkjH8c7ybL8SH2LZI+KowOXUAXnmQs3OLX5So7zDHex4jrhMmPXlljc9AomCERc
+6bzYUA==
+-----END CERTIFICATE-----
+"#;
+
+/// A P-256 key in SEC1 form (`BEGIN EC PRIVATE KEY`, `openssl ecparam -genkey -noout`) and its self-signed
+/// `localhost` certificate (valid 100 years).
+const SEC1_KEY: &str = r#"
+-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIGSc6UoTXkJyPydWn7C2uys0D6/ygo6kL2PMn3GfkwYxoAoGCCqGSM49
+AwEHoUQDQgAENek//8jDylYZw2mFD0SmSZWIuzfP/GuX4eV5xiZ7mML+yc5l9i2U
+lM9zpJwtJ7LAsfn18wWrEtoT4nlpikBYhQ==
+-----END EC PRIVATE KEY-----
+"#;
+
+const SEC1_CERT: &str = r#"
+-----BEGIN CERTIFICATE-----
+MIIBdDCCARqgAwIBAgIUHcSILYitnuK4r3xpF84yvDppL6swCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAyOTA0NTYxNloYDzIxMjYxMDA1
+MDQ1NjE2WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAAQ16T//yMPKVhnDaYUPRKZJlYi7N8/8a5fh5XnGJnuYwv7JzmX2LZSU
+z3OknC0nssCx+fXzBasS2hPieWmKQFiFo0gwRjAdBgNVHQ4EFgQUzgCZYkr3/wU5
+Ol5myjruBu14DlAwDwYDVR0TAQH/BAUwAwEB/zAUBgNVHREEDTALgglsb2NhbGhv
+c3QwCgYIKoZIzj0EAwIDSAAwRQIhALd6awZGREb16KeTvlnLwZ9GxMfqeYfGyVc/
+T2oQ/ubQAiBqi7uw7oUthq1/KJLtHYXa4UfAUmO9ZL2ZlSaJfVniUA==
+-----END CERTIFICATE-----
+"#;
+
+/// PKCS#1 (RSA) and SEC1 (EC) keys build a server config, and the config serves the certificate
+/// that key belongs to: the key is matched to the certificate, so a wrong parse would not pair.
+/// (PKCS#8 is every other test in this file.)
+#[test]
+fn pkcs1_and_sec1_keys_build_a_server_config() {
+    install_crypto_provider();
+    assert!(
+        PKCS1_KEY.contains("BEGIN RSA PRIVATE KEY"),
+        "fixture is PKCS#1"
+    );
+    assert!(SEC1_KEY.contains("BEGIN EC PRIVATE KEY"), "fixture is SEC1");
+    for (what, cert, key) in [
+        ("PKCS#1", PKCS1_CERT.trim(), PKCS1_KEY.trim()),
+        ("SEC1", SEC1_CERT.trim(), SEC1_KEY.trim()),
+    ] {
+        let tls = tls_cfg_from(cert, key, None);
+        let server_cfg = Arc::new(
+            build_server_config(&tls, &SecretResolver::builtins_only())
+                .unwrap_or_else(|e| panic!("a {what} key must build a server config: {e}")),
+        );
+        assert_eq!(
+            served_leaf(&server_cfg, "localhost"),
+            leaf_der(cert),
+            "{what}: the config serves the certificate its key belongs to"
+        );
+    }
+}
+
+/// A refused key or client CA names the FILE it came from (the operator's one handle on it) and
+/// echoes none of its bytes: not the raw text, not its base64. Each file is a PEM section whose body
+/// is a marker, so the marker (or its base64) appearing in the error is the leak.
+#[test]
+fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
+    use base64::Engine;
+    const MARKER: &str = "SECRETMARKERBYTES-0123456789";
+    let b64 = base64::engine::general_purpose::STANDARD.encode(MARKER);
+    let section = |label: &str, body: &str| {
+        format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")
+    };
+    let (cert_pem, key_pem) = gen_self_signed();
+    let path_of = |tag: &str, pem: &str| temp_pem(tag, pem).to_string_lossy().into_owned();
+
+    // (field, the config, the file the error must name)
+    let mut cases: Vec<(&str, TlsCfg, String)> = Vec::new();
+    for (label, body) in [
+        ("PRIVATE KEY", b64.as_str()),
+        ("PRIVATE KEY", MARKER),
+        ("RSA PRIVATE KEY", b64.as_str()),
+        ("EC PRIVATE KEY", b64.as_str()),
+        ("CERTIFICATE", b64.as_str()),
+    ] {
+        let key_path = path_of("bad-key", &section(label, body));
+        cases.push((
+            "key",
+            TlsCfg {
+                cert: SecretRef::file(path_of("ok-cert", &cert_pem)),
+                key: SecretRef::file(key_path.clone()),
+                client_ca: None,
+            },
+            key_path,
+        ));
+    }
+    for (label, body) in [("CERTIFICATE", b64.as_str()), ("PRIVATE KEY", b64.as_str())] {
+        let ca_path = path_of("bad-ca", &section(label, body));
+        cases.push((
+            "client_ca",
+            TlsCfg {
+                cert: SecretRef::file(path_of("ok-cert", &cert_pem)),
+                key: SecretRef::file(path_of("ok-key", &key_pem)),
+                client_ca: Some(SecretRef::file(ca_path.clone())),
+            },
+            ca_path,
+        ));
+    }
+    for (field, tls, path) in cases {
+        let err = build_server_config(&tls, &SecretResolver::builtins_only())
+            .expect_err("a bad key or client CA is refused");
+        assert!(
+            err.contains(field),
+            "{field}: the error names the field: {err}"
+        );
+        assert!(
+            err.contains(&path),
+            "{field}: the error names the file {path}: {err}"
+        );
+        assert!(!err.contains(MARKER), "{field}: raw bytes echoed: {err}");
+        assert!(!err.contains(&b64), "{field}: encoded bytes echoed: {err}");
+    }
+}

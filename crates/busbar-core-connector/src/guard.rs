@@ -18,18 +18,23 @@
 //!   resolver answers a public and an internal address together and lets the connect pick).
 //!   The caller then dials exactly an address judged here (resolve, pin, dial the pin).
 //!
-//! Per address, in order: the allowlist (`advanced.allow_destinations`) admits; in the provider
+//! Per address, in order: the allowlist (`advanced.allow_destinations`) admits (a denylisted
+//! address only by an entry naming it exactly, below); in the provider
 //! class only, the 1.5.5 metadata carve-outs admit (below); then the extra refusals
 //! (`security.blocked_metadata_hosts`); then cloud metadata is refused, whatever
 //! `block_private_addresses` says; then, where `block_private_addresses` holds and the dial's class
 //! refuses private addresses ([`PRIVATE_REFUSED_IN`]: the provider class, and a destination from
-//! request data or the network), every private address (`busbar_contract::net::ip_is_internal`: RFC
-//! 1918, loopback, link-local, CGNAT, unique-local, unspecified and the rest of that list); in the
-//! loopback-allowed class, where `block_private_addresses` holds, every private address but
-//! loopback ([`is_loopback`]: the class is named for it, and 1.5.5 reached a loopback collector
-//! with no configuration). A HOST allowlist entry never admits a metadata answer: it is how
-//! internal DNS is admitted, and it must not become a way to reach IMDS by a rebinding answer. An
-//! IP or CIDR entry that covers a metadata address does admit it, because it names it.
+//! request data or the network), every private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
+//! unique-local, unspecified and the rest of that list); in the loopback-allowed class, where
+//! `block_private_addresses` holds, every private address but loopback ([`is_loopback`]: the class
+//! is named for it, and 1.5.5 reached a loopback collector with no configuration).
+//! A HOST allowlist entry never admits a metadata answer: it is how internal DNS is
+//! admitted, and it must not become a way to reach IMDS by a rebinding answer. The denylist (cloud
+//! metadata and `security.blocked_metadata_hosts`) takes precedence over every private-range
+//! allowance: an IP/CIDR entry admits a denylisted address only when it names exactly that address
+//! (a bare IP, a /32 or a /128 equal to it), never because a wider range covers it, so
+//! `100.64.0.0/10` does not admit `100.100.100.200` and `169.254.0.0/16` does not admit
+//! `169.254.169.254`.
 //!
 //! THE 1.5.5 CARVE-OUTS speak for provider dials only, as they did in 1.5.5, where they were read
 //! for a provider's own URLs and nowhere else: a provider's `allow_metadata_hosts` admits only for
@@ -75,8 +80,8 @@ use busbar_kernel::config::Destinations;
 /// (https to any host, the destination guard still applying; 1.5.5 refused a private, CGNAT,
 /// unique-local or link-local collector and admitted a loopback one, v1.5.5
 /// `crates/busbar/src/observability.rs:620-633`, `:676-728`). Cloud metadata is refused in every
-/// class whatever this table says, a configured NAME rebinding to it included, unless an IP/CIDR
-/// allowlist entry names it (or, for a provider dial only, a 1.5.5 carve-out).
+/// class whatever this table says, a configured NAME rebinding to it included, unless an IP
+/// allowlist entry (or a /32 or /128) names exactly that address (or, for a provider dial only, a 1.5.5 carve-out).
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
     connector::EGRESS_DEFAULT,
     CARVE_OUT_CLASS,
@@ -234,6 +239,12 @@ impl Entry {
             (IpAddr::V6(n), _, IpAddr::V6(a)) => prefix_eq(&n.octets(), &a.octets(), *len),
             _ => false,
         }
+    }
+
+    /// Whether this entry NAMES `addr` itself: a bare IP, or a /32 or /128, equal to it (in any
+    /// spelling [`Entry::covers`] reads). A wider network covers addresses without naming them.
+    fn pins(&self, addr: IpAddr) -> bool {
+        matches!(self, Entry::Net(net, len) if *len == full(*net)) && self.covers(addr)
     }
 }
 
@@ -644,6 +655,16 @@ impl Guard {
         let link_local = matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6));
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
+        // The denylist (cloud metadata, and `security.blocked_metadata_hosts`) takes precedence
+        // over every private-range allowance: an allowlist network admits a denylisted address
+        // only when it names exactly that address (`Entry::pins`), never because a wider range
+        // covers it (`100.64.0.0/10` does not admit `100.100.100.200`).
+        let denied = metadata || listed(&m.blocked);
+        let allowlisted = if denied {
+            self.allow.iter().any(|e| e.pins(addr))
+        } else {
+            listed(&self.allow)
+        };
         // The 1.5.5 carve-outs, a provider dial's only (`Metadata::lifts`): a NAME there admits
         // its metadata answer, as 1.5.5's did; `allow_all_metadata` admits every metadata address
         // and every extra blocked one. A need's private reach to the destination admits as a HOST
@@ -653,9 +674,8 @@ impl Guard {
         } else {
             m.lifts(&name, Some(addr), class)
         };
-        let admitted = listed(&self.allow)
-            || carved
-            || (!metadata && !link_local && (named(&self.allow) || reach));
+        let admitted =
+            allowlisted || carved || (!metadata && !link_local && (named(&self.allow) || reach));
         if admitted {
             return Ok(());
         }
@@ -666,7 +686,7 @@ impl Guard {
                 addr: Some(addr),
             })
         };
-        if metadata || link_local || listed(&m.blocked) {
+        if denied || link_local {
             return refuse(DEST_METADATA);
         }
         let refused = self.refuses_private(class, strict) || self.refuses_off_loopback(class, addr);

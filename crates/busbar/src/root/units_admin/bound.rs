@@ -428,8 +428,9 @@ pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, Governa
 /// `POST /api/v1/admin/trust/approve` and `/revoke` — the operator's decision about one trust key,
 /// `{ "key": "<instance>/<counterparty>[/<item>]" }`, made on the kernel's trust book and kept
 /// durably. Idempotent: the same key twice answers the same row. An unknown key is `404`; an
-/// approval with nothing ever sighted to approve at is `409`; a decision the store could not keep is
-/// `Store` (`503`).
+/// approval with nothing ever sighted to approve at, or at a sighting that failed its verification,
+/// is `409`; a decision the store could not keep is `Store` (`503`). Every refusal is audited
+/// `rejected` (the root-only verb's row the audit step seals).
 pub(crate) fn trust_decide_effect(
     body: &[u8],
     ruling: Ruling,
@@ -468,6 +469,15 @@ pub(crate) fn trust_decide_effect(
             409,
             "conflict",
             &format!("trust key `{key}` moved since it was seen"),
+        )),
+        // NEVER PIN WHAT WAS NOT VERIFIED: the typed verbs refuse it alike (a2a.md:265).
+        Err(TrustRefused::Unverified) => Ok(refused(
+            409,
+            "conflict",
+            &format!(
+                "trust key `{key}` was last sighted unverified: its document failed \
+                 verification, so there is nothing to approve"
+            ),
         )),
         Err(TrustRefused::Rootless) => Ok(refused(
             409,

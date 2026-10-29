@@ -358,3 +358,34 @@ else
     "container ${st}. Log: ${logs}. This is the verbatim first command in docs/getting-started.md and the exact form 1.5.3 refused to boot under. Fix: the image must tolerate a read-only /etc/busbar — point config.overlay.file at a writable path in the baked config, or default to config.locked: true."
 fi
 docker rm -f busbar-gate-ro >/dev/null 2>&1
+
+# ── docker:user and docker:no-shell — the secure-by-default claims (docker.md) ─────────────────
+# The image is FROM scratch with USER 65532. Assert it by digest, the same bytes the boot rows ran:
+# the configured user is uid 65532 (numeric, so the kubelet's runAsNonRoot can verify it), and no
+# shell can be executed in it. `docker create` + `--entrypoint` is enough: a missing executable is
+# an exec failure from the runtime, so no container process ever runs.
+if [ -z "$BOOT_DIGEST" ]; then
+  record "docker:user" FAIL "cannot inspect the image user: ${DOCKERHUB_IMAGE}:${V} resolves to no digest" "see docker:hub-version."
+  record "docker:no-shell" FAIL "cannot probe for a shell: ${DOCKERHUB_IMAGE}:${V} resolves to no digest" "see docker:hub-version."
+else
+  img_user="$(docker inspect --format '{{ .Config.User }}' "$BOOT_REF" 2>/dev/null)"
+  case "$img_user" in
+    65532|65532:65532)
+      record "docker:user" PASS "the image runs as uid ${img_user}, not root" "${BOOT_REF}" ;;
+    *)
+      record "docker:user" FAIL "the image does not run as uid 65532"         "Config.User is '${img_user:-<unset: root>}'. docker.md and kubernetes.md promise a non-root image on uid 65532, and the chart's runAsUser/runAsNonRoot assume it." ;;
+  esac
+  shell_found=""
+  for sh_path in /bin/sh /bin/bash /usr/bin/sh sh; do
+    if docker run --rm --entrypoint "$sh_path" "$BOOT_REF" -c 'exit 0' >/dev/null 2>&1; then
+      shell_found="$sh_path"
+      break
+    fi
+  done
+  if [ -z "$shell_found" ]; then
+    record "docker:no-shell" PASS "no shell can be executed in the image (/bin/sh, /bin/bash, /usr/bin/sh, sh)" "${BOOT_REF}"
+  else
+    record "docker:no-shell" FAIL "the image ships a shell (${shell_found})" \
+      "docker.md promises a FROM-scratch image with no shell. A shell in the image is a post-exploitation tool for anything that reaches code execution in the container."
+  fi
+fi
