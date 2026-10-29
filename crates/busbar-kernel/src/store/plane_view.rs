@@ -68,7 +68,7 @@ pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<
 #[path = "tests/plane_view_tests.rs"]
 mod plane_view_tests;
 
-use busbar_contract::records::{PlaneSelector, RecordStore};
+use busbar_contract::records::{PlaneSelector, RecordStore, Retention};
 use std::sync::Arc;
 
 /// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
@@ -97,6 +97,20 @@ pub trait PlaneStore: Send + Sync + 'static {
     /// See [`RecordStore::purge_plane_records_before`] — the neutral retention purge (honoring the
     /// store's terminal-only-vs-all-older split per kind).
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64>;
+    /// See [`RecordStore::purge_plane_records`] — the neutral retention purge under the rule the
+    /// kind's owner declared ([`Retention`]). DEFAULTED as the contract's: [`Retention::Age`] is
+    /// [`PlaneStore::purge_plane_records_before`], [`Retention::TerminalOnly`] purges nothing.
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => self.purge_plane_records_before(kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
+    }
     /// See [`RecordStore::delete_plane_record`] — the neutral delete.
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()>;
     /// See [`RecordStore::redeem_plane_token`] — the neutral single-use test-and-set.
@@ -158,6 +172,14 @@ impl PlaneStore for PlaneStoreView {
     }
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         self.0.purge_plane_records_before(kind, before)
+    }
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        self.0.purge_plane_records(kind, before, retention)
     }
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
         self.0.delete_plane_record(kind, id)

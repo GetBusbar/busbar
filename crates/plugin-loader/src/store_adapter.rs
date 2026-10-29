@@ -63,7 +63,6 @@ use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
     RecordStoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
-use busbar_contract::slice::Epoch;
 use busbar_contract::verb_store::StoreError as VerbStoreError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -142,10 +141,6 @@ fn system_clock() -> ShimClock {
 struct Shim {
     replay: Mutex<ReplaySlots>,
 }
-
-/// The one epoch a node-local shim has. There is no fleet to advance it and nothing that could
-/// observe it advancing, so it is a constant and the code says which one.
-const SHIM_EPOCH: Epoch = Epoch(0);
 
 impl StoreAdapter {
     /// Bind the seams to `store`, whose signed manifest declares payload schema `abi_version`.
@@ -532,19 +527,6 @@ impl MigrationLedgerRows for MigrationStoreRows {
 impl Shim {
     fn replay(&self) -> MutexGuard<'_, ReplaySlots> {
         self.replay.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter (status row 187,
-/// ARCHITECT 2026-10-20): the slice epoch this node serves at, which `reseal_epoch_floor` puts in
-/// the store as the floor and the boot compares with the floor the store holds. It is the door the
-/// root reads it through, so the money-slice seam stays named only here and in its defining module.
-impl StoreAdapter {
-    /// This node's slice epoch, as a number: the value the epoch floor is resealed to and checked
-    /// against.
-    #[must_use]
-    pub fn recovery_epoch(&self) -> u64 {
-        SHIM_EPOCH.0
     }
 }
 
