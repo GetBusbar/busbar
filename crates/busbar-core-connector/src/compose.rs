@@ -120,7 +120,7 @@ pub struct Dial {
     pub opening: Option<Opening>,
     /// The first message's head words, method and target (`framer::encode_head`); empty = none.
     pub head_words: HeadWords,
-    /// The destination's sealed trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin the
+    /// The destination's sealed trust anchors (the transport pin): the far end's key pin the
     /// handshake is held to and the client identity it presents; `None` = none sealed.
     pub anchors: Option<Arc<crate::tls::client::Sealed>>,
 }
@@ -291,9 +291,9 @@ struct Tunnel {
     authority: String,
 }
 
-/// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin, ARCHITECT 2026-10-03): the handshake's chain
-/// and name check passed and the leaf certificate's key is another, so the connection is refused
-/// before a request byte is written. The connection's facts still name the key it served.
+/// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin): the handshake's
+/// chain and name check passed and the leaf certificate's key is another, so the connection is
+/// refused before a request byte is written. The connection's facts still name the key it served.
 pub const PIN_REFUSED: &str =
     "tls: the far end's key is not the one its trust anchors pin; refused before any request byte";
 
@@ -1085,9 +1085,8 @@ impl Connection {
     }
 
     /// Whether the connection carries CONCURRENT exchanges, one stream each: the protocol agreed
-    /// (in the handshake, or by prior knowledge) is `h2` (RFC 9113; ARCHITECT ruling Q-L18-MUX
-    /// 2026-10-03: concurrent requests to one origin share an h2 connection, h1 stays one request
-    /// per connection).
+    /// (in the handshake, or by prior knowledge) is `h2` (RFC 9113; concurrent requests to one
+    /// origin share an h2 connection, h1 stays one request per connection).
     #[must_use]
     pub fn multiplexes(&self) -> bool {
         self.dialled() && self.live() && self.established.agreed_protocol.as_deref() == Some(b"h2")
@@ -1894,8 +1893,8 @@ impl Connection {
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
-        // A dial hands its opening head fields to the framing's begin too, for a wire that
-        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL).
+        // A dial hands its opening head fields to the framing's begin too, for a wire that carries
+        // them on the connection's opening.
         let opening: &[(String, Vec<u8>)] = match &self.opening {
             Some((fields, _)) if self.side == SIDE_DIAL => fields,
             _ => &[],

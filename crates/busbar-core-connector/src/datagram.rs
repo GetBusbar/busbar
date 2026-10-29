@@ -1202,12 +1202,12 @@ pub struct Across {
 }
 
 /// THE BRIDGE: one session's two associations, their LINES paired `i <-> i` by the order each leg
-/// named them (ARCHITECT ruling, row 132: the host pairs lines, the plane pairs channels). The
-/// upstream leg is dialled with the caller's lines mirrored ([`Bridge::opening`]: same count, kind
-/// and order); a leg whose lines do not mirror the other's is no bridge ([`Bridge::mirrored`]) and
-/// nothing crosses half-paired. A line's frames are carried across unread; each leg seals with
-/// its own keys. Once [`Bridge::stop`]ped nothing crosses again: the session's close stops both
-/// directions in one step.
+/// named them (the host pairs lines, the plane pairs channels). The upstream leg is dialled with
+/// the caller's lines mirrored ([`Bridge::opening`]: same count, kind and order); a leg whose lines
+/// do not mirror the other's is no bridge ([`Bridge::mirrored`]) and nothing crosses half-paired. A
+/// line's frames are carried across unread; each leg seals with its own keys. Once
+/// [`Bridge::stop`]ped nothing crosses again: the session's close stops both directions in one
+/// step.
 #[derive(Debug, Default)]
 pub struct Bridge {
     caller: Vec<(u64, String)>,
@@ -1351,10 +1351,10 @@ pub trait LegSink: Send + Sync {
     fn close(&self);
 }
 
-/// ONE HELD SESSION'S PAIRING (ARCHITECT rulings, row 132): its caller leg, registered under the
-/// session's unit key before the session runs ([`crate::Connector::pair`]); its upstream leg, the
-/// dial the session's walk opens for that unit; and the [`Bridge`] between their lines. Closing it
-/// stops the bridge and closes both legs, exactly once.
+/// ONE HELD SESSION'S PAIRING: its caller leg, registered under the session's unit key before the
+/// session runs ([`crate::Connector::pair`]); its upstream leg, the dial the session's walk opens
+/// for that unit; and the [`Bridge`] between their lines. Closing it stops the bridge and closes
+/// both legs, exactly once.
 pub struct Pairing {
     state: std::sync::Mutex<PairState>,
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host
