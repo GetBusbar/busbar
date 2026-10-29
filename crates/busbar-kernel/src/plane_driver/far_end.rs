@@ -68,7 +68,7 @@ use busbar_kernel_egress::{
         Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
-    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts,
 };
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
@@ -210,6 +210,17 @@ pub struct AuthBinding {
     pub per_request: Option<Arc<dyn busbar_contract::auth_calls::PerRequestHandle>>,
 }
 
+/// Where a walk reaches its breaker: asked once, at the walk's start, so every call of the walk
+/// lands on one cell set. A breaker over the live configuration answers with the cells it reaches
+/// now; a fixed one ([`fixed_breaker`]) with itself.
+pub type BreakerSource = Arc<dyn Fn() -> Arc<dyn Breaker> + Send + Sync>;
+
+/// A [`BreakerSource`] that always answers `breaker`.
+#[must_use]
+pub fn fixed_breaker(breaker: Arc<dyn Breaker>) -> BreakerSource {
+    Arc::new(move || Arc::clone(&breaker))
+}
+
 /// THE EGRESS OF ONE PLANE INSTANCE, sealed per generation by the composition root: its connection
 /// table and its caller id, the walk's ports, its pools and the route of every member.
 pub struct Egress {
@@ -217,8 +228,8 @@ pub struct Egress {
     pub caller: InstanceId,
     /// The connection table.
     pub conns: Arc<dyn PollConns>,
-    /// The breaker.
-    pub breaker: Arc<dyn Breaker>,
+    /// The breaker, asked for once per walk ([`BreakerSource`]).
+    pub breaker: BreakerSource,
     /// The pools' permits.
     pub capacity: Arc<dyn Capacity>,
     /// The clock and its sleep.
@@ -227,8 +238,6 @@ pub struct Egress {
     pub journal: Arc<dyn Journal>,
     /// The counters.
     pub telemetry: Arc<dyn Telemetry>,
-    /// The weighted floor's credits, per pool.
-    pub floor: WeightedFloor,
     /// The pools, by name.
     pub pools: HashMap<String, Pool>,
     /// Every member's route.
@@ -293,14 +302,13 @@ impl Egress {
         budget_secs(&self.pools, pool)
     }
 
-    /// The walk's ports over this egress.
-    fn ports(&self) -> WalkPorts<'_> {
+    /// The walk's ports over this egress, on the breaker the walk resolved at its start.
+    fn ports<'p>(&'p self, breaker: &'p dyn Breaker) -> WalkPorts<'p> {
         WalkPorts {
-            breaker: self.breaker.as_ref(),
+            breaker,
             capacity: self.capacity.as_ref(),
             clock: self.clock.as_ref(),
             telemetry: self.telemetry.as_ref(),
-            floor: &self.floor,
             pools: &self.pools,
         }
     }
@@ -332,9 +340,11 @@ impl Egress {
     /// One unit's far end, its walk starting now.
     #[must_use]
     pub fn unit(&self, route: UnitRoute) -> EgressFarEnd<'_> {
-        let walk = Walk::start(&self.ports(), &route.pool);
+        let breaker = (self.breaker)();
+        let walk = Walk::start(&self.ports(breaker.as_ref()), &route.pool);
         EgressFarEnd {
             egress: self,
+            breaker,
             route,
             state: Mutex::new(State {
                 walk,
@@ -371,9 +381,11 @@ impl Egress {
             .flat_map(|p| &p.members)
             .find(|m| m.destination == destination)?
             .clone();
-        let walk = Walk::pinned(&self.ports(), timeout.as_secs().max(1));
+        let breaker = (self.breaker)();
+        let walk = Walk::pinned(&self.ports(breaker.as_ref()), timeout.as_secs().max(1));
         Some(EgressFarEnd {
             egress: self,
+            breaker,
             route: UnitRoute::default(),
             state: Mutex::new(State {
                 walk,
@@ -507,6 +519,8 @@ struct State {
 /// ONE UNIT'S FAR END over its [`Egress`].
 pub struct EgressFarEnd<'e> {
     egress: &'e Egress,
+    /// The breaker this walk resolved at its start.
+    breaker: Arc<dyn Breaker>,
     route: UnitRoute,
     state: Mutex<State>,
     /// The member a health probe is pinned to; `None` for a unit's walk.
@@ -791,6 +805,11 @@ fn fail_over() -> FarPiece {
 }
 
 impl EgressFarEnd<'_> {
+    /// The breaker every call of this walk lands on.
+    fn breaker(&self) -> &dyn Breaker {
+        self.breaker.as_ref()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state
             .lock()
@@ -814,7 +833,7 @@ impl EgressFarEnd<'_> {
             let _closed = e.conns.close(e.caller, conn);
         }
         if let Some(epoch) = live.probe.take() {
-            e.breaker.release_probe(
+            self.breaker().release_probe(
                 &live.pool,
                 live.member.destination,
                 epoch,
@@ -827,7 +846,7 @@ impl EgressFarEnd<'_> {
         // An answer the plane took as final before its last piece (a body past its cap) is not
         // dropped: the far end did the work, and 1.5.5 kept the unit (FarEnd::taken).
         if live.spent && !live.ended && !live.delivered && !live.taken {
-            e.breaker.refund_budget(live.member.destination);
+            self.breaker().refund_budget(live.member.destination);
         }
         if !live.answered && self.probe_of.is_none() {
             e.journal.abandoned(&live.record);
@@ -859,7 +878,7 @@ impl EgressFarEnd<'_> {
         // The plane's stated reason rides with the reading it states, once.
         let reason = live.fault_reason.take();
         if !callers_key
-            && e.breaker.observe_stated(
+            && self.breaker().observe_stated(
                 &live.pool,
                 destination,
                 classified.outcome,
@@ -894,7 +913,7 @@ impl EgressFarEnd<'_> {
         // reading is recorded with none.
         let reason = live.fault_reason.take().filter(|_| stated.is_some());
         let classified = match stated {
-            Some(fault) => e.breaker.classify(
+            Some(fault) => self.breaker().classify(
                 destination,
                 UpstreamStatus {
                     class: held.class,
@@ -923,7 +942,8 @@ impl EgressFarEnd<'_> {
             // A HEALTH PROBE'S ANSWER is classified as organic traffic is (Part 3 §12), and
             // recorded on every cell of its member; the out-of-band prober counts no failure
             // telemetry (1.5.5).
-            e.breaker.probed(probed, classified.outcome, now, token);
+            self.breaker()
+                .probed(probed, classified.outcome, now, token);
             return;
         }
         live.fault_reason = reason;
@@ -1046,7 +1066,7 @@ impl EgressFarEnd<'_> {
     /// THE WALK'S NEXT MEMBER, or its terminal: the egress unit's stepper, asked under the unit's
     /// lock; its one bounded wait (the queue) is awaited outside it.
     async fn next_member(&self, token: &Pass<Route>) -> Pick {
-        let ports = self.egress.ports();
+        let ports = self.egress.ports(self.breaker());
         let wait = {
             let mut w = self.lock();
             self.settle(&mut w);
@@ -1113,11 +1133,12 @@ impl EgressFarEnd<'_> {
             let outcome = Outcome::Transient { retry_after: None };
             if let Some(destination) = self.probe_of {
                 // A probe's transport failure is a transient on every cell (1.5.5).
-                e.breaker.probed(destination, outcome, now, token);
+                self.breaker().probed(destination, outcome, now, token);
             } else {
                 let pool = Self::metric_pool(&live.pool, &live.member).to_string();
                 let destination = live.member.destination;
-                if e.breaker
+                if self
+                    .breaker()
                     .observe(&live.pool, destination, outcome, now, token)
                 {
                     e.telemetry.breaker_trip(&pool, destination);
@@ -1697,10 +1718,7 @@ impl EgressFarEnd<'_> {
                     retry_after: piece.retry_after_secs,
                 };
                 live.unjudged = Some(Unjudged {
-                    classified: self
-                        .egress
-                        .breaker
-                        .classify(live.member.destination, status),
+                    classified: self.breaker().classify(live.member.destination, status),
                     class: piece.status,
                     code: status.code,
                     retry_after: piece.retry_after_secs,
@@ -1750,7 +1768,7 @@ impl EgressFarEnd<'_> {
             let w = self.lock();
             if let Some(live) = w.live.as_ref().filter(|l| l.error_left.is_none()) {
                 let pool = Self::metric_pool(&live.pool, &live.member).to_string();
-                if e.breaker.observe(
+                if self.breaker().observe(
                     &live.pool,
                     live.member.destination,
                     Outcome::Transient { retry_after: None },
@@ -1777,7 +1795,7 @@ impl EgressFarEnd<'_> {
                 // A delivery that did not complete gives its budget unit back unless a byte of a
                 // streamed answer was delivered: a mid-stream cut is not a refund (spec Part 2 #62,
                 // #77(2)); a buffered answer delivered nothing (v1.5.5 `engine/mod.rs:329-353`).
-                self.egress.breaker.refund_budget(live.member.destination);
+                self.breaker().refund_budget(live.member.destination);
             }
             live.kept = clean && live.spent;
             live.spent = false;
@@ -1845,11 +1863,12 @@ impl EgressFarEnd<'_> {
             // or the probe drops first.
             live.ended = true;
             if matches!(status.class, Some(WireStatusClass::Success) | None) {
-                e.breaker.probed(destination, Outcome::Success, now, token);
+                self.breaker()
+                    .probed(destination, Outcome::Success, now, token);
                 self.settle(&mut w);
             } else {
                 live.unjudged = Some(Unjudged {
-                    classified: e.breaker.classify(destination, status),
+                    classified: self.breaker().classify(destination, status),
                     class: status.class,
                     code: status.code,
                     retry_after: status.retry_after,
@@ -1865,11 +1884,11 @@ impl EgressFarEnd<'_> {
         }
         let destination = live.member.destination;
         if matches!(status.class, Some(WireStatusClass::Success) | None) {
-            e.breaker
+            self.breaker()
                 .observe(&live.pool, destination, Outcome::Success, now, token);
             // The request owns the probe through the outcome it just recorded.
             live.probe = None;
-            live.spent = e.breaker.spend_budget(destination);
+            live.spent = self.breaker().spend_budget(destination);
             live.delivered = self.route.wants_stream && !bytes.is_empty();
             // In fractional milliseconds, as 1.5.5 measured it (`elapsed().as_secs_f64() * 1000`):
             // a sub-millisecond head is a sample, not the EWMA's "none".
@@ -1888,7 +1907,7 @@ impl EgressFarEnd<'_> {
                 cut: false,
             };
         }
-        let classified = e.breaker.classify(destination, status);
+        let classified = self.breaker().classify(destination, status);
         let hard = matches!(classified.disposition, Disposition::HardDown);
         // The caller's own fault is not the destination's, a hard-down is the plane's to render
         // (its verdict: an auth failure ends the unit, a billing one retries), a degraded dispatch
@@ -1995,7 +2014,8 @@ impl EgressFarEnd<'_> {
                     // Every ADMISSIBLE member whose window is at or below the one that refused
                     // would refuse too: the walk's own exclusion.
                     let (pool, failed) = (live.pool.clone(), live.member.clone());
-                    w.walk.refused_for_size(&e.ports(), &pool, &failed);
+                    w.walk
+                        .refused_for_size(&e.ports(self.breaker()), &pool, &failed);
                 }
                 w.failed = Some(classified.label);
                 self.settle(&mut w);
@@ -2023,7 +2043,7 @@ impl FarEnd for EgressFarEnd<'_> {
             .members
             .iter()
             .find(|m| super::route::operator_name(m.name.as_bytes()) == member.as_bytes())?;
-        let left = self.egress.breaker.cooldown_remaining(
+        let left = self.breaker().cooldown_remaining(
             &pool.name,
             at.destination,
             self.egress.clock.now_secs(),
@@ -2063,7 +2083,7 @@ impl FarEnd for EgressFarEnd<'_> {
         // the unit its success kept is given back, once.
         if fault != FAULT_NONE && live.ended && live.kept && !live.delivered && !live.taken {
             live.kept = false;
-            self.egress.breaker.refund_budget(live.member.destination);
+            self.breaker().refund_budget(live.member.destination);
         }
         // THE DEFERRAL (ARCHITECT row 68): a relayed non-success answer is recorded on the plane's
         // FIRST STATED reading of it. A piece the plane reads with no reading (`FAULT_NONE`) keeps
