@@ -38,9 +38,12 @@ fn staging_dir_is_private_and_pid_named() {
 /// field order; here we assert the removal half).
 #[test]
 fn temp_file_staging_cleans_up_on_drop() {
-    let path = stage_temp_file(b"pretend library bytes").expect("stage");
+    let (path, pin) = stage_temp_file(b"pretend library bytes").expect("stage");
     assert!(path.exists());
-    drop(Staged::TempFile { path: path.clone() });
+    drop(Staged::TempFile {
+        path: path.clone(),
+        pin: Some(pin),
+    });
     assert!(!path.exists(), "staged file must be removed on drop");
 }
 
@@ -55,8 +58,10 @@ fn temp_file_staging_cleans_up_on_drop() {
 fn sweep_removes_dead_pid_dirs_only() {
     // Our own live dir must survive the sweep: hold a real staged file so the shared state
     // keeps the directory alive for the duration of this test.
+    let (path, pin) = stage_temp_file(b"keepalive bytes").expect("stage keepalive");
     let held = Staged::TempFile {
-        path: stage_temp_file(b"keepalive bytes").expect("stage keepalive"),
+        path,
+        pin: Some(pin),
     };
     let own = {
         let state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
@@ -530,6 +535,20 @@ mod on_unix {
         });
         tampered.expect("the owning uid can rewrite its own staged file in place");
         assert_refused("staged file rewritten in place", loaded);
+
+        // A quieter rewrite: one byte flipped in place, same length, and the mode put back to the
+        // staged 0400, so only the bytes themselves differ from what was verified.
+        let (tampered, loaded) = tamper_then_load(&verified, |path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+            let last = verified.len() as u64 - 1;
+            std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(last))?;
+            f.write_all(&[verified[verified.len() - 1] ^ 0xff])?;
+            f.flush()?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))
+        });
+        tampered.expect("the owning uid can flip a byte of its own staged file");
+        assert_refused("staged file with one byte flipped", loaded);
     }
 
     #[test]
