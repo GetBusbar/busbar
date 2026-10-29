@@ -3131,9 +3131,9 @@ fn token_exchange_binding(
 /// <secret>`, `{header: <name>}` presents the secret verbatim in that header (the `api-key` style
 /// over that header). The kernel presents it on every request to the member through the auth
 /// kind's per-request call, which reads the binding's current handle and nothing else; the
-/// credential is re-resolved OFF the request path, by the host's refresher once per lease
+/// credential is re-resolved OFF the request path, by the host's refresher at half its lease
 /// (`lease_ttl_ms`, [`refresher`]; ARCHITECT ruling on #787, THE DESIGN §11: no blocking, plugin
-/// memory valid to its next refresh generation). `None` when the registration states no such
+/// memory valid to its next refresh generation), and is never presented past its lease. `None` when the registration states no such
 /// block.
 ///
 /// # Errors
@@ -3212,13 +3212,17 @@ fn upstream_credential(
             }
         },
     };
-    // THE LEASE: how long one resolution of the credential may be presented, and so how often
-    // the refresher re-resolves it (the grammar's `lease_ttl_ms`, greater than zero).
+    // THE LEASE: how long one resolution of the credential may be presented on busbar's own
+    // monotonic clock, after which a hop is refused until a refresh renews it (the grammar's
+    // `lease_ttl_ms`, greater than zero; the refresher renews it ahead of that, [`renew_every`]).
+    // The resolution's instant is taken BEFORE it is made, so the lease never outlives its TTL.
+    let minted = std::time::Instant::now();
     let lease = block
         .get(CREDENTIAL_LEASE_TTL_KEY)
         .and_then(serde_yaml::Value::as_u64)
         .filter(|ms| *ms > 0)
         .map(std::time::Duration::from_millis)
+        .filter(|lease| minted.checked_add(*lease).is_some())
         .ok_or_else(|| {
             format!(
                 "member '{member_name}': its \
@@ -3261,8 +3265,10 @@ fn upstream_credential(
         held: arc_swap::ArcSwapOption::from_pointee(Held {
             digest: busbar_contract::abi::sdk::digest::sha256(credential.expose(&seal)),
             handle,
+            expires_at: minted + lease,
         }),
         refreshing: Mutex::new(()),
+        lapsed: std::sync::atomic::AtomicBool::new(false),
     });
     drop(credential);
     Ok(Some((
@@ -3290,11 +3296,20 @@ fn placement_settings(header: Option<&str>) -> serde_json::Value {
     )
 }
 
-/// What a [`PerHop`] presents now: the handle its auth instance opened, and the SHA-256 of the
-/// value it was opened with (the value itself is never kept).
+/// What a [`PerHop`] presents now: the handle its auth instance opened, the SHA-256 of the
+/// value it was opened with (the value itself is never kept), and when its lease runs out on
+/// busbar's own monotonic clock (the resolution's instant plus `lease_ttl_ms`).
 struct Held {
     digest: [u8; 32],
     handle: u64,
+    expires_at: std::time::Instant,
+}
+
+/// HOW OFTEN THE [`refresher`] RENEWS A LEASE: at half of it (never under a millisecond), so a
+/// healthy refresher renews every lease well before it runs out, and a hop is refused only when
+/// the refresh stalled, erred or was skipped for half a lease or more.
+fn renew_every(lease: std::time::Duration) -> std::time::Duration {
+    (lease / 2).max(std::time::Duration::from_millis(1))
 }
 
 /// A REGISTRATION'S OWN CREDENTIAL, REFRESHED OFF THE REQUEST PATH (`upstream_credential:`): the
@@ -3306,19 +3321,24 @@ struct Held {
 /// request path). [`PerHop::refresh`] re-resolves the value, re-opens the binding only when its
 /// digest changed (handles grow by rotations, never by hops), and swaps the cell whole, so a hop
 /// sees the old handle or the new one; a value that no longer resolves or binds EMPTIES the cell,
-/// so every hop after it is refused, never served a stale credential.
+/// so every hop after it is refused, never served a stale credential. A held credential is
+/// presented only until its lease runs out ([`Held::expires_at`]): past it, with no refresh that
+/// renewed it, every hop is refused (`credential_unavailable`), never presented.
 struct PerHop {
     secret: busbar_contract::secret_ref::SecretRef,
     secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
     style: &'static str,
     header: Option<String>,
-    /// The lease: how often the [`refresher`] re-resolves the credential.
+    /// The lease: how long one resolution may be presented (the [`refresher`] renews it at
+    /// [`renew_every`] of it).
     lease: std::time::Duration,
     held: arc_swap::ArcSwapOption<Held>,
     /// Taken by [`PerHop::refresh`] alone, so two refreshes never open the same rotation twice;
     /// no hop ever waits on it.
     refreshing: Mutex<()>,
+    /// Set by the first hop refused past the lease (its one log line), cleared by a renewal.
+    lapsed: std::sync::atomic::AtomicBool,
 }
 
 impl PerHop {
@@ -3332,6 +3352,8 @@ impl PerHop {
             .refreshing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The lease runs from BEFORE the resolution, so it never outlives its TTL.
+        let expires_at = std::time::Instant::now() + self.lease;
         let Ok(value) = self.secrets.resolve_string_at_config(&self.secret, scope) else {
             self.held.store(None);
             return;
@@ -3340,12 +3362,19 @@ impl PerHop {
         // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
         let seal = busbar_kernel::seal::lend();
         let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
-        if self
-            .held
-            .load()
-            .as_ref()
-            .is_some_and(|held| busbar_contract::redacted::constant_time_eq(&held.digest, &digest))
-        {
+        let unchanged = self.held.load().as_ref().and_then(|held| {
+            busbar_contract::redacted::constant_time_eq(&held.digest, &digest)
+                .then_some(held.handle)
+        });
+        if let Some(handle) = unchanged {
+            // The same value keeps its handle; the lease is renewed from this resolution.
+            self.held.store(Some(Arc::new(Held {
+                digest,
+                handle,
+                expires_at,
+            })));
+            self.lapsed
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         let opened = self.auth.open_outbound(
@@ -3354,8 +3383,15 @@ impl PerHop {
             &placement_settings(self.header.as_deref()),
         );
         drop(value);
-        self.held
-            .store(opened.ok().map(|handle| Arc::new(Held { digest, handle })));
+        self.held.store(opened.ok().map(|handle| {
+            Arc::new(Held {
+                digest,
+                handle,
+                expires_at,
+            })
+        }));
+        self.lapsed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3375,14 +3411,39 @@ impl std::fmt::Debug for PerHop {
     }
 }
 
+impl PerHop {
+    /// The handle a hop made at `now` (busbar's own monotonic clock) presents: none when the last
+    /// refresh found the credential unavailable, or when its lease ran out with no refresh that
+    /// renewed it (the refresher stalled, erred or skipped it). The first hop refused past the
+    /// lease logs it once (naming the style and header, never the credential); every such hop is
+    /// refused as `credential_unavailable`, the refusal an unavailable credential already takes.
+    fn handle_at(&self, now: std::time::Instant) -> Option<u64> {
+        let held = self.held.load();
+        let held = held.as_ref()?;
+        if now < held.expires_at {
+            return Some(held.handle);
+        }
+        if !self.lapsed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                style = self.style,
+                header = self.header.as_deref(),
+                lease_ms = u64::try_from(self.lease.as_millis()).unwrap_or(u64::MAX),
+                "an upstream credential's lease ran out before a refresh renewed it: each hop on \
+                 it is refused (credential_unavailable) until one does"
+            );
+        }
+        None
+    }
+}
+
 impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     fn handle_now(&self) -> Option<u64> {
-        self.held.load().as_ref().map(|held| held.handle)
+        self.handle_at(std::time::Instant::now())
     }
 }
 
 /// THE HOST'S CREDENTIAL REFRESHER: one thread of its own (never a runtime worker, never a
-/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] once per its lease. It keeps
+/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] at half its lease. It keeps
 /// each binding WEAKLY, so a binding its generation dropped (a config apply builds the next
 /// generation's bindings, and the last request on the old one lets it go) is forgotten at its next
 /// due time, never refreshed again.
@@ -3424,7 +3485,7 @@ mod refresher {
         &BOOK
     }
 
-    /// Keep `per`, first due one lease from now (its build has just resolved it).
+    /// Keep `per`, first due half a lease from now (its build has just resolved it).
     pub(super) fn keep(per: &Arc<PerHop>) {
         let book = kept_book();
         book.kept
@@ -3432,7 +3493,7 @@ mod refresher {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Kept {
                 per: Arc::downgrade(per),
-                due: Instant::now() + per.lease,
+                due: Instant::now() + super::renew_every(per.lease),
             });
         book.woken.notify_one();
     }
@@ -3450,7 +3511,7 @@ mod refresher {
             let mut due = Vec::new();
             for k in kept.iter_mut().filter(|k| k.due <= now) {
                 if let Some(per) = k.per.upgrade() {
-                    k.due = now + per.lease;
+                    k.due = now + super::renew_every(per.lease);
                     due.push(per);
                 }
             }
