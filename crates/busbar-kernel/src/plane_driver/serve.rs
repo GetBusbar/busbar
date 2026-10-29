@@ -18,13 +18,14 @@
 //! - One short answer is re-called once; a second short answer or a FAULT answers 502. An index
 //!   past the snapshot never crosses.
 //! - A [`ROUTE_PUBLIC`] route is never on the admin table: it is served on the DATA listener's
-//!   mount at its own target to a caller that presents no busbar credential ([`answer_public`],
-//!   SEAM-4o), by the same `serve` op (a route stating `ROUTE_CARRIES_OWN_TOKEN` is lent the
-//!   request's `authorization`, the plane's own token, and no other credential field), the data
-//!   listener's arrival gates (its body cap and rate gates) still applying; it meters nothing, and
-//!   its audit row is written as an admin route's.
+//!   mount at its own target to a caller that presents no busbar credential
+//!   ([`ServeTables::answer_public`], SEAM-4o), by the same `serve` op (a route stating
+//!   `ROUTE_CARRIES_OWN_TOKEN` is lent the request's `authorization`, the plane's own token, and
+//!   no other credential field), the data listener's arrival gates (its body cap and rate gates)
+//!   still applying; it meters nothing, and its audit row is written as an admin route's.
+//! - The table is a value ([`ServeTables`]) each generation carries, never a process static.
 
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Request};
@@ -96,7 +97,34 @@ pub struct Collision {
     pub with: String,
 }
 
-static TABLES: RwLock<Vec<ServeTable>> = RwLock::new(Vec::new());
+/// THE PUBLISHED INSTANCES' ADMIN TABLE: a value, never a process static. The boot generation is
+/// built with one and every generation after it carries it ([`crate::state::App::serve_tables`]);
+/// the composition root publishes its door planes into the boot generation's, and lends it (a clone
+/// shares the one table) to what answers on it: the admin router's fallback and a stated admin
+/// route read it off the live generation, the data listener's public mount holds it. Two
+/// generations built apart hold two tables, each answering only for the instances published into
+/// it.
+///
+/// A request reads the published snapshot without a lock and holds the one instance it is served
+/// by (an `Arc`), never a copy of it; a publish or a withdraw replaces the snapshot, one at a time.
+#[derive(Clone, Default)]
+pub struct ServeTables(Arc<Published>);
+
+/// The snapshot requests read, and the turn its writers take.
+#[derive(Default)]
+struct Published {
+    now: arc_swap::ArcSwap<Vec<Arc<ServeTable>>>,
+    writing: Mutex<()>,
+}
+
+impl std::fmt::Debug for ServeTables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tables = self.0.now.load();
+        f.debug_list()
+            .entries(tables.iter().map(|t| &t.instance))
+            .finish()
+    }
+}
 
 fn param(segment: &str) -> bool {
     segment.len() > 1 && segment.starts_with('{') && segment.ends_with('}')
@@ -126,109 +154,223 @@ fn fill<'p>(target: &str, path: &'p str) -> Option<&'p str> {
     }
 }
 
-/// PUBLISH `table` (an instance's open or refresh), replacing the instance's last one. Refused,
-/// with nothing changed, when one of its admin routes overlaps another of its own, another
-/// instance's, or a `reserved` kernel admin route `(verb, target)`.
-pub fn publish(table: ServeTable, reserved: &[(&str, &str)]) -> Result<(), Collision> {
-    let mut tables = TABLES.write().unwrap_or_else(PoisonError::into_inner);
-    let mut seen: Vec<(&str, &str, &str)> =
-        reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
-    for t in tables.iter().filter(|t| t.instance != table.instance) {
-        seen.extend(admin(&t.routes).map(|r| (&*r.verb, &*r.target, &*t.instance)));
-    }
-    for r in admin(&table.routes) {
-        if let Some((_, _, with)) = seen
-            .iter()
-            .find(|(v, t, _)| v.eq_ignore_ascii_case(&r.verb) && overlap(t, &r.target))
-        {
-            return Err(Collision {
-                route: (r.verb.clone(), r.target.clone()),
-                with: (*with).to_string(),
-            });
+impl ServeTables {
+    /// PUBLISH `table` (an instance's open or refresh), replacing the instance's last one. Refused,
+    /// with nothing changed, when one of its admin routes overlaps another of its own, another
+    /// instance's, or a `reserved` kernel admin route `(verb, target)`.
+    pub fn publish(&self, table: ServeTable, reserved: &[(&str, &str)]) -> Result<(), Collision> {
+        let _turn = self
+            .0
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let tables = self.0.now.load();
+        let mut seen: Vec<(&str, &str, &str)> =
+            reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
+        for t in tables.iter().filter(|t| t.instance != table.instance) {
+            seen.extend(admin(&t.routes).map(|r| (&*r.verb, &*r.target, &*t.instance)));
         }
-        seen.push((&r.verb, &r.target, &table.instance));
+        for r in admin(&table.routes) {
+            if let Some((_, _, with)) = seen
+                .iter()
+                .find(|(v, t, _)| v.eq_ignore_ascii_case(&r.verb) && overlap(t, &r.target))
+            {
+                return Err(Collision {
+                    route: (r.verb.clone(), r.target.clone()),
+                    with: (*with).to_string(),
+                });
+            }
+            seen.push((&r.verb, &r.target, &table.instance));
+        }
+        let mut next: Vec<Arc<ServeTable>> = tables
+            .iter()
+            .filter(|t| t.instance != table.instance)
+            .cloned()
+            .collect();
+        next.push(Arc::new(table));
+        self.0.now.store(Arc::new(next));
+        Ok(())
     }
-    tables.retain(|t| t.instance != table.instance);
-    tables.push(table);
-    Ok(())
-}
 
-/// The instance is retired or no longer configured: its routes leave the table.
-pub fn withdraw(instance: &str) {
-    let mut tables = TABLES.write().unwrap_or_else(PoisonError::into_inner);
-    tables.retain(|t| t.instance != instance);
+    /// The instance is retired or no longer configured: its routes leave the table.
+    pub fn withdraw(&self, instance: &str) {
+        let _turn = self
+            .0
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let tables = self.0.now.load();
+        let next: Vec<Arc<ServeTable>> = tables
+            .iter()
+            .filter(|t| t.instance != instance)
+            .cloned()
+            .collect();
+        self.0.now.store(Arc::new(next));
+    }
 }
 
 fn admin(routes: &[ServeRoute]) -> impl Iterator<Item = &ServeRoute> {
     routes.iter().filter(|r| r.flags & ROUTE_PUBLIC == 0)
 }
 
-/// THE ADMIN ROUTER'S FALLBACK: a request no kernel route matched, answered by the published
-/// instance whose admin route it names. `None` = no instance names the path (the router's `404`);
-/// a path an instance names under another verb answers the admin surface's `405`. The body is read
-/// only for a served route, under the inbound body limit, so an unmatched path answers as before.
-pub async fn answer(req: Request) -> Option<Response> {
-    use crate::admin::gate::{ApiError, ADMIN_PREFIX};
-    let uri = req.uri().clone();
-    let path = uri.path().strip_prefix(ADMIN_PREFIX).unwrap_or(uri.path());
-    let (table, index, name) = {
-        let tables = TABLES.read().unwrap_or_else(PoisonError::into_inner);
-        let mut named = false;
-        let mut found = None;
-        'tables: for t in tables.iter() {
-            for (i, r) in t.routes.iter().enumerate() {
-                let Some(name) = fill(&r.target, path).filter(|_| r.flags & ROUTE_PUBLIC == 0)
-                else {
-                    continue;
-                };
-                named = true;
-                if r.verb.eq_ignore_ascii_case(req.method().as_str()) {
-                    found = Some((t.clone(), i, name.to_string()));
-                    break 'tables;
-                }
-            }
-        }
-        match found {
-            Some(f) => f,
-            None if named => {
-                return Some(crate::admin::gate::err_json(&ApiError::MethodNotAllowed))
-            }
-            None => return None,
-        }
+/// The head an admin route's plane is lent: `headers` with the credentials the gate `consumed`
+/// stripped and the contract's never-kept fields struck. The map is copied only when it carries a
+/// consumed credential (stripping reorders it, as it always did); otherwise it is read as it is.
+fn lent_head(
+    headers: &axum::http::HeaderMap,
+    consumed: Option<&ConsumedCredentials>,
+) -> HeadFields {
+    let stripped;
+    let headers = if ConsumedCredentials::fields_of(consumed, headers).is_empty() {
+        headers
+    } else {
+        let mut copy = headers.clone();
+        ConsumedCredentials::strip_from(consumed, &mut copy);
+        stripped = copy;
+        &stripped
     };
-    let mut headers = req.headers().clone();
-    ConsumedCredentials::strip_from(req.extensions().get(), &mut headers);
-    let principal = req.extensions().get::<AuthPrincipal>().cloned();
-    let body = match Bytes::from_request(req, &()).await {
-        Ok(body) => body,
-        Err(refused) => return Some(refused.into_response()),
-    };
-    let head: HeadFields = headers
+    headers
         .iter()
         .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
         .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-        .collect();
-    let target = match uri.query() {
-        Some(q) => format!("{path}?{q}"),
-        None => path.to_string(),
-    };
-    let (routes, route) = (table.routes.len(), &table.routes[index]);
-    let calls = &*table.calls;
-    let at = index as u32;
-    let served = serve(calls, table.caps, routes, at, target.as_bytes(), head, body).await;
-    let actor = principal.unwrap_or(AuthPrincipal(None));
-    let served = match served {
-        Ok(s) => write_served_records(
-            table.records.as_ref(),
-            &super::CoreAudit,
-            &s,
-            actor.actor_id(),
+        .collect()
+}
+
+/// The target an admin route is served at: `path`, with `?query` where there is one.
+fn target_of<'p>(path: &'p str, query: Option<&str>) -> std::borrow::Cow<'p, str> {
+    match query {
+        Some(q) => format!("{path}?{q}").into(),
+        None => path.into(),
+    }
+}
+
+impl ServeTables {
+    /// THE ADMIN ROUTER'S FALLBACK: a request no kernel route matched, answered by the published
+    /// instance whose admin route it names. `None` = no instance names the path (the router's
+    /// `404`); a path an instance names under another verb answers the admin surface's `405`. The
+    /// body is read only for a served route, under the inbound body limit, so an unmatched path
+    /// answers as before.
+    pub async fn answer(&self, req: Request) -> Option<Response> {
+        use crate::admin::gate::{ApiError, ADMIN_PREFIX};
+        let uri = req.uri().clone();
+        let path = uri.path().strip_prefix(ADMIN_PREFIX).unwrap_or(uri.path());
+        let (table, index, name) = {
+            let tables = self.0.now.load();
+            let mut named = false;
+            let mut found = None;
+            'tables: for t in tables.iter() {
+                for (i, r) in t.routes.iter().enumerate() {
+                    let Some(name) = fill(&r.target, path).filter(|_| r.flags & ROUTE_PUBLIC == 0)
+                    else {
+                        continue;
+                    };
+                    named = true;
+                    if r.verb.eq_ignore_ascii_case(req.method().as_str()) {
+                        found = Some((Arc::clone(t), i, name));
+                        break 'tables;
+                    }
+                }
+            }
+            match found {
+                Some(f) => f,
+                None if named => {
+                    return Some(crate::admin::gate::err_json(&ApiError::MethodNotAllowed))
+                }
+                None => return None,
+            }
+        };
+        let head = lent_head(req.headers(), req.extensions().get());
+        let principal = req.extensions().get::<AuthPrincipal>().cloned();
+        let body = match Bytes::from_request(req, &()).await {
+            Ok(body) => body,
+            Err(refused) => return Some(refused.into_response()),
+        };
+        let target = target_of(path, uri.query());
+        let (routes, route) = (table.routes.len(), &table.routes[index]);
+        let calls = &*table.calls;
+        let at = index as u32;
+        let served = serve(calls, table.caps, routes, at, target.as_bytes(), head, body).await;
+        let actor = principal.unwrap_or(AuthPrincipal(None));
+        let served = match served {
+            Ok(s) => write_served_records(
+                table.records.as_ref(),
+                &super::CoreAudit,
+                &s,
+                actor.actor_id(),
+            )
+            .await
+            .map(|()| s),
+            Err(e) => Err(e),
+        };
+        Some(audited_reply(&table, route, name, &actor, served))
+    }
+
+    /// THE PUBLIC SERVE PATH (SEAM-4o; `abi::plane::ROUTE_PUBLIC`: "`serve` serves it to an
+    /// unauthenticated caller; the arrival gate and the audit still run, it meters nothing"): a
+    /// data request at `path` (its query in `target`) under `method`, answered by the published
+    /// instance whose PUBLIC route names it, by its `serve` op. No caller credential is asked for
+    /// or lent; the head fields cross with the contract's never-kept fields struck. A path no
+    /// published public route names answers `404`; a plane fault the kernel's status.
+    pub async fn answer_public(
+        &self,
+        method: &str,
+        path: &str,
+        target: &str,
+        headers: &axum::http::HeaderMap,
+        body: Bytes,
+    ) -> Response {
+        let found = {
+            let tables = self.0.now.load();
+            tables.iter().find_map(|t| {
+                t.routes.iter().enumerate().find_map(|(i, r)| {
+                    let name = fill(&r.target, path)?;
+                    (r.flags & ROUTE_PUBLIC != 0 && r.verb.eq_ignore_ascii_case(method))
+                        .then(|| (Arc::clone(t), i, name))
+                })
+            })
+        };
+        let Some((table, index, name)) = found else {
+            return status_only(404);
+        };
+        let route = &table.routes[index];
+        // A ROUTE THE PLANE ADDRESSES BY ITS OWN TOKEN (`ROUTE_CARRIES_OWN_TOKEN`;
+        // `BUSBAR-1.6.0.md` l.4882): `authorization` crosses, as busbar's own correlation value and
+        // no caller's credential; every other never-kept field stays struck.
+        let own_token = route.flags & ROUTE_CARRIES_OWN_TOKEN != 0;
+        let head: HeadFields = headers
+            .iter()
+            .filter(|(n, _)| {
+                !NEVER_KEPT.contains(&n.as_str())
+                    || (own_token && *n == axum::http::header::AUTHORIZATION)
+            })
+            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        let served = serve(
+            &*table.calls,
+            table.caps,
+            table.routes.len(),
+            index as u32,
+            target.as_bytes(),
+            head,
+            body,
         )
-        .await
-        .map(|()| s),
-        Err(e) => Err(e),
-    };
-    Some(audited_reply(&table, route, &name, &actor, served))
+        .await;
+        // Its record writes go before its reply, as an admin route's do (SEAM-L(t)): a public
+        // route's answer that moved the plane's records (a callback's reported move) is written,
+        // never dropped.
+        let served = match served {
+            Ok(s) => write_served_records(
+                table.records.as_ref(),
+                &super::CoreAudit,
+                &s,
+                AuthPrincipal(None).actor_id(),
+            )
+            .await
+            .map(|()| s),
+            Err(e) => Err(e),
+        };
+        audited_reply(&table, route, name, &AuthPrincipal(None), served)
+    }
 }
 
 /// THE REPLY TO A SERVED ANSWER whose record writes are in (`served`), with the route's audit row.
@@ -262,74 +404,9 @@ fn audited_reply(
     reply(&s).unwrap_or_else(|unserved| status_only(unserved.status()))
 }
 
-/// THE PUBLIC SERVE PATH (SEAM-4o; `abi::plane::ROUTE_PUBLIC`: "`serve` serves it to an
-/// unauthenticated caller; the arrival gate and the audit still run, it meters nothing"): a data
-/// request at `path` (its query in `target`) under `method`, answered by the published instance
-/// whose PUBLIC route names it, by its `serve` op. No caller credential is asked for or lent; the
-/// head fields cross with the contract's never-kept fields struck. A path no published public route
-/// names answers `404`; a plane fault the kernel's status.
-pub async fn answer_public(
-    method: &str,
-    path: &str,
-    target: &str,
-    headers: &axum::http::HeaderMap,
-    body: Bytes,
-) -> Response {
-    let found = {
-        let tables = TABLES.read().unwrap_or_else(PoisonError::into_inner);
-        tables.iter().find_map(|t| {
-            t.routes.iter().enumerate().find_map(|(i, r)| {
-                let name = fill(&r.target, path)?;
-                (r.flags & ROUTE_PUBLIC != 0 && r.verb.eq_ignore_ascii_case(method))
-                    .then(|| (t.clone(), i, name.to_string()))
-            })
-        })
-    };
-    let Some((table, index, name)) = found else {
-        return status_only(404);
-    };
-    let route = &table.routes[index];
-    // A ROUTE THE PLANE ADDRESSES BY ITS OWN TOKEN (`ROUTE_CARRIES_OWN_TOKEN`; `BUSBAR-1.6.0.md`
-    // l.4882): `authorization` crosses, as busbar's own correlation value and no caller's
-    // credential; every other never-kept field stays struck.
-    let own_token = route.flags & ROUTE_CARRIES_OWN_TOKEN != 0;
-    let head: HeadFields = headers
-        .iter()
-        .filter(|(n, _)| {
-            !NEVER_KEPT.contains(&n.as_str())
-                || (own_token && *n == axum::http::header::AUTHORIZATION)
-        })
-        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-        .collect();
-    let served = serve(
-        &*table.calls,
-        table.caps,
-        table.routes.len(),
-        index as u32,
-        target.as_bytes(),
-        head,
-        body,
-    )
-    .await;
-    // Its record writes go before its reply, as an admin route's do (SEAM-L(t)): a public route's
-    // answer that moved the plane's records (a callback's reported move) is written, never dropped.
-    let served = match served {
-        Ok(s) => write_served_records(
-            table.records.as_ref(),
-            &super::CoreAudit,
-            &s,
-            AuthPrincipal(None).actor_id(),
-        )
-        .await
-        .map(|()| s),
-        Err(e) => Err(e),
-    };
-    audited_reply(&table, route, &name, &AuthPrincipal(None), served)
-}
-
-/// ONE ADMIN REQUEST as the admin shim hands it to [`served_at`]: its verb, its path relative to
-/// the admin mount and its query, its head fields as received, what the auth gate consumed of them
-/// ([`ConsumedCredentials`]), and the principal the gate admitted.
+/// ONE ADMIN REQUEST as the admin shim hands it to [`ServeTables::served_at`]: its verb, its path
+/// relative to the admin mount and its query, its head fields as received, what the auth gate
+/// consumed of them ([`ConsumedCredentials`]), and the principal the gate admitted.
 #[derive(Debug, Clone, Copy)]
 pub struct AdminServe<'a> {
     /// The verb.
@@ -346,72 +423,71 @@ pub struct AdminServe<'a> {
     pub principal: Option<&'a AuthPrincipal>,
 }
 
-/// SERVE ONE ADMIN REQUEST by the published instance whose admin route names its verb and path:
-/// the target `path?query`, the head fields with the credentials the auth gate consumed and the
-/// contract's never-kept fields struck, and `body`, the plane's audit rows written under the
-/// admitted principal. `None` when no published instance names it. The registry row of a door
-/// plane mounts its stated admin routes through this (its `admin_routes` handler), so the request
-/// is served by the instance's own `serve` op, as the router's fallback ([`answer`]) serves it.
-pub async fn served_at(req: AdminServe<'_>, body: Bytes) -> Option<Result<Served, Unserved>> {
-    served_at_to(&super::CoreAudit, req, body).await
-}
+impl ServeTables {
+    /// SERVE ONE ADMIN REQUEST by the published instance whose admin route names its verb and path:
+    /// the target `path?query`, the head fields with the credentials the auth gate consumed and the
+    /// contract's never-kept fields struck, and `body`, the plane's audit rows written under the
+    /// admitted principal. `None` when no published instance names it. The registry row of a door
+    /// plane mounts its stated admin routes through this (its `admin_routes` handler), so the
+    /// request is served by the instance's own `serve` op, as the router's fallback
+    /// ([`ServeTables::answer`]) serves it.
+    pub async fn served_at(
+        &self,
+        req: AdminServe<'_>,
+        body: Bytes,
+    ) -> Option<Result<Served, Unserved>> {
+        self.served_at_to(&super::CoreAudit, req, body).await
+    }
 
-/// [`served_at`], its plane's audit rows written onto `sink`.
-pub(crate) async fn served_at_to(
-    sink: &dyn super::AuditSink,
-    req: AdminServe<'_>,
-    body: Bytes,
-) -> Option<Result<Served, Unserved>> {
-    let (table, index) = {
-        let tables = TABLES.read().unwrap_or_else(PoisonError::into_inner);
-        tables.iter().find_map(|t| {
-            t.routes.iter().enumerate().find_map(|(i, r)| {
-                (r.flags & ROUTE_PUBLIC == 0
-                    && r.verb.eq_ignore_ascii_case(req.method)
-                    && fill(&r.target, req.path).is_some())
-                .then(|| (t.clone(), i))
+    /// [`ServeTables::served_at`], its plane's audit rows written onto `sink`.
+    pub(crate) async fn served_at_to(
+        &self,
+        sink: &dyn super::AuditSink,
+        req: AdminServe<'_>,
+        body: Bytes,
+    ) -> Option<Result<Served, Unserved>> {
+        let (table, index) = {
+            let tables = self.0.now.load();
+            tables.iter().find_map(|t| {
+                t.routes.iter().enumerate().find_map(|(i, r)| {
+                    (r.flags & ROUTE_PUBLIC == 0
+                        && r.verb.eq_ignore_ascii_case(req.method)
+                        && fill(&r.target, req.path).is_some())
+                    .then(|| (Arc::clone(t), i))
+                })
             })
+        }?;
+        // The credentials the gate consumed go first, as the router's fallback strips them: the
+        // operator's `x-admin-token` is busbar's vocabulary, not the contract's never-kept list.
+        let head = lent_head(req.headers, req.consumed);
+        let target = target_of(req.path, req.query);
+        let calls = &*table.calls;
+        let served = serve(
+            calls,
+            table.caps,
+            table.routes.len(),
+            index as u32,
+            target.as_bytes(),
+            head,
+            body,
+        )
+        .await;
+        let anonymous = AuthPrincipal(None);
+        let actor = req.principal.unwrap_or(&anonymous);
+        Some(match served {
+            Ok(s) => write_served_records(table.records.as_ref(), sink, &s, actor.actor_id())
+                .await
+                .map(|()| s),
+            Err(e) => Err(e),
         })
-    }?;
-    // The credentials the gate consumed go first, as the router's fallback strips them: the
-    // operator's `x-admin-token` is busbar's vocabulary, not the contract's never-kept list.
-    let mut headers = req.headers.clone();
-    ConsumedCredentials::strip_from(req.consumed, &mut headers);
-    let head: HeadFields = headers
-        .iter()
-        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-        .collect();
-    let target = match req.query {
-        Some(q) => format!("{}?{q}", req.path),
-        None => req.path.to_string(),
-    };
-    let calls = &*table.calls;
-    let served = serve(
-        calls,
-        table.caps,
-        table.routes.len(),
-        index as u32,
-        target.as_bytes(),
-        head,
-        body,
-    )
-    .await;
-    let anonymous = AuthPrincipal(None);
-    let actor = req.principal.unwrap_or(&anonymous);
-    Some(match served {
-        Ok(s) => write_served_records(table.records.as_ref(), sink, &s, actor.actor_id())
-            .await
-            .map(|()| s),
-        Err(e) => Err(e),
-    })
+    }
 }
 
 /// A SERVED REQUEST'S RECORD WRITES (SEAM-L(t)), in the plane's order, before its reply goes: an
 /// audit row onto the kernel's audit chain under `actor`; a put through the kernel's record write
-/// path, keyed by the instance (a chained kind appended to its chain), awaited until the store
-/// took it. A write the plane got wrong, a put with no record path, or one the store refuses answers
-/// the request 502 (a write is never dropped).
+/// path, keyed by the instance (a chained kind appended to its chain), awaited until the store took
+/// it. A write the plane got wrong, a put with no record path, or one the store refuses answers the
+/// request 502 (a write is never dropped).
 ///
 /// `records` is the instance's record path ([`ServeTable::records`]) and `sink` the audit chain.
 ///

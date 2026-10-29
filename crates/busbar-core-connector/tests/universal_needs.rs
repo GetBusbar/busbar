@@ -10,15 +10,15 @@
 //! plugin reaches the network through its door's needs, on the connector its host hands the
 //! instance at open.
 //!
-//! THE SECRET KIND'S LEG of "a secret-kind plugin that dials through the connector" (BUSBAR-1.6.0.md
-//! l.664) is proven by a REAL secret plugin, never an in-tree test plugin (OWNER Q7 2026-10-03, no
-//! test plugins; coordinator ruling 2026-10-14): GetBusbar/busbar-secret-vault's
-//! `secret-vault-plugin/tests/conformance.rs` runs busbar's published suite (pinned by its
-//! `.busbar-ref`) LINKED and DROPPED IN with busbar's own `Connector` as the host
-//! (`tests/support/conformance_host.rs`, rendered by the fleet template): its `http` need is
-//! dialled through the connector to a real TLS far end, every `dialing_steps` step of its
-//! `conformance.json` must resume on its ticket (`busbar_test_kit::conformance::resumed`),
-//! and the suite's RED arms are kept. plugin-ci runs it on every change to that repo.
+//! THE SECRET KIND'S LEG of "a secret-kind plugin that dials through the connector"
+//! (BUSBAR-1.6.0.md l.664) is proven by a REAL secret plugin, never an in-tree test plugin (no test
+//! plugins): GetBusbar/busbar-secret-vault's `secret-vault-plugin/tests/conformance.rs` runs
+//! busbar's published suite (pinned by its `.busbar-ref`) LINKED and DROPPED IN with busbar's own
+//! `Connector` as the host (`tests/support/conformance_host.rs`, rendered by the fleet template):
+//! its `http` need is dialled through the connector to a real TLS far end, every `dialing_steps`
+//! step of its `conformance.json` must resume on its ticket
+//! (`busbar_test_kit::conformance::resumed`), and the suite's RED arms are kept. plugin-ci
+//! runs it on every change to that repo.
 
 use std::sync::OnceLock;
 
@@ -30,8 +30,6 @@ use busbar_core_connector::{carrier, compose, framer, hostio};
 #[allow(dead_code, unsafe_code, unused_imports)]
 #[path = "../src/tests/support.rs"]
 mod support;
-
-// ── the connector drives a dropped-in framer door ───────────────────────────────────────────────
 
 /// A dropped-in transport door, as the connector reaches it: the one dispatcher's crossing, the
 /// host's `in`/`out` copied in and the answer copied back.
@@ -193,7 +191,7 @@ fn open_stated(
 /// host socket on the worker's reactor, the door encodes the request and frames the server's
 /// HTTP/1.1 response into a head piece (with its status), body pieces and the empty piece that ends
 /// the stream. DOOR-TRANSPORT's own conformance proves the http door's linked and dropped doors
-/// answer alike through one table; the linked arm here arrives at KERNEL<>PLUGINS step 20, when
+/// answer alike through one table; the linked arm here arrives when
 /// http becomes a root door row.
 #[test]
 fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
@@ -507,11 +505,10 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
 }
 
 /// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
-/// FRAMER (its stated role, ARCHITECT ruling Q128 U7) whose own claim carries no session (one request,
-/// one response), found by what it states and never by a name. It is a pinned plugin repo's cdylib,
-/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it from the pinned
-/// checkout busbar's root resolves, into this target dir (spec P5). A missing door is a failure,
-/// never a skip.
+/// FRAMER (its stated role) whose own claim carries no session (one request, one response), found
+/// by what it states and never by a name. It is a pinned plugin repo's cdylib, which is in no graph
+/// of this workspace: the hop's `build:dlopen-cdylibs` builds it from the pinned checkout busbar's
+/// root resolves, into this target dir. A missing door is a failure, never a skip.
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     use busbar_contract::abi::transport::ROLE_FRAMER;
     libraries_beside_the_test()
@@ -641,8 +638,6 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         c.close(owner, id).unwrap();
     });
 }
-
-// ── the plugins.fetch download (status row 130 E6) ──────────────────────────────────────────────
 
 /// The download's table over a connector serving the composing door beside the test carrier, every
 /// IP literal its own address: the door's own plain scheme, and the table.
@@ -831,10 +826,10 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
     )
 }
 
-/// RED (row 159, a plaintext private plugin registry): 1.5.5's download took plaintext http to a
-/// loopback or private host (a local dev registry) and refused only cloud metadata
-/// (v1.5.5 `crates/busbar/src/main.rs` `plugin_fetch_downloader_with_cap`). Under the deployment's
-/// own guard and its default, a `plugins.fetch` URL is the operator's own destination: a private
+/// RED (a plaintext private plugin registry): 1.5.5's download took plaintext http to a loopback or
+/// private host (a local dev registry) and refused only cloud metadata (v1.5.5
+/// `crates/busbar/src/main.rs` `plugin_fetch_downloader_with_cap`). Under the deployment's own
+/// guard and its default, a `plugins.fetch` URL is the operator's own destination: a private
 /// registry downloads, as it did.
 #[test]
 fn a_plaintext_private_registry_downloads_under_the_default_guard() {

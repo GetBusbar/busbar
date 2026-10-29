@@ -304,7 +304,7 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
 }
 
 /// A reference at a declared EXACT path and one at a declared WILDCARD path both resolve in place;
-/// a literal at the wildcard path is left as written (the lending host takes it as written).
+/// a setting beside them that no declared path names is left as written.
 #[test]
 fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     let var = format!("BUSBAR_DECLARED_FIELD_{}", std::process::id());
@@ -314,7 +314,7 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
         ("client_secret", serde_json::json!({ "env": var })),
         (
             "servers",
-            serde_json::json!({ "a": { "env": { "API_KEY": { "env": var }, "LOG": "debug" } } }),
+            serde_json::json!({ "a": { "env": { "API_KEY": { "env": var } }, "command": "run" } }),
         ),
     ]);
     let out = resolve_settings(
@@ -328,7 +328,7 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     assert_eq!(out["client_secret"], serde_json::json!("RESOLVED"));
     assert_eq!(
         out["servers"],
-        serde_json::json!({ "a": { "env": { "API_KEY": "RESOLVED", "LOG": "debug" } } })
+        serde_json::json!({ "a": { "env": { "API_KEY": "RESOLVED" }, "command": "run" } })
     );
     std::env::remove_var(&var);
 }
@@ -383,4 +383,63 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
         &scope,
     )
     .expect("an unset declared field is not a literal");
+}
+
+/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL, AT A WILDCARD PATH TOO (security.md:316, lead
+/// ruling item 7b): a plain value at a position a declared WILDCARD path names refuses the boot
+/// exactly as one at a declared EXACT path does, in the same non-echoing words, naming the
+/// position (`settings.servers.a.env.LOG`) and never a byte of the value. A scalar of any type and a
+/// `{ literal: … }` wrapper are both literals there; an unset (`null`) match is not.
+#[test]
+fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
+    let resolver = SecretResolver::builtins_only();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    for (value, shown) in [
+        (serde_json::json!("hunter2-wild-pw"), "hunter2-wild-pw"),
+        (serde_json::json!(483_920_175_534_u64), "483920175534"),
+        (
+            serde_json::json!({ "literal": "wrapped-wild-pw" }),
+            "wrapped-wild-pw",
+        ),
+    ] {
+        let settings = obj(&[(
+            "servers",
+            serde_json::json!({ "a": { "env": { "LOG": value }, "command": "run" } }),
+        )]);
+        // Matched, not `expect_err`: that would print the resolved settings (the literal).
+        let Err(err) = resolve_settings(
+            &settings,
+            &declared(&["servers.*.env.*"]),
+            "busbar-plane-x",
+            &resolver,
+            &scope,
+        ) else {
+            panic!("a literal at a wildcard declared secret path refuses");
+        };
+        assert!(
+            err.contains("settings.servers.a.env.LOG"),
+            "names the config position: {err}"
+        );
+        assert!(
+            err.contains(
+                "a secret value must be a REFERENCE, never an inline literal (the value is not \
+                 echoed)"
+            ),
+            "the core secret fields' own non-echoing words: {err}"
+        );
+        assert!(!err.contains(shown), "the value is echoed: {err}");
+    }
+    // A wildcard that matches nothing, or matches `null`, has no literal to refuse.
+    let unset = obj(&[(
+        "servers",
+        serde_json::json!({ "a": { "env": { "LOG": null }, "command": "run" } }),
+    )]);
+    resolve_settings(
+        &unset,
+        &declared(&["servers.*.env.*", "hosts.*.password"]),
+        "busbar-plane-x",
+        &resolver,
+        &scope,
+    )
+    .expect("an unset wildcard match is not a literal");
 }

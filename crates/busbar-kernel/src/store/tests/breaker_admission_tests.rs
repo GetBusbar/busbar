@@ -8,7 +8,7 @@
 
 use super::super::breaker_admission::PlaneBreakers;
 use super::super::{set_now_for_test, BreakerState, Unavailable};
-use crate::breaker::{CanonicalSignal, StatusClass};
+use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 
 /// Opaque cell keys. The kernel's store never reads a key's spelling (a plane qualifies its own
 /// keys and proves its own non-collision), so these name no plane's keyspace (BUSBAR-1.6.0.md THE
