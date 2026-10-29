@@ -499,6 +499,9 @@ pub(crate) struct RigOpts<'a> {
     /// Every provider's `api_key`, a secret reference as written (YAML) (`None`: a credential file
     /// of the rig's own, gone once the door composed).
     pub api_key: Option<&'a str>,
+    /// Each member's provider `api_key` VALUE, by member, written to a credential file of the
+    /// rig's own (gone once the door composed); a member past the end takes [`Self::api_key`].
+    pub member_keys: &'a [&'a str],
     /// More fields of every provider entry, as written (YAML, one level below the provider's name:
     /// `error_map:`, `health:`).
     pub provider_yaml: &'a str,
@@ -889,11 +892,26 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if opts.api_key.is_none() {
         std::fs::write(&key_file, "sk-seats").expect("the credential file");
     }
+    let member_key_files: Vec<std::path::PathBuf> = opts
+        .member_keys
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let file = key_file.with_extension(format!("m{i}"));
+            std::fs::write(&file, value).expect("the member's credential file");
+            file
+        })
+        .collect();
     let mut yaml = String::from("providers:\n");
     for (i, _) in opts.members.iter().enumerate() {
+        let member_key = member_key_files
+            .get(i)
+            .map(|file| format!("{{ file: '{}' }}", file.display()));
         yaml.push_str(&format!(
             "  oai{i}:\n    api_key: {}\n",
-            opts.api_key.unwrap_or(&own_key)
+            member_key
+                .as_deref()
+                .unwrap_or(opts.api_key.unwrap_or(&own_key))
         ));
         yaml.push_str(&indented(opts.provider_yaml, 4));
     }
@@ -1205,6 +1223,9 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &busbar_contract::config_time::ConfigScope::config_time(),
     );
     let _ = std::fs::remove_file(&key_file);
+    for file in &member_key_files {
+        let _ = std::fs::remove_file(file);
+    }
     let mut served = served?;
     served.post = Some(Arc::clone(&post));
     let appliers = served.appliers();
