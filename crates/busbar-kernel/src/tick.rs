@@ -165,11 +165,10 @@ pub fn sweep_settle(
                     Usage::report(&token, lines)
                 }
                 .expect("one usage line is always within the record's bound");
-                // As every other settling site: the writer's `amount` is the money, and the one
-                // line is the evidence it was derived from.
+                // As every other settling site: the writer's `amount` is the reported count, and
+                // the one line is the evidence for it.
                 let ledger = Grant::<WriteMoney>::mint(kernel.seal());
-                let posted =
-                    Posted::settle(hold, u128::from(amount), &usage, &ledger).flagged(flags);
+                let posted = Posted::settle(hold, amount, &usage, &ledger).flagged(flags);
                 canary.settled();
                 Swept {
                     end: UnitEnd::seal(&Grant::<Exit>::mint(kernel.seal()), outcome, Ok(posted)),

@@ -15,8 +15,8 @@ use super::{
     STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_FROM_CREDENTIAL,
     STYLE_ENDPOINT_TOKEN_URL, STYLE_NEEDS_HEADERS, STYLE_RANK_MASK, VERDICT_IDENTITY, VERDICT_PASS,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
-use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
+use crate::abi::mechanism::call::{Outcome, Span, BLOB_OCTETS};
+use crate::abi::mechanism::check::{fault, listed, results, text, Dim, Fault, Rule, MAX_BYTES};
 
 /// The hard maximum of `needed_groups`: no identity asserts more groups than this.
 pub const IDENTITY_GROUPS_HARD_MAX: u32 = 65_536;
@@ -429,14 +429,6 @@ pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fau
     check_points(points, true)
 }
 
-/// A plugin-owned string: a non-zero length never rides a NULL pointer.
-fn text(s: AbiStr, a: &Arms) -> Result<(), Fault> {
-    if s.len > 0 && s.ptr.is_null() {
-        return Err(fault(Rule::NullWithCount, a.null_with_count));
-    }
-    Ok(())
-}
-
 /// `begin_login`'s answer: exactly one of [`BEGIN_AUTHORIZE`] | [`BEGIN_FORM`], and the one it
 /// names is present.
 pub fn check_begin_login(outcome: Outcome, out: &BeginLoginOut) -> Result<(), Fault> {
@@ -450,10 +442,8 @@ pub fn check_begin_login(outcome: Outcome, out: &BeginLoginOut) -> Result<(), Fa
     if out.shape.count_ones() != 1 {
         return Err(fault(Rule::NotExactlyOne, a.not_exactly_one));
     }
-    text(out.authorize_url, a)?;
-    if out.form_len > 0 && out.form.is_null() {
-        return Err(fault(Rule::NullWithCount, a.null_with_count));
-    }
+    text(out.authorize_url, a.null_with_count)?;
+    listed(out.form, out.form_len, a.null_with_count)?;
     let named_absent = match out.shape {
         BEGIN_AUTHORIZE => out.authorize_url.ptr.is_null() || out.authorize_url.len == 0,
         _ => out.form_len == 0,

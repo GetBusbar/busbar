@@ -68,6 +68,22 @@ impl PlaneLife for Echo {
         })
     }
 
+    /// THE APPLIED OWNED SECTIONS (`EXT_OWNED`): a refresh whose document writes an owned section
+    /// the echo plane cannot read is refused, as `open` refuses it; otherwise the settings path.
+    fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Vec<u8>>, Refusal> {
+        let owned = crate::abi::mechanism::extensions::get(
+            input.head().extensions().bytes(),
+            crate::abi::plane::EXT_OWNED,
+        )
+        .unwrap_or_default();
+        if owned == b"{\"agent_push\":\"malformed\"}" {
+            return Err(Refusal::refused(
+                "agent_push: not a section this plane reads",
+            ));
+        }
+        self.refresh(input.settings().bytes(), input.generation())
+    }
+
     fn published(&self, generation: u64) {
         PUBLISHED.fetch_add(generation, Ordering::SeqCst);
     }
@@ -178,8 +194,19 @@ fn open(settings: &[u8]) -> (Outcome, *mut c_void, u64, String) {
 }
 
 fn refresh(inst: *mut c_void, settings: &[u8], generation: u64) -> (Outcome, u64, String) {
+    refresh_with(inst, settings, generation, b"")
+}
+
+/// [`refresh`] with `extensions` lent on the head, as the host lends the applied owned sections.
+fn refresh_with(
+    inst: *mut c_void,
+    settings: &[u8],
+    generation: u64,
+    extensions: &[u8],
+) -> (Outcome, u64, String) {
     let mut input: RefreshIn = zeroed();
     input.head = in_head::<RefreshIn>(slot::REFRESH);
+    input.head.extensions = blob(extensions);
     input.settings = blob(settings);
     input.generation = generation;
     let mut out: PlaneRefreshOut = zeroed();
@@ -288,6 +315,43 @@ fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_can
     assert_eq!(
         call(table().head.release, inst, &ri, &mut ro),
         Outcome::Ready
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// RED (a2a's PlaneLife adoption, ruled 2026-10-29): a PlaneLife plane sees the applied owned
+/// sections (`EXT_OWNED`) at `refresh`, so a malformed `agent_push:` an apply carries is still
+/// refused there, as `open` refuses it; an apply that writes none takes the settings path. RED
+/// before: `refresh` got the settings and the generation only, so the apply was accepted.
+#[test]
+fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_refused() {
+    let (_, inst, _, _) = open(b"{}");
+    let malformed = crate::abi::mechanism::extensions::encode(&[(
+        crate::abi::plane::EXT_OWNED,
+        br#"{"agent_push":"malformed"}"#,
+    )]);
+    let (o, published, why) = refresh_with(inst, b"{}", 2, &malformed);
+    assert_eq!(
+        (o, published),
+        (Outcome::Refused, 0),
+        "a malformed owned section is refused"
+    );
+    assert_eq!(why, "agent_push: not a section this plane reads");
+    let readable = crate::abi::mechanism::extensions::encode(&[(
+        crate::abi::plane::EXT_OWNED,
+        br#"{"agent_push":{}}"#,
+    )]);
+    let (o, published, _) = refresh_with(inst, b"{}", 3, &readable);
+    assert_eq!(
+        (o, published),
+        (Outcome::Ready, 3),
+        "a readable one publishes"
+    );
+    let (o, published, _) = refresh(inst, b"{}", 4);
+    assert_eq!(
+        (o, published),
+        (Outcome::Ready, 4),
+        "none: the settings path"
     );
     assert_eq!(close(inst), Outcome::Ready);
 }

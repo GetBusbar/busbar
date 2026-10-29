@@ -10,9 +10,9 @@
 //!
 //! WHAT A FIGURE WAS PRICED FROM ([`Inputs`]): the bucket's window, the cell's recorded facts (its
 //! per-(model, era) counts, its request and billable-request counts, its fee eras), the card's
-//! generation, the dated history as the read resolves it, and how many corrections the node
-//! journal holds. A recorded write, an `adjust`, a window roll or a card change each leave the
-//! inputs different, so the next scrape reprices exactly that bucket. Nothing on the write side
+//! generation and the dated history as the read resolves it. A recorded write (an `adjust`
+//! included: it is a usage-row delta), a window roll or a card change each leave the inputs
+//! different, so the next scrape reprices exactly that bucket. Nothing on the write side
 //! prices or even touches this memo: staleness is decided at read time, by comparing inputs, so no
 //! write path can forget to mark a bucket.
 
@@ -44,7 +44,6 @@ pub(in crate::governance) struct Inputs {
     /// The dated history the read resolves through, held so its address cannot be reused, with the
     /// entry count it had and the card in force at the read.
     history: Option<(Arc<History>, usize, Option<u64>)>,
-    corrections: usize,
 }
 
 impl PartialEq for Inputs {
@@ -58,7 +57,6 @@ impl PartialEq for Inputs {
             && self.period == other.period
             && self.include_fee == other.include_fee
             && self.card == other.card
-            && self.corrections == other.corrections
             && self.facts == other.facts
     }
 }
@@ -92,7 +90,6 @@ impl Inputs {
             },
             card: cost.generation(),
             history,
-            corrections: crate::audit::amend::node_corrections().len(),
         }
     }
 }

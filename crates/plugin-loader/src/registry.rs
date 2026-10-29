@@ -62,7 +62,9 @@ pub struct LoadablePlugin {
     pub file: String,
     pub manifest: Manifest,
     pub verdict: Verdict,
-    pub lib_bytes: Vec<u8>,
+    /// The verified library bytes, shared (never copied) with every boot row it becomes
+    /// ([`Self::candidate`]).
+    pub lib_bytes: std::sync::Arc<Vec<u8>>,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -102,6 +104,26 @@ impl LoadablePlugin {
             .map(|r| r.version)
             .filter(|v| !v.is_empty())
             .ok_or_else(|| unversioned(&self.manifest.name))
+    }
+
+    /// THE BOOT ROW a DROPPED-IN row states: its signed manifest's Statement rendering, manifest
+    /// alias and former names ([`crate::boot::Candidate::from_manifest`]), over its verified library
+    /// bytes; `None` when the manifest states no Statement (a 1.5.5 JSON-contract plugin).
+    ///
+    /// # Errors
+    /// The rendering does not read back, named (`plugin '<name>': ...`).
+    pub fn candidate(&self) -> Result<Option<crate::boot::Candidate>, String> {
+        let named = |e: String| format!("plugin '{}': {e}", self.manifest.name);
+        let Some(stated) = self.manifest.stated_rendering().map_err(named)? else {
+            return Ok(None);
+        };
+        let origin = crate::boot::Origin::Dropped {
+            file: self.file.clone(),
+            bytes: std::sync::Arc::clone(&self.lib_bytes),
+        };
+        crate::boot::Candidate::from_manifest(stated, &self.manifest, origin)
+            .map(Some)
+            .map_err(named)
     }
 
     /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
@@ -265,16 +287,6 @@ impl LinkedPlugin {
         }
     }
 
-    /// The build's in-process STORE named `name` (its own alias), at the store kind's one version:
-    /// its store v3 `door`, and whether what it holds is lost on restart.
-    pub fn store(
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-        ephemeral: bool,
-    ) -> Self {
-        Self::store_named(name, name, door, ephemeral)
-    }
-
     /// The build's in-process STORE under its CANONICAL `name` (the manifest name its release
     /// tarball carries, plugins.yaml `manifest_name`), answering also to `alias`, the key the
     /// composition root's table names it by and every surface prints ([`LoadablePlugin::key`]).
@@ -287,12 +299,6 @@ impl LinkedPlugin {
         let abi = busbar_contract::abi::store::ABI_VERSION;
         let entry = LinkedEntry::Store { door };
         Self::built_in(name, &[alias], kind::STORE, abi, entry, ephemeral)
-    }
-
-    /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
-    /// crate's `plugin_door!` door, the same door its dropped-in build exports.
-    pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        Self::auth_door_named(name, name, door)
     }
 
     /// A linked AUTH plugin under its CANONICAL `name`, answering also to `alias`, its key
@@ -323,52 +329,6 @@ impl LinkedPlugin {
             LinkedEntry::Door(door),
             false,
         )
-    }
-
-    /// [`Self::door`] over a test's raw door (a NULL or restated one).
-    #[cfg(test)]
-    pub(crate) fn door_raw(
-        manifest: Manifest,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        // A test's own door, answering NULL or a door it laid out: every entry into it runs the
-        // loader's checks.
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Door(door),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
-    }
-
-    /// [`Self::auth_door`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn auth_door_raw(
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, name, door)
-    }
-
-    /// [`Self::auth_door_named`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn auth_door_named_raw(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, alias, door)
-    }
-
-    /// [`Self::door_of_kind`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn door_of_kind_raw(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind).first().copied().unwrap_or_default();
-        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 
     /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
@@ -421,6 +381,68 @@ impl LinkedPlugin {
             keyed_by_alias: alias != name,
         };
         row.with_former_names(aliases.iter().skip(1))
+    }
+}
+
+/// THE TESTS' ROWS: each its own alias, or over a test's raw door (a NULL or restated one, every
+/// entry into which runs the loader's checks).
+#[cfg(test)]
+impl LinkedPlugin {
+    /// The build's in-process STORE named `name` ([`Self::store_named`] under its own alias).
+    pub(crate) fn store(
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+        ephemeral: bool,
+    ) -> Self {
+        Self::store_named(name, name, door, ephemeral)
+    }
+
+    /// A linked AUTH plugin named `name` ([`Self::auth_door_named`] under its own alias).
+    pub(crate) fn auth_door(
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        Self::auth_door_named(name, name, door)
+    }
+
+    /// [`Self::door`] over a raw door.
+    pub(crate) fn door_raw(
+        manifest: Manifest,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
+            ephemeral: false,
+            keyed_by_alias: false,
+        }
+    }
+
+    /// [`Self::auth_door`] over a raw door.
+    pub(crate) fn auth_door_raw(
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, name, door)
+    }
+
+    /// [`Self::auth_door_named`] over a raw door.
+    pub(crate) fn auth_door_named_raw(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, alias, door)
+    }
+
+    /// [`Self::door_of_kind`] over a raw door.
+    pub(crate) fn door_of_kind_raw(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 }
 
@@ -542,7 +564,7 @@ impl PluginRegistry {
                     first_party: false,
                 },
                 manifest,
-                lib_bytes: Vec::new(),
+                lib_bytes: std::sync::Arc::default(),
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -722,7 +744,7 @@ impl PluginRegistry {
         match p.manifest.stated_rendering().map_err(named)? {
             Some(stated) => Ok(StoreDoor::Dropped {
                 file: p.file.clone(),
-                bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                bytes: std::sync::Arc::clone(&p.lib_bytes),
                 stated,
             }),
             None => Err(no_door()),
@@ -794,7 +816,7 @@ impl PluginRegistry {
                 &p.manifest,
                 crate::boot::Origin::Dropped {
                     file: p.file.clone(),
-                    bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                    bytes: std::sync::Arc::clone(&p.lib_bytes),
                 },
             )
             .map_err(|e| format!("transport plugin '{name}': {e}"))?
@@ -855,27 +877,14 @@ impl PluginRegistry {
         }
         let planes = self.loadable().iter();
         for p in planes.filter(|p| p.manifest.kind == kind::PLANE) {
-            let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
-            match p.manifest.stated_rendering().map_err(named)? {
-                Some(stated) => set.doors.push(
-                    crate::boot::Candidate::from_manifest(
-                        stated,
-                        &p.manifest,
-                        crate::boot::Origin::Dropped {
-                            file: p.file.clone(),
-                            bytes: std::sync::Arc::new(p.lib_bytes.clone()),
-                        },
-                    )
-                    .map_err(named)?,
-                ),
-                None => {
-                    return Err(named(
-                        "states no Statement: a plane loads only through its memory-ABI door \
-                         (`busbar_plugin_door`)"
-                            .into(),
-                    ))
-                }
-            }
+            let Some(c) = p.candidate()? else {
+                return Err(format!(
+                    "plugin '{}': states no Statement: a plane loads only through its memory-ABI \
+                     door (`busbar_plugin_door`)",
+                    p.manifest.name
+                ));
+            };
+            set.doors.push(c);
         }
         Ok(set)
     }
@@ -1116,7 +1125,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 file,
                 manifest: unpacked.manifest,
                 verdict,
-                lib_bytes: unpacked.lib_bytes,
+                lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
