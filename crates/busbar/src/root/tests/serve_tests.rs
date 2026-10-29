@@ -1031,7 +1031,14 @@ pub(super) mod session_door {
             (None, None) => far_end_answering(MINTED).await,
         };
         let connector = connector();
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        // The dispatcher serves its instances the composition's host services, as boot's does: R10's
+        // mint asks `ticket.mint` of them on the mint unit (with none, the loader answers "no host
+        // services are bound" and the mint is a 502).
+        let services = composed_services();
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+        ));
         let plane = session_door(
             instance,
             &dispatcher,
@@ -1198,7 +1205,6 @@ pub(super) mod session_door {
         // THE ADMIN TABLE the door is published into, lent to the App built below as the root
         // lends the boot generation its own.
         let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
-        let services = composed_services();
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
