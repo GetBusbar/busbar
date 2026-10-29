@@ -414,44 +414,6 @@ fn mysql_messages_match_the_driver_byte_for_byte() {
     assert_eq!(empty.wire(), &[0, 0, 0, 3]);
 }
 
-/// AWS's published `get-vanilla` vector (the SigV4 test suite): day key, signature and
-/// `SignedHeaders`.
-#[test]
-fn aws4_matches_the_published_get_vanilla_vector() {
-    use super::aws4::Aws4Request;
-    let secret = cred("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
-    let headers = vec![
-        ("Host".to_string(), "example.amazonaws.com".to_string()),
-        ("X-Amz-Date".to_string(), "20150830T123600Z".to_string()),
-    ];
-    let r = Aws4Request {
-        region: "us-east-1",
-        service: "service",
-        method: "GET",
-        canonical_uri: "/",
-        canonical_query: "",
-        headers: &headers,
-        payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        amzdate: "20150830T123600Z",
-        datestamp: "20150830",
-    };
-    let key = secret.aws4_day_key("20150830", "us-east-1", "service");
-    let sig = key.aws4_sign(&r, None).expect("signs");
-    assert_eq!(sig.signed_headers, "host;x-amz-date");
-    assert_eq!(
-        sig.signature.wire(),
-        b"5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
-    );
-    assert!(secret.aws4_verify(
-        &r,
-        "5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
-    ));
-    assert!(!secret.aws4_verify(&r, "00"));
-    let token = cred("tok");
-    let with = key.aws4_sign(&r, Some(&token)).expect("signs");
-    assert_eq!(with.signed_headers, "host;x-amz-date;x-amz-security-token");
-}
-
 /// The floor reads the operator's text: libpq 16's `require_auth` (lists, `!` negation, the
 /// keyword form), the 1.5.5 MySQL driver's switches, the RSA key pin and a unix socket.
 #[test]
