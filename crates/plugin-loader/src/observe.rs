@@ -94,6 +94,12 @@ pub enum BindRefusal<'a> {
         /// The declared diagnostic id.
         code: &'a str,
     },
+    /// Another op of the instance answered with the diagnostic its Statement declares as `code`,
+    /// at ERROR: a refusal the plugin met while serving (an IdP destination it refused, say).
+    Op {
+        /// The declared diagnostic id.
+        code: &'a str,
+    },
 }
 
 /// A refusal of the host's connection table as one host word.
