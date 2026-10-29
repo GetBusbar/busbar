@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `busbar-core-connector::tls` — the core-side connection-security seam (DECISIONS #40), folded in
+//! `busbar-core-connector::tls` — the core-side connection-security seam, folded in
 //! verbatim from the `busbar-core-connsec` crate it was (THE DESIGN: TLS lives only in the connector).
 //!
 //! A trusted, compiled-in `core`-kind sibling of `busbar-kernel` (the same category as
@@ -39,9 +39,8 @@
 //! [`install_crypto_provider`] are relocated byte-for-byte (only the module path each name is
 //! reached through changed) from `busbar-kernel`'s own `tls` module, where the SAME native inbound
 //! TLS termination has built its `rustls::ServerConfig` this way since before this crate existed.
-//! `busbar_kernel::tls` keeps `read_pem` (the one turn-a-`SecretRef`-into-PEM function, which the
-//! readers below call) and the accept-loop/hyper-serving machinery — a LISTENER concern this crate
-//! does not touch — but no longer builds a `ServerConfig` itself.
+//! The accept-loop/hyper-serving machinery is a LISTENER concern this crate does not touch, and
+//! `read_pem` (the one turn-a-`SecretRef`-into-PEM function, which the readers below call) lives here.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -93,6 +92,21 @@ pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
         .unwrap_or_else(|| Arc::new(ring()))
 }
 
+/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
+/// source-named message. Never logs contents.
+fn read_pem(
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    secret: &SecretRef,
+    what: &str,
+) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+    resolver
+        .resolve_at_config(
+            secret,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+}
+
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
 /// public, but we still avoid echoing them.
 ///
@@ -102,7 +116,7 @@ fn load_cert_chain(
     secret: &SecretRef,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
+    let bytes = read_pem(resolver, secret, "cert")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
     let certs = CertificateDer::pem_slice_iter(bytes)
@@ -125,7 +139,7 @@ fn load_private_key(
     secret: &SecretRef,
 ) -> Result<PrivateKeyDer<'static>, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
+    let bytes = read_pem(resolver, secret, "key")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
     // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1, and SEC1 sections, picking the first
@@ -169,7 +183,7 @@ fn load_client_roots(
     secret: &SecretRef,
 ) -> Result<RootCertStore, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
+    let bytes = read_pem(resolver, secret, "client_ca")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
     let cas = CertificateDer::pem_slice_iter(bytes)
@@ -187,8 +201,8 @@ fn load_client_roots(
     Ok(roots)
 }
 
-/// The ALPN ids a TLS listener offers, in its order of preference (OWNER RULING Q137, 2026-10-04).
-/// The listener's hyper builder serves both: it reads an `h2` connection's preface and serves HTTP/2.
+/// The ALPN ids a TLS listener offers, in its order of preference. The listener's hyper builder
+/// serves both: it reads an `h2` connection's preface and serves HTTP/2.
 const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
 
 /// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
@@ -198,11 +212,11 @@ const ALPN_H2: &[u8] = b"h2";
 const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// A connection whose ALPN is `h2` is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes
-/// (RFC 9113 §3.4; the ALPN offer is OWNER RULING Q137): anything but the connection preface is a connection
-/// error. No h2 frame layer exists yet to send a GOAWAY on, so the error closes the connection with
-/// no bytes; it is never handed on to be read as an HTTP/1 request line. Reads at most the preface's
-/// 24 bytes and stops at the first one that differs; the bytes read are the preface, which
-/// [`Preface`] hands back first.
+/// (RFC 9113 §3.4): anything but the connection preface is a connection error. No h2 frame layer
+/// exists yet to send a GOAWAY on, so the error closes the connection with no bytes; it is never
+/// handed on to be read as an HTTP/1 request line. Reads at most the preface's 24 bytes and stops
+/// at the first one that differs; the bytes read are the preface, which [`Preface`] hands back
+/// first.
 async fn expect_h2_preface<S: futures::io::AsyncRead + Unpin>(io: &mut S) -> std::io::Result<()> {
     let mut got = [0u8; 24];
     let mut n = 0;
@@ -279,12 +293,12 @@ impl<S: futures::io::AsyncWrite + Unpin> futures::io::AsyncWrite for Preface<S> 
 ///   certificate chaining to that CA or the handshake fails (mTLS required).
 /// * `client_ca` absent ⇒ `with_no_client_auth()` (server-only TLS).
 ///
-/// ALPN offers [`ALPN_OFFER`], `h2` first then `http/1.1` (OWNER RULING Q137, 2026-10-04, a
-/// signed customer-visible change from 1.5.5, which offered `http/1.1` alone): a client that offers
-/// `h2` speaks HTTP/2 over TLS, one that offers only `http/1.1` (or no ALPN) is served as in 1.5.5.
-/// Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
+/// ALPN offers [`ALPN_OFFER`], `h2` first then `http/1.1` (a signed customer-visible change from
+/// 1.5.5, which offered `http/1.1` alone): a client that offers `h2` speaks HTTP/2 over TLS, one
+/// that offers only `http/1.1` (or no ALPN) is served as in 1.5.5. Returns a clear, source-named
+/// error on any load/parse problem (the caller turns it into `die`).
 ///
-/// Relocated verbatim from `busbar_kernel::tls::build_server_config` (DECISIONS #40): every other
+/// Relocated verbatim from `busbar_kernel::tls::build_server_config`: every other
 /// field, default and error message is unchanged — only the module this function lives in moved.
 pub fn build_server_config(
     tls: &TlsCfg,
@@ -417,7 +431,7 @@ impl std::fmt::Display for FailClosed {
 impl std::error::Error for FailClosed {}
 
 /// Reconcile one binding's operator config against its transport's capability and build the opaque
-/// wrap the transport is handed — the negotiation DECISIONS #40 requires:
+/// wrap the transport is handed — the negotiation it requires:
 ///
 /// * `tls_cfg` is `None` ⇒ `Ok(`[`Identity`]`)`, regardless of `transport_capable` (a plaintext
 ///   binding never needs the capability at all).

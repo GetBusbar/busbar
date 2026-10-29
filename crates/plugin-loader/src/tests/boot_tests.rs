@@ -1144,3 +1144,34 @@ fn a_plane_the_configuration_does_not_use_is_never_bound() {
         "its verb selects it"
     );
 }
+
+/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL, AT A WILDCARD PATH TOO (security.md:316, lead
+/// ruling item 7b): a plain value matched by a declared WILDCARD path (`hosts.*.password`) refuses
+/// exactly as one at a declared EXACT path does: as not a secret reference, naming the position and
+/// never a byte of the value. RED before the fix: the wildcard match was lent as written.
+#[test]
+fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() {
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    for (keys, mut block, at) in [
+        (
+            vec!["client_secret".to_string()],
+            doc(r#"{"client_secret": "pasted-pw-7b"}"#),
+            "settings.client_secret",
+        ),
+        (
+            vec!["hosts.*.password".to_string()],
+            doc(r#"{"hosts": [{"password": "pasted-pw-7b"}]}"#),
+            "settings.hosts.0.password",
+        ),
+    ] {
+        // Matched, not `expect_err`: that would print the lent secrets.
+        let Err(e) = resolve_secrets(&mut block, &keys, &Resolver, &scope) else {
+            panic!("a literal at {at} refuses");
+        };
+        assert!(
+            e.starts_with(&format!("{at}: not a secret reference")),
+            "{at}: {e}"
+        );
+        assert!(!e.contains("pasted-pw-7b"), "the value is echoed: {e}");
+    }
+}

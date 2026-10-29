@@ -64,8 +64,8 @@ pub struct DoorPools {
     /// The pools whose members the plane admits each on its own grant (`member_granted`): the
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
-    /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
-    /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
+    /// Each entry's reserved `timeout:`, in milliseconds (`busbar_contract::section::ENTRY_TIMEOUT_KEY`),
+    /// a registration that writes none at the core's default: its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
@@ -172,15 +172,22 @@ impl DoorPools {
             .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
+        // A REGISTRATION that writes none is held to the core's default; a model entry that writes
+        // none keeps the walk's budget (1.5.5's bound on a model).
         let timeouts = entries
             .iter()
             .filter_map(|entry| {
                 let written = models
                     .unwrap_or(map)
-                    .get(entry.as_str())?
-                    .get(busbar_contract::section::ENTRY_TIMEOUT_KEY)?
-                    .as_str()?;
-                let ms = busbar_contract::section::entry_timeout_ms(written).ok()?;
+                    .get(entry.as_str())
+                    .and_then(|e| e.get(busbar_contract::section::ENTRY_TIMEOUT_KEY))
+                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok());
+                let ms = match (written, models) {
+                    (Some(ms), _) => ms,
+                    (None, None) => busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS,
+                    (None, Some(_)) => return None,
+                };
                 Some((entry.clone(), ms))
             })
             .collect();
@@ -201,8 +208,9 @@ impl DoorPools {
         self.breakers.get(pool)
     }
 
-    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
-    /// walk's own budget bounds it.
+    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`, else, for a
+    /// registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = a model entry that
+    /// writes none, which the walk's own budget bounds.
     #[must_use]
     pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
         self.timeouts.get(entry).copied()
@@ -1328,7 +1336,7 @@ impl DriverSteps for DoorSteps<'_> {
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
         // The unit's dialect is the ingress protocol its tap read the body as (row 155).
         if let Some(protocol) = self.facts.translations.0.get(dialect as usize) {
-            busbar_kernel::handlers::usage_tap_fault(protocol, reason);
+            busbar_kernel::snapshot::usage_tap_fault(protocol, reason);
         }
     }
 
@@ -2218,6 +2226,9 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
+    /// The catalogue the root folded, lent: a declared diagnostic's code is looked up in it when the
+    /// main log writes the line ([`MainLogSink`]).
+    catalogue: busbar_kernel::diagnostics::Catalogue,
     /// Each linked row's outbound facts, READ off its door's `'static` Statement at the first
     /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
     /// static declaration, its kind tail included, is reading, not loading).
@@ -2271,19 +2282,22 @@ impl OutboundAuths {
     /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
     /// `dispatcher`, their needs declared on `conns`: `ConnTable::Host`, the process's connector;
     /// or, stated by the caller, `ConnTable::NoNeeds`: no need is granted, a row that declares one
-    /// will not load and is passed over, and a style that mints mints nothing.
+    /// will not load and is passed over, and a style that mints mints nothing. A declared
+    /// diagnostic's code is looked up in `catalogue`, the one the root folded.
     #[must_use]
     pub fn new(
         dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
         linked: &[busbar_kernel::preflight::LinkedAuth],
         dropped: Option<&'static crate::root::loader::PluginRegistry>,
         conns: crate::root::loader::dispatch::ConnTable,
+        catalogue: busbar_kernel::diagnostics::Catalogue,
     ) -> Self {
         Self {
             dispatcher,
             linked: linked.to_vec(),
             dropped,
             conns,
+            catalogue,
             linked_facts: std::sync::OnceLock::new(),
             dropped_facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
@@ -2313,7 +2327,7 @@ impl OutboundAuths {
                 |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
-        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink));
+        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink, self.catalogue));
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
@@ -2881,7 +2895,11 @@ impl OutboundAuths {
 /// the plugin's own severity.
 ///
 /// [`DIAG_LOG`]: busbar_contract::abi::mechanism::call::DIAG_LOG
-pub(crate) struct MainLogSink(pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>);
+pub(crate) struct MainLogSink(
+    pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>,
+    /// The catalogue the root folded, lent: the one a declared id's code is looked up in.
+    pub(crate) busbar_kernel::diagnostics::Catalogue,
+);
 
 impl MainLogSink {
     /// `text` split into its message and the named values 1.5.5's line carried.
@@ -2902,7 +2920,7 @@ impl MainLogSink {
     }
 
     /// Write one declared diagnostic to the main log.
-    fn write(d: &crate::root::loader::dispatch::Diagnostic<'_>) {
+    fn write(&self, d: &crate::root::loader::dispatch::Diagnostic<'_>) {
         use busbar_contract::diagnostic::Severity;
         use tracing::Level;
         let text = String::from_utf8_lossy(d.text);
@@ -2911,7 +2929,7 @@ impl MainLogSink {
             .ok()
             .and_then(|n| n.strip_prefix("BUSBAR-"))
             .and_then(|n| n.parse::<u16>().ok())
-            .and_then(busbar_kernel::diagnostics::by_code);
+            .and_then(|n| self.1.by_code(n));
         let level = match (code.map(|c| c.severity), d.severity) {
             (Some(Severity::BenignRecurring), _) => Level::DEBUG,
             (Some(Severity::Fatal), _) | (_, 2..) => Level::ERROR,
@@ -2942,7 +2960,7 @@ impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
     fn diag(&self, d: crate::root::loader::dispatch::Diagnostic<'_>) {
         use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
         if d.id != DIAG_LOG && d.id != DIAG_LOG_DROPPED {
-            Self::write(&d);
+            self.write(&d);
         }
         self.0.diag(d);
     }
@@ -2968,6 +2986,7 @@ pub fn process_auths() -> Arc<OutboundAuths> {
                 Arc::clone(crate::root::connector::the())
                     as Arc<dyn busbar_contract::conn::DeclaredConns>,
             ),
+            crate::root::linked::catalogue(),
         ))
     }))
 }
@@ -3120,9 +3139,9 @@ fn token_exchange_binding(
 /// <secret>`, `{header: <name>}` presents the secret verbatim in that header (the `api-key` style
 /// over that header). The kernel presents it on every request to the member through the auth
 /// kind's per-request call, which reads the binding's current handle and nothing else; the
-/// credential is re-resolved OFF the request path, by the host's refresher once per lease
+/// credential is re-resolved OFF the request path, by the host's refresher at half its lease
 /// (`lease_ttl_ms`, [`refresher`]; ARCHITECT ruling on #787, THE DESIGN §11: no blocking, plugin
-/// memory valid to its next refresh generation). `None` when the registration states no such
+/// memory valid to its next refresh generation), and is never presented past its lease. `None` when the registration states no such
 /// block.
 ///
 /// # Errors
@@ -3201,13 +3220,17 @@ fn upstream_credential(
             }
         },
     };
-    // THE LEASE: how long one resolution of the credential may be presented, and so how often
-    // the refresher re-resolves it (the grammar's `lease_ttl_ms`, greater than zero).
+    // THE LEASE: how long one resolution of the credential may be presented on busbar's own
+    // monotonic clock, after which a hop is refused until a refresh renews it (the grammar's
+    // `lease_ttl_ms`, greater than zero; the refresher renews it ahead of that, [`renew_every`]).
+    // The resolution's instant is taken BEFORE it is made, so the lease never outlives its TTL.
+    let minted = std::time::Instant::now();
     let lease = block
         .get(CREDENTIAL_LEASE_TTL_KEY)
         .and_then(serde_yaml::Value::as_u64)
         .filter(|ms| *ms > 0)
         .map(std::time::Duration::from_millis)
+        .filter(|lease| minted.checked_add(*lease).is_some())
         .ok_or_else(|| {
             format!(
                 "member '{member_name}': its \
@@ -3250,8 +3273,10 @@ fn upstream_credential(
         held: arc_swap::ArcSwapOption::from_pointee(Held {
             digest: busbar_contract::abi::sdk::digest::sha256(credential.expose(&seal)),
             handle,
+            expires_at: minted + lease,
         }),
         refreshing: Mutex::new(()),
+        lapsed: std::sync::atomic::AtomicBool::new(false),
     });
     drop(credential);
     Ok(Some((
@@ -3279,11 +3304,20 @@ fn placement_settings(header: Option<&str>) -> serde_json::Value {
     )
 }
 
-/// What a [`PerHop`] presents now: the handle its auth instance opened, and the SHA-256 of the
-/// value it was opened with (the value itself is never kept).
+/// What a [`PerHop`] presents now: the handle its auth instance opened, the SHA-256 of the
+/// value it was opened with (the value itself is never kept), and when its lease runs out on
+/// busbar's own monotonic clock (the resolution's instant plus `lease_ttl_ms`).
 struct Held {
     digest: [u8; 32],
     handle: u64,
+    expires_at: std::time::Instant,
+}
+
+/// HOW OFTEN THE [`refresher`] RENEWS A LEASE: at half of it (never under a millisecond), so a
+/// healthy refresher renews every lease well before it runs out, and a hop is refused only when
+/// the refresh stalled, erred or was skipped for half a lease or more.
+fn renew_every(lease: std::time::Duration) -> std::time::Duration {
+    (lease / 2).max(std::time::Duration::from_millis(1))
 }
 
 /// A REGISTRATION'S OWN CREDENTIAL, REFRESHED OFF THE REQUEST PATH (`upstream_credential:`): the
@@ -3295,19 +3329,24 @@ struct Held {
 /// request path). [`PerHop::refresh`] re-resolves the value, re-opens the binding only when its
 /// digest changed (handles grow by rotations, never by hops), and swaps the cell whole, so a hop
 /// sees the old handle or the new one; a value that no longer resolves or binds EMPTIES the cell,
-/// so every hop after it is refused, never served a stale credential.
+/// so every hop after it is refused, never served a stale credential. A held credential is
+/// presented only until its lease runs out ([`Held::expires_at`]): past it, with no refresh that
+/// renewed it, every hop is refused (`credential_unavailable`), never presented.
 struct PerHop {
     secret: busbar_contract::secret_ref::SecretRef,
     secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
     style: &'static str,
     header: Option<String>,
-    /// The lease: how often the [`refresher`] re-resolves the credential.
+    /// The lease: how long one resolution may be presented (the [`refresher`] renews it at
+    /// [`renew_every`] of it).
     lease: std::time::Duration,
     held: arc_swap::ArcSwapOption<Held>,
     /// Taken by [`PerHop::refresh`] alone, so two refreshes never open the same rotation twice;
     /// no hop ever waits on it.
     refreshing: Mutex<()>,
+    /// Set by the first hop refused past the lease (its one log line), cleared by a renewal.
+    lapsed: std::sync::atomic::AtomicBool,
 }
 
 impl PerHop {
@@ -3321,6 +3360,8 @@ impl PerHop {
             .refreshing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The lease runs from BEFORE the resolution, so it never outlives its TTL.
+        let expires_at = std::time::Instant::now() + self.lease;
         let Ok(value) = self.secrets.resolve_string_at_config(&self.secret, scope) else {
             self.held.store(None);
             return;
@@ -3329,12 +3370,19 @@ impl PerHop {
         // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
         let seal = busbar_kernel::seal::lend();
         let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
-        if self
-            .held
-            .load()
-            .as_ref()
-            .is_some_and(|held| busbar_contract::redacted::constant_time_eq(&held.digest, &digest))
-        {
+        let unchanged = self.held.load().as_ref().and_then(|held| {
+            busbar_contract::redacted::constant_time_eq(&held.digest, &digest)
+                .then_some(held.handle)
+        });
+        if let Some(handle) = unchanged {
+            // The same value keeps its handle; the lease is renewed from this resolution.
+            self.held.store(Some(Arc::new(Held {
+                digest,
+                handle,
+                expires_at,
+            })));
+            self.lapsed
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         let opened = self.auth.open_outbound(
@@ -3343,8 +3391,15 @@ impl PerHop {
             &placement_settings(self.header.as_deref()),
         );
         drop(value);
-        self.held
-            .store(opened.ok().map(|handle| Arc::new(Held { digest, handle })));
+        self.held.store(opened.ok().map(|handle| {
+            Arc::new(Held {
+                digest,
+                handle,
+                expires_at,
+            })
+        }));
+        self.lapsed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3364,14 +3419,39 @@ impl std::fmt::Debug for PerHop {
     }
 }
 
+impl PerHop {
+    /// The handle a hop made at `now` (busbar's own monotonic clock) presents: none when the last
+    /// refresh found the credential unavailable, or when its lease ran out with no refresh that
+    /// renewed it (the refresher stalled, erred or skipped it). The first hop refused past the
+    /// lease logs it once (naming the style and header, never the credential); every such hop is
+    /// refused as `credential_unavailable`, the refusal an unavailable credential already takes.
+    fn handle_at(&self, now: std::time::Instant) -> Option<u64> {
+        let held = self.held.load();
+        let held = held.as_ref()?;
+        if now < held.expires_at {
+            return Some(held.handle);
+        }
+        if !self.lapsed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                style = self.style,
+                header = self.header.as_deref(),
+                lease_ms = u64::try_from(self.lease.as_millis()).unwrap_or(u64::MAX),
+                "an upstream credential's lease ran out before a refresh renewed it: each hop on \
+                 it is refused (credential_unavailable) until one does"
+            );
+        }
+        None
+    }
+}
+
 impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     fn handle_now(&self) -> Option<u64> {
-        self.held.load().as_ref().map(|held| held.handle)
+        self.handle_at(std::time::Instant::now())
     }
 }
 
 /// THE HOST'S CREDENTIAL REFRESHER: one thread of its own (never a runtime worker, never a
-/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] once per its lease. It keeps
+/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] at half its lease. It keeps
 /// each binding WEAKLY, so a binding its generation dropped (a config apply builds the next
 /// generation's bindings, and the last request on the old one lets it go) is forgotten at its next
 /// due time, never refreshed again.
@@ -3413,7 +3493,7 @@ mod refresher {
         &BOOK
     }
 
-    /// Keep `per`, first due one lease from now (its build has just resolved it).
+    /// Keep `per`, first due half a lease from now (its build has just resolved it).
     pub(super) fn keep(per: &Arc<PerHop>) {
         let book = kept_book();
         book.kept
@@ -3421,7 +3501,7 @@ mod refresher {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Kept {
                 per: Arc::downgrade(per),
-                due: Instant::now() + per.lease,
+                due: Instant::now() + super::renew_every(per.lease),
             });
         book.woken.notify_one();
     }
@@ -3439,7 +3519,7 @@ mod refresher {
             let mut due = Vec::new();
             for k in kept.iter_mut().filter(|k| k.due <= now) {
                 if let Some(per) = k.per.upgrade() {
-                    k.due = now + per.lease;
+                    k.due = now + super::renew_every(per.lease);
                     due.push(per);
                 }
             }
