@@ -12,8 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Waker};
 
 use busbar_contract::caps::{
-    Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, PrincipalId, ReasonCode,
-    StepName, UnitKey,
+    Abort, Canary, HoldCellState, OriginKind, Outcome, PrincipalId, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
@@ -388,8 +387,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
 
     // A parent that has passed the door and is still open.
     let parent = std::sync::Arc::new(cell(&kernel));
-    let admitted =
-        busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal(), 5_000);
+    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal());
     // The cell hands the arrival hold back rather than dropping it; the parent's admitted hold has
     // taken its place, and this binding is what the loop's own swap does with it.
     let _arrival = parent
@@ -397,7 +395,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         .expect("the parent's cell was fresh");
 
     let child = TestUnits {
-        door: Door::Accrual(std::sync::Arc::clone(&parent), 250),
+        door: Door::Accrual(std::sync::Arc::clone(&parent)),
         ..TestUnits::default()
     };
     // The child enters the table like every other unit, so its cell and its leases are its slot's.
@@ -421,20 +419,13 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
             taps: None,
         },
     );
-    // The child ends like every other unit: one sealed end carrying one posting. It reserved
-    // nothing, because the reservation behind it is the parent's, and its posting is clean —
-    // nothing about it is late, because the parent was still open when it ended.
+    // The child ends like every other unit: one sealed end carrying one posting, and its posting is
+    // clean — nothing about it is late, because the parent was still open when it ended.
     match ended {
         Ended::Settled { end, requests, fee } => {
             assert_eq!(end.outcome(), Outcome::Completed);
             let posted = end.posted().expect("the child posts like any other unit");
-            assert_eq!(posted.settled(), 250);
-            assert_eq!(
-                posted.reserved(),
-                0,
-                "the reservation behind it is the parent's"
-            );
-            assert_eq!(posted.overdraft(), 0);
+            assert_eq!(posted.principal(), &common::principal());
             assert!(!posted
                 .flags()
                 .contains(busbar_contract::caps::PostingFlags::LATE_ACCRUAL));
@@ -453,8 +444,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
 
     // The child opened no reservation, but it entered the table with an arrival hold like every
     // other unit, and its cell is emptied at its end. Leaving it full would leave the sweep — the
-    // other holder of a key to that cell — free to settle a unit that has already finished, and its
-    // spend is already inside the parent's posting.
+    // other holder of a key to that cell — free to settle a unit that has already finished.
     assert_eq!(
         child_slot.cell().state(),
         busbar_contract::caps::HoldCellState::Taken
@@ -485,17 +475,18 @@ fn a_zero_priced_unit_holds_nothing_and_still_posts() {
     match run(&units, &kernel, &cell, &canary) {
         Ended::Settled { end, .. } => {
             assert_eq!(end.outcome(), Outcome::Completed);
-            assert_eq!(end.posted().map(|p| p.settled()), Ok(0));
+            assert_eq!(end.posted().map(|p| p.quantity()), Ok(0));
         }
         other => panic!("expected a settled end, got {other:?}"),
     }
 }
 
+/// A unit is never refused at its end for what it ran up: it posts the count it reported.
 #[test]
-fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
+fn a_unit_that_ran_up_more_than_it_was_admitted_for_posts_it_rather_than_refusing() {
     let kernel = Kernel::new();
     let units = TestUnits {
-        door: Door::Own(100),
+        door: Door::Own,
         spend: 400,
         evidence: Evidence {
             reported: Some(400),
@@ -508,23 +499,20 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
     match run(&units, &kernel, &cell, &canary) {
         Ended::Settled { end, .. } => {
             let posted = end.posted().expect("value was delivered, so it posts");
-            assert_eq!(posted.settled(), 400);
-            assert_eq!(posted.overdraft(), 300);
-            assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
+            assert_eq!(posted.quantity(), 400);
+            assert!(posted.flags().is_clean(), "{:?}", posted.flags());
         }
         other => panic!("expected a settled end, got {other:?}"),
     }
 }
 
-/// ONE FIGURE SETTLES THE HOLD. The exit spent the hold by the rig's meter and settled
-/// it by the reported `amount`: two numbers, so an end that settled 80 inside a reservation of 100
-/// posted an OVERDRAFT of 50 the meter alone ran up. The hold is now spent by the figure it settles
-/// at, so a second count — whatever it reads — cannot move the posting.
+/// ONE FIGURE SETTLES THE HOLD: the posting carries the count the plane reported, so
+/// a second count — the rig's meter, whatever it reads — cannot move it.
 #[test]
-fn the_hold_is_spent_by_the_figure_it_settles_at_not_by_a_second_count() {
+fn the_hold_is_posted_at_the_reported_figure_not_by_a_second_count() {
     let kernel = Kernel::new();
     let units = TestUnits {
-        door: Door::Own(100),
+        door: Door::Own,
         spend: 150,
         evidence: Evidence {
             reported: Some(80),
@@ -537,15 +525,12 @@ fn the_hold_is_spent_by_the_figure_it_settles_at_not_by_a_second_count() {
     match run(&units, &kernel, &cell, &canary) {
         Ended::Settled { end, .. } => {
             let posted = end.posted().expect("value was delivered, so it posts");
-            assert_eq!(posted.reserved(), 100);
-            assert_eq!(posted.settled(), 80);
-            assert_eq!(posted.released(), 20);
             assert_eq!(
-                posted.overdraft(),
-                0,
-                "settled inside its reservation, so nothing went unbacked"
+                posted.quantity(),
+                80,
+                "the reported figure, not the meter's 150"
             );
-            assert!(!posted.flags().contains(PostingFlags::OVERDRAFT));
+            assert!(posted.flags().is_clean(), "{:?}", posted.flags());
         }
         other => panic!("expected a settled end, got {other:?}"),
     }
