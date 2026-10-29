@@ -242,7 +242,7 @@ fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
     }
     for wider in [
         "100.100.100.200/31",
-        "169.254.169.254/24",
+        "169.254.169.0/24",
         "fd00:ec2::254/127",
     ] {
         let g = guard(true, &[wider]);
