@@ -143,9 +143,10 @@ class World:
     def except_(self, doc, sign=True):
         f = self.root / "release" / "conformance-exceptions.json"
         f.write_text(json.dumps(doc))
+        Path(str(f) + ".sig").unlink(missing_ok=True)  # ssh-keygen asks before overwriting one
         if sign:
             subprocess.run(["ssh-keygen", "-Y", "sign", "-q", "-f", str(self.key), "-n", "busbar-release", str(f)],
-                           check=True, capture_output=True)
+                           check=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
 
 
 def status(m, sid):
