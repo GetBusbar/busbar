@@ -3635,39 +3635,35 @@ async fn drive_door_verb_errors() {
 
 /// A DOOR'S ADMIN ROUTE IS SERVED OFF THE LIVE GENERATION'S OWN TABLE: two admin routers in one
 /// process over the same deployment, one whose generation was lent the table the door was
-/// published into and one whose generation was lent none. The first serves the door's `connect`
-/// (its passthrough registration's `400 invalid_request`); the second answers the same request as
-/// no published instance names it (`404 not_found`). While the table was one process-wide value,
-/// both routers served the door.
+/// published into and one whose generation was lent none. The first serves the door's `health`
+/// for its registration (`200`, naming it, contacted nothing yet); the second answers the same
+/// request as no published instance names it (`404 not_found`). While the table was one
+/// process-wide value, both routers served the door. (The registration states no passthrough:
+/// security item 5 refuses one at load, so its `connect` 400 can no longer be the probe.)
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let tables = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (lent_dir, _lent_overlay, lent, lent_handle) =
         named_map_app_serving("door-table-lent", tables).await;
     let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
         named_map_app("door-table-unlent", false).await;
     let client = reqwest::Client::new();
-    let connect = |addr: std::net::SocketAddr| {
+    let health = |addr: std::net::SocketAddr| {
         client
-            .post(format!(
-                "http://{addr}/api/v1/admin/tools/base-tools/connect"
-            ))
+            .get(format!("http://{addr}/api/v1/admin/tools/base-tools/health"))
             .header("x-admin-token", "admintok")
             .send()
     };
-    let r = connect(lent).await.unwrap();
+    let r = health(lent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(status, 400, "the lent generation serves the door: {body}");
-    assert_eq!(
-        body.pointer("/error/code").unwrap(),
-        "invalid_request",
-        "{body}"
-    );
-    let r = connect(unlent).await.unwrap();
+    assert_eq!(status, 200, "the lent generation serves the door: {body}");
+    assert_eq!(body["name"], "base-tools", "{body}");
+    assert_eq!(body["contacted"], false, "the probe dials nothing: {body}");
+    let r = health(unlent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
