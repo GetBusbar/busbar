@@ -885,9 +885,26 @@ pub fn host_series(name: &str) -> bool {
 static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
+/// The catalogue [`register_diagnostics`] folded, for the root's own process-wide readers that a
+/// kernel seam reaches without a value to hand in (the process's outbound auth set,
+/// `root::door_steps::process_auths`, opened behind the kernel's auth-axis opener). The neutral
+/// built-ins until the fold.
+static CATALOGUE: std::sync::OnceLock<busbar_kernel::diagnostics::Catalogue> =
+    std::sync::OnceLock::new();
+
+/// The catalogue this process's root folded ([`register_diagnostics`]), or the neutral built-ins
+/// before it has.
+pub fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
+    CATALOGUE
+        .get()
+        .copied()
+        .unwrap_or(busbar_kernel::diagnostics::Catalogue::NEUTRAL)
+}
+
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
-/// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
-pub fn register_diagnostics(linked: &Linked) {
+/// ones (K9a S3), folded once into the catalogue the root lends to every reader. A declaration the
+/// catalogue refuses refuses the boot.
+pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Catalogue {
     let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
@@ -913,7 +930,9 @@ pub fn register_diagnostics(linked: &Linked) {
             }
         }
     }
-    busbar_kernel::diagnostics::install_diagnostics(installed.leak());
+    let catalogue = busbar_kernel::diagnostics::Catalogue::lent(installed.leak());
+    let _ = CATALOGUE.set(catalogue);
+    catalogue
 }
 
 /// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE
