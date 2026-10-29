@@ -14,7 +14,7 @@
 #   without it the same tarball is refused for the signing reason. Otherwise the arm proves nothing.
 #   One refusal is the loader's to make under the plant and is asserted instead of the load: a
 #   plugin whose Statement DECLARES a need in an egress class the host grants a first-party plugin
-#   only (provider, loopback-allowed; operator-infrastructure is any trusted plugin's, so a networked
+#   only (provider; operator-infrastructure and loopback-allowed are any trusted plugin's, so a networked
 #   auth plugin LOADS) is refused at that grant, never loaded, when unsigned. For it the arm asserts the signing refusal is gone and that grant refusal,
 #   word for word, is the only one; any other refusal is RED as before.
 #
@@ -78,8 +78,12 @@ echo "gate: ephemeral release pubkey $PUB"
 # ── 1. Build busbar with the ephemeral PUBLIC key embedded ───────────────────────────────────────
 # option_env!("BUSBAR_RELEASE_PUBKEY") is COMPILE-time; cargo tracks env-var deps of env!/option_env!
 # in dep-info, but touch the crate anyway so a cached no-key build can never be reused.
+# The binary is the DEFAULT DISTRIBUTION's (dist/default: core plus the standard plugins, the llm
+# plane among them): core alone links no plugin, so it serves no provider lane and refuses the
+# config below before any plugin is judged. Built into the same target dir the gate reads.
 touch "$BUSBAR_DIR/crates/plugin-loader/src/sign.rs"
-(cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q --bin busbar)
+(cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q \
+  --manifest-path dist/default/Cargo.toml --target-dir "$TARGET_DIR" --bin busbar)
 BUSBAR_VERSION=$("$BUSBAR" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 echo "gate: busbar $BUSBAR_VERSION built with embedded ephemeral key"
 
@@ -120,7 +124,7 @@ pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 # against it, not the other way round. A statement that is not one whole rendering fails the gate.
 GRANT_NEED=$(python3 - "$WORK/unsigned.tar.gz" <<'EOF'
 import json, struct, sys, tarfile
-FIRST_PARTY = {1: "provider", 4: "loopback-allowed"}
+FIRST_PARTY = {1: "provider"}   # loopback-allowed is the operator's to grant (81e3062956, OWNER 2026-10-24)
 with tarfile.open(sys.argv[1]) as t:
     m = json.load(t.extractfile("manifest.json"))
 st = m.get("statement")
@@ -201,7 +205,6 @@ cat > "$WORK/providers.yaml" <<'EOF'
 mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
-  api_key_env: MOCK_KEY
 EOF
 # The reference must be written in the CURRENT config grammar, per kind. 1.5.3 made two of these
 # DEFINE-ONCE maps, and the pre-1.5.3 spellings are now fail-closed boot refusals — which this gate

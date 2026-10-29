@@ -372,14 +372,14 @@ impl AuthRows {
         Ok(Arc::new(opened))
     }
 
-    /// TEST STAND-IN: the auth row serving the outbound `style`, its instance opened for its
-    /// outbound styles over `settings` (as the composition root's `OutboundAuths::serving` opens
-    /// one, without its instance cache or its tick schedule); `None` when no row this build reaches
-    /// states the style. Never shipped: the root serves outbound styles.
+    /// The auth row serving the outbound `style`, its instance opened for its outbound styles over
+    /// `settings` (as the composition root's `OutboundAuths::serving` opens one, without its
+    /// instance cache or its tick schedule); `None` when no row this build reaches states the
+    /// style. The root serves outbound styles itself; this is for a harness with no root (the
+    /// credential canary).
     ///
     /// # Errors
     /// The serving row would not open for its outbound styles.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn serving(
         &self,
         style: &str,
@@ -426,48 +426,6 @@ fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
         .and_then(|s| read(&s).ok())
         .map(|r| crate::boot::rewrites(&r, REWRITE_ALIAS).collect())
         .unwrap_or_default()
-}
-
-/// TEST STAND-IN: one build's auth axis over `registry` on a dispatcher of its own, for a build
-/// with no composition root to hold the process's one dispatcher (a test binary), lent `seal` (the
-/// kernel's, so a verify reveals the credential it lends the plugin as a booted node's does; Part
-/// 2 #54). The first call's seal is the one lent. Never shipped.
-#[cfg(any(test, feature = "test-support"))]
-#[must_use]
-pub fn stand_in(
-    registry: Arc<PluginRegistry>,
-    seal: impl busbar_contract::plugin::KernelSeal + Send + Sync + 'static,
-) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
-    static DISPATCHER: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
-    let dispatcher = DISPATCHER.get_or_init(|| {
-        let d = Dispatcher::new(crate::dispatch::DispatchConfig::default());
-        let _ = d.lend_seal(seal);
-        Arc::new(d)
-    });
-    let rows = AuthRows::new(registry, dispatcher.clone());
-    let table = STAND_IN_CONNS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    Arc::new(match table {
-        Some(table) => rows.with_table(table),
-        None => rows,
-    })
-}
-
-/// The connection table the TEST STAND-IN's opened instances are bound to, when a test installed
-/// one ([`stand_in_conns`]).
-#[cfg(any(test, feature = "test-support"))]
-static STAND_IN_CONNS: std::sync::Mutex<Option<Arc<dyn DeclaredConns>>> =
-    std::sync::Mutex::new(None);
-
-/// TEST STAND-IN: bind every instance the stand-in axis opens from now on to `conns` (a test's
-/// stand-in for the process's connector, e.g. busbar-test-kit's `HttpsConns`). Never shipped.
-#[cfg(any(test, feature = "test-support"))]
-pub fn stand_in_conns(conns: Arc<dyn DeclaredConns>) {
-    *STAND_IN_CONNS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conns);
 }
 
 /// The contract's auth axis over one build's rows: what the kernel's identity chain opens auth

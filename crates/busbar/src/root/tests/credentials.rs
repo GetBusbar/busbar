@@ -66,7 +66,7 @@ fn the_credential_read_follows_the_app_swap() {
     let (s, live) = creds.read(&kind, &old_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
-        (busbar_kernel::auth::DUMMY_SECRET, false),
+        ("", false),
         "a removed id is no longer live"
     );
 }

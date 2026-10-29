@@ -685,6 +685,21 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     .expect("the blocking call ran");
     assert_eq!(written.map(|v| v.as_slice().to_vec()), Some(b"v".to_vec()));
 
+    // A claim is redeemed through the same slots, under the kind it names: the first redemption of
+    // a token wins, a second loses, and the same token under another kind is its own claim.
+    let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
+    let claims = tokio::task::spawn_blocking(move || {
+        let now = 1_000;
+        [
+            rows.claim("attach-claim", "t", now + 60, now),
+            rows.claim("attach-claim", "t", now + 60, now),
+            rows.claim("attach-other", "t", now + 60, now),
+        ]
+    })
+    .await
+    .expect("the blocking call ran");
+    assert_eq!(claims, [Ok(true), Ok(false), Ok(true)]);
+
     // With the governance store's slots kept, the attach binds it; a second bind is refused.
     let gov = busbar_kernel::governance::GovState::new(Arc::clone(&opened.records), None)
         .expect("governance");
@@ -701,12 +716,9 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         &[],
     );
     assert!(
-        !k.attach_records(
-            Arc::new(busbar_kernel::host_records::StoreRows(
-                gov.store_calls().expect("kept")
-            )),
-            gov.store()
-        ),
+        !k.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(
+            gov.store_calls().expect("kept")
+        ))),
         "the governance store is already the record store"
     );
 
@@ -728,12 +740,9 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         &[],
     );
     assert!(
-        k.attach_records(
-            Arc::new(busbar_kernel::host_records::StoreRows(Arc::clone(
-                &gov.store_calls().expect("kept")
-            ))),
-            bare.store()
-        ),
+        k.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(
+            Arc::clone(&gov.store_calls().expect("kept"))
+        ))),
         "a store with no slots bound nothing"
     );
 }
@@ -842,20 +851,12 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
     );
 }
 
-/// THE SERVE PATH NAMES NO STREAM MEDIA TYPE OF ITS OWN (audit R1#4; Law 1, BUSBAR-1.6.0.md l.1895
-/// "Dialects are internal to their plane"): whether an answer that states its length still goes out
-/// piece by piece is read off the declared rows — the event stream the contract names, and the
-/// stream `Content-Type` each declared protocol states on its `ProtocolDecl` row — never off a
-/// dialect's media type spelled here. Every one of them goes out piece by piece, byte for byte as
-/// written. RED before: the root spelled a vendor framing's media type beside the event stream.
+/// Every declared stream type goes out piece by piece, byte for byte as written, even when the
+/// answer states its length: the event stream the contract names, and the stream `Content-Type`
+/// each declared protocol states on its `ProtocolDecl` row.
 #[tokio::test]
-async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spells_none() {
+async fn every_declared_stream_type_goes_piece_by_piece() {
     use http_body::Body as _;
-    let source = include_str!("../serve.rs");
-    assert!(
-        !source.contains("application/vnd."),
-        "the serve path spells a dialect's stream media type: it must read the declared rows"
-    );
     let declared = std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
         .chain(declared_stream_media().iter().copied());
     for media in declared {

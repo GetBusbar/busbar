@@ -42,15 +42,16 @@ fn source_in(text: &str, secret: &SecretRef) -> Vec<String> {
         .collect()
 }
 
-/// An `env` secret reference's value, as the linked `env` secret plugin (the kind's both-ways
-/// fixture, the real source) resolves it, its refusal the source's own text; any other module does
-/// not resolve.
-fn env_reference(r: &SecretRef) -> Result<String, String> {
+/// Whether an `env` secret reference resolves, as the linked `env` secret plugin (the kind's
+/// both-ways fixture, the real source) resolves it, its refusal the source's own text; any other
+/// module does not resolve. The value itself stays in the source's zeroizing holder, wiped here.
+fn env_reference(r: &SecretRef) -> Result<(), String> {
     if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
         return Err(format!("{} does not resolve", r.describe()));
     }
-    let bytes = crate::both_ways::secret_fixture::resolve(&r.settings).map_err(|e| e.message)?;
-    String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8", r.describe()))
+    crate::both_ways::secret_fixture::resolve(&r.settings)
+        .map(drop)
+        .map_err(|e| e.message)
 }
 
 /// A connection table holding the connector's member-program contract: the members each
