@@ -365,17 +365,79 @@ fn key_meta(k: &VirtualKey) -> Value {
     // 1.5.0 keys are PURE AUTH bindings: id / name / allowed_pools / group / labels. Keys carry no
     // limits (all enforcement flows through the bound group). `allowed_pools` keeps the intent:
     // JSON `null` = all pools; `[]` = no pools.
-    json!({
+    let mut meta = json!({
         "id": k.id,
         "name": k.name,
         "allowed_pools": k.allowed_scopes.as_ref().map(|list| {
-            list.iter().map(|s| s.value.as_str()).collect::<Vec<_>>()
+            list.iter()
+                .filter(|s| s.kind == "pool")
+                .map(|s| s.value.as_str())
+                .collect::<Vec<_>>()
         }),
         "group": k.group,
         "enabled": k.enabled,
         "created_at": k.created_at,
         "labels": k.labels,
-    })
+    });
+    // Each plane-kind grant the key holds, under its own `allowed_{kind}s` field (W9) — the same
+    // partition the key's stored row carries. A key holding none (every 1.5.5 key) gains no field.
+    let mut by_kind: std::collections::BTreeMap<String, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for s in k
+        .allowed_scopes
+        .iter()
+        .flatten()
+        .filter(|s| s.kind != "pool")
+    {
+        by_kind
+            .entry(busbar_contract::records::scope_kinds::wire_field_for(
+                &s.kind,
+            ))
+            .or_default()
+            .push(s.value.as_str());
+    }
+    for (field, values) in by_kind {
+        meta[field] = json!(values);
+    }
+    meta
+}
+
+/// Lift the plane-kind grant fields (`allowed_{kind}s`, W9) off a mint body: the body without them,
+/// and the grant they state (`None` when the body names none; `Some(list)` when it names at least
+/// one, the list possibly empty; a field whose value is `null` is omitted, as an `Option` field
+/// reads it). `None` (refused) for a body that is not an object, a grant field of a kind no installed
+/// plane declares, or a grant that is not a list of names.
+fn lift_plane_grants(
+    body: Value,
+) -> Option<(Value, Option<Vec<busbar_contract::records::ScopeRef>>)> {
+    let Value::Object(mut fields) = body else {
+        return Some((body, None));
+    };
+    let grant_fields: Vec<(String, String)> = fields
+        .keys()
+        .filter_map(|field| {
+            busbar_kernel::governance::plane_grant_kind(field).map(|kind| (field.clone(), kind))
+        })
+        .collect();
+    let mut plane: Option<Vec<busbar_contract::records::ScopeRef>> = None;
+    for (field, kind) in grant_fields {
+        let value = fields.remove(&field)?;
+        if !busbar_kernel::governance::plane_declares_kind(&kind) {
+            return None;
+        }
+        if value.is_null() {
+            continue;
+        }
+        let names = value.as_array()?;
+        let list = plane.get_or_insert_with(Vec::new);
+        for name in names {
+            list.push(busbar_contract::records::ScopeRef {
+                kind: kind.clone(),
+                value: name.as_str()?.to_string(),
+            });
+        }
+    }
+    Some((Value::Object(fields), plane))
 }
 
 /// `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
@@ -669,9 +731,21 @@ pub(crate) async fn create_key(
     // This body carries SECRETS (an AWS secret_access_key, the bearer being minted), so any parse
     // failure maps to a GENERIC 400, logging only the byte length via `parse_err_log` (never the raw
     // error, never an input fragment).
-    let req: CreateKeyReq = match busbar_kernel::json::parse(&body) {
-        Ok(req) => req,
-        Err(_) => {
+    // The plane-kind grant fields (`allowed_{kind}s`, W9) are lifted off the body before the rest
+    // is read as `CreateKeyReq`, whose `deny_unknown_fields` (and published schema) stay exactly
+    // 1.5.5's. A grant field of a kind no installed plane declares, or one that is not a list of
+    // names, is refused as an unknown or malformed field is: the same generic 400.
+    let parsed = busbar_kernel::json::parse::<Value>(&body)
+        .ok()
+        .and_then(lift_plane_grants)
+        .and_then(|(rest, plane)| {
+            serde_json::from_value::<CreateKeyReq>(rest)
+                .ok()
+                .map(|req| (req, plane))
+        });
+    let (req, plane_scopes) = match parsed {
+        Some(req) => req,
+        None => {
             diag_debug!(
                 ADMIN_CREATEKEY_MALFORMED_BODY,
                 "create_key: {}",
@@ -770,9 +844,20 @@ pub(crate) async fn create_key(
     // the mode the key is minted with — the per-role `binding_modes` ceiling is reachable and refuses
     // a caller whose role may not mint this mode.
     let requested_binding_mode = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
+    // The grant as the key will hold it: naming any grant field makes it exhaustive across kinds,
+    // so its pools are what the ceiling judges (`[]` when only another kind was named).
+    let (requested_pools, grants_other_kinds) =
+        busbar_kernel::governance::mint_policy::requested_grant(
+            busbar_kernel::governance::grant_scopes(
+                req.allowed_pools.clone(),
+                plane_scopes.clone(),
+            )
+            .as_deref(),
+        );
     let mint_req = MintRequest {
         roles: caller_roles,
-        requested_pools: req.allowed_pools.as_deref(),
+        requested_pools: requested_pools.as_deref(),
+        grants_other_kinds,
         requested_ttl_secs: requested_ttl,
         explicit_ttl: explicit,
         requested_mode: Some(requested_binding_mode),
@@ -866,6 +951,7 @@ pub(crate) async fn create_key(
     let spec = NewKeySpec {
         name: req.name,
         allowed_pools,
+        plane_scopes,
         group: req.group.clone(),
         labels: req.labels,
         minted_by: Some(actor.clone()),
@@ -1619,13 +1705,14 @@ pub(crate) async fn rotate_key(
             else {
                 return Ok(RotateOutcome::Unknown);
             };
-            let pools: Option<Vec<String>> = key
-                .allowed_scopes
-                .as_ref()
-                .map(|list| list.iter().map(|s| s.value.clone()).collect());
+            let (pools, grants_other_kinds) =
+                busbar_kernel::governance::mint_policy::requested_grant(
+                    key.allowed_scopes.as_deref(),
+                );
             let ttl = match policy.check_mint(&MintRequest {
                 roles: &caller_roles,
                 requested_pools: pools.as_deref(),
+                grants_other_kinds,
                 requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
                 explicit_ttl: false,
                 requested_mode: key.binding_mode.as_deref(),

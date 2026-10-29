@@ -1685,6 +1685,41 @@ fn test_validate_rejects_unknown_failover_exclusion() {
     );
 }
 
+/// W9 — A ROLE BINDING'S PLANE GRANT NAMES A DECLARED KIND, OR IT IS REFUSED. `allowed_{kind}s`
+/// beside `allowed_pools` is a role-binding key, and a kind no installed plane declares is refused
+/// at validation naming the binding and the field, never left to sit inert while the operator
+/// believes it granted. A key that is not a grant field at all stays refused at parse.
+#[test]
+fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
+    let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
+        .expect("`allowed_{kind}s` is a role-binding key");
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    auth.chain = vec![config::AuthChainEntry::bare("keys")];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an undeclared kind must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings.keys.ops") && e.contains("allowed_widgets")),
+        "expected the undeclared-kind error naming the binding and field; got: {errs:?}"
+    );
+    for not_a_grant in [
+        "grop: x\n",
+        "allowed_widgets: x\n",
+        "allowed_widgets: [1]\n",
+    ] {
+        assert!(
+            serde_yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
+            "`{not_a_grant}` is not a role-binding grant"
+        );
+    }
+}
+
 #[test]
 fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
@@ -1706,6 +1741,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -1810,6 +1846,7 @@ fn validate_admin_scope_mint_now_errors() {
                 group: None,
                 admin_scope: Some("mint".to_string()),
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -5409,6 +5446,7 @@ fn test_validate_role_binding_group_must_exist() {
         group: Some("squad".to_string()),
         admin_scope: None,
         verbs: None,
+        plane_grants: Default::default(),
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);

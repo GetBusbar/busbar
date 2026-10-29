@@ -720,6 +720,7 @@ fn cred_bindings() -> busbar_kernel::config::RoleBindings {
             group: Some("team".into()),
             admin_scope: None,
             verbs: None,
+            plane_grants: Default::default(),
         },
     );
     let mut outer: busbar_kernel::config::RoleBindings = BTreeMap::new();
