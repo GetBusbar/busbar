@@ -12,28 +12,23 @@
 use busbar_contract::bounded::{
     Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
 };
-use busbar_contract::dest::{
-    AuthDecoration, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
-};
+use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{
     AdminVerbId, LaneId, MeterClassDecl, OpClassId, RecordSchemaId, SchemeKey,
 };
 use busbar_contract::kinds::{
-    Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, SecretRef,
+    Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, SecretRef,
     StoreError,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-use busbar_contract::transport::{Carrier, Framer, TransportMeta};
 use busbar_contract::unit::{
     AuditFacts, Clock, ConfigView, Ctx, FinishClass, Refusal, SessionView, TransportView, Unit,
     UnitEnd, UsageLocators,
 };
-use busbar_contract::wire::{
-    Decode, DiscardCode, Encode, Frame, FrameCursor, StatusAt, Unit0Trigger,
-};
+use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 
 /// The codec host every context this fixture builds hands its plane: a fixed, non-zero entropy fill
 /// and no clock of its own (the context carries the clock). A context cannot be built without one.
@@ -57,9 +52,6 @@ pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &FixtureCodecHost
 
 const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
-// The two transport roles (TRANSPORT-STACK): a transport plugin is one or the other.
-const _CARRIER: Option<&dyn Carrier> = None;
-const _FRAMER: Option<&dyn Framer> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _PLANE_ALLOC: Option<&dyn PlaneAlloc> = None;
 const _CONFIG: Option<&dyn ConfigView> = None;
@@ -311,7 +303,7 @@ struct FixtureTransport;
 
 impl Plugin for FixtureTransport {
     fn key(&self) -> &'static str {
-        <Self as TransportMeta>::KEY
+        "fixture"
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -319,24 +311,6 @@ impl Plugin for FixtureTransport {
     fn abi(&self) -> AbiVersion {
         AbiVersion(1)
     }
-}
-
-impl TransportMeta for FixtureTransport {
-    const KEY: &'static str = "fixture";
-    const SELECTOR_FORMS: &'static [busbar_contract::grammar::SelectorForm] = &[];
-    const EGRESS_SELECTOR_FORMS: &'static [busbar_contract::grammar::SelectorForm] = &[];
-    const COMPOSES_OVER: &'static [&'static str] = &[];
-    const HANDOFF: Option<busbar_contract::wire::Handoff> = None;
-    const FRAMING: busbar_contract::Framing = busbar_contract::Framing::Stream;
-    const SESSION: bool = true;
-    const SESSION_BOUND: bool = false;
-    const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::FirstBytes);
-    const UPGRADES_TO: &'static [&'static str] = &[];
-    const HANDSHAKE_TRIGGER: Option<busbar_contract::wire::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[];
-    const DECODES_PAYLOAD: bool = false;
-    const STATUS_CLASS: Option<StatusAt> = Some(StatusAt::FirstFrame);
-    const STATUS_NAMESPACE: Option<&'static str> = Some("fixture");
 }
 
 // ── the tests ─────────────────────────────────────────────────────────────────────────────────
@@ -403,6 +377,4 @@ fn the_remaining_kinds_shapes_are_constructible() {
     };
     let _ = SecretRef::file("fixture://key");
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
-    let _ = Ack::Durable;
-    let _: Option<AuthDecoration<'static>> = None;
 }

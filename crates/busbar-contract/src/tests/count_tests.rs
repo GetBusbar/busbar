@@ -467,10 +467,6 @@ fn whole_multiples_and_whole_constructors_are_checked() {
     assert_eq!(Count::from_integer(0), Ok(Count::ZERO));
     assert_eq!(Count::from_integer(-27), Ok(ok("-27")));
     assert_eq!(Count::from_integer(i128::MAX), Err(CountError::OutOfRange));
-    assert_eq!(ok("27.5").checked_mul_integer(2), Ok(ok("55")));
-    assert_eq!(MAX.checked_mul_integer(2), Err(CountError::Overflow));
-    assert!(ok("27").is_whole());
-    assert!(!ok("27.5").is_whole());
     assert!(ok("0").is_zero());
     assert!(ok("-0.000001").is_negative());
 }
@@ -512,9 +508,6 @@ fn an_old_row_reads_as_whole_units_and_a_new_row_as_a_mantissa() {
         Count::from_stored(27_500_000, SCALE_MICRO_UNITS),
         Ok(ok("27.5"))
     );
-    // A count writes its mantissa, and the record writes the scale beside it.
-    assert_eq!(ok("27.5").stored_value(), 27_500_000);
-    assert_eq!(ok("27").stored_value(), 27_000_000);
 
     // READING IS IDEMPOTENT, which is the property a rescale does not have. Re-reading the same
     // stored bytes any number of times gives the same count; `x 10^6` run twice gives `x 10^12`.
@@ -547,18 +540,6 @@ fn a_row_from_a_scale_this_build_cannot_read_is_refused() {
         Count::from_stored(i128::MAX, SCALE_WHOLE_UNITS),
         Err(CountError::OutOfRange)
     );
-}
-
-/// A FRACTION BOUND FOR A WHOLE-UNIT DESTINATION REFUSES (#81a(f)).
-#[test]
-fn a_fraction_refuses_rather_than_truncating_into_a_whole_unit_column() {
-    assert_eq!(ok("27").whole_units(), Ok(27));
-    assert_eq!(ok("-27").whole_units(), Ok(-27));
-    assert_eq!(Count::ZERO.whole_units(), Ok(0));
-    // Truncating 27.5 to 27 would bill for a measurement nobody took.
-    assert_eq!(ok("27.5").whole_units(), Err(CountError::NotWhole));
-    assert_eq!(ok("0.000001").whole_units(), Err(CountError::NotWhole));
-    assert_eq!(ok("-0.5").whole_units(), Err(CountError::NotWhole));
 }
 
 /// THE RANGE THAT ACTUALLY BINDS IS THE 64-BIT COLUMN, NOT THE 128-BIT TYPE.

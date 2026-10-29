@@ -1,0 +1,13 @@
+# A 1.5.5 deployment whose metadata block list holds an entry that names no usable host (`db.1`).
+# 1.5.5 booted and the entry matched nothing; 1.6.0 does not accept it silently, and
+# `busbar --migrate-config` removes it. Driven by tests/config_migrate_1_5_5.rs.
+listen: "127.0.0.1:0"
+store: { module: memory }
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+security:
+  blocked_metadata_hosts: ["169.254.169.254", "db.1"]
