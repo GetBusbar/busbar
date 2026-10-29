@@ -215,7 +215,11 @@ impl busbar_contract::io_host::IoHost for Reaps {
     ) -> busbar_contract::io_host::IoResult<u64> {
         Err(busbar_contract::io_host::IoRefusal::unknown())
     }
-    fn ends(&self, _: u64, _: u64) -> busbar_contract::io_host::IoResult<(u16, String)> {
+    fn ends(
+        &self,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::io_host::IoResult<busbar_contract::io_host::Ends> {
         Err(busbar_contract::io_host::IoRefusal::unknown())
     }
     fn reap(&self, owner: u64) {
