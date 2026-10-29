@@ -49,7 +49,7 @@ use crate::abi::hook::{
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::sdk::exchange::Op;
-use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
 use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
 use crate::hooks::{
@@ -842,6 +842,13 @@ fn opened<P: HookOpen>(settings: &[u8]) -> Result<Arc<dyn Hook>, Refusal> {
 impl<P: HookOpen> Life for HookLife<P> {
     /// A hook op pends only on its exchange; a cancel aborts it (the SDK drops what it parked).
     const CANCEL: u32 = cancel::ABORTED;
+
+    /// The settings are a JSON object that [`HookOpen::open`] opens: the instance it opens is
+    /// dropped. `--validate` refuses what boot's `open` would refuse.
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        settings_object(settings)?;
+        opened::<P>(settings).map(drop)
+    }
 
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Self {
