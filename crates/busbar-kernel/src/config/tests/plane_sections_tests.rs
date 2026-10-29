@@ -80,6 +80,11 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
 /// get for free by joining `Plane::ALL`.
 #[test]
 fn a_third_plane_costs_a_section_name_and_nothing_else() {
+    // Hold the registry serial lock for the whole test. Other tests seed a `bays` plane under a
+    // `TestRegistryIsolation`, and an unguarded reader on this thread sees that isolated list
+    // whenever the two interleave. The registry is process-global, so reading it is not isolated
+    // unless the reader holds the lock too.
+    let _isolation = crate::test_support::planes::TestRegistryIsolation::empty();
     let mut sections = config_sections();
     assert!(
         !sections.contains(&"bays"),
