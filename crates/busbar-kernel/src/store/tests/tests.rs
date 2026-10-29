@@ -649,7 +649,7 @@ fn test_recover_close_recovers_tripped_cell_when_unraced() {
 
 /// A CLOSED cell carrying an EXPIRED (past) nonzero `cooldown_until` must NOT be
 /// treated as suppressed. The under-lock check used `cooldown_until > 0`, so any lapsed cooldown
-/// looked "still suppressed" → a spurious `cell_closed_locked` + SWRR reset on an already-recovered
+/// looked "still suppressed" → a spurious `cell_closed_locked` on an already-recovered
 /// lane. The fix threads the caller's `now` and checks `cooldown_until > now`. Here a Closed cell
 /// has a past cooldown; the recovery close must report NOT-recovered (no spurious close).
 #[test]
@@ -771,53 +771,6 @@ fn test_small_base_cooldown_still_jitters() {
     assert!(
         (4..=12).contains(&min) && (4..=12).contains(&max),
         "jittered small cooldowns must stay near the base 8 (saw {min}..={max})"
-    );
-}
-
-/// Memoizing the per-pool shard MUST NOT change selection semantics. The
-/// memoized `swrr_shard` returns the SAME shard index as a fresh FNV-1a of the pool name, so a
-/// selection sequence over the same pools/weights is identical before and after. Assert the
-/// memoized lookup agrees with the pure recompute for every pool, and that repeated selections
-/// produce a stable, reproducible sequence (the SWRR distribution the shard lock guards).
-#[test]
-fn test_swrr_shard_memo_preserves_selection() {
-    set_now_for_test(1000);
-    let store = Arc::new(HealthState::new(vec![
-        make_lane_data(0, 10),
-        make_lane_data(1, 10),
-    ]));
-    // The memoized shard must equal the direct FNV recompute for assorted pool names (including
-    // empty and repeats) — first touch and cached hit alike.
-    for pool in ["", "alpha", "beta", "alpha", "gamma-pool", "", "beta"] {
-        let memo = store.swrr_shard(pool) as *const _;
-        let direct = &store.swrr_shards[swrr_shard_index(pool)] as *const _;
-        assert_eq!(
-            memo, direct,
-            "memoized shard for {pool:?} must be the same lock as a fresh FNV recompute"
-        );
-    }
-    // Selection sequence is deterministic and unchanged by memoization: same pool/weights/now
-    // give the identical lane order on repeat (the shard lock only serializes; it never alters
-    // which lane SWRR picks).
-    let candidates = [0usize, 1];
-    let weights = [3u32, 1];
-    let mut seq_a = Vec::new();
-    for _ in 0..8 {
-        seq_a.push(store.select_weighted_in("alpha", &candidates, &weights, 1000));
-    }
-    // Fresh store, identical inputs → identical sequence (SWRR is deterministic from zeroed
-    // current_weight). Proves memoization left selection bit-for-bit unchanged.
-    let store2 = Arc::new(HealthState::new(vec![
-        make_lane_data(0, 10),
-        make_lane_data(1, 10),
-    ]));
-    let mut seq_b = Vec::new();
-    for _ in 0..8 {
-        seq_b.push(store2.select_weighted_in("alpha", &candidates, &weights, 1000));
-    }
-    assert_eq!(
-        seq_a, seq_b,
-        "memoized shard must not change the SWRR selection sequence"
     );
 }
 
@@ -1970,29 +1923,6 @@ fn test_hostile_retry_after_does_not_bypass_breaker() {
     );
 }
 
-/// A healthy member with `weight: 0` (operator drain) must
-/// never be selected. Without the filter an all-zero-weight set collapses to always picking the
-/// first candidate.
-#[test]
-fn test_zero_weight_member_is_never_selected() {
-    let store = Arc::new(HealthState::new(vec![
-        make_lane_data(0, 10),
-        make_lane_data(1, 10),
-    ]));
-    set_now_for_test(1000);
-    // Lane 0 weight 0 (drained), lane 1 weight 1. Every selection must pick lane 1.
-    for _ in 0..20 {
-        let picked = store.select_weighted_in("p", &[0, 1], &[0, 1], 1000);
-        assert_eq!(picked, Some(1), "zero-weight lane 0 must never be selected");
-    }
-    // All-zero-weight → no selectable member.
-    assert_eq!(
-        store.select_weighted_in("p", &[0, 1], &[0, 0], 1000),
-        None,
-        "an all-zero-weight set selects nothing (every member drained)"
-    );
-}
-
 /// Per-lane latency EWMA (routing `fastest` signal): `None` before any sample; the first sample
 /// seeds the EWMA exactly; subsequent samples fold in at α; non-finite/non-positive samples are
 /// ignored (never poison the signal).
@@ -2017,43 +1947,6 @@ fn test_lane_latency_ewma_records_and_reads() {
         (v2 - 120.0).abs() < 1e-9,
         "bad samples must not move the EWMA, got {v2}"
     );
-}
-
-/// The SWRR lock is per-pool (sharded), not a
-/// single global lock. Correctness must be unchanged — each pool's weighted distribution stays
-/// proportional and pool-local (disjoint pools share no `current_weight` state). Drive two
-/// disjoint pools and assert each independently honors its own weights.
-#[test]
-fn test_sharded_swrr_keeps_per_pool_distribution_proportional() {
-    let store = Arc::new(HealthState::new(vec![
-        make_lane_data(0, 100),
-        make_lane_data(1, 100),
-    ]));
-    set_now_for_test(1000);
-    // Pool A: 3:1 over lanes 0,1. Pool B (disjoint shard usage): 1:1 over the same lanes.
-    let mut a0 = 0;
-    let mut a1 = 0;
-    for _ in 0..40 {
-        match store.select_weighted_in("pool-A", &[0, 1], &[3, 1], 1000) {
-            Some(0) => a0 += 1,
-            Some(1) => a1 += 1,
-            _ => unreachable!(),
-        }
-    }
-    assert_eq!(a0, 30, "pool A: 3:1 weight => 30/40 to lane 0");
-    assert_eq!(a1, 10, "pool A: 3:1 weight => 10/40 to lane 1");
-
-    let mut b0 = 0;
-    let mut b1 = 0;
-    for _ in 0..40 {
-        match store.select_weighted_in("pool-B", &[0, 1], &[1, 1], 1000) {
-            Some(0) => b0 += 1,
-            Some(1) => b1 += 1,
-            _ => unreachable!(),
-        }
-    }
-    assert_eq!(b0, 20, "pool B: 1:1 weight => even split");
-    assert_eq!(b1, 20, "pool B: 1:1 weight => even split");
 }
 
 /// The pool cell read path (`cell`) must return the SAME `Arc<BreakerCell>` for repeated reads of
@@ -2867,60 +2760,6 @@ fn test_hard_down_while_probing_does_not_wedge_lane() {
     );
 }
 
-/// Selection must NOT transition non-selected candidates Open→HalfOpen or
-/// steal their single-flight probes. The filter is side-effect-free; only the one lane a caller
-/// dispatches acquires the probe (via acquire_for_dispatch_in / usable). Here two lanes are Open
-/// with expired cooldowns; running selection many times must leave the UNSELECTED lanes in Open
-/// with no probe in flight.
-#[test]
-fn test_selection_does_not_steal_probes_from_unselected_lanes() {
-    let (lane0, w0) = make_lane_data_with_weight(0, 10);
-    let (lane1, w1) = make_lane_data_with_weight(1, 10);
-    let (lane2, w2) = make_lane_data_with_weight(2, 10);
-    let store = Arc::new(HealthState::new(vec![lane0, lane1, lane2]));
-    set_now_for_test(20_000);
-
-    // All three Open with already-expired cooldowns (so all are "ready" but each would need a
-    // probe to actually dispatch).
-    for i in 0..3 {
-        poke(&store, i, |c| c.cooldown_until = 19_000);
-        set_state(&store, i, 1);
-    }
-
-    let candidates = vec![0usize, 1, 2];
-    let weights = vec![w0, w1, w2];
-
-    // Run selection many times WITHOUT dispatching (no usable()/acquire on the winner).
-    for _ in 0..50 {
-        let _ = store.select_weighted(&candidates, &weights, 20_000);
-    }
-
-    // No lane should have been transitioned to HalfOpen and no probe should be in flight —
-    // selection enumeration alone must not consume probe budget.
-    for i in 0..3 {
-        assert_eq!(
-            store.get_lane(i).cell.snapshot().state,
-            1,
-            "lane {i} must remain Open after pure selection (no Open→HalfOpen side effect)"
-        );
-        assert!(
-            !store.get_lane(i).cell.probe_in_flight(),
-            "lane {i} must NOT have a probe in flight from mere selection enumeration"
-        );
-    }
-
-    // And the dispatch path (usable) on a single chosen lane DOES acquire exactly one probe.
-    assert!(store.usable(0, 20_000), "dispatch on lane 0 wins its probe");
-    assert!(
-        store.get_lane(0).cell.probe_in_flight(),
-        "the dispatched lane acquires the probe"
-    );
-    assert!(
-        !store.get_lane(1).cell.probe_in_flight(),
-        "a non-dispatched lane still has no probe in flight"
-    );
-}
-
 /// `is_ready` is the side-effect-FREE readiness check `/healthz` uses: an expired-Open lane is
 /// reported ready but is NOT transitioned to HalfOpen and its probe is NOT acquired (so healthz
 /// polling can't steal recovery probes from organic traffic).
@@ -2949,160 +2788,19 @@ fn test_is_ready_is_side_effect_free() {
     );
 }
 
-// SWRR convergence test - 3-member pool with weights 1/2/3 should distribute exactly in that ratio
+/// `record_probe_success_all_cells` closes a HalfOpen cell whose probe it answers — the default
+/// cell AND every per-pool cell — when a peer re-armed it HalfOpen after the caller's
+/// `recover_lane`, so THIS push is the one that wins the HalfOpen→Closed CAS.
 #[test]
-fn test_swrr_convergence_1_2_3() {
-    let (lane0, w0) = make_lane_data_with_weight(0, 10);
-    let (lane1, w1) = make_lane_data_with_weight(1, 10);
-    let (lane2, w2) = make_lane_data_with_weight(2, 3);
-
-    // Weights are: lane 0 -> 1, lane 1 -> 2, lane 2 -> 3
-    let store = Arc::new(HealthState::new(vec![lane0, lane1, lane2]));
-    set_now_for_test(1000);
-
-    // Run SWRR selection many times and count distribution
-    let candidates: Vec<usize> = vec![0, 1, 2];
-    let weights: Vec<u32> = vec![w0, w1, w2];
-
-    let mut counts = [0usize; 3];
-    const N: usize = 600; // Should give exactly 1:2:3 distribution (6 per cycle)
-
-    for _ in 0..N {
-        let picked = store.select_weighted(&candidates, &weights, 1000).unwrap();
-        counts[picked] += 1;
-    }
-
-    // With SWRR over weights [1,2,3], sum=6: each cycle of 6 picks gives 1+2+3=6
-    // N=600 means exactly 100 cycles, so expected: lane0=100, lane1=200, lane2=300
-    assert_eq!(
-        counts[0], 100,
-        "member 0 (weight 1) should be picked ~100 times"
-    );
-    assert_eq!(
-        counts[1], 200,
-        "member 1 (weight 2) should be picked ~200 times"
-    );
-    assert_eq!(
-        counts[2], 300,
-        "member 2 (weight 3) should be picked ~300 times"
-    );
-
-    // Verify total equals N
-    let total: usize = counts.iter().sum();
-    assert_eq!(total, N, "total picks should equal N");
-}
-
-// Rebalance on trip - when member 0 trips (Open), distribution should renormalize to survivors
-#[test]
-fn test_swrr_rebalance_on_trip() {
-    let (lane0, w0) = make_lane_data_with_weight(0, 10);
-    let (lane1, w1) = make_lane_data_with_weight(1, 3);
-
-    let store = Arc::new(HealthState::new(vec![lane0, lane1]));
-    set_now_for_test(1000);
-
-    // Put member 0 in Open state (tripped)
-    set_state(&store, 0, 1); // Open
-    poke(&store, 0, |c| c.cooldown_until = u64::MAX);
-
-    let candidates: Vec<usize> = vec![0, 1];
-    let weights: Vec<u32> = vec![w0, w1];
-
-    // All picks should go to member 1 since member 0 is Open/unusable
-    for _ in 0..100 {
-        let picked = store.select_weighted(&candidates, &weights, 1000).unwrap();
-        assert_eq!(picked, 1, "tripped member 0 should never be selected");
-    }
-
-    // Verify member 0 is not usable
-    assert!(
-        !store.usable(0, 1000),
-        "member 0 in Open state should not be usable"
-    );
-}
-
-/// SWRR reset on recovery is GENERATIONAL (per-worker striping): `reset_swrr_for` bumps the
-/// cell's generation instead of storing zero, and each stripe zeroes itself on its owner's next
-/// touch. Two contracts pinned here:
-///   1. Immediately after a HalfOpen→Closed recovery, the cell's accumulator READS zero (the sum
-///      counts only live-generation stripes), so a recovered cell can never rejoin selection
-///      carrying a stale weight.
-///   2. The bump cannot corrupt a selection sequence: a reset fired BETWEEN selections leaves the
-///      per-stripe `Σ == 0` invariant intact afterwards, because the zeroing happens inside
-///      `slot()` on the selecting thread itself, never as an unserialized external store (the
-///      defect the old under-lock discipline existed to prevent, now impossible by construction).
-#[test]
-fn test_swrr_reset_on_recovery_is_generational() {
+fn test_probe_success_all_cells_closes_half_open_cells() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(5000);
 
-    // Seed a stale SWRR accumulator on every stripe and park the default cell HalfOpen with the
-    // probe acquired, so a success drives the HalfOpen→Closed recovery that performs the reset.
-    const STALE: i64 = 777;
-    store.arm_half_open_stale_swrr("", 0, 1000, STALE);
-    assert_eq!(
-        store.cell_current_weight("", 0),
-        STALE,
-        "seeded stale accumulator must be visible before recovery"
-    );
+    // Default ("") cell and a per-pool cell, both parked HalfOpen with the probe acquired. The
+    // expired cooldown (1000 < now=5000) makes them probe-recoverable.
+    store.arm_half_open("", 0, 1000);
+    store.arm_half_open("pool-a", 0, 1000);
 
-    // Recovery: success on the half-open probe → HalfOpen→Closed → generational SWRR reset.
-    store.record_success_for("", 0, HealthState::now_secs());
-    assert_eq!(
-        store.breaker_state(0),
-        BreakerState::Closed,
-        "the half-open probe success must have recovered the cell to Closed"
-    );
-    assert_eq!(
-        store.cell_current_weight("", 0),
-        0,
-        "after recovery the accumulator must READ zero immediately — stale stripes are \
-         generation-invalidated, not lazily visible"
-    );
-
-    // And the invariant survives reset-between-selections: run selections, reset mid-stream,
-    // run more — the accumulator must return to Σ == 0 after every completed selection.
-    for round in 0..3 {
-        for _ in 0..7 {
-            let picked = store.select_weighted_for("", &[0], &[3], 5000);
-            assert_eq!(picked, Some(0));
-            assert_eq!(
-                store.cell_current_weight("", 0),
-                0,
-                "per-stripe Σ must be 0 after each completed selection (round {round})"
-            );
-        }
-        store.reset_swrr_for("", store.cell("", 0).as_ref());
-    }
-}
-
-/// `record_probe_success_all_cells` must gate the SWRR reset on the
-/// `cell_record_success` recovered-bool — for the default cell AND every per-pool cell — exactly
-/// like its siblings `record_success_for` and `recover_lane`. The probe-success caller normally
-/// runs `recover_lane` first, but only when `lane_needs_probe` is true and not against a peer that
-/// re-arms a cell HalfOpen in between; if THIS push then wins the HalfOpen→Closed CAS,
-/// `cell_closed_locked` re-admits the cell to selection while leaving its STALE `current_weight`
-/// untouched (the close never zeroes it — only `reset_swrr_for` does). Dropping the bool skipped
-/// that reset, so the recovered cell rejoined selection carrying a stale accumulator and broke the
-/// pool's `Σ current_weight == 0` invariant.
-///
-/// Against the OLD code (bool discarded) the post-call `current_weight` stays at the seeded STALE
-/// value and these assertions fail; against the fix the close drives the gated `reset_swrr_for` and
-/// the accumulator reads 0.
-#[test]
-fn test_probe_success_all_cells_resets_swrr_on_half_open_close() {
-    const STALE_DEFAULT: i64 = 555;
-    const STALE_POOL: i64 = 999;
-    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
-    set_now_for_test(5000);
-
-    // Default ("") cell and a per-pool cell, both parked HalfOpen with the probe acquired and a
-    // stale SWRR accumulator. The expired cooldown (1000 < now=5000) makes them probe-recoverable.
-    store.arm_half_open_stale_swrr("", 0, 1000, STALE_DEFAULT);
-    store.arm_half_open_stale_swrr("pool-a", 0, 1000, STALE_POOL);
-
-    // Probe success across all cells. With the bug, each cell closes (HalfOpen→Closed) but its
-    // current_weight is never zeroed; with the fix, the gated reset zeroes both.
     store.record_probe_success_all_cells(0, HealthState::now_secs());
 
     assert_eq!(
@@ -3114,85 +2812,6 @@ fn test_probe_success_all_cells_resets_swrr_on_half_open_close() {
         store.breaker_state_in("pool-a", 0),
         BreakerState::Closed,
         "per-pool cell must recover HalfOpen→Closed on the probe success"
-    );
-    assert_eq!(
-        store.cell_current_weight("", 0),
-        0,
-        "default cell's stale SWRR accumulator must be reset to 0 on the HalfOpen→Closed close \
-             (the reset was skipped because the recovered-bool was discarded)"
-    );
-    assert_eq!(
-        store.cell_current_weight("pool-a", 0),
-        0,
-        "per-pool cell's stale SWRR accumulator must be reset to 0 on the HalfOpen→Closed close \
-             (the per-cell reset was skipped because the recovered-bool was discarded)"
-    );
-}
-
-// No Open selection - verify select_weighted never returns an unusable member
-#[test]
-fn test_swrr_no_open_selection() {
-    let (lane0, w0) = make_lane_data_with_weight(0, 10);
-    let (lane1, w1) = make_lane_data_with_weight(1, 10);
-    let (lane2, w2) = make_lane_data_with_weight(2, 3);
-
-    let store = Arc::new(HealthState::new(vec![lane0, lane1, lane2]));
-    set_now_for_test(1000);
-
-    // Put member 1 in Open state
-    set_state(&store, 1, 1);
-    poke(&store, 1, |c| c.cooldown_until = u64::MAX);
-
-    let candidates: Vec<usize> = vec![0, 1, 2];
-    let weights: Vec<u32> = vec![w0, w1, w2];
-
-    // Run many selections, counting rather than merely observing — an empty healthy set (a
-    // regression that made every candidate look unhealthy) would let all 500 iterations take the
-    // `None` arm and assert nothing, so a non-abstaining pick is itself asserted below.
-    let mut picks = [0usize; 3];
-    for _ in 0..500 {
-        let picked = store
-            .select_weighted(&candidates, &weights, 1000)
-            .expect("two healthy members remain — selection must never abstain");
-        assert_ne!(picked, 1, "an Open member must never be selected");
-        picks[picked] += 1;
-    }
-    assert_eq!(
-        picks[0] + picks[2],
-        500,
-        "every selection landed on a healthy member"
-    );
-    assert_eq!(picks[1], 0);
-    // `make_lane_data_with_weight` assigns weight = id + 1, so lane 0 carries weight 1 and lane 2
-    // carries weight 3 (the `max_permits` argument does not affect weight). SWRR renormalises over
-    // the HEALTHY subset only: 1:3, not 1:2:3. Deterministic under the held shard lock, so this is
-    // an exact count, not a tolerance window.
-    assert_eq!(picks[0], 500 / 4);
-    assert_eq!(picks[2], 500 - picks[0]);
-}
-
-// All-down - when every member is Open, select_weighted returns None
-#[test]
-fn test_swrr_all_down_returns_none() {
-    let (lane0, w0) = make_lane_data_with_weight(0, 10);
-    let (lane1, w1) = make_lane_data_with_weight(1, 3);
-
-    let store = Arc::new(HealthState::new(vec![lane0, lane1]));
-    set_now_for_test(1000);
-
-    // Put all members in Open state
-    for i in 0..2 {
-        set_state(&store, i, 1);
-        poke(&store, i, |c| c.cooldown_until = u64::MAX);
-    }
-
-    let candidates: Vec<usize> = vec![0, 1];
-    let weights: Vec<u32> = vec![w0, w1];
-
-    // Should return None when no healthy members
-    assert!(
-        store.select_weighted(&candidates, &weights, 1000).is_none(),
-        "select_weighted should return None when all members are Open"
     );
 }
 
@@ -3419,7 +3038,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     // Fresh Closed cell (cooldown 0) → Ready.
     let cell = store.cell("p", 0);
     assert_eq!(
-        cell.fsm().verdict(now),
+        cell.verdict(now),
         BreakerVerdict::Ready,
         "a Closed, elapsed-cooldown cell is Ready"
     );
@@ -3428,7 +3047,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, now + 600);
     let cell = store.cell("p", 0);
     assert_eq!(
-        cell.fsm().verdict(now),
+        cell.verdict(now),
         BreakerVerdict::Open { until: now + 600 },
         "an unexpired Open cell reports Open with its exact until"
     );
@@ -3437,7 +3056,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, 0);
     let cell = store.cell("p", 0);
     assert_eq!(
-        cell.fsm().verdict(now),
+        cell.verdict(now),
         BreakerVerdict::ProbeWinnable,
         "an expired Open cell is ProbeWinnable"
     );
@@ -3449,7 +3068,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     );
     let cell = store.cell("p", 0);
     assert_eq!(
-        cell.fsm().verdict(now),
+        cell.verdict(now),
         BreakerVerdict::HalfOpen,
         "a HalfOpen (probe-in-flight) cell reports HalfOpen"
     );
@@ -3922,47 +3541,4 @@ fn test_recovery_hint_ms() {
     // Probe/shed carry their advisory floors.
     assert!(Unavailable::ProbeInFlight.recovery_hint_ms(now).is_some());
     assert!(Unavailable::Shedding.recovery_hint_ms(now).is_some());
-}
-
-/// THE MID-SELECTION RESET INTERLEAVING, pinned deterministically at the stripe level. A
-/// selection's add / find-max / subtract must observe the reset generation at EXACTLY ONE point —
-/// its single `slot()` resolution — because `slot()` lazily zeroes a stale-generation slot: the
-/// first cut of `select_weighted_for` re-resolved `slot()` for each of the three steps, so a
-/// recovery `reset()` landing between the add and the compensating subtract zeroed the
-/// accumulator mid-sequence and the subtract drove the stripe to `-total`, starving the
-/// just-recovered cell. Both halves are simulated here instruction-for-instruction: the
-/// single-resolution discipline keeps `Σ == 0` across a mid-sequence reset, and the old
-/// per-step re-resolution is kept as the counterexample it corrupts to `-total`.
-#[test]
-fn test_swrr_slot_resolved_once_spans_a_mid_selection_reset() {
-    let stripes = SwrrStripes::new();
-    let stripe = crate::state::worker_stripe(crate::state::worker_stripes());
-    let total = 3i64;
-
-    // The SHIPPED discipline: one resolution spans the whole sequence.
-    let slot = stripes.slot(stripe);
-    slot.fetch_add(total, Ordering::Relaxed);
-    stripes.reset(); // recovery lands mid-selection
-    let _ = slot.load(Ordering::Relaxed);
-    slot.fetch_sub(total, Ordering::Relaxed);
-    // The reset is observed by the NEXT selection's resolution, which zeroes the stripe whole.
-    let _ = stripes.slot(stripe);
-    assert_eq!(
-        stripes.sum(),
-        0,
-        "a single-resolution selection sequence spans a mid-sequence reset with Σ == 0"
-    );
-
-    // The COUNTEREXAMPLE the rule closes: per-step re-resolution lets the second `slot()` call
-    // observe the fresh generation and zero the accumulator between the add and the subtract.
-    stripes.slot(stripe).fetch_add(total, Ordering::Relaxed);
-    stripes.reset();
-    let _ = stripes.slot(stripe).load(Ordering::Relaxed); // zeroes: stale generation observed
-    stripes.slot(stripe).fetch_sub(total, Ordering::Relaxed);
-    assert_eq!(
-        stripes.sum(),
-        -total,
-        "per-step re-resolution corrupts the accumulator to -total across the same interleaving \
-         — the exact skew the single-resolution rule in select_weighted_for exists to prevent"
-    );
 }
