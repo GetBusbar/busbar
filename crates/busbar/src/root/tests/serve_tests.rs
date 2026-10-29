@@ -1174,9 +1174,12 @@ pub(super) mod session_door {
             upgrades: crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]),
         };
         let mut sections = BTreeMap::new();
+        // The browser's media listener (`streams.media.listen`, R10): the SDP door's claim door
+        // binds there, on an ephemeral loopback port.
         sections.insert(
             section_key,
-            serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
+            serde_yaml::from_str("{session: {model: m-cap}, media: {listen: '127.0.0.1:0'}}")
+                .expect("a section"),
         );
         // The deployment's `models:` beside it, as the root hands the kernel-owned sections a door
         // plane may read (`door_steps::kernel_sections`).
@@ -1205,8 +1208,12 @@ pub(super) mod session_door {
         // THE ADMIN TABLE the door is published into, lent to the App built below as the root
         // lends the boot generation its own.
         let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
+        let doors = [(
+            instance.to_string(),
+            Arc::new(plane) as crate::root::boot::DoorPlane,
+        )];
         let mut served = match compose_planes(
-            &[(instance.to_string(), Arc::new(plane))],
+            &doors,
             &dispatcher,
             &services,
             &sections,
@@ -1228,6 +1235,22 @@ pub(super) mod session_door {
         );
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
+        // THE CLAIM DOORS, bound as boot binds them (`serve::compose`, row 132): each inbound need
+        // whose settings block states a `listen`, answered by a datagram framer, on the composition's
+        // connector, which also answers the claims' carriers (boot's process connector).
+        let binds = crate::root::serve::datagram_binds(&doors, &sections).expect("the binds");
+        served.claim_doors = crate::root::serve::serve_datagram::ClaimDoors::bind(&binds, |t| {
+            connector.framer_for(t)
+        })
+        .expect("the claim door binds");
+        served.session_book = Some(Arc::clone(&connector));
+        // Each plane's ticks and ready-session fan-out, on its driver ticket, as boot spawns them: a
+        // session owing output of its own (the SDP door's call to the provider) is woken through it.
+        served.spawn_ticks();
+        served.framers = Some(crate::root::serve::StreamFramers(Arc::new({
+            let connector = Arc::clone(&connector);
+            move |carrier: &str| connector.framer_for(carrier)
+        })));
         let app = busbar_kernel::test_support::TestApp::new()
             .keys_chain()
             .serve_tables(tables.clone());
@@ -1443,33 +1466,36 @@ pub(super) mod session_door {
         assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
         assert_eq!(s.requests(), 0, "nor charged");
 
+        let before = busbar_kernel::store::now();
         let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
         assert_eq!(response.status(), StatusCode::OK, "served through the door");
         let body = body_of(response).await;
         let body: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
+        // R10 (row 132): BUSBAR mints the ticket itself (`ticket.mint`), never the provider: the
+        // caller is answered busbar's own `ek_` ticket and its real expiry, the ticket's lifetime
+        // from now, and nothing is dialled for it. The provider's own credential, and never the
+        // caller's token, rides busbar's call the SDP offer places
+        // (`a_session_door_sideband_attaches_only_to_a_placed_call`).
+        let value = body["value"].as_str().unwrap_or_default();
+        assert!(
+            value.starts_with("ek_") && value != "ek_door_0001" && !value.contains(&s.plain),
+            "busbar's own ticket, not the provider's secret nor the caller's token: {body}"
+        );
+        let expires = body["expires_at_unix"].as_u64().unwrap_or_default();
+        assert!(
+            expires > before && expires <= busbar_kernel::store::now() + 600,
+            "the ticket's real expiry, its lifetime from the mint: {body}"
+        );
         assert_eq!(
-            body,
-            serde_json::json!({"value": "ek_door_0001", "expires_at_unix": 1_767_225_600_u64}),
-            "the minted secret and its expiry"
-        );
-
-        let head = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
-            .await
-            .expect("the provider's dial is heard within the bound")
-            .expect("the provider was dialled");
-        assert!(head.starts_with(&format!("POST {MINT} ")), "{head}");
-        assert!(
-            head.lines()
-                .any(|l| l.eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}"))),
-            "the provider's own credential: {head}"
+            body.as_object().map(serde_json::Map::len),
+            Some(2),
+            "the minted secret and its expiry: {body}"
         );
         assert!(
-            !head.contains(&s.plain),
-            "the caller's token never reaches the provider: {head}"
-        );
-        assert!(
-            head.contains(r#""model":"m-cap""#),
-            "the locked session on the catalog model: {head}"
+            tokio::time::timeout(std::time::Duration::from_millis(200), s.heard.recv())
+                .await
+                .is_err(),
+            "R10: the mint dials nothing"
         );
 
         assert_eq!(
@@ -1479,7 +1505,16 @@ pub(super) mod session_door {
         );
         assert_eq!(s.money.open_units(), 0, "its money facts closed");
         assert_eq!(s.post.open_units(), 0, "its node facts closed");
-        assert_eq!(s.lines(), 1, "its one record carries its counts");
+        // R10: its ONE record is sealed, completed, naming no provider lane (it dialled nothing,
+        // so no served line on the route `m-cap` carries counts for it).
+        let records = s.audit_records();
+        assert_eq!(records.len(), 1, "its one record: {records:?}");
+        assert!(
+            records[0].outcome.unit_end.is_completed(),
+            "{:?}",
+            records[0].outcome
+        );
+        assert_eq!(s.lines(), 0, "no provider line: the mint dialled nothing");
     }
 
     /// ADMIT, at the session door (its root leg): a key whose group budget is already spent is
@@ -1649,7 +1684,10 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         let (status, heard) = s.mint_once().await;
         assert_eq!(status, StatusCode::OK, "the first mint is served");
-        assert!(heard, "and dialled");
+        assert!(
+            !heard,
+            "R10: busbar mints the ticket itself and dials nothing"
+        );
         let (status, heard) = s.mint_once().await;
         assert_ne!(status, StatusCode::OK, "the second is refused by the limit");
         assert!(!heard, "before its dial");
@@ -2250,13 +2288,32 @@ pub(super) mod session_door {
         );
     }
 
+    /// A BROWSER'S WebRTC OFFER (R10, row 132): busbar terminates the browser's media on the SDP
+    /// door's claim door, so the offer states the terms its association is settled by: a check
+    /// user and secret, a sha-256 certificate fingerprint and one loopback UDP candidate.
+    fn browser_offer() -> String {
+        let print = ["AB"; 32].join(":");
+        let terms = "a=ice-ufrag:root\r\na=ice-pwd:0123456789abcdef0123456789\r\n\
+                     a=setup:actpass\r\n";
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n\
+             a=fingerprint:sha-256 {print}\r\n\
+             m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\n{terms}\
+             a=sendrecv\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\n\
+             a=candidate:1 1 udp 2130706431 127.0.0.1 9 typ host\r\n\
+             m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n\
+             a=mid:1\r\n{terms}a=sctp-port:5000\r\n"
+        )
+    }
+
     /// The call the far end's SDP answer places, where its `Location` says it lives.
     const PLACED_CALL: &str = "rtc_root0001";
 
     /// A provider on loopback that places calls and serves its realtime socket: a `POST` (the SDP
     /// offer) is answered `201` with an SDP answer and a `Location` naming [`PLACED_CALL`]; a
     /// WebSocket upgrade is answered `101`. It reports `OFFER <head>` for each offer, `DIAL <request
-    /// line>` for each upgrade, and `TEXT <payload>` for every text frame a socket is sent.
+    /// line>` for each upgrade, and `TEXT <payload>` for every text frame a socket is sent. An
+    /// offer's report carries its body after its head.
     async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2292,7 +2349,10 @@ pub(super) mod session_door {
                         if socket.read_exact(&mut body).await.is_err() {
                             return;
                         }
-                        let _ = sent.send(format!("OFFER {head}"));
+                        let _ = sent.send(format!(
+                            "OFFER {head}\r\n{}",
+                            String::from_utf8_lossy(&body)
+                        ));
                         let reply = format!(
                             "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
                              location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
@@ -2418,7 +2478,7 @@ pub(super) mod session_door {
         drop(caller);
 
         // The caller's own offer places the call.
-        let offer = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
+        let offer = browser_offer();
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/v1/realtime/calls")
@@ -2436,11 +2496,18 @@ pub(super) mod session_door {
             .get("location")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        assert_eq!(
-            location.as_deref(),
-            Some(format!("/v1/realtime/calls/{PLACED_CALL}").as_str()),
-            "the caller is told where the call lives"
+        // R10: the caller is told BUSBAR'S call (busbar terminates the browser's media and places
+        // its own call), never the provider's.
+        let call = location
+            .as_deref()
+            .and_then(|l| l.strip_prefix("/v1/realtime/calls/"))
+            .filter(|c| c.starts_with("rtc_") && *c != PLACED_CALL)
+            .map(str::to_owned);
+        assert!(
+            call.is_some(),
+            "the caller is told where busbar's call lives: {location:?}"
         );
+        let call = call.unwrap_or_default();
         let posted = next_report(&mut s.heard)
             .await
             .expect("the offer reached the provider");
@@ -2448,9 +2515,27 @@ pub(super) mod session_door {
             posted.starts_with("OFFER POST /v1/realtime/calls "),
             "{posted}"
         );
+        // EGRESS-AUTH (moved from the mint under R10: busbar's call is the door's one dial): the
+        // provider's own credential, never the caller's token, and the locked session on the
+        // catalog model.
+        assert!(
+            posted
+                .lines()
+                .any(|l| l.eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}"))),
+            "the provider's own credential: {posted}"
+        );
+        assert!(
+            !posted.contains(&plain),
+            "the caller's token never reaches the provider: {posted}"
+        );
+        assert!(
+            posted.contains(r#""model":"m-cap""#),
+            "the locked session on the catalog model: {posted}"
+        );
 
-        // The sideband naming the placed call dials the provider's socket attached to it.
-        let attached = SIDEBAND.replace("{call_id}", PLACED_CALL);
+        // The sideband naming busbar's call dials the provider's socket attached to the provider's
+        // call it placed.
+        let attached = SIDEBAND.replace("{call_id}", &call);
         let (mut caller, head) = open_socket(addr, &attached, &plain).await;
         assert!(
             head.as_deref()

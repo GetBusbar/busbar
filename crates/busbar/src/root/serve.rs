@@ -967,6 +967,9 @@ pub struct Served {
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
     pub claim_doors: serve_datagram::ClaimDoors,
+    /// The connector whose session book a datagram session's pairing is registered in, the one its
+    /// upstream leg is dialled through (`Connector::pair`). `None` = the process's one connector's.
+    pub session_book: Option<Arc<busbar_core_connector::Connector>>,
     /// THE PUBLISHED INSTANCES' ADMIN TABLE these planes were published into: the generation's
     /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
     /// mount ([`public_routes`]).
@@ -3630,6 +3633,8 @@ impl DataRoutes {
         door: SessionDoor,
         arrival: Arrival,
     ) -> Response {
+        let book = (self.served.session_book.clone())
+            .unwrap_or_else(|| Arc::clone(crate::root::connector::the()));
         let Some(claim_door) = self.served.claim_doors.get(&carrier) else {
             return stated(
                 (refusal_status(ReasonCode::NoDestination), Vec::new()),
@@ -3657,12 +3662,13 @@ impl DataRoutes {
         let admitted = {
             let joining = Arc::clone(&joining);
             let admitted_unit = Arc::clone(&admitted_unit);
+            let book = Arc::clone(&book);
             Box::new(move |unit: u64| {
                 let j = joining
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take();
-                let joined = j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit));
+                let joined = j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit, &book));
                 if joined.is_ok() {
                     *admitted_unit
                         .lock()
@@ -3671,8 +3677,10 @@ impl DataRoutes {
                 joined
             }) as Box<dyn FnOnce(u64) -> Result<(), String> + Send>
         };
-        let ended = Box::new(|unit: u64| crate::root::connector::the().unpair(unit))
-            as Box<dyn FnOnce(u64) + Send>;
+        let ended = Box::new({
+            let book = Arc::clone(&book);
+            move |unit: u64| book.unpair(unit)
+        }) as Box<dyn FnOnce(u64) + Send>;
         let (verdict, said) = oneshot::channel();
         let attach = Attach {
             answered: CREATED,
@@ -3693,7 +3701,7 @@ impl DataRoutes {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         if let Some(unit) = unit {
-                            crate::root::connector::the().unpair(unit);
+                            book.unpair(unit);
                         }
                         stated(
                             (refusal_status(ReasonCode::PlanePanic), Vec::new()),

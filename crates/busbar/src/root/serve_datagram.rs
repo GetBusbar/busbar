@@ -497,13 +497,18 @@ impl Opened {
 
 impl Joining {
     /// The unit was admitted: the association joins the claim door, and the session's pairing is
-    /// registered under `unit` in the connector's session book before the session runs.
+    /// registered under `unit` in `book`'s session book (the connector its upstream leg is dialled
+    /// through) before the session runs.
     ///
     /// # Errors
     ///
     /// The door refused the association (its user name is another's), or the book the unit; the
     /// pairing is closed either way.
-    pub(super) fn admit(self, unit: u64) -> Result<(), String> {
+    pub(super) fn admit(
+        self,
+        unit: u64,
+        book: &busbar_core_connector::Connector,
+    ) -> Result<(), String> {
         let Joining {
             door,
             framing,
@@ -514,12 +519,10 @@ impl Joining {
             pairing.close();
             return Err(format!("the claim door refused the association: {e:?}"));
         }
-        crate::root::connector::the()
-            .pair(unit, Arc::clone(&pairing))
-            .map_err(|e| {
-                pairing.close();
-                format!("the session book refused the unit: {e:?}")
-            })
+        book.pair(unit, Arc::clone(&pairing)).map_err(|e| {
+            pairing.close();
+            format!("the session book refused the unit: {e:?}")
+        })
     }
 }
 
