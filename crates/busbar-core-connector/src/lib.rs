@@ -976,6 +976,30 @@ impl Connector {
         }
     }
 
+    /// The framer `owner`'s `need` rides, located at `target` (empty = the need's own, as an open
+    /// naming none dials it): its own head lines, and whether its head states the body's length.
+    /// A carrier carried as itself, a need nobody declared, or a target the framer refuses states
+    /// neither.
+    fn framer_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let need = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| {
+                (
+                    Arc::clone(&n.door),
+                    n.declared_target.clone().filter(|_| target.is_empty()),
+                )
+            });
+        need.and_then(|(door, declared)| self.located(&door, declared.as_deref().unwrap_or(target)))
+            .map(|located| HeadDefaults {
+                lines: located.defaults,
+                states_length: located.states_length,
+            })
+            .unwrap_or_default()
+    }
+
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
     fn located(&self, door: &Arc<dyn FramerDoor>, target: &str) -> Option<framer::Located> {
         if door.facts().role == ROLE_CARRIER {
@@ -2226,6 +2250,10 @@ impl DeclaredConns for Connector {
 
     /// A need is framed when the entry serving its transport is a FRAMER (http's kind, over the
     /// carrier the connector chose); a CARRIER entry is a raw stream.
+    fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        self.framer_head(owner, need, target)
+    }
+
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         self.over
             .lock()
@@ -2976,18 +3004,7 @@ impl PollConns for Connector {
     /// states the body's length. A carrier carried as itself, a need nobody declared, or a target
     /// the framer refuses states neither.
     fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
-        let door = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .map(|n| Arc::clone(&n.door));
-        door.and_then(|door| self.located(&door, target))
-            .map(|located| HeadDefaults {
-                lines: located.defaults,
-                states_length: located.states_length,
-            })
-            .unwrap_or_default()
+        self.framer_head(owner, need, target)
     }
 
     fn poll_read(
