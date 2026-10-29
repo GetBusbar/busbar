@@ -867,6 +867,21 @@ pub fn check_route(r: &super::route::RouteMatch) -> Result<(), Fault> {
     Ok(())
 }
 
+/// A framer's stated agreed protocol ([`super::FramerYield::agreed`]) against the offer it was
+/// made on: `0` (not stated) always holds; any other value is a 1-based position in the
+/// `offer_len` protocols the listener offered. A dialled framing is judged against an offer of `0`
+/// (it states none).
+///
+/// # Errors
+///
+/// [`Rule::IndexOutOfRange`] for a position past the offer.
+pub const fn check_agreed_position(agreed: u32, offer_len: u64) -> Result<(), Fault> {
+    if agreed as u64 > offer_len {
+        return Err(fault(Rule::IndexOutOfRange, "framer.agreed"));
+    }
+    Ok(())
+}
+
 /// The most lines one guest list may lend.
 pub const MAX_LINES: u64 = 1024;
 

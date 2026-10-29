@@ -1339,3 +1339,29 @@ fn a_begin_scheme_is_declared() {
         }
     }
 }
+
+/// /status row 192 B: a framer's stated agreed protocol is a 1-based position in the offer its
+/// listener made: `0` (not stated) always holds, every position in the offer holds, one past it is
+/// refused, and a dialled framing (an offer of none) states none.
+#[test]
+fn an_agreed_protocol_past_the_offer_is_refused() {
+    use crate::abi::transport::check::check_agreed_position;
+    assert_eq!(check_agreed_position(0, 2), Ok(()), "not stated");
+    assert_eq!(check_agreed_position(1, 2), Ok(()));
+    assert_eq!(check_agreed_position(2, 2), Ok(()));
+    assert_eq!(
+        check_agreed_position(3, 2),
+        f(Rule::IndexOutOfRange, "framer.agreed"),
+        "past the offer"
+    );
+    assert_eq!(check_agreed_position(0, 0), Ok(()), "a dial states none");
+    assert_eq!(
+        check_agreed_position(1, 0),
+        f(Rule::IndexOutOfRange, "framer.agreed"),
+        "a dial agrees nothing"
+    );
+    assert_eq!(
+        check_agreed_position(u32::MAX, 2),
+        f(Rule::IndexOutOfRange, "framer.agreed")
+    );
+}
