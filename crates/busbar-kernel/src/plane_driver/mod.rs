@@ -831,7 +831,7 @@ pub trait DriverSteps {
     fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
     /// The plane's answer for the unit, read in its `dialect`, carried a USAGE-TAP FAULT of
     /// `reason` (`abi::plane::OnPieceOut::tap_fault`): the steps count it, once per answer that
-    /// carries it (`handlers::usage_tap_fault`).
+    /// carries it (`snapshot::usage_tap_fault`).
     fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}
     /// How the unit's answer went, as the driver saw it, handed just before its audit seat: a byte
     /// of a SUCCESS answer reached the caller (`streamed`: its head stated a 2xx, or no status, and

@@ -462,7 +462,7 @@ pub async fn issue_self_key(
     let SelfMint {
         principal,
         team,
-        granted_pools: pools,
+        granted_scopes: pools,
         ttl,
     } = match admit_self_mint(
         &verdict,

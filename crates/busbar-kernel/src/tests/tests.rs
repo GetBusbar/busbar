@@ -414,7 +414,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         axum::http::StatusCode::NOT_FOUND,
         // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
         // an OpenAI-inferred 404 carries `{"error":{"type":"not_found_error"}}`, not `not_found`.
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(
@@ -436,7 +436,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert!(
@@ -3076,7 +3076,7 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
             path,
             &format!("{path}?q=1"),
             axum::http::StatusCode::METHOD_NOT_ALLOWED,
-            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         )
     };
