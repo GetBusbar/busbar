@@ -141,7 +141,7 @@ impl AdminService {
                 // `snapshot` is the same release-exposed live summary `/stats` reads (ok/err/trips/
                 // dead/inflight — genuinely lane-GLOBAL counters); `available_permits` +
                 // `lane_latency_ms` round it out. `usable`/`cooldown_remaining_seconds` are NOT lane
-                // counters, though — routing ranks a member per-POOL (`select_weighted_in`), so this
+                // counters, though — routing ranks a member per-POOL, so this
                 // endpoint reports the per-pool breaker cell via `ready_in`/`cooldown_remaining_in`,
                 // NOT `snapshot`'s any-cell/max-cell lane aggregates (which would mislabel a member
                 // as usable in a pool where its OWN cell is tripped, or vice versa).
@@ -151,7 +151,7 @@ impl AdminService {
                     weight,
                     // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
                     // which can transition an expired-Open cell to HalfOpen and CAS-steal the
-                    // single-flight recovery probe. `ready_in` is `select_weighted_in`'s own
+                    // single-flight recovery probe. `ready_in` is the pool cell's own
                     // side-effect-free predicate — exactly what this read-only endpoint must report.
                     usable: self.app.store.ready_in(name, idx, now),
                     cooldown_remaining_seconds: self
