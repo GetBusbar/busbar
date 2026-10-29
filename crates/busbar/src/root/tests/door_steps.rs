@@ -1497,16 +1497,14 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
 
 /// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
 /// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
-/// so its `loopback-allowed` mint need is declared pinned to the provider's `token_url`; its tick schedule runs
+/// so its `provider`-class mint need is declared pinned to the provider's `token_url`; its tick schedule runs
 /// without anyone driving it; the member's binding presents nothing until the first mint lands,
 /// then the minted bearer, then the refreshed one ahead of the first token's expiry (the oracle
 /// cell `egress.auth|oauth-cc|mint-refresh`: the second upstream request carries the refreshed
 /// authorization).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer() {
-    use busbar_contract::abi::host::conn::connector::{
-        DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE,
-    };
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_PROVIDER};
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
     let basic = {
@@ -1577,11 +1575,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         assert!(
             table.declared.lock().unwrap().contains(&(
                 0,
-                EGRESS_OPERATOR_INFRASTRUCTURE,
+                EGRESS_PROVIDER,
                 Some(TOKEN_URL.to_string())
             )),
-            "the plugin's operator-infrastructure need (ARCHITECT D1 2026-10-05, MINT CLASS (B)), \
-             pinned to the provider's token_url: {:?}",
+            "the plugin's provider-class need (security item 3, busbar-auth-oauth #43: a private \
+             token endpoint refused unless allowlisted), pinned to the provider's token_url: {:?}",
             table.declared.lock().unwrap()
         );
 
