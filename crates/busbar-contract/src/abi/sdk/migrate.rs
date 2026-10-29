@@ -47,6 +47,14 @@ pub enum MigrateNeed {
     /// version the configuration came from: core adds exactly this host to
     /// `advanced.allow_destinations`.
     AllowDestination(String),
+    /// The plugin dials this host and reached it on the version the configuration came from, but
+    /// cannot tell whether it is private: `migrate` reads nothing but its arguments, so it cannot
+    /// resolve a name. Core resolves it at migrate time and judges every answer with the
+    /// destination guard's own predicates (`crate::net`). It adds exactly this host to
+    /// `advanced.allow_destinations` only when every answer is private or loopback and none is
+    /// cloud metadata. Core prints a line for every decision, added or not, naming what the host
+    /// resolved to.
+    AllowDestinationIfPrivate(String),
 }
 
 /// A plugin's migrated settings section: the new section, a report line per change, and the needs
@@ -83,6 +91,13 @@ pub trait Migrate {
     /// Migrate `settings` (the section as the operator wrote it; `null` when it wrote none) from
     /// the busbar version `from` (`"1.5.5"`, or `""` when the configuration does not say). Pure: it
     /// reads nothing but its arguments and writes nothing.
+    ///
+    /// A plane is handed one object keyed by section: the sections it owns (its declaring section
+    /// first), and beside them the sections it CONSUMES, READ-ONLY. It answers its own sections
+    /// rewritten; core refuses an answer that rewrites a consumed one. A plane that consumes the
+    /// providers is handed the providers catalog merged under the deployment's entries, as boot
+    /// merges them, so it sees every provider it can route to, whether the catalog or the
+    /// configuration states it.
     fn migrate(settings: serde_json::Value, from: &str) -> Migrated;
 }
 
