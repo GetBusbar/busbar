@@ -1,0 +1,78 @@
+# A 1.5.5 deployment whose providers reach PRIVATE upstreams. 1.5.5 dialled a configured private or
+# loopback upstream with no allowlist; 1.6.0 refuses one in the provider class unless
+# `advanced.allow_destinations` names it. Hand-written (no tag shipped one): the configs in
+# `from-tags/` name only public `https://` upstreams, so none exercises this. Each provider below is
+# one case the migration must decide and report:
+#   - an address literal (127.0.0.1, 10.0.0.5), a `localhost` name,
+#   - a NAME that resolves private (`ollama.internal`: the test answers it through a resolver seam,
+#     never real DNS),
+#   - a private entry only the catalog (`providers.yaml` beside this file) states (`in-rack`),
+#   - a private `token_url` the catalog states (`corp-gateway`),
+#   - a public upstream (`openai`), and a cloud-metadata literal (`imds-proxy`), which are never added.
+listen: "0.0.0.0:8080"
+
+providers:
+  openai:
+    api_key: { env: OPENAI_KEY }
+  local-ollama:
+    protocol: openai
+    base_url: http://127.0.0.1:11434
+  lab-vllm:
+    api_key: { env: LAB_KEY }
+    base_url: http://10.0.0.5:8000
+  dev-box:
+    protocol: anthropic
+    base_url: http://localhost:8080
+  ollama:
+    protocol: openai
+    base_url: http://ollama.internal:11434
+  corp-gateway:
+    api_key: { env: CORP_KEY }
+  imds-proxy:
+    protocol: openai
+    base_url: http://169.254.169.254
+
+models:
+  gpt-4o:
+    provider: openai
+    max_concurrent: 20
+    max_requests: -1
+  llama-local:
+    provider: local-ollama
+    max_concurrent: 4
+    max_requests: -1
+  qwen-lab:
+    provider: lab-vllm
+    max_concurrent: 8
+    max_requests: -1
+  dev-claude:
+    provider: dev-box
+    max_concurrent: 2
+    max_requests: -1
+  llama-shared:
+    provider: ollama
+    max_concurrent: 4
+    max_requests: -1
+  rack-mixtral:
+    provider: in-rack
+    max_concurrent: 4
+    max_requests: -1
+  corp-model:
+    provider: corp-gateway
+    max_concurrent: 4
+    max_requests: -1
+
+pools:
+  local:
+    members:
+      - model: llama-local
+      - model: llama-shared
+  lab:
+    members:
+      - model: qwen-lab
+      - model: rack-mixtral
+  everything:
+    members:
+      - model: gpt-4o
+      - model: dev-claude
+      - model: corp-model
