@@ -142,7 +142,9 @@ fn a_plane_life_door_states_migrate_when_it_names_one() {
     use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
     use crate::abi::sdk::migrate::read_answer;
     assert!(plugin::door().migrate().is_none(), "no migrate: none");
-    let op = migrating::door().migrate().expect("the door states migrate");
+    let op = migrating::door()
+        .migrate()
+        .expect("the door states migrate");
     let settings = br#"{"old": 1}"#;
     let from = b"1.5.5";
     let mut buf = vec![0u8; 4096];
