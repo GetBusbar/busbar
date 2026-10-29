@@ -508,10 +508,7 @@ fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, (Vec<HeadL
         vec![0_u8; AMPLE],
     );
     let mut i: LocateIn = input();
-    i.target = AbiStr {
-        ptr: target.as_ptr(),
-        len: target.len(),
-    };
+    i.target = abi_bytes(target);
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
@@ -849,14 +846,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let fields: Vec<Field> = named
             .iter()
             .map(|(n, v)| Field {
-                name: AbiStr {
-                    ptr: n.as_ptr(),
-                    len: n.len(),
-                },
-                value: AbiStr {
-                    ptr: v.as_ptr(),
-                    len: v.len(),
-                },
+                name: abi_bytes(n),
+                value: abi_bytes(v),
             })
             .collect();
         sc.step("dial encode", 1, || {
