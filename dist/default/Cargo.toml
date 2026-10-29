@@ -728,6 +728,13 @@ name = "law7_direct_model_route"
 path = "tests/law7_direct_model_route.rs"
 required-features = ["auth-admin-tokens"]
 
+# Boots the real binary on a config that names an admin token and one decisions model: it needs the
+# operator credential's linked row and the decisions plane's door.
+[[test]]
+name = "decisions_served"
+path = "tests/decisions_served.rs"
+required-features = ["auth-admin-tokens", "plane-decisions"]
+
 [[test]]
 name = "law7_unloaded_plane_apply"
 path = "tests/law7_unloaded_plane_apply.rs"
