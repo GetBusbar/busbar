@@ -1079,6 +1079,33 @@ fn an_emit_states_a_body_length_only_when_it_is_known() {
     );
 }
 
+/// THE ANSWER'S STATUS ON AN EMIT (INBOUND-LISTEN, l.4913): stated on the emit that carries an
+/// accepted stream's answer head, and on no other emit. transport-http's door judges every emit by
+/// it (its dev head, cc05f7d539, the accepted side as this door's), so the check is the contract's.
+#[test]
+fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
+    let mut i: EmitIn = z();
+    assert_eq!(check_emit_status(&i, false), Ok(()));
+    i.status = 200;
+    assert_eq!(check_emit_status(&i, true), Ok(()));
+    i.status = 101;
+    assert_eq!(check_emit_status(&i, true), Ok(()));
+    // RED: a status on an emit that carries no answer head.
+    assert_eq!(
+        check_emit_status(&i, false),
+        f(Rule::Contradiction, "emit.status")
+    );
+    // RED: an accepted stream's answer head with no status.
+    i.status = 0;
+    assert_eq!(check_emit_status(&i, true), f(Rule::Missing, "emit.status"));
+    // RED: the padding is not a channel.
+    i._status_reserved = 1;
+    assert_eq!(
+        check_emit_status(&i, false),
+        f(Rule::UnknownCode, "emit._status_reserved")
+    );
+}
+
 fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
     FaultRow {
         claim,
