@@ -568,12 +568,10 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-webhook"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=5c0d2d003abdfc307cdb275abd7b502dc56a9d3d#5c0d2d003abdfc307cdb275abd7b502dc56a9d3d"
+version = "1.5.0"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=b5240b33d1da15007fac3f74a1ead87f06289fe4#b5240b33d1da15007fac3f74a1ead87f06289fe4"
 dependencies = [
- "base64 0.22.1",
  "busbar-contract",
- "percent-encoding",
  "serde",
  "serde_json",
  "tracing",
