@@ -2047,7 +2047,12 @@ impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
 /// The chain `[answers-only door, test-groups stand-in]`: the second position identifies
 /// `grp:<role>`, so a first position that PASSED would admit.
 fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> AuthMiddleware {
-    let identifier = crate::auth::stand_in::InProcessAuth::new(Box::new(TestGroupsModule));
+    let identifier = crate::auth::stand_in::InProcessAuth::new(
+        crate::test_support::auth_modules::open(
+            crate::test_support::auth_modules::TEST_GROUPS_MODULE,
+        )
+        .expect("the test groups module"),
+    );
     AuthMiddleware::from_doors_for_test(vec![
         (
             "door".to_string(),

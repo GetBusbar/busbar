@@ -16,9 +16,9 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{CheckOut, ExportStream, Route, ScrapeOut, ServeOut, StatusOut, Tail};
 use super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_NONE};
-use crate::abi::mechanism::call::{OutHead, Outcome};
+use crate::abi::mechanism::call::OutHead;
 use crate::abi::mechanism::check::{
-    blob, code, fault, lease, listed, result, text, HARD_MAX_BYTES,
+    code, failed_error, fault, leased_blob, listed, result, served, text, HARD_MAX_BYTES,
 };
 
 /// The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs.
@@ -30,10 +30,7 @@ pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_deliver(out: &OutHead) -> Result<(), Fault> {
-    if out.outcome.0 == (Outcome::Failed as u8) && out.error.len > 0 && out.error.ptr.is_null() {
-        return Err(fault(Rule::NullWithCount, "deliver.error"));
-    }
-    Ok(())
+    failed_error(out, "deliver.error")
 }
 
 /// Validates `scrape`'s `out` against the capacity [`super::ScrapeIn::cap`] gave the plugin.
@@ -57,14 +54,7 @@ pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
-    blob(&out.status, "status.status", "status.status.len")?;
-    lease(
-        out.head.outcome,
-        out.head.lease,
-        out.status.len > 0,
-        "status.lease",
-        "status.lease_without_material",
-    )
+    leased_blob!(out, "status", status)
 }
 
 /// Validates `check`'s `out`.
@@ -72,14 +62,7 @@ pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
-    blob(&out.findings, "check.findings", "check.findings.len")?;
-    lease(
-        out.head.outcome,
-        out.head.lease,
-        out.findings.len > 0,
-        "check.lease",
-        "check.lease_without_material",
-    )
+    leased_blob!(out, "check", findings)
 }
 
 /// Validates `serve`'s `out`.
@@ -87,20 +70,8 @@ pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
-    if out.headers_out_len > 0 && out.headers_out.is_null() {
-        return Err(fault(Rule::NullWithCount, "serve.headers_out"));
-    }
-    if out.headers_out_len as u64 > HARD_MAX_HEADERS_OUT_LEN {
-        return Err(fault(Rule::OverMax, "serve.headers_out_len"));
-    }
-    blob(&out.body, "serve.body", "serve.body.len")?;
-    lease(
-        out.head.outcome,
-        out.head.lease,
-        out.headers_out_len > 0 || out.body.len > 0,
-        "serve.lease",
-        "serve.lease_without_material",
-    )
+    let (h, n) = (out.headers_out, out.headers_out_len);
+    served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
 }
 
 /// The most routes one export instance may declare.
