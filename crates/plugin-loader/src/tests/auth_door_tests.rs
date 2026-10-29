@@ -1252,14 +1252,14 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
         d.clone(),
         "keyed-z",
         b"{}",
-        vec![b"kept-for-refresh".to_vec()],
+        vec![b"s3cret".to_vec()],
     )
     .expect("the keyed plugin opens over its credential");
     let kept = a.kept_secrets();
     wiped_when_dropped(kept);
     let shown = format!("{kept:?}");
     assert!(
-        !shown.contains("kept-for-refresh") && !shown.contains("107, 101, 112, 116"),
+        !shown.contains("s3cret") && !shown.contains("115, 51, 99"),
         "the kept secrets print: {shown}"
     );
     assert!(a.refresh().is_ok(), "refresh is still lent the kept secret");

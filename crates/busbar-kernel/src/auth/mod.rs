@@ -733,8 +733,10 @@ impl AdminAuthChain {
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
                     let label = format!("admin_auth.{name}");
+                    // `resolved` is wiped when it drops, at the end of this arm: once `open` has
+                    // answered, busbar's copy of the resolved secrets is gone.
                     let calls = axis
-                        .open(other, &label, &serde_json::Value::Object(resolved))
+                        .open(other, &label, resolved.as_value())
                         .map_err(refused)?;
                     // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
                     // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
@@ -853,9 +855,11 @@ impl AuthMiddleware {
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
-                    let calls = axis
-                        .open(other, &entry.name, &serde_json::Value::Object(resolved))
-                        .map_err(refused)?;
+                    let opened = axis.open(other, &entry.name, resolved.as_value());
+                    // busbar's copy of the resolved secrets is wiped the moment `open` answers,
+                    // whatever it answered (security.md:318).
+                    drop(resolved);
+                    let calls = opened.map_err(refused)?;
                     chain.push(ChainEntry {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),

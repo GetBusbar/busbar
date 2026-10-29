@@ -76,6 +76,7 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 getrandom = { workspace = true }
@@ -104,7 +105,6 @@ tungstenite = { workspace = true }
 busbar-stub-transport-plugin = { path = "stubs/transport/plugin" }
 busbar-stub-transport = { path = "stubs/transport/logic" }
 busbar-contract = { path = "../busbar-contract", features = ["test-seal", "services-double"] }
-zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
