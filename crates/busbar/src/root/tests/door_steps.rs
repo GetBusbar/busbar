@@ -7543,6 +7543,83 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A LEASED CREDENTIAL EXPIRES ON BUSBAR'S OWN CLOCK (website a2a: "a leased credential is bound
+/// to its target and expired on busbar's clock"): one resolution is presented for its
+/// `lease_ttl_ms` and no longer. With no refresh at all (the refresher stalled, erred or skipped
+/// it), the first hop past the lease is refused (the handle answers none, so the hop is refused as
+/// `credential_unavailable` and nothing is presented), hop after hop; a refresh that re-resolves
+/// the credential renews the lease from its own resolution. Driven through the hop's clock seam
+/// (`handle_at`), never a sleep.
+/// RED before the fix: the lease was only the refresher's interval, and a held credential was
+/// presented for as long as no refresh emptied it.
+#[test]
+fn an_expired_lease_is_refused_on_the_next_hop() {
+    use std::time::{Duration, Instant};
+    let path = own_secret("lease-expiry", "tok");
+    let reach = own_reach();
+    let bound = Instant::now();
+    let (_, per) = super::upstream_credential(
+        "planner",
+        &registration(&path, ""),
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let lease = Duration::from_millis(60_000);
+    let first = per.handle_at(bound).expect("a fresh lease is presented");
+    assert_eq!(
+        per.handle_at(bound + lease - Duration::from_millis(1)),
+        Some(first),
+        "inside its lease the credential is presented"
+    );
+    let resolved = Instant::now();
+    for hop in 0..8 {
+        assert_eq!(
+            per.handle_at(resolved + lease + Duration::from_millis(1 + hop)),
+            None,
+            "past its lease, with no refresh, the hop is refused, never presented"
+        );
+    }
+    let before = Instant::now();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
+    let after = Instant::now();
+    assert!(
+        per.handle_at(before + lease - Duration::from_millis(1))
+            .is_some(),
+        "a refresh that re-resolves it renews the lease"
+    );
+    assert_eq!(
+        per.handle_at(after + lease + Duration::from_millis(1)),
+        None,
+        "and the renewed lease expires on the same clock"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A FRESH LEASE IS PRESENTED (the control for the expiry above): a hop made now, inside the lease
+/// of the resolution the build just made, presents the credential.
+#[test]
+fn a_fresh_lease_is_presented() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("lease-fresh", "tok");
+    let reach = own_reach();
+    let (binding, per) = super::upstream_credential(
+        "planner",
+        &registration(&path, ""),
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let handle = per.handle_now().expect("a fresh lease is presented");
+    assert_eq!(
+        presents(&*binding.auth, handle),
+        vec![("authorization".to_string(), "Bearer tok".to_string())]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A SECRET PASTED WHERE ITS REFERENCE BELONGS IS NEVER ECHOED (secret-hygiene Check 3; coordinator
 /// ruling 2026-10-07: the refusal names the binding, member and key, never the value or a decoder
 /// error over the secret input). Each `secret:` below carries a real-looking value in a shape the
@@ -7657,8 +7734,10 @@ fn per_hop_over(
         held: arc_swap::ArcSwapOption::from_pointee(super::Held {
             digest: busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
             handle,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(60),
         }),
         refreshing: std::sync::Mutex::new(()),
+        lapsed: std::sync::atomic::AtomicBool::new(false),
     }
 }
 

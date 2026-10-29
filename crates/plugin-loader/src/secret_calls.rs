@@ -737,10 +737,8 @@ impl SecretAxis for SecretRows {
             &keys,
             true,
             |at, found| found.map_or(Ok(SecretValue::default()), |v| reference(at, v)),
-            |at, found| match found {
-                serde_json::Value::String(s) => Ok(SecretValue::new(s.into_bytes())),
-                v => reference(at, v),
-            },
+            // A wildcard match is a declared secret as an exact one is: a literal refuses (7b).
+            |at, found| reference(at, found),
         )?;
         let bytes = if lent_settings.is_null() {
             Vec::new()

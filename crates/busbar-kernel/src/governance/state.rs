@@ -63,12 +63,9 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
         // pre-rotation token is rejected by every node reading the same store.
         generation_hash: binding_marker(&id, &generation),
         name: spec.name,
-        // Intent carried intact from the mint body: None = all pools; Some([]) = none.
-        allowed_scopes: spec.allowed_pools.map(|list| {
-            list.into_iter()
-                .map(busbar_contract::records::ScopeRef::pool)
-                .collect()
-        }),
+        // Intent carried intact from the mint body: no grant field = everything; any grant field
+        // = exactly the scopes named, across every kind; every field `[]` = nothing.
+        allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
         enabled: true,
         created_at: now,
         group: spec.group,
@@ -466,21 +463,7 @@ impl GovState {
         Ok((binding, token.into(), public_id, secret_value))
     }
 
-    /// THE CALLER-REFERENCE KEY a door plane's units are lent their caller's opaque reference under
-    /// (`crate::auth::CallerRefKey`, HKDF label `busbar caller-ref v1`): derived from this node's
-    /// token-signing material, else from the DEPLOYMENT KEYSET the book binds
-    /// ([`Self::bind_deployment_caller_ref`]; row 159 H2). Either way the same principal has the same
-    /// reference on every node of the deployment and across restarts. A node with neither derives
-    /// it from its per-boot random key, so a verified principal is never lent an empty one.
-    #[must_use]
-    pub fn caller_ref_key(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
-        self.caller_refs
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    /// The live slot [`Self::caller_ref_key`] reads, shared with every plane driver.
+    /// THE CALLER-REFERENCE KEY's live slot (`crate::auth::CallerRefKey`), shared with every plane driver.
     #[must_use]
     pub fn caller_ref_slot(&self) -> crate::plane_driver::CallerRefs {
         Arc::clone(&self.caller_refs)
@@ -498,7 +481,7 @@ impl GovState {
         self.refresh_caller_refs();
     }
 
-    /// Re-derive [`Self::caller_ref_key`]: the signing material when the node has one, else the
+    /// Re-derive the caller-reference key: the signing material when the node has one, else the
     /// deployment keyset's material, else this boot's random key. Never none.
     fn refresh_caller_refs(&self) {
         let key = match self.signing_material() {
@@ -544,23 +527,6 @@ impl GovState {
             kid: format!("{prefix}{}", m.signer.kid()),
             issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
         })
-    }
-
-    /// SIGN a plane-framed card signing-input with the deployment's DOMAIN-DERIVED card subkey — the
-    /// host side of the plane `card_sign` seam. Resolves the card-signing domain from the built-in
-    /// plane declaration for the `agents` section (so this file names no specific plane's type), derives
-    /// the subkey and signs. The subkey secret is derived and used entirely here; the caller receives
-    /// only the 64 signature bytes. `None` when no signing key is configured or no plane declares a
-    /// card-signing domain.
-    // Reached only through the host `card_sign` vtable slot, which a plane declaring a card-signing
-    // domain wires; with no such plane installed this has no caller. Unconditional allow — the neutral
-    // host names no plane feature; the card-signing domain is resolved from the registry.
-    #[allow(dead_code)]
-    pub fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        let domain = crate::plane_driver::registry::plane_decl_for_config_section("agents")?
-            .card_signing_domain?;
-        let m = self.signing_material()?;
-        Some(m.signer.sign_with_subkey(domain, signing_input))
     }
 
     /// SIGN `input` with the subkey this node's signing key derives for `domain`: the key id and the
@@ -801,7 +767,7 @@ impl GovState {
         key_id: &str,
         model: &str,
         provider: &str,
-        usage: Option<&crate::billing::TokenUsage>,
+        usage: Option<&busbar_contract::billing::TokenUsage>,
         now: u64,
     ) {
         let add = MeterCounts {
@@ -1272,11 +1238,7 @@ impl GovState {
             id,
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -1334,11 +1296,7 @@ impl GovState {
             id: id.clone(),
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
             enabled: true,
             created_at: now,
             group: spec.group,

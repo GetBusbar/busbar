@@ -31,7 +31,7 @@ pub(crate) async fn protocol_dispatch(
         &app.planes,
         uri.path(),
         StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "the requested resource was not found",
     )
 }

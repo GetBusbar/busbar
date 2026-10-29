@@ -708,7 +708,8 @@ pub trait PerRequestHandle: Send + Sync {
     /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
     /// resolution, an open or a wait (it is asked on the request path). `None` when the last
     /// refresh found the credential unavailable (it no longer resolves, or its new value would not
-    /// bind): the request is refused and nothing is presented.
+    /// bind), or when its lease ran out on busbar's clock with no refresh that renewed it: the
+    /// request is refused and nothing is presented.
     fn handle_now(&self) -> Option<u64>;
 }
 

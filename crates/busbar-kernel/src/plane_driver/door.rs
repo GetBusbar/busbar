@@ -140,6 +140,13 @@ pub fn is_door(decl: &PlaneDecl) -> bool {
     decl.door.is_some()
 }
 
+/// The sections a folded door's Statement CONSUMES (`PlaneRegistration::consumes`): sections
+/// another owner declares that the plane reads. Empty for a row no door folded.
+#[must_use]
+pub fn consumed_sections(decl: &PlaneDecl) -> &'static [&'static str] {
+    row(decl).map_or(&[], |d| d.reg.consumes.as_slice())
+}
+
 /// THE PROVIDER-KEY DESCRIPTOR a door of `decls` states (`PlaneRegistration::provider_keys`, row 155
 /// B1c): the `providers:` entry keys its plane owns, per form, in their frozen order and the neutral
 /// shape vocabulary; the first door row that states one, `None` when none does. The kernel names

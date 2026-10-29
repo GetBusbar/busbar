@@ -55,8 +55,6 @@ pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
 
-// Re-export status_class_from_str for config validation
-pub use crate::breaker::status_class_from_str;
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
