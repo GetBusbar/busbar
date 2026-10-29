@@ -713,19 +713,17 @@ fn a_durable_demotion_is_replayed_at_admit() {
     );
 }
 
+/// `trust.due` answers no counterparty, however far the clock moves past the declared cadence: no
+/// background timer re-fetches an upstream nobody called (tool-and-agent-trust.md:61-62).
 #[test]
-fn trust_due_answers_the_ticks_marks_one_span_each() {
+fn trust_due_answers_no_counterparty_as_the_clock_moves() {
     let r = rig();
     let me = caller("inst");
     assert!(r.s.trust_due(&me).spans.is_empty());
-    r.s.mark_due();
+    r.clock.fetch_add(1_000_000, Ordering::SeqCst);
     let s = r.s.trust_due(&me);
-    assert_eq!(s.bytes, b"cp");
-    assert_eq!((s.spans[0].key.offset, s.spans[0].key.len), (0, 2));
-    assert_eq!(
-        s.spans[0].value.offset,
-        busbar_contract::abi::mechanism::check::SPAN_ABSENT
-    );
+    assert_eq!(s.outcome, Outcome::Ready);
+    assert!(s.spans.is_empty() && s.bytes.is_empty());
 }
 
 #[test]
