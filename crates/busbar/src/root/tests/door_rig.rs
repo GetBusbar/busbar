@@ -53,7 +53,7 @@ use crate::root::loader::sign::BreakerDecl;
 pub(crate) use super::planes_tests::{Published, PUBLISHING};
 pub(crate) use super::with_pools;
 pub(crate) use crate::root::door_steps::Rules;
-pub(crate) use crate::root::durability::{Durability, UnitCounts};
+pub(crate) use crate::root::durability::Durability;
 pub(crate) use crate::root::kernel::RootHistory;
 pub(crate) use crate::root::loader::dispatch::LinkedRow;
 pub(crate) use crate::root::loader::sign::NeedLevel;
@@ -612,7 +612,7 @@ pub(crate) fn hook_env(
 ) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::test_support::test_hook_env(
         aliases,
-        busbar_kernel::test_support::hook_needs(prompt, user),
+        busbar_kernel::test_support::HookNeeds { prompt, user },
     )
 }
 
