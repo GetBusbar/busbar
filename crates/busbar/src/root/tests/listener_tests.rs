@@ -1055,3 +1055,68 @@ async fn a_listener_states_its_scheme_on_every_request() {
     assert!(got.ends_with(&format!("scheme={SCHEME_PLAIN}")), "{got}");
     let _ = (stop_secured.send(()), stop_plain.send(()));
 }
+
+/// AN OVERSIZE BODY STILL GETS ITS 413, however slowly it is uploaded (the oracle's
+/// `http.crosscut|413|*` cells, 1.5.5's golden): busbar answers the body limit's 413 before the
+/// client has finished sending, and closes. A close with the client's unread bytes still arriving
+/// makes the kernel answer them with a reset, which can destroy the 413 before the client reads
+/// it. The listener half-closes and drains what the client is still sending, so the client always
+/// reads the whole 413.
+/// RED before the fix: the client's next write after the server closed drew a reset, and its read
+/// ended in `ECONNRESET` (on Linux the reset also discards the 413 the client had not read yet).
+#[tokio::test]
+async fn an_oversize_body_sent_slowly_still_reads_its_413() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let shutdown = async {
+            let _ = rx.await;
+        };
+        let router = Router::new()
+            .route(
+                "/echo",
+                axum::routing::post(
+                    |body: axum::body::Bytes| async move { body.len().to_string() },
+                ),
+            )
+            .layer(axum::extract::DefaultBodyLimit::max(1024));
+        super::serve_plain(listener, router, shutdown, None)
+            .await
+            .unwrap();
+    });
+
+    const CHUNK: usize = 64 * 1024;
+    const CHUNKS: usize = 64;
+    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+        CHUNK * CHUNKS
+    );
+    sock.write_all(head.as_bytes()).await.unwrap();
+    let (mut rd, mut wr) = sock.into_split();
+    // The upload goes on, slowly, well after the server has answered; a write error ends it.
+    let upload = tokio::spawn(async move {
+        let chunk = vec![b'x'; CHUNK];
+        for _ in 0..CHUNKS {
+            if wr.write_all(&chunk).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = wr.shutdown().await;
+    });
+    // Read only once the server has long answered and closed, as a slow client would.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut got = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(10), rd.read_to_end(&mut got)).await;
+    let _ = upload.await;
+    assert!(
+        matches!(read, Ok(Ok(_))) && got.starts_with(b"HTTP/1.1 413"),
+        "the client reads the 413 (read: {read:?}): {:?}",
+        String::from_utf8_lossy(&got)
+    );
+    let _ = tx.send(());
+}
