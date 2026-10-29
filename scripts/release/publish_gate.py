@@ -45,6 +45,9 @@ builders"):
   internal/        busbar-<musl target>.tar.gz (the binaries the image carries; not published)
   oci/             busbar.oci.tar (an OCI layout of the multi-platform image)
   SHA256SUMS       every file of artifacts/ and sboms/ (bare names)
+  conformance-manifest.json  the release's conformance manifest; conformance/ the ModernCI receipts
+                   and verdicts it was rendered from (candidate.py conformance-manifest; G-C,
+                   docs/design/conformance-release.md)
   IMAGES           `busbar sha256:<index digest>`
   rebuild/         (optional) the second builder's artifacts/, byte-compared (report mode)
 """
@@ -65,6 +68,9 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import conformance_gate as cg  # noqa: E402
 
 REPO = "GetBusbar/busbar"
 IMAGE_REPOS = ("docker.io/getbusbar/busbar", "ghcr.io/getbusbar/busbar")
@@ -210,6 +216,7 @@ class Inputs:
     pack: str  # the owner-built busbar-plugin-pack
     net: Net
     require_hardware_k2: bool = True  # only a test harness passes False; the CLI cannot
+    mci: object = None  # ModernCI (conformance_gate.ModernCI); tests pass a fake
 
 
 def load_trust(path: Path) -> dict:
@@ -624,6 +631,18 @@ def g14_trust(inp: Inputs, vd: Verdict) -> None:
     vd.ok("G-14")
 
 
+def gc_conformance(inp: Inputs, cj: dict, vd: Verdict) -> None:
+    """G-C: every public conformance suite passes for the release commit and the shipped pins, or a
+    K2-signed owner exception records it as it is (docs/design/conformance-release.md)."""
+    try:
+        refusals = cg.gate_c(inp.root, inp.cand, commit=cj["commit"], release=cj["version"],
+                             allowed_signers=inp.trust["k2_allowed_signers"], client=inp.mci or cg.ModernCI())
+    except cg.CannotRun as e:
+        raise CannotRun(str(e)) from None
+    vd.refusals.extend(refusals)  # gate_c printed each
+    vd.ok("G-C")
+
+
 def verify_all(inp: Inputs) -> tuple:
     vd = Verdict()
     try:
@@ -644,12 +663,13 @@ def verify_all(inp: Inputs) -> tuple:
     g11_compiled_in(inp, cj, vd)
     g2_not_published(inp, cj, vd)
     g12_test_kit(inp, cj, vd)
+    gc_conformance(inp, cj, vd)
     repro = g13_rebuild(inp, vd)
     if (inp.cand / "provenance").exists():
         vd.refuse("G-9", "provenance/", "no provenance (G-9 is not in 1.6.0's rule set)", "present",
                   "Land G-9 with ModernCI's pinned builder key before shipping provenance; an unchecked file is never published.")
     # G-0: every class ran on something.
-    for rule in ("G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-8", "G-10", "G-11", "G-12", "G-14"):
+    for rule in ("G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-8", "G-10", "G-11", "G-12", "G-14", "G-C"):
         if not vd.checked.get(rule):
             vd.refuse("G-0", rule, "at least one subject checked", "none", "A rule that checked nothing is not a pass.")
     vd.evidence = {
@@ -665,6 +685,9 @@ def verify_all(inp: Inputs) -> tuple:
         "local_spot_rebuild": "not-run",
         "k1_keys": [e.split(":")[0] for e in inp.trust["k1"].split(",")],
     }
+    if (inp.cand / "conformance-manifest.json").is_file():
+        # The K2 hook: release-evidence.json (K2-signed) pins the manifest the release publishes.
+        vd.evidence.update(cg.evidence(inp.root, inp.cand, cj["version"]))
     return vd, cj, rows
 
 
@@ -819,6 +842,11 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
                  "-s", str(f) + ".sig"], stdin=f.read_bytes())
         if p.returncode != 0:
             vd.refuse("G-7", f.name, "a K2 signature verifying against your allowed_signers", "none", "Run `sign` first.")
+    manifest = inp.cand / "conformance-manifest.json"
+    signed_ev = json.loads((out / "release-evidence.json").read_text())
+    if sha256_file(manifest) != signed_ev.get("conformance_manifest_sha256"):
+        vd.refuse("G-C", "conformance-manifest.json", f"sha256 {signed_ev.get('conformance_manifest_sha256')} "
+                  "(release-evidence.json)", sha256_file(manifest), "Run `sign` again over this candidate.")
     if (out / "SHA256SUMS").read_bytes() != (inp.cand / "SHA256SUMS").read_bytes():
         vd.refuse("G-4", "SHA256SUMS", "the signed file equals the candidate's", "different", "Run `sign` again.")
     plugin_sums = read_sums(out / "SHA256SUMS.plugins")
@@ -842,7 +870,7 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     core = read_sums(out / "SHA256SUMS")
     assets = [inp.cand / "artifacts" / n for n in core if (inp.cand / "artifacts" / n).is_file()]
     assets += [inp.cand / "sboms" / n for n in core if (inp.cand / "sboms" / n).is_file()]
-    assets += signed_files + [Path(str(f) + ".sig") for f in signed_files]
+    assets += signed_files + [Path(str(f) + ".sig") for f in signed_files] + [manifest]
     run([tool("gh"), "release", "create", tag, "-R", REPO, "--draft", "--target", cj["commit"],
          "--title", f"busbar {v}", "--notes-file", "-"], stdin=b"See CHANGELOG.md and docs/verify.md.", check=True)
     run([tool("gh"), "release", "upload", tag, "-R", REPO, *map(str, assets)], check=True)
@@ -876,6 +904,9 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
                  "-s", str(dl / (f + ".sig"))], stdin=(dl / f).read_bytes())
         if p.returncode != 0:
             vd.refuse("G-7", f"published {f}", "verifies", "does not", "Pull the release back to draft at once.")
+    if sha256_file(dl / manifest.name) != signed_ev["conformance_manifest_sha256"]:
+        vd.refuse("G-C", f"published {manifest.name}", signed_ev["conformance_manifest_sha256"],
+                  sha256_file(dl / manifest.name), "Pull the release back to draft at once.")
     for name, want in read_sums(dl / "SHA256SUMS").items():
         if (dl / name).is_file() and sha256_file(dl / name) != want:
             vd.refuse("G-4", f"published {name}", want, sha256_file(dl / name), "Pull the release back to draft at once.")
@@ -892,6 +923,7 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     # The rows rekor_watch.py compares the public log with: commit them to release/released.tsv.
     (out / "released.tsv").write_text("".join(f"{v}\t{f.name}\t{sha256_file(f)}\n" for f in signed_files))
     print(f"Commit {out / 'released.tsv'}'s rows to release/released.tsv (the Rekor watch reads it).")
+    print(f"Commit {manifest} as conformance/manifest.json on the release branch (the tree and the asset agree).")
     print("Rekor entries:")
     for k, line in rekor.items():
         print(f"  {k}: {line}")

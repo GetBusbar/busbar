@@ -39,6 +39,11 @@ python3 $G upload --candidate candidate --trust $T --pack $P --out out    # draf
 - a binary without the embedded key;
 - an image whose binary is not the built one;
 - a version already published.
+- a public conformance suite (conformance/registry.toml) without a real ModernCI `pass` for the
+  release commit, or for a plugin's shipped pin judged against it, unless a K2-signed owner
+  exception records it as `fail`/`not-run` (G-C, docs/design/conformance-release.md). The
+  candidate's `conformance-manifest.json` is pinned in `release-evidence.json` and attached to the
+  Release by `upload`.
 
 `sign` shows the full commit and the key-list diff before any key is touched. `upload` moves `latest`
 only after downloading the release back and verifying it as a user would. A plugin released between

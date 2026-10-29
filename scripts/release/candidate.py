@@ -30,6 +30,11 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       that platform's image: its musl binary (DIR/internal/), then a single-platform OCI layout
       archive (DIR/oci/busbar-<arch>.oci.tar) on the musl runtime pinned in release/rust-alpine.txt.
       Refuses a BuildKit older than 0.13 (rewrite-timestamp).
+  candidate.py conformance-manifest --out DIR
+      the release's conformance manifest (docs/design/conformance-release.md): every registered
+      suite's verdict fetched from ModernCI only, for busbar at this commit (T) and for each plugin
+      at its shipped pin, judged against T. Writes DIR/conformance/ (receipts and verdicts) and
+      DIR/conformance-manifest.json. Needs a ModernCI client with read access (`artifact`).
   candidate.py assemble --kit-tag TAG --kit-commit SHA --out OUT DIR...
       merges the slices (the owner runs it locally from the `artifact` downloads), joins the
       per-platform images into one multi-platform index (OUT/oci/busbar.oci.tar), copies the
@@ -52,6 +57,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import conformance_gate as cg  # noqa: E402
 import publish_gate as pg  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -325,6 +331,12 @@ def join_images(parts: list, dest: Path) -> str:
     return f"sha256:{digest}"
 
 
+def cmd_conformance_manifest(out: Path) -> None:
+    commit = sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip()
+    cg.build_manifest(cg.ModernCI(), ROOT, commit=commit, release=version(), out=out)
+    print(f"candidate: {out / 'conformance-manifest.json'} for {version()} at {commit}")
+
+
 def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None:
     for sub in ("artifacts", "sboms", "internal", "plugins", "oci"):
         (out / sub).mkdir(parents=True, exist_ok=True)
@@ -340,10 +352,17 @@ def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None
                 if dest.exists() and pg.sha256_file(dest) != pg.sha256_file(f):
                     sys.exit(f"candidate: two slices built different {sub}/{f.name}")
                 shutil.copy(f, dest)
+        if (s / "conformance-manifest.json").is_file():
+            if (out / "conformance-manifest.json").exists():
+                sys.exit("candidate: two slices carry a conformance manifest")
+            shutil.copy(s / "conformance-manifest.json", out / "conformance-manifest.json")
+            shutil.copytree(s / "conformance", out / "conformance")
         if (s / "plugins.json").is_file():
             for r in json.loads((s / "plugins.json").read_text()):
                 if plugins.setdefault(r["repo"], r) != r:
                     sys.exit(f"candidate: slices disagree on {r['repo']}'s tag")
+    if not (out / "conformance-manifest.json").is_file():
+        sys.exit("candidate: no slice carries conformance-manifest.json; run `candidate.py conformance-manifest`")
     v = version()
     shutil.copy(ROOT / "crates/busbar-core-admin/src/v1/json/openapi.json", out / "artifacts" / f"busbar-openapi-v{v}.json")
     files = [f for sub in ("artifacts", "sboms") for f in (out / sub).iterdir()]
@@ -382,6 +401,8 @@ def main(argv: list) -> None:
         cmd_plugins(pos[0], out)
     elif cmd == "image" and len(pos) == 1 and pos[0] in ("amd64", "arm64"):
         cmd_image(pos[0], out)
+    elif cmd == "conformance-manifest" and not pos:
+        cmd_conformance_manifest(out)
     elif cmd == "assemble" and pos and opts.get("kit-tag") and opts.get("kit-commit"):
         cmd_assemble(out, pos, opts["kit-tag"], opts["kit-commit"])
     else:
