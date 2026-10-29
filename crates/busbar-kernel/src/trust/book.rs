@@ -40,6 +40,7 @@
 //!   the last verdict and changes nothing: an upstream that stopped answering is neither drifted
 //!   nor cleared by it.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -163,11 +164,17 @@ impl Subject {
         }
     }
 
+    /// Nothing at the counterparty is approved: never pinned, revoked, or pending on a declared
+    /// fingerprint the operator never approved.
+    fn unapproved(&self) -> bool {
+        self.pinned.is_none() || self.revoked || self.pending
+    }
+
     /// The verdict a sighting of the pinned state answers, without one being made.
     fn verdict(&self) -> Sight {
         if self.quarantined {
             Sight::Quarantined
-        } else if self.pinned.is_none() || self.revoked || self.pending {
+        } else if self.unapproved() {
             Sight::New
         } else {
             Sight::Same
@@ -182,7 +189,7 @@ impl Subject {
             } else {
                 KeyState::Quarantined
             }
-        } else if self.pinned.is_none() || self.revoked || self.pending {
+        } else if self.unapproved() {
             KeyState::New
         } else if self.confirmed {
             KeyState::Same
@@ -320,6 +327,28 @@ struct Book {
     subjects: BTreeMap<String, Subject>,
 }
 
+impl Book {
+    /// `name`'s entry and state; a declared counterparty never sighted reads as declared.
+    fn subject(&self, name: &str) -> Option<(&TrustEntry, Cow<'_, Subject>)> {
+        let entry = self.entries.get(name)?;
+        let s = self
+            .subjects
+            .get(name)
+            .map_or_else(|| Cow::Owned(Subject::declared(entry)), Cow::Borrowed);
+        Some((entry, s))
+    }
+
+    /// `name`'s entry and its state to change, made from the declaration on first use.
+    fn subject_mut(&mut self, name: &str) -> Option<(&TrustEntry, &mut Subject)> {
+        let entry = self.entries.get(name)?;
+        let s = self
+            .subjects
+            .entry(name.to_string())
+            .or_insert_with(|| Subject::declared(entry));
+        Some((entry, s))
+    }
+}
+
 /// THE TRUST STATE of every admitted instance.
 #[derive(Debug, Default)]
 pub struct TrustBook {
@@ -382,15 +411,10 @@ impl TrustBook {
     ) -> Result<(Sight, Effect), Unjudged> {
         let mut map = self.lock();
         let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
-        let entry = book
-            .entries
-            .get(counterparty)
+        let (entry, s) = book
+            .subject_mut(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
         let backoff = entry.policy.recovery_backoff_ms;
-        let s = book
-            .subjects
-            .entry(counterparty.to_string())
-            .or_insert_with(|| Subject::declared(entry));
         s.ledger.last_checked_ms = Some(now_ms);
         s.due = false;
         s.last_seen = Some(hash.to_string());
@@ -452,14 +476,10 @@ impl TrustBook {
     pub fn last_verdict(&self, instance: &str, counterparty: &str) -> Result<Sight, Unjudged> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Unjudged::UnknownInstance)?;
-        let entry = book
-            .entries
-            .get(counterparty)
+        let (_, s) = book
+            .subject(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
-        Ok(book
-            .subjects
-            .get(counterparty)
-            .map_or_else(|| Subject::declared(entry).verdict(), Subject::verdict))
+        Ok(s.verdict())
     }
 
     /// The root key `instance` declares for `counterparty`: its pin's material when the pin is an
@@ -531,18 +551,10 @@ impl TrustBook {
     ) -> Result<RulingRow, Undecided> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Undecided::NoSuchKey)?;
-        let entry = book.entries.get(counterparty).ok_or(Undecided::NoSuchKey)?;
+        let (entry, s) = book.subject(counterparty).ok_or(Undecided::NoSuchKey)?;
         if decision == Ruling::Approve && entry.rootless() {
             return Err(Undecided::Rootless);
         }
-        let declared;
-        let s = match book.subjects.get(counterparty) {
-            Some(s) => s,
-            None => {
-                declared = Subject::declared(entry);
-                &declared
-            }
-        };
         // APPROVE WHAT YOU SAW: a stated fingerprint must be the key's current sighting.
         if let (Ruling::Approve, Some(expected)) = (decision, expected) {
             let current = match item {
@@ -616,14 +628,12 @@ impl TrustBook {
         if entry.pin != fact.declared {
             return Err(Undecided::Stale);
         }
-        let approves = fact.approved.is_some();
-        if approves && entry.rootless() {
+        if fact.approved.is_some() && entry.rootless() {
             return Err(Undecided::Rootless);
         }
-        let s = book
-            .subjects
-            .entry(fact.counterparty.clone())
-            .or_insert_with(|| Subject::declared(entry));
+        let (entry, s) = book
+            .subject_mut(&fact.counterparty)
+            .ok_or(Undecided::NoSuchKey)?;
         match (&fact.item, &fact.approved) {
             (None, Some(at)) => {
                 s.confirmed = s.pinned.as_ref() == Some(at) && s.confirmed;
@@ -662,16 +672,12 @@ impl TrustBook {
             return;
         };
         for row in rows.into_iter().filter(|r| r.instance == instance) {
-            let Some(entry) = book.entries.get(&row.counterparty) else {
+            let Some((entry, s)) = book.subject_mut(&row.counterparty) else {
                 continue;
             };
             if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
                 continue;
             }
-            let s = book
-                .subjects
-                .entry(row.counterparty.clone())
-                .or_insert_with(|| Subject::declared(entry));
             match (&row.item, &row.approved) {
                 (Some(item), at) => {
                     s.granted.insert(item.clone(), at.clone());
@@ -696,15 +702,11 @@ impl TrustBook {
         instances.sort_by(|a, b| a.0.cmp(b.0));
         let mut out = Vec::new();
         for (instance, book) in instances {
-            for (name, entry) in &book.entries {
-                let declared;
-                let s = match book.subjects.get(name) {
-                    Some(s) => s,
-                    None => {
-                        declared = Subject::declared(entry);
-                        &declared
-                    }
+            for name in book.entries.keys() {
+                let Some((entry, s)) = book.subject(name) else {
+                    continue;
                 };
+                let s = &*s;
                 out.push(row_of(instance, name, None, entry, s));
                 let mut items: std::collections::BTreeSet<&str> =
                     s.items.keys().map(String::as_str).collect();
@@ -735,14 +737,9 @@ impl TrustBook {
     ) -> Result<Sight, Unjudged> {
         let mut map = self.lock();
         let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
-        let entry = book
-            .entries
-            .get(counterparty)
+        let (_, s) = book
+            .subject_mut(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
-        let s = book
-            .subjects
-            .entry(counterparty.to_string())
-            .or_insert_with(|| Subject::declared(entry));
         let before = s.items.insert(item.to_string(), digest.to_string());
         Ok(if s.quarantined {
             Sight::Quarantined
@@ -767,18 +764,7 @@ impl TrustBook {
     pub fn judge(&self, instance: &str, facts: &TrustFacts<'_>) -> Result<(), Distrust> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Distrust::Unknown)?;
-        if !book.entries.contains_key(facts.counterparty) {
-            return Err(Distrust::Unknown);
-        }
-        let entry = &book.entries[facts.counterparty];
-        let declared;
-        let s = match book.subjects.get(facts.counterparty) {
-            Some(s) => s,
-            None => {
-                declared = Subject::declared(entry);
-                &declared
-            }
-        };
+        let (entry, s) = book.subject(facts.counterparty).ok_or(Distrust::Unknown)?;
         if s.quarantined {
             return Err(Distrust::Quarantined);
         }
