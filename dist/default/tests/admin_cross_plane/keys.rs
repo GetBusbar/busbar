@@ -3574,13 +3574,29 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
 }
 
 /// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
-/// own `serve` op: an unregistered name is `404 not_found` on every verb, and `connect` on a
-/// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
-/// operator's refresh has none).
+/// own `serve` op: an unregistered name is `404 not_found` on every verb. A `passthrough`
+/// registration, whose `connect` this case once answered `400`, no longer loads at all (security
+/// item 5: it would lend the caller's busbar credential upstream): the kernel refuses it in the
+/// door's own words, naming the registration.
 async fn drive_door_verb_errors() {
+    let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section("tools")
+        .expect("a test-linked plane owns `tools:`");
+    let passthrough: serde_yaml::Value = serde_yaml::from_str(
+        "base-tools:\n  url: https://pass.example/rpc\n  pin: { mechanism: pinned_pubkey, key: \"sha256/K=\" }\n  upstream_credentials: passthrough\n  tools_allow:\n    read: { schema_hash: \"sha256:aa\" }\n",
+    )
+    .expect("a section");
+    let refused = busbar_kernel::config::plane_sections::validate_plane_section(
+        "tools",
+        &passthrough,
+        owner.trust_keys,
+        owner.caller_credential_refusal,
+        &busbar_kernel::config::plane_sections::config_sections(),
+    )
+    .expect_err("a passthrough registration is refused at load");
+    assert!(refused.starts_with("`tools.base-tools`"), "{refused}");
     let _published = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
     let client = reqwest::Client::new();
@@ -3600,16 +3616,6 @@ async fn drive_door_verb_errors() {
         let body: serde_json::Value = r.json().await.unwrap();
         assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
     }
-    let r = send(reqwest::Method::POST, "/tools/base-tools/connect")
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 400);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        body.pointer("/error/code").unwrap(),
-        "invalid_request",
-        "{body}"
-    );
     handle.abort();
 }
 

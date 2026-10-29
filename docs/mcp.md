@@ -95,7 +95,7 @@ This refusal is MCP-only. There is no equivalent check for `agents:` — see [A2
 | Reserved section key | Type | Combine rule |
 |---|---|---|
 | `tools.hooks` | list of bare hook names | **ADDITIVE** — union with each server's own `hooks:`, deduped in declaration order (`tools_config.rs`) |
-| `tools.upstream_credentials` | `own` \| `passthrough` | **OVERRIDE** — an entry's own value replaces it (`tools_config.rs`) |
+| `tools.upstream_credentials` | `own` (`passthrough` is **refused**) | **OVERRIDE** — an entry's own value replaces it. `passthrough` would present each caller's own busbar credential to every server, so boot refuses it, naming every server it would apply to and every `token_exchange:` it would have overridden (`tools_config.rs`, the kernel's `caller_credential_refusal`) |
 
 Naming a server `hooks` or `upstream_credentials` is refused at parse with a message naming the reservation, and the refusal for a reserved key holding a *mapping* fires **before** the typed lifts so you read "that name is reserved" rather than "expected a sequence" (`split_section`, `crates/busbar-contract/src/section.rs`).
 
@@ -127,7 +127,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `max_input_required_rounds` | u32 | no | `3` (`tools_config.rs`) | Cap on the rounds of an UPSTREAM's asks Busbar relays to its caller, per dispatch. `0` means never. |
 | `max_caller_ask_rounds` | u32 | no | `3` (`tools_config.rs`) | Cap on rounds Busbar asks ITS OWN CALLER for. `0` is an operator kill switch for every `ask_caller` on this server. |
 | `sampling_bounds` | object | no | see below | Input-side bounds on a relayed `sampling/createMessage` ask. An ask past any bound is refused by name (`sampling_bound_exceeded`), never relayed. |
-| `upstream_credentials` | `own` \| `passthrough` | no; **refused** on `stdio` | section value, else engine default | |
+| `upstream_credentials` | `own` (`passthrough` is **refused**) | no; **refused** on `stdio` | section value, else engine default | `passthrough` would present the caller's own busbar credential to this server: refused at boot and on the admin write path, naming the server and the alternatives (`token_exchange:`, `own`) |
 | `hooks` | list of bare names | no | `[]` | Adds to `tools.hooks:`. |
 
 **`tools_allow.<tool>`** (`tools_config.rs`):
@@ -208,7 +208,7 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 | a resource template using anything above RFC 6570 level 1 (`+ # / ? & *`), an unbalanced brace, an empty `{}`, a duplicated parameter, or no parameter at all | a matcher that accepted level-3 syntax with level-1 semantics would resolve some URIs to the wrong template — content served under an approval nobody gave | `1629-1684` |
 | `resource_templates_allow.<t>.text:` substitutes none of the template's parameters | a concrete resource behind a URI wildcard | `1382-1393` |
 | `token_exchange.token_url:` not https (and not `http` + `allow_private`) | it receives Busbar's own subject token | `1401-1409` |
-| `token_exchange:` beside `upstream_credentials: passthrough` | one says Busbar mints the credential, the other says the caller supplies it | `1413-1422` |
+| `upstream_credentials: passthrough`, on a registration or as the section default, alone or beside `token_exchange:` | it would present the caller's own busbar credential upstream; a section default would also silently override a registration's exchange. Refused, never dropped | `tools_config.rs` (`validate_server`, `REFUSE_PASSTHROUGH_SECTION`); kernel `plane_sections.rs` |
 | `token_exchange:` with no `aud:` | without a resource indicator the issued token is spendable at any backend the AS serves | `1426-1432` |
 | `aud:` not an absolute http(s) URI | | `1435-1442` |
 | a `hooks:` entry that is not a bare name, or that reaches onto another section (`pools.x`, `agents.y`) | | `crates/busbar-kernel/src/config/plane_sections.rs` |
@@ -535,7 +535,7 @@ What is written: every `tools/call` terminal — the dispatched result, every re
 
 The claim is **tamper-evidence, not tamper-prevention.** A chain detects an altered, reordered, inserted or removed record after the fact; it does not stop one, and a host compromised at the moment of writing can rewrite a whole chain consistently and it will verify. Prevention means shipping the records off-box. A chain break is *reported*, never repaired by deleting the record — deleting a record whose chain does not verify would turn a detection control into a deletion primitive.
 
-**Upstream credentials are bound to the inbound caller.** The plane never holds the outbound credential: it names the scheme, and the kernel's auth binding adds the credential when it sends, under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction (`call.rs`, `tool_records.rs`). A `passthrough` registration is lent the caller's own credential. The RFC 8693 exchange asks for a scope **derived, never configured** (`tool_scope.rs`) — a configured static list would be a second place the authority is written down.
+**Upstream credentials are bound to the inbound caller.** The plane never holds the outbound credential: it names the scheme, and the kernel's auth binding adds the credential when it sends, under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction (`call.rs`, `tool_records.rs`). The caller's own busbar credential never travels upstream: `upstream_credentials: passthrough`, which would lend it, is refused at boot. The RFC 8693 exchange asks for a scope **derived, never configured** (`tool_scope.rs`) — a configured static list would be a second place the authority is written down.
 
 **An upstream's ask is relayed to the caller; Busbar answers nothing on the caller's behalf.** A server-initiated ask arrives as an `input_required` result of a call Busbar made. `grants.{sampling,elicitation,roots}` decides whether that server may put the ask to your callers at all — every kind the ask names must be granted, or the call is refused (`ask_ungranted`). A granted ask reaches the caller with the upstream's `inputRequests` exactly as sent, under Busbar's own sealed `requestState`, which nests the upstream's state and binds it to that caller, that call (tool and arguments) and the server that asked. The caller's retry is a new request with its own admission: the state is checked and spent once, the call goes back to that same server and no other, and the caller's `inputResponses` and the upstream's own state are handed to it verbatim. Busbar only declares a capability upstream that both the grant and the caller declare. A result that still carries an ask after the relay decision is refused (`ask_not_proxied`). Busbar's own `ask_caller:` rounds are resolved first, as before (`call.rs`, `ask.rs`).
 

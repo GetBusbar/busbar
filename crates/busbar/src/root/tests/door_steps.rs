@@ -3518,12 +3518,15 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "the unit ended inside itself");
     }
 
-    /// UPSTREAM CREDENTIALS FROM THE REGISTRATION (ARCHITECT round 4 Q-L3B-SURFACES (d)): a
-    /// `upstream_credentials: passthrough` registration's member is bound to the kernel's
-    /// caller-credential lending, so the server hears the caller's own verified credential as its
-    /// bearer; a registration that states none hears no credential at all.
+    /// UPSTREAM CREDENTIALS FROM THE REGISTRATION (security item 5; website `mcp.astro:497-531`,
+    /// "the caller's own Busbar credential never travels upstream, in any credential mode"): a
+    /// registration's own `upstream_credentials: passthrough` would lend the caller's verified busbar
+    /// credential to the server as its bearer, so it is REFUSED at load, in the mcp plane's words
+    /// (the door's folded `caller_credential_refusal`), naming the registration: the kernel reads
+    /// the reserved key the door never sees. A registration that states no mode is served and its
+    /// server hears no credential at all.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_passthrough_registration_presents_the_callers_credential_and_no_other() {
+    async fn a_passthrough_registration_is_refused_and_one_with_no_mode_presents_no_credential() {
         let _one = PUBLISHING.lock().await;
         let tools = |port: u16, mode: &str| -> serde_yaml::Value {
             serde_yaml::from_str(&format!(
@@ -3534,45 +3537,58 @@ pub(crate) mod tool_door {
             ))
             .expect("a section")
         };
+        let row = super::door_boundary::row();
+        let refusal = row
+            .caller_credential_refusal
+            .expect("the mcp door states the sentence refusing a forwarded caller credential");
+        let refused = busbar_kernel::config::plane_sections::validate_plane_section(
+            "tools",
+            &tools(1, "  upstream_credentials: passthrough\n"),
+            row.trust_keys,
+            row.caller_credential_refusal,
+            &busbar_kernel::config::plane_sections::config_sections(),
+        )
+        .expect_err("a registration's own passthrough is refused at load");
+        assert!(
+            refused.starts_with("`tools.fs`") && refused.contains(refusal),
+            "the refusal names the registration, in the plane's words: {refused}"
+        );
+
         let instance = "door-passthrough";
         let _published = Published(instance);
-        for (mode, lends) in [("  upstream_credentials: passthrough\n", true), ("", false)] {
-            let (port, mut heard) = tool_server().await;
-            let rig = Rig::with(
-                instance,
-                port,
-                None,
-                None,
-                Some(tools(port, mode)),
-                Footing::own(),
-                &|app| app,
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            Some(tools(port, "")),
+            Footing::own(),
+            &|app| app,
+        );
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let (mut call, mut list) = (None, None);
+        while let Ok(r) = heard.try_recv() {
+            if r.contains("\"tools/call\"") {
+                call = Some(r);
+            } else if r.contains("\"tools/list\"") {
+                list = Some(r);
+            }
+        }
+        // The relayed call, and the door's own verify-on-call fetch made inside the caller's unit.
+        for (what, heard) in [("call", call), ("verify-on-call list", list)] {
+            let heard = heard
+                .unwrap_or_else(|| panic!("the server heard the {what}"))
+                .to_ascii_lowercase();
+            assert!(
+                !heard.contains(&rig.token.to_ascii_lowercase()),
+                "{what}: the caller's busbar credential never reaches the server: {heard}"
             );
-            let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
-            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-            let (mut call, mut list) = (None, None);
-            while let Ok(r) = heard.try_recv() {
-                if r.contains("\"tools/call\"") {
-                    call = Some(r);
-                } else if r.contains("\"tools/list\"") {
-                    list = Some(r);
-                }
-            }
-            let bearer = format!("authorization: bearer {}", rig.token.to_ascii_lowercase());
-            // The relayed call, and the door's own verify-on-call fetch made inside the caller's
-            // unit (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: it carries the member's binding, so a
-            // passthrough member's is lent the unit's caller credential).
-            for (what, heard) in [("call", call), ("verify-on-call list", list)] {
-                let heard = heard
-                    .unwrap_or_else(|| panic!("{mode:?}: the server heard the {what}"))
-                    .to_ascii_lowercase();
-                assert_eq!(heard.contains(&bearer), lends, "{mode:?} {what}: {heard}");
-                if !lends {
-                    assert!(
-                        !heard.contains("authorization:"),
-                        "{what}: no credential at all: {heard}"
-                    );
-                }
-            }
+            assert!(
+                !heard.contains("authorization:"),
+                "{what}: no credential at all: {heard}"
+            );
         }
     }
 
@@ -5158,10 +5174,11 @@ pub(crate) mod door_boundary {
     /// THE OPERATOR'S `connect` CARRIES THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE;
     /// round 4 (d)): a `token_exchange:` registration's tool list is fetched with the token busbar's
     /// own subject token was exchanged for under the registration's approved set; a `passthrough`
-    /// registration's credential belongs to a caller and `connect` has none, so it fetches nothing
-    /// (the previous release's refusal, its words, `400`) and no byte reaches the server.
+    /// registration would lend the caller's busbar credential upstream, so it is refused at load
+    /// (security item 5) and there is no server to `connect` to: no byte reaches it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member() {
+    async fn connect_fetches_with_the_members_binding_and_a_passthrough_member_is_refused_at_load()
+    {
         let _one = PUBLISHING.lock().await;
         std::env::set_var(
             "BUSBAR_DOOR_CONNECT_TEST_SUBJECT",
@@ -5221,9 +5238,7 @@ pub(crate) mod door_boundary {
             );
         }
 
-        // ── PASSTHROUGH ───────────────────────────────────────────────────────────────────────────
-        let instance = "door-connect-passthrough";
-        let _published = Published(instance);
+        // ── PASSTHROUGH: REFUSED AT LOAD ─────────────────────────────────────────────────────────
         let (port, mut heard) = super::tool_door::tool_server_listing(listed()).await;
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
             "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
@@ -5231,19 +5246,16 @@ pub(crate) mod door_boundary {
              tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
         ))
         .expect("a section");
-        let slot = slot_over(row, tools.clone());
-        let rig = rig_tools(instance, port, tools, &|app| {
-            dispatched(app.admin_chain(chain.clone()), row, &slot)
-        });
-        let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
-        assert_eq!(status, 400, "{body}");
-        assert!(
-            body.to_string().contains(
-                "an operator-driven refresh has no caller and busbar will not substitute its own"
-            ),
-            "{body}"
-        );
-        assert!(heard.try_recv().is_err(), "connect fetched nothing");
+        let refused = busbar_kernel::config::plane_sections::validate_plane_section(
+            "tools",
+            &tools,
+            row.trust_keys,
+            row.caller_credential_refusal,
+            &busbar_kernel::config::plane_sections::config_sections(),
+        )
+        .expect_err("a passthrough registration is refused at load");
+        assert!(refused.starts_with("`tools.fs`"), "{refused}");
+        assert!(heard.try_recv().is_err(), "nothing reached the server");
     }
 
     /// The environment variable busbar's own subject token is named by in the apply cases below.
