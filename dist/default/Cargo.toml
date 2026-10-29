@@ -884,8 +884,10 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # (secret-hygiene check1, #1192), compiled against busbar dev's contract (oauth f62e2adc58).
 # Its grants state their token endpoint and rank (arch-audit u29 F1, busbar-auth-oauth #43):
 # `jwt-bearer` STYLE_ENDPOINT_FROM_CREDENTIAL rank 3, `oauth-client-credentials`
-# STYLE_ENDPOINT_TOKEN_URL rank 4.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "a1ab87c9f5e2ad8d07a581b14f55ea88669847e8" }
+# STYLE_ENDPOINT_TOKEN_URL rank 4. Its mint needs are in the provider class (security item 3,
+# busbar-auth-oauth #43, dev ce2dbffe28): a private token endpoint is refused unless
+# advanced.allow_destinations names it, as BUSBAR-3025 says.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "ce2dbffe2825d36abc92488b7d6f88b1df856219" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
