@@ -381,7 +381,7 @@ pub struct PlaneDeclaration {
     /// The operation classes this plane serves ONE LEVEL DOWN — to another plane's unit that states
     /// only the class it needs ([`crate::dest::DestinationFacts::NestedPlane`]) — each with the name
     /// the plane is called by where a refusal names it. The host answers a nested destination with
-    /// the plane that declares the class here ([`plane_serving`]); at most one plane declares a class
+    /// the plane that declares the class here; at most one plane declares a class
     /// ([`check_served_op_classes`]). `&[]` for a plane no other plane reaches.
     pub served_op_classes: &'static [ServedOpClass],
     /// The plane-record KINDS this plane keeps on the store's neutral plane-record seam (the
@@ -468,19 +468,6 @@ pub struct ServedOpClass {
     pub op: OpClassId,
     /// The display name the serving plane is called by in operator- and caller-visible text.
     pub name: &'static str,
-}
-
-/// THE HOST'S ANSWER to a nested destination: the registered plane that declares it serves `op`,
-/// as its key and its declared row. `None` when no registered plane declares the class — linked or
-/// dropped in, both reach the host as one declaration — and a requesting plane refuses then.
-pub fn plane_serving<'a>(
-    op: OpClassId,
-    decls: impl IntoIterator<Item = &'a PlaneDeclaration>,
-) -> Option<(&'static str, ServedOpClass)> {
-    decls.into_iter().find_map(|d| {
-        let served = d.served_op_classes.iter().find(|s| s.op == op)?;
-        Some((d.key, *served))
-    })
 }
 
 /// THE ONE-SERVER GUARD over a set of declarations' [`PlaneDeclaration::served_op_classes`]: `Ok(())`
@@ -616,7 +603,7 @@ pub const PER_SESSION: &str = "per_session";
 
 /// THE CONDITION OF A REFUSED ADMIN ANSWER: the reply head field a door's `serve` names, beside a
 /// `400`, which of the admin taxonomy's validation conditions the refusal is, so the kernel frames
-/// it condition-tagged (one value of [`ADMIN_CONDITIONS`]). Absent = untagged.
+/// it condition-tagged. Absent = untagged.
 pub const ADMIN_CONDITION_FIELD: &str = "busbar-admin-condition";
 
 /// [`ADMIN_CONDITION_FIELD`]: the request body did not parse as the verb's expected shape.
@@ -624,12 +611,6 @@ pub const ADMIN_CONDITION_MALFORMED_BODY: &str = "malformed-body";
 
 /// [`ADMIN_CONDITION_FIELD`]: the request contradicts the operator's configured state.
 pub const ADMIN_CONDITION_INVALID_CONFIG: &str = "invalid-config";
-
-/// Every value [`ADMIN_CONDITION_FIELD`] carries.
-pub const ADMIN_CONDITIONS: &[&str] = &[
-    ADMIN_CONDITION_MALFORMED_BODY,
-    ADMIN_CONDITION_INVALID_CONFIG,
-];
 
 /// THE DUP-CLAIM GUARD over a set of declarations' [`PlaneDeclaration::owned_config_sections`],
 /// judged against the sections the host still declares concretely (`reserved`, supplied by the
