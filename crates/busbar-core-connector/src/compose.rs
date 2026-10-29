@@ -247,6 +247,12 @@ pub struct Connection {
     /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
     /// (`check_agreed`) before the framer is handed it. Empty = none offered.
     alpn_offer: Vec<u8>,
+    /// THE LISTENER'S PROTOCOL OFFER ([`Accept::alpn`], the framer's accepting offer), in order:
+    /// what the framer's stated agreed position names; empty on a dial.
+    offer: Vec<Vec<u8>>,
+    /// The 1-based position in `offer` the framer last stated it agreed (`FramerYield::agreed`);
+    /// `0` = not stated.
+    agreed: u32,
     /// A STREAM'S OWN BACKPRESSURE (`busbar_contract::abi::transport`): the streams whose last
     /// emit the framer answered `YIELD_STREAM_FULL`. Nothing more is emitted on one until the
     /// framer hands a writable piece for it, or its end or failure piece.
@@ -810,6 +816,8 @@ impl Connection {
             tunnel: None,
             fallback: None,
             alpn_offer: Vec::new(),
+            offer: Vec::new(),
+            agreed: 0,
             full: std::collections::HashSet::new(),
         })
     }
@@ -870,6 +878,8 @@ impl Connection {
             tunnel: None,
             fallback: None,
             alpn_offer: Vec::new(),
+            offer: Vec::new(),
+            agreed: 0,
             full: std::collections::HashSet::new(),
             security_error: None,
             key_pin: None,
@@ -1031,6 +1041,8 @@ impl Connection {
             tunnel: None,
             fallback: None,
             alpn_offer,
+            offer: accept.alpn.clone(),
+            agreed: 0,
             full: std::collections::HashSet::new(),
         };
         if conn.tls.is_none() {
@@ -1043,6 +1055,16 @@ impl Connection {
     #[must_use]
     pub fn is_open(&self) -> bool {
         matches!(self.phase, Phase::Open) && !self.opening_owed
+    }
+
+    /// THE PROTOCOL THE CONNECTION AGREED, as its framer last stated it on an accepted connection
+    /// (`FramerYield::agreed`, a position in its accepting offer), resolved against the offer the
+    /// listener made: the protocol's bytes, opaque to the host. `None` = not stated (and on every
+    /// dial).
+    #[must_use]
+    pub fn agreed(&self) -> Option<&[u8]> {
+        let at = usize::try_from(self.agreed).ok()?.checked_sub(1)?;
+        self.offer.get(at).map(Vec::as_slice)
     }
 
     /// Whether an op is parked on the framing's ticket, waiting for its wake.
@@ -2067,6 +2089,20 @@ impl Connection {
                 }
                 None => self.queue(&y.wire, false),
             }
+        }
+        if y.agreed != 0 {
+            // A position past the listener's offer (or any on a dial) is the framer's fault.
+            busbar_contract::abi::transport::check::check_agreed_position(
+                y.agreed,
+                self.offer.len() as u64,
+            )
+            .map_err(|f| {
+                Failure::Failed(format!(
+                    "the framer's agreed protocol breaks {:?} at {}",
+                    f.rule, f.field
+                ))
+            })?;
+            self.agreed = y.agreed;
         }
         // A stream the framer says is writable again, or whose last piece arrived, is held no
         // more.
