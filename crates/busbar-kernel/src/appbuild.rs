@@ -1744,7 +1744,7 @@ pub fn build_app_from_config(
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
                 };
-                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+                (decl.build)(decl, &ctx).map(|obj| (decl.key, obj))
             })
             .collect()
     };
@@ -1870,6 +1870,11 @@ pub fn build_app_from_config(
         // The limits this generation goes live with: `AppHandle::swap` publishes them before any
         // reader of the new generation runs, and carries them onto the plane breaker store.
         limits: Some(limits_resolved.clone()),
+        // The boot generation's admin table is a new one; every generation after it carries its
+        // prior's, so the instances the root published stay served across an apply.
+        serve_tables: prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
+            p.serve_tables.clone()
+        }),
         root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
