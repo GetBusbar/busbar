@@ -58,7 +58,8 @@ pub const PEND_TIMER: &[u8] = b"pend:timer";
 pub const PEND_HOLD: &[u8] = b"pend:hold";
 /// `tick` mode: `hang:<key>` does not return until `unhang:<key>`.
 pub const HANG: &[u8] = b"hang:";
-/// `tick` mode: `unhang:<key>` releases every op hung on `<key>`.
+/// `tick` mode: `unhang:<key>` releases every op hung on `<key>`, now and for the rest of the
+/// process (tests share it), so each test hangs on a key of its own.
 pub const UNHANG: &[u8] = b"unhang:";
 /// `tick` mode: `pend:hold:<d>` is held like [`PEND_HOLD`]; its `cancel` answers disposition `<d>`
 /// (`f` = `cancel` answers FAULT).
@@ -201,6 +202,7 @@ static DOOR: Shared<Door> = Shared(unsafe {
         statement: &STATEMENT.0 as *const Statement,
         ops: &OPS.0 as *const OpsHead,
         ready: None,
+        layout: KIND.layout_fingerprint(),
     })
 });
 

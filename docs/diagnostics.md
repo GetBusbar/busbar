@@ -451,15 +451,26 @@ RETIRED. Nothing emits this code: an unreadable overlay reports as BUSBAR-3005 a
 **What to do:** Nothing emits this code. See BUSBAR-3005 and BUSBAR-3017.
 
 <a id="config-metadata-entry-names-no-host"></a>
-### BUSBAR-3024 — A metadata host-list entry names no host (it matches nothing and is dropped)
+### BUSBAR-3024 — A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `config-metadata-entry-names-no-host`
 
-An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` names no host a URL client would dial: UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or its last label reads as a number but it is no IPv4 address (`1.2.3.4.5`, `999.1.1.1`). It could never match a destination, so it is dropped from matching and the configuration boots, as it did on 1.5.5. The built-in cloud-metadata denylist still blocks every real target. Emitted once per entry at config load, naming the key and the entry.
+RETIRED. Nothing emits this code: a metadata host-list entry that names no host is refused at startup by config validation, naming the key and the entry.
 
-**What to do:** Fix the named entry as the line says (write the host in ASCII or punycode, decoded, or as a dotted-quad address), or remove it. Nothing else changes until you do.
+**What to do:** Nothing emits this code. Fix the entry config validation names.
+
+<a id="config-provider-destination-refused"></a>
+### BUSBAR-3025 — A provider URL names a private or loopback host the destination guard refuses
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-provider-destination-refused`
+
+A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.
+
+**What to do:** Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
 
 ## 4xxx — Auth & identity
 

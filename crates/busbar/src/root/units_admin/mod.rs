@@ -1062,6 +1062,8 @@ pub struct CoreGovernance {
     records: Option<PlaneRecordSink>,
     /// The node's `Idempotency-Key` replay cache for the two Q71(2) writes (contract D-3).
     replays: Arc<bound::ReplayCache>,
+    /// Where a key is claimed so a retry after a restart or on another node runs nothing twice.
+    replay_store: Option<bound::ReplayStore>,
     /// The kernel's trust book, for the three trust verbs. No keys until a root binds it.
     trust: TrustDesk,
 }
@@ -1091,6 +1093,7 @@ impl CoreGovernance {
             planes: no_planes(),
             records: None,
             replays: Arc::new(bound::ReplayCache::new()),
+            replay_store: None,
             trust: no_trust(),
         }
     }
@@ -1102,10 +1105,16 @@ impl CoreGovernance {
         self
     }
 
-    /// Bind the node's `Idempotency-Key` replay cache (contract D-3).
+    /// Bind the node's `Idempotency-Key` replay cache (contract D-3) and the store its keys are
+    /// claimed in.
     #[must_use]
-    pub fn replaying(mut self, replays: Arc<bound::ReplayCache>) -> Self {
+    pub fn replaying(
+        mut self,
+        replays: Arc<bound::ReplayCache>,
+        store: Option<bound::ReplayStore>,
+    ) -> Self {
         self.replays = replays;
+        self.replay_store = store;
         self
     }
 
@@ -1229,6 +1238,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
             KernelVerb::PlaneRecordWrite => {
                 return bound::replayable(
                     &self.replays,
+                    self.replay_store.as_ref(),
                     verb,
                     &self.attribution.principal,
                     &self.request,
@@ -1246,6 +1256,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
             KernelVerb::CommitUpgrade => {
                 return bound::replayable(
                     &self.replays,
+                    self.replay_store.as_ref(),
                     verb,
                     &self.attribution.principal,
                     &self.request,
@@ -2710,10 +2721,11 @@ pub struct AdminBinding {
     /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
     /// applied without its durable record (item 30).
     pub amendments: Option<Arc<AmendmentJournal>>,
-    /// Where an idempotency claim the admin plane's replay cache takes is made durable (item 271).
-    /// `None` until a root binds one — a node with no data dir behaves exactly as it did before
-    /// this seam existed.
-    pub claims: Option<Arc<RootClaimJournal>>,
+    /// The configured store an `Idempotency-Key` is claimed in, so a retry after a restart or on
+    /// another node never runs a write twice (`busbar_core_admin::idempotency::durable`). `None`
+    /// until a root binds one: a composition with no store has nowhere to keep a claim, and its keys
+    /// answer for its own process only.
+    pub replay_store: Option<bound::ReplayStore>,
     /// Which pool names an `adjust` may name (Q64/Q67): the node's CONFIGURED pools, read live.
     /// Knows none until a root binds them, so a node composed without a configuration refuses every
     /// correction's pool rather than accepting one it cannot check.
@@ -2728,9 +2740,8 @@ pub struct AdminBinding {
     /// No keys until a root binds the kernel's composed services.
     pub trust: TrustDesk,
     /// THE NODE'S `Idempotency-Key` REPLAY CACHE for `plane_record_write` and `commit_upgrade`
-    /// (contract D-3). Node-level, because a unit's governance value lives for one request; built on
-    /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
-    /// key mint and rotate caches do (item 271).
+    /// (contract D-3). Node-level, because a unit's governance value lives for one request; what
+    /// outlives the process is the claim in [`AdminBinding::replay_store`].
     pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
     /// THE NODE'S MUTATION LIMITER for the verbs unit: built once, here, with the binding, and
     /// handed to every `Verbs` the route step builds. A `Verbs` lives for one request, so the
@@ -2762,7 +2773,7 @@ impl AdminBinding {
             ledger: Arc::new(UnopenedLedger),
             audit: None,
             amendments: None,
-            claims: None,
+            replay_store: None,
             pools: no_pools(),
             planes: no_planes(),
             records: None,
@@ -3038,38 +3049,38 @@ pub(crate) fn route(
     // `docs/design/BUSBAR-1.6.0.md` l.2279), authorized by the grant Approve checked.
     let actor = actor_of(walk);
 
-    let verbs =
-        busbar_core_admin::Verbs::new(
-            CoreGovernance::new(
-                Arc::clone(&binding.dispatch),
-                Arc::clone(&binding.ledger),
-                binding.audit.clone(),
-                verb,
-                request.clone(),
-            )
-            .amending(
-                binding.amendments.clone(),
-                AmendAttribution {
-                    principal: actor.clone(),
-                },
-            )
-            .granted(granted)
-            .pooled(Arc::clone(&binding.pools))
-            .planed(Arc::clone(&binding.planes), binding.records.clone())
-            .trusting(Arc::clone(&binding.trust))
-            .replaying(Arc::clone(binding.replays.get_or_init(|| {
-                Arc::new(match &binding.claims {
-                    Some(journal) => bound::ReplayCache::with_journal(Arc::clone(journal)
-                        as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
-                    None => bound::ReplayCache::new(),
-                })
-            }))),
-            store,
-            CONFIG_CLASS_RULES,
-            Arc::clone(&binding.mutations),
-        );
+    let verbs = busbar_core_admin::Verbs::new(
+        CoreGovernance::new(
+            Arc::clone(&binding.dispatch),
+            Arc::clone(&binding.ledger),
+            binding.audit.clone(),
+            verb,
+            request.clone(),
+        )
+        .amending(
+            binding.amendments.clone(),
+            AmendAttribution {
+                principal: actor.clone(),
+            },
+        )
+        .granted(granted)
+        .pooled(Arc::clone(&binding.pools))
+        .planed(Arc::clone(&binding.planes), binding.records.clone())
+        .trusting(Arc::clone(&binding.trust))
+        .replaying(
+            Arc::clone(
+                binding
+                    .replays
+                    .get_or_init(|| Arc::new(bound::ReplayCache::new())),
+            ),
+            binding.replay_store.clone(),
+        ),
+        store,
+        CONFIG_CLASS_RULES,
+        Arc::clone(&binding.mutations),
+    );
 
-    // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are admitted
+    // THE TWO DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are admitted
     // exactly as every other new verb is — scope, then rate class — but their effect lands on
     // `Store` rather than on a handler. Sending them through `execute` sent them to
     // `execute_new_verb`, which asks the mounted router for a path that release never had: the gates
@@ -3085,9 +3096,6 @@ pub(crate) fn route(
                 let backup_ref = backup_ref_of(&request.body).ok_or(ReasonCode::DecodeFailed)?;
                 verbs.store_restore(admin, &actor, granted, request.at, &backup_ref)
             }
-            RecoveryVerb::ResealEpochFloor => {
-                verbs.reseal_epoch_floor(admin, &actor, granted, request.at)
-            }
         };
         ran.map(|()| applied_answer())
     } else {
@@ -3097,16 +3105,15 @@ pub(crate) fn route(
     Ok(())
 }
 
-/// The three verbs whose effect lands on the store rather than on a handler.
+/// The two verbs whose effect lands on the store rather than on a handler.
 ///
-/// Named as a closed enumeration of its own rather than matched inline, so "these three and no
+/// Named as a closed enumeration of its own rather than matched inline, so "these two and no
 /// others" is a fact with a test on it. The verbs unit draws the same line from the other side: it
 /// gives each of them a method, and gives `execute` no arm that could reach one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryVerb {
     ChainBreak,
     StoreRestore,
-    ResealEpochFloor,
 }
 
 /// Which recovery verb this is, or `None` for a verb whose effect is the governance seam's.
@@ -3114,15 +3121,14 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
     match verb {
         KernelVerb::ChainBreak => Some(RecoveryVerb::ChainBreak),
         KernelVerb::StoreRestore => Some(RecoveryVerb::StoreRestore),
-        KernelVerb::ResealEpochFloor => Some(RecoveryVerb::ResealEpochFloor),
         _ => None,
     }
 }
 
 /// What an operation that changed something and has nothing to say answers with.
 ///
-/// A recovery verb's whole result is its effect: the chain broke, or the floor resealed (a restore
-/// is refused, never answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
+/// A recovery verb's whole result is its effect: the chain broke (a restore is refused, never
+/// answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
 /// body and declares no content type — inventing a document here would put a schema on the wire that
 /// nothing describes and that a client would then be entitled to depend on.
 fn applied_answer() -> AdminAnswer {
@@ -3341,16 +3347,14 @@ fn finish_of(outcome: &Outcome) -> busbar_contract::FinishClass {
 mod admin_mount;
 pub(crate) use admin_mount::*;
 
-// ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
+// ── `adjust` and the bound verbs: sibling modules, re-exported here ─────────────────────────────
 mod adjust;
 pub use adjust::RecordedCounts;
 pub(crate) mod bound;
 pub use bound::{
-    live_admin_door, live_planes, live_records, no_planes, no_trust, PlaneLookup, PlaneRecordSink,
-    TrustDesk,
+    live_admin_door, live_planes, live_records, live_replay_store, no_planes, no_trust,
+    PlaneLookup, PlaneRecordSink, TrustDesk,
 };
-mod claims;
-pub use claims::RootClaimJournal;
 
 #[cfg(test)]
 #[path = "tests/units_admin.rs"]

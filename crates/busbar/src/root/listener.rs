@@ -645,13 +645,20 @@ where
 struct BodyTimeoutService {
     inner: TowerToHyperService<Router>,
     timeout: Duration,
+    /// The listener's scheme, stated on every request it serves.
+    scheme: busbar_kernel::plane_routes::ListenerScheme,
 }
 
 impl BodyTimeoutService {
-    fn new(router: Router, timeout: Duration) -> Self {
+    fn new(
+        router: Router,
+        timeout: Duration,
+        scheme: busbar_kernel::plane_routes::ListenerScheme,
+    ) -> Self {
         Self {
             inner: TowerToHyperService::new(router),
             timeout,
+            scheme,
         }
     }
 }
@@ -669,7 +676,8 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
 
     fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
         let timeout = self.timeout;
-        let req = req.map(|body| TimeoutBody::new(body, timeout));
+        let mut req = req.map(|body| TimeoutBody::new(body, timeout));
+        req.extensions_mut().insert(self.scheme);
         self.inner.call(req)
     }
 }
@@ -721,6 +729,16 @@ struct Served {
     security: Option<Arc<dyn ConnectionSecurity>>,
     /// The scheme a log line names.
     scheme: &'static str,
+}
+
+/// The scheme a listener states on every request it serves: secure where the connector
+/// terminates connection security on it, plain where it serves the stream as it arrived.
+fn listener_scheme(secured: bool) -> busbar_kernel::plane_routes::ListenerScheme {
+    busbar_kernel::plane_routes::ListenerScheme(if secured {
+        busbar_contract::abi::host::service::SCHEME_SECURE
+    } else {
+        busbar_contract::abi::host::service::SCHEME_PLAIN
+    })
 }
 
 impl Served {
@@ -792,7 +810,11 @@ impl Served {
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let service = BodyTimeoutService::new(self.router, body_read_timeout());
+        let service = BodyTimeoutService::new(
+            self.router,
+            body_read_timeout(),
+            listener_scheme(self.security.is_some()),
+        );
         let conn = self
             .builder
             .serve_connection_with_upgrades(TokioIo::new(io), service);
