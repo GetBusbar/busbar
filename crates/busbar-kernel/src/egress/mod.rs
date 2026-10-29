@@ -7,7 +7,7 @@
 //! transport"; status row 130): every outbound connection is the connector's
 //! (`busbar-core-connector`), which alone holds TLS, the per-worker pools, ALPN, the CONNECT proxy
 //! and busbar's mTLS identity (THE DESIGN §8). What stays here is the protocol-blind return
-//! vocabulary of one buffered/streamed hop (`Response`, `StreamHead`, `ChunkFlow`). A destinations
+//! vocabulary of one buffered/streamed hop (`Response`, `StreamHead`). A destinations
 //! commit reaches the connector's one guard through the root's rules
 //! (`appbuild::RootRules::destinations_applied`).
 
@@ -70,15 +70,4 @@ pub struct StreamHead {
     /// The body, for a reply the backend did NOT stream. Empty on a real stream: those bytes were
     /// handed to the chunk sink instead.
     pub body: Vec<u8>,
-}
-
-/// What a chunk sink says about continuing. A sink whose consumer has gone away asks the hop to
-/// STOP rather than being written to forever: a caller that disconnected mid-stream must not leave
-/// busbar holding a thread against an upstream that is happy to keep talking. Gated to the `relay`
-/// feature, its consumer (see [`Response`]).
-#[cfg(feature = "relay")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChunkFlow {
-    Continue,
-    Stop,
 }

@@ -61,6 +61,7 @@ pub(crate) async fn exchange(
             req.uri().path(),
             req.headers(),
             candidate.as_deref(),
+            &mut None,
         )
         .await
     } else {

@@ -166,18 +166,18 @@ pub use http;
 pub type Millis = u64;
 
 pub use bounded::{
-    BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit, IrPatch, Labels, Overflow,
-    PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS,
-    MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
+    BoundedVec, FactValue, Facts, FactsExhausted, Ir, Labels, Overflow, PlaneAlloc,
+    PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
+    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
     MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES, SCRATCH_BASE_BYTES,
 };
 pub use count::{
-    read_count, read_count_bytes, stored_scale_default, Count, CountError, COUNT_SCALE,
-    MAX_ACROSS_A_64_BIT_COLUMN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
+    read_count, read_count_bytes, Count, CountError, COUNT_SCALE, MAX_ACROSS_A_64_BIT_COLUMN,
+    MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
-    AuthDecoration, ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan,
-    SecretOnce, SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
+    ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan, SecretOnce,
+    SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
 };
 
 pub use grammar::{
@@ -185,14 +185,14 @@ pub use grammar::{
     SelectorFamily, SelectorForm, SignedOver,
 };
 pub use ids::{
-    AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
-    ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
-    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId,
-    StreamId, TransportId, UnitKey, UpstreamIdx,
+    AdminVerbId, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection, ClassEstimate,
+    CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
+    PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey,
+    UpstreamIdx,
 };
 pub use kinds::{
-    Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, EnvelopeFields, Head,
-    PlaneFacts, RecordBytes, SecretRef, StoreError,
+    Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, RecordBytes,
+    SecretRef, StoreError,
 };
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,

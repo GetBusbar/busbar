@@ -301,13 +301,7 @@ fn the_requirement_travels_with_every_seal() {
     assert!(c.secure_required());
     let c = c.secure_for("http://x");
     assert!(c.secure_required(), "never relaxed");
-    for s in [
-        c.field(),
-        c.bearer(),
-        c.basic("u"),
-        c.hmac_sha256_hex(b"d"),
-        c.resp_auth(None),
-    ] {
+    for s in [c.field(), c.bearer(), c.basic("u"), c.resp_auth(None)] {
         assert!(s.secure_required());
     }
     assert!(!Parts::new().public(b"a").sealed(c.field()).is_empty());
