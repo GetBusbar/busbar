@@ -7734,8 +7734,10 @@ fn per_hop_over(
         held: arc_swap::ArcSwapOption::from_pointee(super::Held {
             digest: busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
             handle,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(60),
         }),
         refreshing: std::sync::Mutex::new(()),
+        lapsed: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
