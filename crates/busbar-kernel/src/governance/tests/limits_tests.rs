@@ -1241,11 +1241,11 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -1266,6 +1266,7 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// A `tokens:` cap counts EVERY class a plane declares in the token family, not only the reserved

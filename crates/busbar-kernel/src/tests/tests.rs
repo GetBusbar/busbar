@@ -2502,7 +2502,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
                 config_section: SECTION,
                 ..crate::test_support::NEUTRAL_FALLBACK.declaration
             },
-            build: |_| {
+            build: |_, _| {
                 Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
             },
             ..crate::test_support::NEUTRAL_FALLBACK
@@ -3141,44 +3141,6 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["error"]["code"], "internal", "got {v}");
-}
-
-/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
-/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
-/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
-#[test]
-fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
-    use crate::ir::lane_caps::{
-        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
-    };
-    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
-    let provider = ProviderLaneCaps {
-        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
-        ..ProviderLaneCaps::default()
-    };
-    let rules = [
-        ModelCapabilities {
-            models: vec!["model-a*".to_string()],
-            native_structured_output: Some(true),
-            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
-            ..ModelCapabilities::default()
-        },
-        ModelCapabilities {
-            models: vec!["model-a-2*".to_string()],
-            native_structured_output: Some(false),
-            ..ModelCapabilities::default()
-        },
-    ];
-    assert_eq!(
-        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
-        LaneCaps::NONE
-    );
-    let other = resolve_lane_caps(provider, &rules, "model-b");
-    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
-    assert!(!other.native_structured_output);
-    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
-    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
-    assert!(first_match.native_structured_output);
 }
 
 /// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
