@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON,
+};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
@@ -121,6 +123,16 @@ pub(crate) fn validate_frame(settings: Blob) -> Frame<ValidateIn, OutHead> {
 /// `validate` `settings` on `plugin` (ticket-less; it never pends).
 pub(crate) fn validate_call<K: Kind>(plugin: &Plugin<K>, settings: Blob) -> Called {
     plugin.call(life::VALIDATE, &mut validate_frame(settings))
+}
+
+/// `validate` JSON `settings` on `plugin` (ticket-less; it never pends): `Ok` when READY, else the
+/// plugin's words (the outcome's name when it wrote none).
+pub(crate) fn validate_json<K: Kind>(plugin: &Plugin<K>, settings: &[u8]) -> Result<(), String> {
+    let c = validate_call(plugin, blob(settings, BLOB_JSON, 0));
+    match c.outcome {
+        Outcome::Ready => Ok(()),
+        o => Err(text(c.error).unwrap_or_else(|| format!("{o:?}"))),
+    }
 }
 
 /// Hand a lease back (ticket-less; a release never pends). `0` is none.
