@@ -5143,6 +5143,57 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     );
 }
 
+/// A FAILOVER LANE PRESENTS ITS OWN CREDENTIAL (security use case: every lane is reached with its
+/// own key): the primary member, configured with its own key, answers 500, the walk fails over to
+/// the second member, configured with a different key, and the caller is served. Each far end saw
+/// exactly its own member's key; the failover hop never carries the primary's, nor the caller's.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
+    const PRIMARY_KEY: &str = "sk-primary-6c2f81";
+    const FAILOVER_KEY: &str = "sk-failover-0d94e3";
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failover-credential";
+    let _published = Withdrawn(instance);
+    let primary = seat_far_end(
+        500,
+        r#"{"error":{"message":"upstream down","type":"server_error"}}"#,
+    )
+    .await;
+    let failover = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(primary.port, 100), (failover.port, 1)],
+            member_keys: &[PRIMARY_KEY, FAILOVER_KEY],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        (primary.served(), failover.served()),
+        (1, 1),
+        "the primary failed and the walk failed over"
+    );
+    assert_eq!(
+        primary.authorizations.lock().unwrap().clone(),
+        vec![format!("Bearer {PRIMARY_KEY}")],
+        "the primary is reached with its own key"
+    );
+    let seen = failover.authorizations.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![format!("Bearer {FAILOVER_KEY}")],
+        "the failover lane presents its own key"
+    );
+    assert!(
+        !seen[0].contains(PRIMARY_KEY) && !seen[0].contains(&rig.token),
+        "never the primary's key, never the caller's token"
+    );
+}
+
 /// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
