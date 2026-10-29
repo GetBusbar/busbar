@@ -62,6 +62,12 @@ impl HostServices for Judges {
     fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
     }
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
+        Stored::refused(busbar_contract::services::UNSERVED)
+    }
+    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
+        Stored::refused(busbar_contract::services::UNSERVED)
+    }
     fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
     }

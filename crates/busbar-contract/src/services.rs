@@ -173,19 +173,13 @@ pub trait HostServices: Send + Sync {
         unit: Option<u64>,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Stored {
-        let _ = (caller, unit, ttl_secs, record);
-        Stored::refused(UNSERVED)
-    }
+    ) -> Stored;
 
     /// `ticket.take`: the record of the ticket that admitted `unit`, once: READY `TICKET_TAKEN`
     /// with the record as the bytes, or `TICKET_NONE` with nothing when a key admitted it. `None`
     /// (a crossing that serves no unit) and a second take for one unit are REFUSED. Never pends. A
     /// host that mints no tickets refuses every one.
-    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
-        let _ = (caller, unit);
-        Stored::refused(UNSERVED)
-    }
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored;
 
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.

@@ -2962,6 +2962,22 @@ pub(crate) mod tool_door {
         ) -> busbar_contract::services::Stored {
             self.inner.session_emit(caller, session, bytes)
         }
+        fn ticket_mint(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ttl_secs: u64,
+            record: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.ticket_mint(caller, unit, ttl_secs, record)
+        }
+        fn ticket_take(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+        ) -> busbar_contract::services::Stored {
+            self.inner.ticket_take(caller, unit)
+        }
         fn random_fill(&self, len: u64) -> busbar_contract::services::Stored {
             self.inner.random_fill(len)
         }

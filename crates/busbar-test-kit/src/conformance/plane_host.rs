@@ -712,6 +712,12 @@ impl HostServices for Host {
     fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
         Stored::refused(UNSERVED)
     }
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
+        Stored::refused(UNSERVED)
+    }
     fn records_secret(&self, _: &str, _: &str, _: Pended) -> Ran {
         Ran::Now(Stored::refused(UNSERVED))
     }
