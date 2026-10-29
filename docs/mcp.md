@@ -115,7 +115,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `env` | map of name → string \| secret ref | no; **refused** on non-stdio | `{}` | The child's WHOLE environment. |
 | `cwd` | string | no; **refused** on non-stdio | Busbar's own | Absolute. |
 | `verify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`tools_config.rs`) | The longest an observation of this upstream's tool list may be reused on the `tools/call` path before it is re-fetched and re-verified. `0` = strict-live (re-verify every call); a larger value is an explicit security downgrade. Renamed from `refresh_ttl` in 1.6.0 — see [Tool and agent trust](/docs/tool-and-agent-trust/). |
-| `timeout` | `<n><s\|m\|h\|d>` | no | `30s` (`tools_config.rs`) | Wall-clock budget for one outbound leg (the tool call; separately, the RFC 8693 exchange). `0` is refused. |
+| `timeout` | `<n><s\|m\|h\|d>` | no | `30s` (the core's default for every registration, `DEFAULT_ENTRY_TIMEOUT_MS` in `crates/busbar-contract/src/section.rs`) | Wall-clock budget for one outbound leg (the tool call; separately, the tool-list fetch and the RFC 8693 exchange). `0` is refused. |
 | `tools_allow` | map of tool name → object | no | `{}` | The approved tools. A map, not a list, because every tool needs a slot for its approved schema hash. |
 | `prompts_allow` | map of prompt name → object | no | `{}` | |
 | `resources_allow` | map of URI → object | no | `{}` | |
@@ -480,7 +480,7 @@ A tripped server answers:
 
 **A tripped server that is a member of a `tools.pools` failover pool is not what produces the `503` above.** The walk runs before any refusal is composed and tries the next member whose approved digest matches the primary's (`tool_door.rs`); the caller gets that member's answer. The `503` is what remains when the walk found no member its breaker admits, with the `Retry-After` the kernel's walk reports (`tool_door.rs`). An unpooled registration has no twin to select, so for it the `503` is the whole story.
 
-**Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses (`tools_config.rs`).
+**Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses. A registration that writes no `timeout:` is held to the 30 s default by the kernel's walk itself, the same bound a written one sets (`crates/busbar/src/root/door_steps.rs`, `DoorPools`); a call it cuts is answered with the `503`/`-32030` above, in words that say the call was dispatched and the server's timeout ran out.
 
 ### Other refusals on this plane
 
