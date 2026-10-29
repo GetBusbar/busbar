@@ -185,6 +185,31 @@ impl Table {
         free.live -= 1;
         slot.swap(None)
     }
+
+    /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
+    /// from here on.
+    fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut gone = Vec::new();
+        for slot in self
+            .segments
+            .iter()
+            .filter_map(OnceLock::get)
+            .flat_map(|s| s.iter())
+        {
+            if !slot.load_full().is_some_and(|e| e.owner == owner) {
+                continue;
+            }
+            if let Some(e) = slot.swap(None) {
+                if let Some(next) = e.id.checked_add(GENERATION) {
+                    free.released.push(next);
+                }
+                free.live -= 1;
+                gone.push(e);
+            }
+        }
+        gone
+    }
 }
 
 /// THE HOST'S I/O (module docs).
@@ -428,6 +453,17 @@ impl HostListener {
     }
 }
 
+/// A released handle's end: a program is its handle's own, and ends with it.
+fn ended(e: &Entry) {
+    if let Kind::Program(p) = &e.kind {
+        let _ = p
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .start_kill();
+    }
+}
+
 fn shutdown(how: u32) -> Shutdown {
     match how {
         DIR_READ => Shutdown::Read,
@@ -635,15 +671,12 @@ impl IoHost for HostIo {
 
     fn close(&self, owner: u64, id: u64) -> IoResult<()> {
         let e = self.release(owner, id)?;
-        // A program is its handle's own: it ends with it.
-        if let Kind::Program(p) = &e.kind {
-            let _ = p
-                .child
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .start_kill();
-        }
+        ended(&e);
         Ok(())
+    }
+
+    fn reap(&self, owner: u64) {
+        self.handles.reap(owner).iter().for_each(|e| ended(e));
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
