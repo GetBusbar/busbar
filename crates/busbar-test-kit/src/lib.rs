@@ -32,12 +32,12 @@ pub mod conformance_host;
 /// The framed connection-table stand-in with in-process far ends, for a build that cannot link
 /// the process's connector. No TLS library: TLS stays in the connector.
 pub mod https_conns;
-/// The host-services test double: a test overrides only the services it serves.
-pub mod services_double;
 /// The composition root's door fixtures: doors built by the contract's door macro, whose expansion
 /// writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no such expansion.
 #[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
 pub mod root_door_fixtures;
+/// The host-services test double: a test overrides only the services it serves.
+pub mod services_double;
 /// The facts the test connection tables stand in for, read from data (`stand_in.json`).
 pub mod stand_in;
 /// The stream connection table over real local sockets.
