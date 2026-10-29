@@ -1767,6 +1767,28 @@ RETIRED. Nothing emits this code: the engine keeps no plane task store.
 
 **What to do:** Nothing emits this code.
 
+<a id="plane-record-kind-reserved"></a>
+### BUSBAR-7106 — A plane declares a record kind the kernel keeps its own records under (the plane is refused)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-record-kind-reserved`
+
+A plane's Statement declares a record kind that the kernel keeps its own records under (`ticket`, where a minted ticket's record is kept). A plane's declared kind names the rows its retention rule governs, so admitting it would let that plane purge the kernel's records under its own rule. busbar refuses the plane instance at its admit, so the boot (or the reload) that would open it fails, naming the instance and the kind. Nothing of the instance is registered.
+
+**What to do:** Use a plane build that does not declare a kernel record kind: rename the plane's record kind (it is the plugin author's word, in its Statement's record kinds) and rebuild. There is no configuration override; the kernel's kinds are never shared.
+
+<a id="plane-record-write-kernel-kind"></a>
+### BUSBAR-7107 — An admin plane record write named a kernel record kind (the write is refused)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-record-write-kernel-kind`
+
+`POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (plane-mcp declares `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.
+
+**What to do:** Do not write kernel records through the plane record verb. To lift a quarantine, approve the counterparty with `POST /api/v1/admin/trust/approve`, which clears its durable demotion. Write a plane's own records under a kind that is not the kernel's.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>
