@@ -67,8 +67,10 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # loader refuses a door built against another layout, so these nine rows are each plugin's r5-repin
 # branch built against #1845 (584b6cefb9; the four store rows at f053f4f3b4, whose store table carries record retention): the store rows above merged onto it (31 slots), the vault
 # answering into the host-lent buffer (#1704).
+# 2026-10-29 (busbar #1959): store-postgres is its dev head ad66be9 (#54: the 1.5.5 libpq socket options a
+# URL carries, keepalives=1 among them, are accepted), which holds bc531d0.
 store-sqlite	src:6f5787ceae37e2d91e0b8eb044cd3b5d30a6e3d5	build:busbar-store-sqlite	-	1.6
-store-postgres	src:bc531d07efd9ad4c2479af63c4ac83280c26cda1	build:busbar-store-postgres	-	1.6
+store-postgres	src:ad66be9cf41ebfa6b342e246df92a954921bf46d	build:busbar-store-postgres	-	1.6
 store-valkey	src:55622a7acbc88d1d0e6d7580b4d179c8e986d1c4	build:busbar-store-valkey	-	1.6
 store-mysql	src:7d985a3d01ef6c49bb017f1465253a9f4cc498f5	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:04627d7cb87de9f0e5b32e3fcfd2fd2ecaf69920	build:busbar-secret-vault	-	1.6
