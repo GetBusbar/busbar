@@ -185,11 +185,17 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
 struct ConfigTimeOnly;
 
 impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
-    fn resolve(&self, _secret: &SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        _secret: &SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         Err("refused off config time".to_string())
     }
 
-    fn resolve_string(&self, _secret: &SecretRef) -> Result<String, String> {
+    fn resolve_string(
+        &self,
+        _secret: &SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
         Err("refused off config time".to_string())
     }
 
@@ -197,16 +203,20 @@ impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
         &self,
         _secret: &SecretRef,
         _scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<Vec<u8>, String> {
-        Ok(b"AT-CONFIG".to_vec())
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+        Ok(busbar_contract::redacted::Secret::new(
+            b"AT-CONFIG".to_vec(),
+        ))
     }
 
     fn resolve_string_at_config(
         &self,
         _secret: &SecretRef,
         _scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<String, String> {
-        Ok("AT-CONFIG".to_string())
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        Ok(busbar_contract::redacted::Secret::new(
+            "AT-CONFIG".to_string(),
+        ))
     }
 }
 

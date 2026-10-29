@@ -133,7 +133,12 @@
 //!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
 //!    first (a refusal there wins), then renders this refusal before admission, so nothing is
-//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault).
+//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault). With
+//!    [`REFUSED_AFTER_ADMISSION`] in [`ArriveOut::refusal_flags`] the refusal is held one step
+//!    further: after the caller's identity and its grant over the entry, the kernel runs the
+//!    entry's ADMISSION (its group limits and budget; a refusal there wins, in admission's own
+//!    status and words), and only then renders this refusal. That rendering refunds or releases
+//!    whatever admission held and runs no walk, no hook and no tap, so nothing is net-charged.
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
@@ -169,6 +174,7 @@
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
+//! | (new) record retention rules (terminal-only vs by age) | tail [`PlaneTail::record_retentions`]; a kind not listed is purged by age |
 //! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | Statement: [`SECTION_REQUIRED`](crate::abi::mechanism::door::SECTION_REQUIRED) on a `sections` entry |
@@ -227,6 +233,116 @@ use crate::caps::ReasonCode;
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
+
+/// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the plane table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x344ee53291ab670c;
+
+/// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/plane/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops =>
+        head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog
+    ),
+    crate::layout_shape!(DialectAuth => dialect, flags, style, params),
+    crate::layout_shape!(OpClass => op, name),
+    crate::layout_shape!(BillableClass => class, family),
+    crate::layout_shape!(RouteCost => class, _reserved, weight),
+    crate::layout_shape!(RecordChain => kind, framing, flags, _reserved),
+    crate::layout_shape!(RecordRetention => kind, rule),
+    crate::layout_shape!(PinMechanism => token, flags, _reserved),
+    crate::layout_shape!(TrustKey => key, role, flags, default, mechanisms, mechanisms_len),
+    crate::layout_shape!(RefusalStatus => dialect, reason, status, _reserved),
+    crate::layout_shape!(PlaneTail =>
+        head, flags, ingress, dispatch_shape, answer_layout, scope, label, subject_noun, admin_noun,
+        audit_kind, signing_domain, signing_kid_prefix, cli_help, dialects, dialects_len,
+        dialect_auth, dialect_auth_len, scope_kinds, scope_kinds_len, op_classes, op_classes_len,
+        billable_classes, billable_classes_len, route_cost, route_cost_len, fee_units,
+        fee_units_len, record_kinds, record_kinds_len, egress_targets, egress_targets_len,
+        record_chains, record_chains_len, trust_keys, trust_keys_len, refusal_statuses,
+        refusal_statuses_len, caller_credential_refusal, admin_routes, admin_routes_len,
+        admin_openapi, stream_ceiling_secs, metric_lanes, metric_lanes_len, record_retentions,
+        record_retentions_len
+    ),
+    crate::layout_shape!(Claim => verb, target, carrier, flags, refusal_dialect, _pad),
+    crate::layout_shape!(AdminRoute => verb, target, flags, _reserved, audit_verb),
+    crate::layout_shape!(PlaneSnapshot =>
+        size, _reserved, generation, claims, claims_len, admin_routes, admin_routes_len, openapi,
+        audience, resource_metadata, resource_facts, listed, listed_len, arrival_spans,
+        arrival_spans_len
+    ),
+    crate::layout_shape!(ProviderFacts => name, protocol, error_map),
+    crate::layout_shape!(PlaneOpenIn => open, public_url, owned, providers, providers_len),
+    crate::layout_shape!(PlaneOpenOut => open, snapshot),
+    crate::layout_shape!(PlaneRefreshOut => head, snapshot),
+    crate::layout_shape!(UnitCount => class, source, amount),
+    crate::layout_shape!(OutField => name, value),
+    crate::layout_shape!(RecordWrite => kind, op, key, value),
+    crate::layout_shape!(ArriveIn =>
+        head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap,
+        method
+    ),
+    crate::layout_shape!(ArriveOut =>
+        head, op_class, principal_need, dialect, units_written, units_needed, refusal,
+        refusal_status, refusal_flags, correlation, cancels, pool, route, route_flags,
+        _route_reserved, affinity, trust_counterparty, trust_item, trust_digest
+    ),
+    crate::layout_shape!(OnPieceIn =>
+        head, unit, from, flags, stream, bytes, status_code, status_class, reply_buf, reply_cap,
+        units_buf, units_cap, records_buf, records_cap, fields_buf, fields_cap, arena_buf,
+        arena_cap, member, attempt_no, _reserved, pool, caller_ref, claim, dialect, head_fields,
+        head_fields_len, passthrough, reason
+    ),
+    crate::layout_shape!(OnPieceOut =>
+        head, emitted, more, flags, reply_status, fields_written, fields_needed, units_written,
+        units_needed, records_written, records_needed, verdict, arena_written, arena_needed, verb,
+        target, need, fault, tap_fault, _fault_reserved, lane, final_status, _final_reserved,
+        final_message, final_details, metric_pool, metric_lane, wait_member, fault_reason
+    ),
+    crate::layout_shape!(RefusalIn =>
+        head, cause, status, dialect, reason, text, reply_buf, reply_cap, fields_buf, fields_cap,
+        arena_buf, arena_cap, unit, plane_code, retry_after_s, target, records_buf, records_cap,
+        hook, trust, _trust_reserved
+    ),
+    crate::layout_shape!(RefusalOut =>
+        head, reply_written, reply_needed, arena_written, arena_needed, marker, fields_written,
+        fields_needed, status, records_written, records_needed
+    ),
+    crate::layout_shape!(ServeIn =>
+        head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap, fields_buf,
+        fields_cap, arena_buf, arena_cap, records_buf, records_cap
+    ),
+    crate::layout_shape!(ServeOut =>
+        head, reply_written, reply_needed, arena_written, arena_needed, status, fields_written,
+        fields_needed, audit, records_written, records_needed
+    ),
+    crate::layout_shape!(CatalogIn =>
+        head, method, target, fields, fields_len, names, names_len, reply_buf, reply_cap,
+        fields_buf, fields_cap, arena_buf, arena_cap
+    ),
+    crate::layout_shape!(CatalogOut =>
+        head, reply_written, reply_needed, arena_written, arena_needed, status, fields_written,
+        fields_needed, _reserved
+    ),
+    crate::layout_shape!(PlaneDriveIn => drive, sessions_buf, sessions_cap),
+    crate::layout_shape!(PlaneCancelIn =>
+        cancel, records_buf, records_cap, arena_buf, arena_cap, unit
+    ),
+    crate::layout_shape!(PlaneCancelOut => cancel, records_written, _reserved, arena_written),
+    crate::layout_shape!(PlaneDriveOut => head, sessions_written, sessions_needed),
+    crate::layout_shape!(ProjectIn =>
+        head, claim, _reserved, target, fields, fields_len, body, signals_buf, signals_cap,
+        arena_buf, arena_cap, rewrite, messages_buf, messages_cap, unit
+    ),
+    crate::layout_shape!(ProjectOut =>
+        head, view, body, signals_needed, _reserved, arena_written, arena_needed, prompt, end_user,
+        rewritten, messages_needed, _reserved2
+    ),
+];
 
 /// [`crate::abi::mechanism::call::InHead::op`] of each plane op, in table order: kind op `k` is
 /// [`LIFECYCLE_SLOTS`]` + k`. `tick` and `cancel` are the lifecycle's.
@@ -407,6 +523,13 @@ pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 /// percent-decoded, as the span's field `<field>` ([`check::entry_fact`]). An entry fact mounts no
 /// route and takes no arrival. Never with another flag.
 pub const CLAIM_ENTRY: u32 = 1 << 6;
+/// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
+/// ([`op::TICKET_MINT`](crate::abi::host::service::op::TICKET_MINT)). The gate verifies a credential
+/// carrying the plane's declared issued-id prefix as a ticket on this route only, consumes it when
+/// it admits the unit (a ticket admits one unit, once), and holds its record for
+/// [`op::TICKET_TAKE`](crate::abi::host::service::op::TICKET_TAKE). A key admits as on any keyed
+/// route. Never with [`CLAIM_OPEN`].
+pub const CLAIM_TICKET: u32 = 1 << 7;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -566,6 +689,16 @@ pub const ROUTE_COUNTED: u8 = 8;
 /// the kernel and the root count the outcome and never read the plane's code or status to tell one
 /// refusal from another.
 pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
+
+/// [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before
+/// it (see "A refused arrival", rule 6). Only on a REFUSED `arrive` that names its entry
+/// ([`ArriveOut::pool`] with a [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`]): the kernel
+/// judges the caller's identity, then its grant over the entry, then the entry's admission (group
+/// limits and budget), a refusal at any of them winning; only then does it render this refusal,
+/// refunding or releasing what admission held, with no walk, no hook and no tap, so nothing is
+/// net-charged. On an answer that names no entry, or on any other outcome, it is a FAULT. Unset,
+/// the refusal is rendered before admission and nothing is charged.
+pub const REFUSED_AFTER_ADMISSION: u32 = 2;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
@@ -1276,6 +1409,27 @@ impl RecordChain {
     };
 }
 
+/// One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than
+/// a purge's cutoff the host's purge drops. The host passes the rule with every purge of the kind
+/// (the store ABI's `KindBeforeIn::retention`), so no store infers it from the kind's name. A kind
+/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE)).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordRetention {
+    /// Index into [`PlaneTail::record_kinds`].
+    pub kind: u32,
+    /// [`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE) |
+    /// [`RETENTION_TERMINAL_ONLY`](crate::abi::store::plane::RETENTION_TERMINAL_ONLY).
+    pub rule: u32,
+}
+
+impl RecordRetention {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordRetention { …, ..RecordRetention::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self { kind: 0, rule: 0 };
+}
+
 /// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
 /// fingerprint?}`: which authenticity root it has and the operator's out-of-band material.
 pub const TRUST_PIN: u32 = 1;
@@ -1552,6 +1706,13 @@ pub struct PlaneTail {
     pub metric_lanes: *const AbiStr,
     /// How many.
     pub metric_lanes_len: usize,
+    /// THE RETENTION RULE OF EACH RECORD KIND THAT IS NOT PURGED BY AGE ([`RecordRetention`]): at
+    /// most one entry per kind, each naming a kind of [`PlaneTail::record_kinds`]. A kind not listed
+    /// is purged by age. NULL/0 = none. A tail addition: a tail whose `size` ends before it lists
+    /// none.
+    pub record_retentions: *const RecordRetention,
+    /// How many.
+    pub record_retentions_len: usize,
 }
 
 impl PlaneTail {
@@ -1603,6 +1764,8 @@ impl PlaneTail {
         stream_ceiling_secs: 0,
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
+        record_retentions: std::ptr::null(),
+        record_retentions_len: 0,
     };
 }
 
@@ -1659,6 +1822,8 @@ impl PlaneTail {
         stream_ceiling_secs: 0,
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
+        record_retentions: std::ptr::null(),
+        record_retentions_len: 0,
     };
 
     abi_lists! {
@@ -1714,7 +1879,8 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`]; any other bit
+    /// refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
@@ -2059,8 +2225,9 @@ pub struct ArriveOut {
     /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
     /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
-    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`]);
-    /// `0` on every other outcome. In what was padding.
+    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`])
+    /// and, on a refusal about an entry, its order ([`REFUSED_AFTER_ADMISSION`]); `0` on every
+    /// other outcome. In what was padding.
     pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent
@@ -2591,10 +2758,19 @@ pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
 /// hook runs, so the unit's first `project` is made before any rewrite hook is invoked) or the call
 /// carried a rewrite ([`ProjectIn::rewrite`] present):
 ///
-/// * READY: the view (and the rewritten body, when the plane applied the rewrite).
-/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. That is the
-///   rewriting hook's own failure, answered by its `on_error` (a load-bearing hook refuses the
-///   unit; any other proceeds with the request as it stood).
+/// * READY: the view, and the rewritten body ([`ProjectOut::rewritten`]) when the plane applied
+///   the rewrite. A READY answer to a call carrying a rewrite that names messages, with no
+///   rewritten body, is one of two things, told apart by
+///   [`PROJECT_REWRITE_NOT_APPLICABLE`] in `view.flags`:
+///   - the mark set: the rewrite does not apply to this unit (its operation has no conversation to
+///     frame one into). The kernel forwards the unit unmodified, records the hook a pass, and warns
+///     naming the hook and the entry;
+///   - the mark clear: the plane did not apply the rewrite. The kernel refuses the unit, as for
+///     REFUSED below.
+/// * REFUSED (or FAILED with nothing needed): the plane declines to apply the rewrite. The kernel
+///   REFUSES the unit and never forwards the body un-rewritten, whatever the hook's `on_error`
+///   says: a load-bearing hook (`on_error: reject`) with the shared 503 a failed call of it
+///   answers, any other with [`PROJECT_FAULT_STATUS`] and [`PROJECT_FAULT_MESSAGE`].
 /// * FAULT: the plane could not apply a rewrite it must not leave unapplied (a redaction whose
 ///   document the body does not parse into). The kernel ALWAYS answers
 ///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
@@ -2639,6 +2815,30 @@ pub const fn project_fault_unparseable(
         && out.head.outcome.0 == RawOutcome::of(Outcome::Fault).0
         && out.view.flags == PROJECT_FAULT_UNPARSEABLE
 }
+
+/// THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried
+/// a rewrite ([`ProjectIn::rewrite`]) and answers no rewritten body: the unit's operation has no
+/// conversation to frame a rewrite into (the plane may still project its content as a turn, so the
+/// gates screen it, but its body has nowhere a hook's messages could go), so the rewrite does not
+/// apply to it. The kernel forwards the unit unmodified, records the hook a pass (not failed), and
+/// warns naming the hook and the entry (see [`project_faults`]). Without the mark, a READY answer
+/// with no rewritten body is a rewrite the plane did not apply, and the kernel refuses the unit.
+///
+/// A plane never sets it for a unit whose operation frames a conversation, whatever kept the
+/// rewrite from applying there (a body the splice cannot place it in, a container the body lacks):
+/// that unit is refused. The mark means nothing on any other outcome, on a `project` that carried
+/// no rewrite, or beside a rewritten body.
+pub const PROJECT_REWRITE_NOT_APPLICABLE: u32 = 1 << 30;
+
+// The view flags a `project` answer may state are one bit each: the hook view's own, and the two
+// marks a plane states beside them.
+const _: () = assert!(one_bit_each(&[
+    super::hook::REQUEST_HAS_MAX_TOKENS,
+    super::hook::REQUEST_HAS_TOOLS,
+    super::hook::REQUEST_STREAM,
+    PROJECT_REWRITE_NOT_APPLICABLE,
+    PROJECT_FAULT_UNPARSEABLE,
+]));
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
 #[repr(C)]
@@ -2711,8 +2911,16 @@ pub struct ProjectOut {
     pub end_user: AbiStr,
     /// The rewritten body, in the arena, when [`ProjectIn::rewrite`] was given and the plane
     /// applied it: the body the kernel keeps and re-pushes on every attempt from now on. Empty
-    /// (or [`SPAN_ABSENT`]) = not applied, and the unit proceeds with the body it had (1.5.5:
-    /// a rewrite that cannot be applied leaves the request unmodified).
+    /// (or [`SPAN_ABSENT`]) = not applied. For a rewrite naming messages, that is either:
+    /// - a rewrite that does not apply to the unit, a dialect or operation with no conversation to
+    ///   frame it into, stated by [`PROJECT_REWRITE_NOT_APPLICABLE`] in `view.flags`: the audited
+    ///   pass-through, the unit forwarded unmodified with the hook on record as a pass and a
+    ///   warning naming it;
+    /// - any other unapplied rewrite (the mark clear): the kernel refuses the unit (the hook's 503
+    ///   under `on_error: reject`, [`PROJECT_FAULT_STATUS`] otherwise), never forwarding the body
+    ///   un-rewritten.
+    ///
+    /// A rewrite naming no messages is no rewrite (1.5.5).
     pub rewritten: Span,
     /// Short answer: the turns `messages_buf` needs.
     pub messages_needed: u32,
