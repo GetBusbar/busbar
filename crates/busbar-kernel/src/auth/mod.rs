@@ -2280,6 +2280,9 @@ pub(crate) async fn auth_middleware(
     // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
     // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
     let mut dpop_proven = false;
+    // The bearer's payload, read at most once: by the DPoP binding check, then the audience
+    // pre-filter. A proven DPoP token was never read here, so the pre-filter reads it afresh.
+    let mut read = None;
     let client_token = if is_admin {
         client_token
     } else {
@@ -2289,6 +2292,7 @@ pub(crate) async fn auth_middleware(
             &path,
             req.headers(),
             client_token.as_deref(),
+            &mut read,
         )
         .await
         {
@@ -2637,7 +2641,8 @@ pub(crate) async fn auth_middleware(
         // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
         // chain, so this can narrow what is admitted and can never widen it.
         if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
-            match audience::inspect_bearer(tok, &adm.audience) {
+            let read = read.get_or_insert_with(|| audience::Bearer::read(tok));
+            match read.binding(&adm.audience) {
                 // A busbar-signed token: the verifier below has the claims and the signature, and
                 // does the real check. Pre-judging it here would refuse every valid one.
                 audience::Binding::Deferred | audience::Binding::Bound => {}

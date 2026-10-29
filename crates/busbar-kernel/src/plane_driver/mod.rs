@@ -60,7 +60,6 @@ mod cancel;
 mod close;
 pub mod dispatch;
 pub mod door;
-mod epoch;
 mod far_end;
 mod govern;
 pub(crate) mod hooks;
@@ -99,7 +98,6 @@ use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
-pub use epoch::FlushEpoch;
 pub use far_end::{
     fixed_breaker, AuthBinding, BreakerSource, Egress, EgressFarEnd, MemberFacts, MemberRoute,
     MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
@@ -114,7 +112,7 @@ pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
+pub use money::{EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
@@ -750,9 +748,10 @@ pub trait DriverSteps {
         Evidence::default()
     }
 
-    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]).
-    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
-        Ok(accrual.amount())
+    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]): nothing refused,
+    /// by default.
+    fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
+        Ok(())
     }
 
     /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
@@ -1724,7 +1723,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
         self.steps.evidence(ctx)
     }
 
-    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
+    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<(), Refusal> {
         self.steps.at_parent_exit(ctx, accrual)
     }
 
