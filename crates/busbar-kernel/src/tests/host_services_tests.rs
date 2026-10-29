@@ -772,6 +772,36 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
     assert_eq!(s.value, svc::ABSENT);
 }
 
+/// AN ITEM'S DRIFT DEMOTION IS DURABLE: an item approved and then sighted at another digest is
+/// refused, and after a restart over the same store it is still refused, sighted back at its
+/// approved digest, until the operator approves it again. RED before: nothing was kept and the
+/// revert served.
+#[test]
+fn an_items_drift_demotion_outlives_a_restart() {
+    use crate::trust::book::Ruling;
+    let r = rig();
+    let me = caller("inst");
+    run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    r.s.trust_sight_item(&me, "cp", "t", "d1");
+    r.s.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    let serves = |s: &KernelServices| s.trust_serves(&me, "cp", Some("t"), None).value;
+    assert_eq!(serves(&r.s), svc::DISTRUST_NONE);
+    r.s.trust_sight_item(&me, "cp", "t", "d2");
+    assert_eq!(serves(&r.s), svc::DISTRUST_CHANGED);
+    let fresh = restarted(&r);
+    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    run(|l| fresh.trust_sight(&me, "cp", "fp", l));
+    fresh.trust_sight_item(&me, "cp", "t", "d1");
+    assert_ne!(
+        serves(&fresh),
+        svc::DISTRUST_NONE,
+        "reverted after a restart, it stays refused"
+    );
+    fresh.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    assert_eq!(serves(&fresh), svc::DISTRUST_NONE, "re-approved");
+}
+
 /// The rig's kernel after a restart: the same durable demotion record, nothing else.
 fn restarted(r: &Rig) -> KernelServices {
     let d = r.s.demotions.get().unwrap();
