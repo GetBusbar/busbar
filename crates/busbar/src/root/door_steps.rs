@@ -3375,9 +3375,16 @@ impl std::fmt::Debug for PerHop {
     }
 }
 
+impl PerHop {
+    /// The handle a hop made at `now` (busbar's own monotonic clock) presents.
+    fn handle_at(&self, _now: std::time::Instant) -> Option<u64> {
+        self.held.load().as_ref().map(|held| held.handle)
+    }
+}
+
 impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     fn handle_now(&self) -> Option<u64> {
-        self.held.load().as_ref().map(|held| held.handle)
+        self.handle_at(std::time::Instant::now())
     }
 }
 
