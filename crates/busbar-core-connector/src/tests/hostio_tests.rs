@@ -59,6 +59,26 @@ fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
     });
 }
 
+/// A released handle is never made again: its slot holds the next handle under a new generation,
+/// and the old one still answers "no such handle" for its maker and every other caller.
+#[test]
+fn a_released_handle_is_never_made_again() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        io.admit(ticket(50), Admission::Bind("127.0.0.1:0".into()));
+        let (old, _) = io.listen(OWNER, ticket(50), "127.0.0.1:0").unwrap();
+        io.close(OWNER, old).unwrap();
+        io.admit(ticket(51), Admission::Bind("127.0.0.1:0".into()));
+        let (new, _) = io.listen(OWNER, ticket(51), "127.0.0.1:0").unwrap();
+        assert_ne!(new, old, "a released handle was made again");
+        assert!(matches!(io.ends(OWNER, old), Err(IoRefusal::Refused(_))));
+        assert!(matches!(io.close(OWNER, old), Err(IoRefusal::Refused(_))));
+        assert!(io.ends(OWNER, new).is_ok());
+        io.close(OWNER, new).unwrap();
+        assert_eq!(io.held(), 0);
+    });
+}
+
 #[test]
 fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
     worker().block_on(async {
@@ -88,7 +108,7 @@ fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
             .await
             .unwrap();
         assert_eq!(&buf[..n], b"pong");
-        let (_, peer_at) = io.ends(OWNER, h).unwrap();
+        let peer_at = io.ends(OWNER, h).unwrap().peer;
         assert_eq!(peer_at, at);
         // RED: another owner reaches nothing of it.
         assert!(io.close(OWNER + 1, h).is_err());
@@ -142,6 +162,61 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
         assert!(!io.program_exited(h));
         io.close(OWNER, h).unwrap();
         assert_eq!(io.held(), 0);
+    });
+}
+
+/// RED (a program carrier's end, coordinator ruling (A)): `io.ends` on a program's handle answers the program's
+/// OWN exit, read without waiting, so a program whose descendant still holds its output is seen to
+/// have ended while a read of the pipe still pends. Here the program exits with code 3 and leaves a
+/// `sleep` holding its output. RED before: `ends` answered a program `(0, "")` and nothing of its
+/// exit, so the end was only ever seen at the pipe's end, which the descendant withholds.
+#[test]
+fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        let args = ["-c".to_owned(), "sleep 5 & exit 3".to_owned()];
+        let program = Program {
+            command: "/bin/sh".into(),
+            args: args.to_vec(),
+            env: Vec::new(),
+            env_refs: Vec::new(),
+        };
+        io.admit(
+            ticket(21),
+            Admission::Spawn(program, crate::spawn_env::HeldEnv::written_only()),
+        );
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let h = io
+            .spawn(
+                OWNER,
+                ticket(21),
+                &Spawn {
+                    program: "/bin/sh",
+                    args: &argv,
+                    env: &[],
+                },
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        let ends = loop {
+            let ends = io.ends(OWNER, h).unwrap();
+            if ends.exit.is_some() || std::time::Instant::now() > deadline {
+                break ends;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert_eq!(
+            ends.exit,
+            Some(3),
+            "the program's own exit was not answered"
+        );
+        assert_eq!((ends.port, ends.peer.as_str()), (0, ""));
+        // The descendant still holds the output: a read of the pipe pends, not ends.
+        let mut buf = [0_u8; 16];
+        let waker = std::task::Waker::noop();
+        let read = io.read(OWNER, h, &mut buf, waker);
+        assert!(read.is_pending(), "the pipe ended: {read:?}");
+        io.close(OWNER, h).unwrap();
     });
 }
 

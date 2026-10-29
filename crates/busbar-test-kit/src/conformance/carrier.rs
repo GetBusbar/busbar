@@ -32,6 +32,8 @@
 //!   FAILED;
 //! * a read with nothing to read answers PENDING and moves nothing; the host's wake for the ticket
 //!   fires once the far end answers, and the RESUMED read answers the frame;
+//! * THE HOST'S END OF A PROGRAM: `io.ends` answers a program that exited while a descendant still
+//!   holds its output as exited, its code with it, while the pipe stays open;
 //! * THE HOST'S GUARD (RED arm): a dial to what the host did not admit is refused, and so is the
 //!   destination kind the carrier does not reach.
 
@@ -122,9 +124,12 @@ fn text(v: &serde_json::Value, what: &str) -> String {
 
 /// The ops of the role a carrier does not play, in slot order: each REFUSED, one crossing each.
 fn framer_ops(p: &Plugin<Transport>, side: &Side) -> String {
+    // A declared scheme, so the begin reaches the carrier, which refuses it as its own.
+    let mut begin: BeginIn = input();
+    begin.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
     let outcomes = [
         go::<_, LocateOut>(p, side, false, slot::LOCATE, input::<LocateIn>()).0,
-        go::<_, FramerOut>(p, side, false, slot::BEGIN, input::<BeginIn>()).0,
+        go::<_, FramerOut>(p, side, false, slot::BEGIN, begin).0,
         go::<_, FramerOut>(p, side, false, slot::INGEST, input::<IngestIn>()).0,
         go::<_, FramerOut>(p, side, false, slot::EMIT, input::<EmitIn>()).0,
         go::<_, FramerOut>(p, side, false, slot::ENCODE, input::<EncodeIn>()).0,
@@ -545,6 +550,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     want.push(("dial the other kind".into(), Want::Starts("Refused ")));
     drop(guarded);
 
+    // ── THE HOST'S END OF A PROGRAM (`io.ends`' `exited`): a program that exits while a
+    // descendant still holds its output is answered as exited, its code with it, while its pipe
+    // stays open; the carrier reads the program's end there, never from the pipe. Host-side: no
+    // crossing. ──
+    r.line("a program's own exit", 0, || program_exit(&host));
+    want.push((
+        "a program's own exit".into(),
+        Want::Is("exited code=3 pipe=open".into()),
+    ));
+
     r.line("close", 1, || super::called(&close(&p)));
     want.push(("close".into(), Want::Starts("Ready ")));
     // 0: a closed instance answers FAULT without a crossing.
@@ -561,6 +576,50 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let fold = r.fold();
     contract(&fold, &want);
     fold
+}
+
+/// The suite's host spawns `sh`, which exits with code 3 and leaves a `sleep` holding its output,
+/// and answers what `io.ends` reads of the program: its own exit, and whether the pipe is still open.
+fn program_exit(host: &SuiteIo) -> String {
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_contract::io_host::{IoHost, Spawn};
+    const OWNER: u64 = u64::MAX;
+    let ticket = Ticket {
+        slot: u32::MAX,
+        generation: 1,
+    };
+    host.admit(ticket, Admit::Program("/bin/sh".into()));
+    let spawned = host.spawn(
+        OWNER,
+        ticket,
+        &Spawn {
+            program: "/bin/sh",
+            args: &["-c", "sleep 5 & exit 3"],
+            env: &[],
+        },
+    );
+    let h = match spawned {
+        Ok(h) => h,
+        Err(e) => return format!("not spawned: {e:?}"),
+    };
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let exit = loop {
+        match host.ends(OWNER, h) {
+            Ok(e) if e.exit.is_some() || Instant::now() > deadline => break e.exit,
+            Ok(_) => std::thread::sleep(Duration::from_millis(10)),
+            Err(e) => return format!("ends: {e:?}"),
+        }
+    };
+    let mut buf = [0_u8; 8];
+    let open = host.read(OWNER, h, &mut buf, Waker::noop()).is_pending();
+    let _ = host.close(OWNER, h);
+    match exit {
+        Some(code) => format!(
+            "exited code={code} pipe={}",
+            if open { "open" } else { "ended" }
+        ),
+        None => "running".into(),
+    }
 }
 
 /// What the contract requires of one step's answer.
