@@ -385,3 +385,27 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
         assert_eq!(io.held(), 0);
     });
 }
+
+/// RED (transport ABI defect 2): `reap` releases every handle its owner still holds, as `close`
+/// releases one: the listener it bound stops listening. Another owner's handles stay.
+#[test]
+fn reap_releases_every_handle_of_its_owner_and_no_other() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        io.admit(ticket(30), Admission::Bind("127.0.0.1:0".into()));
+        let (_, at) = io.listen(OWNER, ticket(30), "127.0.0.1:0").unwrap();
+        io.admit(ticket(31), Admission::Bind("127.0.0.1:0".into()));
+        let (other, _) = io.listen(OWNER + 1, ticket(31), "127.0.0.1:0").unwrap();
+        assert_eq!(io.held(), 2);
+        io.reap(OWNER);
+        assert_eq!(io.held(), 1, "the owner's listener is released");
+        assert!(
+            tokio::net::TcpStream::connect(&at).await.is_err(),
+            "the reaped listener still accepts at {at}"
+        );
+        assert!(matches!(io.close(OWNER, other), Err(IoRefusal::Refused(_))));
+        io.close(OWNER + 1, other)
+            .expect("another owner's handle stays");
+        assert_eq!(io.held(), 0);
+    });
+}

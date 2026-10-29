@@ -1314,6 +1314,10 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                         allow: crate::sign::AllowReason::Unsigned,
                         ..
                     } => "unsigned (allowed)".to_string(),
+                    Verdict::Allowed {
+                        allow: crate::sign::AllowReason::RetiredKey,
+                        ..
+                    } => "retired-key (allowed)".to_string(),
                     Verdict::Allowed { .. } => "third-party (allowed)".to_string(),
                 };
                 rows.push(InventoryEntry {
@@ -1339,6 +1343,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
+                    RejectKind::RetiredKey => "retired-key",
                 }
                 .to_string();
                 let status = match s.kind {
