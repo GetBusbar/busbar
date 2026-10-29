@@ -481,7 +481,8 @@ pub(super) fn take(m: &mut Mapping, k: &str) -> Option<Value> {
     m.remove(Value::from(k))
 }
 
-/// 1.6.0 verify-on-call: rename each `tools.servers.<id>.refresh_ttl:` to `verify_ttl:`.
+/// 1.6.0 verify-on-call: rename each `tools.<id>.refresh_ttl:` (the flat shape) and each
+/// pre-release `tools.servers.<id>.refresh_ttl:` to `verify_ttl:`.
 ///
 /// The KEY is renamed and the VALUE is carried over unchanged, because a rescale would guess at what
 /// the operator meant. But the meaning is not the same: `refresh_ttl` was a BACKGROUND SWEEP CADENCE
@@ -500,11 +501,42 @@ fn migrate_tools_verify_ttl(
     let Some(Value::Mapping(tools)) = root.get_mut(Value::from("tools")) else {
         return;
     };
+    // The 1.6.0 flat shape: each `tools.<id>` entry, the legacy `servers:` container aside.
+    let flat = rename_refresh_ttl(
+        tools
+            .iter_mut()
+            .filter(|(id, _)| id.as_str() != Some("servers")),
+        "tools",
+        warnings,
+    );
+    if flat {
+        changes.push(
+            "tools.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
+             refresh daemon; see the per-server WARNING for the semantics change)"
+                .into(),
+        );
+    }
     let Some(Value::Mapping(servers)) = tools.get_mut(Value::from("servers")) else {
         return;
     };
+    if rename_refresh_ttl(servers.iter_mut(), "tools.servers", warnings) {
+        changes.push(
+            "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
+             refresh daemon; see the per-server WARNING for the semantics change)"
+                .into(),
+        );
+    }
+}
+
+/// Rename `refresh_ttl:` to `verify_ttl:` on each mapping entry of `entries` (the entries under
+/// `prefix`), with the per-server WARNING; true when any entry was renamed.
+fn rename_refresh_ttl<'a>(
+    entries: impl Iterator<Item = (&'a Value, &'a mut Value)>,
+    prefix: &str,
+    warnings: &mut Vec<String>,
+) -> bool {
     let mut renamed = false;
-    for (id, def) in servers.iter_mut() {
+    for (id, def) in entries {
         let Value::Mapping(def) = def else { continue };
         let Some(value) = def.remove(Value::from("refresh_ttl")) else {
             continue;
@@ -513,7 +545,7 @@ fn migrate_tools_verify_ttl(
         def.insert("verify_ttl".into(), value);
         renamed = true;
         warnings.push(format!(
-            "tools.servers.{}.refresh_ttl -> verify_ttl (value `{shown}` carried over). The meaning \
+            "{prefix}.{}.refresh_ttl -> verify_ttl (value `{shown}` carried over). The meaning \
              CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the \
              MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your \
              value is now a drift-serving window on the request path — reconsider it: a few seconds \
@@ -522,13 +554,7 @@ fn migrate_tools_verify_ttl(
             id.as_str().unwrap_or("?")
         ));
     }
-    if renamed {
-        changes.push(
-            "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
-             refresh daemon; see the per-server WARNING for the semantics change)"
-                .into(),
-        );
-    }
+    renamed
 }
 
 /// 1.6.0 Q-STORE = (B) (owner ruling 2026-09-27): a config with no `store:` block is refused, so the

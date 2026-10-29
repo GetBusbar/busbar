@@ -22,6 +22,11 @@
 //!   DLL's file cannot be deleted. A crash leaves the per-process directory behind;
 //!   [`sweep_dead_staging`] removes any `busbar-plugins-<pid>-*` directory INSIDE THE PARENT whose
 //!   pid is no longer alive at the next boot.
+//!   The staged file is PINNED: the handle that wrote it is kept (unix: made `0400`; Windows:
+//!   reopened read-only, sharing no write and no delete), and the bytes, owner, mode and identity at
+//!   the name are checked through it after the write and immediately before and after the load;
+//!   any difference refuses the load. The loaders open by path, so this is narrower than the memfd
+//!   seal: the residual risk is stated at [`load_via_staged_file`].
 //!
 //! The sweep lists the dedicated parent ONLY, never the OS temp directory itself: boot cost is
 //! bounded by the number of busbar staging directories, not by the size of `$TMPDIR` (a full-temp
@@ -143,8 +148,14 @@ pub(crate) enum Staged {
     #[cfg(target_os = "linux")]
     Memfd { fd: Option<std::os::fd::OwnedFd> },
     /// A file inside the per-process private staging directory (non-Linux, or Linux memfd
-    /// fallback). Removed on drop; the (shared, per-process) directory is removed too once empty.
-    TempFile { path: PathBuf },
+    /// fallback), with the handle that wrote and verified it, held for the library's life (on
+    /// Windows that handle's share mode is what keeps the file from being rewritten, renamed or
+    /// deleted under the mapped image). Removed on drop, the handle first; the (shared,
+    /// per-process) directory is removed too once empty. `pin` is `None` only once dropped.
+    TempFile {
+        path: PathBuf,
+        pin: Option<std::fs::File>,
+    },
 }
 
 impl Drop for Staged {
@@ -158,7 +169,10 @@ impl Drop for Staged {
                     retire_memfd(fd);
                 }
             }
-            Staged::TempFile { path } => {
+            Staged::TempFile { path, pin } => {
+                // The pin closes first: on Windows a file held open without delete sharing cannot
+                // be removed.
+                drop(pin.take());
                 // Unload happened first (field order in the holder). Release under the shared
                 // staging lock: remove the file, and remove the per-process directory only when
                 // this was the LAST live staged file - the refcount makes release atomic with any
@@ -253,35 +267,190 @@ fn dylib_suffix() -> &'static str {
     }
 }
 
-/// Stage `bytes` into the per-process private directory and return the created file path. The file
-/// is opened `create_new` (never adopting a pre-planted file) and `0600` on unix. Runs under the
-/// staging lock so a concurrent last-file release cannot remove the directory mid-create.
-fn stage_temp_file(bytes: &[u8]) -> Result<PathBuf, String> {
+/// Stage `bytes` into the per-process private directory and return the created file's path and
+/// the PIN: the open handle the bytes were verified through (see [`pin_staged`]). The file is
+/// opened `create_new` (never adopting a pre-planted file; on unix also `O_NOFOLLOW`, `0600`).
+/// Runs under the staging lock so a concurrent last-file release cannot remove the directory
+/// mid-create.
+fn stage_temp_file(bytes: &[u8]) -> Result<(PathBuf, std::fs::File), String> {
     let mut state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
     let dir = ensure_staging_dir(&mut state)?;
     let path = dir.join(format!("lib-{}{}", next_seq(), dylib_suffix()));
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut f = opts
-        .open(&path)
+    let f = create_staged(&path)
         .map_err(|e| format!("cannot create staged plugin file {}: {e}", path.display()))?;
-    if let Err(e) = f.write_all(bytes).and_then(|()| f.flush()) {
-        drop(f);
+    // The file is ours from here (create_new): any failure removes it.
+    let pin = pin_staged(f, &path, bytes).map_err(|e| {
         let _ = std::fs::remove_file(&path);
-        return Err(format!(
-            "cannot write staged plugin file {}: {e}",
-            path.display()
-        ));
-    }
-    // Close before dlopen (Windows dislikes an open writable handle racing the loader's read).
-    drop(f);
+        format!("cannot stage plugin file {}: {e}", path.display())
+    })?;
     state.live += 1;
-    Ok(path)
+    Ok((path, pin))
+}
+
+/// Create the staging file: exclusive (`create_new`), never through a symlink, owner-only.
+#[cfg(unix)]
+fn create_staged(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// Windows `FILE_SHARE_READ`: other openers may read, and nothing else (no write, no delete, so no
+/// rename over or of the file) while a handle opened with only this share mode is held.
+#[cfg(windows)]
+const FILE_SHARE_READ: u32 = 0x0000_0001;
+/// Windows `FILE_FLAG_OPEN_REPARSE_POINT`: open a symlink/junction itself, never its target, so a
+/// reparse point planted at the staged name is seen (and refused) instead of followed.
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// Create the staging file: exclusive (`create_new`), and shared with NOBODY while we write it.
+#[cfg(windows)]
+fn create_staged(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .open(path)
+}
+
+/// Write the verified `bytes` through `f` and turn it into the PIN: the handle the staged file is
+/// verified through, then and before and after the load.
+///
+/// Unix: the SAME handle that wrote the bytes is kept (no reopen, so no window between writing and
+/// holding), the file is made read-only (`fchmod 0400`) through it, and the bytes are read back
+/// through it and compared.
+///
+/// Windows: the exclusive write handle is closed and the file reopened READ-ONLY sharing only
+/// read: the image loader's own open (read/execute, sharing read and delete) is compatible with
+/// it, but no writer, no delete and no rename over the name can open the file while it is held.
+/// A tamper in the instant between close and reopen is caught by reading the bytes back through
+/// the new handle; from then on the OS holds the name to these bytes.
+fn pin_staged(
+    mut f: std::fs::File,
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<std::fs::File, String> {
+    f.write_all(bytes)
+        .and_then(|()| f.flush())
+        .map_err(|e| format!("write: {e}"))?;
+    #[cfg(unix)]
+    let pin = {
+        use std::os::unix::fs::PermissionsExt as _;
+        f.set_permissions(std::fs::Permissions::from_mode(0o400))
+            .map_err(|e| format!("make read-only: {e}"))?;
+        f
+    };
+    #[cfg(windows)]
+    let pin = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        drop(f);
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|e| format!("reopen read-only: {e}"))?
+    };
+    verify_pinned(&pin, path, bytes)?;
+    Ok(pin)
+}
+
+/// Does `f`, read from its start through THIS handle, hold exactly `bytes` and nothing more?
+fn holds_exactly(mut f: &std::fs::File, bytes: &[u8]) -> std::io::Result<bool> {
+    use std::io::{Read as _, Seek as _};
+    f.seek(std::io::SeekFrom::Start(0))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut at = 0usize;
+    loop {
+        let n = match f.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if n == 0 {
+            return Ok(at == bytes.len());
+        }
+        let end = at + n;
+        if end > bytes.len() || buf[..n] != bytes[at..end] {
+            return Ok(false);
+        }
+        at = end;
+    }
+}
+
+/// The staged file is still EXACTLY the verified bytes, at the name the loader opens. `Err` names
+/// what differs. Run after the write, immediately before the load and immediately after it.
+///
+/// Unix: through the pin, a regular file owned by this uid, mode `0400`, one link, the verified
+/// length and bytes; and the NAME, inspected without following a symlink, is that same file
+/// (device and inode equal to the pin's). Any rewrite in place, chmod, hard link, or rename over
+/// the name since the last check is refused.
+#[cfg(unix)]
+fn verify_pinned(pin: &std::fs::File, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let held = pin.metadata().map_err(|e| format!("stat: {e}"))?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if !held.file_type().is_file() {
+        return Err("is not a regular file".into());
+    }
+    if held.uid() != euid {
+        return Err(format!("is owned by uid {}, not {euid}", held.uid()));
+    }
+    if held.mode() & 0o7777 != 0o400 {
+        return Err(format!("has mode {:o}, not 400", held.mode() & 0o7777));
+    }
+    if held.nlink() != 1 {
+        return Err(format!("has {} links, not 1", held.nlink()));
+    }
+    if held.len() != bytes.len() as u64
+        || !holds_exactly(pin, bytes).map_err(|e| format!("read back: {e}"))?
+    {
+        return Err("does not hold the verified bytes".into());
+    }
+    let named = path
+        .symlink_metadata()
+        .map_err(|e| format!("is gone from its name: {e}"))?;
+    if !named.file_type().is_file() || named.dev() != held.dev() || named.ino() != held.ino() {
+        return Err("is no longer the file at its name (replaced since it was verified)".into());
+    }
+    Ok(())
+}
+
+/// Windows: through the pin, a regular file (not a reparse point) of the verified length and
+/// bytes; and the NAME, opened afresh (not following a reparse point), holds the same bytes. While
+/// the pin is held the OS refuses any writer, delete or rename, so the second read is the belt to
+/// that brace: it is what binds the name the loader opens to the bytes verified.
+#[cfg(windows)]
+fn verify_pinned(pin: &std::fs::File, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let regular_with_bytes = |f: &std::fs::File, what: &str| -> Result<(), String> {
+        let m = f.metadata().map_err(|e| format!("stat {what}: {e}"))?;
+        if !m.file_type().is_file() || m.file_type().is_symlink() {
+            return Err(format!("{what} is not a regular file"));
+        }
+        if m.len() != bytes.len() as u64
+            || !holds_exactly(f, bytes).map_err(|e| format!("read back {what}: {e}"))?
+        {
+            return Err(format!("{what} does not hold the verified bytes"));
+        }
+        Ok(())
+    };
+    regular_with_bytes(pin, "the pinned handle")?;
+    let named = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|e| format!("cannot be reopened at its name: {e}"))?;
+    regular_with_bytes(&named, "the file at its name")
 }
 
 #[cfg(test)]
@@ -294,8 +463,8 @@ std::thread_local! {
 /// Load a dynamic library from EXACTLY the in-memory `bytes` supplied - the verified-bytes ==
 /// loaded-bytes entrypoint. On Linux this uses `memfd_create` + `/proc/self/fd/N` (zero disk
 /// files); elsewhere (or if memfd fails) the bytes are staged into the per-process private `0700`
-/// directory and loaded from there. `display` labels errors. Returns the mapped [`Library`] plus
-/// the [`Staged`] guard that must be dropped AFTER the library.
+/// directory, pinned, and loaded from there ([`load_via_staged_file`]). `display` labels errors.
+/// Returns the mapped [`Library`] plus the [`Staged`] guard that must be dropped AFTER the library.
 pub(crate) fn load_library_from_bytes(
     bytes: &[u8],
     display: &str,
@@ -317,20 +486,79 @@ pub(crate) fn load_library_from_bytes(
             }
         }
     }
-    let path = stage_temp_file(bytes)?;
+    load_via_staged_file(bytes, display, &mut |_| {})
+}
+
+/// The staging-file load (macOS, Windows, any non-Linux unix, and Linux's memfd fallback).
+/// `before_load` runs after the bytes are staged and verified, immediately before the pre-load
+/// check: production passes a no-op; the tests use it to tamper with the staged file there.
+///
+/// The staged file is verified through its pin after the write ([`pin_staged`]), again
+/// immediately before the `dlopen`, and again immediately after it ([`verify_pinned`]). Any
+/// difference refuses the load; after the `dlopen` the library is unloaded first.
+///
+/// RESIDUAL RISK, stated, not hidden (W23; the memfd path above has none of it):
+/// - The platform loaders open a library BY PATH (`dlopen`/dyld; `LoadLibraryW`). No public API
+///   on macOS loads a Mach-O image from an open descriptor or from memory, so the pin cannot be
+///   handed to the loader; it can only prove what sits at the name around the call.
+/// - macOS / unix fallback: a process running as THIS uid (or root) can chmod, rewrite or rename
+///   inside our `0700` directory. One that swaps other bytes in after the pre-load check and swaps
+///   the original back before the post-load check gets them mapped, and their initialisers run,
+///   with nothing left for either check to see. It can likewise reopen the file for write before
+///   the load (chmod it back to 0400 in time for the checks) and rewrite it in place after: a
+///   `MAP_PRIVATE` mapping does not snapshot pages not yet faulted in. No other uid can reach the
+///   file: the parent and the per-process directory are owner-checked `0700`.
+/// - Windows: while the pin is held (the library's whole life) the OS refuses any writer, delete
+///   or rename of the file, so the bytes at the name cannot change; the one instant without a pin,
+///   between the exclusive write handle's close and the read-only reopen, is covered by the
+///   read-back through the new handle. What remains is what the loader itself resolves outside
+///   that file (its own search for the DLL's imports), which this staging does not change.
+fn load_via_staged_file(
+    bytes: &[u8],
+    display: &str,
+    before_load: &mut dyn FnMut(&std::path::Path),
+) -> Result<(Library, Staged), String> {
+    let (path, pin) = stage_temp_file(bytes)?;
+    // Every failure below releases the staging: the pin closes first (Windows cannot remove a file
+    // held without delete sharing), then `release_temp_file` removes the file AND decrements
+    // `live` (a bare `remove_file` would leak the count and keep the clean-shutdown `live == 0`
+    // directory removal from ever firing).
+    let abandon = |pin: std::fs::File, path: &PathBuf| {
+        drop(pin);
+        release_temp_file(path);
+    };
+    before_load(&path);
+    if let Err(why) = verify_pinned(&pin, &path, bytes) {
+        abandon(pin, &path);
+        return Err(format!(
+            "refusing to load plugin '{display}': its staged file {why}"
+        ));
+    }
     // SAFETY: running an operator-trusted plugin's init code - the same trust as compiling it in.
-    // The file was created by us, in a directory we created 0700, from already-verified bytes.
-    let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path)).map_err(|e| {
-        let msg = format!("failed to load plugin '{display}': {e}");
-        // `stage_temp_file` already did `state.live += 1`, but no `Staged::TempFile` is
-        // constructed on this error path, so `release_temp_file` (the only decrementer) would never
-        // run — leaking a `live` count that keeps the clean-shutdown `live == 0` dir-removal from
-        // ever firing. Release here (removes the file AND decrements `live`, reclaiming the dir when
-        // it hits 0), not a bare `remove_file`.
-        release_temp_file(&path);
-        msg
-    })?;
-    Ok((lib, Staged::TempFile { path }))
+    // The file was created by us, in a directory we created 0700, from already-verified bytes,
+    // and was verified at its name through the pin immediately above.
+    let lib = match crate::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
+        Ok(lib) => lib,
+        Err(e) => {
+            abandon(pin, &path);
+            return Err(format!("failed to load plugin '{display}': {e}"));
+        }
+    };
+    if let Err(why) = verify_pinned(&pin, &path, bytes) {
+        crate::dlclose_on_worker(lib);
+        abandon(pin, &path);
+        return Err(format!(
+            "refusing to load plugin '{display}': its staged file changed while it was loading \
+             ({why}); unloaded"
+        ));
+    }
+    Ok((
+        lib,
+        Staged::TempFile {
+            path,
+            pin: Some(pin),
+        },
+    ))
 }
 
 /// Linux zero-disk load: write the verified bytes to an anonymous memfd and dlopen it via
