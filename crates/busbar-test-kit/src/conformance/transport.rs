@@ -29,6 +29,13 @@
 //!                                                       answer yields (ws: the switching
 //!                                                       response's head, HEAD-FIELDS) */
 //!         "emit":   "<one frame the host emits>",   "wire":   "<the wire bytes it becomes>",
+//!         "request": { "fields": [["<name>", "<value>"], ...], "body": "<body>" },
+//!                                                    /* optional, in place of emit: the request
+//!                                                       the host encodes, its head merged with
+//!                                                       the framer's own head lines (locate's
+//!                                                       defaults) whose names it lacks, then
+//!                                                       the body's content-length where locate
+//!                                                       states it (states_length) */
 //!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...],
 //!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
 //!                                                       and the close is answered (ws); the
@@ -372,6 +379,8 @@ fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (C
         Op::Begin(side, target) => {
             let mut i: BeginIn = input();
             (i.side, i.sink, i.target) = (side, raw, abi_bytes(target));
+            // The suite runs no connection security: its connections ride in the clear.
+            i.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
             go(p, slot::BEGIN, i)
         }
         Op::Ingest(bytes, end) => {
@@ -483,6 +492,57 @@ pub(super) fn carrier_line(outcomes: &[Outcome; 8]) -> String {
         .join(" ")
 }
 
+/// One head line, its name and its value.
+type HeadLine = (Vec<u8>, Vec<u8>);
+
+/// THE FRAMER'S OWN HEAD LINES at `target` (`LocateIn::defaults_buf`), read as the connector reads
+/// them: its line, and the lines, `name: value` each, in the framer's order. A dial that states its
+/// request as fields and a body has them merged into the request's head before it is encoded, as
+/// the host's walk adds each one its request does not carry before the auth signs the head (THE
+/// DESIGN section 6, step 5).
+fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, (Vec<HeadLine>, bool)) {
+    let (mut authority, mut name, mut alpn, mut defaults) = (
+        vec![0_u8; AMPLE],
+        vec![0_u8; AMPLE],
+        vec![0_u8; AMPLE],
+        vec![0_u8; AMPLE],
+    );
+    let mut i: LocateIn = input();
+    i.target = AbiStr {
+        ptr: target.as_ptr(),
+        len: target.len(),
+    };
+    (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
+    (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
+    (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
+    (i.defaults_buf, i.defaults_cap) = (defaults.as_mut_ptr(), defaults.len());
+    let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
+    let c = p.call(slot::LOCATE, &mut f);
+    let written = (f.out.defaults_written as usize).min(defaults.len());
+    let lines: Vec<HeadLine> = if c.outcome == Outcome::Ready {
+        defaults[..written]
+            .split(|b| *b == b'\n')
+            .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| {
+                let at = l.iter().position(|b| *b == b':')?;
+                let value = &l[at + 1..];
+                let start = value.iter().position(|b| *b != b' ').unwrap_or(value.len());
+                Some((l[..at].to_vec(), value[start..].to_vec()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let states_length = c.outcome == Outcome::Ready && f.out.states_length != 0;
+    let line = format!(
+        "{:?} defaults={} states_length={states_length}",
+        c.outcome,
+        lines.len()
+    );
+    (line, (lines, states_length))
+}
+
 /// One `locate` of `target` with an authority buffer of `cap` bytes: its line, and its SHORT
 /// answer's re-call token with the size it named.
 pub(super) fn locate(
@@ -508,6 +568,10 @@ fn locate_on(
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
+    // The framer's own head lines, lent AMPLE as the host lends them: a framer that states lines
+    // answers SHORT on a buffer that cannot hold them, and this probe pins the authority alone.
+    let mut defaults = vec![0_u8; AMPLE];
+    (i.defaults_buf, i.defaults_cap) = (defaults.as_mut_ptr(), defaults.len());
     let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
     let c = match recall {
         Some(token) => p.recall(token, slot::LOCATE, &mut f),
@@ -694,10 +758,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     // ── a dialled framing: out through a tight wire, in through a tight frame, the far end ──
     let dial = &k["dial"];
-    let (emit, wire) = (
-        text(&dial["emit"], "dial.emit"),
-        text(&dial["wire"], "dial.wire"),
-    );
+    let wire = text(&dial["wire"], "dial.wire");
     let (ingest, frames) = (
         text(&dial["ingest"], "dial.ingest"),
         texts(&dial["frames"], "dial.frames"),
@@ -742,6 +803,67 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             pump(&p, token, Op::Ingest(&answer, false), &mut tight).line()
         });
     }
+    // THE REQUEST THE DIAL SENDS: `dial.emit` as the message bytes, or `dial.request` (`fields` and
+    // `body`) encoded by the framer itself with its own head lines merged in, as the host's walk
+    // merges them: the request's fields, then each line the framer states whose name the request
+    // does not carry, then the body's length where the framer states it (THE DESIGN section 6,
+    // step 5).
+    let emit = if dial["request"].is_null() {
+        text(&dial["emit"], "dial.emit")
+    } else {
+        let request = &dial["request"];
+        let body = opt_text(&request["body"], "dial.request.body");
+        let mut named: Vec<HeadLine> = request["fields"]
+            .as_array()
+            .map(|fs| {
+                fs.iter()
+                    .map(|f| {
+                        (
+                            text(&f[0], "dial.request.fields name"),
+                            text(&f[1], "dial.request.fields value"),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (defaults, states_length) =
+            sc.step("dial defaults", 1, || located_defaults(&p, &target));
+        for (name, value) in defaults {
+            if !named.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                named.push((name, value));
+            }
+        }
+        // Where the framer states its body's length, the body's `content-length` LAST, for a
+        // non-empty body whose head carries none, as the host's walk adds it.
+        if states_length
+            && !body.is_empty()
+            && !named
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(b"content-length"))
+        {
+            named.push((
+                b"content-length".to_vec(),
+                body.len().to_string().into_bytes(),
+            ));
+        }
+        let fields: Vec<Field> = named
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr {
+                    ptr: n.as_ptr(),
+                    len: n.len(),
+                },
+                value: AbiStr {
+                    ptr: v.as_ptr(),
+                    len: v.len(),
+                },
+            })
+            .collect();
+        sc.step("dial encode", 1, || {
+            let y = once(&p, 0, Op::Encode(&body, &fields), &mut Sink::ample());
+            (y.line(), y.wire)
+        })
+    };
     let want = Want::Is(yielded_line(&wire, &[], &[], armed("emit"), false));
     sc.judged("emit", sinkfuls(wire.len(), TIGHT_WIRE), want, || {
         pump(&p, token, Op::Emit(&emit, true), &mut tight).line()

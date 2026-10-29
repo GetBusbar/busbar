@@ -285,6 +285,8 @@ fn begin(
     let l = host.lane(0, &inputs.local);
     let mut i: BeginIn = input();
     i.side = side;
+    // A datagram lane rides the host's secure layer, as the connector's does.
+    i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
     i.facts = &facts;
     i.sink = host.sink();
     if side == SIDE_DIAL && !fields.is_empty() {
