@@ -738,6 +738,13 @@ name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
 
+# Boots the real binary with the webhook sink at a target the host refuses, and reads the audit
+# chain through the admin API: it needs the operator credential's row and the webhook sink linked.
+[[test]]
+name = "bind_refusal_audited"
+path = "tests/bind_refusal_audited.rs"
+required-features = ["auth-admin-tokens", "export-webhook"]
+
 [[test]]
 name = "admin_bound_before_healthz"
 path = "tests/admin_bound_before_healthz.rs"
