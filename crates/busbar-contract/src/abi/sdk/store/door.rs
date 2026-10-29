@@ -57,8 +57,8 @@ use crate::abi::store::{
 use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
 use crate::records::{
-    CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecordRef, PlaneSelector, UsageDelta,
-    UsageLedger, VirtualKey,
+    CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecordRef, PlaneSelector, Retention,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 
 /// How many error texts one instance keeps alive for the host to copy.
@@ -920,9 +920,15 @@ slot!(
 );
 slot!(
     /// `purge_plane_records_before` (slot 22).
+    /// The rule rides the `in`; an older host's shorter `in` reads `0` there (the trampoline
+    /// zero-fills past its stated size), the age rule that host purged by. A code that names no
+    /// rule is refused, never guessed.
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before)) {
+        let Some(retention) = Retention::from_code(i.retention) else {
+            return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
+        };
+        match step!(o, s.store.purge_plane_records(cx, kind, i.before, retention)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
