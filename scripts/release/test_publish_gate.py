@@ -399,5 +399,220 @@ class Gate(unittest.TestCase):
         self.assertFalse((self.w.out / "signed").exists())
 
 
+
+GIT = ("git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "tag.gpgSign=false")
+
+
+class IndexNet(pg.Net):
+    """GitHub's answer to `repos/<org>/<name>`: the repository a name redirects to, or None."""
+
+    def __init__(self, redirects=None):
+        self.redirects = redirects or {}
+
+    def repo_full_name(self, repo):
+        return self.redirects.get(repo)
+
+
+@unittest.skipUnless(shutil.which("git") and shutil.which("ssh-keygen"), "needs git and ssh-keygen")
+class VersionTag(unittest.TestCase):
+    """G-15: the version tag is annotated, signed by K2 under the `git` namespace, and names the
+    release commit. Needs no busbar-plugin-pack."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="publish-gate-tag-"))
+        self.root, self.keys = self.tmp / "repo", self.tmp / "keys"
+        self.root.mkdir()
+        self.keys.mkdir()
+        for k in ("k2", "other"):
+            sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", k, "-f", str(self.keys / k))
+        pub = (self.keys / "k2.pub").read_text().split()
+        self.file_line = f'busbar-release namespaces="busbar-release" {pub[0]} {pub[1]} busbar-release-2026a'
+        self.git_line = f'busbar-release namespaces="git" {pub[0]} {pub[1]} busbar-release-2026a'
+        self.k1 = "busbar-plugins-root:p256:" + "04" * 65
+        (self.root / ".cargo").mkdir()
+        (self.root / ".cargo" / "config.toml").write_text(f'[env]\nBUSBAR_RELEASE_PUBKEY = "{self.k1}"\n')
+        (self.root / "release").mkdir()
+        self.set_signers([self.file_line, self.git_line])
+        sh(*GIT, "init", "-q", cwd=self.root)
+        sh(*GIT, "add", "-A", cwd=self.root)
+        sh(*GIT, "commit", "-q", "-m", "release", cwd=self.root)
+        self.commit = sh("git", "rev-parse", "HEAD", cwd=self.root).decode().strip()
+        self.cj = {"version": VERSION, "commit": self.commit}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def set_signers(self, lines):
+        self.trust = {"k1": self.k1, "release_signer": "p256:00", "keys_doc": "keys.json", "k2_allowed_signers": lines}
+        (self.root / "release" / "allowed_signers").write_text("# K2\n" + "".join(l + "\n" for l in lines))
+
+    def tag(self, key=None, annotated=True, at="HEAD"):
+        name = f"v{VERSION}"
+        if key:
+            sh(*GIT, "-c", "gpg.format=ssh", "-c", f"user.signingkey={self.keys / key}",
+               "tag", "-s", name, "-m", f"busbar {VERSION}", at, cwd=self.root)
+        elif annotated:
+            sh(*GIT, "tag", "-a", name, "-m", f"busbar {VERSION}", at, cwd=self.root)
+        else:
+            sh(*GIT, "tag", name, at, cwd=self.root)
+
+    def inputs(self):
+        return pg.Inputs(root=self.root, cand=self.tmp, trust=self.trust, pack="", net=IndexNet(),
+                         require_hardware_k2=False)
+
+    def g15(self):
+        vd = pg.Verdict()
+        pg.g15_version_tag(self.inputs(), self.cj, vd)
+        return vd
+
+    def assert_refused(self, vd, needle=""):
+        hit = [x for x in vd.refusals if x.split()[1] == "G-15" and needle in x]
+        self.assertTrue(hit, f"expected a G-15 refusal containing {needle!r}; got {vd.refusals}")
+
+    def test_an_unsigned_version_tag_refuses_the_publish(self):
+        self.assert_refused(self.g15(), f"v{VERSION}")  # no tag at all
+        self.tag(annotated=False)
+        self.assert_refused(self.g15(), "annotated")  # a lightweight tag
+        sh("git", "tag", "-d", f"v{VERSION}", cwd=self.root)
+        self.tag(annotated=True)
+        self.assert_refused(self.g15(), "signed")  # annotated, but unsigned
+
+    def test_a_tag_signed_by_a_key_not_in_allowed_signers_refuses(self):
+        self.tag(key="other")
+        self.assert_refused(self.g15(), "signed")
+
+    def test_a_tag_verified_only_by_a_git_line_for_another_key_refuses(self):
+        # A `git` line whose key is not a K2 file-signing key would let any key sign the tag.
+        pub = (self.keys / "other.pub").read_text().split()
+        self.set_signers([self.file_line, f'busbar-release namespaces="git" {pub[0]} {pub[1]} other'])
+        self.tag(key="other")
+        self.assert_refused(self.g15(), "release key")
+
+    def test_a_signed_tag_on_another_commit_refuses(self):
+        sh(*GIT, "commit", "-q", "--allow-empty", "-m", "later", cwd=self.root)
+        self.tag(key="k2")
+        self.assert_refused(self.g15(), self.commit)
+
+    def test_a_version_tag_signed_by_k2_verifies(self):
+        self.tag(key="k2")
+        vd = self.g15()
+        self.assertEqual(vd.refusals, [])
+        self.assertTrue(vd.checked.get("G-15"))
+
+    def test_g14_allows_a_k2_line_limited_to_the_git_tag_namespace(self):
+        vd = pg.Verdict()
+        pg.g14_trust(self.inputs(), vd)
+        self.assertEqual(vd.refusals, [])
+        both = self.file_line.replace('namespaces="busbar-release"', 'namespaces="busbar-release,git"')
+        self.set_signers([both])
+        vd = pg.Verdict()
+        pg.g14_trust(self.inputs(), vd)
+        self.assertTrue(any(x.split()[1] == "G-14" for x in vd.refusals), vd.refusals)
+
+
+INDEX_PLUGIN = "busbar-store-stub"
+
+
+def parser_keys() -> list:
+    """The key lists `Index::parse` (crates/busbar/src/root/config_migrate.rs) accepts, in order:
+    the document, a plugin, a release. The binary refuses any other key."""
+    import re
+    src = (Path(__file__).resolve().parents[2] / "crates/busbar/src/root/config_migrate.rs").read_text()
+    body = src[src.index("pub fn parse(bytes: &[u8])"):src.index("fn by_repo(")]
+    return [re.findall(r'"([a-z_]+)"', m) for m in re.findall(r"&\[\s*((?:\"[a-z_]+\",?\s*)+)\]", body)]
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class PluginIndex(unittest.TestCase):
+    """plugin-index.json: owed by G-3, listed in SHA256SUMS, rendered from the candidate's plugins in
+    the shape `busbar --migrate-config` parses. Needs no busbar-plugin-pack."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="publish-gate-index-"))
+        self.root, self.cand = self.tmp / "repo", self.tmp / "cand"
+        r, c = self.root, self.cand
+        (r / ".github").mkdir(parents=True)
+        (r / ".github" / "release-targets.json").write_text(json.dumps({"targets": [
+            {"target": "x86_64-unknown-linux-gnu", "kind": "binary", "published": True, "archive": "tar.gz"}]}))
+        (r / "plugins.yaml").write_text(
+            "plugins:\n"
+            f"  - repo: {INDEX_PLUGIN}\n    kind: store\n    alias: stub\n    crate: {INDEX_PLUGIN}-plugin\n"
+            f"    former_names: [{INDEX_PLUGIN}-plugin, busbar-stub-db]\n"
+            "  - repo: busbar-auth-empty\n    kind: auth\n    alias: empty\n    crate: busbar-auth-empty\n"
+            "    pending_crate: true\n")
+        (r / "release").mkdir()
+        (r / "release" / "plugin-pins.tsv").write_text(f"# pins\n{INDEX_PLUGIN}\tv{PVER}\t{'c' * 40}\n")
+        for d in ("artifacts", "sboms", "plugins"):
+            (c / d).mkdir(parents=True)
+        (c / "artifacts" / "busbar-x86_64-unknown-linux-gnu.tar.gz").write_bytes(tgz({"busbar": b"bin"}))
+        (c / "artifacts" / f"busbar-openapi-v{VERSION}.json").write_text("{}\n")
+        (c / "sboms" / f"busbar-v{VERSION}-x86_64-unknown-linux-gnu.cdx.json").write_text("{}\n")
+        manifest = json.dumps({"name": INDEX_PLUGIN, "alias": "stub", "kind": "store", "version": PVER,
+                               "abi_version": 7}).encode()
+        for target, _, _ in pg.PLUGIN_TARGETS:
+            (c / "plugins" / f"{INDEX_PLUGIN}-{PVER}-{target}.tar.gz").write_bytes(
+                tgz({"libstub.so": b"lib", "manifest.json": manifest}))
+        self.cj = {"version": VERSION, "commit": "a" * 40, "repo": "GetBusbar/busbar",
+                   "test_kit": {"tag": f"test-kit-v{VERSION}", "commit": "b" * 40},
+                   "plugins": [{"repo": INDEX_PLUGIN, "version": PVER, "tag": f"v{PVER}", "commit": "c" * 40}]}
+        # GitHub still redirects the 1.5.5 repository name to the plugin; the other candidates are not repos.
+        self.net = IndexNet({"GetBusbar/store-stub": f"GetBusbar/{INDEX_PLUGIN}"})
+        self.sums()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def sums(self):
+        pg.write_sums(self.cand / "SHA256SUMS", [f for d in ("artifacts", "sboms") for f in (self.cand / d).iterdir()])
+
+    def inputs(self):
+        return pg.Inputs(root=self.root, cand=self.cand, trust={}, pack="", net=self.net, require_hardware_k2=False)
+
+    def g3(self):
+        vd = pg.Verdict()
+        pg.g3_g4_sets_and_sums(self.inputs(), self.cj, vd)
+        return vd.refusals
+
+    def render(self):
+        (self.cand / "artifacts" / "plugin-index.json").write_bytes(
+            pg.render_plugin_index(self.root, self.cand, self.cj["plugins"], self.net))
+        self.sums()
+
+    def test_a_candidate_without_plugin_index_json_refuses(self):
+        r = self.g3()
+        self.assertTrue(any(x.startswith("REFUSED G-3 artifacts/plugin-index.json") for x in r), r)
+
+    def test_a_candidate_with_the_rendered_index_passes_and_sums_list_it(self):
+        self.render()
+        self.assertEqual(self.g3(), [])
+        self.assertIn("plugin-index.json", pg.read_sums(self.cand / "SHA256SUMS"))
+
+    def test_an_index_that_is_not_the_render_of_the_candidate_refuses(self):
+        self.render()
+        f = self.cand / "artifacts" / "plugin-index.json"
+        doc = json.loads(f.read_text())
+        doc["plugins"][0]["releases"][0]["tag"] = "v9.9.9"
+        f.write_text(json.dumps(doc, indent=2) + "\n")
+        self.sums()
+        r = self.g3()
+        self.assertTrue(any(x.startswith("REFUSED G-3 artifacts/plugin-index.json") for x in r), r)
+
+    def test_the_rendered_index_is_the_document_the_binary_parses(self):
+        top, plugin, release = parser_keys()
+        self.assertEqual(top, ["plugins"])
+        doc = json.loads(pg.render_plugin_index(self.root, self.cand, self.cj["plugins"], self.net))
+        self.assertEqual(sorted(doc), sorted(top))
+        self.assertEqual(len(doc["plugins"]), 1)
+        p = doc["plugins"][0]
+        self.assertEqual(sorted(p), sorted(plugin))
+        for r in p["releases"]:
+            self.assertEqual(sorted(r), sorted(release))
+        self.assertEqual(p["repo"], f"GetBusbar/{INDEX_PLUGIN}")
+        self.assertEqual(p["former_repos"], ["GetBusbar/store-stub"])
+        self.assertEqual(p["kind"], "store")
+        self.assertEqual(p["answers_to"], [INDEX_PLUGIN, "stub", f"{INDEX_PLUGIN}-plugin", "busbar-stub-db"])
+        # The ABI version is read off the built tarball's manifest, never assumed.
+        self.assertEqual(p["releases"], [{"tag": f"v{PVER}", "abi_version": 7}])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
