@@ -63,12 +63,9 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
         // pre-rotation token is rejected by every node reading the same store.
         generation_hash: binding_marker(&id, &generation),
         name: spec.name,
-        // Intent carried intact from the mint body: None = all pools; Some([]) = none.
-        allowed_scopes: spec.allowed_pools.map(|list| {
-            list.into_iter()
-                .map(busbar_contract::records::ScopeRef::pool)
-                .collect()
-        }),
+        // Intent carried intact from the mint body: no grant field = everything; any grant field
+        // = exactly the scopes named, across every kind; every field `[]` = nothing.
+        allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
         enabled: true,
         created_at: now,
         group: spec.group,
@@ -1272,11 +1269,7 @@ impl GovState {
             id,
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -1334,11 +1327,7 @@ impl GovState {
             id: id.clone(),
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
             enabled: true,
             created_at: now,
             group: spec.group,
