@@ -1724,9 +1724,11 @@ pub(super) mod session_door {
         );
     }
 
-    /// APPROVE, at the session door: a key whose grant does not reach the door's pool is refused at
-    /// approval — before the provider is dialled, charged nothing, no line written — while a key with
-    /// the grant is served (the mint cell above). RED: a door that skipped approval would dial.
+    /// THE GRANT, at the session door (R10 grant ruling): a key whose grant does not reach the session
+    /// model's pool is refused at the mint, before anything is minted or dialled: its request is not
+    /// counted against the key's caps (before R10 the kernel refused it before counting), no line is
+    /// written, and the refusal is audited naming the pool — while a key with the grant is served
+    /// (the mint cell above). RED: a door that skipped the grant would mint.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_key_short_of_the_doors_grant_is_refused_before_any_dial() {
         let _one = PUBLISHING.lock().await;
@@ -1739,6 +1741,16 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
+        // THE REFUSAL'S REASON IN THE UNIT'S AUDIT (R10 ruling 2): a rejected mint row naming the
+        // pool the key is not granted, under the key's principal, never the key itself.
+        let rejected = |s: &SessionDoor| {
+            busbar_kernel::audit::auditlog::AUDIT_LOG
+                .list_filtered(0, 1000, Some("realtime_ticket.mint"), Some("pool:m-cap"))
+                .into_iter()
+                .filter(|e| e.principal == s.key.id && e.outcome == "rejected")
+                .collect::<Vec<_>>()
+        };
+        let before = rejected(&s).len();
         let (status, heard) = s.mint_once().await;
         assert!(
             status.is_client_error(),
@@ -1749,6 +1761,13 @@ pub(super) mod session_door {
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no record carries counts");
+        let rows = rejected(&s);
+        assert_eq!(rows.len(), before + 1, "the refusal is audited, once");
+        assert!(
+            rows.iter()
+                .all(|e| !e.action.contains(&s.plain) && !e.resource.contains(&s.plain)),
+            "the audit never names the key"
+        );
     }
 
     // ── a live session through the door's session route, on a real listener ──────────────────────
