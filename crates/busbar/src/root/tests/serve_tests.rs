@@ -3044,6 +3044,51 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
+    /// RED W11 (docs/mcp.md: `timeout:` defaults to `30s`, a core default): a registration that
+    /// writes NO `timeout:` is bounded all the same. A server that takes the relayed `tools/call`
+    /// and never answers it is answered to the caller at the 30 s default, in the timed-out words,
+    /// not at the walk's 120 s budget.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_tool_server_with_no_timeout_is_answered_at_the_default() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-stall-default";
+        let (port, mut heard) = tool_server_replying(Arc::new(|r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else {
+                (STALL, String::new())
+            }
+        }))
+        .await;
+        let rig = rig_tools(instance, port, registration("stall", port, ""), &|app| app);
+
+        let started = Instant::now();
+        let (status, answer) = tokio::time::timeout(
+            Duration::from_secs(60),
+            call(&rig, &rig.token, "stall_read_file", serde_json::json!({})),
+        )
+        .await
+        .expect("the stalled call was answered at the default, not the walk's 120 s budget");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(30) && took < Duration::from_secs(40),
+            "answered at the 30 s default: {took:?} {answer}"
+        );
+        assert!(
+            drain(&mut heard).contains(&"call"),
+            "the call reached the stalled server"
+        );
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
+        assert_eq!(answer["error"]["code"], -32030, "{answer}");
+        let message = answer["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("did not answer this call within the server's timeout"),
+            "the timed-out words: {message}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
     /// RED's control (ARCHITECT ruling on the timed-out answer): a dial that FAILS — the server
     /// answered its tool list, then stopped listening — keeps the not-dispatched words; only a
     /// dispatched call whose timeout ran out says it was dispatched.

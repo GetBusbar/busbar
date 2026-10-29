@@ -62,6 +62,32 @@ fn an_entrys_timeout_is_its_members_attempt_bound() {
     assert_eq!(m.timeout_ms("m2"), None);
 }
 
+/// RED W11 (docs/mcp.md: a registration's `timeout:` defaults to `30s`; owner: a CORE default): a
+/// REGISTRATION that writes no `timeout:` is still bounded. Its member's attempt bound is the core
+/// default, 30 seconds, never the walk's whole budget (the pool's 120 s), so an upstream that takes
+/// a call and never answers it holds its caller 30 s. A written `timeout:` wins. A model-serving
+/// section's entries keep 1.5.5's rule: no bound of their own, the walk's budget.
+#[test]
+fn a_registration_that_writes_no_timeout_is_bounded_at_the_core_default() {
+    let p = pools("fs: { url: \"http://up.example/rpc\" }\nslow: { timeout: 2m }");
+    assert_eq!(
+        p.timeout_ms("fs"),
+        Some(30_000),
+        "none written: the core's 30 s default, not the walk's budget"
+    );
+    assert_eq!(
+        p.timeout_ms("slow"),
+        Some(120_000),
+        "a written timeout wins"
+    );
+    let m = pools("models:\n  m: { provider: p }");
+    assert_eq!(
+        m.timeout_ms("m"),
+        None,
+        "a model entry keeps 1.5.5's walk budget"
+    );
+}
+
 #[test]
 fn a_direct_route_walks_its_entry_alone_under_the_empty_label() {
     let p = pools(SECTION);
