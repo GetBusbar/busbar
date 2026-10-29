@@ -1352,7 +1352,7 @@ impl TestApp {
             .get_or_insert_with(Default::default)
             .entry("test-idp-module".to_string())
             .or_default()
-            .entry(crate::auth::TEST_IDP_ROLE.to_string())
+            .entry(auth_modules::TEST_IDP_ROLE.to_string())
             .or_default();
         self
     }
@@ -1866,6 +1866,14 @@ impl TestApp {
                 let mut chain = self
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
+                // The admin group module answers under its own name in every fixture, so a chain
+                // that names it (set here, after the build, or by `PUT /admin-auth`) reaches it.
+                if let Some(module) = auth_modules::open(auth_modules::TEST_SCOPE_MODULE) {
+                    chain
+                        .modules
+                        .entry(auth_modules::TEST_SCOPE_MODULE.to_string())
+                        .or_insert_with(|| crate::auth::AdminModule::in_process(module));
+                }
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
                 let reg = crate::preflight::linked().expect("the linked registry");
                 chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
@@ -2130,6 +2138,8 @@ pub mod warn_capture;
 /// are handed to a dependent crate's tests, which never name the seal or a constructor.
 pub mod tokens;
 
+/// The test auth modules a test chain names, answered in process by the test build's auth axis.
+pub mod auth_modules;
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
@@ -2275,7 +2285,23 @@ pub fn install_root_hook_names(names: &'static [&'static str]) {
 /// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
 /// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
 pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
+    if ROOT_AUTH_AXIS.set(open).is_ok() {
+        let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(root_auth_axis_with_test_modules);
+    }
+}
+
+/// The root test binary's own auth-axis opener ([`install_root_auth_axis`]).
+static ROOT_AUTH_AXIS: std::sync::OnceLock<crate::preflight::AuthAxisOpener> =
+    std::sync::OnceLock::new();
+
+/// The root test binary's auth axis with the test auth modules answered ahead of its rows.
+fn root_auth_axis_with_test_modules(
+    registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+) -> std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    let open = ROOT_AUTH_AXIS
+        .get()
+        .expect("installed before the opener is reported");
+    auth_modules::around(open(registry))
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,

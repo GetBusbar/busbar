@@ -192,7 +192,13 @@ impl ModelPools {
             .models
             .iter()
             .filter_map(|(name, m)| {
-                let health = cfg.providers.get(&m.provider)?.health.as_ref()?;
+                let provider = cfg.providers.get(&m.provider)?;
+                // A keyless lane (`api_key: none`) is not probed: it holds no credential, as
+                // 1.5.5's prober skipped a lane with no key ("no key, no probe").
+                if provider.api_key.is_none() {
+                    return None;
+                }
+                let health = provider.health.as_ref()?;
                 Some((
                     name.clone(),
                     busbar_kernel::probe::ProbeCfg::resolve(
