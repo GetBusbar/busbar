@@ -48,6 +48,9 @@ use crate::abi::transport::{
     IngestIn, KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
+#[allow(unused_imports)]
+use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch};
+
 /// One block's pointer and length pairs, per struct: `(pointer, length, length's width)`.
 macro_rules! lend_pairs {
     (fn $reg:ident; $($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {

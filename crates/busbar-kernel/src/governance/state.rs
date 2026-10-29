@@ -236,6 +236,18 @@ impl GovState {
                 return None;
             }
         };
+        self.standing_key(&claims, now)
+    }
+
+    /// THE STATE HALF OF A SIGNED-TOKEN VERIFY, over claims whose signature, expiry and audience
+    /// already held: the subject not revoked, its binding enabled, and the token naming the
+    /// binding's current generation. Shared by [`Self::verify_token`] and the ticket gate, so a
+    /// ticket stands exactly when a key minted for its subject would.
+    pub(super) fn standing_key(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
         // Revocation: the ONE state read on the otherwise-stateless path. The set is a bounded-TTL
         // CACHE of the store's denylist, re-read here when stale so a peer's (or an out-of-band)
         // revoke is honoured within `REVOCATION_SYNC_TTL_SECS` instead of never.
@@ -1223,7 +1235,7 @@ impl GovState {
 
     /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
     /// never across the crypto).
-    fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
+    pub(super) fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
         self.signing
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -2592,16 +2604,17 @@ impl GovState {
 
     /// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): the secret of `(kind, public_id)` and
     /// whether it may authenticate now (the credential live, its key enabled and not revoked). An
-    /// unknown pair, or a secret in an unrecognized envelope, answers the fixed dummy secret, not
-    /// live, through the SAME steps (the lookup, the copy, the revocation check), so the reply's
-    /// cost does not say whether the pair exists. The one place this rule lives.
+    /// unknown pair, or a secret in an unrecognized envelope, answers an EMPTY secret, not live,
+    /// through the SAME steps (the lookup, the copy, the revocation check), so the reply's cost
+    /// does not say whether the pair exists. The verifying auth swaps in its own dummy secret when
+    /// the answer is not live and runs its full verification over it, so a reject costs what a bad
+    /// signature costs (no identifier-enumeration oracle). The one place this rule lives.
     pub fn credential_secret(
         &self,
         kind: &str,
         public_id: &str,
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
-        let dummy = crate::auth::DUMMY_SECRET;
         let keys = self.at_rest_keys();
         // Owned copies, out of the cache lock before the revocation check takes its own. The
         // stored envelope is opened here, at the read: the cache holds it sealed.
@@ -2615,11 +2628,11 @@ impl GovState {
                 };
                 (key.id.clone(), plain, key.enabled)
             }
-            None => (dummy.to_string(), None, false),
+            None => (String::new(), None, false),
         };
         let revoked = self.is_revoked_at(&key, now);
         let live = enabled && plain.is_some() && !revoked;
-        let secret = plain.unwrap_or_else(|| dummy.to_string());
+        let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
     }
 

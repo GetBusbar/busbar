@@ -3,14 +3,14 @@
 
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
-//! The closed verb table (`admin_codec::verbs`) declares 20 operations 1.6.0 adds to the
-//! administrative surface: the 12 kernel verbs ([`NEW_VERBS`]: nine money-governance, three trust),
+//! The closed verb table (`admin_codec::verbs`) declares 19 operations 1.6.0 adds to the
+//! administrative surface: the 11 kernel verbs ([`NEW_VERBS`]: eight money-governance, three trust),
 //! the five ledger views ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
 //! audit reads render from the one ledger (the store's usage counts x the rate card) and the
 //! node's audit chain, `adjust` lands on the usage counts as a signed adjustment,
-//! `amend_rate_history` lands on the node's amendment journal, and the three disaster-recovery verbs
+//! `amend_rate_history` lands on the node's amendment journal, and the two disaster-recovery verbs
 //! land on the store.
 //!
 //! They used to be described nowhere, or in a side-car document kept beside the served one so the
@@ -774,7 +774,7 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        // ── the three disaster-recovery verbs: their effect lands on the store ──
+        // ── the two disaster-recovery verbs: their effect lands on the store ──
         KernelVerb::ChainBreak => VerbDoc {
             summary: "Deliberately break the journal chain (disaster recovery)",
             description: "Admitted through the same gates as every other new verb, then handed to \
@@ -828,24 +828,6 @@ fn doc_for(
                 ),
             ],
         },
-        KernelVerb::ResealEpochFloor => VerbDoc {
-            summary: "Reseal the epoch floor after a chain break or restore",
-            description: "Admitted through the same gates as every other new verb, then handed to \
-                          the store. The request body is not read."
-                .to_string(),
-            success: Success::NoContent("Applied: the floor is resealed. No body"),
-            request: None,
-            query: Vec::new(),
-            errors: vec![
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store names no such resource".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-
         // ── the four verbs owner answer Q71(2) binds ──
         KernelVerb::Verify => VerbDoc {
             summary: "Verify this node's ledger: checkpoints, sequences, the book and the identity",

@@ -12599,68 +12599,6 @@
         "x-busbar-required-scope": "read-only"
       }
     },
-    "/api/v1/admin/reseal-epoch-floor": {
-      "post": {
-        "description": "Admitted through the same gates as every other new verb, then handed to the store. The request body is not read.",
-        "operationId": "PostResealEpochFloor",
-        "responses": {
-          "204": {
-            "description": "Applied: the floor is resealed. No body"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the store names no such resource"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Reseal the epoch floor after a chain break or restore",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
     "/api/v1/admin/restart": {
       "post": {
         "operationId": "PostRestart",
