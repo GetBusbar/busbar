@@ -278,6 +278,13 @@ pub enum Ruling {
     Revoke,
 }
 
+/// THE SIGHTING OF A DOCUMENT THAT FAILED ITS VERIFICATION: a plane that fetched a counterparty's
+/// document and could not verify it (against its pin, its signature or its root) reports this word
+/// in place of a fingerprint. No fingerprint is ever this word, so a pinned counterparty sighted
+/// under it drifts, and nothing is ever approved at it ([`Undecided::Unverified`]): an approval
+/// approves what was seen AND verified, by the generic verb and a plane's typed one alike.
+pub const UNVERIFIED_SIGHTING: &str = "unverified";
+
 /// Why a decision was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Undecided {
@@ -290,6 +297,9 @@ pub enum Undecided {
     Rootless,
     /// The fingerprint the caller approves is not the key's current sighting.
     Stale,
+    /// The key's current sighting is a document that failed its verification
+    /// ([`UNVERIFIED_SIGHTING`]): there is nothing verified to approve.
+    Unverified,
 }
 
 /// THE DURABLE FACT a decision leaves: what the operator decided about one key. Replayed at admit
@@ -516,7 +526,8 @@ impl TrustBook {
     /// for an approval with nothing ever sighted (or declared) to approve at;
     /// [`Undecided::Rootless`] for an approval at a counterparty with no authenticity root; and
     /// [`Undecided::Stale`] for an approval whose `expected` fingerprint is not the current
-    /// sighting.
+    /// sighting; and [`Undecided::Unverified`] for an approval at a sighting that failed its
+    /// verification ([`UNVERIFIED_SIGHTING`]).
     pub fn decide(
         &self,
         instance: &str,
@@ -593,6 +604,11 @@ impl TrustBook {
                 }
             }
         };
+        // NEVER PIN WHAT WAS NOT VERIFIED: whichever verb asks, with or without an expected
+        // fingerprint, the placeholder of a failed verification is never approved.
+        if approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
+            return Err(Undecided::Unverified);
+        }
         Ok(RulingRow {
             instance: instance.to_string(),
             counterparty: counterparty.to_string(),
@@ -673,6 +689,10 @@ impl TrustBook {
                 continue;
             };
             if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
+                continue;
+            }
+            // An approval kept at the placeholder of a failed verification approves nothing.
+            if row.approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
                 continue;
             }
             match (&row.item, &row.approved) {
