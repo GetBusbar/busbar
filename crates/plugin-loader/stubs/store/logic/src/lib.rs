@@ -16,8 +16,8 @@
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -805,16 +805,35 @@ impl Store for MemoryStore {
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
-        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
-        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
-        // work), every other kind drops any row older than `before`.
+        // The rule-less form: `task` drops only TERMINAL rows (an interrupted task waiting on a human
+        // is exactly the row that sits still longest), every other kind drops any row older than
+        // `before`.
+        let retention = if kind == "task" {
+            Retention::TerminalOnly
+        } else {
+            Retention::Age
+        };
+        self.purge_plane_records(kind, before, retention)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        // WHICH rows go is the rule the purge is handed, never one inferred from the kind's name:
+        // under `TerminalOnly` an old ACTIVE row stays and an old TERMINAL one goes.
         let mut records = self.plane_records();
         let before_len = records.len();
         records.retain(|(k, _, _), r| {
-            if k != kind || r.ts >= before {
-                return true;
-            }
-            k == "task" && r.disposition != PlaneDisposition::Terminal
+            let goes = k == kind
+                && r.ts < before
+                && match retention {
+                    Retention::Age => true,
+                    Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
+                };
+            !goes
         });
         Ok((before_len - records.len()) as u64)
     }

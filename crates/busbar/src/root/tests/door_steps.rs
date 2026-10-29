@@ -524,6 +524,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -652,6 +653,7 @@ fn charge_once_at(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
@@ -2022,7 +2024,7 @@ pub(crate) mod tool_door {
     use busbar_contract::conn::{DeclaredConns, PollConns};
     use busbar_kernel::cost::CostModel;
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
+    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
     use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2508,7 +2510,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
-                busbar_kernel::config::secret::resolve_linked_string_at_config,
+                busbar_core_connector::spawn_env::linked_spawn_secret,
             )
             .expect("the connector builds");
             let plane = bound(
@@ -2527,7 +2529,7 @@ pub(crate) mod tool_door {
             );
 
             let node = Arc::new(Node::new());
-            let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+            let book = crate::root::durability::node_book();
             node.bind_book(Arc::clone(&book.durability));
             let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
             let site = Arc::clone(&post);
@@ -3390,35 +3392,34 @@ pub(crate) mod tool_door {
                 "the call's one chained record: {chained:?}"
             );
         }
-        let rows = rig.book.durability.lock().expect("unpoisoned").read_back();
-        // The unit's lane is the published tool it called (SEAM-L(j)), as predev ledgered a call.
-        let lane = format!("{}{PLANE_LANE_SEP}fs_read_file", rig.plane_key);
-        let lines: Vec<_> = rows
-            .iter()
-            .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
-            .collect();
+        // THE UNIT'S ONE AUDIT RECORD carries what the plane reported, by class: the node keeps no
+        // money line (MONEY-DESIGN §3); the counts are the governance ledger's.
+        let records = rig
+            .book
+            .durability
+            .lock()
+            .expect("unpoisoned")
+            .audit_records
+            .clone();
+        let counted = |class: &str| -> Vec<u64> {
+            records
+                .iter()
+                .flat_map(|r| r.usage.lines.iter())
+                .filter(|l| l.class.as_str() == class)
+                .map(|l| l.quantity)
+                .collect()
+        };
         assert_eq!(
-            lines.len(),
-            1,
-            "the unit's one line on the node's book: {rows:?}"
-        );
-        let counts = lines[0].counts.as_ref().expect("its counts");
-        assert_eq!(
-            lines[0].refusal, None,
-            "its classes resolve: {:?}",
-            lines[0]
-        );
-        assert_eq!(
-            counts.classes.get(surface("class_tool_calls")).copied(),
-            Some(1),
-            "the one tool call the plane reported: {counts:?}"
+            counted(surface("class_tool_calls")),
+            vec![1],
+            "the one tool call the plane reported, on the unit's one record: {records:?}"
         );
         // THE BYTE CLASS, STATED (THE DESIGN §7, "The plane reports; the kernel writes"; Law 6): the
         // length of the document the server answered with, the plane's second declared class.
         assert_eq!(
-            counts.classes.get(surface("class_bytes")).copied(),
-            Some(ANSWER.len() as u64),
-            "the bytes of the server's answer the plane reported: {counts:?}"
+            counted(surface("class_bytes")),
+            vec![ANSWER.len() as u64],
+            "the bytes of the server's answer the plane reported: {records:?}"
         );
     }
 
@@ -5808,7 +5809,7 @@ mod door_listen;
 /// `tasks/cancel` and the `-32021` gate answer as the served engine's tasks did.
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod task_continuation {
-    use busbar_kernel::governance::{NewKeySpec, PLANE_LANE_SEP};
+    use busbar_kernel::governance::NewKeySpec;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::tool_door::{
@@ -6054,31 +6055,34 @@ mod task_continuation {
             .await
             .expect("every unit ended");
         assert_eq!(rig.admitted(), 2, "the creating unit and its continuation");
-        let rows = rig.book.durability.lock().expect("unpoisoned").read_back();
-        // The unit's lane is the published tool it called (SEAM-L(j)), as predev ledgered a call.
-        let lane = format!("{}{PLANE_LANE_SEP}fs_read_file", rig.plane_key);
-        let calls: Vec<_> = rows
+        // The tool call is reported ONCE: one audit record carries it, under the caller's
+        // principal.
+        let records = rig
+            .book
+            .durability
+            .lock()
+            .expect("unpoisoned")
+            .audit_records
+            .clone();
+        let calls: Vec<_> = records
             .iter()
-            .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
-            .filter(|p| {
-                p.counts
-                    .as_ref()
-                    .and_then(|c| c.classes.get(super::tool_door::surface("class_tool_calls")))
-                    .copied()
-                    .unwrap_or(0)
-                    > 0
+            .filter(|r| {
+                r.usage.lines.iter().any(|l| {
+                    l.class.as_str() == super::tool_door::surface("class_tool_calls")
+                        && l.quantity > 0
+                })
             })
             .collect();
-        assert_eq!(calls.len(), 1, "the tool call posted once: {rows:?}");
         assert_eq!(
-            calls[0]
-                .counts
-                .as_ref()
-                .and_then(|c| c.classes.get(super::tool_door::surface("class_tool_calls")))
-                .copied(),
-            Some(1)
+            calls.len(),
+            1,
+            "the tool call is reported once: {records:?}"
         );
-        assert_eq!(calls[0].principal, rig.key.id, "on the caller's key");
+        assert_eq!(
+            calls[0].subject,
+            busbar_kernel_audit::Subject::PrincipalId(rig.key.id.clone()),
+            "on the caller's key"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6836,9 +6840,16 @@ pub(crate) mod hook_parity {
             port,
             vec![(
                 "screen",
+                // Screens only: clean arguments are let through untouched (the double's default
+                // answer is a chat rewrite a tool call cannot take, which is refused, never
+                // relayed un-rewritten).
                 gate(
                     "rw",
-                    serde_json::json!({ "reject_if_contains": "/etc/shadow", "reject_status": 451 }),
+                    serde_json::json!({
+                        "reject_if_contains": "/etc/shadow",
+                        "reject_status": 451,
+                        "raw_transform_reply": {},
+                    }),
                 ),
             )],
         );
@@ -7665,6 +7676,8 @@ fn per_hop_over(
 ) -> super::PerHop {
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
     let value = secrets.resolve_string(&secret).expect("it resolves");
+    let seal = busbar_kernel::seal::lend();
+    let value = value.expose(&seal);
     let settings = serde_json::json!({});
     let handle = {
         use busbar_contract::auth_calls::OutboundAuth as _;
@@ -7855,7 +7868,10 @@ struct CountingResolves {
 }
 
 impl busbar_contract::secret::SecretResolve for CountingResolves {
-    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
@@ -7864,7 +7880,7 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
     fn resolve_string(
         &self,
         secret: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<String, String> {
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)
@@ -8543,6 +8559,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 records: None,
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
