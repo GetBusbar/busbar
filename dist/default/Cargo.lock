@@ -768,6 +768,7 @@ dependencies = [
  "tar",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

@@ -76,6 +76,7 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 getrandom = { workspace = true }

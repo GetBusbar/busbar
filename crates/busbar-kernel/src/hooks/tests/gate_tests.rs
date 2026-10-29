@@ -91,8 +91,8 @@ fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
 /// The hook double, opened with the one setting `key: value`.
 fn double_gate(key: &str, value: serde_json::Value) -> Arc<dyn RoutingPolicy> {
     let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
-    let mut settings = serde_json::Map::new();
-    settings.insert(key.into(), value);
+    let mut settings = crate::config::secret::ResolvedSettings::default();
+    settings.map_mut().insert(key.into(), value);
     env.open("reply-gate", &settings, "reply-gate", 5_000)
         .expect("the hook double opens through the axis")
 }
