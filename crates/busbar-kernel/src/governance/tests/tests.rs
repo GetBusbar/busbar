@@ -1717,6 +1717,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty,
         last_touch: now,
@@ -1795,6 +1796,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch,
@@ -1874,6 +1876,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now,
@@ -1999,12 +2002,7 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
         "a negative token rate is an unpriced class, and the read refuses: {refused:?}"
     );
     let tokens: u64 = gov
-        .bucket_model_tokens(
-            &neg_rate,
-            "k1",
-            crate::governance::WINDOW_TOTAL,
-            1_700_000_000,
-        )
+        .bucket_model_tokens("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
         .iter()
         .flat_map(|(_, units)| units.values())
         .sum();
@@ -3513,6 +3511,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         flushed_billable_requests: requests,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty,
         last_touch,
@@ -4463,6 +4462,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         flushed_billable_requests: 7,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
@@ -4527,6 +4527,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         flushed_billable_requests: 1,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now,
@@ -4698,6 +4699,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         flushed_billable_requests: 7,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
@@ -4747,6 +4749,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         flushed_billable_requests: 1,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now,
@@ -6177,7 +6180,8 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     let (got, live) = gov.credential_secret(&signed_kind(), "AKIAdoesnotexist0000", now);
     assert_eq!(
         (got.expose(&crate::seal::lend()).as_str(), live),
-        (crate::auth::DUMMY_SECRET, false)
+        ("", false),
+        "an unknown pair answers an empty secret, not live: the verifier swaps in its own dummy"
     );
     gov.revoke(&key.id, "test").unwrap();
     assert!(

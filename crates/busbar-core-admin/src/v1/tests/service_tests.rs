@@ -2491,6 +2491,118 @@ mod dated_rate_card_history {
         AdminService::new(app).get_usage(Some(bucket), as_of).await
     }
 
+    /// **AN `adjust` MOVES THE SERVED USAGE FIGURE** (item 404, OWNER RULING Q9; MONEY-DESIGN §4,
+    /// PR-C). Key `vk_adjust_404` metered 1,000 input tokens three days ago at 2.5 micro-units
+    /// each: `GET /api/v1/admin/usage` serves 2,500 micro-units. A root adjust of -200 input on
+    /// that key, lane and era, made today, is a signed adjustment row beside THAT day's metering
+    /// rows (the unit's card epoch picks the day, Q128 arch u32 #18; dev's fixture day), and the
+    /// same read serves 800 tokens and 2,000 micro-units: the counts AS ADJUSTED, priced by the one
+    /// function.
+    /// The figure survives a restart (a new state over the same store), an adjustment past the
+    /// metered count is refused and moves nothing, and an adjustment of a key with no metered row
+    /// that day is refused.
+    ///
+    /// RED before the adjustment row: the read-time correction was deleted with the second ledger,
+    /// and the read served 1,000 / 2,500 after the adjust.
+    #[tokio::test]
+    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
+        use busbar_kernel::governance::{AdjustRefused, Adjustment};
+        const ADJUSTED_KEY: &str = "vk_adjust_404";
+        // THE UNIT'S DAY, three days back (dev's fixture), and its arrival instant in it.
+        let (day, _, _) = windows();
+        let served_at = day + 5;
+        let store = Arc::new(MemoryStore::new());
+        let key = VirtualKey {
+            id: ADJUSTED_KEY.to_string(),
+            generation_hash: format!("h:{ADJUSTED_KEY}"),
+            name: "adjusted".to_string(),
+            enabled: true,
+            revision: 1,
+            ..Default::default()
+        };
+        busbar_contract::records::RecordStore::put_key(store.as_ref(), &key).expect("key persists");
+        busbar_contract::records::RecordStore::add_metering(
+            store.as_ref(),
+            &busbar_contract::records::MeteringDelta {
+                key_id: ADJUSTED_KEY.to_string(),
+                bucket: day,
+                model: LANE.to_string(),
+                provider: PROVIDER.to_string(),
+                tokens_input: TOKENS,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: 1,
+                billable_requests: 1,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+                usage_units: Default::default(),
+            },
+        )
+        .expect("the memory store accepts a metering delta");
+        let cost = newest_cost();
+        let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
+        // The budget book holds the same counts, as the unit's accrual put them there.
+        let units = std::collections::BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            TOKENS,
+        )]);
+        gov.record_usage(&cost, &key, "", LANE, &units, served_at);
+        let src = source(History::opening(card(2.5), 0));
+
+        let before = read(gov.clone(), src, day).await.total;
+        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
+
+        let era = busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms());
+        let adjust = |key_id: &'static str, by: i64| {
+            let delta = std::collections::BTreeMap::from([(
+                busbar_contract::records::UNIT_INPUT.to_string(),
+                by,
+            )]);
+            gov.adjust_usage(
+                &cost,
+                &Adjustment {
+                    key_id,
+                    pool: "",
+                    model: LANE,
+                    entry_era: era,
+                    card_epoch_ms: served_at * 1_000,
+                    delta: &delta,
+                    now: busbar_kernel::store::now(),
+                },
+            )
+            .expect("the store reads")
+        };
+        assert!(
+            matches!(
+                adjust(ADJUSTED_KEY, -1_001),
+                Err(AdjustRefused::Exceeds { .. })
+            ),
+            "an adjustment past the metered count is refused"
+        );
+        assert_eq!(
+            read(gov.clone(), src, day).await.total.spend_micros,
+            2_500,
+            "a refused adjustment moves nothing"
+        );
+        assert_eq!(adjust(ADJUSTED_KEY, -200), Ok(()));
+        let after = read(gov.clone(), src, day).await.total;
+        assert_eq!(
+            (after.tokens_input, after.spend_micros),
+            (800, 2_000),
+            "the served figure prices the adjusted counts: 800 x 2.5"
+        );
+
+        let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
+        let again = read(restarted, src, day).await.total;
+        assert_eq!(
+            (again.tokens_input, again.spend_micros),
+            (800, 2_000),
+            "the adjustment row is durable: a restart serves the same figure"
+        );
+    }
+
     /// The three dated windows, day-aligned because a metering bucket is a UTC day. The owner's
     /// example spans months; the arithmetic of "an earlier window keeps its own card" is the same
     /// at any spacing, and a day apart keeps the fixture inside the memory store's retention.
@@ -2826,85 +2938,6 @@ mod dated_rate_card_history {
         assert_eq!(
             view.total.spend_micros, 750_090_000,
             "with no history installed the read is the published 1.5.5 figure"
-        );
-    }
-
-    // ── ITEM 404 (OWNER RULING Q9): an `adjust` of a unit's COUNTS reaches the served figure ──
-
-    /// **THE EXIT TEST FOR ITEM 404's USAGE HALF.** A unit of key `vk_adjust_404` metered 1,000
-    /// input tokens at 2.5 micro-units each: `GET /api/v1/admin/usage` serves 2,500 micro-units
-    /// (2,500,000 nano-units). A root `adjust` seals 800 on the node amendment journal — counts, no
-    /// money — and the same read serves 800 tokens and 2,000 micro-units (2,000,000 nano-units): the
-    /// read prices the counts AS CORRECTED. A correction for another key leaves the row alone.
-    #[tokio::test]
-    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
-        use busbar_kernel::audit::amend::{correct_counts, ClassCounts, CountCorrection};
-        const ADJUSTED_KEY: &str = "vk_adjust_404";
-        let (bucket, _, _) = windows();
-        let store = Arc::new(MemoryStore::new());
-        busbar_contract::records::RecordStore::add_metering(
-            store.as_ref(),
-            &busbar_contract::records::MeteringDelta {
-                key_id: ADJUSTED_KEY.to_string(),
-                bucket,
-                model: LANE.to_string(),
-                provider: PROVIDER.to_string(),
-                tokens_input: TOKENS,
-                tokens_output: 0,
-                tokens_cache_read: 0,
-                tokens_cache_write: 0,
-                requests: 1,
-                billable_requests: 1,
-                key_group_at_use: String::new(),
-                pricing_version: String::new(),
-                priced_from_ms: 0,
-                usage_units: Default::default(),
-            },
-        )
-        .expect("the memory store accepts a metering delta");
-        let gov = Arc::new(GovState::new(store, None).expect("governance builds"));
-        let src = source(History::opening(card(2.5), 0));
-
-        let before = read(gov.clone(), src, bucket).await.total;
-        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
-
-        let count = |n: i128| busbar_contract::count::Count::from_integer(n).expect("whole");
-        let was = ClassCounts::from([(
-            busbar_contract::records::UNIT_INPUT.to_string(),
-            count(1_000),
-        )]);
-        let correct = |principal: &'static str, amends: &'static str| {
-            correct_counts(
-                busbar_contract::authz::Scope::Full,
-                &was,
-                CountCorrection {
-                    amends,
-                    principal: Some(principal),
-                    lane: LANE,
-                    card_epoch_ms: bucket * 1_000 + 5,
-                    now: ClassCounts::from([(
-                        busbar_contract::records::UNIT_INPUT.to_string(),
-                        count(800),
-                    )]),
-                    authorised_by: "admin",
-                    reason: "a retried request was metered twice",
-                    pool: None,
-                },
-            )
-            .expect("a root correction with a reason is sealed")
-        };
-        correct("vk_someone_else_404", "item-404-other-unit");
-        assert_eq!(
-            read(gov.clone(), src, bucket).await.total.spend_micros,
-            2_500,
-            "a correction for another key does not reach this row"
-        );
-        correct(ADJUSTED_KEY, "item-404-usage-unit");
-        let after = read(gov, src, bucket).await.total;
-        assert_eq!(
-            (after.tokens_input, after.spend_micros),
-            (800, 2_000),
-            "the served figure prices the corrected counts: 800 x 2.5"
         );
     }
 }

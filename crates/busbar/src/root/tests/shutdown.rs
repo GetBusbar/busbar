@@ -6,12 +6,10 @@
 //! of the process's tails — the listener path's and the line-serve mode's — are this one function.
 
 use busbar_contract::caps::{DurableWrite, StepName};
-use busbar_kernel_ledger::legacy::RecordingRows;
 use busbar_kernel_wal::{Entry, Record, RecordClass};
 
 use super::*;
 use crate::root::durability::{build_on_store, read_chain, DurabilityConfig, JournalLane};
-use crate::root::kernel::PinnedHistory;
 use crate::root::store_double::RecordSlots;
 
 /// The node the test book is built as.
@@ -23,11 +21,6 @@ const OUTAGE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// How long a test waits on the lane outside the tail.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// No dated history: the test book prices nothing.
-fn no_history() -> Option<PinnedHistory> {
-    None
-}
 
 /// A book over `slots` with no data directory (the production boot's shape for a child process
 /// with no disk), and a handle on the same lane its journal ships through.
@@ -46,8 +39,6 @@ fn store_book_bounded(
         &DurabilityConfig { data_dir: None },
         NODE,
         lane.clone(),
-        Box::new(RecordingRows::new()),
-        Box::new(no_history),
         None,
     )
     .expect("the store reads back");

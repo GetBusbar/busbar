@@ -291,9 +291,10 @@ impl LoginMethods {
                     .map_err(|e| {
                         format!("identity-providers.{name} browser_login.client_secret: {e}")
                     })?;
+                // OWED (row 7): the client secret is lent inline, as a JSON string.
                 resolved.insert(
                     CLIENT_SECRET_SLOT.to_string(),
-                    serde_json::Value::String(secret),
+                    serde_json::Value::String(secret.expose(&crate::seal::lend()).clone()),
                 );
             }
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the

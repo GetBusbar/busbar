@@ -7,7 +7,7 @@
 //! no lane, a `finish` that does not end.
 
 use super::*;
-use crate::conformance::Step;
+use crate::conformance::{judge as contract, output, Step};
 
 fn called(outcome: Outcome) -> Called {
     Called {
@@ -29,16 +29,16 @@ fn answer(
 ) -> FramerOut {
     let mut o: FramerOut = output();
     if let Some((bytes, piece_flags)) = piece {
-        h.frame[..bytes.len()].copy_from_slice(bytes);
-        h.pieces[0].stream = 0;
-        h.pieces[0].offset = 0;
-        h.pieces[0].len = bytes.len() as u64;
-        h.pieces[0].flags = piece_flags;
+        h.sink.frame[..bytes.len()].copy_from_slice(bytes);
+        h.sink.pieces[0].stream = 0;
+        h.sink.pieces[0].offset = 0;
+        h.sink.pieces[0].len = bytes.len() as u64;
+        h.sink.pieces[0].flags = piece_flags;
         o.yielded.pieces_len = 1;
         o.yielded.frame_len = bytes.len() as u64;
     }
     if routes != 0 {
-        h.wire[0] = 1;
+        h.sink.wire[0] = 1;
         h.routes[0] = DatagramRoute {
             offset: 0,
             len: 1,

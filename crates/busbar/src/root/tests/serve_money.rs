@@ -239,7 +239,6 @@ fn governed_full(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_kernel_wal::NullShipper::new()),
-                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
             )
             .expect("a memory-buffered journal opens"),
         ));

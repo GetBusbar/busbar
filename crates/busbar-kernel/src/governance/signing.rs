@@ -37,6 +37,11 @@ use serde::{Deserialize, Serialize};
 /// structural pre-check can reject an obviously-non-busbar credential before any crypto.
 pub const TOKEN_PREFIX: &str = "bbk_";
 
+/// THE TICKET AUDIENCE: the audience claim every host-minted TICKET carries (row 132, the ARCHITECT
+/// ticket ruling). A ticket verifies only where the gate expects exactly this audience, on a route
+/// that takes a ticket; the plain data plane, which expects none, refuses it.
+pub const TICKET_AUDIENCE: &str = "busbar:ticket";
+
 /// The DER prefix of an Ed25519 SubjectPublicKeyInfo, RFC 8410 section 4: `SEQUENCE { SEQUENCE {
 /// OID 1.3.101.112 }, BIT STRING }`. Fixed-length and fully determined; prefixed to the 32 raw key
 /// bytes to render busbar's PUBLIC card-issuer key in the ONE spelling the verifier accepts.
@@ -90,6 +95,10 @@ pub struct TokenClaims {
     /// classes is tolerable here and would not be in an authorization decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cid: Option<String>,
+    /// The TICKET id (wire name `t`), 1.6.0: present only on a host-minted ticket, naming the record
+    /// stored beside it and the single-use claim its admission spends. `None` on every key.
+    #[serde(default, rename = "t", skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
 }
 
 /// A verify failure. Every arm rejects fail-closed; the distinctions exist for the AUDIT log /
@@ -231,6 +240,7 @@ impl TokenSigner {
             generation: generation.map(str::to_string),
             aud: None,
             cid: None,
+            ticket: None,
         })
     }
 
@@ -261,16 +271,44 @@ impl TokenSigner {
             generation: generation.map(str::to_string),
             aud: Some(aud.to_string()),
             cid: cid.map(str::to_string),
+            ticket: None,
+        })
+    }
+
+    /// Mint a TICKET's signed BODY (row 132): `<b64url(payload)>.<b64url(sig)>`, the claims bound to
+    /// [`TICKET_AUDIENCE`] and naming `ticket`, with no prefix. The host prepends the issued-id
+    /// prefix the minting plane declares; the gate strips it and verifies the body with
+    /// [`TokenVerifier::verify_body`].
+    pub fn mint_ticket_body(
+        &self,
+        sub: &str,
+        exp: u64,
+        generation: Option<&str>,
+        ticket: &str,
+    ) -> String {
+        self.sign_body(&TokenClaims {
+            sub: sub.to_string(),
+            exp,
+            kid: self.kid.clone(),
+            generation: generation.map(str::to_string),
+            aud: Some(TICKET_AUDIENCE.to_string()),
+            cid: None,
+            ticket: Some(ticket.to_string()),
         })
     }
 
     /// Serialize + sign a claims payload into the two-segment token form. The ONE signing site,
     /// so every mint variant produces the identical wire shape.
     fn sign_claims(&self, claims: TokenClaims) -> String {
-        let payload = serde_json::to_vec(&claims).expect("TokenClaims serializes");
+        format!("{TOKEN_PREFIX}{}", self.sign_body(&claims))
+    }
+
+    /// The two signed segments of a claims payload, `<b64url(payload)>.<b64url(sig)>`.
+    fn sign_body(&self, claims: &TokenClaims) -> String {
+        let payload = serde_json::to_vec(claims).expect("TokenClaims serializes");
         let sig: Signature = self.key.sign(&payload);
         format!(
-            "{TOKEN_PREFIX}{}.{}",
+            "{}.{}",
             URL_SAFE_NO_PAD.encode(&payload),
             URL_SAFE_NO_PAD.encode(sig.to_bytes())
         )
@@ -316,6 +354,21 @@ impl TokenVerifier {
         let body = token
             .strip_prefix(TOKEN_PREFIX)
             .ok_or(VerifyError::Malformed)?;
+        self.verify_body(body, now, expected_aud)
+    }
+
+    /// [`Self::verify`] over the two signed segments alone, the prefix already stripped by the
+    /// caller: a ticket's body, whose prefix is the minting plane's declared one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify`].
+    pub fn verify_body(
+        &self,
+        body: &str,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> Result<TokenClaims, VerifyError> {
         let (payload_b64, sig_b64) = body.split_once('.').ok_or(VerifyError::Malformed)?;
         let payload = URL_SAFE_NO_PAD
             .decode(payload_b64)
@@ -372,7 +425,9 @@ impl TokenVerifier {
 /// changing this derivation is a new key rather than a silently different one under the same name —
 /// which is also why the bytes it emits are pinned by known-answer vectors in the tests below.
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
-    busbar_kernel_ledger::digest::sha256_of(&[b"busbar/subkey/v1", secret, domain.as_bytes()])
+    busbar_contract::abi::sdk::digest::sha256(
+        &[&b"busbar/subkey/v1"[..], secret, domain.as_bytes()].concat(),
+    )
 }
 
 #[cfg(test)]

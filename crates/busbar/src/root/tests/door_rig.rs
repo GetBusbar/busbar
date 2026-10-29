@@ -310,11 +310,6 @@ pub(crate) fn unpriced_card(now_ms: u64) -> RootHistory {
     holder
 }
 
-/// The node's book, its units priced against the history `pin` answers.
-pub(crate) fn node_book(pin: fn() -> Option<PinnedHistory>) -> NodeBook {
-    crate::root::durability::node_book_over(Box::new(pin))
-}
-
 /// A store opened through a linked store door, as the governance book's store is opened: its
 /// records and its record slots are the kernel's record store (ARCHITECT Q-L3B-RECORDS).
 pub(crate) struct DoorStore {
@@ -616,7 +611,7 @@ pub(crate) fn hook_env(
 ) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::test_support::test_hook_env(
         aliases,
-        crate::root::loader::sign::HookNeeds { prompt, user },
+        busbar_kernel::test_support::hook_needs(prompt, user),
     )
 }
 

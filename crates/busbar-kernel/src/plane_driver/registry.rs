@@ -88,8 +88,8 @@ pub struct BootCtx {
     /// `None` in the start phase (a start hook restores nothing).
     pub store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
 
-    /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
-    /// write-through sink (`demotion_record`) and restores them. `None` in the start
+    /// HYDRATE phase — the freshly-built `App` a hydrate hook restores its durable state into (the
+    /// kernel's trust record is attached by `boot::hydrate_all` itself). `None` in the start
     /// phase, where the app has been moved into the router builder and only the handle remains.
     pub app: Option<std::sync::Arc<crate::state::App>>,
 
@@ -137,19 +137,6 @@ impl BootCtx {
 impl PlaneBootCtx for BootCtx {
     fn has_store(&self) -> bool {
         self.store.is_some()
-    }
-
-    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINK — the upstream-demotion record — to the
-    /// plane-narrowed store, in the hydrate phase. Named HERE, core
-    /// side, so the plane's own hydrate hook attaches them without its own code naming an `App` field:
-    /// the sink field (`demotion_record`) is core-owned and the store is the
-    /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
-    /// (hydrate phase) and a configured store are present — byte-identical to the old inline
-    /// `app.demotion_record.set_sink(store)`.
-    fn attach_durable_sinks(&self) {
-        if let (Some(app), Some(store)) = (self.app.as_ref(), &self.store) {
-            app.demotion_record.set_sink(store.clone());
-        }
     }
 
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
@@ -650,11 +637,6 @@ pub trait PlaneBootCtx {
     /// ephemeral by design (`store: memory`). `true` iff a plane-narrowed store is present.
     fn has_store(&self) -> bool;
 
-    /// ATTACH THE CALLING PLANE'S DURABLE WRITE-THROUGH SINKS (today only the MCP plane has durable task state to attach) — the spent-approval ledger and the
-    /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. A no-op unless
-    /// BOTH the freshly-built app and a configured store are present.
-    fn attach_durable_sinks(&self);
-
     /// THE PLANE-NARROWED DURABLE STORE for this deployment, or `None` under `store: memory`. A plane
     /// that OWNS its durable subsystem (the A2A task set) drives its own `PlaneRecord` reads/writes off
     /// this handle at boot — attaching it as its registry's sink and running its own rehydrate — rather
@@ -776,8 +758,7 @@ plane_behaviour! {
     /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
-    /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
-    /// the superset-IR rule remains a rule rather than a fact about today's planes.
+    /// `Plane::wire_formats` stays DERIVED from this list.
     wire_format_names: fn(&PlaneDecl) -> &'static [&'static str],
 
     /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order

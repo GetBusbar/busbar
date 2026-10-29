@@ -33,7 +33,7 @@
 //! second thing to keep lossless and a second place for a translation bug in a product whose
 //! headline claim is lossless translation.
 //!
-//! So [`has_superset_ir`] is derived from [`wire_formats`] rather than written as
+//! So the superset rule is derived from [`wire_formats`] rather than written as
 //! `matches!(key, FALLBACK_KEY)`. That makes it a RULE rather than a fact about today's planes: the
 //! day a second dialect lands on some plane, that plane earns an IR and the test says so. And the
 //! fallback plane's dialect count is read off the real protocol registry, so a new dialect does not
@@ -78,16 +78,6 @@
 //     `supportedInterfaces[].protocolBinding` busbar may publish on a card pointing at busbar's own
 //     address. That was previously a literal in the rewrite, and it published a binding at an
 //     address busbar does not serve it on.
-//
-// STILL WITHOUT A PRODUCTION CALLER, and named rather than left to be discovered: `PlaneSections`
-// and `has_superset_ir`. The candidate projection and the shared sibling-section container are
-// the dependants those are waiting on, so the attribute stays until they land.
-//
-// `wire_formats` is NOT in that list, and has two callers rather than one: `sole_wire_format` reads
-// its length on the request path, and the card-publishing boundary reads its contents to decide which
-// bindings a served card may advertise. Both are named here because this header, not the call
-// sites, is what states whether a member of this module is reachable.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use super::registry;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
@@ -219,7 +209,7 @@ pub fn provider_dialects() -> Vec<&'static str> {
 
 /// The plane's ONE wire format, when it has exactly one — otherwise `None`.
 ///
-/// COMPUTED, like [`has_superset_ir`], and for the same reason. A plane with a single dialect can
+/// COMPUTED, like the superset rule, and for the same reason. A plane with a single dialect can
 /// be labelled with it at the ingress BOUNDARY, before any handler has read a byte of the body,
 /// because there is nothing to decide. A plane with several cannot: which dialect spoke is a fact
 /// only its reader knows, so that plane labels its own requests from inside (the fallback plane
@@ -232,16 +222,10 @@ pub fn sole_wire_format(key: &str) -> Option<&'static str> {
 
 /// How many distinct WIRE FORMATS this plane translates between. DERIVED from
 /// [`wire_format_names`] rather than written as a second literal, so a plane cannot gain a dialect
-/// in one place and keep its old count in the other — which would silently keep [`has_superset_ir`]
+/// in one place and keep its old count in the other — which would silently keep the superset rule
 /// answering the pre-change question.
 pub fn wire_formats(key: &str) -> usize {
     wire_format_names(key).len()
-}
-
-/// Whether this plane has EARNED a superset intermediate representation. See the module header:
-/// the threshold is two wire formats, and nothing else.
-pub fn has_superset_ir(key: &str) -> bool {
-    superset_of(wire_formats(key))
 }
 
 /// The `sole_wire_format` DERIVATION, split from the registry read so the ZERO-dialect case is
@@ -252,8 +236,7 @@ pub fn has_superset_ir(key: &str) -> bool {
 /// `_ => None` as "several", so the plane silently stopped being labelled at the ingress boundary
 /// with no statement that anyone had decided that. The answer is STILL `None` — a plane with no
 /// dialect has nothing to label a request with — but it is now a signed decision with a test
-/// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` above: zero wire
-/// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
+/// (`plane/tests/`), not a match arm's accident.
 pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
     match names {
         // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.
@@ -261,11 +244,6 @@ pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
         [only] => Some(only),
         _ => None,
     }
-}
-
-/// The `has_superset_ir` derivation, split out for the same zero-dialect reason as [`sole_of`].
-pub fn superset_of(wire_formats: usize) -> bool {
-    wire_formats >= 2
 }
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
@@ -325,7 +303,7 @@ pub struct PlaneDispatch {
 /// The wire format is recorded WITH the path rather than derived from the plane, and that is what
 /// keeps the ingress boundary able to label a plane that speaks more than one. [`wire_formats`]
 /// answers "how many dialects does this plane translate between" — a fact about the plane, and the
-/// threshold [`has_superset_ir`] reads. It cannot answer "which one is being spoken right
+/// threshold the superset rule reads. It cannot answer "which one is being spoken right
 /// now", because that is a fact about the DOOR the request came through. A plane whose bindings each
 /// have their own door can answer it at the door; one whose bindings share a door cannot, and says so
 /// by declaring its CANONICAL format on that claim.
@@ -642,169 +620,13 @@ fn path_is_under(path: &str, mount: &str) -> bool {
     }
 }
 
-/// THE SHARED CONTAINER for a plane's sibling config sections: several independent, per-plane
-/// namespaces are ONE code object with N namespaces, not N types that happen to look alike.
-///
-/// ## Siblings, and therefore no cross-references
-///
-/// The sections are INDEPENDENT namespaces. One name may exist in all of them and each means a
-/// different thing, so a name is not globally unique and must never be treated as if it were.
-///
-/// The rule that follows, and the reason this type exists rather than one map per section: a name
-/// is resolved ONLY within the plane doing the referencing. An entry in one section naming an entry
-/// in a sibling section is not a clever shortcut, it is a plane boundary violation, and the resolver
-/// REFUSES it.
-///
-/// ## The refusal DIAGNOSES rather than merely denying
-///
-/// [`RefError::CrossPlane`] names the plane the entry actually lives on, so the operator reads
-/// "that is defined on a different section of this plane". A bare not-found would send someone
-/// hunting for a typo that is not there, which is why an unknown name is a genuinely different
-/// error.
-///
-/// The TYPE (and [`RefError`], [`Self::insert`], [`Self::resolve`]) are `pub` rather than
-/// `pub(crate)` so `crates/busbar/tests/plane_config_cross_plane.rs::the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary`
-/// can drive the resolve-time refusal directly, over the REAL plane roster, exactly as the sibling
-/// parse-time refusal in that file already does — the same "internal-only `busbar-kernel` crate
-/// (`publish = false`) pays that cost" reasoning `crates/busbar/tests/registry_cross_plane.rs`'s header gives for its own
-/// widened seams.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlaneSections<T> {
-    /// One section per plane, keyed by plane registry key. An absent key is an EMPTY section, read
-    /// as such by every accessor — the same answer the old three hard fields gave for a plane that
-    /// happened to hold nothing. Iteration order is never taken from this map's own key order:
-    /// every walk drives from [`plane_keys`] (LAYERING order) so the validator's diagnostics stay
-    /// deterministic and in the order the module header describes.
-    sections: std::collections::BTreeMap<&'static str, std::collections::BTreeMap<String, T>>,
-}
-
-/// Why a name did not resolve. The two arms are kept distinct because only one of them is
-/// actionable in the same way.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RefError {
-    /// The name exists, but on ANOTHER plane. A plane boundary violation.
-    CrossPlane {
-        name: String,
-        referenced_from: &'static str,
-        defined_in: &'static str,
-    },
-    /// The name exists nowhere.
-    Unknown { name: String, plane: &'static str },
-}
-
-impl std::fmt::Display for RefError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RefError::CrossPlane {
-                name,
-                referenced_from,
-                defined_in,
-            } => write!(
-                f,
-                "`{}` references `{name}`, which is defined in `{}`. The plane sections are \
-                 siblings and never reference each other: define `{name}` in `{}`, or move the \
-                 reference.",
-                plane_decl(referenced_from).config_section,
-                plane_decl(defined_in).config_section,
-                plane_decl(referenced_from).config_section
-            ),
-            RefError::Unknown { name, plane } => write!(
-                f,
-                "`{}` references `{name}`, which is not defined.",
-                plane_decl(plane).config_section
-            ),
-        }
-    }
-}
-
-// `Default` is hand-written, NOT derived. The derive would bound it on `T: Default`, which is
-// wrong twice over: an EMPTY container needs nothing from `T`, and requiring it would force every
-// entry type a plane ever holds to invent a meaningless empty value just to be storable here.
-impl<T> Default for PlaneSections<T> {
-    fn default() -> Self {
-        Self {
-            sections: std::collections::BTreeMap::new(),
-        }
-    }
-}
-
-impl<T> PlaneSections<T> {
-    /// This plane's section, or `None` when the plane holds nothing — read as an EMPTY section.
-    fn map(&self, plane: &str) -> Option<&std::collections::BTreeMap<String, T>> {
-        self.sections.get(plane)
-    }
-
-    /// This plane's section, created empty on first write.
-    fn map_mut(&mut self, plane: &'static str) -> &mut std::collections::BTreeMap<String, T> {
-        self.sections.entry(plane).or_default()
-    }
-
-    /// Declare `name` on `plane`.
-    pub fn insert(&mut self, plane: &'static str, name: &str, entry: T) -> Option<T> {
-        self.map_mut(plane).insert(name.to_string(), entry)
-    }
-
-    /// This plane's entry for `name`, or `None`. Scoped to the plane: it never reads a sibling
-    /// section, so a caller cannot accidentally cross the boundary by using the cheap read.
-    pub(crate) fn get(&self, plane: &str, name: &str) -> Option<&T> {
-        self.sections.get(plane).and_then(|m| m.get(name))
-    }
-
-    /// One plane's whole section, or `None` when the plane holds nothing.
-    pub(crate) fn section(&self, plane: &str) -> Option<&std::collections::BTreeMap<String, T>> {
-        self.map(plane)
-    }
-
-    /// THE VALIDATOR ENTRY POINT: resolve `name` as referenced FROM `plane`, refusing a cross-plane
-    /// reference with a diagnosis.
-    ///
-    /// The sibling scan runs in [`plane_keys`] (LAYERING) order so a name defined on several other
-    /// planes always diagnoses the same one. A nondeterministic diagnostic is worse than none: it
-    /// makes a boot failure unreproducible.
-    pub fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
-        if let Some(entry) = self.sections.get(plane).and_then(|m| m.get(name)) {
-            return Ok(entry);
-        }
-        for other in plane_keys().filter(|k| *k != plane) {
-            if self
-                .sections
-                .get(other)
-                .is_some_and(|m| m.contains_key(name))
-            {
-                return Err(RefError::CrossPlane {
-                    name: name.to_string(),
-                    referenced_from: plane,
-                    defined_in: other,
-                });
-            }
-        }
-        Err(RefError::Unknown {
-            name: name.to_string(),
-            plane,
-        })
-    }
-
-    /// Every entry across every plane, attributed to the plane it belongs to. Walked by the config
-    /// validator, so a plane absent here is a plane that is never validated. Driven from
-    /// [`plane_keys`] so the walk is in LAYERING order regardless of the map's own key order.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&'static str, &str, &T)> {
-        plane_keys().flat_map(move |k| {
-            self.sections
-                .get(k)
-                .into_iter()
-                .flatten()
-                .map(move |(n, e)| (k, n.as_str(), e))
-        })
-    }
-}
-
 // `plane_tests` MOVED to `crates/busbar/tests/plane_dispatch_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
 // cleanup): it hard-codes the real `"llm"`/`"mcp"`/`"a2a"` keys and asserts against their REAL
 // declared wire formats (the actual dialect/plane registries), which only type-checks/behaves
 // correctly with ONE `busbar_kernel` in the graph and a real roster registered — an integration-test
 // target, never this `#[cfg(test)]` unit module. See that file's header.
 
-/// Build one ALL-STUB `PlaneDecl` for [`isolated_three_plane_test_registry`] — every hook is
+/// Build one ALL-STUB `PlaneDecl` for a registry test — every hook is
 /// `None`/no-op (no dialect, no wire format, no scope kind), like
 /// [`crate::test_support::register_neutral_test_plane`]'s single fixture. `const fn` because it
 /// backs `static` initializers: a function POINTER is a compile-time constant regardless of what
@@ -864,43 +686,6 @@ pub(crate) const fn neutral_sibling_decl(
         door: None,
     }
 }
-
-/// THE NEUTRAL THREE-PLANE TEST REGISTRY — for [`PlaneSections`]'s own unit tests (`sections_tests`).
-/// Unlike [`crate::test_support::register_neutral_test_plane`] (ONE plane: "some plane exists so a
-/// config section has an owner"), these are the CONTAINER's own tests: they exercise
-/// [`PlaneSections::resolve`]'s sibling walk over THREE distinct registered keys, and one of them
-/// (`sections_tests::iteration_covers_every_plane_and_attributes_each_entry`) counts [`plane_keys`]
-/// against exactly the entries it inserted, so the registered set must be EXACTLY these three:
-/// nothing a sibling test left registered, nothing more.
-///
-/// The three keys are DELIBERATELY not `"llm"`/`"mcp"`/`"a2a"`: this generic multi-tenant container
-/// asserts nothing about what any real plane IS or DOES, and core naming those literals — even in a
-/// `#[cfg(test)]`-only synthetic `PlaneDecl` — is exactly what the A6/HostCtx dev-dependency-cycle
-/// cleanup deleted `TEST_BUILTIN_PLANE_DECLS` to stop (`cargo xtask gate construction`'s
-/// `neutral-no-dialect` rule, ceiling 0, enforces this). `"alpha"`/`"beta"`/`"gamma"` are three
-/// registry keys and nothing else. The one test in this file that DID need a real plane's own
-/// section-name prose (`the_refusal_message_is_actionable`) moved to
-/// `crates/busbar/tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
-///
-/// Returns the [`crate::test_support::planes::TestRegistryIsolation`] guard, which the caller holds for its test body's
-/// lifetime: the registered set stays exactly these three regardless of what ran before it or runs
-/// concurrently with it.
-#[cfg(test)]
-pub(crate) fn isolated_three_plane_test_registry(
-) -> crate::test_support::planes::TestRegistryIsolation {
-    static ALPHA: registry::PlaneDecl =
-        neutral_sibling_decl("alpha", "alpha-section", "alpha thing");
-    static BETA: registry::PlaneDecl = neutral_sibling_decl("beta", "beta-section", "beta thing");
-    static GAMMA: registry::PlaneDecl =
-        neutral_sibling_decl("gamma", "gamma-section", "gamma thing");
-    // `seeded`, NOT `empty()` followed by `register_test_plane`: the guard holds the registration
-    // lock for its whole lifetime, so a registration on this thread would self-deadlock.
-    crate::test_support::planes::TestRegistryIsolation::seeded(&[&ALPHA, &BETA, &GAMMA])
-}
-
-#[cfg(test)]
-#[path = "tests/dispatch_sections_tests.rs"]
-mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
