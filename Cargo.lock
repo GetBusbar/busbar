@@ -499,9 +499,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "ring",
  "serde",
- "sha2",
 ]
 
 [[package]]
@@ -705,6 +703,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

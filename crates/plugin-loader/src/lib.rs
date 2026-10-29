@@ -74,22 +74,6 @@ pub mod store_adapter;
 #[allow(unsafe_code)] // REVIEWED: lends the store door its request (`Lend`)
 pub mod store_v3;
 pub mod tarball;
-/// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
-/// Compiled for this crate's tests and under the `test-support` feature, which only
-/// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-#[path = "tests/test_support.rs"]
-pub mod test_support;
-
-/// TEST ONLY: the composition root's door fixtures (status row 195): doors built by the contract's
-/// door macro, whose expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no
-/// such expansion. Under `test-support`, which only the root's `[dev-dependencies]` turns on.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-#[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
-#[path = "../tests/fixtures/root_door_fixtures.rs"]
-pub mod root_door_fixtures;
 
 /// TEST ONLY: busbar-test-kit's source (the published conformance suite and the test connection
 /// tables), compiled into this crate's own tests so the suite's unit tests run over this crate's

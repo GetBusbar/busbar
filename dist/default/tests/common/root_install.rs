@@ -133,7 +133,7 @@ fn linked_registry() -> PluginRegistry {
 fn auth_axis(rows: Arc<dyn PluginRows>) -> Arc<dyn AuthAxis> {
     let registry = busbar_plugin_loader::rows::registry_arc(rows)
         .unwrap_or_else(|| Arc::new(linked_registry()));
-    Arc::new(LoaderAuth(busbar_plugin_loader::auth_axis::stand_in(
+    Arc::new(LoaderAuth(busbar_test_kit::auth_axis::stand_in(
         registry,
         busbar_kernel::seal::lend(),
     )))

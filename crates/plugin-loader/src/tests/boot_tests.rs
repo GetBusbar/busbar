@@ -912,17 +912,26 @@ fn a_candidate_carries_its_statements_needs() {
 struct Resolver;
 
 impl busbar_contract::secret::SecretResolve for Resolver {
-    fn resolve(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        r: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         use crate::dispatch::ready::ready_plugins::auth;
         match r.env_var() {
-            Some("OIDC_SECRET") => Ok(auth::SECRET.to_vec()),
+            Some("OIDC_SECRET") => Ok(busbar_contract::redacted::Secret::new(
+                auth::SECRET.to_vec(),
+            )),
             _ => Err(format!("{} is not set", r.describe())),
         }
     }
 
-    fn resolve_string(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-        self.resolve(r)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    fn resolve_string(
+        &self,
+        r: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        self.resolve(r)?
+            .into_text()
+            .map_err(|e| format!("{} is not text: {e:?}", r.describe()))
     }
 }
 

@@ -301,7 +301,7 @@ def row_first_party_plugin(ctx) -> str:
     providers = os.path.join(work, "providers.yaml")
     config = os.path.join(work, "config.yaml")
     with open(providers, "w") as fh:
-        fh.write('mock:\n  protocol: openai\n  base_url: "http://127.0.0.1:9"\n  api_key_env: MOCK_KEY\n')
+        fh.write('mock:\n  protocol: openai\n  base_url: "http://127.0.0.1:9"\n')
     with open(config, "w") as fh:
         fh.write(
             'listen: "127.0.0.1:0"\n'
