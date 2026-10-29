@@ -10,8 +10,8 @@ use busbar_contract::{
 };
 
 use busbar_kernel_audit::amend::{
-    content_access, correction, AmendBody, AmendChain, AmendClass, AmendJournal, ClassCounts,
-    CorrectionRefused, Reader, AMENDMENTS_RETAINED,
+    content_access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal, ClassCounts, Reader,
+    AMENDMENTS_RETAINED,
 };
 use busbar_kernel_audit::record::{AuditBreakKind, OpClassId, Subject};
 
@@ -47,6 +47,35 @@ fn an_access() -> AmendBody {
         vec!["messages".into(), "system".into()],
         1_700_000_000,
     )
+}
+
+/// A pre-release 1.6.0 count correction, built as that release sealed it. Nothing writes one now
+/// (a correction is a signed delta on the usage rows, MONEY-DESIGN §4), but a chain that holds one
+/// must still verify, so the record stays decodable and these tests keep sealing it.
+#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
+fn correction(
+    amends: &str,
+    subject: Subject,
+    lane: &str,
+    card_epoch_ms: u64,
+    was: ClassCounts,
+    now: ClassCounts,
+    authorised_by: &str,
+    reason: &str,
+    wall: u64,
+) -> Result<AmendBody, std::convert::Infallible> {
+    Ok(AmendBody::Adjust(Adjust {
+        amends_hash: amends.to_string(),
+        subject,
+        lane: lane.to_string(),
+        card_epoch_ms,
+        was,
+        now,
+        authorised_by: authorised_by.to_string(),
+        reason: reason.to_string(),
+        wall,
+        pool: None,
+    }))
 }
 
 /// Whole-unit counts per class.
@@ -164,8 +193,6 @@ fn a_correction_names_what_it_amends_and_why() {
     match &amendment.body {
         AmendBody::Adjust(a) => {
             assert_eq!(a.amends_hash, "the-entry-being-amended");
-            assert_eq!(a.delta("input_tokens"), -200_000_000);
-            assert_eq!(a.delta("output_tokens"), 0);
             assert!(
                 !a.reason.is_empty(),
                 "a correction nobody can question is not one to trust"
@@ -250,109 +277,11 @@ fn removing_an_amendment_from_the_middle_is_caught() {
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
-/// A DELTA THAT WOULD OVERRUN THE SIGNED RANGE PINS AT THE EXTREME, rather than panicking in a
-/// debug build or wrapping — into a correction in the opposite direction — in a release one.
-///
-/// The two count maps themselves are what the chain digests and what a reader answers questions
-/// from; this is a convenience over them, so saturating costs nothing and wrapping would mislead.
-/// `now` may not go below zero, so the overrun that remains is `was` at the negative extreme.
+/// THE IN-MEMORY WINDOW IS BOUNDED. Accesses arrive at request rate, so the journal releases the
+/// oldest held amendment past [`AMENDMENTS_RETAINED`] — and still verifies the window it holds to
+/// the chain's head.
 #[test]
-fn a_delta_too_large_for_the_range_saturates_instead_of_wrapping() {
-    let mut was = ClassCounts::new();
-    was.insert("c".into(), Count::from_micros(i128::MIN));
-    let mut now = ClassCounts::new();
-    now.insert("c".into(), Count::from_micros(i128::MAX));
-    let far_apart = correction(
-        "e",
-        Subject::Aggregate,
-        "lane",
-        1,
-        was,
-        now,
-        "operator",
-        "a pair no meter could report",
-        1,
-    )
-    .unwrap();
-    match &far_apart {
-        AmendBody::Adjust(a) => assert_eq!(a.delta("c"), i128::MAX),
-        other => panic!("expected a correction, got {other:?}"),
-    }
-}
-
-/// A CORRECTION THAT WOULD TAKE A COUNT BELOW ZERO IS REFUSED, before it reaches any chain: a
-/// negative measurement is not a thing a meter reports, and a negative count prices as a credit
-/// nobody authorised the card to give.
-#[test]
-fn a_correction_below_zero_is_refused() {
-    let refused = correction(
-        "e",
-        Subject::Aggregate,
-        "lane",
-        1,
-        counts(&[("input_tokens", 10)]),
-        counts(&[("input_tokens", -1)]),
-        "operator",
-        "over-corrected",
-        1,
-    );
-    assert_eq!(
-        refused,
-        Err(CorrectionRefused::NegativeCount {
-            class: "input_tokens".into()
-        })
-    );
-}
-
-/// The reason is not optional, and a blank one is no reason.
-#[test]
-fn a_correction_with_no_reason_is_refused() {
-    let refused = correction(
-        "e",
-        Subject::Aggregate,
-        "lane",
-        1,
-        counts(&[("input_tokens", 10)]),
-        counts(&[("input_tokens", 9)]),
-        "operator",
-        "  ",
-        1,
-    );
-    assert_eq!(refused, Err(CorrectionRefused::NoReason));
-}
-
-/// THE JOURNAL READS AN ENTRY'S COUNTS THROUGH ITS LATEST CORRECTION, and leaves an uncorrected
-/// entry at what was recorded.
-#[test]
-fn a_journal_answers_the_counts_an_entry_stands_at_now() {
-    let mut journal = AmendJournal::new();
-    let recorded = counts(&[("input_tokens", 1_000)]);
-    assert_eq!(journal.counts_now("x", &recorded), recorded);
-    journal.append(
-        one_count("x", Subject::Aggregate, 1_000, 800),
-        &pass::<AuditStep>(),
-    );
-    journal.append(
-        one_count("x", Subject::Aggregate, 800, 700),
-        &pass::<AuditStep>(),
-    );
-    journal.append(
-        one_count("y", Subject::Aggregate, 5, 1),
-        &pass::<AuditStep>(),
-    );
-    assert_eq!(
-        journal.counts_now("x", &recorded),
-        counts(&[("input_tokens", 700)])
-    );
-    assert_eq!(journal.corrections().len(), 3);
-    assert!(journal.verify().is_ok());
-}
-
-/// THE IN-MEMORY WINDOW IS BOUNDED; CORRECTIONS ARE NOT. Accesses arrive at request rate, so the
-/// journal releases the oldest held amendment past [`AMENDMENTS_RETAINED`] — and still verifies the
-/// window it holds to the chain's head — while every correction stays readable.
-#[test]
-fn a_journal_bounds_what_it_holds_but_never_drops_a_correction() {
+fn a_journal_bounds_what_it_holds() {
     let mut journal = AmendJournal::new();
     journal.append(
         one_count("x", Subject::Aggregate, 10, 9),
@@ -363,25 +292,7 @@ fn a_journal_bounds_what_it_holds_but_never_drops_a_correction() {
     }
     assert_eq!(journal.recent().count(), AMENDMENTS_RETAINED);
     assert_eq!(journal.released(), 1);
-    assert_eq!(journal.corrections().len(), 1);
-    assert_eq!(
-        journal.counts_now("x", &counts(&[("input_tokens", 10)])),
-        counts(&[("input_tokens", 9)])
-    );
     assert!(journal.verify().is_ok());
-}
-
-/// A correction DOWNWARD is the commonest one there is, so `was` exceeding `now` is an ordinary
-/// amendment and not something to refuse.
-#[test]
-fn a_correction_downward_is_an_ordinary_amendment() {
-    match &a_correction() {
-        AmendBody::Adjust(a) => {
-            assert!(a.was["input_tokens"] > a.now["input_tokens"]);
-            assert_eq!(a.delta("input_tokens"), -200_000_000);
-        }
-        other => panic!("expected a correction, got {other:?}"),
-    }
 }
 
 /// CUTTING THE HEAD OFF A CORRECTION HISTORY IS CAUGHT.
@@ -599,8 +510,8 @@ fn an_amendment_names_the_audit_record_it_amends() {
     }
 }
 
-/// A JOURNAL REBUILT FROM ITS WHOLE RUN is the journal that sealed it: the same head, the same
-/// corrected counts, and the next amendment links on where the run ended. A run with its head cut
+/// A JOURNAL REBUILT FROM ITS WHOLE RUN is the journal that sealed it: the same head, and the next
+/// amendment links on where the run ended. A run with its head cut
 /// off is refused rather than rebuilt.
 #[test]
 fn a_journal_rebuilt_from_its_run_reads_and_continues_as_the_one_that_sealed_it() {
@@ -611,12 +522,6 @@ fn a_journal_rebuilt_from_its_run_reads_and_continues_as_the_one_that_sealed_it(
 
     let mut rebuilt = AmendJournal::restore(run.clone()).expect("a whole run rebuilds");
     assert_eq!(rebuilt.head(), sealed.head());
-    assert_eq!(rebuilt.corrections(), sealed.corrections());
-    let recorded = counts(&[("input_tokens", 1_000), ("output_tokens", 200)]);
-    assert_eq!(
-        rebuilt.counts_now("the-entry-being-amended", &recorded),
-        counts(&[("input_tokens", 800), ("output_tokens", 200)])
-    );
     let next = rebuilt.append(an_access(), &pass::<AuditStep>());
     assert_eq!((next.seq, next.prev_hash.as_str()), (3, sealed.head()));
     assert_eq!(rebuilt.verify(), Ok(()));
