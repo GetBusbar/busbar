@@ -1916,6 +1916,52 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     }
 }
 
+/// **A RECORD KIND THE KERNEL KEEPS ITS OWN RECORDS UNDER IS NEVER AN INSTANCE'S.** The kernel keeps
+/// a minted ticket's record under the kind `ticket` ([`crate::governance::TICKET_RECORD_KIND`]); a
+/// plane that declares that kind would have the admin `plane_record_write` verb upsert rows beside
+/// the kernel's tickets and its own retention rule govern every purge of them. Such an instance is
+/// refused at its admit, with the refusal naming the instance and the kind, and nothing is
+/// registered for it.
+///
+/// RED while the admit took any declared kind: the instance was admitted and its rule for the
+/// kernel's `ticket` kind was in force.
+#[test]
+fn an_instance_declaring_the_kernels_ticket_kind_is_refused_at_admit() {
+    let r = rig();
+    let refused =
+        r.s.admit(
+            "squatter",
+            InstanceFacts {
+                record_kinds: vec![KIND, RecordSchemaId::new("ticket")],
+                record_retentions: vec![busbar_contract::abi::plane::RecordRetention {
+                    kind: 1,
+                    rule: busbar_contract::abi::store::plane::RETENTION_TERMINAL_ONLY,
+                }],
+                ..InstanceFacts::default()
+            },
+        )
+        .expect_err("an instance declaring the kernel's `ticket` kind must not be admitted");
+    assert_eq!(
+        refused,
+        AdmitRefused::KindReserved {
+            instance: "squatter".to_string(),
+            kind: "ticket".to_string(),
+        }
+    );
+    let words = refused.to_string();
+    assert!(
+        words.contains("`squatter`") && words.contains("`ticket`") && words.contains("kernel"),
+        "the refusal names the instance, the kind and why: {words}"
+    );
+    let s = r.s.sign(&caller("squatter"), b"x");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    assert_eq!(
+        r.s.record_retention("squatter", "ticket"),
+        Retention::Age,
+        "no rule of the refused instance is in force over the kernel's tickets"
+    );
+}
+
 /// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
 /// store-plugin crossing an admit makes (audit K4 #6).
 struct ParkingStore {
@@ -1965,10 +2011,11 @@ impl crate::store::plane_view::PlaneStore for ParkingStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _: &str,
         _: u64,
+        _: Retention,
     ) -> busbar_contract::records::RecordStoreResult<u64> {
         Ok(0)
     }
@@ -2205,10 +2252,11 @@ impl crate::store::plane_view::PlaneStore for Probe {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _kind: &str,
         _before: u64,
+        _retention: Retention,
     ) -> busbar_contract::records::RecordStoreResult<u64> {
         Ok(0)
     }
@@ -2517,10 +2565,11 @@ impl crate::store::plane_view::PlaneStore for DownStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Err(down())
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _kind: &str,
         _before: u64,
+        _retention: Retention,
     ) -> busbar_contract::records::RecordStoreResult<u64> {
         Err(down())
     }
