@@ -3545,7 +3545,7 @@ mod tools_door {
     }
 
     /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
-    /// attributed to the tool it called and to this plane, counting one request.
+    /// attributed to the server it called (R-11) and to this plane, counting one request.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
         let _one = PUBLISHING.lock().await;
@@ -3568,9 +3568,11 @@ mod tools_door {
         let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key.id).collect();
         assert_eq!(mine.len(), 1, "one metering row for the key: {rows:?}");
         assert_eq!(mine[0].requests, 1, "counting one request: {:?}", mine[0]);
+        // R-11 (architect ruling 2026-10-23): a call is billed under the registered SERVER it
+        // resolved to, the lane a present `tools.rate_card` prices, never under its published tool.
         assert!(
-            mine[0].model.contains("read_file"),
-            "attributed to the tool it called: {:?}",
+            mine[0].model.ends_with(":metered") && !mine[0].model.contains("read_file"),
+            "attributed to the server it called, not the tool: {:?}",
             mine[0]
         );
         assert_eq!(
