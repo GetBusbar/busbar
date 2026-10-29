@@ -2139,3 +2139,116 @@ fn a_verify_op_issues_its_handles_in_order_and_never_crosses_ticketless() {
         Poll::Ready(Err(ServiceError::Unserved))
     );
 }
+
+// ── TICKET.MINT: THE TICKET IS SEALED FROM THE PLANE (R7) ───────────────────────────────────────
+
+/// The ticket the minting host writes: longer than the SDK's first buffer, so the first crossing is
+/// the short answer.
+fn minted_ticket() -> Vec<u8> {
+    let mut t = b"bt_".to_vec();
+    t.resize(600, b'k');
+    t
+}
+
+/// When [`minted_ticket`] expires.
+const MINTED_EXPIRES: u64 = 1_767_225_600;
+
+/// How many `ticket.mint` crossings [`mints`] answered.
+static MINTS: AtomicU8 = AtomicU8::new(0);
+
+/// A host that mints [`minted_ticket`]: into the caller's buffer READY with its expiry, or FAILED
+/// naming its length when the buffer is short.
+extern "C" fn mints(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    MINTS.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: the wrapper hands a `TicketMintIn` naming its live buffer.
+    let i = unsafe { input.cast::<TicketMintIn>().read_unaligned() };
+    let ticket = minted_ticket();
+    if i.into.cap < ticket.len() {
+        // SAFETY: a live `out`.
+        unsafe { (*out).needed_bytes = ticket.len() as u64 };
+        return answer(out, Outcome::Failed, 0, 0, 0);
+    }
+    // SAFETY: `into.buf` holds `into.cap` writable bytes, at least the ticket's length.
+    unsafe { std::ptr::copy_nonoverlapping(ticket.as_ptr(), i.into.buf, ticket.len()) };
+    answer(out, Outcome::Ready, MINTED_EXPIRES, ticket.len() as u64, 0)
+}
+
+/// What a sealed answer puts on the wire, through the SDK's test-only driver.
+fn sealed_wire(w: &mut crate::abi::sdk::cred::SealedWrite) -> Vec<u8> {
+    let mut wire = Vec::new();
+    let done = crate::abi::sdk::test_support::chip::drive_sealed::<()>(w, |b: &[u8]| {
+        wire.extend_from_slice(b);
+        Poll::Ready(Ok(b.len()))
+    });
+    assert!(done.is_ready(), "the sealed answer is taken whole");
+    wire
+}
+
+/// RED-BEFORE-GREEN (R7: a plane never holds credential bytes; the chip precedent of the `ek_`
+/// answer): `ticket.mint` hands the plane its bearer ticket SEALED. Nothing the plane can print
+/// shows it, and the plane's only way to answer it on is the SDK's sealed JSON, which carries it
+/// byte for byte to the host's buffer. A ticket longer than the first buffer is the short answer,
+/// re-called once inside the call. RED before: the plane got the ticket as a `&str` view into a
+/// buffer of its own.
+#[test]
+fn a_minted_ticket_reaches_the_plane_sealed() {
+    let t = HostSlots {
+        ticket_mint: Some(mints),
+        ..table(None)
+    };
+    let before = MINTS.load(Ordering::SeqCst);
+    let minted = services(&t)
+        .ticket_mint(handle(), 600, br#"{"locked":true}"#)
+        .expect("minted");
+    assert_eq!(
+        MINTS.load(Ordering::SeqCst) - before,
+        2,
+        "the short answer, then its one re-call"
+    );
+    assert_eq!(minted.expires_at_unix, MINTED_EXPIRES);
+    assert_eq!(minted.ticket.len(), minted_ticket().len());
+    assert!(minted.ticket.starts_with(b"bt_"));
+    let shown = format!("{minted:?}");
+    assert!(!shown.contains("bt_k"), "Debug shows the ticket: {shown}");
+    assert!(shown.contains("<600 bytes>"), "{shown}");
+
+    // Named sorted, as `serde_json::json!` writes them (SealedJson writes members in the order named).
+    let mut answer = crate::abi::sdk::cred::SealedJson::new()
+        .public("expires_at_unix", minted.expires_at_unix)
+        .sealed("value", &minted.ticket)
+        .encoded()
+        .expect("the ticket is text");
+    let ticket = String::from_utf8(minted_ticket()).expect("text");
+    assert_eq!(
+        sealed_wire(&mut answer),
+        serde_json::to_vec(&serde_json::json!({
+            "value": ticket,
+            "expires_at_unix": MINTED_EXPIRES,
+        }))
+        .expect("json"),
+        "the host's buffer receives the ticket byte for byte"
+    );
+}
+
+/// A host that answers a ticket that is not UTF-8: broken, never handed on.
+extern "C" fn mints_bytes(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `TicketMintIn` naming its live buffer.
+    let i = unsafe { input.cast::<TicketMintIn>().read_unaligned() };
+    // SAFETY: the SDK's first buffer holds far more than two bytes.
+    unsafe { std::ptr::copy_nonoverlapping([0xff_u8, 0xfe].as_ptr(), i.into.buf, 2) };
+    answer(out, Outcome::Ready, MINTED_EXPIRES, 2, 0)
+}
+
+#[test]
+fn a_minted_ticket_that_is_not_text_is_broken() {
+    let t = HostSlots {
+        ticket_mint: Some(mints_bytes),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&t)
+            .ticket_mint(handle(), 600, b"{}")
+            .map(|m| m.expires_at_unix),
+        Err(ServiceError::Broken)
+    );
+}
