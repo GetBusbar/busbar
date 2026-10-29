@@ -1181,7 +1181,7 @@ impl DriverSteps for DoorSteps<'_> {
         // parent's hold. A parent that already exited, or any refusal of the accrual, leaves the
         // child its own zero hold: it posts on its own.
         if let Some(cell) = self.parent {
-            if let Ok(accrual) = cell.accrue_child(principal, 0, admit) {
+            if let Ok(accrual) = cell.accrue_child(principal, admit) {
                 return Ok(busbar_contract::caps::Admission::Accrual(accrual));
             }
         }

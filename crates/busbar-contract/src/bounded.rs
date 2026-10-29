@@ -604,23 +604,3 @@ impl<'u> Ir<'u> {
         }
     }
 }
-
-/// One replacement a gate hook asks the kernel to apply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IrEdit<'u> {
-    /// The pointer whose span is replaced.
-    pub pointer: &'u str,
-    /// The bytes that replace it.
-    pub replacement: ScratchBytes<'u>,
-}
-
-/// A bounded set of edits a gate hook asks the kernel to apply to the spooled body.
-///
-/// The hook row of the plugin-kinds table is explicit that the kernel applies the patch, that it
-/// applies it to the spooled body and never to bytes already on the wire, and that the price delta
-/// it may cause is bounded by the hook's declaration.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IrPatch<'u> {
-    /// The edits, in declaration order.
-    pub edits: BoundedVec<IrEdit<'u>, MAX_KEYS>,
-}
