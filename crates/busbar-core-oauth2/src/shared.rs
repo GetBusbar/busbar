@@ -92,10 +92,11 @@ use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientId};
 use oauth_as::consent::ConsentRecord;
-use oauth_as::device::{DeviceGrant, DeviceGrantState};
+use oauth_as::device::{normalize_user_code, DeviceGrant, DeviceGrantState};
 use oauth_as::par::PushedAuthorizationRequest;
 use oauth_as::store::{RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The fixed kernel label every record kind of the authorization server lives under. It begins
@@ -191,9 +192,7 @@ fn version_token(id: &str, epoch: &str, next: u64) -> String {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    secs_of(SystemTime::now())
 }
 
 fn secs_of(t: SystemTime) -> u64 {
@@ -210,6 +209,15 @@ fn decode_failed(what: &str, e: serde_json::Error) -> StorageError {
     StorageError::new(format!("oauth_as store: {what} did not decode: {e}"))
 }
 
+/// THE ONE RECORD CODEC: every record this module keeps is one JSON value.
+fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> {
+    serde_json::to_vec(value).map_err(|e| decode_failed(what, e))
+}
+
+fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageError> {
+    serde_json::from_slice(body).map_err(|e| decode_failed(what, e))
+}
+
 /// The fence: a write computed from a read at `read_at` may be issued only within [`WRITE_BUDGET`].
 fn within_budget(what: &str, read_at: tokio::time::Instant) -> Result<(), StorageError> {
     if read_at.elapsed() > WRITE_BUDGET {
@@ -221,6 +229,11 @@ fn within_budget(what: &str, read_at: tokio::time::Instant) -> Result<(), Storag
         )));
     }
     Ok(())
+}
+
+/// A device grant's user code, normalized, and its device code: what its user-code cell holds.
+fn user_code(d: &DeviceGrant) -> (String, String) {
+    (normalize_user_code(&d.user_code), d.device_code.clone())
 }
 
 /// Run `fut` to completion on this thread, parking until it is woken. For the one synchronous
@@ -263,22 +276,14 @@ struct Times {
 }
 
 impl Times {
-    fn of(w: RevocationWindow) -> Self {
-        Self {
-            recorded_at: w.recorded_at,
-            until: w.until,
-        }
-    }
-
     /// The later of each instant, as `MemoryStorage` merges a second barrier into a first.
     fn merge(slot: &mut Option<Times>, w: RevocationWindow) {
-        match slot {
-            Some(t) => {
-                t.until = t.until.max(w.until);
-                t.recorded_at = t.recorded_at.max(w.recorded_at);
-            }
-            None => *slot = Some(Self::of(w)),
-        }
+        let t = slot.get_or_insert(Times {
+            recorded_at: w.recorded_at,
+            until: w.until,
+        });
+        t.until = t.until.max(w.until);
+        t.recorded_at = t.recorded_at.max(w.recorded_at);
     }
 
     fn covers(&self, established: SystemTime) -> bool {
@@ -288,27 +293,18 @@ impl Times {
 
 /// EVERYTHING ONE CLIENT HOLDS, swapped whole.
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Bucket {
     /// The client this bucket is for, as written: what the sweep walks the buckets by.
-    #[serde(default)]
     id: String,
-    #[serde(default)]
     client: Option<Client>,
-    #[serde(default)]
     client_barrier: Option<Times>,
-    #[serde(default)]
     consent_barriers: BTreeMap<String, Times>,
-    #[serde(default)]
     tokens: BTreeMap<String, IssuedToken>,
-    #[serde(default)]
     refresh: BTreeMap<String, RefreshTokenRecord>,
-    #[serde(default)]
     codes: BTreeMap<String, AuthorizationCodeRecord>,
-    #[serde(default)]
     pushed: BTreeMap<String, PushedAuthorizationRequest>,
-    #[serde(default)]
     devices: BTreeMap<String, DeviceGrant>,
-    #[serde(default)]
     consents: BTreeMap<String, ConsentRecord>,
 }
 
@@ -333,14 +329,17 @@ impl Bucket {
         self.tokens.len() + self.refresh.len() + self.codes.len() + self.devices.len()
     }
 
+    /// Whether this bucket holds no record a client keeps alive by.
+    fn idle(&self) -> bool {
+        self.records() == 0 && self.pushed.is_empty() && self.consents.is_empty()
+    }
+
     /// Whether this bucket holds nothing at all: no client, no barrier and no record.
     fn holds_nothing(&self) -> bool {
         self.client.is_none()
             && self.client_barrier.is_none()
             && self.consent_barriers.is_empty()
-            && self.records() == 0
-            && self.pushed.is_empty()
-            && self.consents.is_empty()
+            && self.idle()
     }
 }
 
@@ -371,6 +370,17 @@ enum Swap<R> {
     Retire(R, bool),
 }
 
+impl<R> Swap<R> {
+    /// Write when `changed`, else keep; answer `r` either way.
+    fn when(changed: bool, r: R) -> Self {
+        if changed {
+            Swap::Write(r)
+        } else {
+            Swap::Keep(r)
+        }
+    }
+}
+
 /// THE STORE THE AUTHORIZATION SERVER SHARES with every node on the deployment's store.
 pub(crate) struct Shared {
     calls: Arc<dyn StoreCalls>,
@@ -388,25 +398,61 @@ impl Shared {
             .map_err(|f| failed(kind_name, f))
     }
 
-    async fn put_body(
+    async fn get<T: DeserializeOwned>(
         &self,
         kind_name: &str,
         id: &str,
-        parent: Option<&str>,
-        seq: u64,
-        body: &[u8],
-    ) -> Result<(), StorageError> {
+    ) -> Result<Option<T>, StorageError> {
+        match self.get_body(kind_name, id).await? {
+            Some(body) => decode(kind_name, &body).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Point-read records live at sequence 0 with no parent: that is where every store reads
+    /// `get_plane_record` back from.
+    async fn put_body(&self, kind_name: &str, id: &str, body: &[u8]) -> Result<(), StorageError> {
         let k = kind(kind_name);
         self.calls
             .upsert_plane_record(PlaneRecordRef {
                 kind: &k,
                 id,
-                parent,
-                seq,
+                parent: None,
+                seq: 0,
                 ts: now_secs(),
                 disposition: PlaneDisposition::Active,
                 body,
             })
+            .await
+            .map_err(|f| failed(kind_name, f))
+    }
+
+    async fn put<T: Serialize>(
+        &self,
+        kind_name: &str,
+        id: &str,
+        value: &T,
+    ) -> Result<(), StorageError> {
+        self.put_body(kind_name, id, &encode(kind_name, value)?)
+            .await
+    }
+
+    /// Every record of `kind_name` that decodes as a `T`.
+    async fn list<T: DeserializeOwned>(&self, kind_name: &str) -> Result<Vec<T>, StorageError> {
+        let rows = self
+            .calls
+            .list_plane_records(&kind(kind_name), &PlaneSelector::All)
+            .await
+            .map_err(|f| failed(kind_name, f))?;
+        Ok(rows
+            .iter()
+            .filter_map(|body| serde_json::from_slice(body).ok())
+            .collect())
+    }
+
+    async fn delete(&self, kind_name: &str, id: &str) -> Result<(), StorageError> {
+        self.calls
+            .delete_plane_record(&kind(kind_name), id)
             .await
             .map_err(|f| failed(kind_name, f))
     }
@@ -426,59 +472,33 @@ impl Shared {
             .map_err(|f| failed(kind_name, f))
     }
 
-    async fn read_cell<T: for<'de> Deserialize<'de> + Default>(
-        &self,
-        kind_name: &str,
-        id: &str,
-    ) -> Result<(u64, T), StorageError> {
-        self.read_cell_at(kind_name, id)
-            .await
-            .map(|(v, _, _, value)| (v, value))
-    }
-
     /// The cell's version, when that version was written, its epoch, and its value.
-    async fn read_cell_at<T: for<'de> Deserialize<'de> + Default>(
+    async fn read_cell<T: DeserializeOwned + Default>(
         &self,
         kind_name: &str,
         id: &str,
     ) -> Result<(u64, u64, String, T), StorageError> {
-        match self.get_body(kind_name, id).await? {
-            None => Ok((0, 0, String::new(), T::default())),
-            Some(body) => serde_json::from_slice::<Cell<T>>(&body)
-                .map(|c| (c.v, c.at, c.e, c.b))
-                .map_err(|e| decode_failed(kind_name, e)),
-        }
+        Ok(match self.get::<Cell<T>>(kind_name, id).await? {
+            None => (0, 0, String::new(), T::default()),
+            Some(c) => (c.v, c.at, c.e, c.b),
+        })
     }
 
     /// COMPARE-AND-SET the store cell `(kind_name, id)`, never an `AppHandle`: `f` reads the current
-    /// value and says what to write; the write lands only under the version this call redeemed, and
-    /// a lost version reads again.
+    /// value and when that version was written (Unix seconds), and says what to write; the write
+    /// lands only under the version this call redeemed, and a lost version reads again.
     async fn cas_cell<T, R>(
-        &self,
-        kind_name: &str,
-        id: &str,
-        mut f: impl FnMut(&mut T) -> Result<Swap<R>, StorageError>,
-    ) -> Result<R, StorageError>
-    where
-        T: Serialize + for<'de> Deserialize<'de> + Default,
-    {
-        self.cas_cell_at(kind_name, id, move |value, _| f(value))
-            .await
-    }
-
-    /// [`Self::cas_cell`], with `f` told when the version it reads was written (Unix seconds).
-    async fn cas_cell_at<T, R>(
         &self,
         kind_name: &str,
         id: &str,
         mut f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError>
     where
-        T: Serialize + for<'de> Deserialize<'de> + Default,
+        T: Serialize + DeserializeOwned + Default,
     {
         for attempt in 0..SWAP_ATTEMPTS {
             let read_at = tokio::time::Instant::now();
-            let (v, at, epoch, mut value) = self.read_cell_at::<T>(kind_name, id).await?;
+            let (v, at, epoch, mut value) = self.read_cell::<T>(kind_name, id).await?;
             let (answer, retire) = match f(&mut value, at)? {
                 Swap::Keep(r) => return Ok(r),
                 Swap::Write(r) => (r, false),
@@ -509,23 +529,18 @@ impl Shared {
                     // Retired under the won claim: a writer that read this version loses it and
                     // reads the cell gone, and creates it again under a new epoch, which no claim
                     // of this one names.
-                    self.calls
-                        .delete_plane_record(&kind(kind_name), id)
-                        .await
-                        .map_err(|f| failed(kind_name, f))?;
+                    self.delete(kind_name, id).await?;
                     return Ok(answer);
                 }
-                let body = serde_json::to_vec(&Cell {
+                let cell = Cell {
                     v: next,
                     b: &value,
                     at: now_secs(),
                     id: id.to_string(),
                     e: epoch,
-                })
-                .map_err(|e| decode_failed(kind_name, e))?;
-                // Point-read records live at sequence 0 with no parent: that is where every store
-                // reads `get_plane_record` back from. The version rides in the cell itself.
-                self.put_body(kind_name, id, None, 0, &body).await?;
+                };
+                // The version rides in the cell itself.
+                self.put(kind_name, id, &cell).await?;
                 return Ok(answer);
             }
             // Another writer holds this version: read again, after a short, growing pause.
@@ -540,24 +555,16 @@ impl Shared {
         Ok(self
             .read_cell::<Bucket>("bucket", &digest(client_id))
             .await?
-            .1)
+            .3)
     }
 
+    /// Swap `client_id`'s bucket: `f` is told when its current version was written.
     async fn update<R>(
-        &self,
-        client_id: &str,
-        mut f: impl FnMut(&mut Bucket) -> Result<Swap<R>, StorageError>,
-    ) -> Result<R, StorageError> {
-        self.update_at(client_id, move |b, _| f(b)).await
-    }
-
-    /// [`Self::update`], with `f` told when the bucket's current version was written.
-    async fn update_at<R>(
         &self,
         client_id: &str,
         mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError> {
-        self.cas_cell_at("bucket", &digest(client_id), |b: &mut Bucket, at| {
+        self.cas_cell("bucket", &digest(client_id), |b: &mut Bucket, at| {
             b.id = client_id.to_string();
             f(b, at)
         })
@@ -567,14 +574,12 @@ impl Shared {
     /// Index the credential (or family) `key` of kind `ix` to the one client it was minted for.
     async fn index(&self, ix: &str, key: &str, client_id: &str) -> Result<(), StorageError> {
         let id = digest(key);
-        let body = serde_json::to_vec(&IndexRow {
+        let row = IndexRow {
             client: client_id.to_string(),
             key: id.clone(),
             at: now_secs(),
-        })
-        .map_err(|e| decode_failed(ix, e))?;
-        self.put_body(&format!("ix.{ix}"), &id, None, 0, &body)
-            .await
+        };
+        self.put(&format!("ix.{ix}"), &id, &row).await
     }
 
     /// The one client the index `ix` names for `key`.
@@ -582,9 +587,38 @@ impl Shared {
         let Some(body) = self.get_body(&format!("ix.{ix}"), &digest(key)).await? else {
             return Ok(None);
         };
-        serde_json::from_slice::<IndexRow>(&body)
-            .map(|row| Some(row.client))
-            .map_err(|e| decode_failed(ix, e))
+        decode::<IndexRow>(ix, &body).map(|row| Some(row.client))
+    }
+
+    /// What `pick` reads from the bucket of the client the index `ix` names for `key`.
+    async fn lookup<R>(
+        &self,
+        ix: &str,
+        key: &str,
+        pick: impl FnOnce(Bucket) -> Option<R>,
+    ) -> Result<Option<R>, StorageError> {
+        let Some(client) = self.client_of(ix, key).await? else {
+            return Ok(None);
+        };
+        Ok(pick(self.bucket(&client).await?))
+    }
+
+    /// TAKE, in one swap of the bucket of the client the index `ix` names for `key`, the record
+    /// `pick` removes: exactly one taker wins it.
+    async fn take<R>(
+        &self,
+        ix: &str,
+        key: &str,
+        mut pick: impl FnMut(&mut Bucket) -> Option<R>,
+    ) -> Result<Option<R>, StorageError> {
+        let Some(client) = self.client_of(ix, key).await? else {
+            return Ok(None);
+        };
+        self.update(&client, |b, _| {
+            let taken = pick(b);
+            Ok(Swap::when(taken.is_some(), taken))
+        })
+        .await
     }
 
     /// Index `subject` to `client_id`: a subject's one index cell names every client it consented
@@ -592,7 +626,7 @@ impl Shared {
     /// indexed within half the grace is left as it is, so a consent's every write is not a swap.
     async fn index_subject(&self, key: &str, client_id: &str) -> Result<(), StorageError> {
         let now = now_secs();
-        self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &digest(key), |ix| {
+        self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &digest(key), |ix, _| {
             if ix
                 .clients
                 .get(client_id)
@@ -607,19 +641,11 @@ impl Shared {
         .await
     }
 
-    /// Every client the subject index names for `key`.
-    async fn clients_of_subject(&self, key: &str) -> Result<Vec<String>, StorageError> {
-        let (_, ix) = self
-            .read_cell::<SubjectIndex>(SUBJECT_INDEX, &digest(key))
-            .await?;
-        Ok(ix.clients.into_keys().collect())
-    }
-
     async fn family_barred(&self, family_id: Option<&str>) -> Result<bool, StorageError> {
         let Some(family) = family_id else {
             return Ok(false);
         };
-        let (_, bar) = self
+        let (_, _, _, bar) = self
             .read_cell::<FamilyBar>("family", &digest(family))
             .await?;
         Ok(bar.times.is_some())
@@ -630,9 +656,8 @@ impl Shared {
         normalized: &str,
         device_code: &str,
     ) -> Result<(), StorageError> {
-        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held| {
-            let owner = held.clone();
-            match owner.as_deref() {
+        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held, _| {
+            match held.as_deref() {
                 Some(owner) if owner != device_code => Err(StorageError::new(
                     "user code is already indexed for a different device_code",
                 )),
@@ -651,7 +676,7 @@ impl Shared {
         normalized: &str,
         device_code: &str,
     ) -> Result<(), StorageError> {
-        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held| {
+        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held, _| {
             if held.as_deref() == Some(device_code) {
                 *held = None;
                 Ok(Swap::Retire((), true))
@@ -662,11 +687,18 @@ impl Shared {
         .await
     }
 
+    async fn release_all(&self, freed: Vec<(String, String)>) -> Result<(), StorageError> {
+        for (uc, dc) in freed {
+            self.release_user_code(&uc, &dc).await?;
+        }
+        Ok(())
+    }
+
     async fn user_code_owner(&self, normalized: &str) -> Result<Option<String>, StorageError> {
         Ok(self
             .read_cell::<Option<String>>("uc", &digest(normalized))
             .await?
-            .1)
+            .3)
     }
 
     /// Record that the browser holding session `id` is `subject`, until `ttl` from now.
@@ -676,23 +708,21 @@ impl Shared {
         subject: &str,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        let body = serde_json::to_vec(&SessionRow {
+        let row = SessionRow {
             subject: subject.to_string(),
             until: now_secs() + ttl.as_secs(),
             id: digest(id),
-        })
-        .map_err(|e| decode_failed("session", e))?;
-        self.put_body("session", &digest(id), None, 0, &body).await
+        };
+        self.put("session", &digest(id), &row).await
     }
 
     /// The subject of a live session, or `None`.
     pub(crate) async fn session_subject(&self, id: &str) -> Result<Option<String>, StorageError> {
-        let Some(body) = self.get_body("session", &digest(id)).await? else {
-            return Ok(None);
-        };
-        let row: SessionRow =
-            serde_json::from_slice(&body).map_err(|e| decode_failed("session", e))?;
-        Ok((row.until > now_secs()).then_some(row.subject))
+        Ok(self
+            .get::<SessionRow>("session", &digest(id))
+            .await?
+            .filter(|row| row.until > now_secs())
+            .map(|row| row.subject))
     }
 
     /// Stake one answer for `key` on session `id`. A second answer for the same request on the same
@@ -710,25 +740,20 @@ impl Shared {
             return Ok(());
         }
         let row_id = format!("{}:{}", digest(id), digest(key));
-        let body = serde_json::to_vec(&StakeRow {
+        let row = StakeRow {
             approve,
             until: now_secs() + ttl.as_secs(),
             id: row_id.clone(),
             nonce: nonce()?,
-        })
-        .map_err(|e| decode_failed("stake", e))?;
-        self.put_body("stake", &row_id, None, 0, &body).await
+        };
+        self.put("stake", &row_id, &row).await
     }
 
     async fn stake_row(&self, id: &str, key: &str) -> Result<Option<StakeRow>, StorageError> {
-        let Some(body) = self
-            .get_body("stake", &format!("{}:{}", digest(id), digest(key)))
+        Ok(self
+            .get::<StakeRow>("stake", &format!("{}:{}", digest(id), digest(key)))
             .await?
-        else {
-            return Ok(None);
-        };
-        let row: StakeRow = serde_json::from_slice(&body).map_err(|e| decode_failed("stake", e))?;
-        Ok((row.until > now_secs()).then_some(row))
+            .filter(|row| row.until > now_secs()))
     }
 
     /// Whether an answer is staked for `key` on session `id`, without spending it.
@@ -757,16 +782,11 @@ impl Shared {
         &self,
         request_uri: &str,
     ) -> Result<Option<PushedAuthorizationRequest>, StorageError> {
-        let Some(client) = self.client_of("par", request_uri).await? else {
-            return Ok(None);
-        };
         let now = SystemTime::now();
-        Ok(self
-            .bucket(&client)
-            .await?
-            .pushed
-            .remove(request_uri)
-            .filter(|p| p.expires_at > now))
+        self.lookup("par", request_uri, |mut b| {
+            b.pushed.remove(request_uri).filter(|p| p.expires_at > now)
+        })
+        .await
     }
 
     /// Mark a pushed request shown on the consent screen, answering whether it had been already.
@@ -838,7 +858,7 @@ impl Shared {
         use base64::Engine as _;
         let body = base64::engine::general_purpose::STANDARD.encode(&der);
         within_budget("key", claimed_at).map_err(|e| e.0)?;
-        self.put_body("key", "signing", None, 0, body.as_bytes())
+        self.put_body("key", "signing", body.as_bytes())
             .await
             .map_err(|e| e.0)?;
         read()
@@ -868,6 +888,16 @@ struct StakeRow {
     nonce: String,
 }
 
+const LOST_ROW: &str = "oauth_as: a lapsed row was not reclaimed this tick";
+const LOST_REPLAY: &str = "oauth_as: a lapsed replay row was not reclaimed this tick";
+
+/// One claimed replay id, kept beside its claim so the sweep can count what it reclaims.
+#[derive(Serialize, Deserialize)]
+struct ReplayRow {
+    id: String,
+    until: u64,
+}
+
 /// The record kind a subject's index cell is kept under, by the subject's digest.
 const SUBJECT_INDEX: &str = "ix.subj";
 
@@ -893,10 +923,29 @@ struct IndexRow {
     at: u64,
 }
 
+/// A token family's barrier, named by its family's digest so the sweep can find it again.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct FamilyBar {
+    id: String,
+    times: Option<Times>,
+}
+
 /// THE SERVER'S `Storage` OVER [`Shared`]: `MemoryStorage`'s rules, record for record, with the
 /// mutex replaced by the per-client bucket swap.
 pub(crate) struct SharedStorage {
     shared: Arc<Shared>,
+}
+
+/// One credential [`SharedStorage::put_guarded`] writes: its index, its family, and the grant the
+/// barriers are judged against.
+struct Guarded<'a> {
+    client: &'a str,
+    ix: &'a str,
+    key: &'a str,
+    family: Option<&'a str>,
+    subject: Option<&'a str>,
+    established: SystemTime,
 }
 
 impl SharedStorage {
@@ -904,37 +953,34 @@ impl SharedStorage {
         Self { shared }
     }
 
-    /// Write `token` into its client's bucket unless a barrier stands; then the family barrier,
-    /// read after the write, undoes it.
-    async fn put_issued(&self, token: IssuedToken) -> Result<WriteOutcome, StorageError> {
+    /// Write a token or refresh token into its client's bucket (`insert`) unless a barrier stands;
+    /// then the family barrier, read after the write, undoes it (`remove`).
+    async fn put_guarded(
+        &self,
+        g: Guarded<'_>,
+        insert: impl Fn(&mut Bucket),
+        remove: impl Fn(&mut Bucket) -> bool,
+    ) -> Result<WriteOutcome, StorageError> {
         let s = &self.shared;
-        let client = token.client_id.as_str().to_string();
-        let access = token.access_token.clone();
-        let family = token.family_id.clone();
-        if let Some(f) = &family {
-            s.index("fam", f, &client).await?;
+        if let Some(f) = g.family {
+            s.index("fam", f, g.client).await?;
         }
-        s.index("tok", &access, &client).await?;
+        s.index(g.ix, g.key, g.client).await?;
         let applied = s
-            .update(&client, |b| {
-                if b.barred(token.subject.as_deref(), token.grant_established_at) {
+            .update(g.client, |b, _| {
+                if b.barred(g.subject, g.established) {
                     return Ok(Swap::Keep(false));
                 }
-                b.tokens.insert(token.access_token.clone(), token.clone());
+                insert(b);
                 Ok(Swap::Write(true))
             })
             .await?;
         if !applied {
             return Ok(WriteOutcome::RefusedRevoked);
         }
-        if s.family_barred(family.as_deref()).await? {
-            s.update(&client, |b| {
-                Ok(match b.tokens.remove(&access) {
-                    Some(_) => Swap::Write(()),
-                    None => Swap::Keep(()),
-                })
-            })
-            .await?;
+        if s.family_barred(g.family).await? {
+            s.update(g.client, |b, _| Ok(Swap::when(remove(b), ())))
+                .await?;
             return Ok(WriteOutcome::RefusedRevoked);
         }
         Ok(WriteOutcome::Applied)
@@ -954,7 +1000,7 @@ impl Storage for SharedStorage {
     async fn put_client(&self, client: Client) -> Result<(), StorageError> {
         let id = client.client_id.as_str().to_string();
         self.shared
-            .update(&id, |b| {
+            .update(&id, |b, _| {
                 b.client = Some(client.clone());
                 Ok(Swap::Write(()))
             })
@@ -968,7 +1014,7 @@ impl Storage for SharedStorage {
     ) -> Result<bool, StorageError> {
         let id = updated.client_id.as_str().to_string();
         self.shared
-            .update(&id, |b| {
+            .update(&id, |b, _| {
                 if b.client.as_ref() != Some(expected) {
                     return Ok(Swap::Keep(false));
                 }
@@ -989,22 +1035,13 @@ impl Storage for SharedStorage {
                  identity a barrier can be recorded for",
             ));
         }
-        let mut freed: Vec<(String, String)> = Vec::new();
+        let mut freed = Vec::new();
         let existed = self
             .shared
-            .update(client_id.as_str(), |b| {
+            .update(client_id.as_str(), |b, _| {
                 let existed = b.client.take().is_some();
                 Times::merge(&mut b.client_barrier, window);
-                freed = b
-                    .devices
-                    .values()
-                    .map(|d| {
-                        (
-                            oauth_as::device::normalize_user_code(&d.user_code),
-                            d.device_code.clone(),
-                        )
-                    })
-                    .collect();
+                freed = b.devices.values().map(user_code).collect();
                 b.tokens.clear();
                 b.refresh.clear();
                 b.codes.clear();
@@ -1014,24 +1051,22 @@ impl Storage for SharedStorage {
                 Ok(Swap::Write(existed))
             })
             .await?;
-        for (uc, dc) in freed {
-            self.shared.release_user_code(&uc, &dc).await?;
-        }
+        self.shared.release_all(freed).await?;
         Ok(existed)
     }
 
     async fn put_device_grant(&self, grant: DeviceGrant) -> Result<(), StorageError> {
         let s = &self.shared;
-        let normalized = oauth_as::device::normalize_user_code(&grant.user_code);
+        let normalized = normalize_user_code(&grant.user_code);
         s.hold_user_code(&normalized, &grant.device_code).await?;
         let client = grant.client_id.as_str().to_string();
         s.index("dev", &grant.device_code, &client).await?;
         let mut previous = None;
-        s.update(&client, |b| {
+        s.update(&client, |b, _| {
             previous = b
                 .devices
                 .insert(grant.device_code.clone(), grant.clone())
-                .map(|p| oauth_as::device::normalize_user_code(&p.user_code));
+                .map(|p| normalize_user_code(&p.user_code));
             Ok(Swap::Write(()))
         })
         .await?;
@@ -1045,15 +1080,9 @@ impl Storage for SharedStorage {
         &self,
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        let Some(client) = self.shared.client_of("dev", device_code).await? else {
-            return Ok(None);
-        };
-        Ok(self
-            .shared
-            .bucket(&client)
-            .await?
-            .devices
-            .remove(device_code))
+        self.shared
+            .lookup("dev", device_code, |mut b| b.devices.remove(device_code))
+            .await
     }
 
     async fn find_device_grant_by_user_code(
@@ -1070,24 +1099,13 @@ impl Storage for SharedStorage {
         &self,
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        let Some(client) = self.shared.client_of("dev", device_code).await? else {
-            return Ok(None);
-        };
         let taken = self
             .shared
-            .update(&client, |b| {
-                Ok(match b.devices.remove(device_code) {
-                    Some(g) => Swap::Write(Some(g)),
-                    None => Swap::Keep(None),
-                })
-            })
+            .take("dev", device_code, |b| b.devices.remove(device_code))
             .await?;
         if let Some(g) = &taken {
             self.shared
-                .release_user_code(
-                    &oauth_as::device::normalize_user_code(&g.user_code),
-                    device_code,
-                )
+                .release_user_code(&normalize_user_code(&g.user_code), device_code)
                 .await?;
         }
         Ok(taken)
@@ -1102,12 +1120,16 @@ impl Storage for SharedStorage {
         let Some(client) = s.client_of("dev", &updated.device_code).await? else {
             return Ok(false);
         };
+        let is_expected = |b: &Bucket| {
+            b.devices
+                .get(&updated.device_code)
+                .is_some_and(|current| current.state == *expected)
+        };
         // `MemoryStorage`'s order: a state that moved on answers `false` before the index is asked.
-        match s.bucket(&client).await?.devices.get(&updated.device_code) {
-            Some(current) if current.state == *expected => {}
-            _ => return Ok(false),
+        if !is_expected(&s.bucket(&client).await?) {
+            return Ok(false);
         }
-        let normalized = oauth_as::device::normalize_user_code(&updated.user_code);
+        let normalized = normalize_user_code(&updated.user_code);
         if let Some(owner) = s.user_code_owner(&normalized).await? {
             if owner != updated.device_code {
                 return Err(StorageError::new(
@@ -1117,15 +1139,14 @@ impl Storage for SharedStorage {
         }
         let mut previous = None;
         let swapped = s
-            .update(&client, |b| {
-                match b.devices.get(&updated.device_code) {
-                    Some(current) if current.state == *expected => {}
-                    _ => return Ok(Swap::Keep(false)),
+            .update(&client, |b, _| {
+                if !is_expected(b) {
+                    return Ok(Swap::Keep(false));
                 }
                 previous = b
                     .devices
                     .insert(updated.device_code.clone(), updated.clone())
-                    .map(|p| oauth_as::device::normalize_user_code(&p.user_code));
+                    .map(|p| normalize_user_code(&p.user_code));
                 Ok(Swap::Write(true))
             })
             .await?;
@@ -1145,7 +1166,7 @@ impl Storage for SharedStorage {
         let client = record.client_id.as_str().to_string();
         self.shared.index("code", &record.code, &client).await?;
         self.shared
-            .update(&client, |b| {
+            .update(&client, |b, _| {
                 b.codes.insert(record.code.clone(), record.clone());
                 Ok(Swap::Write(()))
             })
@@ -1161,7 +1182,7 @@ impl Storage for SharedStorage {
             return Ok(false);
         };
         self.shared
-            .update(&client, |b| {
+            .update(&client, |b, _| {
                 match b.codes.get(&updated.code) {
                     Some(current) if current.state == *expected => {}
                     _ => return Ok(Swap::Keep(false)),
@@ -1176,16 +1197,8 @@ impl Storage for SharedStorage {
         &self,
         code: &str,
     ) -> Result<Option<AuthorizationCodeRecord>, StorageError> {
-        let Some(client) = self.shared.client_of("code", code).await? else {
-            return Ok(None);
-        };
         self.shared
-            .update(&client, |b| {
-                Ok(match b.codes.remove(code) {
-                    Some(c) => Swap::Write(Some(c)),
-                    None => Swap::Keep(None),
-                })
-            })
+            .take("code", code, |b| b.codes.remove(code))
             .await
     }
 
@@ -1198,7 +1211,7 @@ impl Storage for SharedStorage {
             .index("par", &record.request_uri, &client)
             .await?;
         self.shared
-            .update(&client, |b| {
+            .update(&client, |b, _| {
                 if b.barred(None, record.pushed_at) {
                     return Ok(Swap::Keep(WriteOutcome::RefusedRevoked));
                 }
@@ -1212,103 +1225,82 @@ impl Storage for SharedStorage {
         &self,
         request_uri: &str,
     ) -> Result<Option<PushedAuthorizationRequest>, StorageError> {
-        let Some(client) = self.shared.client_of("par", request_uri).await? else {
-            return Ok(None);
-        };
         self.shared
-            .update(&client, |b| {
-                Ok(match b.pushed.remove(request_uri) {
-                    Some(p) => Swap::Write(Some(p)),
-                    None => Swap::Keep(None),
-                })
-            })
+            .take("par", request_uri, |b| b.pushed.remove(request_uri))
             .await
     }
 
     async fn put_token(&self, token: IssuedToken) -> Result<WriteOutcome, StorageError> {
-        self.put_issued(token).await
+        let client = token.client_id.as_str();
+        let access = token.access_token.as_str();
+        let g = Guarded {
+            client,
+            ix: "tok",
+            key: access,
+            family: token.family_id.as_deref(),
+            subject: token.subject.as_deref(),
+            established: token.grant_established_at,
+        };
+        self.put_guarded(
+            g,
+            |b| {
+                b.tokens.insert(access.to_string(), token.clone());
+            },
+            |b| b.tokens.remove(access).is_some(),
+        )
+        .await
     }
 
     async fn get_token(
         &self,
         access_token: &str,
     ) -> Result<Option<Arc<IssuedToken>>, StorageError> {
-        let Some(client) = self.shared.client_of("tok", access_token).await? else {
-            return Ok(None);
-        };
-        Ok(self
-            .shared
-            .bucket(&client)
-            .await?
-            .tokens
-            .remove(access_token)
-            .map(Arc::new))
+        self.shared
+            .lookup("tok", access_token, |mut b| {
+                b.tokens.remove(access_token).map(Arc::new)
+            })
+            .await
     }
 
     async fn delete_token(&self, access_token: &str) -> Result<(), StorageError> {
-        let Some(client) = self.shared.client_of("tok", access_token).await? else {
-            return Ok(());
-        };
         self.shared
-            .update(&client, |b| {
-                Ok(match b.tokens.remove(access_token) {
-                    Some(_) => Swap::Write(()),
-                    None => Swap::Keep(()),
-                })
-            })
+            .take("tok", access_token, |b| b.tokens.remove(access_token))
             .await
+            .map(drop)
     }
 
     async fn put_refresh_token(
         &self,
         record: RefreshTokenRecord,
     ) -> Result<WriteOutcome, StorageError> {
-        let s = &self.shared;
-        let client = record.client_id.as_str().to_string();
-        let rt = record.refresh_token.clone();
-        let family = record.family_id.clone();
-        s.index("fam", &family, &client).await?;
-        s.index("rt", &rt, &client).await?;
-        let applied = s
-            .update(&client, |b| {
-                if b.barred(record.subject.as_deref(), record.grant_established_at) {
-                    return Ok(Swap::Keep(false));
-                }
-                b.refresh
-                    .insert(record.refresh_token.clone(), record.clone());
-                Ok(Swap::Write(true))
-            })
-            .await?;
-        if !applied {
-            return Ok(WriteOutcome::RefusedRevoked);
-        }
-        if s.family_barred(Some(&family)).await? {
-            s.update(&client, |b| {
-                Ok(match b.refresh.remove(&rt) {
-                    Some(_) => Swap::Write(()),
-                    None => Swap::Keep(()),
-                })
-            })
-            .await?;
-            return Ok(WriteOutcome::RefusedRevoked);
-        }
-        Ok(WriteOutcome::Applied)
+        let rt = record.refresh_token.as_str();
+        let g = Guarded {
+            client: record.client_id.as_str(),
+            ix: "rt",
+            key: rt,
+            family: Some(&record.family_id),
+            subject: record.subject.as_deref(),
+            established: record.grant_established_at,
+        };
+        self.put_guarded(
+            g,
+            |b| {
+                b.refresh.insert(rt.to_string(), record.clone());
+            },
+            |b| b.refresh.remove(rt).is_some(),
+        )
+        .await
     }
 
     async fn get_refresh_token(
         &self,
         refresh_token: &str,
     ) -> Result<Option<Arc<RefreshTokenRecord>>, StorageError> {
-        let Some(client) = self.shared.client_of("rt", refresh_token).await? else {
-            return Ok(None);
-        };
-        Ok(self
-            .shared
-            .bucket(&client)
-            .await?
-            .refresh
-            .remove(refresh_token)
-            .map(Arc::new))
+        self.shared
+            .lookup("rt", refresh_token, |mut b| {
+                b.refresh.remove(refresh_token).map(Arc::new)
+            })
+            .await
     }
 
     async fn rotate_refresh_token(
@@ -1332,7 +1324,7 @@ impl Storage for SharedStorage {
             s.index("fam", &n.family_id, &client).await?;
         }
         let rotated = s
-            .update(&client, |b| {
+            .update(&client, |b, _| {
                 if b.refresh.get(&expected.refresh_token) != Some(expected)
                     || b.barred(expected.subject.as_deref(), expected.grant_established_at)
                 {
@@ -1349,7 +1341,7 @@ impl Storage for SharedStorage {
         if rotated && s.family_barred(Some(&expected.family_id)).await? {
             // A family revocation landed between the check and the write: its cascade may have
             // listed the family before this write; take back what this rotation issued.
-            s.update(&client, |b| {
+            s.update(&client, |b, _| {
                 b.tokens.remove(&access.access_token);
                 if let Some(n) = next {
                     b.refresh.remove(&n.refresh_token);
@@ -1366,16 +1358,8 @@ impl Storage for SharedStorage {
         &self,
         refresh_token: &str,
     ) -> Result<Option<RefreshTokenRecord>, StorageError> {
-        let Some(client) = self.shared.client_of("rt", refresh_token).await? else {
-            return Ok(None);
-        };
         self.shared
-            .update(&client, |b| {
-                Ok(match b.refresh.remove(refresh_token) {
-                    Some(r) => Swap::Write(Some(r)),
-                    None => Swap::Keep(None),
-                })
-            })
+            .take("rt", refresh_token, |b| b.refresh.remove(refresh_token))
             .await
     }
 
@@ -1393,31 +1377,25 @@ impl Storage for SharedStorage {
         let s = &self.shared;
         // The barrier first, then the cascade over every client the family's index names.
         let id = digest(family_id);
-        s.cas_cell::<FamilyBar, ()>("family", &id, |bar| {
+        s.cas_cell::<FamilyBar, ()>("family", &id, |bar, _| {
             bar.id.clone_from(&id);
             Times::merge(&mut bar.times, window);
             Ok(Swap::Write(()))
         })
         .await?;
-        let mut removed = 0u64;
         // A family is minted for one client: its index names that one.
-        if let Some(client) = s.client_of("fam", family_id).await? {
-            removed += s
-                .update(&client, |b| {
-                    let before = b.tokens.len() + b.refresh.len();
-                    b.tokens
-                        .retain(|_, t| t.family_id.as_deref() != Some(family_id));
-                    b.refresh.retain(|_, r| r.family_id != family_id);
-                    let gone = (before - (b.tokens.len() + b.refresh.len())) as u64;
-                    Ok(if gone == 0 {
-                        Swap::Keep(0)
-                    } else {
-                        Swap::Write(gone)
-                    })
-                })
-                .await?;
-        }
-        Ok(removed)
+        let Some(client) = s.client_of("fam", family_id).await? else {
+            return Ok(0);
+        };
+        s.update(&client, |b, _| {
+            let before = b.tokens.len() + b.refresh.len();
+            b.tokens
+                .retain(|_, t| t.family_id.as_deref() != Some(family_id));
+            b.refresh.retain(|_, r| r.family_id != family_id);
+            let gone = (before - (b.tokens.len() + b.refresh.len())) as u64;
+            Ok(Swap::when(gone != 0, gone))
+        })
+        .await
     }
 
     async fn put_consent(&self, record: ConsentRecord) -> Result<(), StorageError> {
@@ -1425,7 +1403,7 @@ impl Storage for SharedStorage {
         let client = record.client_id.as_str().to_string();
         s.index("cons", &record.consent_id, &client).await?;
         s.index_subject(&record.subject, &client).await?;
-        s.update(&client, |b| {
+        s.update(&client, |b, _| {
             b.consents
                 .insert(record.consent_id.to_string(), record.clone());
             Ok(Swap::Write(()))
@@ -1442,7 +1420,7 @@ impl Storage for SharedStorage {
         let client = updated.client_id.as_str().to_string();
         s.index("cons", &updated.consent_id, &client).await?;
         s.index_subject(&updated.subject, &client).await?;
-        s.update(&client, |b| {
+        s.update(&client, |b, _| {
             let current = b
                 .consents
                 .values()
@@ -1463,16 +1441,11 @@ impl Storage for SharedStorage {
         &self,
         consent_id: &str,
     ) -> Result<Option<Arc<ConsentRecord>>, StorageError> {
-        let Some(client) = self.shared.client_of("cons", consent_id).await? else {
-            return Ok(None);
-        };
-        Ok(self
-            .shared
-            .bucket(&client)
-            .await?
-            .consents
-            .remove(consent_id)
-            .map(Arc::new))
+        self.shared
+            .lookup("cons", consent_id, |mut b| {
+                b.consents.remove(consent_id).map(Arc::new)
+            })
+            .await
     }
 
     async fn find_consent(
@@ -1494,8 +1467,12 @@ impl Storage for SharedStorage {
         &self,
         subject: &str,
     ) -> Result<Vec<Arc<ConsentRecord>>, StorageError> {
+        let (_, _, _, ix) = self
+            .shared
+            .read_cell::<SubjectIndex>(SUBJECT_INDEX, &digest(subject))
+            .await?;
         let mut out = Vec::new();
-        for client in self.shared.clients_of_subject(subject).await? {
+        for client in ix.clients.into_keys() {
             out.extend(
                 self.shared
                     .bucket(&client)
@@ -1517,10 +1494,10 @@ impl Storage for SharedStorage {
         let Some(client) = self.shared.client_of("cons", consent_id).await? else {
             return Ok(0);
         };
-        let mut freed: Vec<(String, String)> = Vec::new();
+        let mut freed = Vec::new();
         let removed = self
             .shared
-            .update(&client, |b| {
+            .update(&client, |b, _| {
                 let Some(peek) = b.consents.get(consent_id) else {
                     return Ok(Swap::Keep(0));
                 };
@@ -1542,30 +1519,26 @@ impl Storage for SharedStorage {
                     b.consent_barriers.insert(subject.clone(), t);
                 }
                 let before = b.records();
+                let of_grant = |client: &ClientId, s: Option<&str>| *client == cid && s == Some(subject.as_str());
                 b.tokens
-                    .retain(|_, t| !(t.client_id == cid && t.subject.as_deref() == Some(subject.as_str())));
+                    .retain(|_, t| !of_grant(&t.client_id, t.subject.as_deref()));
                 b.refresh
-                    .retain(|_, r| !(r.client_id == cid && r.subject.as_deref() == Some(subject.as_str())));
+                    .retain(|_, r| !of_grant(&r.client_id, r.subject.as_deref()));
                 b.codes
-                    .retain(|_, c| !(c.client_id == cid && c.subject == subject));
+                    .retain(|_, c| !of_grant(&c.client_id, Some(c.subject.as_str())));
                 freed = Vec::new();
                 b.devices.retain(|_, d| {
                     let gone = d.client_id == cid
                         && matches!(&d.state, DeviceGrantState::Approved { subject: s } if *s == subject);
                     if gone {
-                        freed.push((
-                            oauth_as::device::normalize_user_code(&d.user_code),
-                            d.device_code.clone(),
-                        ));
+                        freed.push(user_code(d));
                     }
                     !gone
                 });
                 Ok(Swap::Write((before - b.records()) as u64))
             })
             .await?;
-        for (uc, dc) in freed {
-            self.shared.release_user_code(&uc, &dc).await?;
-        }
+        self.shared.release_all(freed).await?;
         Ok(removed)
     }
 
@@ -1579,12 +1552,11 @@ impl Storage for SharedStorage {
         let won = s.claim("replay", &key, secs_of(expires_at)).await?;
         if won {
             // Kept beside the claim so the sweep can count what it reclaims.
-            let row = serde_json::to_vec(&ReplayRow {
+            let row = ReplayRow {
                 id: key.clone(),
                 until: secs_of(expires_at),
-            })
-            .map_err(|e| decode_failed("replay", e))?;
-            s.put_body("replay", &key, None, 0, &row).await?;
+            };
+            s.put("replay", &key, &row).await?;
         }
         Ok(won)
     }
@@ -1592,23 +1564,12 @@ impl Storage for SharedStorage {
     async fn sweep_expired(&self, now: SystemTime) -> Result<u64, StorageError> {
         let s = &self.shared;
         let mut removed = 0u64;
-        let k = kind("bucket");
-        let rows = s
-            .calls
-            .list_plane_records(&k, &PlaneSelector::All)
-            .await
-            .map_err(|f| failed("bucket", f))?;
-        let cells: Vec<Cell<Bucket>> = rows
-            .iter()
-            .filter_map(|body| serde_json::from_slice::<Cell<Bucket>>(body).ok())
-            .filter(|cell| !cell.b.id.is_empty())
-            .collect();
-        for mut cell in cells {
+        let cells = s.list::<Cell<Bucket>>("bucket").await?;
+        for mut cell in cells.into_iter().filter(|cell| !cell.b.id.is_empty()) {
             // Judged first on the body the listing already read: a client with nothing to reclaim
             // is not read again. Every node sweeps every client each minute, so a second read of
             // each would be a store read per client per node per minute, to change nothing.
-            let listed = sweep_bucket(&mut cell.b, cell.at, now, &mut Vec::new());
-            let acts = match listed {
+            let acts = match sweep_bucket(&mut cell.b, cell.at, now, &mut Vec::new()) {
                 Swap::Keep(_) => false,
                 Swap::Write(_) => true,
                 Swap::Retire(_, changed) => {
@@ -1618,12 +1579,11 @@ impl Storage for SharedStorage {
             if !acts {
                 continue;
             }
-            let client = cell.b.id;
-            let mut freed: Vec<(String, String)> = Vec::new();
+            let mut freed = Vec::new();
             // One bucket that will not swap (a held version, a store fault) is skipped and said,
             // never the end of the sweep: the next tick tries it again.
             let swept = s
-                .update_at(&client, |b, at| Ok(sweep_bucket(b, at, now, &mut freed)))
+                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now, &mut freed)))
                 .await;
             match swept {
                 Ok(n) => removed += n,
@@ -1645,7 +1605,9 @@ impl Storage for SharedStorage {
                 tracing::warn!(error = %e, "oauth_as: lapsed family barriers were not swept this tick")
             }
         }
-        match s.sweep_replays(secs_of(now)).await {
+        let now_s = secs_of(now);
+        let replays = s.sweep_rows::<ReplayRow>("replay", now_s, LOST_REPLAY, |r| (r.until, &r.id));
+        match replays.await {
             Ok(n) => removed += n,
             Err(e) => {
                 tracing::warn!(error = %e, "oauth_as: lapsed replay rows were not swept this tick")
@@ -1655,10 +1617,12 @@ impl Storage for SharedStorage {
             s.sweep_user_codes().await,
             s.sweep_indexes().await,
             s.sweep_subjects().await,
-            s.sweep_rows::<SessionRow>("session", secs_of(now), |r| (r.until, &r.id))
-                .await,
-            s.sweep_rows::<StakeRow>("stake", secs_of(now), |r| (r.until, &r.id))
-                .await,
+            s.sweep_rows::<SessionRow>("session", now_s, LOST_ROW, |r| (r.until, &r.id))
+                .await
+                .map(drop),
+            s.sweep_rows::<StakeRow>("stake", now_s, LOST_ROW, |r| (r.until, &r.id))
+                .await
+                .map(drop),
         ];
         for r in reclaimed {
             if let Err(e) = r {
@@ -1678,45 +1642,32 @@ fn sweep_bucket(
     now: SystemTime,
     freed: &mut Vec<(String, String)>,
 ) -> Swap<u64> {
-    let mut n = 0u64;
+    fn lapse<V>(map: &mut BTreeMap<String, V>, mut live: impl FnMut(&V) -> bool) -> u64 {
+        let before = map.len();
+        map.retain(|_, v| live(v));
+        (before - map.len()) as u64
+    }
     freed.clear();
-    b.devices.retain(|_, g| {
+    let mut n = lapse(&mut b.devices, |g| {
         let keep = now < g.expires_at;
         if !keep {
-            freed.push((
-                oauth_as::device::normalize_user_code(&g.user_code),
-                g.device_code.clone(),
-            ));
+            freed.push(user_code(g));
         }
         keep
     });
-    n += freed.len() as u64;
-    let before = b.codes.len();
-    b.codes.retain(|_, c| now < c.expires_at);
-    n += (before - b.codes.len()) as u64;
-    let before = b.pushed.len();
-    b.pushed.retain(|_, p| now < p.expires_at);
-    n += (before - b.pushed.len()) as u64;
-    let before = b.tokens.len();
-    b.tokens.retain(|_, t| now < t.expires_at);
-    n += (before - b.tokens.len()) as u64;
-    let before = b.refresh.len();
-    b.refresh
-        .retain(|_, r| r.expires_at.is_none_or(|exp| now < exp));
-    n += (before - b.refresh.len()) as u64;
+    n += lapse(&mut b.codes, |c| now < c.expires_at);
+    n += lapse(&mut b.pushed, |p| now < p.expires_at);
+    n += lapse(&mut b.tokens, |t| now < t.expires_at);
+    n += lapse(&mut b.refresh, |r| r.expires_at.is_none_or(|exp| now < exp));
     if b.client_barrier.is_some_and(|t| now >= t.until) {
         b.client_barrier = None;
         n += 1;
     }
-    let before = b.consent_barriers.len();
-    b.consent_barriers.retain(|_, t| now < t.until);
-    n += (before - b.consent_barriers.len()) as u64;
+    n += lapse(&mut b.consent_barriers, |t| now < t.until);
     // A SELF-REGISTERED client that has held nothing for the idle period goes: registration takes
     // no credential, and nothing else would ever reclaim it.
     if b.client.as_ref().is_some_and(|c| c.registration.is_some())
-        && b.records() == 0
-        && b.pushed.is_empty()
-        && b.consents.is_empty()
+        && b.idle()
         && secs_of(now).saturating_sub(at) > crate::policy::REGISTERED_CLIENT_IDLE.as_secs()
     {
         b.client = None;
@@ -1724,44 +1675,32 @@ fn sweep_bucket(
     }
     if b.holds_nothing() {
         Swap::Retire(n, n > 0)
-    } else if n == 0 {
-        Swap::Keep(0)
     } else {
-        Swap::Write(n)
+        Swap::when(n != 0, n)
     }
 }
 
 impl Shared {
     /// Clear every lapsed family barrier: one swap each, counted as `MemoryStorage` counts it.
     async fn sweep_family_barriers(&self, now: SystemTime) -> Result<u64, StorageError> {
-        let rows = self
-            .calls
-            .list_plane_records(&kind("family"), &PlaneSelector::All)
-            .await
-            .map_err(|f| failed("family", f))?;
         let mut removed = 0u64;
-        for body in rows {
-            let Ok(cell) = serde_json::from_slice::<Cell<FamilyBar>>(&body) else {
-                continue;
-            };
+        for cell in self.list::<Cell<FamilyBar>>("family").await? {
             if cell.b.id.is_empty() || cell.b.times.is_some_and(|t| now < t.until) {
                 continue;
             }
             // A lapsed barrier is cleared, and a cleared one retired once it is old enough. One
             // that will not swap is said and left for the next tick.
-            match self
-                .cas_cell::<FamilyBar, u64>("family", &cell.b.id.clone(), |bar| {
-                    Ok(match bar.times {
-                        Some(t) if now >= t.until => {
-                            bar.times = None;
-                            Swap::Retire(1, true)
-                        }
-                        Some(_) => Swap::Keep(0),
-                        None => Swap::Retire(0, false),
-                    })
+            let swept = self.cas_cell::<FamilyBar, u64>("family", &cell.b.id, |bar, _| {
+                Ok(match bar.times {
+                    Some(t) if now >= t.until => {
+                        bar.times = None;
+                        Swap::Retire(1, true)
+                    }
+                    Some(_) => Swap::Keep(0),
+                    None => Swap::Retire(0, false),
                 })
-                .await
-            {
+            });
+            match swept.await {
                 Ok(n) => removed += n,
                 Err(e) => {
                     tracing::warn!(error = %e, "oauth_as: a lapsed family barrier was not swept this tick");
@@ -1773,28 +1712,18 @@ impl Shared {
 
     /// Retire every released user-code cell old enough to go.
     async fn sweep_user_codes(&self) -> Result<(), StorageError> {
-        let rows = self
-            .calls
-            .list_plane_records(&kind("uc"), &PlaneSelector::All)
-            .await
-            .map_err(|f| failed("uc", f))?;
-        for body in rows {
-            let Ok(cell) = serde_json::from_slice::<Cell<Option<String>>>(&body) else {
-                continue;
-            };
+        for cell in self.list::<Cell<Option<String>>>("uc").await? {
             if cell.id.is_empty() || cell.b.is_some() {
                 continue;
             }
-            let retired = self
-                .cas_cell::<Option<String>, ()>("uc", &cell.id, |held| {
-                    Ok(if held.is_none() {
-                        Swap::Retire((), false)
-                    } else {
-                        Swap::Keep(())
-                    })
+            let retired = self.cas_cell::<Option<String>, ()>("uc", &cell.id, |held, _| {
+                Ok(if held.is_none() {
+                    Swap::Retire((), false)
+                } else {
+                    Swap::Keep(())
                 })
-                .await;
-            if let Err(e) = retired {
+            });
+            if let Err(e) = retired.await {
                 tracing::warn!(error = %e, "oauth_as: a released user code was not retired this tick");
             }
         }
@@ -1861,18 +1790,9 @@ impl Shared {
     /// flight before that); a subject whose index names no client is retired. A client whose
     /// records will not read is kept, and one entry indexed again meanwhile is kept.
     async fn sweep_subjects(&self) -> Result<(), StorageError> {
-        let k = kind(SUBJECT_INDEX);
-        let rows = self
-            .calls
-            .list_plane_records(&k, &PlaneSelector::All)
-            .await
-            .map_err(|f| failed(SUBJECT_INDEX, f))?;
         let now_s = now_secs();
         let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
-        for body in rows {
-            let Ok(cell) = serde_json::from_slice::<Cell<SubjectIndex>>(&body) else {
-                continue;
-            };
+        for cell in self.list::<Cell<SubjectIndex>>(SUBJECT_INDEX).await? {
             if cell.id.is_empty() {
                 continue;
             }
@@ -1897,21 +1817,17 @@ impl Shared {
             if gone.is_empty() && !cell.b.clients.is_empty() {
                 continue;
             }
-            let swept = self
-                .cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &cell.id, |ix| {
-                    let before = ix.clients.len();
-                    ix.clients.retain(|c, i| gone.get(c) != Some(&*i));
-                    let changed = ix.clients.len() != before;
-                    Ok(if ix.clients.is_empty() {
-                        Swap::Retire((), changed)
-                    } else if changed {
-                        Swap::Write(())
-                    } else {
-                        Swap::Keep(())
-                    })
+            let swept = self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &cell.id, |ix, _| {
+                let before = ix.clients.len();
+                ix.clients.retain(|c, i| gone.get(c) != Some(&*i));
+                let changed = ix.clients.len() != before;
+                Ok(if ix.clients.is_empty() {
+                    Swap::Retire((), changed)
+                } else {
+                    Swap::when(changed, ())
                 })
-                .await;
-            if let Err(e) = swept {
+            });
+            if let Err(e) = swept.await {
                 tracing::warn!(error = %e, "oauth_as: a subject's index was not swept this tick");
             }
         }
@@ -1919,74 +1835,27 @@ impl Shared {
     }
 
     /// Delete every row of `kind_name` whose `until` (read by `of`, with the row's own id) has
-    /// passed `now_s`.
-    async fn sweep_rows<R: for<'de> Deserialize<'de>>(
+    /// passed `now_s`, answering how many went.
+    async fn sweep_rows<R: DeserializeOwned>(
         &self,
         kind_name: &str,
         now_s: u64,
+        lost: &str,
         of: impl Fn(&R) -> (u64, &String),
-    ) -> Result<(), StorageError> {
-        let k = kind(kind_name);
-        let rows = self
-            .calls
-            .list_plane_records(&k, &PlaneSelector::All)
-            .await
-            .map_err(|f| failed(kind_name, f))?;
-        for body in rows {
-            let Ok(row) = serde_json::from_slice::<R>(&body) else {
-                continue;
-            };
-            let (until, id) = of(&row);
-            if until <= now_s && !id.is_empty() {
-                if let Err(f) = self.calls.delete_plane_record(&k, id).await {
-                    tracing::warn!(error = %failed(kind_name, f), "oauth_as: a lapsed row was not reclaimed this tick");
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Count and delete the replay rows whose claim has lapsed (the claim itself lapses with the
-    /// store's own expiry).
-    async fn sweep_replays(&self, now_s: u64) -> Result<u64, StorageError> {
-        let k = kind("replay");
-        let rows = self
-            .calls
-            .list_plane_records(&k, &PlaneSelector::All)
-            .await
-            .map_err(|f| failed("replay", f))?;
+    ) -> Result<u64, StorageError> {
         let mut removed = 0u64;
-        for body in rows {
-            let Ok(row) = serde_json::from_slice::<ReplayRow>(&body) else {
+        for row in self.list::<R>(kind_name).await? {
+            let (until, id) = of(&row);
+            if until > now_s || id.is_empty() {
                 continue;
-            };
-            if row.until <= now_s {
-                match self.calls.delete_plane_record(&k, &row.id).await {
-                    Ok(()) => removed += 1,
-                    Err(f) => {
-                        tracing::warn!(error = %failed("replay", f), "oauth_as: a lapsed replay row was not reclaimed this tick");
-                    }
-                }
+            }
+            match self.delete(kind_name, id).await {
+                Ok(()) => removed += 1,
+                Err(e) => tracing::warn!(error = %e, "{lost}"),
             }
         }
         Ok(removed)
     }
-}
-
-/// A token family's barrier, named by its family's digest so the sweep can find it again.
-#[derive(Default, Serialize, Deserialize)]
-struct FamilyBar {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    times: Option<Times>,
-}
-
-/// One claimed replay id, kept beside its claim so the sweep can count what it reclaims.
-#[derive(Serialize, Deserialize)]
-struct ReplayRow {
-    id: String,
-    until: u64,
 }
 
 #[cfg(test)]
