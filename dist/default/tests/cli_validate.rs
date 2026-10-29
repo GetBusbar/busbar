@@ -176,6 +176,44 @@ fn validate_ok_on_valid_config_without_plugins() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--print-metadata-blocklist` IS THE GROUND TRUTH (security.md): it prints every entry the guard
+/// enforces as metadata, the EC2 task-metadata endpoint `fd00:ec2::23` and IPv6 link-local
+/// `fe80::/10` among them, then the operator's `security.blocked_metadata_hosts`.
+/// RED: the two enforced entries are missing from the printed list.
+#[cfg(linked_section_pools)]
+#[test]
+fn print_metadata_blocklist_prints_builtin_plus_blocked() {
+    let dir = fixture_dir("print-blocklist");
+    write_configs(
+        &dir,
+        "security:\n  blocked_metadata_hosts: [\"internal-metadata.example\"]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--print-metadata-blocklist"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    let printed: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        printed,
+        vec![
+            "169.254.0.0/16",
+            "100.100.100.200",
+            "168.63.129.16",
+            "192.0.0.192",
+            "fd00:ec2::254",
+            "fd00:ec2::23",
+            "fe80::/10",
+            "metadata.google.internal",
+            "metadata.internal",
+            "metadata.tencentyun.com",
+            "metadata.platformequinix.com",
+            "instance-data",
+            "instance-data.ec2.internal",
+            "internal-metadata.example",
+        ],
+        "every enforced entry, then the operator's additions; stderr={stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A 1.5.5-shaped config whose root `pools:` names a pool after a reserved sub-key (`tier`, `work`)
 /// validates exactly as 1.5.5 did: the root `pools:` section keeps
 /// 1.5.5's two reserved words and no more, so both are pools and both are counted.
