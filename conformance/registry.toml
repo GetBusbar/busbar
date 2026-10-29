@@ -120,6 +120,16 @@ plane = "streaming"
 public = "true"
 
 [[suite]]
+id = "voice-twilio"
+standard = "Twilio Media Streams"
+plan = "spec battery + replay"
+tier = "spec-conformant"
+label = "Voice Twilio"
+verdict = "conformance-verdict-voice-twilio"
+plane = "streaming"
+public = "true"
+
+[[suite]]
 id = "webrtc-browser"
 standard = "WebRTC (browser interop: ICE, DTLS-SRTP, SCTP data channels)"
 plan = "headless Chromium and Firefox against busbar's terminating datagram path; control: the browser against itself; negative control: a broken line echo"
