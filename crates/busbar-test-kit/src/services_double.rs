@@ -372,11 +372,11 @@ impl<T: ServicesDouble> HostServices for Double<T> {
         ttl_secs: u64,
         record: &[u8],
     ) -> Stored {
-        ServicesDouble::ticket_mint(self, caller, unit, ttl_secs, record)
+        ServicesDouble::ticket_mint(&self.0, caller, unit, ttl_secs, record)
     }
 
     fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
-        ServicesDouble::ticket_take(self, caller, unit)
+        ServicesDouble::ticket_take(&self.0, caller, unit)
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
