@@ -202,8 +202,8 @@ fn handed() -> Handed {
     )
 }
 
-/// The one record the node sealed names [`DESTINATION`] and the hold and settlement the unit's own
-/// records sit at on the chain.
+/// The one record the node sealed names [`DESTINATION`], and no hold or settlement: the journal
+/// carries none (MONEY-DESIGN §2c, PR-C).
 fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::NodeBook) {
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let records = durability.audit_records.clone();
@@ -214,34 +214,17 @@ fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::N
         Some(DESTINATION),
         "the record names the verified destination the unit routed to"
     );
-    let seq = |r: Option<&String>| r.and_then(|r| r.parse::<u64>().ok());
-    let hold = seq(record.controls.hold_ref.as_ref()).expect("the record names the unit's hold");
-    let settle =
-        seq(record.controls.settle_ref.as_ref()).expect("the record names the unit's settlement");
-    let Ok(Ok(chain)) = durability.journal.replay() else {
-        panic!("the node's journal reads back");
-    };
-    let at = |seq: u64| chain.iter().find(|r| r.node_seq == seq);
-    assert!(
-        at(hold)
-            .and_then(crate::root::durability::HoldOpened::from_record)
-            .is_some(),
-        "hold_ref {hold} is the seq of the unit's hold record"
+    assert_eq!(record.controls.hold_ref, None, "no hold is journalled");
+    assert_eq!(
+        record.controls.settle_ref, None,
+        "no settlement is journalled"
     );
-    assert!(
-        at(settle)
-            .and_then(crate::root::durability::Posting::from_record)
-            .is_some_and(|p| p.kind == crate::root::durability::PostingKind::Settlement),
-        "settle_ref {settle} is the seq of the settlement that closed the hold"
-    );
-    assert!(hold < settle, "the hold opens before it settles");
 }
 
-/// A HANDED unit that routes to destination D and runs under a hold seals a record whose
-/// destination is D and whose controls name its hold and its settlement by seq. RED before
-/// root-R1#1: the record carried `destination: None` and `Controls::default()`.
+/// A HANDED unit that routes to destination D seals a record whose destination is D. RED before
+/// root-R1#1: the record carried `destination: None`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_handed_unit_seals_its_verified_destination_and_its_hold_and_settle_seqs() {
+async fn a_handed_unit_seals_its_verified_destination() {
     let node = Node::new();
     let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));
@@ -252,7 +235,7 @@ async fn a_handed_unit_seals_its_verified_destination_and_its_hold_and_settle_se
 /// The same, for a unit a plane driver lends the node ([`Node::drive_borrowed`]): its facts ride the
 /// posting site's open entry to the seal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_borrowed_unit_seals_its_verified_destination_and_its_hold_and_settle_seqs() {
+async fn a_borrowed_unit_seals_its_verified_destination() {
     let node = Arc::new(Node::new());
     let book = crate::root::durability::node_book();
     node.bind_book(Arc::clone(&book.durability));

@@ -75,8 +75,9 @@ use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
-    answered, bind_far, called, close, crossings, dispatcher, input, load, open, output,
-    ready_step, refresh, submit_on, tick, validate, Fold, Leg, Recorder, Subject,
+    abi_bytes as str_of, answered, asis, bind_far, called, closed, crossings, dispatcher, facts,
+    input, input_text, listed, load, open, opened, output, refreshed, refused_settings, submit_on,
+    Fold, Leg, Script, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
@@ -95,14 +96,6 @@ const REWRITE_CAP: usize = 64 * 1024;
 /// The pool and dialect every request names.
 const POOL: &str = "conformance";
 
-fn text(v: &Value) -> Vec<u8> {
-    match v {
-        Value::String(s) => s.as_bytes().to_vec(),
-        Value::Null => panic!("conformance.json: a hook input is missing"),
-        other => other.to_string().into_bytes(),
-    }
-}
-
 /// One request of the set: the host's view, the op, and the line its answer must read.
 pub(super) struct Request {
     label: String,
@@ -115,13 +108,6 @@ pub(super) struct Request {
     expect: String,
     /// Whether the expected answer overflows the host's first buffer (the ONE re-call).
     short: bool,
-}
-
-fn str_of(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
 }
 
 // SAFETY: the raw pointers in `statics` point into `_names`, owned by the same `Request` (their heap
@@ -378,7 +364,7 @@ fn cross(
     );
     let lent = Arc::clone(&lend) as Lent;
     let b = &lend.bufs;
-    if op == slot::DECIDE {
+    let (called, short, said) = if op == slot::DECIDE {
         let f: Frame<DecideIn, DecideOut> = Frame::new(i, output());
         let done = submit_on(p, d, ticket, op, f, when, lent, BUDGET);
         let said = done.frame.as_ref().map_or_else(Said::default, |f| {
@@ -398,11 +384,7 @@ fn cross(
                 ],
             }
         });
-        Crossed {
-            called: answered(&done),
-            short: done.short,
-            said,
-        }
+        (answered(&done), done.short, said)
     } else {
         let f: Frame<DecideIn, TransformOut> = Frame::new(i, output());
         let done = submit_on(p, d, ticket, op, f, when, lent, BUDGET);
@@ -417,11 +399,12 @@ fn cross(
                 ..Said::default()
             }
         });
-        Crossed {
-            called: answered(&done),
-            short: done.short,
-            said,
-        }
+        (answered(&done), done.short, said)
+    };
+    Crossed {
+        called,
+        short,
+        said,
     }
 }
 
@@ -521,35 +504,21 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("hook");
     assert!(k.is_object(), "conformance.json has no `hook` inputs");
     let settings = leg.settings(s);
-    let bad: Vec<Vec<u8>> = k["bad_settings"]
-        .as_array()
-        .expect("conformance.json: hook.bad_settings must be an array")
-        .iter()
-        .map(text)
-        .collect();
-    assert!(
-        !bad.is_empty(),
-        "conformance.json: hook.bad_settings is empty"
-    );
+    let text = |v: &Value| input_text(v, "a hook");
+    let bad: Vec<Vec<u8>> = listed(k, "hook", "bad_settings").iter().map(text).collect();
     let order_cap = k["order_cap"]
         .as_u64()
         .and_then(|n| usize::try_from(n).ok())
         .expect("conformance.json: hook.order_cap must be a number");
-    let requests: Vec<Arc<Request>> = k["requests"]
-        .as_array()
-        .expect("conformance.json: hook.requests must be an array")
+    let requests: Vec<Arc<Request>> = listed(k, "hook", "requests")
         .iter()
         .map(|r| Arc::new(Request::of(r, order_cap)))
         .collect();
-    assert!(
-        !requests.is_empty(),
-        "conformance.json: hook.requests is empty"
-    );
     let orders = s.hook_orders();
     let short = recall_request(orders, &requests)
         .unwrap_or_else(|e| panic!("conformance.json: {e}"))
         .cloned();
-    let refreshed = text(&k["refresh"]["settings"]);
+    let refreshed_to = text(&k["refresh"]["settings"]);
     let after = Arc::new(Request::of(&k["refresh"]["request"], order_cap));
     if !orders {
         if let Err(e) = abstain_only(std::slice::from_ref(&after)) {
@@ -559,27 +528,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     let d = dispatcher();
     let p = load::<Hook>(s, leg, bind_for(&d, s)).expect("the hook door loads");
-    let mut r = Recorder::new(crossings(&p));
-    r.line("facts", 0, || {
-        format!(
-            "{:?} {} max_inflight={}",
-            p.kind(),
-            p.name(),
-            p.max_inflight()
-        )
-    });
-    for (i, b) in bad.iter().enumerate() {
-        r.line(&format!("validate bad #{i}"), 1, || {
-            called(&validate(&p, b))
-        });
-    }
-    r.line("validate", 1, || called(&validate(&p, &settings)));
+    let mut r = Script::new(crossings(&p));
+    r.line("facts", 0, || facts(&p));
+    refused_settings(&mut r, &p, &bad, &asis);
     r.line("decide unopened", 0, || {
         ask(&p, &d, &requests[0], order_cap)
     });
     r.line("open bad", 1, || called(&open(&p, &bad[0])));
-    r.line("open", 1, || called(&open(&p, &settings)));
-    ready_step(&mut r, s, &p, &d);
+    opened(&mut r, (s, &p, &d), &settings, &asis);
     for q in &requests {
         r.line(&q.label, q.pinned(), || ask(&p, &d, q, order_cap));
     }
@@ -590,17 +546,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             recall_again(&p, &d, short, order_cap)
         });
     }
-    r.line("tick", 1, || {
-        let (c, next) = tick(&p, 1);
-        format!("{} next={next}", called(&c))
-    });
-    r.line("refresh bad", 1, || called(&refresh(&p, &bad[0])));
-    r.line("refresh", 1, || called(&refresh(&p, &refreshed)));
+    refreshed(&mut r, &p, Some(&bad[0]), &refreshed_to, &asis);
     let after_label = format!("after refresh: {}", after.label);
     r.line(&after_label, after.pinned(), || {
         ask(&p, &d, &after, order_cap)
     });
-    r.line("close", 1, || called(&close(&p)));
+    closed(&mut r, &p, &asis);
     r.line("decide after close", 0, || {
         ask(&p, &d, &requests[0], order_cap)
     });

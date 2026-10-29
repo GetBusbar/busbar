@@ -137,7 +137,6 @@ impl Default for MockResponse {
 #[derive(Debug, Default)]
 pub struct MockServerState {
     queued_replies: Mutex<Vec<MockResponse>>,
-    last_auth_header: std::sync::Mutex<Option<String>>,
     last_request_body: std::sync::Mutex<Option<Vec<u8>>>,
     last_request_headers: std::sync::Mutex<Option<axum::http::HeaderMap>>,
     last_request_path: std::sync::Mutex<Option<String>>,
@@ -152,21 +151,6 @@ impl MockServerState {
     }
     pub fn next_response(&self) -> Option<MockResponse> {
         self.queued_replies.lock().unwrap().pop()
-    }
-
-    /// Record the last seen Authorization header for testing passthrough token forwarding
-    pub fn record_auth_header(&self, header: &str) {
-        *self.last_auth_header.lock().unwrap() = Some(header.to_string());
-    }
-
-    /// Get the recorded Authorization header (for assertions in tests)
-    pub fn get_last_auth_header(&self) -> Option<String> {
-        self.last_auth_header.lock().unwrap().clone()
-    }
-
-    /// Clear the recorded Authorization header
-    pub fn clear_auth_header(&self) {
-        *self.last_auth_header.lock().unwrap() = None;
     }
 
     /// Record the received request path (for translation / on-the-wire assertions).
@@ -309,15 +293,6 @@ async fn mock_handler(
 
     // Record the full header set the upstream received (indistinguishability assertions).
     state.record_request_headers(&parts.headers);
-
-    // Record the Authorization header for passthrough token forwarding tests
-    if let Some(auth_header) = parts
-        .headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        state.record_auth_header(auth_header);
-    }
 
     // Record the received request body for translation / on-the-wire assertions.
     let body_bytes = axum::body::to_bytes(body, usize::MAX)
@@ -1884,15 +1859,6 @@ pub mod ranking_double;
 /// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
 pub mod store_double;
 
-/// The manifest `needs` a dropped-in hook declares, built from its two axes so a caller names no field
-/// of the value (the value's type is the kernel kit's to change).
-pub fn hook_needs(
-    prompt: busbar_contract::plugin_rows::NeedLevel,
-    user: busbar_contract::plugin_rows::NeedLevel,
-) -> HookNeeds {
-    HookNeeds { prompt, user }
-}
-
 /// Install a test build's linked auth rows and the operator credential's words, as boot does
 /// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
 /// result nor the types behind it.
@@ -2089,10 +2055,6 @@ pub use seam::{
 /// test binary binds in one line so its tests build and drive the whole fixture naming no other item
 /// of this crate.
 pub mod engine_kit;
-
-/// The WIDENED engine test-kit seam and its implementation, on the same fixture types as
-/// `engine_kit`.
-pub mod engine_kit_plus;
 
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every

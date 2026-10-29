@@ -385,7 +385,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // side-effect-free all-cells `is_ready_any_cell` (so /healthz and /stats can't steal a recovery
     // probe), leaving the bare form test-only — so it is `#[cfg(test)]`-gated out of the release
     // binary entirely rather than merely silenced.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn usable(&self, lane: usize, now: u64) -> bool {
         self.usable_in("", lane, now)
     }
