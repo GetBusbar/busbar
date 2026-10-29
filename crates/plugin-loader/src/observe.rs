@@ -110,6 +110,11 @@ pub const fn conn_reason(e: busbar_contract::conn::ConnError) -> &'static str {
         ConnError::Fault => "fault",
         ConnError::Unarmed => "unarmed",
         ConnError::CredentialUnavailable => "credential_unavailable",
+        ConnError::AuthRefused => "auth_refused",
+        ConnError::AuthFailed => "auth_failed",
+        // `ConnError` is non-exhaustive; a cause this host does not name is the host failing the
+        // call, as the connection services answer it.
+        _ => "fault",
     }
 }
 
