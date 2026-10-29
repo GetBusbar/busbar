@@ -425,13 +425,12 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$|^llm\\|(anthropic\\|(bedrock|cohere|gemini|openai|responses)|bedrock\\|(anthropic|cohere|gemini|openai|responses)|cohere\\|(anthropic|bedrock|gemini|openai|responses)|gemini\\|(anthropic|bedrock|cohere|openai|responses)|openai\\|(anthropic|bedrock|cohere|gemini|responses)|responses\\|(anthropic|bedrock|cohere|gemini|openai))\\|request\\|ok_stream_whole_answer$",
-      "expected_cells": 36,
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$|^llm\\|bedrock\\|(anthropic|cohere|gemini|openai|responses)\\|request\\|ok_stream_whole_answer$",
+      "expected_cells": 11,
       "classes": [
-        "body",
-        "headers"
+        "body"
       ],
-      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the stream-synthesis behaviour (a stream:true request served as a spec-shaped event stream, not a buffered application/json body) also produces its difference on the 20 ok_stream_whole_answer cells of the anthropic, cohere, gemini and openai doors (every backend but the door's own): llm|anthropic|bedrock|request|ok_stream_whole_answer, llm|anthropic|cohere|request|ok_stream_whole_answer, llm|anthropic|gemini|request|ok_stream_whole_answer, llm|anthropic|openai|request|ok_stream_whole_answer, llm|anthropic|responses|request|ok_stream_whole_answer, llm|cohere|anthropic|request|ok_stream_whole_answer, llm|cohere|bedrock|request|ok_stream_whole_answer, llm|cohere|gemini|request|ok_stream_whole_answer, llm|cohere|openai|request|ok_stream_whole_answer, llm|cohere|responses|request|ok_stream_whole_answer, llm|gemini|anthropic|request|ok_stream_whole_answer, llm|gemini|bedrock|request|ok_stream_whole_answer, llm|gemini|cohere|request|ok_stream_whole_answer, llm|gemini|openai|request|ok_stream_whole_answer, llm|gemini|responses|request|ok_stream_whole_answer, llm|openai|anthropic|request|ok_stream_whole_answer, llm|openai|bedrock|request|ok_stream_whole_answer, llm|openai|cohere|request|ok_stream_whole_answer, llm|openai|gemini|request|ok_stream_whole_answer, llm|openai|responses|request|ok_stream_whole_answer. Classes stay body and headers. WIDENED AGAIN 2026-10-20 (OWNER ruling \"widen the entries\", relayed by the coordinator, PR #1292): the same synthesis also covers the ok_stream_whole_answer cells of the bedrock door (5; body 6 -> 5 events, no empty contentBlockStart) and the responses door (5; 1.5.5 application/json -> 1.6.0 text/event-stream, the same stream:true-answered-whole difference), and llm|bedrock|gemini|request|ok_stream (the gemini-upstream cell added 2026-10-13; 6 -> 5 events). All 30 ok_stream_whole_answer cells of the six doors are now listed.",
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the stream-synthesis behaviour (a stream:true request served as a spec-shaped event stream, not a buffered application/json body) also produces its difference on the 20 ok_stream_whole_answer cells of the anthropic, cohere, gemini and openai doors (every backend but the door's own): llm|anthropic|bedrock|request|ok_stream_whole_answer, llm|anthropic|cohere|request|ok_stream_whole_answer, llm|anthropic|gemini|request|ok_stream_whole_answer, llm|anthropic|openai|request|ok_stream_whole_answer, llm|anthropic|responses|request|ok_stream_whole_answer, llm|cohere|anthropic|request|ok_stream_whole_answer, llm|cohere|bedrock|request|ok_stream_whole_answer, llm|cohere|gemini|request|ok_stream_whole_answer, llm|cohere|openai|request|ok_stream_whole_answer, llm|cohere|responses|request|ok_stream_whole_answer, llm|gemini|anthropic|request|ok_stream_whole_answer, llm|gemini|bedrock|request|ok_stream_whole_answer, llm|gemini|cohere|request|ok_stream_whole_answer, llm|gemini|openai|request|ok_stream_whole_answer, llm|gemini|responses|request|ok_stream_whole_answer, llm|openai|anthropic|request|ok_stream_whole_answer, llm|openai|bedrock|request|ok_stream_whole_answer, llm|openai|cohere|request|ok_stream_whole_answer, llm|openai|gemini|request|ok_stream_whole_answer, llm|openai|responses|request|ok_stream_whole_answer. Classes stay body and headers. WIDENED AGAIN 2026-10-20 (OWNER ruling \"widen the entries\", relayed by the coordinator, PR #1292): the same synthesis also covers the ok_stream_whole_answer cells of the bedrock door (5; body 6 -> 5 events, no empty contentBlockStart) and the responses door (5; 1.5.5 application/json -> 1.6.0 text/event-stream, the same stream:true-answered-whole difference), and llm|bedrock|gemini|request|ok_stream (the gemini-upstream cell added 2026-10-13; 6 -> 5 events). All 30 ok_stream_whole_answer cells of the six doors are now listed. NARROWED 2026-10-27 (ORACLE-116 review, S-1): back to the Bedrock frame it was signed for. Its 11 cells are the Bedrock door's: the 6 ok_stream cells and the 5 ok_stream_whole_answer cells, where 1.5.5 already answered an event stream and the only difference is the empty text contentBlockStart (body /len 6 -> 5); class `body` only. The 25 other-door ok_stream_whole_answer cells, where a stream:true request answered whole is now served as the caller's stream (application/json -> the caller's stream), leave for their own entry, `S-1-SYNTH`, signed by the owner 2026-10-27.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok_stream",
         "status": 200
@@ -563,7 +562,7 @@
       "classes": [
         "effects.egress"
       ],
-      "rationale": "CLASSES NARROWED 2026-09-24 (item 52, P3A-register) to ['effects.egress']: the only classes that move on the measured build (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66). OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).' The egress record shows the injected stream_options.include_usage on the fallback hop.",
+      "rationale": "CLASSES NARROWED 2026-09-24 (item 52, P3A-register) to ['effects.egress']: the only classes that move on the measured build (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66). OWNER DECISION: bill them. A streaming request served through a fallback/least-bad/queue hop to an OpenAI Chat Completions lane now has stream_options.include_usage injected upstream exactly as a primary hop does, so the trailing usage chunk arrives and the key is billed its real tokens (previously zero). The client-facing stream is unchanged for a client that did not opt in (the injected chunk is stripped at the framing seam); an opted-in client now receives its usage chunk on the fallback hop too. CHANGELOG 1.6.0: 'Fallback-pool and least-bad streams to OpenAI Chat Completions lanes are now metered (previously billed zero tokens).' The egress record shows the injected stream_options.include_usage on the fallback hop. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Forgiven: the fallback hop's `stream_options: {include_usage: true}` (the signed billing fix), the content-length it adds (85 -> 125), and the caller's own user-agent on that same-dialect hop (`curl/8.5.0`, the pass-through R4/581 signs); nothing else busbar sends upstream on this cell.",
       "changelog": "1.6.0 Improvements: fallback-lane streams are now billed",
       "premise": {
         "all": [
@@ -593,7 +592,26 @@
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
-      }
+      },
+      "values": [
+        {
+          "pointer": "/effects/egress/1/body/stream_options",
+          "golden_absent": true,
+          "candidate": {
+            "include_usage": true
+          }
+        },
+        {
+          "pointer": "/effects/egress/1/headers/content-length",
+          "golden": "85",
+          "candidate": "125"
+        },
+        {
+          "pointer": "/effects/egress/1/headers/user-agent",
+          "golden": "OpenAI/Python 1.54.0",
+          "candidate": "curl/8.5.0"
+        }
+      ]
     },
     {
       "id": "PR2-D9 degraded transport-error telemetry",
@@ -981,11 +999,6 @@
           },
           {
             "cell": "admin.ops|GetOpenapiJson|ok",
-            "pointer": "/paths/~1api~1v1~1admin~1reseal-epoch-floor/post/x-busbar-since",
-            "equals": "1.6.0"
-          },
-          {
-            "cell": "admin.ops|GetOpenapiJson|ok",
             "pointer": "/paths/~1api~1v1~1admin~1store-restore/post/x-busbar-since",
             "equals": "1.6.0"
           },
@@ -1025,7 +1038,7 @@
           }
         ]
       },
-      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green), the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 17 core admin paths, every one marked `x-busbar-since: 1.6.0` and none marked `x-busbar-effect-bound: false` (the architect ruling in Q56 removed the unbound verbs from service and from the document, so the 13 the 2026-09-24 count carried are gone): adjust, audit head/keys/range, chain-break, commit-upgrade, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, plane-facts, plane-record-write, reseal-epoch-floor, store-restore, verify. No `tools`/`agents` path is served. The 2026-09-24 figures (26 added: 13 bound, 13 unbound) are superseded; commit-upgrade, plane-facts, plane-record-write and verify are core admin verbs added since, and the premise now names all 17. MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 17 core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 17 are enumerated here, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row. 2026-10-24 (OWNER, in session): the AuditEntry hash description rewritten for scheme 2 (0f44eac783)."
+      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green), the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 16 core admin paths, every one marked `x-busbar-since: 1.6.0` and none marked `x-busbar-effect-bound: false` (the architect ruling in Q56 removed the unbound verbs from service and from the document, so the 13 the 2026-09-24 count carried are gone): adjust, audit head/keys/range, chain-break, commit-upgrade, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, plane-facts, plane-record-write, store-restore, verify. No `tools`/`agents` path is served. The 2026-09-24 figures (26 added: 13 bound, 13 unbound) are superseded; commit-upgrade, plane-facts, plane-record-write and verify are core admin verbs added since, and the premise now names all 16 (reseal-epoch-floor was deleted 2026-10-25 by owner ruling). MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 16 core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 16 are enumerated here, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row. 2026-10-24 (OWNER, in session): the AuditEntry hash description rewritten for scheme 2 (0f44eac783)."
     },
     {
       "id": "E7-1 non-Responses doors stream when the backend is Responses-shaped",
@@ -1123,38 +1136,6 @@
         "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-05",
         "ruling": "2026-09-05 oracle Phase 0 group-budget-total cell",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
-      "id": "S-9 responses url citations survive the hop",
-      "kind": "improvement",
-      "changelog": "**A Responses URL citation survives the hop.**",
-      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok(_stream)?$",
-      "expected_cells": 12,
-      "classes": [
-        "body",
-        "headers"
-      ],
-      "rationale": "Spec fidelity: the Responses API's published UrlCitationBody FLATTENS url/title/start_index/end_index onto the annotation, while Chat nests them under a url_citation object. 1.5.5 wrote the flat shape but read only the nested one, so every URL citation on a Responses-shaped upstream response was dropped -- including Responses->Responses, where the reader consumed bytes the writer had just produced. 1.6.0 reads both published shapes, so a citation the upstream sent reaches the client. Additive: a response that carried no citation is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
-      "premise": {
-        "cell": "llm|responses|anthropic|request|ok",
-        "status": 200
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
-        "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-09-30",
@@ -1338,7 +1319,7 @@
       "id": "#1467 metadata host-list entries are mapped to their ASCII host, and a host holding % outside a zone id is DEST_NO_HOST",
       "kind": "breaking",
       "status": "owner-approved 2026-10-21",
-      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.",
+      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.",
       "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
@@ -1381,48 +1362,6 @@
         ]
       },
       "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `１０.９９.９９.９９` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
-    },
-    {
-      "id": "#1467 an unjudgeable metadata host-list entry boots with one BUSBAR-3024 warning line",
-      "kind": "improvement",
-      "status": "owner-approved 2026-10-21",
-      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.",
-      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-21",
-        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): #1467 item 3 approved as proposed: an unjudgeable metadata host-list entry still boots, is dropped from matching, and is named in a new BUSBAR-3024 warning"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^boot\\.warning\\|BUSBAR-3024-(number-label|percent-escape|unmappable)\\|validate$",
-      "expected_cells": 0,
-      "classes": [
-        "effects.stderr"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "boot.refusal|BOOT-001|validate",
-            "status": 1
-          },
-          {
-            "cell": "boot.refusal|BOOT-002|validate",
-            "status": 1
-          },
-          {
-            "cell": "boot.refusal|BOOT-003|validate",
-            "status": 1
-          },
-          {
-            "cell": "cli|--print-metadata-blocklist",
-            "body_contains": "metadata.google.internal"
-          }
-        ]
-      },
-      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', item 3, approved as proposed. An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` that names no host the guard judges (a `%` outside an IPv6 zone id, a number-like last label that is no IPv4 address such as `db.1` or `1.2.3.4.5`, or non-ASCII UTS #46 cannot map) still boots as on 1.5.5, is dropped from matching, and is named in one BUSBAR-3024 warning line (CONFIG_METADATA_ENTRY_NAMES_NO_HOST). Such a config boots and validates exactly as on 1.5.5, so this entry forgives ONLY the added stderr line: its exit status and every other byte must stay 1.5.5's. No oracle cell is touched today: BOOT-001/002/003 hold CIDR entries (refused with 1.5.5's text, as before), cli|--print-metadata-blocklist runs the baseline config with no operator entry, and no shipped, example or oracle config holds a `%` or number-label entry. None of them is in `cells`; all must stay byte-identical. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed warning cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set. Proof: config_validate test_a_metadata_entry_naming_no_host_boots_with_one_warning_line."
     },
     {
       "id": "K-1 rotate refuses an overlong key id like its siblings",
@@ -1774,7 +1713,44 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference. WIDENED 2026-10-24 (OWNER, in session): the anthropic, cohere and openai stream-cut/error cells and the gemini tool-use cell, whose metrics move by the same breaker reading and the signed #62 / SPEND-LEDGER / RULE21-576 billing (spend and token series)."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference. WIDENED 2026-10-24 (OWNER, in session): the anthropic, cohere and openai stream-cut/error cells and the gemini tool-use cell, whose metrics move by the same breaker reading and the signed #62 / SPEND-LEDGER / RULE21-576 billing (spend and token series). NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Q40 forgives only `busbar_lane_state` reading 2 where 1.5.5 read 1; the spend and token series of the stream-cut, stream-error and tool-use cells are their money entries' (#62, SPEND-LEDGER, RULE21-576), each pinned to its figure.",
+      "values": [
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"oracle-fo\",lane=\"m-openai-chat\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-anthropic\",lane=\"m-anthropic\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-cohere\",lane=\"m-cohere\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-gemini\",lane=\"m-gemini\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-openai-chat\",lane=\"m-openai-chat\"}",
+          "golden": 1,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-cohere\",lane=\"m-cohere\"}",
+          "golden_absent": true,
+          "candidate": 2
+        },
+        {
+          "pointer": "/effects/metrics/busbar_lane_state{pool=\"m-openai-chat\",lane=\"m-openai-chat\"}",
+          "golden_absent": true,
+          "candidate": 2
+        }
+      ]
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (served read)",
@@ -2216,10 +2192,9 @@
       "expected_cells": 1,
       "classes": [
         "effects.usage",
-        "effects.metrics",
-        "norm.rules"
+        "effects.metrics"
       ],
-      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim. SIGNATURE 2026-10-27: covered by the owner's billing standing rule (dialects ledger what was done; we bill by that); the behaviour and scope are unchanged.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim. SIGNATURE 2026-10-27: covered by the owner's billing standing rule (dialects ledger what was done; we bill by that); the behaviour and scope are unchanged. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 290, /effects/usage/tokens -> 22.",
       "premise": {
         "all": [
           {
@@ -2256,7 +2231,49 @@
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
-      }
+      },
+      "values": [
+        {
+          "pointer": "/effects/usage/spend_cents",
+          "golden": 250,
+          "candidate": 290
+        },
+        {
+          "pointer": "/effects/usage/tokens",
+          "golden": 18,
+          "candidate": 22
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_budget_remaining_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden": -250,
+          "candidate": -290
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_spend_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden": 250,
+          "candidate": 290
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"<KEY>\",model=\"m-gemini\",tier=\"input\"}",
+          "golden": 11,
+          "candidate": 15
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\",model=\"m-gemini\",tier=\"input\"}",
+          "golden": 11,
+          "candidate": 15
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_spend_cents{key=\"<KEY>\"}",
+          "golden": 250,
+          "candidate": 290
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_tokens_total{key=\"<KEY>\"}",
+          "golden": 18,
+          "candidate": 22
+        }
+      ]
     },
     {
       "id": "HOOK-Q1 a failing transform under on_error: reject answers 503",
@@ -2495,10 +2512,81 @@
       "expected_cells": 1,
       "classes": [
         "effects.usage",
-        "effects.metrics",
+        "effects.metrics"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge.\" NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 110, /effects/usage/tokens -> 11.",
+      "premise": {
+        "cell": "route.failover|fb|member-down-stream-openai",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:#62",
+        "when": "2026-09-20",
+        "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied by ARCHITECT ruling 2026-10-13 (status row 155, row-159 plane-llm L1#2, option (b))",
+        "widened_2026_10_24": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "values": [
+        {
+          "pointer": "/effects/usage/spend_cents",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/usage/tokens",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_budget_remaining_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": -110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_spend_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"<KEY>\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_spend_cents{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_tokens_total{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 11
+        }
+      ]
+    },
+    {
+      "id": "#62-NORM the key-id mask fires on the usage this cell now records (split out of #62)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "ruling:#62 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
         "norm.rules"
       ],
-      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge.\"",
+      "rationale": "SPLIT 2026-10-27 out of #62 (same cells, same signature, strictly less forgiven): now that the cell records a spend line, its key series carry the masked `<KEY>`, so the recorder's `key.id` normalization rule fires on the candidate where it did not on 1.5.5 (norm.rules only_candidate [key.id]). Only that class; every figure is the parent entry's values.",
       "premise": {
         "cell": "route.failover|fb|member-down-stream-openai",
         "status": 200
@@ -2537,31 +2625,6 @@
         "who": "ruling:#62",
         "when": "2026-09-20",
         "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied to the translate abort by ARCHITECT ruling 2026-10-17"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
-      "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
-      "kind": "improvement",
-      "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
-      "cells": "^llm\\|((anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)|gemini\\|gemini\\|request\\|(ok|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture))$",
-      "expected_cells": 21,
-      "classes": [
-        "headers"
-      ],
-      "rationale": "Dialect fidelity F2 (handoffs DIALECT-FIDELITY-DESIGN.md, under the owner's LLM dialect fidelity rule of 2026-10-02): on a same-dialect route the response head is the upstream's: every field passes except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's declared tenant/credential-derived headers (dialect.rs governed_response_headers: anthropic-organization-id, openai-organization, openai-project). 1.5.5 built a fresh head instead: Content-Type plus the ingress dialect's relayed request-id names only (v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1862-1880 passthrough error relay, :1927-1940 client-fault relay, :2300-2335 streamed 2xx; proxy/wire.rs:24-58; the names: proto/anthropic/writer.rs:104-106 request-id, proto/bedrock/writer.rs:1143-1147 x-amzn-requestid + x-amzn-errortype, proto/mod.rs:695-697 none for the rest). The plane relays through exchange::reply wire::relay_far_head; the llm door's needs state KEEP_ALL_EXCEPT_DENIED with the governed names denied (busbar-plane-llm plane_door.rs DENY_RESPONSE_HEADERS). Headers class only: no status, body or usage class is forgiven. Translated routes are unchanged (no far head crosses a dialect).",
-      "premise": {
-        "cell": "llm|anthropic|anthropic|request|ok",
-        "status": 200
-      },
-      "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-02",
-        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02, pre-approved register entries), F2 response headers; applied by ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -3730,42 +3793,6 @@
       }
     },
     {
-      "id": "C-22 bedrock budget refusal is a declared Converse error",
-      "kind": "breaking",
-      "changelog": "1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only InvokeModel declares.",
-      "by": "ruling:§NAMED CONFORMANCE GAPS ARE 0 (registered under a standing ruling; no owner signature on this entry); rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C)",
-      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|over_budget_total$",
-      "expected_cells": 1,
-      "classes": [
-        "status",
-        "body",
-        "headers"
-      ],
-      "rationale": "1.5.5 answered a Bedrock caller whose group budget is spent with HTTP 400 `__type`/`x-amzn-errortype` `ServiceQuotaExceededException` (golden/1.5.5/cells/llm__bedrock__bedrock__request__over_budget_total.json; v1.5.5 proto bedrock writer quota_exceeded_status() = 400). That exception is not in the `errors` of Converse or ConverseStream in the pinned botocore bedrock-runtime model (testing/llm-conformance/spec-digests.tsv, e5c8122617a2: AccessDenied, InternalServer, ModelError, ModelNotReady, ModelTimeout, ResourceNotFound, ServiceUnavailable, Throttling, Validation); only InvokeModel declares it. So the llm spec-conformance rig failed `error.declared` on this row, and the row sat in testing/llm-conformance/named-gaps.json as a named gap. Owner rule 22 (2026-10-14) makes every named conformance gap a defect to fix in code. 1.6.0 answers 429 `ThrottlingException`, the declared Converse error whose AWS description is 'Your request was denied due to exceeding the account quotas for Amazon Bedrock' (httpStatusCode 429), matching the other five dialects' 429 for the same refusal. Moved classes: status 400 -> 429, body `__type` (the message is unchanged), headers `x-amzn-errortype` and the content-length that follows the body. Not money: the refusal charges nothing on either side and effects.usage is untouched (the metrics outcome label is client_error for both statuses). Code: crates/busbar-plane-llm/src/codec/bedrock/mod.rs error_kind_to_bedrock_type and quota_exceeded_status, crates/busbar-plane-llm/src/refusal.rs (the bedrock OVER_BUDGET row removed, so the class default 429 answers). SCOPE: exactly one cell.",
-      "premise": {
-        "all": [
-          {
-            "cell": "llm|bedrock|bedrock|request|over_budget_total",
-            "status": 429
-          },
-          {
-            "cell": "llm|bedrock|bedrock|request|over_budget_total",
-            "pointer": "/__type",
-            "equals": "ThrottlingException"
-          }
-        ]
-      },
-      "signoff": {
-        "who": "ruling:§NAMED CONFORMANCE GAPS ARE 0",
-        "when": "2026-10-14",
-        "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C: ThrottlingException/429)"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
       "id": "GEN-LIMITS an apply's limits are in force only once its generation is live",
       "kind": "improvement",
       "changelog": "A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits.",
@@ -3870,10 +3897,93 @@
       "expected_cells": 1,
       "classes": [
         "effects.usage",
-        "effects.metrics",
+        "effects.metrics"
+      ],
+      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents. PREMISE 2026-10-24: the pointer into /effects/usage was read against the SSE body and could never hold; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's own SSE body is what the judge reads, so the premise is that body stating the 11 input tokens in message_start AND ending in an error event, i.e. the stream stated cost before its upstream failed; the bare status premise said nothing about the claim. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 110, /effects/usage/tokens -> 11.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "body_contains": "\"input_tokens\":11"
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "body_contains": "event: error"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-20",
+        "ruling": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged",
+        "widened_2026_10_24": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "values": [
+        {
+          "pointer": "/effects/usage/spend_cents",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/usage/tokens",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_budget_remaining_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": -110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_spend_cents{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"<KEY>\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_bucket_tokens{bucket=\"group:oracle@day\",group=\"oracle\",window=\"day\",model=\"m-anthropic\",tier=\"input\"}",
+          "golden_absent": true,
+          "candidate": 11
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_spend_cents{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 110
+        },
+        {
+          "pointer": "/effects/metrics/busbar_key_tokens_total{key=\"<KEY>\"}",
+          "golden_absent": true,
+          "candidate": 11
+        }
+      ]
+    },
+    {
+      "id": "SPEND-LEDGER-NORM the key-id mask fires on the usage this cell now records (split out of SPEND-LEDGER)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), 2026-10-20 ruling on PR #1292",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_error@fixture$",
+      "expected_cells": 1,
+      "classes": [
         "norm.rules"
       ],
-      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents. PREMISE 2026-10-24: the pointer into /effects/usage was read against the SSE body and could never hold; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's own SSE body is what the judge reads, so the premise is that body stating the 11 input tokens in message_start AND ending in an error event, i.e. the stream stated cost before its upstream failed; the bare status premise said nothing about the claim.",
+      "rationale": "SPLIT 2026-10-27 out of SPEND-LEDGER (same cells, same signature, strictly less forgiven): now that the cell records a spend line, its key series carry the masked `<KEY>`, so the recorder's `key.id` normalization rule fires on the candidate where it did not on 1.5.5 (norm.rules only_candidate [key.id]). Only that class; every figure is the parent entry's values.",
       "premise": {
         "all": [
           {
@@ -4061,7 +4171,14 @@
         "cell": "llm|gemini|gemini|request|ok",
         "status": 200
       },
-      "rationale": "OWNER 2026-10-24 (in session): 581's pass-through covers the egress path query on a same-dialect gemini route. 1.6.0 forwards the client's `?alt=sse` (plane-llm exchange/arrive.rs); translated routes are unchanged. The judge's transforms do not reach the egress record, so the class is forgiven on these four cells only."
+      "rationale": "OWNER 2026-10-24 (in session): 581's pass-through covers the egress path query on a same-dialect gemini route. 1.6.0 forwards the client's `?alt=sse` (plane-llm exchange/arrive.rs); translated routes are unchanged. The judge's transforms do not reach the egress record, so the class is forgiven on these four cells only. NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Only the upstream path gaining the caller's `?alt=sse`.",
+      "values": [
+        {
+          "pointer": "/effects/egress/0/path",
+          "golden": "/v1beta/models/m-gemini%3AstreamGenerateContent",
+          "candidate": "/v1beta/models/m-gemini%3AstreamGenerateContent?alt=sse"
+        }
+      ]
     },
     {
       "id": "LOG-OWN export plugin log lines go to the plugin's own log file",
@@ -4822,6 +4939,141 @@
         ]
       },
       "rationale": "OWNER G13, 2026-10-25 (ORACLE-SIGNOFF G13 option (a)): a recoverable credential is sealed under a dedicated at-rest key (#1690, owner ruling), so a node with no credentials.at_rest.key refuses the mint, saying what to configure. The cell's own config has no credentials block, so its AWS mint now answers 409 where the 1.5.5 golden recorded 201. SCOPE: exactly this one cell, and in it only `aws_mint_status` (201 -> 409) and the `aws_mint` facts (the token, AccessKeyId and secret-access-key shapes, state and group_provisioned are absent from a refusal). The PREMISE holds the rest: the cell ran (status 0), the AWS mint answered 409 and carried no AccessKeyId, secret or signed token, and the plain mint on the same node still answers 201 and carries neither AWS field, exactly as the golden records. The golden is not edited."
+    },
+    {
+      "id": "S-1-SYNTH a stream:true request is answered as a stream even when the far end answered one whole body",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
+      "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded ~/Developer/tmp/cleanup/NEXT.md:328)",
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream)$",
+      "expected_cells": 30,
+      "classes": [
+        "headers",
+        "body",
+        "effects.audit"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "body_contains": "event: message_start"
+          },
+          {
+            "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27, as recorded ~/Developer/tmp/cleanup/NEXT.md:328: \"S-1 -> OWNER SIGNED 2026-10-27: rule 'busbar answers in the caller's dialect and mode; convert when possible, refuse explained otherwise'; synthesized streams audited, billed from real body; own entry + CHANGELOG.\"",
+        "widened_2026_10_28": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-28",
+          "ruling": "OWNER SIGNED 2026-10-28 (asked by the coordinator with the before/after below): extend S-1-SYNTH by the 5 cells llm|{anthropic,bedrock,cohere,gemini,openai}|responses|request|ok_stream. Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row."
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape. WIDENED 2026-10-28 (OWNER signed 2026-10-28): the 5 cells llm|anthropic|responses|request|ok_stream, llm|bedrock|responses|request|ok_stream, llm|cohere|responses|request|ok_stream, llm|gemini|responses|request|ok_stream and llm|openai|responses|request|ok_stream (+5, 30). Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row. These cells only."
+    },
+    {
+      "id": "S-1-AUDIT a stream synthesised for a Bedrock caller writes its egress.stream_synthesized audit row",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a stream synthesised for a Bedrock (ConverseStream) caller from an upstream's whole body writes one `egress.stream_synthesized` audit row naming the far dialect.",
+      "by": "owner (Matthew Jackson), 2026-10-28 (signed via the coordinator's question with the before/after below)",
+      "cells": "^(llm\\|bedrock\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|openai\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|responses\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|responses\\|request\\|ok_stream)$",
+      "expected_cells": 6,
+      "classes": [
+        "effects.audit"
+      ],
+      "premise": {
+        "cell": "llm|bedrock|anthropic|request|ok_stream_whole_answer",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-28",
+        "ruling": "OWNER SIGNED 2026-10-28: add the effects.audit class to S-1's six Bedrock cells, the five llm|bedrock|*|request|ok_stream_whole_answer cells plus llm|bedrock|responses|request|ok_stream. The new effect is one egress.stream_synthesized row naming the far dialect."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "On these six Bedrock-caller cells the far end answers one whole body and busbar synthesises the caller's ConverseStream from it (S-1 forgives the frame shape, body only). The synthesis is audited, as the owner's 2026-10-27 rule requires for every synthesised stream: one applied egress.stream_synthesized row naming the far dialect (busbar-plane-llm #53). Before: no audit row. After: one egress.stream_synthesized row naming the far dialect. effects.audit only; these six cells only; S-1 keeps its own scope and classes."
+    },
+    {
+      "id": "STREAMERR-ANTHROPIC a cut Anthropic stream's error event names a published error type (api_error), the text in message",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: an Anthropic-dialect stream cut mid-flight ends on an error event whose `error.type` is a published type (`api_error`), with the text in `error.message`, as the Anthropic spec says.",
+      "by": "owner (Matthew Jackson), 2026-10-26 \"Fix and sign\"",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "\"error\":\\{\"message\":\"The response stream was interrupted\\.\",\"type\":\"api_error\"\\}",
+            "\"error\":{\"message\":\"The response stream was interrupted.\",\"type\":\"The response stream was interrupted.\"}"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "llm|anthropic|anthropic|request|stream_upstream_cut",
+        "body_contains": "\"type\":\"api_error\""
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-26",
+        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): before `{\"error\":{\"message\":\"The response stream was interrupted.\",\"type\":\"The response stream was interrupted.\"},\"type\":\"error\"}`, after `...\"type\":\"api_error\"}` with the same message. 1.5.5 copied the message text into the error-type field, which fails Anthropic's conformance schema. A transform: only that `type` member is read back as 1.5.5's; every other byte of the stream (and R-22's request_id) stays judged by its own entry."
+    },
+    {
+      "id": "STREAMERR-BEDROCK a cut Bedrock stream's exception frame names the union member internalServerException",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a Bedrock ConverseStream cut mid-flight ends on an exception frame whose `:exception-type` is the spec's union member name `internalServerException`.",
+      "by": "owner (Matthew Jackson), 2026-10-26 \"Fix and sign\"",
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^internalServerException$",
+            "InternalServerException"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "llm|bedrock|bedrock|request|stream_upstream_cut",
+        "body_contains": "internalServerException"
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-26",
+        "ruling": "OWNER SIGNED 2026-10-26 ~17:10 PDT in session (~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md \"Owner-signed 2026-10-26 ~17:10 PDT: LLM vendor-spec fixes (Anthropic, Bedrock)\"): \"Fix and sign (Recommended)\"; fixes in busbar-plane-llm #44 (343bddc05b7d)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): the frame's `:exception-type` header value moves from `InternalServerException` to `internalServerException`, as the ConverseStream output union names it; the payload `{\"message\":\"The response stream was interrupted.\"}` is unchanged (the frame CRCs change with the header; the recording holds the decoded frames). A transform: only that one exception-name string is read back as 1.5.5's; every other frame stays judged."
     }
   ]
 }
