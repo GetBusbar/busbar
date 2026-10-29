@@ -443,3 +443,108 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
     )
     .expect("an unset wildcard match is not a literal");
 }
+
+/// REFERENCE-CAPABLE, NOT-SECRET FIELDS (lead ruling item 7a): a store, exporter or hook `url` its
+/// plugin names in the Statement's reference-capable list resolves a 1.5.5 `{env: VAR}` IN PLACE
+/// to the variable's string, and a literal url there passes as written (never refused as a secret
+/// literal). The postgres, valkey and mysql stores' and the webrequest hook's `url` alike.
+#[test]
+fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
+    let var = format!("BUSBAR_T_REFCAP_URL_{}", std::process::id());
+    std::env::set_var(&var, "postgres://db.internal:5432/busbar\n");
+    let resolver = SecretResolver::builtins_only();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    for plugin in [
+        "busbar-store-postgres",
+        "busbar-store-valkey",
+        "busbar-store-mysql",
+        "busbar-hook-webrequest",
+    ] {
+        let by_ref = obj(&[("url", serde_json::json!({ "env": var }))]);
+        let out = resolve_settings(
+            &by_ref,
+            &declared(&[]),
+            &declared(&["url"]),
+            plugin,
+            &resolver,
+            &scope,
+        )
+        .unwrap_or_else(|e| panic!("{plugin}: a reference-capable url resolves: {e}"));
+        assert_eq!(
+            out.get("url"),
+            Some(&serde_json::json!("postgres://db.internal:5432/busbar")),
+            "{plugin}"
+        );
+        let literal = obj(&[("url", serde_json::json!("redis://cache:6379"))]);
+        let out = resolve_settings(
+            &literal,
+            &declared(&[]),
+            &declared(&["url"]),
+            plugin,
+            &resolver,
+            &scope,
+        )
+        .unwrap_or_else(|e| panic!("{plugin}: a literal url passes: {e}"));
+        assert_eq!(
+            out.get("url"),
+            Some(&serde_json::json!("redis://cache:6379")),
+            "{plugin}"
+        );
+    }
+    std::env::remove_var(&var);
+}
+
+/// A reference-capable field resolves fail-closed as a secret one does (an unset variable refuses,
+/// naming the field), a secret field beside it still refuses its literal, and a path in both lists
+/// is refused.
+#[test]
+fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
+    let var = format!("BUSBAR_T_REFCAP_UNSET_{}", std::process::id());
+    std::env::remove_var(&var);
+    let resolver = SecretResolver::builtins_only();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    let unset = obj(&[("url", serde_json::json!({ "env": var }))]);
+    let Err(e) = resolve_settings(
+        &unset,
+        &declared(&[]),
+        &declared(&["url"]),
+        "busbar-export-otlp",
+        &resolver,
+        &scope,
+    ) else {
+        panic!("an unset variable at a reference-capable field refuses");
+    };
+    assert!(e.contains("url"), "{e}");
+
+    let secret_literal = obj(&[
+        ("url", serde_json::json!("https://siem.example/in")),
+        (
+            "auth_header",
+            serde_json::json!({ "name": "Authorization", "value": "pasted-7a" }),
+        ),
+    ]);
+    let Err(e) = resolve_settings(
+        &secret_literal,
+        &declared(&["auth_header.value"]),
+        &declared(&["url"]),
+        "busbar-export-webhook",
+        &resolver,
+        &scope,
+    ) else {
+        panic!("a literal at the secret auth_header.value refuses");
+    };
+    assert!(e.contains("settings.auth_header.value"), "{e}");
+    assert!(!e.contains("pasted-7a"), "{e}");
+
+    let Err(e) = resolve_settings(
+        &obj(&[("url", serde_json::json!("https://x"))]),
+        &declared(&["url"]),
+        &declared(&["url"]),
+        "acme",
+        &resolver,
+        &scope,
+    ) else {
+        panic!("a path in both lists refuses");
+    };
+    assert!(e.contains("url") && e.contains("'acme'"), "{e}");
+}

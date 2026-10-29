@@ -255,3 +255,96 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
         "the sink stated live: false, and that holds"
     );
 }
+
+/// An axis whose one module declares `auth_header.value` secret (its Statement's `secret_refs`)
+/// and `url` reference-capable (its Statement's reference-capable list), answering nothing else:
+/// what [`sink_settings`] asks of a real axis.
+struct DeclaringAxis;
+
+impl ExportAxis for DeclaringAxis {
+    fn probe(&self, _: &str, _: &str, _: &Value) -> Option<busbar_contract::export_calls::Probed> {
+        None
+    }
+    fn check(&self, _: &str, _: u32, _: &[(String, Value)]) -> Option<Vec<String>> {
+        None
+    }
+    fn open(&self, module: &str, _: &str, _: &Value) -> Result<Arc<dyn ExportCalls>, String> {
+        Err(format!("{module} opens nothing here"))
+    }
+    fn linked(&self, _: &str) -> bool {
+        true
+    }
+    fn first_party(&self, _: &str) -> bool {
+        true
+    }
+    fn secret_refs(&self, module: &str) -> Vec<String> {
+        match module {
+            "declaring-sink" => vec!["auth_header.value".into()],
+            _ => Vec::new(),
+        }
+    }
+    fn reference_fields(&self, module: &str) -> Vec<String> {
+        match module {
+            "declaring-sink" => vec!["url".into()],
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn settings_of(v: Value) -> serde_json::Map<String, Value> {
+    match v {
+        Value::Object(map) => map,
+        other => panic!("not settings: {other}"),
+    }
+}
+
+/// THE EXPORT HOST, REFERENCE-CAPABLE `url` (lead ruling item 7a; 1.5.5's own otlp and
+/// request-log-webhook docs write `url: {env: VAR}`): a reference at the sink's reference-capable
+/// `url` and at its secret `auth_header.value` reaches the sink RESOLVED to its string (the export
+/// host lends nothing; references resolve in place); a literal url is handed as written; the
+/// configuration keeps the reference. RED before: the sink was handed the `{env: …}` map.
+#[test]
+fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
+    let (url, token) = (
+        format!("BUSBAR_T_REFCAP_EXPORT_URL_{}", std::process::id()),
+        format!("BUSBAR_T_REFCAP_EXPORT_TOKEN_{}", std::process::id()),
+    );
+    std::env::set_var(&url, "https://siem.example/in");
+    std::env::set_var(&token, "Bearer t0k");
+    let written = settings_of(serde_json::json!({
+        "url": { "env": url },
+        "auth_header": { "name": "Authorization", "value": { "env": token } },
+        "batch": 10,
+    }));
+    let handed = sink_settings(&DeclaringAxis, "declaring-sink", &written).expect("resolves");
+    assert_eq!(
+        handed,
+        serde_json::json!({
+            "url": "https://siem.example/in",
+            "auth_header": { "name": "Authorization", "value": "Bearer t0k" },
+            "batch": 10,
+        })
+    );
+    assert_eq!(written["url"], serde_json::json!({ "env": url }));
+
+    let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
+    assert_eq!(
+        sink_settings(&DeclaringAxis, "declaring-sink", &literal).expect("as written"),
+        Value::Object(literal.clone())
+    );
+
+    // Fail-closed: an unset variable at the url is the error, naming the field.
+    std::env::remove_var(&url);
+    let err = sink_settings(&DeclaringAxis, "declaring-sink", &written).unwrap_err();
+    assert!(err.contains("url"), "{err}");
+    assert!(!err.contains("Bearer t0k"), "{err}");
+    std::env::remove_var(&token);
+
+    // A module declaring nothing is handed its settings as written: the undeclared reference is
+    // the undeclared-reference refusal's to word (`config_validate`), not this resolution's.
+    let undeclared = settings_of(serde_json::json!({ "url": { "env": "NEVER_READ" } }));
+    assert_eq!(
+        sink_settings(&DeclaringAxis, "silent-sink", &undeclared).expect("as written"),
+        Value::Object(undeclared.clone())
+    );
+}
