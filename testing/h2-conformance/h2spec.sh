@@ -19,8 +19,8 @@
 # All three always run. `pass` only when all three hold; anything else is `fail` (armed), with the
 # failing test ids named. h2spec is the official release asset at a pinned version, checked against
 # its pinned sha256 before it is unpacked (as testing/conformance/tools.sh provisions its tools). Its
-# release ships amd64 binaries only: on Linux it runs (static) inside the pinned Caddy image as
-# linux/amd64 on the host network, on macOS natively. The PKI is generated at run time
+# release ships amd64 binaries only: on Linux the static binary runs inside a pinned linux/amd64
+# busybox image (its platform manifest, by digest) on the host network, on macOS natively. The PKI is generated at run time
 # (testing/evidence-conformance/pki.py, no openssl). Needs docker (Linux: --network host), python3,
 # cargo. Writes $CONFORMANCE_OUT/verdict.json and the JUnit reports beside it.
 set -uo pipefail
@@ -43,6 +43,8 @@ http2/8.1.2.2 | Sends a HEADERS frame that contains the connection-specific head
 http2/8.1.2.2 | Sends a HEADERS frame that contains the TE header field with any value other than "trailers"
 http2/8.1.2.6 | Sends a HEADERS frame with the "content-length" header field which does not equal the DATA frame payload length'
 export CONTROL_KNOWN
+# busybox 1.37.0-musl, the linux/amd64 platform manifest by digest: h2spec's carrier on Linux.
+CARRIER_IMAGE='busybox@sha256:5624bb6777cf469b1fb50ae3f981b15d2715ee2fffaf20b9998cfb7843726835'
 
 W="$(mktemp -d "${TMPDIR:-/tmp}/h2-conf.XXXXXX")"
 cids=(); pids=()
@@ -95,15 +97,15 @@ mkdir -p "$W/h2spec" && tar -xzf "$tgz" -C "$W/h2spec" h2spec || { why+=("the h2
 docker pull -q "$CADDY_IMAGE" >/dev/null 2>&1 || docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1 \
   || { why+=("the pinned Caddy image could not be pulled"); final; }
 if [ "$plat" = linux_amd64 ]; then
-  docker pull -q --platform linux/amd64 "$CADDY_IMAGE" >/dev/null 2>&1 \
-    || { why+=("the pinned Caddy image (linux/amd64, h2spec's carrier) could not be pulled"); final; }
+  docker pull -q --platform linux/amd64 "$CARRIER_IMAGE" >/dev/null 2>&1 || docker image inspect "$CARRIER_IMAGE" >/dev/null 2>&1 \
+    || { why+=("h2spec's pinned carrier image (busybox, linux/amd64) could not be pulled: $(docker pull --platform linux/amd64 "$CARRIER_IMAGE" 2>&1 | tail -1)"); final; }
 fi
 
 # h2spec_run <name> <port>: the JUnit report at $W/<name>.xml, the console at $W/<name>.log.
 h2spec_run() {
   if [ "$plat" = linux_amd64 ]; then
     docker run --rm --platform linux/amd64 --network host --user "$(id -u):$(id -g)" \
-      -v "$W/h2spec:/h2:ro" -v "$W:/out" --entrypoint /h2/h2spec "$CADDY_IMAGE" \
+      -v "$W/h2spec:/h2:ro" -v "$W:/out" --entrypoint /h2/h2spec "$CARRIER_IMAGE" \
       -t -k -h 127.0.0.1 -p "$2" --timeout 5 -j "/out/$1.xml" >"$W/$1.log" 2>&1
   else
     "$W/h2spec/h2spec" -t -k -h 127.0.0.1 -p "$2" --timeout 5 -j "$W/$1.xml" >"$W/$1.log" 2>&1

@@ -141,8 +141,31 @@ def build_subject(log, *, oidc=False):
     tgt = target_dir()
     builds = [["cargo", "build", "--locked", "--manifest-path", manifest, "--target-dir", tgt, "--bin", "busbar"]]
     if oidc:
-        builds += [["cargo", "build", "--locked", "--manifest-path", manifest, "--target-dir", tgt,
-                    "-p", "busbar-auth-oidc-plugin"],
+        # The OIDC module is a dev-dependency of dist/default (cargo cannot build one alone with
+        # `-p`): its repo at the rev dist/default/Cargo.lock pins, its busbar-contract patched to THIS
+        # checkout (as dist/default's own [patch] does), so module and subject speak one plugin ABI.
+        version, url, rev = oidc_pin()
+        src = os.path.join(tgt, f"oidc-src-{rev[:12]}")
+        if not os.path.isfile(os.path.join(src, "Cargo.toml")):
+            shutil.rmtree(src, ignore_errors=True)
+            os.makedirs(src)
+            for argv in (["git", "init", "-q", src], ["git", "-C", src, "fetch", "-q", "--depth", "1", url, rev],
+                         ["git", "-C", src, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD"]):
+                if run(argv, log) != 0:
+                    raise Refused(f"the OIDC module {url}@{rev[:12]} could not be fetched: {tail(log, 3)}")
+        with open(os.path.join(src, "Cargo.toml")) as f:
+            man = f.read()
+        contract = os.path.join(REPO, "crates", "busbar-contract")
+        patched = re.sub(r'(\[patch\.["\']https://github\.com/GetBusbar/busbar["\']\]\s*\nbusbar-contract = )\{[^}]*\}',
+                         lambda m: m.group(1) + '{ path = "' + contract + '" }', man)
+        if "[patch." not in man:
+            patched = man + f'\n[patch."https://github.com/GetBusbar/busbar"]\nbusbar-contract = {{ path = "{contract}" }}\n'
+        if f'path = "{contract}"' not in patched:
+            raise Refused("the OIDC module's manifest could not be patched to this checkout's busbar-contract")
+        with open(os.path.join(src, "Cargo.toml"), "w") as f:
+            f.write(patched)
+        builds += [["cargo", "build", "--manifest-path", os.path.join(src, "Cargo.toml"), "--target-dir",
+                    os.path.join(tgt, "oidc"), "-p", "busbar-auth-oidc-plugin"],
                    ["cargo", "build", "--locked", "--target-dir", os.path.join(tgt, "root"),
                     "-p", "busbar-plugin-loader", "--features", "pack", "--bin", "busbar-plugin-pack"]]
     for argv in builds:
@@ -153,20 +176,23 @@ def build_subject(log, *, oidc=False):
     out = {"busbar": os.path.join(debug, "busbar")}
     if oidc:
         lib = "libbusbar_auth_oidc_plugin." + ("dylib" if sys.platform == "darwin" else "so")
-        out["oidc"] = os.path.join(debug, lib)
+        out["oidc"] = os.path.join(tgt, "oidc", "debug", lib)
         out["pack"] = os.path.join(tgt, "root", "debug", "busbar-plugin-pack")
-        out["oidc_version"] = oidc_pin()
+        out["oidc_version"] = oidc_pin()[0]
     return out
 
 
 def oidc_pin():
-    """The OIDC module's version as dist/default/Cargo.lock pins it."""
+    """(version, git url, rev) of the OIDC module as dist/default/Cargo.lock pins it."""
     with open(os.path.join(REPO, "dist", "default", "Cargo.lock")) as f:
         lock = f.read()
     m = re.search(r'name = "busbar-auth-oidc-plugin"\nversion = "([^"]+)"\nsource = "([^"]+)"', lock)
     if not m:
         raise Refused("dist/default/Cargo.lock pins no busbar-auth-oidc-plugin")
-    return m.group(1)
+    sm = re.match(r"git\+(https://[^?#]+)\?rev=([0-9a-f]{40})#", m.group(2))
+    if not sm:
+        raise Refused(f"dist/default/Cargo.lock pins busbar-auth-oidc-plugin from {m.group(2)!r}, not a git rev")
+    return m.group(1), sm.group(1), sm.group(2)
 
 
 class Busbar:
