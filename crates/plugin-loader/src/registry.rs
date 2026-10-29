@@ -62,7 +62,9 @@ pub struct LoadablePlugin {
     pub file: String,
     pub manifest: Manifest,
     pub verdict: Verdict,
-    pub lib_bytes: Vec<u8>,
+    /// The verified library bytes, shared (never copied) with every boot row it becomes
+    /// ([`Self::candidate`]).
+    pub lib_bytes: std::sync::Arc<Vec<u8>>,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -102,6 +104,26 @@ impl LoadablePlugin {
             .map(|r| r.version)
             .filter(|v| !v.is_empty())
             .ok_or_else(|| unversioned(&self.manifest.name))
+    }
+
+    /// THE BOOT ROW a DROPPED-IN row states: its signed manifest's Statement rendering, manifest
+    /// alias and former names ([`crate::boot::Candidate::from_manifest`]), over its verified library
+    /// bytes; `None` when the manifest states no Statement (a 1.5.5 JSON-contract plugin).
+    ///
+    /// # Errors
+    /// The rendering does not read back, named (`plugin '<name>': ...`).
+    pub fn candidate(&self) -> Result<Option<crate::boot::Candidate>, String> {
+        let named = |e: String| format!("plugin '{}': {e}", self.manifest.name);
+        let Some(stated) = self.manifest.stated_rendering().map_err(named)? else {
+            return Ok(None);
+        };
+        let origin = crate::boot::Origin::Dropped {
+            file: self.file.clone(),
+            bytes: std::sync::Arc::clone(&self.lib_bytes),
+        };
+        crate::boot::Candidate::from_manifest(stated, &self.manifest, origin)
+            .map(Some)
+            .map_err(named)
     }
 
     /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
@@ -542,7 +564,7 @@ impl PluginRegistry {
                     first_party: false,
                 },
                 manifest,
-                lib_bytes: Vec::new(),
+                lib_bytes: std::sync::Arc::default(),
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -722,7 +744,7 @@ impl PluginRegistry {
         match p.manifest.stated_rendering().map_err(named)? {
             Some(stated) => Ok(StoreDoor::Dropped {
                 file: p.file.clone(),
-                bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                bytes: std::sync::Arc::clone(&p.lib_bytes),
                 stated,
             }),
             None => Err(no_door()),
@@ -794,7 +816,7 @@ impl PluginRegistry {
                 &p.manifest,
                 crate::boot::Origin::Dropped {
                     file: p.file.clone(),
-                    bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                    bytes: std::sync::Arc::clone(&p.lib_bytes),
                 },
             )
             .map_err(|e| format!("transport plugin '{name}': {e}"))?
@@ -855,27 +877,14 @@ impl PluginRegistry {
         }
         let planes = self.loadable().iter();
         for p in planes.filter(|p| p.manifest.kind == kind::PLANE) {
-            let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
-            match p.manifest.stated_rendering().map_err(named)? {
-                Some(stated) => set.doors.push(
-                    crate::boot::Candidate::from_manifest(
-                        stated,
-                        &p.manifest,
-                        crate::boot::Origin::Dropped {
-                            file: p.file.clone(),
-                            bytes: std::sync::Arc::new(p.lib_bytes.clone()),
-                        },
-                    )
-                    .map_err(named)?,
-                ),
-                None => {
-                    return Err(named(
-                        "states no Statement: a plane loads only through its memory-ABI door \
-                         (`busbar_plugin_door`)"
-                            .into(),
-                    ))
-                }
-            }
+            let Some(c) = p.candidate()? else {
+                return Err(format!(
+                    "plugin '{}': states no Statement: a plane loads only through its memory-ABI \
+                     door (`busbar_plugin_door`)",
+                    p.manifest.name
+                ));
+            };
+            set.doors.push(c);
         }
         Ok(set)
     }
@@ -1116,7 +1125,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 file,
                 manifest: unpacked.manifest,
                 verdict,
-                lib_bytes: unpacked.lib_bytes,
+                lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
