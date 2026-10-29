@@ -7,11 +7,11 @@
 //! (scope, then rate class: a plain scoped verb, #77(9) OWNER-LOCKED), so each effect here speaks
 //! only to its own body and its own effect.
 //!
-//! * `GET /api/v1/admin/verify` — [`verify_effect`]: the ledger's own verifier
-//!   ([`busbar_kernel_ledger::verify`]) over what the node holds — every sealed checkpoint re-hashes
-//!   to its body, no node's sequence went backwards between two checkpoints, the book as it stands
-//!   against the last checkpoint — and the reconciliation identity. A failed verification is still a
-//!   `200`: the verb answers the question it was asked, and `ok` says the answer.
+//! * `GET /api/v1/admin/verify` — [`verify_effect`]: everything that has to be true of what the node
+//!   holds — every count of the one ledger priceable at the card, the journal read back clean at
+//!   boot, the amendment and audit chains as held, and every chain the store keeps. A failed
+//!   verification is still a `200`: the verb answers the question it was asked, and `ok` says the
+//!   answer.
 //! * `GET /api/v1/admin/plane-facts?plane=<key>` — [`plane_facts_effect`]: what a plane this node
 //!   serves declares about itself (its contract `PlaneDeclaration`), read off the registry. A plane
 //!   this node does not serve is `404` — the same Law-7 answer its admin paths give.
@@ -30,8 +30,7 @@ use busbar_core_admin::GovernanceError;
 use busbar_kernel::host_services::{KernelServices, TrustRefused};
 use busbar_kernel::trust::book::{KeyRow, Ruling};
 
-use super::{AdminAnswer, AmendmentJournal, LedgerView, VerifySnapshot};
-use busbar_kernel_ledger::checkpoint::Checkpoint;
+use super::{AdminAnswer, AmendmentJournal, AuditView, LedgerView};
 
 /// Which plane THIS node serves under a key, and what it declares: `None` for a key no plane is
 /// registered under, and for a registered plane this node has not configured (Law 7). A predicate
@@ -102,114 +101,72 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 
 /// `GET /api/v1/admin/verify` — everything that has to be true of this node's ledger, checked.
 ///
-/// A balance whose book holds a refused counts row (#42) is a FINDING, named with its window, lane
-/// and refusal, and its row is withheld from the identity exactly as the ledger views beside it
-/// withhold it: an identity measured over a balance with no figure is not a measurement. Every
-/// other check still runs and every other finding is still reported — one refused row is a hole
-/// in one balance, and a verify that went dark over it would hide everything else it found.
-pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
-    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
-
-    // THE SAME RE-DERIVATION THE CHECKPOINTS READ SERVES (ARCHITECT A1): each held checkpoint is
-    // handed over as the chain re-derives it, checked as it arrives, and only the latest is kept
-    // for the book check below, so the verb holds one checkpoint's figures beside the walk's.
-    let mut findings: Vec<Finding> = Vec::new();
-    let mut count = 0usize;
-    let mut since: Option<Checkpoint> = None;
-    let snapshot = ledger.verify_snapshot_anchored(&mut |checkpoint| {
-        if !checkpoint.body_hash_verifies() {
-            findings.push(Finding::CheckpointEdited {
-                checkpoint_seq: checkpoint.checkpoint_seq,
-            });
-        }
-        if let Some(previous) = &since {
-            findings.extend(sequences_are_monotonic(previous, checkpoint));
-        }
-        count += 1;
-        since = Some(checkpoint.clone());
-    });
-    let VerifySnapshot {
-        read,
-        book,
-        anchored,
-    } = snapshot;
-    // A held checkpoint the chain does not reproduce is a finding naming its sequence number, and
-    // the book is then measured against no checkpoint: the last one handed over is not the head.
-    let unreadable = read.err();
-    let since = since.as_ref();
-    let book_verified = match (since, &book, &unreadable) {
-        (Some(since), Some(now), None) => {
-            // The checkpoint's own digest was checked above with every other one.
-            findings.extend(
-                verify(since, now, anchored.as_ref())
-                    .into_iter()
-                    .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
-            );
-            true
-        }
-        _ => false,
-    };
-    let (mut ledger_rows, mut legacy_rows) = ledger
-        .identity_snapshot()
-        .map_err(|_| GovernanceError::Store)?;
-    // Asked AFTER the rows are read: see `LedgerView::refused_balances`.
-    let refused = ledger.refused_balances();
-    super::withhold_refused(&mut ledger_rows, &refused);
-    super::withhold_refused(&mut legacy_rows, &refused);
-    let discrepancies = crate::root::ledger_identity::reconcile(&ledger_rows, &legacy_rows)
-        .map_err(|_| GovernanceError::Store)?;
-    let identity_holds = discrepancies.is_empty();
-    let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
-    if let Some(unreadable) = &unreadable {
-        findings.push(unreadable.to_string());
+/// THE ONE LEDGER is the store's usage counts, priced by the card in core: there is no second book
+/// to measure against a checkpoint, so `checkpoints` is 0, `since` is null and `book_verified` is
+/// false, as on a node that never sealed one. The identity holds when every count is priceable; a
+/// row the card refuses (#42) is a finding naming it, and every other check still runs. The journal
+/// (what the boot could not read back, the amendment chain, the audit chain, every chain the store
+/// keeps) is verified as before, through `audit`.
+pub(crate) fn verify_effect(
+    ledger: &dyn LedgerView,
+    audit: Option<&dyn AuditView>,
+) -> Result<AdminAnswer, GovernanceError> {
+    let priced = ledger.priced().map_err(|why| {
+        tracing::warn!(why = %why, "verify could not read the ledger's counts");
+        GovernanceError::Store
+    })?;
+    let identity_holds = priced.refused.is_empty();
+    let mut findings: Vec<String> = priced
+        .refused
+        .iter()
+        .map(|row| {
+            format!(
+                "refused counts: {} in the window opening at {}: {}",
+                row.bucket, row.day, row.refusal
+            )
+        })
+        .collect();
+    // WHAT THE BOOT COULD NOT READ BACK of the journal: a quarantined segment, a record that does
+    // not decode, an amendment that does not link. The boot logs it and serves on, and this is
+    // where an operator asking reads it.
+    if let Some(audit) = audit {
+        findings.extend(
+            audit
+                .restart_findings()
+                .into_iter()
+                .map(|finding| format!("restart: {finding}")),
+        );
     }
-    // EVERY BALANCE WITH NO FIGURE (#42): its balance, window, lane and refusal, in words.
-    findings.extend(
-        refused
-            .iter()
-            .map(|balance| format!("refused counts: {balance}")),
-    );
-    // WHAT THE BOOT RECONCILIATION FOUND: a journal record the chain could not read, or a balance
-    // the book and a second replay disagree on. A settled figure edited on disk is caught here; the
-    // boot logs it and serves on, and this is where an operator asking reads it.
-    findings.extend(
-        ledger
-            .restart_findings()
-            .into_iter()
-            .map(|finding| format!("restart: {finding}")),
-    );
-    // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held
-    // corrections and content accesses after boot is a finding, as a rewound checkpoint is.
+    // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held content
+    // accesses after boot is a finding.
     if let Err(broken) = crate::root::durability::verify_held() {
         findings.push(format!("amendment chain: {broken}"));
     }
-    // THE FIXED AUDIT CHAIN, walked as it is held now: a retained record edited, relinked or
-    // re-signed after it was sealed is a finding.
-    findings.extend(
-        ledger
-            .retained_audit_findings()
-            .into_iter()
-            .map(|finding| format!("audit chain: {finding}")),
-    );
-    // EVERY CHAIN THE STORE KEEPS, this node's and its peers', walked and verified against the
-    // deployment keyset: a chain on the store that does not verify is a finding wherever it is.
-    findings.extend(
-        ledger
-            .stored_chain_findings()
-            .into_iter()
-            .map(|finding| format!("stored chain: {finding}")),
-    );
+    if let Some(audit) = audit {
+        // THE FIXED AUDIT CHAIN, walked as it is held now: a retained record edited, relinked or
+        // re-signed after it was sealed is a finding.
+        findings.extend(
+            audit
+                .retained_audit_findings()
+                .into_iter()
+                .map(|finding| format!("audit chain: {finding}")),
+        );
+        // EVERY CHAIN THE STORE KEEPS, this node's and its peers', walked and verified against the
+        // deployment keyset.
+        findings.extend(
+            audit
+                .stored_chain_findings()
+                .into_iter()
+                .map(|finding| format!("stored chain: {finding}")),
+        );
+    }
     answer(&serde_json::json!({
-        "checkpoints": count,
-        "since": since.map(|c| serde_json::json!({
-            "checkpoint_seq": c.checkpoint_seq,
-            "node": c.node,
-            "wall": c.wall,
-        })),
-        "book_verified": book_verified,
+        "checkpoints": 0,
+        "since": null,
+        "book_verified": false,
         "findings": findings,
         "identity_holds": identity_holds,
-        "discrepancies": discrepancies.len(),
+        "discrepancies": 0,
         "ok": findings.is_empty() && identity_holds,
     }))
 }
@@ -680,7 +637,7 @@ pub(crate) fn replayable(
         return effect();
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
-    let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
+    let digest: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(body);
     // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
     // never replay each other's answer.
     use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
