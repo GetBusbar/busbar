@@ -4194,7 +4194,11 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
 /// section words are refused as pool names, in 1.5.5's sentence.
 #[test]
 fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
-    crate::test_support::register_neutral_test_plane();
+    // Seeded, not registered: a registration is visible to the next read only until a sibling
+    // test's `TestRegistryIsolation` swaps the list, so the reader holds the isolation itself.
+    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
     let pools: crate::config::PoolsCfg = serde_yaml::from_str(
         "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
          breaker:\n  members: [{model: m}]\n",

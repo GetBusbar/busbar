@@ -20,7 +20,7 @@
 
 use super::signing::TICKET_AUDIENCE;
 use super::*;
-use busbar_contract::records::{PlaneDisposition, PlaneRecordRef};
+use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, Retention};
 
 /// The record kind a ticket's record is stored under, keyed by the ticket id.
 pub const TICKET_RECORD_KIND: &str = "ticket";
@@ -97,8 +97,10 @@ impl GovState {
         }
         let id = ticket_id()?;
         let store = self.store();
-        // Lapsed tickets go as each new one is minted: a record lives no longer than its ticket.
-        let _purged = store.purge_plane_records_before(TICKET_RECORD_KIND, now);
+        // Lapsed tickets go as each new one is minted: a record lives no longer than its ticket. The
+        // record's `ts` is its ticket's expiry, so the kind is purged by age, on the purge that
+        // carries its rule as every purge of a kind does.
+        let _purged = store.purge_plane_records(TICKET_RECORD_KIND, now, Retention::Age);
         store
             .upsert_plane_record(PlaneRecordRef {
                 kind: TICKET_RECORD_KIND,
