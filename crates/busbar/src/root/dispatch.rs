@@ -121,6 +121,10 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         self.0.default_inbound_style()
     }
 
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        crate::root::door_steps::declared_styles()
+    }
+
     fn check_outbound(
         &self,
         style: &str,
@@ -135,19 +139,8 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
-        self.serving_presenting(style, settings, None)
-    }
-
-    // TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the legacy lane's endpoint Basic, handed across the axis.
-    fn serving_presenting(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        endpoint_basic: Option<&[u8]>,
-    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
-        let endpoint = endpoint_basic.and_then(crate::root::userinfo::UserinfoBasic::from_value);
         Ok(crate::root::door_steps::process_auths()
-            .serving_with(style, settings, endpoint)?
+            .serving(style, settings)?
             .map(
                 |(auth, decl)| busbar_contract::auth_calls::OutboundServing {
                     auth,

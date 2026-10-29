@@ -69,7 +69,8 @@ impl AdminNode {
 
     /// Seal admin unit `key`'s record on the node's book: who the auth step resolved (or the
     /// arrival, for a unit refused before anybody was), the operation class its audit stated, how it
-    /// ended, and no amount: an admin unit counts nothing.
+    /// ended, and no amount: an admin unit counts nothing. Its card version and the policy
+    /// generation it ran under are read off one pin of the process's history, at its arrival.
     fn seal(
         &self,
         key: UnitKey,
@@ -79,6 +80,8 @@ impl AdminNode {
         ended: Outcome,
     ) {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        let arrived_ms = arrived_at.saturating_mul(1_000);
         let subject = principal.map_or(Subject::Arrival, |p| {
             Subject::PrincipalId(p.as_str().to_string())
         });
@@ -112,12 +115,15 @@ impl AdminNode {
                 tier_bp: 10_000,
                 fee_count: 0,
                 rate_card_version: crate::root::plane_node::card_in_force(
-                    crate::root::kernel::ROOT_CARD.pin().as_ref(),
-                    arrived_at.saturating_mul(1_000),
+                    card.as_ref(),
+                    arrived_ms,
                 ),
                 bucket_chain_ref: String::new(),
             },
-            controls: Controls::default(),
+            controls: Controls {
+                policy_epoch: crate::root::plane_node::policy_in_force(card.as_ref(), arrived_ms),
+                ..Controls::default()
+            },
             correlation_label: None,
         };
         let token = self.kernel.durability_token();
@@ -181,6 +187,9 @@ pub(crate) fn refused_answer(ended: Outcome, request: &AdminRequest) -> AdminAns
     }
     if is_rate_refusal(ended) {
         return rate_limited_answer();
+    }
+    if let Some(explained) = explained_answer(request, ended) {
+        return explained;
     }
     answer_for(ended)
 }
@@ -253,7 +262,7 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 /// rather than from a recording, and the oracle cannot confirm them.
 #[cfg(feature = "root-admin")]
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
     error_answer_with_message(
         403,
         "forbidden",
@@ -361,6 +370,31 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
     }
 }
 
+/// The path of the one verb whose unreadable body is answered with what the body must carry.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_PATH: &str = "/api/v1/admin/ledger/amend-rate-history";
+
+/// What `amend-rate-history` says when it cannot read the correction it was sent (OWNER
+/// 2026-10-27: every refusal explains itself). A bare `invalid_request` told an operator holding
+/// a pre-1.6.0 body nothing about why it was refused.
+#[cfg(feature = "root-admin")]
+pub(crate) const AMEND_RATE_HISTORY_SHAPE: &str = "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape";
+
+/// The refusal that names what was wrong, where the answer can say more than its code: an
+/// `amend-rate-history` body the verb could not read. `None` for every other ending.
+#[cfg(feature = "root-admin")]
+pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Option<AdminAnswer> {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    let unreadable = matches!(
+        outcome,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
+            if class_of(reason) == RefusalClass::Unreadable
+    );
+    let path = request.path.split('?').next().unwrap_or("");
+    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+        .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
+}
+
 /// What a node that cannot take the unit at all answers with.
 #[cfg(feature = "root-admin")]
 pub(crate) fn unavailable_answer() -> AdminAnswer {
@@ -386,37 +420,8 @@ pub struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
-/// The node's claim journal (item 271), read by the node's key replay cache ([`CellJournal`]) and set at
-/// most once, right after `AdminNode`'s own `units.admin.claims` is known (see [`mount`]) — before
-/// the router this dispatch drives is reachable by any real request. A `OnceLock` rather than a
-/// plain field because the replay cache is built BEFORE `AdminBinding::claims` is resolved (the
-/// binding is built from the very `dispatch` this type becomes), so there is one moment between
-/// construction and first use where the answer is not yet known — never a moment where it is asked
-/// twice.
-#[cfg(feature = "root-admin")]
-pub(crate) type ClaimJournalCell =
-    std::sync::Arc<std::sync::OnceLock<Option<std::sync::Arc<dyn ClaimJournal>>>>;
-
-#[cfg(feature = "root-admin")]
-use busbar_core_admin::idempotency::ClaimJournal;
 #[cfg(feature = "root-admin")]
 use busbar_core_admin::keys::KeyReplayCache;
-
-/// The node's claim journal as the replay cache sees it: the cell, read at the moment a claim is
-/// taken. The cache is built before the journal is known (see [`ClaimJournalCell`]); every claim it
-/// takes comes from a real request, which cannot arrive until the cell is set, so a claim is never
-/// dropped for a cell that was merely early.
-#[cfg(feature = "root-admin")]
-struct CellJournal(ClaimJournalCell);
-
-#[cfg(feature = "root-admin")]
-impl ClaimJournal for CellJournal {
-    fn journal_claim(&self, key: &(String, String), now: u64) {
-        if let Some(journal) = self.0.get().and_then(Option::as_ref) {
-            journal.journal_claim(key, now);
-        }
-    }
-}
 
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
@@ -636,29 +641,13 @@ pub fn mount(
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
     busbar_core_admin::restart::drain_released_at_exit();
-    // Item 271: the claim journal `build_units` binds onto `units.admin.claims` (root/kernel.rs,
-    // `ProductionUnits::admin_only_sharing`) is not known until `build_units` runs — and
-    // `build_units` needs `dispatch`, which needs the router `RouterDispatch` drives, before either
-    // exists. The cell breaks the cycle: `RouterDispatch` is handed an empty one now and reads it on
-    // every call after, and it is filled exactly once, below, the instant the answer is known — long
-    // before the router this dispatch drives can see a real request.
-    let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
     // THE NODE'S KEY REPLAY CACHE, built here once: this function runs once per process, so the
     // cache lives as long as the node does and a mint's in-flight sentinel outlives every config
-    // reload. Its journal is the cell.
-    let replays = Arc::new(KeyReplayCache::with_journal(Arc::new(CellJournal(
-        Arc::clone(&claims),
-    ))));
+    // reload. What outlives the process is the key's claim in the store.
+    let replays = Arc::new(KeyReplayCache::new());
     let dispatch: Arc<dyn AdminDispatch> =
         Arc::new(RouterDispatch::new(inner.clone(), &runtime, replays));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
-    let _ = claims.set(
-        node.units
-            .admin
-            .claims
-            .clone()
-            .map(|j| j as std::sync::Arc<dyn ClaimJournal>),
-    );
 
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
@@ -814,6 +803,8 @@ pub fn mount_node(
             // live snapshot (Law 7) and write through the configured store's plane-facing seam.
             units.admin.planes = live_planes(Arc::clone(app));
             units.admin.records = Some(live_records(Arc::clone(app)));
+            // An `Idempotency-Key` is claimed in the same configured store.
+            units.admin.replay_store = Some(live_replay_store(Arc::clone(app)));
             // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
             // book — the composed services, reached through the late install.
             let late = Arc::clone(late);

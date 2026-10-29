@@ -157,6 +157,47 @@ therefore does NOT interpolate cleanly if it is spliced into a double-quoted sca
 
 A map of provider name → `ProviderDef`. The shipped catalog is a curated set of verified providers across the six supported protocols. You can add an entry for any OpenAI-compatible endpoint not already in the catalog.
 
+### Provider options
+
+A provider entry in `config.yaml` may also set any request header or query parameter its dialect's
+API accepts, under the provider's own name, beside busbar's keys:
+
+```yaml
+providers:
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+    OpenAI-Organization: org-abc
+    OpenAI-Project: proj_1
+  vertex:
+    api_key: { env: GOOGLE_SA }
+    x-goog-user-project: my-gcp-project
+  azure:
+    api_key: { env: AZURE_KEY }
+    api-version: 2024-10-21
+```
+
+| Dialect | Names (header unless noted) |
+|---|---|
+| `anthropic` | `anthropic-version` (`2023-06-01`, `2023-01-01`), `anthropic-beta` (a list or comma-separated) |
+| `openai`, `responses` | `OpenAI-Organization`\*, `OpenAI-Project`\*, `api-version` (query; Azure OpenAI) |
+| `gemini` | `X-Goog-User-Project`\*, `X-Goog-Quota-User`, `X-Goog-Request-Reason`, `X-Server-Timeout` (whole seconds) |
+| `bedrock` | `X-Amzn-Bedrock-Trace`, `X-Amzn-Bedrock-GuardrailIdentifier`, `X-Amzn-Bedrock-GuardrailVersion`, `X-Amzn-Bedrock-PerformanceConfig-Latency`, `X-Amzn-Bedrock-Service-Tier` (sent to `bedrock-invoke` models) |
+| `cohere` | `X-Client-Name` |
+
+- Header names match without regard to case. Query names match exactly.
+- Any other key that is not one of busbar's provider keys fails startup and `--validate`. The
+  error names the key and lists the names the provider's dialect accepts.
+- Credential and auth fields (`Authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `key`,
+  `X-Amz-*`, ...) can't be set this way. Use `api_key` and `auth`. Hop-by-hop fields
+  (`Connection`, `Transfer-Encoding`, `Host`, ...) are refused too.
+- **Precedence.** A static option is a default. When a caller speaks the provider's own dialect and
+  sends the same header or query parameter, the caller's value is used. Names marked \* are forced:
+  they select the account that is billed, so the configured value always goes out and a caller's
+  value never does.
+- A `providers.yaml` catalog entry follows the same rule: it may set options, and any other key
+  fails startup, naming the file and the key. This applies to every entry, deployed or not.
+  `busbar --migrate-config` reports stray catalog keys.
+
 ### Catalog fields
 
 | Field | Type | Required | Default | Notes |
@@ -166,7 +207,6 @@ A map of provider name → `ProviderDef`. The shipped catalog is a curated set o
 | `error_map` | map<string, string> | no | `{}` | Maps a provider-specific error **code string** (from the JSON error body) to a canonical disposition class. Valid values: `rate_limit`, `overloaded`, `server_error`, `timeout`, `network`, `auth`, `billing`, `client_error`, `context_length`. An unrecognized class value is a startup error. HTTP-status classification (401→auth, 429→rate_limit, 5xx→server_error, etc.) applies automatically without an `error_map`; this field is only for provider-specific JSON codes. |
 | `path` | string | no | Protocol's standard path | Overrides the upstream request path appended to `base_url`. Must begin with `/`. Static, ignores the per-request model. Use when the API version is in `base_url` and the endpoint path differs from the protocol default (e.g. `/chat/completions` without `/v1`). |
 | `path_base` | string | no | Protocol's default base | For URL-model protocols: overrides the hardcoded base segment while the per-request suffix is still appended. Must begin with `/`. On **Gemini** it replaces `/v1beta/models` (suffix `/{model}:verb`) to reach Google Vertex AI's `/v1/projects/{project}/locations/{location}/publishers/google/models` layout; on **Anthropic** it enables Claude-on-Vertex (the model moves into a `:rawPredict`/`:streamRawPredict` suffix and the body carries `anthropic_version` in place of `model`). Config-only, no code. |
-| `organization`, `project` | string | no | none | The tenant the upstream bills this provider's traffic to, sent on every upstream request under the header its protocol defines (OpenAI and Responses: `OpenAI-Organization`, `OpenAI-Project`). A caller's own tenant headers are never forwarded. Absent: none is sent. |
 | `auth` | string | no | Protocol's native auth | The egress auth mechanism. `bearer` (sends `Authorization: Bearer <key>`) · `api-key` (sends `api-key: <key>`, for Azure OpenAI) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523: mints + auto-refreshes a bearer from a service-account key resolved via `api_key`; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4: the `api_key` reference resolves to `client_id:client_secret`, exchanged at `token_url` for a bearer; e.g. Azure OpenAI via Entra ID). When unset, each protocol uses its native scheme: bearer for anthropic/openai/responses/cohere, `x-goog-api-key` for gemini, AWS SigV4 for bedrock. |
 | `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where Busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
 | `scope` | string | no | none | OAuth scope for `auth: oauth-client-credentials`. Required for that auth. |
@@ -369,6 +409,7 @@ still hold independent grants.
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
 | `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling, which is the default and the recommended posture for an external IdP, reduces a `full` grant to `read-only`). Omitting `admin_scope` here is how a role gets no admin authority at all. |
+| *the role `"*"`* | 1.6.0. Binds the principals 1.5.5 admitted with no grant: a principal that asserts no roles, and, when the provider's table binds no other role, every principal the provider identifies. It grants what its fields state, like any role. A principal whose roles a named binding grants is judged by those alone; one asserting only roles the table does not name is still refused. 1.6.0 refuses a signed-in principal no binding grants (401), so `busbar --migrate-config` writes `"*": {}` (every pool, no budget) for each data-plane provider whose users 1.5.5 admitted that way, with a warning: it keeps 1.5.5's access and is yours to tighten or remove. |
 | `verbs` | 1.6.0. The PER-VERB admin allow-list this role grants: `"*"` (every verb, exactly `admin_scope: full`) or a list of admin operation names from the closed verb table, e.g. `[get_keys, post_keys, get_ledger_totals]` (the snake-case operation names of the [admin API](admin-api.md), the 1.6.0 verbs by their own names). A named verb is admitted whatever scope it needs; any verb the list does not name is `403 forbidden`, the same answer a missing scope gets. `admin_scope` stays the 1.5.5 shorthand beside it (`read-only` = every read, `full` = every verb), and a principal holds the UNION of both across its bound roles. The provider's `max_admin_scope` caps a named verb as it caps `admin_scope`. Absent = only what `admin_scope` grants, as in 1.5.5. Any other shape, or a name the table does not declare, fails `--validate`/boot. |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an identity provider named in `admin_auth`)
@@ -771,7 +812,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 | `error_map` | map<string, string> | no | `{}` merged onto catalog | Merged with the catalog's `error_map`; deployment entries win per code. |
 | `path` | string | no | Catalog value | Override the upstream path. Must begin with `/`. |
 | `path_base` | string | no | Catalog value | Override the URL-model base segment (Gemini or Anthropic), keeping the per-request verb suffix. Must begin with `/`. For Gemini-on-Vertex and Claude-on-Vertex. |
-| `organization`, `project` | string | no | Catalog value | Override the provider's tenant (see the catalog keys above). |
+| *provider options* | per name | no | none | Any value the provider's own API accepts in a request header or query parameter, written under the provider's own name directly in the entry (see [Provider options](#provider-options)). |
 | `auth` | string | no | Catalog value | `bearer`, `api-key`, `jwt-bearer` (OAuth service-account, e.g. Vertex AI), or `oauth-client-credentials` (e.g. Azure Entra ID). |
 | `token_url` | string | no | Catalog value | OAuth token endpoint for `oauth-client-credentials`. |
 | `scope` | string | no | Catalog value | OAuth scope for `oauth-client-credentials`. |
@@ -1421,7 +1462,7 @@ plugins:
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
     acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
   logs:                         # every plugin instance's own log file
-    dir: logs/plugins           # <dir>/<instance>.log (default: logs/plugins)
+    dir: logs/plugins           # <dir>/<section>.<instance>.log, e.g. export.metrics.log (default: logs/plugins)
     level: info                 # off | error | warn | info | debug | trace (default: info)
     levels: { primary: debug }  # per-instance levels, by instance name
     rotate_mb: 64               # rotate past this size (default: never)
@@ -1439,7 +1480,7 @@ plugins:
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
 | `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
 | `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
-| `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<instance>.log`, the instance name with every character outside `[A-Za-z0-9._-]` written as `_`. This build accepts and checks the `logs` keys but writes no per-plugin file yet; plugin log lines reach the Busbar log, as in 1.5.5. |
+| `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<section>.<instance>.log`: the instance name after its kind's config section (`export`, `secrets`, `store`, `identity-providers`, `hooks`, `providers`; a plane's instance is its own section), with every character outside `[A-Za-z0-9._-]` written as `_`. So the `metrics` export writes `export.metrics.log` and the memory store `store.memory.log`. |
 | `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
 | `logs.levels` | map | no | empty | Per-instance levels: instance name -> level word. |
 | `logs.rotate_mb` | integer | no | never | Past this size the file is renamed `<file>.1` (older archives shift up) and a new file begins, the request-log file's rotation. `0` is a boot error. |

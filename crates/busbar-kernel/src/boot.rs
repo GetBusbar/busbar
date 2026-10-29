@@ -60,15 +60,24 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
         .governance
         .as_ref()
         .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store()));
-    let ctx = crate::plane::registry::BootCtx::for_hydrate(plane_store, app);
+    // THE KERNEL'S DURABLE TRUST RECORD (THE DESIGN §11.12: "the demotion record is durable"): the
+    // demotions and the operator's trust decisions write through to the configured store, attached
+    // here, core side, for every deployment with a store, whatever planes are linked. It rides the
+    // `App` across every later config apply, so this one attach holds for the process.
+    if let Some(store) = &plane_store {
+        app.demotion_record.set_sink(Arc::clone(store));
+    }
+    let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }
 
 /// LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"): the
 /// linked planes this generation CONFIGURED, in plane-list order. An unconfigured plane's boot hooks
 /// never run — it restores nothing and starts nothing. One generic check, naming no plane.
-fn configured_decls(app: &crate::state::App) -> Vec<&'static crate::plane::registry::PlaneDecl> {
-    crate::plane::registry::plane_decls()
+fn configured_decls(
+    app: &crate::state::App,
+) -> Vec<&'static crate::plane_driver::registry::PlaneDecl> {
+    crate::plane_driver::registry::plane_decls()
         .iter()
         .copied()
         .filter(|d| app.plane_configured(d))
@@ -76,13 +85,13 @@ fn configured_decls(app: &crate::state::App) -> Vec<&'static crate::plane::regis
 }
 
 /// THE HYDRATE FOLD. Split from [`hydrate_all`] and taking its decl list by argument for the reason
-/// [`crate::plane::registry::build_dispatch`] is split from `appbuild`: the boot-refuses-on-`Err`
+/// [`crate::plane_driver::registry::build_dispatch`] is split from `appbuild`: the boot-refuses-on-`Err`
 /// ratchet (R2-boot) is then drivable over an INJECTED decl — a plane whose `hydrate` returns `Err` —
 /// without the process plane `OnceLock`, which can be initialised only once per test binary. A hook's
 /// `Err` aborts the fold with `?`; a plane that half-restored its durable state must not serve.
 pub fn run_hydrate_hooks(
-    decls: &[&'static crate::plane::registry::PlaneDecl],
-    ctx: &crate::plane::registry::BootCtx,
+    decls: &[&'static crate::plane_driver::registry::PlaneDecl],
+    ctx: &crate::plane_driver::registry::BootCtx,
 ) -> Result<(), String> {
     for decl in decls {
         if let Some(hydrate) = decl.hydrate {
@@ -120,7 +129,7 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
         .governance
         .as_ref()
         .and_then(|g| g.card_issuer());
-    let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
+    let ctx = crate::plane_driver::registry::BootCtx::for_start(app_handle, card_issuer);
     run_start_hooks(&configured_decls(&app_handle.load()), &ctx)
 }
 
@@ -130,8 +139,8 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
 /// listeners. A hook's `Err` aborts the fold with `?`, which is how a plane's outbound identity that
 /// does not resolve stops the boot rather than yielding a deployment that re-verifies nothing.
 pub fn run_start_hooks(
-    decls: &[&'static crate::plane::registry::PlaneDecl],
-    ctx: &crate::plane::registry::BootCtx,
+    decls: &[&'static crate::plane_driver::registry::PlaneDecl],
+    ctx: &crate::plane_driver::registry::BootCtx,
 ) -> Result<(), String> {
     for decl in decls {
         if let Some(start) = decl.start {
@@ -150,3 +159,7 @@ pub fn generate_signing_key_hex() -> Result<String, String> {
             .map_err(|e| e.to_string())?;
     Ok(hex::encode(signer.secret_bytes()))
 }
+
+#[cfg(test)]
+#[path = "tests/boot_tests.rs"]
+mod boot_tests;

@@ -505,6 +505,46 @@ pub trait AuthAxis: Send + Sync {
         let _ = (style, credential, settings);
         Ok(Vec::new())
     }
+
+    /// THE OUTBOUND STYLES this build's auth rows declare, as a provider's `auth:` may name them:
+    /// each row's tail styles, linked rows first in registration order, then dropped-in rows, in
+    /// [`listed_styles`] order (ranked first by rank, then unranked in that order; a name stated
+    /// twice listed once, at its first place), each with its declared flags. Read without opening
+    /// an instance. Empty by default.
+    fn outbound_styles(&self) -> Vec<DeclaredStyle> {
+        Vec::new()
+    }
+}
+
+/// ONE OUTBOUND STYLE an auth row declares ([`AuthAxis::outbound_styles`]): its name and its
+/// `abi::auth::StyleDecl::flags` (the `STYLE_*` bits and its list rank).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredStyle {
+    /// The style name: an open string a provider's `auth:` resolves against.
+    pub name: String,
+    /// Its declared flags.
+    pub flags: u32,
+}
+
+/// THE ONE ORDER the host lists outbound styles in: `declared` (every row's styles, linked rows
+/// first in registration order, then dropped-in rows, each row's in its tail's order) with the
+/// ranked styles first, by rank ([`crate::abi::auth::style_rank`]), then the unranked ones in the
+/// order given; two of one rank keep the order given, and a name stated twice is listed once, at
+/// its first place in that order.
+#[must_use]
+pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<DeclaredStyle> {
+    let mut out: Vec<DeclaredStyle> = Vec::new();
+    for style in declared {
+        if !out.iter().any(|s| s.name == style.name) {
+            out.push(style);
+        }
+    }
+    // Stable: equal keys keep the order given. Unranked (`0`) sorts after every rank.
+    out.sort_by_key(|s| match crate::abi::auth::style_rank(s.flags) {
+        0 => u32::MAX,
+        rank => rank,
+    });
+    out
 }
 
 /// ONE AUTH PLUGIN SERVING AN OUTBOUND STYLE ([`AuthAxis::serving`]): its instance, and the style
@@ -612,22 +652,19 @@ pub struct AuthField {
     pub name: Vec<u8>,
     /// The value: credential material, zeroised when it drops, whichever copy it is.
     pub value: Secret<Vec<u8>>,
-    /// `abi::auth::FIELD_SENSITIVE`: never logged, zeroised once the head is encoded.
+    /// `abi::auth::FIELD_SENSITIVE`, as the plugin stated it: the h2 encoding the field asks for.
+    /// Logging never reads it: every auth field's value is withheld, marked or not.
     pub sensitive: bool,
 }
 
+/// Every auth field's value is withheld, whatever its `sensitive` bit says: a field whose
+/// sensitivity the plugin did not declare is treated as sensitive (owner ruling 2026-10-27).
 impl std::fmt::Debug for AuthField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = if self.sensitive {
-            "<redacted>".to_string()
-        } else {
-            // A field the auth plugin marked NOT sensitive renders as it is: this crate reads its
-            // own `Secret`'s field (the sealed `expose` is the host's accessor).
-            String::from_utf8_lossy(&self.value.0).into_owned()
-        };
         f.debug_struct("AuthField")
             .field("name", &String::from_utf8_lossy(&self.name))
-            .field("value", &value)
+            .field("value", &"<redacted>")
+            .field("sensitive", &self.sensitive)
             .finish()
     }
 }

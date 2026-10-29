@@ -65,7 +65,7 @@ fn linked_row(row: &LinkedRow) -> LinkedPlugin {
             LinkedPlugin::auth_door_named(canonical, key, door)
         }
     };
-    let former = busbar_kernel::config::legacy::former_names(&row.manifest.alias);
+    let former = busbar_kernel::config::migration_table::former_names(&row.manifest.alias);
     row.with_former_names(former)
 }
 
@@ -131,7 +131,7 @@ fn linked_registry() -> PluginRegistry {
 fn auth_axis(rows: Arc<dyn PluginRows>) -> Arc<dyn AuthAxis> {
     let registry = busbar_plugin_loader::rows::registry_arc(rows)
         .unwrap_or_else(|| Arc::new(linked_registry()));
-    Arc::new(LoaderAuth(busbar_plugin_loader::auth_axis::stand_in(
+    Arc::new(LoaderAuth(busbar_test_kit::auth_axis::stand_in(
         registry,
         busbar_kernel::seal::lend(),
     )))

@@ -62,20 +62,14 @@ impl CredentialRead for AppCredentials {
 
     fn read(&self, kind: &str, id: &str) -> (Secret<String>, bool) {
         let Some(handle) = self.0.get() else {
-            return (
-                Secret::new(busbar_kernel::auth::DUMMY_SECRET.to_string()),
-                false,
-            );
+            return (Secret::new(String::new()), false);
         };
         let app = handle.snapshot();
         let now = busbar_kernel::store::now();
         match app.governance.as_ref() {
             Some(gov) => gov.credential_secret(kind, id, now),
             // A node without governance holds no credential.
-            None => (
-                Secret::new(busbar_kernel::auth::DUMMY_SECRET.to_string()),
-                false,
-            ),
+            None => (Secret::new(String::new()), false),
         }
     }
 }

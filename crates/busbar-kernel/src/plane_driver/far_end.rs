@@ -48,15 +48,6 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::proxy::egress_unit::{
-    attempt::attempt_cap_ms,
-    ports::{
-        disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
-    },
-    walk::budget_secs,
-    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
-};
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::plane::RefusalCode;
 use busbar_contract::abi::transport::{
@@ -70,9 +61,21 @@ use busbar_contract::conn::{
 use busbar_contract::redacted::Secret;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
+use busbar_kernel_egress::{
+    attempt::attempt_cap_ms,
+    ports::{
+        disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
+        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
+    },
+    walk::budget_secs,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
+};
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
+
+/// The line a framer that states its body's length has the host add (`HeadDefaults::states_length`).
+const CONTENT_LENGTH: &[u8] = b"content-length";
 
 /// The bytes one read of the far end takes: the size of a unit's one read buffer ([`Scratch`]).
 const READ_BYTES: usize = 16 * 1024;
@@ -1169,6 +1172,7 @@ impl EgressFarEnd<'_> {
         request: &OutboundRequest,
         url: &str,
         extensions: Vec<u8>,
+        defaults: &[(Vec<u8>, Vec<u8>)],
     ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
@@ -1190,8 +1194,10 @@ impl EgressFarEnd<'_> {
             path: path.as_bytes().to_vec(),
             query,
             timestamp: self.egress.clock.now_secs(),
+            // The head the auth signs is the head that goes out: the plane's fields and the
+            // framer's own lines it adds (THE DESIGN section 6, step 5: nothing is added after).
             headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
-                request.fields.clone()
+                request.fields.iter().chain(defaults).cloned().collect()
             } else {
                 Vec::new()
             },
@@ -1234,7 +1240,7 @@ impl EgressFarEnd<'_> {
     async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
-        crate::proxy::strip_re_derived(&mut request.fields);
+        busbar_kernel_egress::upstream::strip_re_derived(&mut request.fields);
         // THE PLANE'S PER-CALL SCOPE rides its request as the host's own field
         // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
         // to the member's auth call in its extensions blob. No wire carries it.
@@ -1253,6 +1259,7 @@ impl EgressFarEnd<'_> {
                 true
             }
         });
+        busbar_kernel_egress::upstream::apply_upstream_encoding(&mut request.fields);
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
         // EVERY ATTEMPT THAT LEAVES NOTHING ON THE WIRE says why (`State::unsent`): the walk's
         // exhausted refused piece names it, so the plane can tell a hop that never left from one
@@ -1322,6 +1329,36 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
+        // THE FRAMER'S OWN HEAD for this target (THE DESIGN section 6, step 5): each of its lines
+        // the request does not carry is part of the head the auth signs and goes out after the
+        // plane's fields, where 1.5.5's client wrote its defaults; then, where the framer states
+        // it, the opening body's length, last, for a non-empty body whose head carries none. The
+        // framer adds nothing at encode.
+        let located = e.conns.head_defaults(e.caller, need, &url);
+        let carried = |name: &[u8]| {
+            request
+                .fields
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(name))
+        };
+        let mut defaults: Vec<(Vec<u8>, Vec<u8>)> = located
+            .lines
+            .into_iter()
+            .filter(|(name, _)| !carried(name))
+            .collect();
+        let opening: &[u8] = if request.text { &[] } else { &request.body };
+        if located.states_length
+            && !opening.is_empty()
+            && !carried(CONTENT_LENGTH)
+            && !defaults
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(CONTENT_LENGTH))
+        {
+            defaults.push((
+                CONTENT_LENGTH.to_vec(),
+                opening.len().to_string().into_bytes(),
+            ));
+        }
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
@@ -1341,7 +1378,7 @@ impl EgressFarEnd<'_> {
                 return false;
             };
             match self
-                .auth_fields(binding, handle, &request, &url, extensions)
+                .auth_fields(binding, handle, &request, &url, extensions, &defaults)
                 .await
             {
                 Some(fields) => auth = fields,
@@ -1360,7 +1397,9 @@ impl EgressFarEnd<'_> {
         let (_, path) = split(&url);
         // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
         // auth values, so it wipes itself when the open has taken it.
-        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));
+        let mut head = Head(Vec::with_capacity(
+            request.fields.len() + auth.len() + defaults.len(),
+        ));
         // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
         head.0.extend(auth.iter().map(|f| {
             (
@@ -1372,6 +1411,14 @@ impl EgressFarEnd<'_> {
         head.0.extend(
             request
                 .fields
+                .iter()
+                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
+                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
+        );
+        // The framer's own lines last, as 1.5.5's client added its defaults after every field the
+        // request carried; one the auth wrote is the auth's.
+        head.0.extend(
+            defaults
                 .iter()
                 .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
@@ -1407,8 +1454,13 @@ impl EgressFarEnd<'_> {
                 target: &url,
                 fields: &borrowed,
                 // A TEXT message rides no opening: the connection opens bare and the message is
-                // written to it as text once open (the opening carries no text bit).
-                body: if request.text { &[] } else { &request.body },
+                // written to it as text once open (the opening carries no text bit). Any other body
+                // is frozen here, once: the connector keeps it without a copy.
+                body: if request.text {
+                    bytes::Bytes::new()
+                } else {
+                    std::mem::take(&mut request.body).into()
+                },
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
@@ -1439,6 +1491,14 @@ impl EgressFarEnd<'_> {
                     return self.write_to(conn, &request.body, true).await;
                 }
                 true
+            }
+            // An AUTH outcome (the auth refused the request, or its call failed): nothing was sent
+            // and the destination did not fail. Nothing is recorded against it; the next member,
+            // as for an auth that answers no fields.
+            Err(err) if err.is_auth() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                false
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
@@ -1532,6 +1592,13 @@ impl EgressFarEnd<'_> {
         let piece = match read {
             Err(_elapsed) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::Timeout));
+            }
+            // An auth outcome before any answer: nothing recorded against the destination; the
+            // next member (as at the open).
+            Ok(Err(err)) if !answered && err.is_auth() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                return Some(fail_over());
             }
             Ok(Err(err)) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::of(err)));
@@ -2043,7 +2110,10 @@ impl FarEnd for EgressFarEnd<'_> {
             .filter(|l| l.degraded)
             .map(|l| l.member.destination.get());
         match lane {
+            // 1.5.5's target: `forward_once` was a `#[tracing::instrument]` in
+            // `proxy::engine::walk`.
             Some(lane) => tracing::span!(
+                target: "busbar::proxy::engine::walk",
                 crate::observability::HOTPATH_LEVEL,
                 "forward_once",
                 lane = lane

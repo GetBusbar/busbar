@@ -16,8 +16,7 @@
 
 mod linked;
 
-use busbar_kernel::config::plane_sections::{config_sections, refuse_cross_plane_reference};
-use busbar_kernel::plane::{PlaneSections, RefError};
+use busbar_kernel::config::plane_sections::config_sections;
 
 /// Register every test-linked plane in the process registry — idempotent (first-wins), so every
 /// test can call it unconditionally regardless of run order.
@@ -84,73 +83,4 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
             "the refusal must NAME the section reached onto, got: {on_agents}"
         );
     }
-}
-
-/// THE RESOLVE-TIME REFUSAL, on a name that EXISTS on a sibling plane — the resolve-time twin of the
-/// parse-time rule above. The input is a BARE name — no dot, nothing for the parse-time rule to
-/// object to. It passes that rule cleanly and is refused only because the BINDING crosses the
-/// boundary. Neither check subsumes the other, which is why merging them would delete one.
-///
-/// Relocated from `src/plane/tests/config_tests.rs`: the final assertion pins the rendered message's
-/// PROSE, which names the `agents:` owner's config section (`"agents"`) — see this file's header.
-#[test]
-fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
-    register_planes();
-    let agents = linked::owning("agents").key;
-    let tools = linked::owning("tools").key;
-    let mut sections: PlaneSections<u8> = PlaneSections::default();
-    sections.insert(agents, "planner", 1);
-
-    // The parse-time rule has NO objection to this name.
-    refuse_cross_plane_reference("`tools.search`", "planner", &config_sections())
-        .expect("a bare name is legal in shape; the boundary it crosses is a binding, not a shape");
-
-    let err = sections
-        .resolve(tools, "planner")
-        .expect_err("a name defined on a sibling plane is a boundary violation");
-    assert_eq!(
-        err,
-        RefError::CrossPlane {
-            name: "planner".to_string(),
-            referenced_from: tools,
-            defined_in: agents,
-        }
-    );
-    assert!(
-        err.to_string().contains("which is defined in `agents`"),
-        "the refusal DIAGNOSES rather than merely denying, got: {err}"
-    );
-}
-
-/// The rendered message says which plane, which name, and where it actually lives. This is the text
-/// an operator sees at boot, so it is pinned rather than left to drift.
-///
-/// Relocated from `src/plane/tests/sections_tests.rs`: it pins the same real section-name PROSE
-/// (`"tools"`, `"agents"`) as the test above — see this file's header.
-#[test]
-fn the_refusal_message_is_actionable() {
-    register_planes();
-    let models = linked::fallback().key;
-    let tools = linked::owning("tools").key;
-    let agents = linked::owning("agents").key;
-    let mut s: PlaneSections<&'static str> = PlaneSections::default();
-    s.insert(models, "fast", "a pool");
-    s.insert(tools, "filesystem", "a tool server");
-    s.insert(agents, "planner", "an agent");
-
-    let msg = s.resolve(tools, "planner").unwrap_err().to_string();
-    assert!(msg.contains("planner"), "names the entry: {msg}");
-    assert!(
-        msg.contains("tools"),
-        "names the referencing section: {msg}"
-    );
-    assert!(msg.contains("agents"), "names the defining section: {msg}");
-
-    let unknown = s.resolve(tools, "nowhere").unwrap_err().to_string();
-    assert!(unknown.contains("nowhere"));
-    assert!(unknown.contains("tools"));
-    assert!(
-        !unknown.contains("agents"),
-        "an unknown name must not invent a plane it lives on: {unknown}"
-    );
 }

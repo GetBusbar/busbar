@@ -495,7 +495,7 @@ pub(crate) fn trust_decide_effect(
 pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     Arc::new(move |key: &str| {
         let snapshot = app.load();
-        busbar_kernel::plane::registry::plane_decls()
+        busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .map(|decl| decl.declaration)
             .find(|decl| decl.key == key && snapshot.plane_configured(decl))
@@ -517,26 +517,100 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
     })
 }
 
-/// THE PRODUCTION RECORD SINK: the live configuration's governance store, narrowed to the
-/// plane-facing seam every plane persists through. A node with no store configured keeps nothing,
-/// and says so (`Err`), rather than acknowledging a write that went nowhere.
+/// THE PRODUCTION RECORD SINK: the live configuration's governance store, written through its v3
+/// `upsert_plane_record`. A node with no store configured keeps nothing, and says so (`Err`),
+/// rather than acknowledging a write that went nowhere. The sink is synchronous and the admin unit
+/// that calls it answers on the blocking pool, so the store call is awaited here, on that thread:
+/// the sink's one wait.
 #[must_use]
 pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSink {
     Arc::new(move |record: &PlaneRecord| {
         let snapshot = app.load();
-        let gov = snapshot
+        let calls = snapshot
             .governance
             .as_ref()
+            .and_then(|gov| gov.store_calls())
             .ok_or_else(|| "no record store is configured".to_string())?;
-        busbar_kernel::store::plane_view::PlaneStoreView::narrow(gov.store())
-            .upsert_plane_record(record.view())
-            .map_err(|e| e.0)
+        crate::root::durability::off_runtime(|| {
+            crate::root::durability::wait_for(calls.upsert_plane_record(record.view()))
+        })
+        .map_err(|e| e.to_string())
     })
 }
 
 /// THE REPLAY CACHE the two Q71(2) writes share (contract D-3): per `(actor, "<verb>:<key>")`, the
 /// SHA-256 of the body the first call carried and the answer it produced.
 pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], AdminAnswer)>;
+
+/// The configured store a key is claimed in, read when the claim is taken.
+pub type ReplayStore =
+    Arc<dyn Fn() -> Option<Arc<dyn busbar_contract::records::RecordStore>> + Send + Sync>;
+
+/// THE PRODUCTION REPLAY STORE: the live configuration's governance store.
+#[must_use]
+pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplayStore {
+    Arc::new(move || app.load().governance.as_ref().map(|gov| gov.store()))
+}
+
+/// A first answer as the store keeps it: the body's digest, then the whole answer — status, every
+/// header in emission order, body — length-prefixed, so a header value or a body may hold any byte
+/// and come back identical. The store boundary is the only place an answer is bytes.
+fn stored_answer(digest: &[u8; 32], answer: &AdminAnswer) -> Vec<u8> {
+    fn push(out: &mut Vec<u8>, bytes: &[u8]) {
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&bytes[..len as usize]);
+    }
+    let mut out = Vec::with_capacity(32 + 6 + answer.body.len() + 64);
+    out.extend_from_slice(digest);
+    out.extend_from_slice(&answer.status.to_be_bytes());
+    let count = u32::try_from(answer.headers.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&count.to_be_bytes());
+    for (name, value) in answer.headers.iter().take(count as usize) {
+        push(&mut out, name.as_bytes());
+        push(&mut out, value.as_bytes());
+    }
+    push(&mut out, &answer.body);
+    out
+}
+
+/// What [`stored_answer`] wrote, read back: the first body's digest and the first answer. `None`
+/// on anything that is not exactly that framing. The header count is a claim the bytes make about
+/// themselves, so nothing is reserved on it: each header is read off the bytes actually held.
+fn kept_answer(kept: &[u8]) -> Option<([u8; 32], AdminAnswer)> {
+    fn take<'b>(bytes: &'b [u8], cursor: &mut usize, n: usize) -> Option<&'b [u8]> {
+        let end = cursor.checked_add(n)?;
+        let slice = bytes.get(*cursor..end)?;
+        *cursor = end;
+        Some(slice)
+    }
+    fn pull<'b>(bytes: &'b [u8], cursor: &mut usize) -> Option<&'b [u8]> {
+        let len = u32::from_be_bytes(take(bytes, cursor, 4)?.try_into().ok()?);
+        take(bytes, cursor, usize::try_from(len).ok()?)
+    }
+    let mut cursor = 0usize;
+    let digest: [u8; 32] = take(kept, &mut cursor, 32)?.try_into().ok()?;
+    let status = u16::from_be_bytes(take(kept, &mut cursor, 2)?.try_into().ok()?);
+    let count = u32::from_be_bytes(take(kept, &mut cursor, 4)?.try_into().ok()?);
+    let mut headers = Vec::new();
+    for _ in 0..count {
+        let name = String::from_utf8(pull(kept, &mut cursor)?.to_vec()).ok()?;
+        let value = String::from_utf8(pull(kept, &mut cursor)?.to_vec()).ok()?;
+        headers.push((name, value));
+    }
+    let body = pull(kept, &mut cursor)?.to_vec();
+    if cursor != kept.len() {
+        return None;
+    }
+    Some((
+        digest,
+        AdminAnswer {
+            status,
+            headers,
+            body,
+        },
+    ))
+}
 
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
@@ -551,6 +625,7 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// existing `409 conflict` "a request with this Idempotency-Key is already in flight".
 pub(crate) fn replayable(
     cache: &ReplayCache,
+    store: Option<&ReplayStore>,
     verb: busbar_core_admin::KernelVerb,
     actor: &str,
     unit: &super::AdminRequest,
@@ -572,28 +647,77 @@ pub(crate) fn replayable(
     let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
     // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
     // never replay each other's answer.
-    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
-        Probe::Replay((first, answer)) if first == digest => Ok(answer),
-        Probe::Replay(_) => Ok(refused(
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+
+    let other_body = || {
+        Ok(refused(
             409,
             "conflict",
             "this Idempotency-Key was already used with a different request body",
-        )),
-        Probe::InFlight => Ok(refused(
+        ))
+    };
+    let in_flight = || {
+        Ok(refused(
             409,
             "conflict",
             "a request with this Idempotency-Key is already in flight",
-        )),
+        ))
+    };
+    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
+        Probe::Replay((first, answer)) if first == digest => Ok(answer),
+        Probe::Replay(_) => other_body(),
+        Probe::InFlight => in_flight(),
         Probe::NoKey => effect(),
-        Probe::Reserved(reservation) => match effect() {
-            Ok(answer) if (200..300).contains(&answer.status) => {
-                reservation.commit((digest, answer.clone()), unit.at);
-                Ok(answer)
+        Probe::Reserved(reservation) => {
+            // Claimed in the store before the effect runs, so a retry after a restart or on another
+            // node replays the first answer or is refused: it never runs the effect again.
+            let store = store.and_then(|store| store());
+            let claim = match &store {
+                Some(store) => match durable::claim(&**store, reservation.key(), unit.at) {
+                    Ok(claim) => Some(claim),
+                    Err(Refused::Answer(kept)) => {
+                        // The first answer, whole and byte for byte — status, headers and body: a
+                        // re-render would mint a second one-time secret over one identity.
+                        return match kept_answer(&kept) {
+                            Some((first, answer)) if first == digest => Ok(answer),
+                            Some(_) => other_body(),
+                            None => {
+                                tracing::error!("the store keeps an Idempotency-Key's first answer in a form this node cannot read");
+                                Ok(journal_unavailable(
+                                    "the first answer to this Idempotency-Key cannot be read back; nothing was done",
+                                ))
+                            }
+                        };
+                    }
+                    Err(Refused::Unavailable(why)) => {
+                        tracing::error!(reason = %why, "an Idempotency-Key could not be claimed in the store");
+                        return Ok(journal_unavailable(
+                            "the store could not record this Idempotency-Key; nothing was done",
+                        ));
+                    }
+                    Err(Refused::InFlight | Refused::Applied(_)) => {
+                        return in_flight();
+                    }
+                },
+                None => None,
+            };
+            let (answer, settled) = match effect() {
+                Ok(answer) if (200..300).contains(&answer.status) => {
+                    let settled = Settled::Answer(stored_answer(&digest, &answer));
+                    reservation.commit((digest, answer.clone()), unit.at);
+                    (Ok(answer), settled)
+                }
+                other => {
+                    reservation.clear();
+                    (other, Settled::Released)
+                }
+            };
+            if let (Some(store), Some(claim)) = (&store, &claim) {
+                if let Err(why) = durable::settle(&**store, claim, unit.at, &settled) {
+                    tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+                }
             }
-            other => {
-                reservation.clear();
-                other
-            }
-        },
+            answer
+        }
     }
 }

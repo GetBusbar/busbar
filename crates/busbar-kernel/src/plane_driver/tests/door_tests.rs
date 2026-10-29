@@ -334,7 +334,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         [(decl.key, &unbound as &dyn std::any::Any)]
             .into_iter()
             .collect();
-    let keyed = crate::plane::registry::build_dispatch(&[decl], &slots, true);
+    let keyed = crate::plane_driver::registry::build_dispatch(&[decl], &slots, true);
     assert!(
         keyed.is_ok(),
         "the key chain admits a door claim: {keyed:?}"
@@ -345,7 +345,7 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         "admitted by the key chain, the claim binds no audience"
     );
     // RED ARM: no audience and no key chain is no admission path at all.
-    let refused = crate::plane::registry::build_dispatch(&[decl], &slots, false)
+    let refused = crate::plane_driver::registry::build_dispatch(&[decl], &slots, false)
         .expect_err("a door claim with no admission path refuses the boot");
     assert!(refused.contains("bound no admission"), "{refused}");
     assert!((decl.claims)(&"not a door slot").is_empty());
@@ -419,7 +419,7 @@ fn lane_less_healthz(
     sections: &[&'static str],
 ) -> (u16, Vec<u8>) {
     let seeded: Vec<&'static PlaneDecl> = door.into_iter().collect();
-    let _isolated = crate::plane::registry::TestRegistryIsolation::seeded(&seeded);
+    let _isolated = crate::test_support::planes::TestRegistryIsolation::seeded(&seeded);
     let mut fixture = crate::test_support::TestApp::new().plane_sections(sections);
     if let Some(decl) = door {
         let section = DoorSection::new(

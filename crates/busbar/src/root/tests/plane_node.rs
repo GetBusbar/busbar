@@ -1512,7 +1512,6 @@ async fn drive_screened_by(
     };
     let driven = Driven {
         node,
-        units: &*units,
         route,
         op_class,
         principal: &principal,
@@ -1522,7 +1521,7 @@ async fn drive_screened_by(
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -1531,6 +1530,7 @@ async fn drive_screened_by(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )
@@ -4511,7 +4511,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     // holder is empty in a test, and the late arm posts nothing without a pinned history.
     let driven = Driven {
         node: &node,
-        units: &*units,
         route: &*route,
         op_class,
         principal: &principal,
@@ -4521,7 +4520,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -4530,6 +4529,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )
@@ -4757,7 +4757,7 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
         kind: &str,
         message: &str,
     ) -> Response {
-        busbar_kernel::proxy::ingress_error(proto, status, kind, message)
+        busbar_kernel::ingress::ingress_error(proto, status, kind, message)
     }
 
     fn envelope_dialect(
@@ -4776,7 +4776,7 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
         err_type: &str,
         message: &str,
     ) -> Response {
-        busbar_kernel::proxy::ingress_error(PROTO, status, err_type, message)
+        busbar_kernel::ingress::ingress_error(PROTO, status, err_type, message)
     }
 
     fn percent_decode(&self, s: &str) -> String {
@@ -4784,15 +4784,15 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
     }
 
     fn kind_not_found(&self) -> &'static str {
-        busbar_kernel::proxy::KIND_NOT_FOUND
+        busbar_contract::protocol::KIND_NOT_FOUND
     }
 
     fn kind_invalid_request(&self) -> &'static str {
-        busbar_kernel::proxy::KIND_INVALID_REQUEST
+        busbar_contract::protocol::KIND_INVALID_REQUEST
     }
 
     fn err_type_not_found(&self) -> &'static str {
-        busbar_kernel::proxy::KIND_NOT_FOUND
+        busbar_contract::protocol::KIND_NOT_FOUND
     }
 }
 
@@ -5556,7 +5556,6 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     };
     let driven = Driven {
         node: &node,
-        units: &*units,
         route: &*route,
         op_class,
         principal: &principal,
@@ -5566,7 +5565,7 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     };
     let _ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -5575,6 +5574,7 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )
@@ -5810,7 +5810,6 @@ async fn serve_rerank(
     };
     let driven = Driven {
         node: &node,
-        units: &*units,
         route: &*route,
         op_class,
         principal: &principal,
@@ -5820,7 +5819,7 @@ async fn serve_rerank(
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -5829,6 +5828,7 @@ async fn serve_rerank(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )

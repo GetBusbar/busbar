@@ -466,7 +466,13 @@ impl sealed::Take for crate::abi::secret::ResolveOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> SecretCopy {
-        judged(crate::abi::secret::validate::check_resolve(self));
+        // The `in` is the test's own, so the host buffer is judged where the answer names it: the
+        // dispatcher judges it against the buffer it lent (`check_resolve`'s `buf`/`cap`).
+        judged(crate::abi::secret::validate::check_resolve(
+            self,
+            self.secret.ptr as usize,
+            self.secret.len as u64,
+        ));
         let mut copy = Zeroizing::new(Vec::new());
         copy.extend_from_slice(lent(self.secret.ptr, self.secret.len, "resolve.secret"));
         SecretCopy(copy)
@@ -545,6 +551,27 @@ impl sealed::Take for crate::abi::export::StatusOut {
 }
 impl Reply for crate::abi::export::StatusOut {
     type Owned = Vec<u8>;
+}
+
+impl sealed::Take for crate::abi::export::ScrapeOut {
+    fn head(&mut self) -> &mut OutHead {
+        &mut self.head
+    }
+    fn clear(&mut self, _: Token) {
+        clear_head(&mut self.head);
+    }
+    /// The bytes land in the buffer the `in` lent, which the caller holds; `written` and `needed`
+    /// stay on the `out`. The kit does not know the buffer's capacity here, so the capacity judged
+    /// is what was written.
+    fn take(&self, _: Outcome, _: Token) {
+        judged(crate::abi::export::validate::check_scrape(
+            self,
+            self.written,
+        ));
+    }
+}
+impl Reply for crate::abi::export::ScrapeOut {
+    type Owned = ();
 }
 
 impl sealed::Take for crate::abi::auth::BeginLoginOut {

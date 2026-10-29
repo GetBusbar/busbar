@@ -125,7 +125,7 @@ pub fn registry_rows(
 
 /// The registry row one of the kernel's linked rows states: a STORE under its canonical name,
 /// answering also to its key; an AUTH row likewise — each answering also to the former names the
-/// root legacy table gives that key ([`answering_former_names`]).
+/// root migration table gives that key ([`answering_former_names`]).
 #[must_use]
 pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     match *row {
@@ -152,12 +152,12 @@ pub fn linked_registry() -> PluginRegistry {
         .unwrap_or_else(|_| PluginRegistry::empty())
 }
 
-/// `row`, answering also to the former names the root legacy table declares for its alias
+/// `row`, answering also to the former names the root migration table declares for its alias
 /// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
 /// earlier releases carried exactly as its dropped-in copy's signed manifest does.
 #[must_use]
 pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
-    let former = busbar_kernel::config::legacy::former_names(&row.manifest.alias);
+    let former = busbar_kernel::config::migration_table::former_names(&row.manifest.alias);
     row.with_former_names(former)
 }
 
@@ -710,7 +710,7 @@ pub fn unbound_sections() -> Vec<&'static str> {
         .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
         .filter_map(|c| c.verbs.first())
         .filter_map(|section| {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         })
         .filter(|decl| !decl.fallback)
         .map(|decl| decl.config_section)
@@ -1104,9 +1104,9 @@ pub fn book(
     };
     let token = super::kernel::new_kernel().durability_token();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
-    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the store's epoch floor, read back through
-    // `record_get`, fences a node below it out; the chain's operator breaks are read as deliberate.
-    super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
+    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the chain's operator breaks, read as
+    // deliberate.
+    super::durability::report_operator_breaks(&durability);
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
     // an empty reference and two principals never share one. A node with neither keeps this
@@ -1159,9 +1159,7 @@ pub fn book(
     let verb_store = super::durability::node_verb_store(
         Arc::clone(&durability),
         super::kernel::new_kernel().durability_token(),
-        calls,
         store,
-        &adapter,
     );
     Ok(super::durability::NodeBook {
         durability,

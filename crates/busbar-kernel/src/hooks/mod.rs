@@ -226,10 +226,13 @@ impl HookEnv {
     /// FAIL-CLOSED: an unresolvable ref is an `Err`, never a dangling reference handed to the plugin.
     fn resolve_hook_settings(
         &self,
+        module: &str,
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         crate::config::secret::resolve_settings(
             settings,
+            &self.registry.secret_slots(module),
+            module,
             self.secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
@@ -252,7 +255,7 @@ impl HookEnv {
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
         for (name, hook) in hooks {
-            self.resolve_hook_settings(&hook.settings)
+            self.resolve_hook_settings(&hook.plugin, &hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
         }
         Ok(())
@@ -301,7 +304,7 @@ impl HookEnv {
             // An open failure here is a hard boot/reload error — the gate would otherwise be silently
             // dropped and its admission/rewrite decision lost.
             let resolved = self
-                .resolve_hook_settings(&hook.settings)
+                .resolve_hook_settings(&hook.plugin, &hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
             self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
                 .map_err(|e| {
@@ -862,7 +865,7 @@ fn gate_transport_uncached(
     // a gate whose secret failed to resolve — by the time we get here the secret has ALREADY resolved.
     // A residual `Err` here (e.g. a race where the secret was rotated away after the pre-resolve pass)
     // is still treated conservatively as absent, but the pre-resolve pass is the real gate.
-    let resolved = match env.resolve_hook_settings(&hook.settings) {
+    let resolved = match env.resolve_hook_settings(&hook.plugin, &hook.settings) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(
@@ -1413,7 +1416,7 @@ pub async fn fetch_status(
 ///
 /// 1. NEITHER BAG MAY GO ON THE WIRE. The endpoint used to serialize `reported.settings` verbatim,
 ///    which is the hook's ECHO of the SECRET-RESOLVED bag: `configure_hook` pushes
-///    `resolve_hook_settings(&hook.settings)`, so the plugin receives — and echoes back — the
+///    `resolve_hook_settings(&hook.plugin, &hook.settings)`, so the plugin receives — and echoes back — the
 ///    PLAINTEXT of every `SecretRef`. That is resolved secret material, at READ-ONLY admin scope.
 ///    So the comparison happens in here rather than at the endpoint, and the caller gets
 ///    KEY NAMES (which it is already free to serve) and a boolean.
@@ -1858,6 +1861,23 @@ pub enum ResolvedPolicy {
     },
 }
 
+/// The default hook content ceiling, in bytes. `0` = unlimited; a non-zero ceiling is the
+/// operator's `limits.hook_content_max_bytes`.
+pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
+
+static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
+
+/// Install the generation's hook content ceiling (boot and every config apply).
+pub fn set_hook_content_max_bytes(bytes: usize) {
+    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The generation's hook content ceiling. `0` = unlimited.
+pub fn hook_content_max_bytes() -> usize {
+    HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// THE HOOK CONTENT CEILING, on a built prompt projection: measured on its bytes BEFORE any call,
 /// and over the ceiling the content is OMITTED WHOLE (the hook is shown an empty projection, its
 /// grant still honoured), never truncated mid-value; `busbar_hook_content_truncated_total` counts
@@ -1865,7 +1885,7 @@ pub enum ResolvedPolicy {
 /// prompt applies.
 #[must_use]
 pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
-    let cap = crate::proxy::hook_content_max_bytes();
+    let cap = hook_content_max_bytes();
     if cap == 0 {
         return p;
     }
