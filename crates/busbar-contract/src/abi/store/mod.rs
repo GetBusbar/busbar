@@ -74,7 +74,9 @@
 //!   the store cannot hold, a constraint, a script error before any write). FAILED proves nothing:
 //!   a store answers FAILED whenever it cannot know whether its commit landed (a lost commit or EXEC
 //!   reply, a dropped session), so the host replays the same `op_id` with the same body until READY
-//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`.
+//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`. The one
+//!   deterministic answer that is FAILED is a FORK (slot 19 under `fork_refusal`: a different
+//!   record at an occupied chain position): the host never replays a fork under the same `op_id`.
 
 pub mod check;
 pub mod ledger;

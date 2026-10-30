@@ -5,7 +5,7 @@
 //! only; every money figure is derived in core as counts x the dated rate card. No slot here
 //! carries a price, a balance, a reservation, an epoch fence or a cap.
 //!
-//! DEDUPE, the same on every slot here: the module rule in [`super`] ("Dedupe", S1-S4): a replay
+//! DEDUPE, the same on every slot here: the module rule in [`super`] ("Dedupe", S1-S5): a replay
 //! with the same value fields applies nothing and returns the ORIGINAL `out`; different value
 //! fields are REFUSED with [`super::DIAG_OPID_CONFLICT`]; only a READY that applied a change is
 //! recorded.
