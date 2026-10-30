@@ -182,16 +182,15 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
+  # W23 windows-compile runs on request only until ModernCI's runners have LLVM (clang-cl): it marked moves
+  # red even when declared blocks:false (2026-10-30).
+  manual: [windows-compile]
   move:
     - fmt
     - clippy
     - test
     - deny
     - oracle
-    # W23 windows-compile: reports, never blocks, until the ModernCI xwin runner has clang-cl
-    # (ring needs it; 37 moves red 2026-10-30). Make it blocking again once it is green on dev.
-    - checks: [windows-compile]
-      blocks: false
 checks:
   fmt:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.

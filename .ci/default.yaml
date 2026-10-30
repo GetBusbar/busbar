@@ -21,9 +21,6 @@ on:
     - test
     - deny
     - oracle
-    # W23 windows-compile: non-blocking until the xwin runner has clang-cl (see dev.yaml).
-    - checks: [windows-compile]
-      blocks: false
     # The conformance suites (testing/conformance/suites.tsv): every move and every landing, never
     # blocking (owner 2026-10-26: a suite not run or not passed in dev is a gap in our CI).
     - checks: [conformance]
@@ -33,8 +30,8 @@ on:
   # it reports, never gates.
   schedule:
   - cron: "0 7 * * *"
-    checks: [codeql]
-  manual: [codeql]
+    checks: [codeql, windows-compile]
+  manual: [codeql, windows-compile]
 # Step 5: dist/default is its own workspace and embeds core's source, so a change to it or to
 # crates/busbar runs every scoped check whole (the dist half carries no -p to narrow by).
 affected:
