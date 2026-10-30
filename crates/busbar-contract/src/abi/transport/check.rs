@@ -12,10 +12,7 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
-use super::route::{
-    FieldPredicate, RouteMatch, FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_ANY, PATH_CONTAINS,
-    PATH_EXACT,
-};
+use super::route::{RouteMatch, FIELD_PRESENT, METHOD_ANY, PATH_CONTAINS, PATH_EXACT};
 use super::{
     slot, AcceptIn, AdoptIn, ArrivalIn, BeginIn, EncodeIn, FramerSink, FramingIn, IngestIn,
     ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
@@ -23,12 +20,13 @@ use super::{
 use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
-    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
-    FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
-    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER,
-    ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
-    UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_ACCEPTS, FACT_ADOPTS, FACT_DECODES_PAYLOAD,
+    FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM,
+    MAX_ADDR, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
@@ -118,6 +116,7 @@ pub fn check_locate(
 ) -> Result<(), Fault> {
     code(u64::from(out.secure), 0, 1, "locate.secure")?;
     code(u64::from(out.has_name), 0, 1, "locate.has_name")?;
+    code(u64::from(out.states_length), 0, 1, "locate.states_length")?;
     if out.has_name == 0 && (out.name_written | out.name_needed) != 0 {
         return Err(fault(Rule::Contradiction, "locate.name_without_has_name"));
     }
@@ -407,17 +406,6 @@ abi_op! {
     }
 }
 
-/// [`check_keying`] over the keying item a call lends (status rows 159 and 194): the same rules,
-/// read where it is lent. #1471 seals the `Lent` and keeps this name, so a transport checks the
-/// item it was lent with `check_keying_lent(&k)` before and after.
-///
-/// # Errors
-///
-/// As [`check_keying`].
-pub fn check_keying_lent(k: &crate::abi::sdk::Lent<'_, KeyingMaterial>) -> Result<(), Fault> {
-    check_keying(k.get())
-}
-
 /// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
 /// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
@@ -527,7 +515,7 @@ abi_op! {
         deny((t.role == ROLE_CARRIER) == (t.role == ROLE_FRAMER), NotExactlyOne, "tail.role");
         deny(t.role == ROLE_CARRIER && t.composes_over_len != 0, Contradiction, "tail.composes_over");
         code(framing, FRAMING_STREAM, FRAMING_DATAGRAM);
-        bits(facts, FACT_SIGNS_NOTHING_AFTER_AUTH | FACT_DECODES_PAYLOAD);
+        bits(facts, FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS);
         deny(t.claim_rows_len == 0, Missing, "tail.claim_rows");
         deny(t.claim_rows_len as u64 > MAX_CLAIMS, OverMax, "tail.claim_rows");
         then listed(t.composes_over, t.composes_over_len, "tail.composes_over");
@@ -671,21 +659,22 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
     Ok(())
 }
 
-/// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
-/// the emit that carries an ACCEPTED stream's answer head (`answers_head`), and on no other. The
-/// framer refuses the emit that breaks it, before any byte of it reaches the wire.
+/// An `emit`'s OPENING BODY LENGTH ([`EmitIn::body_len`]): `body_len_known` is `0` or `1`, its
+/// padding is zero, and a length rides only with `body_len_known` `1` (a streamed body states
+/// none). The host stamps it; a framer refuses the emit that breaks it, before any byte of it
+/// reaches the wire.
 ///
 /// # Errors
 ///
 /// The rule the emit breaks.
-pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
-    if i._status_reserved != 0 {
-        return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
+pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
+    if i._body_len_reserved != 0 {
+        return Err(fault(Rule::UnknownCode, "emit._body_len_reserved"));
     }
-    match (answers_head, i.status) {
-        (true, 0) => Err(fault(Rule::Missing, "emit.status")),
-        (false, s) if s != 0 => Err(fault(Rule::Contradiction, "emit.status")),
-        _ => Ok(()),
+    match (i.body_len_known, i.body_len) {
+        (0, 0) | (1, _) => Ok(()),
+        (0, _) => Err(fault(Rule::Contradiction, "emit.body_len")),
+        _ => Err(fault(Rule::UnknownCode, "emit.body_len_known")),
     }
 }
 
@@ -785,22 +774,114 @@ abi_op! {
     }
 }
 
-/// Every field predicate's shape: a known op and well-formed strings.
+/// A framer's stated agreed protocol ([`super::FramerYield::agreed`]) against the offer it was
+/// made on: `0` (not stated) always holds; any other value is a 1-based position in the
+/// `offer_len` protocols the listener offered. A dialled framing is judged against an offer of `0`
+/// (it states none).
 ///
 /// # Errors
 ///
-/// The rule the first bad predicate breaks.
-pub fn check_route_fields(fields: &[FieldPredicate]) -> Result<(), Fault> {
-    fields.iter().try_for_each(check_route_field)
+/// [`Rule::IndexOutOfRange`] for a position past the offer.
+pub const fn check_agreed_position(agreed: u32, offer_len: u64) -> Result<(), Fault> {
+    if agreed as u64 > offer_len {
+        return Err(fault(Rule::IndexOutOfRange, "framer.agreed"));
+    }
+    Ok(())
 }
 
-abi_op! {
-    /// One field predicate, as [`check_route_fields`] states.
-    fn check_route_field(f: &FieldPredicate) as "route.field", ROUTE_FIELD_RULES for f: FieldPredicate {
-        code(op, FIELD_PRESENT, FIELD_VALUE_PREFIX);
-        text(name);
-        text(value);
+/// The most lines one guest list may lend.
+pub const MAX_LINES: u64 = 1024;
+
+/// A `begin`'s guest list: a line table only on an accepting side, never a count behind NULL, at
+/// most [`MAX_LINES`], and every line well-formed: an id that is not `LINE_NONE` and not repeated,
+/// a valid point set (empty exactly for a `none` line, whose handle is still the kernel's), a
+/// handle, a `body_limit` exactly with the body point, and a well-formed route.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for lines on the dial side, a `body_limit` that disagrees with the
+/// points, or a repeated line; [`Rule::NullWithCount`]; [`Rule::OverMax`]; [`Rule::Missing`] for
+/// no handle or a `LINE_NONE` id; the point set's and the route's own rules.
+///
+/// # Safety
+///
+/// A non-NULL `i.lines` is the host's own table of `i.lines_len` live entries.
+pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
+    use crate::abi::auth::check_points;
+    use crate::abi::host::service::LINE_NONE;
+    listed(i.lines, i.lines_len, "begin.lines")?;
+    if i.side == super::SIDE_DIAL && i.lines_len != 0 {
+        return Err(fault(Rule::Contradiction, "begin.lines"));
     }
+    if i.lines_len as u64 > MAX_LINES {
+        return Err(fault(Rule::OverMax, "begin.lines"));
+    }
+    if i.lines_len == 0 {
+        return Ok(());
+    }
+    // SAFETY: the caller's contract; the count is bounded and the pointer non-NULL (checked).
+    let lines = unsafe { core::slice::from_raw_parts(i.lines, i.lines_len) };
+    for (n, l) in lines.iter().enumerate() {
+        if l.line == LINE_NONE {
+            return Err(fault(Rule::Missing, "line.line"));
+        }
+        if lines[..n].iter().any(|e| e.line == l.line) {
+            return Err(fault(Rule::Contradiction, "line.line"));
+        }
+        if l.auth.is_none() {
+            return Err(fault(Rule::Missing, "line.auth"));
+        }
+        check_points(l.points, false)?;
+        if (l.points & POINT_HEAD_BODY != 0) != (l.body_limit != 0) {
+            return Err(fault(Rule::Contradiction, "line.body_limit"));
+        }
+        check_route(&l.route)?;
+    }
+    Ok(())
+}
+
+/// A `begin`'s binding: on [`super::SIDE_DIAL`] a valid point set with a handle exactly when it
+/// is not empty; on an accepting side no points and no handle.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for points or a handle on an accepting side, or a handle that disagrees
+/// with the points; the point set's own rules.
+pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
+    if i.side != super::SIDE_DIAL {
+        if i.points != 0 || !i.auth.is_none() {
+            return Err(fault(Rule::Contradiction, "begin.auth"));
+        }
+        return Ok(());
+    }
+    if let Err(e) = crate::abi::auth::check_points(i.points, false) {
+        return Err(e);
+    }
+    if (i.points == 0) != i.auth.is_none() {
+        return Err(fault(Rule::Contradiction, "begin.auth"));
+    }
+    Ok(())
+}
+
+/// A `begin`'s scheme ([`super::BeginIn::scheme`]), on every side: a declared code,
+/// [`SCHEME_PLAIN`](crate::abi::host::service::SCHEME_PLAIN) or
+/// [`SCHEME_SECURE`](crate::abi::host::service::SCHEME_SECURE). A zero never grants: the framer
+/// copies the scheme into every request view it builds for its auth call, so an undeclared one is
+/// refused here, before the crossing, rather than read as plain.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED);
+/// [`Rule::UnknownCode`] for a code above `SCHEME_SECURE`.
+pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
+    use crate::abi::host::service::{SCHEME_SECURE, SCHEME_UNDECLARED};
+    if i.scheme == SCHEME_UNDECLARED {
+        return Err(fault(Rule::Missing, "begin.scheme"));
+    }
+    if i.scheme > SCHEME_SECURE {
+        return Err(fault(Rule::UnknownCode, "begin.scheme"));
+    }
+    Ok(())
 }
 
 /// A route's CONTENT, read: a method set inside the vocabulary and not empty, a known path form, a

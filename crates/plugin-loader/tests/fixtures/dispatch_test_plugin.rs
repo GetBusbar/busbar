@@ -58,7 +58,8 @@ pub const PEND_TIMER: &[u8] = b"pend:timer";
 pub const PEND_HOLD: &[u8] = b"pend:hold";
 /// `tick` mode: `hang:<key>` does not return until `unhang:<key>`.
 pub const HANG: &[u8] = b"hang:";
-/// `tick` mode: `unhang:<key>` releases every op hung on `<key>`.
+/// `tick` mode: `unhang:<key>` releases every op hung on `<key>`, now and for the rest of the
+/// process (tests share it), so each test hangs on a key of its own.
 pub const UNHANG: &[u8] = b"unhang:";
 /// `tick` mode: `pend:hold:<d>` is held like [`PEND_HOLD`]; its `cancel` answers disposition `<d>`
 /// (`f` = `cancel` answers FAULT).
@@ -98,6 +99,12 @@ pub const SHORT_ANSWER: &[u8] = b"short";
 pub const KIND_REJECTS: u64 = 0xDEAD;
 /// The `next_tick_ns` the test kind's `short` reads as "needs a bigger buffer".
 pub const SHORT: u64 = 0x5807;
+/// `open` settings: READY, its envelope [`OPEN_FLAGS`]: the declared `m1.note` at warn, a log line
+/// at warn, the declared id at info, and an id the Statement does not declare at error.
+pub const FLAG_OPEN: &[u8] = b"flag:open";
+/// `tick` mode: READY, its envelope [`OP_FLAGS`]: the declared `m1.note` at error, the declared id
+/// at warn, a log line at error, and an id the Statement does not declare at error.
+pub const FLAG_OP: &[u8] = b"flag:op";
 /// `tick` mode: panic. `tick` has no guard, so the process aborts.
 pub const PANIC: &[u8] = b"panic";
 /// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (#74:
@@ -246,6 +253,60 @@ static DIAGS: Shared<[Diag; 2]> = Shared([
     Diag {
         id_idx: 5,
         severity: 1,
+        text: s(b"no such id"),
+        ..Diag::ZERO
+    },
+]);
+
+/// The diagnostics an `open` handed [`FLAG_OPEN`] answers with: only the first is a declared one at
+/// warn or error.
+static OPEN_FLAGS: Shared<[Diag; 4]> = Shared([
+    Diag {
+        severity: 1,
+        text: s(b"flagged at open"),
+        ..Diag::ZERO
+    },
+    Diag {
+        id_idx: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        severity: 1,
+        text: s(b"dispatch_test_plugin: a log line at warn"),
+        ..Diag::ZERO
+    },
+    Diag {
+        severity: 0,
+        text: s(b"only a note"),
+        ..Diag::ZERO
+    },
+    Diag {
+        id_idx: 5,
+        severity: 2,
+        text: s(b"no such id"),
+        ..Diag::ZERO
+    },
+]);
+
+/// The diagnostics a `tick` handed [`FLAG_OP`] answers with: only the first is a declared one at
+/// error.
+static OP_FLAGS: Shared<[Diag; 4]> = Shared([
+    Diag {
+        severity: 2,
+        text: s(b"refused at an op"),
+        ..Diag::ZERO
+    },
+    Diag {
+        severity: 1,
+        text: s(b"a warning at an op"),
+        ..Diag::ZERO
+    },
+    Diag {
+        id_idx: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        severity: 2,
+        text: s(b"dispatch_test_plugin: a log line at error"),
+        ..Diag::ZERO
+    },
+    Diag {
+        id_idx: 5,
+        severity: 2,
         text: s(b"no such id"),
         ..Diag::ZERO
     },
@@ -401,6 +462,13 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             close_faults: AtomicBool::new(false),
         });
         (*out.cast::<OpenOut>()).instance = Arc::into_raw(inst).cast_mut().cast();
+        if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == FLAG_OPEN {
+            (*out.cast::<OutHead>()).envelope = Envelope {
+                diags: OPEN_FLAGS.0.as_ptr(),
+                diags_len: OPEN_FLAGS.0.len(),
+                ..Envelope::ZERO
+            };
+        }
         say(out, Outcome::Ready)
     }
 }
@@ -496,6 +564,14 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         let me = inst(instance);
         if let Some(arg) = mode.strip_prefix(ANSWER) {
             return answer(me, arg, out);
+        }
+        if mode == FLAG_OP {
+            (*out.cast::<OutHead>()).envelope = Envelope {
+                diags: OP_FLAGS.0.as_ptr(),
+                diags_len: OP_FLAGS.0.len(),
+                ..Envelope::ZERO
+            };
+            return say(out, Outcome::Ready);
         }
         if let Some(rest) = mode.strip_prefix(ARM) {
             let Some(driver) = driver_of(rest) else {

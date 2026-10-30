@@ -579,37 +579,6 @@ pub const UNIT_CACHE_WRITE: &str = "cache_write";
 /// the migration folds the old `TierTokens` fields onto.
 pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
-/// PER-PLUGIN PRICING IS UNREPRESENTABLE (DECISIONS #77(1)) — a COMPILE-TIME proof.
-///
-/// The money-path durable records key money by `(principal, meter_class[, lane], units, timestamp)`
-/// and hold NO plugin/plane field. So per-plugin/per-plane pricing is not merely *banned* — there is
-/// no field to key a price on, which is what makes it UNREPRESENTABLE. "Different price per plane" is
-/// a plane DECLARING a different meter-class STRING that an operator prices, never a plugin-named
-/// field on a money AMOUNT record. The [`xtask`] `money-invariants` gate holds this over the source;
-/// these doctests hold it against the TYPE SYSTEM, which is where "unrepresentable" actually lives.
-///
-/// The raw COUNTS a plane emits do resolve — a well-typed reader reads them (control, so the
-/// compile-fail below is proven to fail for the right reason and not a bad path):
-///
-/// ```rust,no_run
-/// fn counts_for(row: &busbar_contract::records::MeteringRow) -> u64 {
-///     // The class-keyed raw counts #71 requires — these fields exist.
-///     row.tokens_input + row.tokens_output + row.requests
-/// }
-/// ```
-///
-/// A PER-PLUGIN PRICE HOOK does NOT — there is no plugin-keyed price field to read, so this cannot
-/// compile:
-///
-/// ```compile_fail
-/// fn per_plugin_price(row: &busbar_contract::records::MeteringRow) -> u64 {
-///     // #77(1): the money record carries no per-plugin pricing field. There is nothing to key a
-///     // price on, so this does not compile — per-plugin pricing is unrepresentable, not banned.
-///     row.plugin_price_nanos
-/// }
-/// ```
-pub const PER_PLUGIN_PRICING_IS_UNREPRESENTABLE: () = ();
-
 /// One model's accumulated billable-unit counts inside a [`UsageLedger`]. RAW counts, never money:
 /// every dollar figure is DERIVED at read time as `units x current rate card` (units are the ledger;
 /// dollars are always derived, never stored as truth).
@@ -708,12 +677,6 @@ impl UsageLedger {
     /// cap.
     pub fn total_cache_read(&self) -> u64 {
         self.total_tier(UNIT_CACHE_READ)
-    }
-
-    /// CACHE-WRITE (cache_creation) tokens across every model — the durable counterpart of the
-    /// `tokens_cache_write` cap.
-    pub fn total_cache_write(&self) -> u64 {
-        self.total_tier(UNIT_CACHE_WRITE)
     }
 
     /// Apply one signed per-model unit delta, flooring every counter at 0 (a refund can never
@@ -1009,6 +972,17 @@ impl Retention {
             1 => Some(Retention::TerminalOnly),
             _ => None,
         }
+    }
+
+    /// Whether a purge under this rule drops a row of `disposition` written at `ts`, against the
+    /// cutoff `before`: a row at or after the cutoff is always kept.
+    #[must_use]
+    pub fn drops(self, ts: u64, before: u64, disposition: PlaneDisposition) -> bool {
+        ts < before
+            && match self {
+                Retention::Age => true,
+                Retention::TerminalOnly => disposition == PlaneDisposition::Terminal,
+            }
     }
 }
 

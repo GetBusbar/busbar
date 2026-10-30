@@ -23,6 +23,13 @@ pub const SELECT_ALL: u32 = 0;
 /// (`PlaneSelector::Parent`).
 pub const SELECT_PARENT: u32 = 1;
 
+/// [`KindBeforeIn::retention`]: every row of the kind older than `before` goes (`Retention::Age`).
+/// `0`, so an `in` that ends before the field (an older host's) purges by age, as that host did.
+pub const RETENTION_AGE: u32 = 0;
+/// [`KindBeforeIn::retention`]: only the kind's `DISPOSITION_TERMINAL` rows older than `before`
+/// go (`Retention::TerminalOnly`); an active row is kept however old.
+pub const RETENTION_TERMINAL_ONLY: u32 = 1;
+
 abi_struct! {
     /// One plane record: `records.rs` `PlaneRecord`, its sidecar fixed and its body opaque.
     #[repr(C)]
@@ -104,6 +111,10 @@ abi_struct! {
     }
 
     /// `purge_plane_records_before`' `in` (records.rs:1530-1538).
+    ///
+    /// `retention` and its padding were APPENDED: the door copies the host's `in` up to its stated
+    /// `head.size` into a zeroed `in` of this build's size, so an older host's shorter `in` reads
+    /// [`RETENTION_AGE`], the rule it purged by.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct KindBeforeIn {
@@ -113,6 +124,11 @@ abi_struct! {
         pub kind: AbiStr,
         /// The cutoff (Unix seconds).
         pub before: u64,
+        /// [`RETENTION_AGE`] | [`RETENTION_TERMINAL_ONLY`]: the rule the kind's owner declared; any
+        /// other code is refused.
+        pub retention: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
     }
 
     /// `redeem_plane_token`'s and `plane_token_live`'s `in` (records.rs:1545-1596).

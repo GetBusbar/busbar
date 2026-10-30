@@ -18,7 +18,7 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
 
-use super::planes_tests::{bound, composed_services, Published, PUBLISHING};
+use super::planes_tests::{bound, composed_services, PUBLISHING};
 use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
@@ -26,7 +26,6 @@ use crate::root::plane_node::{Node, NodeEndPost};
 /// A governed composition of the test plane: a signing book with one minted key, the plane's
 /// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 pub(super) struct Governed {
-    _published: Published,
     pub(super) router: axum::Router,
     /// The test plane's driver, for a test that reloads its generation while a unit is in flight.
     pub(super) driver: Arc<busbar_kernel::plane_driver::PlaneDriver>,
@@ -240,7 +239,6 @@ fn governed_full(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_kernel_wal::NullShipper::new()),
-                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
             )
             .expect("a memory-buffered journal opens"),
         ));
@@ -285,6 +283,7 @@ fn governed_full(
         &move || Arc::clone(&one),
         None,
         Some(&hooks),
+        &app.serve_tables,
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
@@ -297,7 +296,6 @@ fn governed_full(
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Governed {
-        _published: Published(instance),
         router,
         driver,
         post,
@@ -820,7 +818,6 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
-    let _published = Published(instance);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
@@ -849,6 +846,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
         models: None,
@@ -867,6 +865,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         None,
         &reach,
         None,
+        &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
     .expect("every build composes a configured door plane");
     assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
