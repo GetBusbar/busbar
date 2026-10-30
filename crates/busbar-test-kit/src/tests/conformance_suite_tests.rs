@@ -1627,7 +1627,11 @@ mod hook_orders {
             step("validate", "Ready lease=false", 1, 1),
             step("validate bad #0", "Failed lease=false why", 1, 1),
             step("open", "Ready lease=false", 1, 1),
-            step("open bad", "Failed lease=false why", 1, 1),
+            step("open bad #0", "Failed lease=false why", 1, 1),
+            step("configure", "Ready lease=false | acked=2", 1, 1),
+            step("notify", "Ready lease=false", 1, 1),
+            step("status", "Ready lease=true | json={}", 1, 1),
+            step("describe", "Ready lease=true | json={}", 1, 1),
             step("tick", "Ready next=0", 1, 1),
             step("refresh", "Ready lease=false", 1, 1),
             step("refresh bad", "Failed lease=false why", 1, 1),
@@ -1671,6 +1675,71 @@ mod hook_orders {
             "an undeclared hook is held to the re-call"
         );
         contract(&passing(&[abstain], true), &expect, true).expect("an undeclared hook re-calls");
+    }
+
+    /// The passing fold with step `label` answering `answer` (added when it has no such step).
+    fn with_step(label: &str, answer: &str) -> Vec<super::Step> {
+        let mut f = passing(&[], true);
+        match f.iter_mut().find(|s| s.label == label) {
+            Some(s) => s.answer = answer.to_string(),
+            None => f.push(step(label, answer, 1, 1)),
+        }
+        f
+    }
+
+    /// RED (hook ABI defect 1, its follow-up): EVERY bad setting the inputs name is judged, not only
+    /// the first: each `validate bad #i` must be FAILED naming why, and each `open bad #i` FAILED.
+    #[test]
+    fn red_every_bad_setting_is_judged() {
+        contract(&passing(&[], true), &[], true).expect("the passing fold");
+        for (label, answer) in [
+            ("validate bad #1", "Ready lease=false"),
+            ("validate bad #1", "Failed lease=false"),
+            ("open bad #1", "Ready lease=false"),
+        ] {
+            assert!(
+                contract(&with_step(label, answer), &[], true).is_err(),
+                "{label} answering {answer:?} passed"
+            );
+        }
+    }
+
+    /// RED (hook ABI defect 9): the hook script walks `configure`, `notify`, `status` and
+    /// `describe`, and the contract judges them: `configure` READY acknowledges the pushed version
+    /// and a refusal names why; `status` and `describe` READY carry JSON; none of the four FAULTs;
+    /// a scripted `configure` the inputs say must be refused is FAILED naming why.
+    #[test]
+    fn red_the_hook_contract_judges_configure_notify_status_and_describe() {
+        for (label, answer) in [
+            ("configure", "Ready lease=false | acked=1"),
+            ("configure", "Failed lease=false | acked=0"),
+            ("configure", "Fault lease=false | acked=0"),
+            ("notify", "Fault lease=false"),
+            ("status", "Ready lease=true | json=invalid"),
+            ("status", "Fault lease=false | json=none"),
+            ("describe", "Ready lease=true | json=invalid"),
+            ("configure refused", "Ready lease=false | acked=3"),
+            ("configure refused", "Failed lease=false | acked=0"),
+        ] {
+            assert!(
+                contract(&with_step(label, answer), &[], true).is_err(),
+                "{label} answering {answer:?} passed"
+            );
+        }
+        for (label, answer) in [
+            ("configure", "Refused lease=false | acked=0"),
+            ("configure", "Failed lease=false not a setting | acked=0"),
+            ("notify", "Refused lease=false"),
+            ("status", "Refused lease=false | json=none"),
+            ("configure refused", "Failed lease=false not a setting | acked=0"),
+        ] {
+            contract(&with_step(label, answer), &[], true)
+                .unwrap_or_else(|e| panic!("{label} answering {answer:?}: {e}"));
+        }
+        let mut missing = passing(&[], true);
+        missing.retain(|s| s.label != "describe");
+        let e = contract(&missing, &[], true).expect_err("a fold with no describe step");
+        assert!(e.contains("'describe'"), "{e}");
     }
 
     /// The whole fold over the fixtures, linked: a hook declaring no orders that abstains passes;
