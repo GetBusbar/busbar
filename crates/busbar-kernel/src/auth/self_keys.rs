@@ -95,9 +95,10 @@ pub(crate) struct DeterministicEd25519Keys {
     /// PARENT under which the per-user `user:<sub>` leaf is auto-provisioned. Resolved by
     /// [`resolve_exchange`] (guaranteed present: a self key must charge through a group).
     team: String,
-    /// The pools this principal's bound role grants (`None` = all, `Some([])` = none). Resolved
-    /// from `role_bindings` by [`resolve_exchange`] and carried onto the minted binding.
-    allowed_pools: Option<Vec<String>>,
+    /// The scopes this principal's bound roles grant, every kind (`None` = all, `Some([])` =
+    /// none). Resolved from `role_bindings` by [`resolve_exchange`] and carried onto the minted
+    /// binding.
+    allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     /// Provisions the `user:<sub>` leaf under `team` before the token is minted (the bug fix).
     provisioner: Arc<dyn SelfGroupProvisioner>,
 }
@@ -107,14 +108,14 @@ impl DeterministicEd25519Keys {
         gov: Arc<GovState>,
         provider: String,
         team: String,
-        allowed_pools: Option<Vec<String>>,
+        allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
         provisioner: Arc<dyn SelfGroupProvisioner>,
     ) -> Self {
         Self {
             gov,
             provider,
             team,
-            allowed_pools,
+            allowed_scopes,
             provisioner,
         }
     }
@@ -151,7 +152,7 @@ impl DeterministicEd25519Keys {
             op,
             principal.id.clone(),
             self.provider.clone(),
-            self.allowed_pools.clone(),
+            self.allowed_scopes.clone(),
             exp,
             now,
         )
@@ -322,8 +323,9 @@ pub(crate) struct SelfMint<'a> {
     pub principal: &'a Principal,
     /// The bound TEAM group the `user:<sub>` leaf is provisioned under.
     pub team: String,
-    /// The pools the mint grants: the union across every granting binding (`None` = all).
-    pub granted_pools: Option<Vec<String>>,
+    /// The scopes the mint grants, every kind: the union across every granting binding (`None` =
+    /// all).
+    pub granted_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     /// The key's lifetime: the self-serve default, clamped to the ceiling.
     pub ttl: Duration,
 }
@@ -344,11 +346,13 @@ pub(crate) fn admit_self_mint<'a>(
     policy: &crate::governance::mint_policy::MintPolicy,
     default_ttl_secs: u64,
 ) -> Result<SelfMint<'a>, ExchangeError> {
-    let (principal, team, pools) = resolve_exchange(verdict, role_bindings, policy.self_mint)?;
+    let (principal, team, scopes) = resolve_exchange(verdict, role_bindings, policy.self_mint)?;
+    let (pools, other_kinds) = crate::governance::mint_policy::requested_grant(scopes.as_deref());
     let ttl_secs = policy
         .check_mint(&crate::governance::mint_policy::MintRequest {
             roles: &principal.roles,
             requested_pools: pools.as_deref(),
+            grants_other_kinds: other_kinds,
             requested_ttl_secs: default_ttl_secs,
             explicit_ttl: false,
             requested_mode: None,
@@ -357,7 +361,7 @@ pub(crate) fn admit_self_mint<'a>(
     Ok(SelfMint {
         principal,
         team,
-        granted_pools: pools,
+        granted_scopes: scopes,
         ttl: Duration::from_secs(ttl_secs),
     })
 }
@@ -382,7 +386,14 @@ pub(crate) fn resolve_exchange<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
     self_mint: Option<bool>,
-) -> Result<(&'a Principal, String, Option<Vec<String>>), ExchangeError> {
+) -> Result<
+    (
+        &'a Principal,
+        String,
+        Option<Vec<busbar_contract::records::ScopeRef>>,
+    ),
+    ExchangeError,
+> {
     match verdict {
         ChainVerdict::Identified {
             module,
@@ -430,9 +441,11 @@ pub(crate) fn resolve_exchange<'a>(
             // set), a self-serve key is always minted for an admitted identity — an every-binding-`[]`
             // union yields `Some(vec![])`, the SAME "no pools" encoding `GovState::issue_self`/
             // `refresh_self` already special-case ("C6 intent carried intact: None = all pools;
-            // Some([]) = none"), so the minted key exists but grants no data-plane pool.
-            let allowed_pools = crate::governance::pool_union(&granting);
-            Ok((principal, team, allowed_pools))
+            // Some([]) = none"), so the minted key exists but grants no data-plane pool. The union is
+            // over EVERY scope kind a binding grants (`allowed_pools` and the plane kinds'
+            // `allowed_{kind}s`), the same grant `synthesize_principal_key` carries (W9).
+            let allowed_scopes = crate::governance::grant_union(&granting);
+            Ok((principal, team, allowed_scopes))
         }
         // No identity established (all-Pass default, or an explicit Reject) → 401.
         ChainVerdict::Open | ChainVerdict::Denied => Err(ExchangeError::Unauthorized),
