@@ -853,11 +853,36 @@ impl<'a> Op<'a> {
         self.exchange_sealed(need, target, || request().map(|r| (r, Vec::new())))
     }
 
+    /// [`Op::exchange`] with its reply body capped at `limit` bytes ([`Exchange::reply_limit`]: a
+    /// limit above [`REPLY_MAX`] clamps to it). A reply past it is refused as one past
+    /// [`REPLY_MAX`] is, without buffering more than `limit`.
+    pub fn exchange_with(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        limit: usize,
+        request: impl FnOnce() -> Result<Request, ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
+        self.exchange_sealed_with(need, target, limit, || request().map(|r| (r, Vec::new())))
+    }
+
     /// [`Op::exchange`] for a request with sealed fields ([`Exchange::request_sealed`]).
     pub fn exchange_sealed(
         &self,
         need: u32,
         target: Option<&str>,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
+        self.exchange_sealed_with(need, target, REPLY_MAX, request)
+    }
+
+    /// [`Op::exchange_sealed`] with its reply body capped at `limit` bytes, as
+    /// [`Op::exchange_with`] caps it.
+    pub fn exchange_sealed_with(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        limit: usize,
         request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
     ) -> Answer<ExchangeResponse> {
         let Some(host) = self.host else {
@@ -866,7 +891,7 @@ impl<'a> Op<'a> {
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
             None => match request().and_then(|(r, sealed)| Exchange::request_sealed(r, sealed)) {
-                Ok(s) => s,
+                Ok(s) => s.reply_limit(limit),
                 Err(e) => return Poll::Ready(Err(e)),
             },
         };
