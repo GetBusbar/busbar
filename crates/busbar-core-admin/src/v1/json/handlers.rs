@@ -6,6 +6,29 @@ use busbar_kernel::diagnostics::{
     PLUGIN_ROLLBACK_REVERT_FAILED,
 };
 
+/// Unwrap a `Result<_, Response>` (or, with `boxed`, a `Result<_, Box<Response>>`) or return the
+/// ready-made response from the handler.
+macro_rules! ok_or_respond {
+    (boxed $e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(resp) => return *resp,
+        }
+    };
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        }
+    };
+}
+
+/// The rejected arm of a config mutation: audit `action` REJECTED, answer the error.
+fn reject(action: &str, resource: &str, actor: &str, e: &AdminError) -> Response {
+    audit::AUDIT.record_by(action, resource, audit::OUTCOME_REJECTED, actor);
+    err_json(e)
+}
+
 /// `GET /api/v1/admin/info` — version, compiled-in plugin proof, uptime, topology.
 pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
     respond(StatusCode::OK, service(&handle).info().await)
@@ -81,10 +104,8 @@ pub(crate) async fn list_groups(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (start, limit) = match page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT) {
-        Ok(page) => page,
-        Err(resp) => return *resp,
-    };
+    let (start, limit) =
+        ok_or_respond!(boxed page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT));
     let version = handle.load().config_version;
     with_config_etag(
         respond(
@@ -211,10 +232,7 @@ pub(crate) async fn install_plugin(
             audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_APPLIED, &actor);
             ok_json(StatusCode::CREATED, &view)
         }
-        Err(e) => {
-            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.install", &resource, &actor, &e),
     }
 }
 
@@ -243,10 +261,7 @@ pub(crate) async fn inspect_plugin(
     body: axum::body::Bytes,
 ) -> Response {
     use base64::Engine as _;
-    let req: InspectPluginReq = match json_body(&body, "plugin") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let req: InspectPluginReq = ok_or_respond!(boxed json_body(&body, "plugin"));
     let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
     {
         Ok(b) => b,
@@ -300,10 +315,7 @@ pub(crate) async fn remove_plugin(
             audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_APPLIED, &actor);
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(e) => {
-            audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.remove", &resource, &actor, &e),
     }
 }
 
@@ -394,25 +406,9 @@ pub(crate) async fn reload_plugins(
                 );
                 ok_json(StatusCode::OK, &view)
             }
-            Err(e) => {
-                audit::AUDIT.record_by(
-                    "plugin.reload",
-                    "plugin:dir",
-                    audit::OUTCOME_REJECTED,
-                    &actor,
-                );
-                err_json(&e)
-            }
+            Err(e) => reject("plugin.reload", "plugin:dir", &actor, &e),
         },
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.reload",
-                "plugin:dir",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.reload", "plugin:dir", &actor, &e),
     }
 }
 
@@ -446,14 +442,8 @@ pub(crate) async fn rollback_plugin(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PluginRollbackReq = match json_body(&body, "rollback") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PluginRollbackReq = ok_or_respond!(boxed json_body(&body, "rollback"));
     let resource = format!("plugin:{}", req.file);
     let file = req.file.clone();
     let audit_resource = resource.clone();
@@ -572,15 +562,7 @@ pub(crate) async fn rollback_plugin(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.rollback",
-                &resource,
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.rollback", &resource, &actor, &e),
     }
 }
 
@@ -712,14 +694,8 @@ pub(crate) async fn register_hook(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RegisterHookReq = match json_body(&body, "hook") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: RegisterHookReq = ok_or_respond!(boxed json_body(&body, "hook"));
     let name = req.name.clone();
     let resource = format!("hook:{name}");
     let cfg = req.config;
@@ -802,10 +778,7 @@ pub(crate) async fn register_hook(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("hook.register", &resource, &actor, &e),
     }
 }
 
@@ -822,14 +795,8 @@ pub(crate) async fn put_hook(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PutHookReq = match json_body(&body, "hook") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PutHookReq = ok_or_respond!(boxed json_body(&body, "hook"));
     let resource = format!("hook:{name}");
     let cfg = req.config;
     let txn_name = name.clone();
@@ -886,10 +853,7 @@ pub(crate) async fn put_hook(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("hook.replace", &resource, &actor, &e),
     }
 }
 
@@ -905,10 +869,7 @@ pub(crate) async fn delete_hook(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let resource = format!("hook:{name}");
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
@@ -972,10 +933,7 @@ pub(crate) async fn delete_hook(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("hook.delete", &resource, &actor, &e),
     }
 }
 
@@ -1003,14 +961,8 @@ pub(crate) async fn register_group(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RegisterGroupReq = match json_body(&body, "group") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: RegisterGroupReq = ok_or_respond!(boxed json_body(&body, "group"));
     let name = req.name.clone();
     let resource = format!("group:{name}");
     let cfg = req.config;
@@ -1068,10 +1020,7 @@ pub(crate) async fn register_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.create", &resource, &actor, &e),
     }
 }
 
@@ -1086,14 +1035,8 @@ pub(crate) async fn put_group(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PutGroupReq = match json_body(&body, "group") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PutGroupReq = ok_or_respond!(boxed json_body(&body, "group"));
     let resource = format!("group:{name}");
     let cfg = req.config;
     let txn_name = name.clone();
@@ -1141,10 +1084,7 @@ pub(crate) async fn put_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.replace", &resource, &actor, &e),
     }
 }
 
@@ -1161,10 +1101,7 @@ pub(crate) async fn patch_group(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let req: GroupPatchReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -1229,10 +1166,7 @@ pub(crate) async fn patch_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.patch", &resource, &actor, &e),
     }
 }
 
@@ -1247,10 +1181,7 @@ pub(crate) async fn delete_group(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let resource = format!("group:{name}");
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
@@ -1330,10 +1261,7 @@ pub(crate) async fn delete_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.delete", &resource, &actor, &e),
     }
 }
 
@@ -1396,10 +1324,7 @@ pub(crate) async fn reset_overlay_section(
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     // ONE section: the If-Match re-validation, the idempotent-no-op probe, the disk rebuild, the
     // overlay clear and the swap. The disk work (overlay read + `load_config_from_disk` + resolve +
     // build) is a store/disk READ, so it is queued onto `spawn_blocking` — it used to run inline on
@@ -1691,10 +1616,8 @@ fn record_group_version(installed: &Arc<busbar_kernel::state::App>, actor: &str,
 pub(crate) async fn get_audit(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (start, limit) = match page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT) {
-        Ok(page) => page,
-        Err(resp) => return *resp,
-    };
+    let (start, limit) =
+        ok_or_respond!(boxed page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT));
     let action = q.get("action").map(String::as_str);
     let resource = q.get("resource").map(String::as_str);
     // Fetch one past the page to learn whether a further page exists, then trim to `limit`.
@@ -1717,10 +1640,8 @@ pub(crate) async fn list_config_versions(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let (start, limit) = match page_window(&q, crate::v1::contract::VERSIONS_LIMIT_DEFAULT) {
-        Ok(page) => page,
-        Err(resp) => return *resp,
-    };
+    let (start, limit) =
+        ok_or_respond!(boxed page_window(&q, crate::v1::contract::VERSIONS_LIMIT_DEFAULT));
     let mut versions = handle.load().versions().list(start, limit + 1);
     let next_cursor = page_cursor(&mut versions, start, limit);
     ok_json(
@@ -1886,14 +1807,8 @@ pub(crate) async fn rollback_config(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RollbackReq = match json_body(&body, "rollback") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: RollbackReq = ok_or_respond!(boxed json_body(&body, "rollback"));
     let resource = format!("config:v{}", req.version);
     let want = req.version;
     let out = config_transaction(&handle, move |txn| {
@@ -1961,15 +1876,7 @@ pub(crate) async fn rollback_config(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.rollback",
-                &resource,
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.rollback", &resource, &actor, &e),
     }
 }
 
@@ -1992,10 +1899,7 @@ pub(crate) async fn put_auth(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let req: PutAuthBody = match serde_json::from_slice(&body) {
         Ok(b) => b,
         Err(e) => return err_json(&AdminError::Validation(format!("invalid body: {e}"))),
@@ -2280,15 +2184,7 @@ pub(crate) async fn reload_config(
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.reload",
-                "config:disk",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.reload", "config:disk", &actor, &e),
     }
 }
 
@@ -2407,14 +2303,8 @@ pub(crate) async fn apply_config(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: ApplyConfigReq = match json_body(&body, "config") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: ApplyConfigReq = ok_or_respond!(boxed json_body(&body, "config"));
     // A first section of a plane this process did not load is refused whole, before the parse and
     // before anything is built, in the running generation's root rules' words (Law 7).
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
@@ -2544,15 +2434,7 @@ pub(crate) async fn apply_config(
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.apply",
-                "config:body",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.apply", "config:body", &actor, &e),
     }
 }
 
@@ -2932,14 +2814,8 @@ pub(crate) async fn put_config_settings(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let mut raw: serde_json::Value = match json_body(&body, "config settings") {
-        Ok(v) => v,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let mut raw: serde_json::Value = ok_or_respond!(boxed json_body(&body, "config settings"));
     let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
         None => false,
         Some(serde_json::Value::Bool(b)) => b,
@@ -3128,15 +3004,7 @@ pub(crate) async fn put_config_settings(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.settings",
-                "config:settings",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.settings", "config:settings", &actor, &e),
     }
 }
 
@@ -3164,14 +3032,8 @@ pub(crate) async fn patch_hook_settings(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PatchSettingsReq = match json_body(&body, "settings") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PatchSettingsReq = ok_or_respond!(boxed json_body(&body, "settings"));
     // BOUND the settings map. It is persisted verbatim into the config overlay AND re-sent to the hook
     // as the configure preamble on EVERY (re)connection, so an unbounded map amplifies both the
     // overlay size and per-reconnect wire traffic. Cap the serialized size and the key count as
@@ -5299,10 +5161,7 @@ pub(crate) async fn validate_config(
     State(handle): State<Arc<AppHandle>>,
     body: axum::body::Bytes,
 ) -> Response {
-    let req: ValidateConfigReq = match json_body(&body, "config") {
-        Ok(r) => r,
-        Err(resp) => return *resp,
-    };
+    let req: ValidateConfigReq = ok_or_respond!(boxed json_body(&body, "config"));
     // The dry run judges what an apply would: a first section of an unloaded plane is refused.
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
         return err_json(&AdminError::Validation(refusal));

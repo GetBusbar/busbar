@@ -43,9 +43,9 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::lifecycle::slot as lc;
 use busbar_contract::abi::mechanism::route::Route;
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 
+use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::lifecycle::{
     self, copy_blob, lend, lend_opt, open_frame, release, validate_call, why,
@@ -223,15 +223,15 @@ impl Shared {
     /// runs on with nobody waiting, still owning the batch, and its ticket is recycled once it ends.
     async fn deliver(self: Arc<Self>, worker: u32, stream: u8, lines: Vec<Line>) {
         let workers = self.dispatcher.workers().max(1);
-        let ticket = (0..workers).find_map(|i| self.dispatcher.mint((worker + i) % workers));
-        let Some(ticket) = ticket else {
+        let call =
+            (0..workers).find_map(|i| Ticketed::mint(&self.dispatcher, (worker + i) % workers));
+        let Some(mut call) = call else {
             tracing::warn!(
                 plugin = %self.plugin.name(),
                 "no ticket could be minted for an export batch; it is dropped"
             );
             return;
         };
-        let _minted = Minted(&self.dispatcher, ticket);
         let mut batch = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
         for l in &lines {
             batch.extend_from_slice(&l.bytes);
@@ -248,19 +248,16 @@ impl Shared {
                 batch: blob(&batch, BLOB_JSONL),
             };
             // Submitted with no deadline, the op is answered by the plugin, or ended by the
-            // watchdog; a delivery the flusher abandons drops this reply (a client drop).
-            let done = self
-                .dispatcher
-                .submit_lent(
-                    &self.plugin,
-                    ticket,
-                    slot::DELIVER,
-                    Frame::new(input, out_head()),
-                    DeadlineClass::WriteBehind,
-                    0,
-                    batch.clone(),
-                )
-                .await;
+            // watchdog; a delivery the flusher abandons drops this call (a client drop).
+            call.submit(
+                &self.plugin,
+                slot::DELIVER,
+                Frame::new(input, out_head()),
+                DeadlineClass::WriteBehind,
+                0,
+                batch.clone(),
+            );
+            let done = (&mut call).await;
             match done.outcome {
                 Outcome::Ready => break,
                 Outcome::Failed if attempt < DELIVER_ATTEMPTS => continue,
@@ -276,7 +273,7 @@ impl Shared {
             }
         }
         // The lines' holds are released here: the batch has answered. The ticket is recycled as
-        // `_minted` drops.
+        // `call` drops.
         drop(lines);
     }
 
@@ -320,16 +317,6 @@ impl Shared {
                 "export deliveries still in flight when the instance was dropped are abandoned"
             );
         }
-    }
-}
-
-/// A delivery's ticket, recycled when the delivery ends, answered or abandoned (the dispatcher
-/// recycles a ticket whose op is still in flight once that op ends).
-struct Minted<'a>(&'a Arc<Dispatcher>, Ticket);
-
-impl Drop for Minted<'_> {
-    fn drop(&mut self) {
-        self.0.recycle(self.1);
     }
 }
 

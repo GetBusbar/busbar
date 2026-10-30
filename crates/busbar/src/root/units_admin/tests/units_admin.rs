@@ -2072,7 +2072,7 @@ fn verify_names_a_refused_row_and_every_other_finding() {
         .push("the journal does not verify: a forged record".to_string());
     let audit =
         crate::root::units_admin::NodeAudit::new(std::sync::Arc::clone(&node_book.durability));
-    let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit))
+    let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit), None)
         .expect("a refused row must not take /admin/verify down");
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]

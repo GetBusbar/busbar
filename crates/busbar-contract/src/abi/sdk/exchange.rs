@@ -860,13 +860,41 @@ impl<'a> Op<'a> {
         target: Option<&str>,
         request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
     ) -> Answer<ExchangeResponse> {
+        self.exchange_sealed_bounded(need, target, REPLY_MAX, request)
+    }
+
+    /// [`Op::exchange`] whose reply body may reach at most `reply_limit` bytes
+    /// ([`Exchange::reply_limit`]; above [`REPLY_MAX`] it is [`REPLY_MAX`]): a reply past it is
+    /// refused ([`REPLY_OVER_BOUND`]) as it is read, never buffered whole first. The limit is set
+    /// on the exchange the op's first entry builds; a resumed exchange keeps the one it was built
+    /// with.
+    pub fn exchange_bounded(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        request: impl FnOnce() -> Result<Request, ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
+        self.exchange_sealed_bounded(need, target, reply_limit, || {
+            request().map(|r| (r, Vec::new()))
+        })
+    }
+
+    /// [`Op::exchange_bounded`] for a request with sealed fields ([`Exchange::request_sealed`]).
+    pub fn exchange_sealed_bounded(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
         let Some(host) = self.host else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
             None => match request().and_then(|(r, sealed)| Exchange::request_sealed(r, sealed)) {
-                Ok(s) => s,
+                Ok(s) => s.reply_limit(reply_limit),
                 Err(e) => return Poll::Ready(Err(e)),
             },
         };
