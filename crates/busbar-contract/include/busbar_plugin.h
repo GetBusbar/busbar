@@ -80,6 +80,7 @@ extern "C" {
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
 #define BB_MECH_SECTION_SELECTS UINT32_C(16) /* [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7). */
 #define BB_MECH_EXT_DECLARES "declares" /* THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21 */
+#define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */

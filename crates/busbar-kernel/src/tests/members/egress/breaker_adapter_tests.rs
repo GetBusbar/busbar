@@ -51,26 +51,6 @@ impl BreakerAdapter {
     }
 }
 
-fn map_outcome_to_breaker(o: Outcome) -> busbar_kernel_breaker::Outcome {
-    use busbar_kernel_breaker::Outcome as BO;
-    match o {
-        Outcome::Success => BO::Success,
-        Outcome::Transient { retry_after } => BO::Transient { retry_after },
-        Outcome::HardDown => BO::HardDown,
-        Outcome::RecordNothing => BO::RecordNothing,
-    }
-}
-
-fn map_outcome_from_breaker(o: busbar_kernel_breaker::Outcome) -> Outcome {
-    use busbar_kernel_breaker::Outcome as BO;
-    match o {
-        BO::Success => Outcome::Success,
-        BO::Transient { retry_after } => Outcome::Transient { retry_after },
-        BO::HardDown => Outcome::HardDown,
-        BO::RecordNothing => Outcome::RecordNothing,
-    }
-}
-
 impl Breaker for BreakerAdapter {
     fn try_admit(
         &self,
@@ -78,11 +58,8 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        match self.0.try_admit(pool, destination, now) {
-            Ok(admit) => Ok(Admit {
-                probe_epoch: admit.probe_epoch,
-            }),
-            Err(state) => Err(match state {
+        self.0.try_admit(pool, destination, now).map_err(|state| {
+            match state {
                 busbar_kernel_breaker::LaneState::Suppressed { until } => {
                     Unavailable::BreakerOpen { until }
                 }
@@ -95,8 +72,8 @@ impl Breaker for BreakerAdapter {
                 busbar_kernel_breaker::LaneState::Ready => {
                     unreachable!("BreakerUnit::try_admit does not return Err(Ready)")
                 }
-            }),
-        }
+            }
+        })
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
@@ -127,17 +104,12 @@ impl Breaker for BreakerAdapter {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        let classified = busbar_kernel_breaker::port::classify_upstream(
+        busbar_kernel_breaker::port::classify_upstream(
             busbar_kernel_breaker::port::UpstreamStatus {
                 reading: Self::reading(status),
                 retry_after: status.retry_after,
             },
-        );
-        Classified {
-            disposition: classified.disposition,
-            outcome: map_outcome_from_breaker(classified.outcome),
-            label: classified.label,
-        }
+        )
     }
 
     fn observe(
@@ -150,14 +122,8 @@ impl Breaker for BreakerAdapter {
     ) -> bool {
         // Both crates name the same `busbar-caps` `Pass<Route>`, so the token this call was
         // actually lent is what crosses the seam — no adapter-minted stand-in.
-        self.0.observe(
-            pool,
-            destination,
-            map_outcome_to_breaker(outcome),
-            &self.1,
-            now,
-            token,
-        )
+        self.0
+            .observe(pool, destination, outcome, &self.1, now, token)
     }
 
     fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
@@ -168,7 +134,7 @@ impl Breaker for BreakerAdapter {
         let cfg = self.1.clone();
         self.0.probed(
             destination,
-            map_outcome_to_breaker(outcome),
+            outcome,
             &move |_| Some(cfg.clone()),
             now,
             token,
