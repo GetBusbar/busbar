@@ -379,8 +379,7 @@ fn a_value_that_grew_between_the_two_reads_is_a_named_transient_refusal() {
         .expect("the growing stub opens");
     let refused = opened
         .resolve(br#"{"key":"rotating"}"#)
-        .err()
-        .expect("a value short twice is refused");
+        .expect_err("a value short twice is refused");
     assert_eq!(
         refused.error_kind,
         busbar_contract::abi::secret::ERROR_KIND_UNAVAILABLE,
