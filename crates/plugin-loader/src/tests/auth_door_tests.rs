@@ -734,7 +734,8 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
 
 /// RED (THE DESIGN §11.13 M1): one refresh at a time, never waited for. A refresh wedged in its
 /// plugin holds no other caller behind the instance's lifecycle lock: a second refresh is
-/// answered at once, naming the one in flight.
+/// answered at once, naming the one in flight, and a verify, on the spot and submitted, is still
+/// judged.
 #[test]
 fn a_wedged_refresh_holds_no_other_caller() {
     let a = rows()
@@ -759,6 +760,22 @@ fn a_wedged_refresh_holds_no_other_caller() {
         });
     }
     let second = done.recv_timeout(Duration::from_secs(5));
+    let (judged_tx, judged) = std::sync::mpsc::channel();
+    {
+        let a = Arc::clone(&a);
+        std::thread::spawn(move || {
+            let now = a.verify_now(&request(Some("good"), None));
+            let mut submitted = a.verify(request(Some("bad"), None));
+            let since = std::time::Instant::now();
+            let mut settled = submitted.settled();
+            while settled.is_none() && since.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(2));
+                settled = submitted.settled();
+            }
+            let _ = judged_tx.send((now, settled));
+        });
+    }
+    let judged = judged.recv_timeout(Duration::from_secs(10));
     {
         let (lock, cv) = &REFRESH_GATE;
         lock.lock().unwrap().1 = true;
@@ -768,6 +785,12 @@ fn a_wedged_refresh_holds_no_other_caller() {
     assert_eq!(
         second,
         Err("auth instance `judge-wedge`: a refresh is already in flight".to_string())
+    );
+    let judged = judged.expect("a refresh wedged in its plugin held a verify behind it");
+    assert_eq!(
+        judged,
+        (Some(alice()), Some(answered(Verified::Reject))),
+        "a verify is judged on the spot and submitted while a refresh is wedged"
     );
     let _ = wedged.join().unwrap();
 }
