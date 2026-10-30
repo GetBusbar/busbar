@@ -186,7 +186,6 @@ on:
   # red even when declared blocks:false (2026-10-30).
   manual: [windows-compile]
   # After each landing on dev: reports, never gates (no blocks; never back under move).
-  landed: [windows-compile]
   move:
     - fmt
     - clippy

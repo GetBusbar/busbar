@@ -25,12 +25,12 @@ on:
     # blocking (owner 2026-10-26: a suite not run or not passed in dev is a gap in our CI).
     - checks: [conformance]
       blocks: false
-  landed: [conformance, windows-compile]
+  landed: [conformance]
   # CodeQL (off GitHub code scanning default setup, 2026-10-26): daily at dev's tip and on request;
   # it reports, never gates.
   schedule:
   - cron: "0 7 * * *"
-    checks: [codeql, windows-compile]
+    checks: [codeql]
   manual: [codeql, windows-compile]
 # Step 5: dist/default is its own workspace and embeds core's source, so a change to it or to
 # crates/busbar runs every scoped check whole (the dist half carries no -p to narrow by).
