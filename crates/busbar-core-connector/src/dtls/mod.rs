@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `busbar-core-connector::dtls` — the DTLS engine: transport encryption over a DATAGRAM carrier,
-//! the sibling of [`crate::tls`] over a stream carrier (owner, 2026-09-30: "TLS is just a transport
-//! encryption, like DTLS … all siblings, same flow"). Core-only, never a plugin.
+//! the sibling of [`crate::tls`] over a stream carrier ("TLS is just a transport encryption, like
+//! DTLS … all siblings, same flow"). Core-only, never a plugin.
 //!
 //! Same flow as TLS. The host owns the certificate and its key ([`SessionCert`]); the handshake runs
 //! here (dimpl, on ring — [`ring`]); the framer above sees plaintext and, because SRTP needs it,

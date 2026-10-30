@@ -9,7 +9,7 @@
 //! - [`Class::Legacy`]: the 66 operations derived from 1.5.5's `openapi.json` (49 paths, 34
 //!   read-only / 32 full); `tests/table_matches_openapi.rs` fails if these rows and the committed
 //!   fixture disagree by one operation, one scope or one name;
-//! - [`Class::New`]: the 12 new 1.6.0 verbs. The scope is the 1.5.5 rule on the method: the three
+//! - [`Class::New`]: the 11 new 1.6.0 verbs. The scope is the 1.5.5 rule on the method: the three
 //!   `GET` ones are read-only, the rest are `Full` mutations;
 //! - [`Class::Ledger`]: the five 1.6.0 ledger views, reads of what the ledger already holds;
 //! - [`Class::Audit`]: the three 1.6.0 audit-chain reads (pull, never push);
@@ -55,7 +55,7 @@ impl VerbScope {
 pub enum Class {
     /// One of the 66 operations of 1.5.5's `openapi.json`.
     Legacy,
-    /// One of the 12 new 1.6.0 verbs.
+    /// One of the 11 new 1.6.0 verbs.
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
@@ -208,13 +208,12 @@ pub enum KernelVerb {
     PostRestart,
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (12) ----
+    // ---- 1.6.0 new verbs (11) ----
     Verify,
     PlaneFacts,
     PlaneRecordWrite,
     ChainBreak,
     StoreRestore,
-    ResealEpochFloor,
     CommitUpgrade,
     Adjust,
     AmendRateHistory,
@@ -329,7 +328,6 @@ pub const TABLE: &[VerbRow] = table! {
     New PlaneRecordWrite "POST" "/api/v1/admin/plane-record-write" "plane_record_write";
     New ChainBreak "POST" "/api/v1/admin/chain-break" "chain_break";
     New StoreRestore "POST" "/api/v1/admin/store-restore" "store_restore";
-    New ResealEpochFloor "POST" "/api/v1/admin/reseal-epoch-floor" "reseal_epoch_floor";
     New CommitUpgrade "POST" "/api/v1/admin/commit-upgrade" "commit_upgrade";
     New Adjust "POST" "/api/v1/admin/adjust" "adjust";
     New AmendRateHistory "POST" "/api/v1/admin/ledger/amend-rate-history" "amend_rate_history";
@@ -395,7 +393,7 @@ const fn verbs_of<const N: usize>(class: Class) -> [KernelVerb; N] {
 /// The 66 legacy rows.
 pub const LEGACY_VERBS: &[VerbRow] = &rows_of::<{ count(Class::Legacy) }>(Class::Legacy);
 
-/// The 12 new 1.6.0 verbs: scope is the method rule, so the `GET` ones are reads and the rest are
+/// The 11 new 1.6.0 verbs: scope is the method rule, so the `GET` ones are reads and the rest are
 /// `Full` mutations. Membership is what spends the mutation budget in `Verbs::admit`.
 pub const NEW_VERBS: &[KernelVerb] = &verbs_of::<{ count(Class::New) }>(Class::New);
 

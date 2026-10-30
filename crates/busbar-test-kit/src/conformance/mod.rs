@@ -79,7 +79,7 @@
 //! step can require that the suite FAILS when a count moves.
 //!
 //! THE SEAM: the suite lives in busbar-test-kit, a dev-dependency only, and reaches the one loader
-//! through the dispatcher internals busbar-plugin-loader opens under its `test-support` feature.
+//! through the dispatcher internals busbar-plugin-loader exports as its test seams.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
 //! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes
@@ -1249,9 +1249,10 @@ fn host_lends<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>
 /// `settings` (one JSON object) AS THE KERNEL RESOLVES THEM before they cross to `p`
 /// (`busbar_contract::secret_fields::resolve_declared`): a secret reference at a position `p`'s
 /// Statement does not declare secret is refused in the kernel's sentence; each one at a declared
-/// position is replaced by the string `resolve` answers for it. A plugin's suite proves its
-/// declared fields with it: `{env: VAR}` at a declared field resolves; anywhere else, it is
-/// refused.
+/// position is replaced by the string `resolve` answers for it. At a position `p`'s Statement names
+/// REFERENCE-CAPABLE (its extensions' `reference_fields`, lead ruling item 7a) a reference resolves
+/// the same way and a literal passes as written. A plugin's suite proves its declared fields with
+/// it: `{env: VAR}` at a declared field resolves; anywhere else, it is refused.
 ///
 /// # Errors
 /// The settings are not a JSON document, the refusal, or `resolve`'s error.
@@ -1262,9 +1263,10 @@ pub fn settings_as_the_kernel_resolves<K: Kind>(
 ) -> Result<Vec<u8>, String> {
     let mut tree: serde_json::Value = serde_json::from_slice(settings)
         .map_err(|e| format!("the settings are not a JSON document: {e}"))?;
-    busbar_contract::secret_fields::resolve_declared(
+    busbar_contract::secret_fields::resolve_declared_fields(
         &mut tree,
         p.secret_refs(),
+        p.reference_fields(),
         p.name(),
         resolve,
     )?;
@@ -1510,6 +1512,217 @@ pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, 
             p.ready(d, READY_DEADLINE)
         )
     });
+}
+
+// ---- the shared script: the steps every kind's script takes; each kind file keeps its own ops ----
+
+/// What a kind's contract requires of one step's answer.
+pub(crate) enum Want {
+    /// Exactly this line.
+    Is(String),
+    /// A line that starts so.
+    Starts(&'static str),
+}
+
+/// THE STEPS' CONTRACT: every step `want` names answered as it requires, so two equal folds of
+/// failures prove nothing.
+///
+/// # Panics
+/// A step the script never ran, or one that answered otherwise.
+pub(crate) fn judge(fold: &[Step], want: &[(String, Want)]) {
+    for (label, w) in want {
+        let got = answer(fold, label);
+        match w {
+            Want::Is(line) => assert_eq!(got, line.as_str(), "{label}"),
+            Want::Starts(prefix) => assert!(got.starts_with(prefix), "{label}: {got}"),
+        }
+    }
+}
+
+/// Step `label`'s answer in `fold`.
+///
+/// # Panics
+/// The script ran no such step.
+pub(crate) fn answer<'f>(fold: &'f [Step], label: &str) -> &'f str {
+    fold.iter()
+        .find(|s| s.label == label)
+        .map(|s| s.answer.as_str())
+        .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
+}
+
+/// ONE KIND'S SCRIPT UNDER WAY: its [`Recorder`] (every step recorded, pinned and compared both
+/// ways) and what its contract requires of each judged step, held to it when the fold ends.
+pub(crate) struct Script<'a> {
+    r: Recorder<'a>,
+    want: Vec<(String, Want)>,
+}
+
+impl<'a> Script<'a> {
+    /// A script over `counter` (the instance's crossing gate).
+    pub(crate) fn new(counter: Counts<'a>) -> Self {
+        Self {
+            r: Recorder::new(counter),
+            want: Vec::new(),
+        }
+    }
+
+    /// Step `label`, pinned at `pinned` crossings, whose answer must be `want`.
+    pub(crate) fn judged(
+        &mut self,
+        label: &str,
+        pinned: u64,
+        want: Want,
+        f: impl FnOnce() -> String,
+    ) {
+        self.r.line(label, pinned, f);
+        self.want.push((label.to_owned(), want));
+    }
+
+    /// [`Script::judged`] for a step that gives a value back.
+    pub(crate) fn step_judged<T>(
+        &mut self,
+        label: &str,
+        pinned: u64,
+        want: Want,
+        f: impl FnOnce() -> (String, T),
+    ) -> T {
+        self.want.push((label.to_owned(), want));
+        self.r.step(label, pinned, f)
+    }
+
+    /// The fold, every judged step held to what it requires ([`judge`]).
+    pub(crate) fn fold(self) -> Fold {
+        let fold = self.r.fold();
+        judge(&fold, &self.want);
+        fold
+    }
+}
+
+impl<'a> std::ops::Deref for Script<'a> {
+    type Target = Recorder<'a>;
+    fn deref(&self) -> &Recorder<'a> {
+        &self.r
+    }
+}
+
+impl std::ops::DerefMut for Script<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.r
+    }
+}
+
+/// Borrowed bytes (a `str` or a byte slice) as the ABI names them.
+pub(crate) fn abi_bytes(b: &(impl AsRef<[u8]> + ?Sized)) -> AbiStr {
+    let b = b.as_ref();
+    AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    }
+}
+
+/// A step's line as it is: the wrap of a kind whose lines carry nothing more.
+pub(crate) fn asis(line: String) -> String {
+    line
+}
+
+/// The `facts` line every kind's script opens with: the host's own record, no crossing.
+pub(crate) fn facts<K: Kind>(p: &Plugin<K>) -> String {
+    format!(
+        "{:?} {} max_inflight={}",
+        p.kind(),
+        p.name(),
+        p.max_inflight()
+    )
+}
+
+/// THE LIFECYCLE'S HEAD every kind's script takes: `validate` and `open` over `settings`, one
+/// crossing each and READY, then the `ready` step ([`ready_step`]). `wrap` adds what the kind's
+/// lines carry (export: what its host's sink observed).
+pub(crate) fn opened<K: Kind>(
+    sc: &mut Script<'_>,
+    (s, p, d): (&Subject, &Plugin<K>, &Dispatcher),
+    settings: &[u8],
+    wrap: &dyn Fn(String) -> String,
+) {
+    sc.judged("validate", 1, Want::Starts("Ready "), || {
+        wrap(called(&validate(p, settings)))
+    });
+    sc.judged("open", 1, Want::Starts("Ready "), || {
+        wrap(called(&open(p, settings)))
+    });
+    ready_step(sc, s, p, d);
+}
+
+/// THE REFUSAL LOOP: `validate` over each of the inputs' `bad` settings, one crossing each.
+pub(crate) fn refused_settings<K: Kind>(
+    sc: &mut Script<'_>,
+    p: &Plugin<K>,
+    bad: &[Vec<u8>],
+    wrap: &dyn Fn(String) -> String,
+) {
+    for (i, b) in bad.iter().enumerate() {
+        sc.line(&format!("validate bad #{i}"), 1, || {
+            wrap(called(&validate(p, b)))
+        });
+    }
+}
+
+/// THE LIFECYCLE'S TAIL every kind's script takes before its last ops: `tick`, then (when the
+/// inputs name bad settings) `refresh` over the first of them, then `refresh` over `settings`,
+/// READY; one crossing each.
+pub(crate) fn refreshed<K: Kind>(
+    sc: &mut Script<'_>,
+    p: &Plugin<K>,
+    bad: Option<&[u8]>,
+    settings: &[u8],
+    wrap: &dyn Fn(String) -> String,
+) {
+    sc.line("tick", 1, || {
+        let (c, next) = tick(p, 1);
+        wrap(format!("{} next={next}", called(&c)))
+    });
+    if let Some(bad) = bad {
+        sc.line("refresh bad", 1, || wrap(called(&refresh(p, bad))));
+    }
+    sc.judged("refresh", 1, Want::Starts("Ready "), || {
+        wrap(called(&refresh(p, settings)))
+    });
+}
+
+/// `close`, one crossing, READY.
+pub(crate) fn closed<K: Kind>(sc: &mut Script<'_>, p: &Plugin<K>, wrap: &dyn Fn(String) -> String) {
+    sc.judged("close", 1, Want::Starts("Ready "), || {
+        wrap(called(&close(p)))
+    });
+}
+
+/// The kind's inputs `k` at `key`, a list the script requires non-empty.
+///
+/// # Panics
+/// It is not a list, or it is empty.
+pub(crate) fn listed<'v>(
+    k: &'v serde_json::Value,
+    kind: &str,
+    key: &str,
+) -> &'v [serde_json::Value] {
+    let list = k[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("conformance.json: {kind}.{key} must be an array"));
+    assert!(!list.is_empty(), "conformance.json: {kind}.{key} is empty");
+    list
+}
+
+/// A settings-like input (`what`: "a hook", "an export"): a string's bytes, anything else as its
+/// JSON.
+///
+/// # Panics
+/// The input is missing.
+pub(crate) fn input_text(v: &serde_json::Value, what: &str) -> Vec<u8> {
+    match v {
+        serde_json::Value::String(s) => s.as_bytes().to_vec(),
+        serde_json::Value::Null => panic!("conformance.json: {what} input is missing"),
+        other => other.to_string().into_bytes(),
+    }
 }
 
 // ---- the kind dispatch ----

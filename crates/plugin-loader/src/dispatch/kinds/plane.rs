@@ -46,9 +46,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
     check_fee_units, check_metric_lanes, check_on_piece, check_pin_mechanisms, check_project,
-    check_record_chains, check_refusal, check_refusal_records, check_refusal_statuses,
-    check_route_cost, check_sections, check_serve, check_serve_records, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_record_chains, check_record_retentions, check_refusal, check_refusal_records,
+    check_refusal_statuses, check_route_cost, check_sections, check_serve, check_serve_records,
+    check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -266,6 +266,13 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.record_kinds_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // Each retention rule names a kind the tail keeps, once, with a rule the host passes; a tail
+    // that ends before the list (an older plane's) reads none, so every kind is purged by age.
+    check_record_retentions(
+        &listed(tail.record_retentions, tail.record_retentions_len),
+        tail.record_kinds_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_route_cost(
         &listed(tail.route_cost, tail.route_cost_len),
         tail.billable_classes_len as u64,
@@ -298,10 +305,12 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.dialects_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let mut decl = declared(&tail);
+    decl.ticket_prefix = ticket_prefix(st)?;
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
-        declared: declared(&tail),
+        declared: decl,
         served: ServedFacts {
             section: sections
                 .iter()
@@ -497,6 +506,31 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
     list.to_vec()
 }
 
+/// The issued-id prefix `st` declares (its one
+/// [`MARK_WORD_ISSUED_ID_PREFIX`](busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX)
+/// word mark): what leads every ticket the host mints for the plane (row 132). `None` = none
+/// declared; two are refused, as is an empty one.
+fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
+    use busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX;
+    let mut found = None;
+    for i in 0..st.mark_words_len {
+        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
+        // `mark_words_len` `'static` word marks.
+        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        if w.class != MARK_WORD_ISSUED_ID_PREFIX {
+            continue;
+        }
+        let word = kept(w.word);
+        if word.is_empty() {
+            return Err("the plane declares an empty issued-id prefix".to_string());
+        }
+        if found.replace(word).is_some() {
+            return Err("the plane declares two issued-id prefixes".to_string());
+        }
+    }
+    Ok(found)
+}
+
 /// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
 /// trust keys (each judged at bind by `check_tail_trust_keys`).
 fn declared(t: &PlaneTail) -> InstanceDecl {
@@ -535,6 +569,8 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
         record_chains: listed(t.record_chains, t.record_chains_len),
+        record_retentions: listed(t.record_retentions, t.record_retentions_len),
+        ticket_prefix: None,
     }
 }
 
@@ -843,7 +879,7 @@ fn registered(
         provider_keys: served.provider_keys.clone(),
         validate: Arc::new(move |settings: &[u8]| {
             let plugin = judge_of(&judge, &judge_bind)?;
-            validate(&plugin, settings)
+            lifecycle::validate_json(&plugin, settings)
         }),
         facing: Arc::new(
             move |settings: &[u8],
@@ -960,16 +996,32 @@ pub fn open_door(
     owned: &[u8],
     public_url: Option<&str>,
 ) -> Result<OwnedSnapshot, String> {
+    checked(plugin, opened(plugin, settings, owned, public_url, &[])?)
+}
+
+/// OPEN `plugin` at generation 1, as [`open_door`] does, handed the providers' dialect facts
+/// `providers` (each pointing into memory that outlives the open): its snapshot, `None` when it did
+/// not pass the host's checks.
+fn opened(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    settings: &[u8],
+    owned: &[u8],
+    public_url: Option<&str>,
+    providers: &[busbar_contract::abi::plane::ProviderFacts],
+) -> Result<Option<OwnedSnapshot>, String> {
     use busbar_contract::abi::mechanism::call::BLOB_JSON;
     let blob = |bytes: &[u8]| lifecycle::blob(bytes, BLOB_JSON, 0);
-    let url = public_url.unwrap_or_default();
     let mut frame = Frame::new(
         PlaneOpenIn {
             open: lifecycle::open_in(blob(settings)),
-            public_url: lifecycle::lend_or_null(url),
+            public_url: lifecycle::lend_or_null(public_url.unwrap_or_default()),
             owned: blob(owned),
-            providers: std::ptr::null(),
-            providers_len: 0,
+            providers: if providers.is_empty() {
+                std::ptr::null()
+            } else {
+                providers.as_ptr()
+            },
+            providers_len: providers.len(),
         },
         PlaneOpenOut {
             open: lifecycle::open_out(),
@@ -980,6 +1032,14 @@ pub fn open_door(
     if called.outcome != Outcome::Ready {
         return Err(called.open_failure(plugin.name()));
     }
+    Ok(snapshot)
+}
+
+/// A generation's snapshot, or the refusal of one that did not pass the host's checks.
+fn checked(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    snapshot: Option<OwnedSnapshot>,
+) -> Result<OwnedSnapshot, String> {
     snapshot.ok_or_else(|| {
         format!(
             "plane `{}`'s snapshot did not pass the host's checks",
@@ -1001,6 +1061,17 @@ pub fn refresh_door(
     owned: &[u8],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
+    checked(plugin, refreshed(plugin, settings, owned, next)?)
+}
+
+/// REFRESH `plugin` onto `next`, as [`refresh_door`] does: its snapshot, `None` when it did not
+/// pass the host's checks.
+fn refreshed(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    settings: &[u8],
+    owned: &[u8],
+    next: u64,
+) -> Result<Option<OwnedSnapshot>, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON, BLOB_OCTETS};
     let blob = lifecycle::blob(settings, BLOB_JSON, 0);
     // ITS OTHER OWNED SECTIONS ride the extensions blob under `EXT_OWNED` (the same JSON object
@@ -1044,12 +1115,7 @@ pub fn refresh_door(
             called.outcome
         ));
     }
-    snapshot.ok_or_else(|| {
-        format!(
-            "plane `{}`'s snapshot did not pass the host's checks",
-            plugin.name()
-        )
-    })
+    Ok(snapshot)
 }
 
 /// RETIRE `generation` of `plugin`: no unit runs on it any more.
@@ -1081,78 +1147,22 @@ fn facing(
     public_url: Option<&str>,
     facts: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
-    use busbar_contract::abi::mechanism::call::BLOB_JSON;
-    use busbar_contract::abi::mechanism::lifecycle::{GenIn, RefreshIn};
-    let blob = lifecycle::blob(settings, BLOB_JSON, 0);
     let snapshot = if *current == 0 {
-        let url = public_url.unwrap_or_default();
-        // Each points into `facts`, which outlives the open.
+        // The same list the served instance's open is handed: the plane resolves each model's
+        // dialect from it, and its claims follow. Each points into `facts`, which outlives the open.
         let providers = provider_facts(facts);
-        let mut frame = Frame::new(
-            PlaneOpenIn {
-                open: lifecycle::open_in(blob),
-                public_url: lifecycle::lend_or_null(url),
-                owned: lifecycle::blob(owned, BLOB_JSON, 0),
-                // The same list the served instance's open is handed: the plane resolves each
-                // model's dialect from it, and its claims follow.
-                providers: if providers.is_empty() {
-                    std::ptr::null()
-                } else {
-                    providers.as_ptr()
-                },
-                providers_len: providers.len(),
-            },
-            PlaneOpenOut {
-                open: lifecycle::open_out(),
-                snapshot: std::ptr::null(),
-            },
-        );
-        let (called, snapshot) = plugin.open(&mut frame);
-        if called.outcome != Outcome::Ready {
-            return Err(called.open_failure(plugin.name()));
-        }
+        let snapshot = opened(plugin, settings, owned, public_url, &providers)?;
         *current = 1;
         snapshot
     } else {
+        // Refreshed with no owned sections: they are read at the probe's open only.
         let next = *current + 1;
-        let mut frame = Frame::new(
-            RefreshIn {
-                head: in_head(),
-                generation: next,
-                settings: blob,
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-            },
-            PlaneRefreshOut {
-                head: out_head(),
-                snapshot: std::ptr::null(),
-            },
-        );
-        let (called, snapshot) = plugin.refresh(&mut frame);
-        if called.outcome != Outcome::Ready {
-            return Err(format!(
-                "plane `{}` did not refresh: {:?}",
-                plugin.name(),
-                called.outcome
-            ));
-        }
-        let mut retire = Frame::new(
-            GenIn {
-                head: in_head(),
-                generation: *current,
-            },
-            out_head(),
-        );
-        let _ = plugin.call(life::RETIRE, &mut retire);
+        let snapshot = refreshed(plugin, settings, &[], next)?;
+        retire_door(plugin, *current);
         *current = next;
         snapshot
     };
-    let snapshot = snapshot.ok_or_else(|| {
-        format!(
-            "plane `{}`'s snapshot did not pass the host's checks",
-            plugin.name()
-        )
-    })?;
+    let snapshot = checked(plugin, snapshot)?;
     Ok(busbar_contract::plane_calls::DoorFacing {
         claims: snapshot
             .claims
@@ -1168,23 +1178,6 @@ fn facing(
         admission: snapshot.audience.zip(snapshot.resource_metadata),
         listed: snapshot.listed,
     })
-}
-
-/// `validate` `settings` on `plugin` (ticket-less; it never pends): `Ok` when READY, else the
-/// plugin's words.
-fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<(), String> {
-    let c = lifecycle::validate_call(
-        plugin,
-        lifecycle::blob(
-            settings,
-            busbar_contract::abi::mechanism::call::BLOB_JSON,
-            0,
-        ),
-    );
-    match c.outcome {
-        Outcome::Ready => Ok(()),
-        o => Err(lifecycle::text(c.error).unwrap_or_else(|| format!("{o:?}"))),
-    }
 }
 
 /// The tail's billable classes and fee units, judged PER ELEMENT (ARCHITECT Q-L5-FEE (C)): each

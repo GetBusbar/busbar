@@ -483,7 +483,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_500;
-    let usage = crate::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 11,
         output: 22,
         cache_read: Some(5),
@@ -1121,7 +1121,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     });
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_000;
-    let per = crate::billing::TokenUsage {
+    let per = busbar_contract::billing::TokenUsage {
         input: 3,
         output: 5,
         cache_read: Some(1),
@@ -1222,7 +1222,7 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
     for t in 0..threads {
         let gov = gov.clone();
         handles.push(std::thread::spawn(move || {
-            let usage = crate::billing::TokenUsage {
+            let usage = busbar_contract::billing::TokenUsage {
                 input: 2,
                 output: 3,
                 ..Default::default()
@@ -1298,7 +1298,7 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
     for t in 0..threads {
         let gov = gov.clone();
         handles.push(std::thread::spawn(move || {
-            let usage = crate::billing::TokenUsage {
+            let usage = busbar_contract::billing::TokenUsage {
                 input: 1,
                 ..Default::default()
             };
@@ -1717,6 +1717,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty,
         last_touch: now,
@@ -1795,6 +1796,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch,
@@ -1874,6 +1876,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now,
@@ -1999,12 +2002,7 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
         "a negative token rate is an unpriced class, and the read refuses: {refused:?}"
     );
     let tokens: u64 = gov
-        .bucket_model_tokens(
-            &neg_rate,
-            "k1",
-            crate::governance::WINDOW_TOTAL,
-            1_700_000_000,
-        )
+        .bucket_model_tokens("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
         .iter()
         .flat_map(|(_, units)| units.values())
         .sum();
@@ -3513,6 +3511,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         flushed_billable_requests: requests,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty,
         last_touch,
@@ -3734,7 +3733,7 @@ mod metering_fanout {
         for i in 0..n {
             let gov = gov.clone();
             handles.push(tokio::spawn(async move {
-                let usage = crate::billing::TokenUsage {
+                let usage = busbar_contract::billing::TokenUsage {
                     input: 1,
                     output: 1,
                     ..Default::default()
@@ -3772,7 +3771,7 @@ mod metering_fanout {
         let store = std::sync::Arc::new(CountingStore::new(1)); // fail exactly once
         let gov = GovState::new(store.clone(), None).unwrap();
         let now = 1_700_200_000u64;
-        let usage = crate::billing::TokenUsage {
+        let usage = busbar_contract::billing::TokenUsage {
             input: 10,
             output: 5,
             ..Default::default()
@@ -4463,6 +4462,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         flushed_billable_requests: 7,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
@@ -4527,6 +4527,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         flushed_billable_requests: 1,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now,
@@ -4698,6 +4699,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         flushed_billable_requests: 7,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
@@ -4747,6 +4749,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         flushed_billable_requests: 1,
         models: Vec::new(),
         fee_eras: Default::default(),
+        flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
         dirty: false,
         last_touch: now,
@@ -5301,6 +5304,7 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
             labels,
             minted_by: Some(admin.to_string()),
             binding_mode: Some("time-bound".to_string()),
+            plane_scopes: None,
         };
         let (key, token) = gov.mint_signed(spec, now + 30 * 86_400, now).unwrap();
         minted.push((label, pool, key, token));
@@ -6177,7 +6181,8 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     let (got, live) = gov.credential_secret(&signed_kind(), "AKIAdoesnotexist0000", now);
     assert_eq!(
         (got.expose(&crate::seal::lend()).as_str(), live),
-        (crate::auth::DUMMY_SECRET, false)
+        ("", false),
+        "an unknown pair answers an empty secret, not live: the verifier swaps in its own dummy"
     );
     gov.revoke(&key.id, "test").unwrap();
     assert!(
@@ -6231,4 +6236,38 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
              id's reads must run the same steps"
         );
     }
+}
+
+/// CONSTANT-TIME TOKEN COMPARISON (website: "constant-time token comparison"). A virtual key is
+/// checked by its ed25519 signature, which compares no secret. The one byte comparison of stored
+/// key material on that path is the binding's rotation generation against the token's claim
+/// ([`super::generation_matches`]), and it goes through the contract's timing-safe primitive, never
+/// `==`. Pinned at the function's source, since timing is not observable from a unit test; its
+/// verdicts are pinned beside it.
+/// RED: the generation is compared with `==`.
+#[test]
+fn a_virtual_keys_generation_is_compared_in_constant_time() {
+    let src = include_str!("../mod.rs");
+    let body = src
+        .split("pub fn generation_matches(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("generation_matches is in governance/mod.rs");
+    assert!(
+        body.contains("constant_time_eq"),
+        "the generation compare goes through the timing-safe primitive: {body}"
+    );
+    assert!(
+        !body.contains("=="),
+        "no plain equality on key material: {body}"
+    );
+
+    let marker = super::binding_marker("vk_1", "g7");
+    assert!(super::generation_matches(&marker, Some("g7")));
+    assert!(!super::generation_matches(&marker, Some("g8")));
+    assert!(!super::generation_matches(&marker, Some("g")));
+    assert!(!super::generation_matches(&marker, None));
+    let legacy = "not-a-binding-marker";
+    assert!(super::generation_matches(legacy, None));
+    assert!(!super::generation_matches(legacy, Some("g7")));
 }

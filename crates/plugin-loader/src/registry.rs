@@ -62,7 +62,9 @@ pub struct LoadablePlugin {
     pub file: String,
     pub manifest: Manifest,
     pub verdict: Verdict,
-    pub lib_bytes: Vec<u8>,
+    /// The verified library bytes, shared (never copied) with every boot row it becomes
+    /// ([`Self::candidate`]).
+    pub lib_bytes: std::sync::Arc<Vec<u8>>,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -102,6 +104,26 @@ impl LoadablePlugin {
             .map(|r| r.version)
             .filter(|v| !v.is_empty())
             .ok_or_else(|| unversioned(&self.manifest.name))
+    }
+
+    /// THE BOOT ROW a DROPPED-IN row states: its signed manifest's Statement rendering, manifest
+    /// alias and former names ([`crate::boot::Candidate::from_manifest`]), over its verified library
+    /// bytes; `None` when the manifest states no Statement (a 1.5.5 JSON-contract plugin).
+    ///
+    /// # Errors
+    /// The rendering does not read back, named (`plugin '<name>': ...`).
+    pub fn candidate(&self) -> Result<Option<crate::boot::Candidate>, String> {
+        let named = |e: String| format!("plugin '{}': {e}", self.manifest.name);
+        let Some(stated) = self.manifest.stated_rendering().map_err(named)? else {
+            return Ok(None);
+        };
+        let origin = crate::boot::Origin::Dropped {
+            file: self.file.clone(),
+            bytes: std::sync::Arc::clone(&self.lib_bytes),
+        };
+        crate::boot::Candidate::from_manifest(stated, &self.manifest, origin)
+            .map(Some)
+            .map_err(named)
     }
 
     /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
@@ -265,16 +287,6 @@ impl LinkedPlugin {
         }
     }
 
-    /// The build's in-process STORE named `name` (its own alias), at the store kind's one version:
-    /// its store v3 `door`, and whether what it holds is lost on restart.
-    pub fn store(
-        name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
-        ephemeral: bool,
-    ) -> Self {
-        Self::store_named(name, name, door, ephemeral)
-    }
-
     /// The build's in-process STORE under its CANONICAL `name` (the manifest name its release
     /// tarball carries, plugins.yaml `manifest_name`), answering also to `alias`, the key the
     /// composition root's table names it by and every surface prints ([`LoadablePlugin::key`]).
@@ -287,12 +299,6 @@ impl LinkedPlugin {
         let abi = busbar_contract::abi::store::ABI_VERSION;
         let entry = LinkedEntry::Store { door };
         Self::built_in(name, &[alias], kind::STORE, abi, entry, ephemeral)
-    }
-
-    /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
-    /// crate's `plugin_door!` door, the same door its dropped-in build exports.
-    pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        Self::auth_door_named(name, name, door)
     }
 
     /// A linked AUTH plugin under its CANONICAL `name`, answering also to `alias`, its key
@@ -323,52 +329,6 @@ impl LinkedPlugin {
             LinkedEntry::Door(door),
             false,
         )
-    }
-
-    /// [`Self::door`] over a test's raw door (a NULL or restated one).
-    #[cfg(test)]
-    pub(crate) fn door_raw(
-        manifest: Manifest,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        // A test's own door, answering NULL or a door it laid out: every entry into it runs the
-        // loader's checks.
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Door(door),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
-    }
-
-    /// [`Self::auth_door`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn auth_door_raw(
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, name, door)
-    }
-
-    /// [`Self::auth_door_named`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn auth_door_named_raw(
-        name: &str,
-        alias: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        Self::auth_entry(name, alias, door)
-    }
-
-    /// [`Self::door_of_kind`] over a test's raw door.
-    #[cfg(test)]
-    pub(crate) fn door_of_kind_raw(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind).first().copied().unwrap_or_default();
-        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 
     /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
@@ -421,6 +381,68 @@ impl LinkedPlugin {
             keyed_by_alias: alias != name,
         };
         row.with_former_names(aliases.iter().skip(1))
+    }
+}
+
+/// THE TESTS' ROWS: each its own alias, or over a test's raw door (a NULL or restated one, every
+/// entry into which runs the loader's checks).
+#[cfg(test)]
+impl LinkedPlugin {
+    /// The build's in-process STORE named `name` ([`Self::store_named`] under its own alias).
+    pub(crate) fn store(
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+        ephemeral: bool,
+    ) -> Self {
+        Self::store_named(name, name, door, ephemeral)
+    }
+
+    /// A linked AUTH plugin named `name` ([`Self::auth_door_named`] under its own alias).
+    pub(crate) fn auth_door(
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        Self::auth_door_named(name, name, door)
+    }
+
+    /// [`Self::door`] over a raw door.
+    pub(crate) fn door_raw(
+        manifest: Manifest,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
+            ephemeral: false,
+            keyed_by_alias: false,
+        }
+    }
+
+    /// [`Self::auth_door`] over a raw door.
+    pub(crate) fn auth_door_raw(
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, name, door)
+    }
+
+    /// [`Self::auth_door_named`] over a raw door.
+    pub(crate) fn auth_door_named_raw(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        Self::auth_entry(name, alias, door)
+    }
+
+    /// [`Self::door_of_kind`] over a raw door.
+    pub(crate) fn door_of_kind_raw(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::sdk::door::RawDoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind).first().copied().unwrap_or_default();
+        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 }
 
@@ -542,7 +564,7 @@ impl PluginRegistry {
                     first_party: false,
                 },
                 manifest,
-                lib_bytes: Vec::new(),
+                lib_bytes: std::sync::Arc::default(),
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -722,7 +744,7 @@ impl PluginRegistry {
         match p.manifest.stated_rendering().map_err(named)? {
             Some(stated) => Ok(StoreDoor::Dropped {
                 file: p.file.clone(),
-                bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                bytes: std::sync::Arc::clone(&p.lib_bytes),
                 stated,
             }),
             None => Err(no_door()),
@@ -794,7 +816,7 @@ impl PluginRegistry {
                 &p.manifest,
                 crate::boot::Origin::Dropped {
                     file: p.file.clone(),
-                    bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                    bytes: std::sync::Arc::clone(&p.lib_bytes),
                 },
             )
             .map_err(|e| format!("transport plugin '{name}': {e}"))?
@@ -855,27 +877,14 @@ impl PluginRegistry {
         }
         let planes = self.loadable().iter();
         for p in planes.filter(|p| p.manifest.kind == kind::PLANE) {
-            let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
-            match p.manifest.stated_rendering().map_err(named)? {
-                Some(stated) => set.doors.push(
-                    crate::boot::Candidate::from_manifest(
-                        stated,
-                        &p.manifest,
-                        crate::boot::Origin::Dropped {
-                            file: p.file.clone(),
-                            bytes: std::sync::Arc::new(p.lib_bytes.clone()),
-                        },
-                    )
-                    .map_err(named)?,
-                ),
-                None => {
-                    return Err(named(
-                        "states no Statement: a plane loads only through its memory-ABI door \
-                         (`busbar_plugin_door`)"
-                            .into(),
-                    ))
-                }
-            }
+            let Some(c) = p.candidate()? else {
+                return Err(format!(
+                    "plugin '{}': states no Statement: a plane loads only through its memory-ABI \
+                     door (`busbar_plugin_door`)",
+                    p.manifest.name
+                ));
+            };
+            set.doors.push(c);
         }
         Ok(set)
     }
@@ -1051,7 +1060,18 @@ fn read_file_capped(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
 enum FileOutcome {
     Loadable(LoadablePlugin),
     Skipped(SkippedPlugin),
-    Invalid { file: String, reason: String },
+    Invalid {
+        file: String,
+        reason: String,
+    },
+    /// A tarball built for an earlier contract of its kind (its manifest states an ABI version this
+    /// host does not speak): invalid, unless a newer build of the same plugin is beside it
+    /// ([`supersede`]), which makes it a skip.
+    Outdated {
+        file: String,
+        reason: String,
+        manifest: Manifest,
+    },
 }
 
 /// Run phases 1 (structural) + 2 (trust) over one tarball.
@@ -1106,6 +1126,14 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         &supported_abi,
         HOST_IDENTITY,
     ) {
+        let speaks = supported_abi(&unpacked.manifest.kind);
+        if !speaks.is_empty() && !speaks.contains(&unpacked.manifest.abi_version) {
+            return FileOutcome::Outdated {
+                file,
+                reason,
+                manifest: unpacked.manifest,
+            };
+        }
         return FileOutcome::Invalid { file, reason };
     }
     // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
@@ -1116,7 +1144,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 file,
                 manifest: unpacked.manifest,
                 verdict,
-                lib_bytes: unpacked.lib_bytes,
+                lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
@@ -1235,6 +1263,79 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
     errors
 }
 
+/// The newer build that supersedes `old` (the tarball `file`): another loadable tarball of the same
+/// kind (so one whose contract this host speaks) that names `old`'s manifest name as its own or as a
+/// former name, is at least `old`'s version, and states its door's Statement when `stated` asks it
+/// to. Read off the manifests alone; no plugin name is written here.
+fn superseder<'a>(
+    old: &Manifest,
+    file: &str,
+    stated: bool,
+    outcomes: &'a [FileOutcome],
+) -> Option<&'a LoadablePlugin> {
+    outcomes.iter().find_map(|o| match o {
+        FileOutcome::Loadable(q)
+            if q.file != file
+                && q.manifest.kind == old.kind
+                && (!stated || q.manifest.statement.is_some())
+                && (q.manifest.name == old.name || q.manifest.former_names.contains(&old.name))
+                && crate::sign::version_at_least(&q.manifest.version, &old.version) =>
+        {
+            Some(q)
+        }
+        _ => None,
+    })
+}
+
+/// AN OLDER BUILD BESIDE ITS SUCCESSOR IS SKIPPED, NOT FATAL (owner ruling 2026-10-27, the 1.5.5
+/// upgrade). A tarball built for an earlier contract of its kind ([`FileOutcome::Outdated`]), or a
+/// loadable one that states no Statement (a pre-1.6.0 artifact), whose newer build of the same plugin
+/// sits in the same directory ([`superseder`]), is skipped with one warning naming the build that
+/// replaces it; the boot loads the newer build. Without a successor nothing changes: an outdated
+/// tarball is invalid and fails the scan, naming the rebuild, as before.
+fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
+    let reasons: Vec<Option<String>> = outcomes
+        .iter()
+        .map(|o| {
+            let (file, old, stated) = match o {
+                FileOutcome::Outdated { file, manifest, .. } => (file, manifest, false),
+                FileOutcome::Loadable(p) if p.manifest.statement.is_none() => {
+                    (&p.file, &p.manifest, true)
+                }
+                _ => return None,
+            };
+            superseder(old, file, stated, &outcomes).map(|q| {
+                format!(
+                    "superseded by {} {} ({}): this is an older build of the same plugin, made for \
+                     an earlier busbar, so it is not loaded; remove it from the plugins directory",
+                    q.manifest.name, q.manifest.version, q.file
+                )
+            })
+        })
+        .collect();
+    outcomes
+        .into_iter()
+        .zip(reasons)
+        .map(|(o, why)| match (o, why) {
+            (FileOutcome::Outdated { file, manifest, .. }, Some(reason)) => {
+                FileOutcome::Skipped(SkippedPlugin {
+                    file,
+                    manifest,
+                    reason,
+                    kind: crate::sign::RejectKind::Superseded,
+                })
+            }
+            (FileOutcome::Loadable(p), Some(reason)) => FileOutcome::Skipped(SkippedPlugin {
+                file: p.file,
+                manifest: p.manifest,
+                reason,
+                kind: crate::sign::RejectKind::Superseded,
+            }),
+            (o, _) => o,
+        })
+        .collect()
+}
+
 /// The full boot/validate pipeline: discover -> phase 1 -> phase 2 -> phase 3 -> registry.
 /// FAIL-CLOSED: any unreadable/invalid tarball (phase 1) or any conflict (phase 3) returns
 /// `Err(errors)` with every problem named - the caller (boot / `--validate`) aborts; there is no
@@ -1245,14 +1346,17 @@ pub fn scan_and_validate(dir: &Path, policy: &TrustPolicy) -> Result<PluginRegis
     let mut errors = Vec::new();
     let mut loadable = Vec::new();
     let mut skipped = Vec::new();
-    for path in &files {
-        match examine(path, policy) {
+    let examined: Vec<FileOutcome> = files.iter().map(|path| examine(path, policy)).collect();
+    for outcome in supersede(examined) {
+        match outcome {
             FileOutcome::Loadable(p) => loadable.push(p),
             FileOutcome::Skipped(s) => skipped.push(s),
-            FileOutcome::Invalid { file, reason } => errors.push(format!(
-                "invalid plugin '{}': {reason}",
-                dir.join(file).display()
-            )),
+            FileOutcome::Invalid { file, reason } | FileOutcome::Outdated { file, reason, .. } => {
+                errors.push(format!(
+                    "invalid plugin '{}': {reason}",
+                    dir.join(file).display()
+                ));
+            }
         }
     }
     errors.extend(conflicts(&loadable).into_iter().map(|c| c.message));
@@ -1293,8 +1397,9 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
     };
     let mut loadable = Vec::new();
     let mut rows = Vec::new();
-    for path in &files {
-        match examine(path, policy) {
+    let examined: Vec<FileOutcome> = files.iter().map(|path| examine(path, policy)).collect();
+    for outcome in supersede(examined) {
+        match outcome {
             FileOutcome::Loadable(p) => {
                 let signature = match &p.verdict {
                     Verdict::Trusted {
@@ -1305,6 +1410,10 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                         allow: crate::sign::AllowReason::Unsigned,
                         ..
                     } => "unsigned (allowed)".to_string(),
+                    Verdict::Allowed {
+                        allow: crate::sign::AllowReason::RetiredKey,
+                        ..
+                    } => "retired-key (allowed)".to_string(),
                     Verdict::Allowed { .. } => "third-party (allowed)".to_string(),
                 };
                 rows.push(InventoryEntry {
@@ -1330,6 +1439,8 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
+                    RejectKind::Superseded => "superseded",
+                    RejectKind::RetiredKey => "retired-key",
                 }
                 .to_string();
                 let status = match s.kind {
@@ -1347,12 +1458,14 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     status,
                 });
             }
-            FileOutcome::Invalid { file, reason } => rows.push(InventoryEntry {
-                file,
-                manifest: None,
-                signature: "INVALID".to_string(),
-                status: format!("INVALID: {reason}"),
-            }),
+            FileOutcome::Invalid { file, reason } | FileOutcome::Outdated { file, reason, .. } => {
+                rows.push(InventoryEntry {
+                    file,
+                    manifest: None,
+                    signature: "INVALID".to_string(),
+                    status: format!("INVALID: {reason}"),
+                })
+            }
         }
     }
     // Surface phase-3 conflicts on the affected loadable rows. The join is on the tarball the

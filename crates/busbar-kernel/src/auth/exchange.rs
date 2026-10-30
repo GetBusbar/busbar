@@ -61,6 +61,7 @@ pub(crate) async fn exchange(
             req.uri().path(),
             req.headers(),
             candidate.as_deref(),
+            &mut None,
         )
         .await
     } else {
@@ -90,7 +91,7 @@ pub(crate) async fn exchange(
     let SelfMint {
         principal,
         team,
-        granted_pools: pools,
+        granted_scopes: pools,
         ttl,
     } = match admit_self_mint(
         &verdict,

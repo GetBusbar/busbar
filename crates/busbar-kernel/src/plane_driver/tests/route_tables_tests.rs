@@ -7,63 +7,26 @@
 use std::collections::HashMap;
 
 use super::{ConfigTables, EngineTablesView};
-use crate::plane_driver::route_input::{
-    AuthStyleInput, LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
-};
+use crate::plane_driver::route_input::{LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput};
 
 fn lane(model: &str, provider: &str) -> LaneInput {
     LaneInput {
         model: model.to_string(),
         provider: provider.to_string(),
-        protocol: "widget".to_string(),
         base_url: format!("https://{provider}.invalid"),
-        url_userinfo: None,
-        path: None,
-        path_base: None,
-        upstream_model: None,
-        api_key: busbar_contract::redacted::Secret::new(String::new()),
-        auth_style: AuthStyleInput::Default,
-        scope: None,
-        token_url: None,
-        token_userinfo: None,
-        subject: None,
-        error_map: HashMap::new(),
-        health: None,
-        allow_metadata_hosts: Vec::new(),
-        context_max: None,
-        lane_default_max_tokens: None,
-        attempt_timeout_ms: None,
-        reasoning: false,
-        prompt_caching: false,
-        lane_caps: Default::default(),
         max_concurrent: 1,
-        limited: false,
-        budget: -1,
     }
 }
 
-fn member(model: &str, lane_idx: usize, weight: u32) -> PoolMemberInput {
-    PoolMemberInput {
-        model: model.to_string(),
-        lane_idx,
-        weight,
-        reasoning: None,
-        attempt_timeout_ms: None,
-        tier: None,
-        cost_per_mtok: None,
-        tags: Vec::new(),
-    }
+fn member(lane_idx: usize, weight: u32) -> PoolMemberInput {
+    PoolMemberInput { lane_idx, weight }
 }
 
 fn pool(name: &str, members: Vec<PoolMemberInput>, on_exhausted: OnExhaustedInput) -> PoolInput {
     PoolInput {
         name: name.to_string(),
         members,
-        failover: None,
-        affinity: None,
         on_exhausted,
-        upstream_credentials: None,
-        breaker: None,
     }
 }
 
@@ -73,14 +36,10 @@ fn the_tables_project_the_resolved_sections_in_lane_order() {
     let pools = vec![
         pool(
             "primary",
-            vec![member("m-a", 0, 3), member("m-b", 1, 1)],
+            vec![member(0, 3), member(1, 1)],
             OnExhaustedInput::FallbackPool("spare".to_string()),
         ),
-        pool(
-            "spare",
-            vec![member("m-b", 1, 1)],
-            OnExhaustedInput::default(),
-        ),
+        pool("spare", vec![member(1, 1)], OnExhaustedInput::default()),
     ];
     let by_model: HashMap<String, usize> = [("m-a".to_string(), 0), ("m-b".to_string(), 1)].into();
     let t = ConfigTables::of(
