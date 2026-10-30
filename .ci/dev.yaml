@@ -182,7 +182,7 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
-  move: [fmt, clippy, test, deny, oracle]
+  move: [fmt, clippy, test, deny, oracle, windows-compile]
 checks:
   fmt:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
