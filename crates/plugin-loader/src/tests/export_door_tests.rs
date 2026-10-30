@@ -255,8 +255,10 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
 extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::mechanism::door::{Door, Statement};
     use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
-    static DOOR: std::sync::OnceLock<&'static Door> = std::sync::OnceLock::new();
-    DOOR.get_or_init(|| {
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    static DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    let mut door = DOOR.load(Ordering::Acquire);
+    if door.is_null() {
         let real: &'static Door = SCRAPE_DOOR();
         // SAFETY: the real door's Statement is `'static` plugin data.
         let st = unsafe { *real.statement() };
@@ -271,8 +273,19 @@ extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::d
         let mut d = real.parts();
         d.statement = stated;
         // SAFETY: a copy of the real door with its Statement replaced by a `'static` one.
-        Box::leak(Box::new(unsafe { Door::__from_parts(d) }))
-    })
+        let made: *mut Door = Box::leak(Box::new(unsafe { Door::__from_parts(d) }));
+        door = match DOOR.compare_exchange(
+            std::ptr::null_mut(),
+            made,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => made,
+            Err(first) => first,
+        };
+    }
+    // SAFETY: a leaked, never-freed `Door`, so `'static`.
+    unsafe { &*door }
 }
 
 /// A DOOR STATES IT TAKES FULL SPAN RECORDS through its Statement's extensions (`span_records`,
