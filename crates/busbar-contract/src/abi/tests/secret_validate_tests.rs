@@ -57,10 +57,27 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
     Err(Fault { rule, field })
 }
 
-/// A READY answer with a well-formed absent secret passes.
+/// RED (S3): a READY answer that names no material: a secret resolved to nothing is no secret,
+/// and the host would hand an empty credential on (fail-closed: refused, never resolved empty).
 #[test]
-fn ready_with_no_secret_passes() {
-    assert!(check(&base_out(), &[0; 16]).is_ok());
+fn ready_with_no_secret_faults() {
+    assert_eq!(
+        check(&base_out(), &[0; 16]),
+        red(Rule::Missing, "resolve.secret_on_ready")
+    );
+}
+
+/// RED (S12): READY material in the host's buffer that is not flagged secret.
+#[test]
+fn ready_with_material_not_flagged_secret_faults() {
+    let buf = [0u8; 16];
+    let mut out = base_out();
+    out.secret.ptr = buf.as_ptr();
+    out.secret.len = 4;
+    assert_eq!(
+        check(&out, &buf),
+        red(Rule::Missing, "resolve.secret.flags")
+    );
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes: those outcomes carry no answer.
@@ -259,3 +276,4 @@ fn needed_over_the_hard_max_faults() {
     out.needed = HARD_MAX_BYTES + 1;
     assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
 }
+
