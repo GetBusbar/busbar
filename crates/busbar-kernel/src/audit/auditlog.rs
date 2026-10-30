@@ -1038,28 +1038,58 @@ struct HeldRefusal {
     resource: String,
 }
 
-/// THE HOLD: `Some` until the chain opens (each refusal kept in raise order, bounded), `None` after
-/// (each refusal sealed at once). One lock orders a refusal raised while the hold is being sealed
-/// after everything held.
+/// THE HOLD: refusals kept (in raise order, bounded) until the chain opens, sealed at once after.
+/// Sealing crosses the audit store, which is plugin code, so it never runs under the hold's lock
+/// (THE DESIGN §11.13 M1): the open takes the held rows out and seals them with the lock released,
+/// and a refusal raised meanwhile is held behind them and sealed by the open's next round, so the
+/// chain still carries every refusal in raise order.
 struct RefusalHold {
-    held: Mutex<Option<(Vec<HeldRefusal>, u64)>>,
+    held: Mutex<Hold>,
+}
+
+/// What [`RefusalHold`] keeps under its lock.
+struct Hold {
+    /// Not yet sealed, in raise order.
+    rows: Vec<HeldRefusal>,
+    /// Raised past [`MAX_HELD_REFUSALS`] and not yet reported.
+    over: u64,
+    phase: Phase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// The chain is not open: every refusal is held.
+    Closed,
+    /// An open is sealing the held rows: every refusal is held behind them.
+    Sealing,
+    /// The chain is open: every refusal is sealed at once.
+    Open,
 }
 
 impl RefusalHold {
     const fn new() -> Self {
         Self {
-            held: Mutex::new(Some((Vec::new(), 0))),
+            held: Mutex::new(Hold {
+                rows: Vec::new(),
+                over: 0,
+                phase: Phase::Closed,
+            }),
         }
     }
 
-    /// Hold `row` while the chain is not open; once it is, hand it to `seal`.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Hold> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Hold `row` while the chain is not open (or its held rows are still being sealed); once it
+    /// is, hand it to `seal`.
     fn raise(&self, row: HeldRefusal, seal: impl FnOnce(&HeldRefusal)) {
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((rows, over)) = held.as_mut() {
-            if rows.len() < MAX_HELD_REFUSALS {
-                rows.push(row);
+        let mut held = self.lock();
+        if held.phase != Phase::Open {
+            if held.rows.len() < MAX_HELD_REFUSALS {
+                held.rows.push(row);
             } else {
-                *over += 1;
+                held.over += 1;
             }
             return;
         }
@@ -1068,16 +1098,41 @@ impl RefusalHold {
     }
 
     /// Open the chain: hand every held row to `seal`, in raise order, then the count the hold could
-    /// not keep (when any) to `over`. A second open seals nothing.
-    fn open(&self, mut seal: impl FnMut(&HeldRefusal), over: impl FnOnce(u64)) {
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        let Some((rows, dropped)) = held.take() else {
+    /// not keep (when any) to `over`, each with the lock released; rows raised meanwhile follow, in
+    /// the same order. A second open seals nothing.
+    fn open(&self, mut seal: impl FnMut(&HeldRefusal), mut over: impl FnMut(u64)) {
+        let mut held = self.lock();
+        if held.phase != Phase::Closed {
             return;
-        };
-        rows.iter().for_each(&mut seal);
-        if dropped > 0 {
-            over(dropped);
         }
+        held.phase = Phase::Sealing;
+        // An unwinding seal opens the chain rather than holding every later refusal for good.
+        let opened = OpenOnDrop(self);
+        loop {
+            let rows = std::mem::take(&mut held.rows);
+            let dropped = std::mem::take(&mut held.over);
+            if rows.is_empty() && dropped == 0 {
+                held.phase = Phase::Open;
+                break;
+            }
+            drop(held);
+            rows.iter().for_each(&mut seal);
+            if dropped > 0 {
+                over(dropped);
+            }
+            held = self.lock();
+        }
+        drop(held);
+        std::mem::forget(opened);
+    }
+}
+
+/// Opens a [`RefusalHold`] whose open unwound mid-seal.
+struct OpenOnDrop<'a>(&'a RefusalHold);
+
+impl Drop for OpenOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.lock().phase = Phase::Open;
     }
 }
 
