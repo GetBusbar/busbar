@@ -123,6 +123,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- auth-sigv4 now refuses a malformed AWS credential when the plugin opens, with an audited refusal naming the field, instead of opening and logging an error on every request (owner-signed 2026-10-30).
 - **A metadata host-list entry is read the way the destination it guards is read.**
   1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.
   On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
