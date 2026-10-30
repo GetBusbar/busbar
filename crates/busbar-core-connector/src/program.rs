@@ -30,7 +30,7 @@
 //!   no new lease; its program is killed once its last lease closes (at once when it has none).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 
 use busbar_contract::conn::{ConnError, Piece, PieceKind, Program, PROGRAM_GENERATION_FIELD};
@@ -107,7 +107,9 @@ struct Inbox {
 
 /// The program as it runs.
 struct Live {
-    conn: Connection,
+    /// Its connection while it is at home: `None` while a lease drives it with no lock held
+    /// ([`Member::crossing`]).
+    conn: Option<Connection>,
     generation: u64,
 }
 
@@ -119,6 +121,80 @@ struct State {
     retired: bool,
     next_lease: u64,
     leases: HashMap<u64, Inbox>,
+    /// A lease is spawning the next generation, with no lock held: another open waits for it.
+    spawning: bool,
+    /// The callers that found the program's connection out with another lease, woken once it is
+    /// back.
+    missed: Vec<Waker>,
+    /// Connections taken out of the member to be closed, each once the lock is let go
+    /// ([`Locked`]).
+    doomed: Vec<Connection>,
+}
+
+/// THE MEMBER'S LOCK, held. NO PLUGIN CODE RUNS UNDER IT (`BUSBAR-1.6.0.md` §11.13 M1): a
+/// connection taken out of the member to be closed is closed (its carrier's ends crossed) as this
+/// lets the lock go, never under it.
+struct Locked<'m>(Option<MutexGuard<'m, State>>);
+
+impl std::ops::Deref for Locked<'_> {
+    type Target = State;
+
+    fn deref(&self) -> &State {
+        self.0.as_ref().expect("the member's lock")
+    }
+}
+
+impl std::ops::DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        self.0.as_mut().expect("the member's lock")
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        let doomed = self
+            .0
+            .take()
+            .map(|mut st| std::mem::take(&mut st.doomed))
+            .unwrap_or_default();
+        for conn in doomed {
+            conn.close();
+        }
+    }
+}
+
+/// A connection a lease has out of its member. Only an unwind out of a drive drops it still
+/// holding the connection: its generation then ends, the connection closed.
+struct Out<'m> {
+    member: &'m Member,
+    generation: u64,
+    conn: Option<Connection>,
+}
+
+impl Drop for Out<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            let mut st = self.member.lock();
+            st.ended(self.generation, Some(Failure::Closed), &self.member.fan);
+            st.doomed.push(conn);
+        }
+    }
+}
+
+/// A spawn in flight with no lock held. Only an unwind out of the spawn drops it armed: the spawn
+/// is then let go, and the opens waiting on it are woken.
+struct Spawning<'m> {
+    member: &'m Member,
+    armed: bool,
+}
+
+impl Drop for Spawning<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.member.lock().spawning = false;
+            self.member.spawned.notify_all();
+        }
+    }
 }
 
 /// ONE MEMBER'S PROGRAM: its recipe, the entry framing its pipes, and the one connection every
@@ -131,6 +207,8 @@ pub(crate) struct Member {
     via: Via,
     alpn: Vec<Vec<u8>>,
     state: Mutex<State>,
+    /// Signalled as a spawn comes to its end.
+    spawned: Condvar,
     fan: Arc<Fan>,
     /// Its supervision key (`DialIn::supervision_key`): minted at [`Member::new`], never `0`, and
     /// kept for as long as this member is, so a re-declaration that keeps the member keeps it.
@@ -167,17 +245,16 @@ impl State {
     }
 
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
-    /// killed and every lease of its generation ends. The end is the carrier's to count (its
-    /// supervisor saw the program's output close, or finds it ended at the `shut`).
+    /// killed (its connection closed once the lock is let go, or by the lease that has it out as
+    /// it brings it back) and every lease of its generation ends. The end is the carrier's to
+    /// count (its supervisor saw the program's output close, or finds it ended at the `shut`).
     fn ended(&mut self, generation: u64, failure: Option<Failure>, fan: &Fan) {
         if self
             .live
             .as_ref()
             .is_some_and(|l| l.generation == generation)
         {
-            if let Some(live) = self.live.take() {
-                live.conn.close();
-            }
+            self.kill();
         }
         for inbox in self.leases.values_mut() {
             if inbox.generation == generation && inbox.ended.is_none() {
@@ -187,26 +264,19 @@ impl State {
         fan.wake_all();
     }
 
-    /// Queue what `lease`'s open carried, once the program's queue has room: `Ok(false)` while it
-    /// has none.
-    fn flush_unsent(&mut self, lease: u64, cx: &mut Context<'_>) -> Result<bool, Failure> {
-        let Some(inbox) = self.leases.get_mut(&lease) else {
-            return Err(Failure::Closed);
-        };
-        let Some(unsent) = inbox.unsent.take() else {
-            return Ok(true);
-        };
-        let generation = inbox.generation;
-        let Some(live) = self.live.as_mut().filter(|l| l.generation == generation) else {
-            return Err(Failure::Closed);
-        };
-        if live.conn.write_whole(&unsent, cx)? {
-            return Ok(true);
+    /// The running program is let go: its connection (when at home) is closed once the lock is
+    /// let go; one a lease has out is closed by that lease as it brings it back.
+    fn kill(&mut self) {
+        if let Some(conn) = self.live.take().and_then(|l| l.conn) {
+            self.doomed.push(conn);
         }
-        if let Some(inbox) = self.leases.get_mut(&lease) {
-            inbox.unsent = Some(unsent);
+    }
+
+    /// `waker`'s caller found the program's connection out: it is woken once it is back.
+    fn miss(&mut self, waker: &Waker) {
+        if !self.missed.iter().any(|w| w.will_wake(waker)) {
+            self.missed.push(waker.clone());
         }
-        Ok(false)
     }
 }
 
@@ -231,7 +301,11 @@ impl Member {
                 retired: false,
                 next_lease: 1,
                 leases: HashMap::new(),
+                spawning: false,
+                missed: Vec::new(),
+                doomed: Vec::new(),
             }),
+            spawned: Condvar::new(),
             fan: Arc::new(Fan::default()),
             supervision_key: NEXT_SUPERVISION_KEY
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -248,10 +322,89 @@ impl Member {
         &self.env
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> Locked<'_> {
+        Locked(Some(
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ))
+    }
+
+    /// THE HAND-OFF (`BUSBAR-1.6.0.md` §11.13 M1). Take `generation`'s connection out of the
+    /// member (`st` is its lock, let go here), `drive` it as its sole owner with no lock held, and
+    /// bring it back under the lock returned, so what the drive read is settled before another
+    /// lease can drive it. `None` (the lock kept) while another lease has it out (`missed` woken
+    /// once it is back) or the generation runs no more.
+    fn crossing<'m, R>(
+        &'m self,
+        mut st: Locked<'m>,
+        generation: u64,
+        missed: &Waker,
+        drive: impl FnOnce(&mut Connection) -> R,
+    ) -> (Locked<'m>, Option<R>) {
+        let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
+            return (st, None);
+        };
+        let Some(conn) = live.conn.take() else {
+            st.miss(missed);
+            return (st, None);
+        };
+        drop(st);
+        let mut out = Out {
+            member: self,
+            generation,
+            conn: Some(conn),
+        };
+        let r = drive(out.conn.as_mut().expect("the connection is out"));
+        let conn = out.conn.take().expect("the connection is out");
+        let mut st = self.lock();
+        // Back home, unless its generation ended meanwhile: then it is closed as the lock goes.
+        match st
+            .live
+            .as_mut()
+            .filter(|l| l.generation == generation && l.conn.is_none())
+        {
+            Some(live) => live.conn = Some(conn),
+            None => st.doomed.push(conn),
+        }
+        for w in std::mem::take(&mut st.missed) {
+            w.wake();
+        }
+        (st, Some(r))
+    }
+
+    /// Queue what `lease`'s open carried, once the program's queue has room: `Ok(false)` while it
+    /// has none, or while another lease has the connection out.
+    fn flush_unsent<'m>(
+        &'m self,
+        mut st: Locked<'m>,
+        lease: u64,
+        cx: &mut Context<'_>,
+    ) -> (Locked<'m>, Result<bool, Failure>) {
+        let Some(inbox) = st.leases.get_mut(&lease) else {
+            return (st, Err(Failure::Closed));
+        };
+        let Some(unsent) = inbox.unsent.take() else {
+            return (st, Ok(true));
+        };
+        let generation = inbox.generation;
+        if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
+            return (st, Err(Failure::Closed));
+        }
+        let missed = cx.waker().clone();
+        let (mut st, wrote) = self.crossing(st, generation, &missed, |conn| {
+            conn.write_whole(&unsent, cx)
+        });
+        match wrote {
+            Some(Ok(true)) => (st, Ok(true)),
+            Some(Err(f)) => (st, Err(f)),
+            Some(Ok(false)) | None => {
+                if let Some(inbox) = st.leases.get_mut(&lease) {
+                    inbox.unsent = Some(unsent);
+                }
+                (st, Ok(false))
+            }
+        }
     }
 
     fn fan_waker(&self) -> Waker {
@@ -264,15 +417,29 @@ impl Member {
     /// host's). `first` (when not empty) is the lease's first message, written whole.
     pub(crate) fn lease(&self, first: &[u8]) -> Result<u64, ConnError> {
         let mut st = self.lock();
-        if st.retired {
-            return Err(ConnError::Refused);
+        loop {
+            if st.retired {
+                return Err(ConnError::Refused);
+            }
+            if !st.spawning {
+                break;
+            }
+            // Another open is spawning the program, with no lock held: this one waits for it.
+            let guard = st.0.take().expect("the member's lock");
+            st.0 = Some(
+                self.spawned
+                    .wait(guard)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
         }
         // A program that already exited is never written to: its end is a crash, and this open
-        // starts the next generation.
-        let exited = st
-            .live
-            .as_mut()
-            .and_then(|l| l.conn.program_exited().then_some(l.generation));
+        // starts the next generation. (One out with a lease is found exited by its drive.)
+        let exited = st.live.as_mut().and_then(|l| {
+            l.conn
+                .as_mut()
+                .is_some_and(Connection::program_exited)
+                .then_some(l.generation)
+        });
         if let Some(generation) = exited {
             st.ended(generation, None, &self.fan);
         }
@@ -286,17 +453,37 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
             };
-            match Connection::spawn(
+            // The carrier's `dial` crosses with no lock held; another open meanwhile waits for it.
+            st.spawning = true;
+            drop(st);
+            let mut spawning = Spawning {
+                member: self,
+                armed: true,
+            };
+            let spawned = Connection::spawn(
                 &self.via,
                 &self.program,
                 &self.env,
                 dial,
                 self.supervision_key,
-            ) {
+            );
+            spawning.armed = false;
+            st = self.lock();
+            st.spawning = false;
+            self.spawned.notify_all();
+            match spawned {
+                // Retired meanwhile: the program spawned for no lease is killed.
+                Ok(conn) if st.retired => {
+                    st.doomed.push(conn);
+                    return Err(ConnError::Refused);
+                }
                 Ok(conn) => {
                     st.generation += 1;
                     let generation = st.generation;
-                    st.live = Some(Live { conn, generation });
+                    st.live = Some(Live {
+                        conn: Some(conn),
+                        generation,
+                    });
                     st.mid_frame = false;
                 }
                 Err(f) => return Err(map(&f)),
@@ -325,7 +512,8 @@ impl Member {
             },
         );
         let waker = self.fan_waker();
-        if let Err(f) = st.flush_unsent(lease, &mut Context::from_waker(&waker)) {
+        let (mut st, flushed) = self.flush_unsent(st, lease, &mut Context::from_waker(&waker));
+        if let Err(f) = flushed {
             st.ended(generation, Some(f.clone()), &self.fan);
             st.leases.remove(&lease);
             return Err(map(&f));
@@ -383,7 +571,9 @@ impl Member {
                 };
             }
             let generation = inbox.generation;
-            match st.flush_unsent(lease, &mut cx) {
+            let (back, flushed) = self.flush_unsent(st, lease, &mut cx);
+            st = back;
+            match flushed {
                 Ok(_) => {}
                 Err(f) => {
                     st.ended(generation, Some(f), &self.fan);
@@ -398,10 +588,14 @@ impl Member {
             if st.backlogged(generation) {
                 return Err(ConnError::Pending);
             }
-            let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
-                continue;
+            let (back, polled) =
+                self.crossing(st, generation, waker, |conn| conn.poll_piece(&mut cx));
+            st = back;
+            // `None`: another lease has the program out, and this one is woken once it is back.
+            let Some(polled) = polled else {
+                return Err(ConnError::Pending);
             };
-            match live.conn.poll_piece(&mut cx) {
+            match polled {
                 Poll::Pending => return Err(ConnError::Pending),
                 Poll::Ready(Ok(Some(got))) => {
                     if got.fields || (got.bytes.is_empty() && !got.end_of_frame) {
@@ -432,7 +626,7 @@ impl Member {
     /// Whether `lease` has a piece (or its end) ready, `waker` woken when one arrives.
     pub(crate) fn ready(&self, lease: u64, waker: &Waker) -> Result<bool, ConnError> {
         let fan_waker = self.fan_waker();
-        let mut st = self.lock();
+        let st = self.lock();
         let inbox = st.leases.get(&lease).ok_or(ConnError::Closed)?;
         if inbox.head.is_some() || !inbox.pieces.is_empty() || inbox.ended.is_some() {
             return Ok(true);
@@ -443,14 +637,15 @@ impl Member {
             self.fan.register(lease, waker);
             return Ok(false);
         }
-        let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
+        if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
             return Ok(true);
-        };
+        }
         self.fan.register(lease, waker);
-        Ok(live
-            .conn
-            .poll_ready(&mut Context::from_waker(&fan_waker))
-            .is_ready())
+        let (_st, polled) = self.crossing(st, generation, waker, |conn| {
+            conn.poll_ready(&mut Context::from_waker(&fan_waker))
+        });
+        // `None`: another lease has the program out, and this one is woken once it is back.
+        Ok(polled.is_some_and(|p| p.is_ready()))
     }
 
     /// Write `bytes` on `lease` as ONE WHOLE MESSAGE: all taken, or `Pending` while the program's
@@ -458,14 +653,15 @@ impl Member {
     pub(crate) fn write(&self, lease: u64, bytes: &[u8]) -> Result<usize, ConnError> {
         let fan_waker = self.fan_waker();
         let mut cx = Context::from_waker(&fan_waker);
-        let mut st = self.lock();
+        let st = self.lock();
         let generation = st
             .leases
             .get(&lease)
             .filter(|i| i.ended.is_none())
             .map(|i| i.generation)
             .ok_or(ConnError::Closed)?;
-        match st.flush_unsent(lease, &mut cx) {
+        let (mut st, flushed) = self.flush_unsent(st, lease, &mut cx);
+        match flushed {
             Ok(true) => {}
             Ok(false) => return Err(ConnError::Pending),
             Err(f) => {
@@ -476,10 +672,14 @@ impl Member {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
+        if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
             return Err(ConnError::Closed);
-        };
-        match live.conn.write_whole(bytes, &mut cx) {
+        }
+        let (mut st, wrote) = self.crossing(st, generation, &fan_waker, |conn| {
+            conn.write_whole(bytes, &mut cx)
+        });
+        // `None`: another lease has the program out; the leases are woken once it is back.
+        match wrote.unwrap_or(Ok(false)) {
             Ok(true) => Ok(bytes.len()),
             Ok(false) => Err(ConnError::Pending),
             Err(f) => {
@@ -524,9 +724,7 @@ impl Member {
             self.fan.wake_all();
         }
         if st.retired && st.leases.is_empty() {
-            if let Some(live) = st.live.take() {
-                live.conn.close();
-            }
+            st.kill();
         }
     }
 
@@ -536,9 +734,7 @@ impl Member {
         let mut st = self.lock();
         st.retired = true;
         if st.leases.is_empty() {
-            if let Some(live) = st.live.take() {
-                live.conn.close();
-            }
+            st.kill();
         }
     }
 }
