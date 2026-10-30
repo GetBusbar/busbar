@@ -421,3 +421,38 @@ fn zeroed_pending_and_refused_pass_every_op() {
         );
     }
 }
+
+/// THE KIND TAIL GROWTH RULE on the hook tail (H8): the hook facts are read through the loader's one
+/// tail reader, like a plane's, store's or transport's. A tail of the host's size loads; one that
+/// states MORE (a later plugin's appended field) loads, read only to the host's size; one below the
+/// frozen size is refused, naming it.
+#[test]
+fn the_hook_tail_follows_the_growth_rule() {
+    use busbar_contract::abi::hook::{Tail, CLASS_TAP, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::hook_calls::HookFacts;
+    let bind = |size: usize| {
+        let mut tail = Tail::EMPTY.with_access(CLASS_TAP, PROMPT_NO, USER_NO);
+        tail.head.size = size as u32;
+        // Room past the host's tail for a later plugin's appended bytes.
+        let leaked: &'static mut [Tail; 2] = Box::leak(Box::new([tail, tail]));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&leaked[0]).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Hook as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<HookFacts>().ok())
+                .map(|f| f.class)
+        })
+    };
+    let host = size_of::<Tail>();
+    assert_eq!(bind(host), Ok(Some(CLASS_TAP)));
+    assert_eq!(bind(host + 8), Ok(Some(CLASS_TAP)), "a grown tail loads");
+    assert_eq!(
+        bind(host - 8),
+        Err(format!(
+            "a hook states a {}-byte tail, smaller than its frozen {host}",
+            host - 8
+        ))
+    );
+}

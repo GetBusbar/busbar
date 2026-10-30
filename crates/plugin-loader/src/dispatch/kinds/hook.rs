@@ -25,6 +25,11 @@ fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
+/// The hook tail's last frozen size: it has not grown since 1.6.0 froze it, so it is this host's
+/// (THE KIND TAIL GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail appended to later
+/// still loads a plugin built against this one, its appended fields read absent.
+const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
+
 /// The refusal of a hook Statement that states no kind tail.
 pub const NO_TAIL: &str =
     "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
@@ -37,20 +42,12 @@ pub const NO_TAIL: &str =
 /// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
 fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
-    let p = st.kind_tail;
-    if p.is_null() {
+    if st.kind_tail.is_null() {
         return Err(NO_TAIL.to_string());
     }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `Tail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<Tail>() {
-        return Err(format!(
-            "the hook tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let t = unsafe { p.cast::<Tail>().read_unaligned() };
+    // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
+    // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
+    let t: Tail = unsafe { crate::dispatch::plugin::kind_tail(st, "a hook", HOOK_TAIL_FROZEN) }?;
     if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
         return Err(format!("the hook tail states class {}", t.kind_class));
     }

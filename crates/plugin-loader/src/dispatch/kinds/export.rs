@@ -75,22 +75,16 @@ fn route(r: &export::Route) -> Result<Route, String> {
     Ok(Route { path, method, auth })
 }
 
+/// The export tail's last frozen size: it has not grown since 1.6.0 froze it, so it is this host's
+/// (THE KIND TAIL GROWTH RULE, `abi::mechanism::door::tail_read_len`).
+const EXPORT_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
+
 /// Read and judge the export tail ([`validate::check_tail`], then [`validate::check_tail_entries`]).
 fn facts(st: &Statement) -> Result<ExportFacts, String> {
-    let p = st.kind_tail;
-    if p.is_null() {
-        return Err("an export plugin states no kind tail".into());
-    }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `Tail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<Tail>() {
-        return Err(format!(
-            "the export tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let t = unsafe { p.cast::<Tail>().read_unaligned() };
+    // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
+    // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
+    let t: Tail =
+        unsafe { crate::dispatch::plugin::kind_tail(st, "an export plugin", EXPORT_TAIL_FROZEN) }?;
     let why = |f: Fault| format!("the export tail breaks {:?} at {}", f.rule, f.field);
     validate::check_tail(&t).map_err(why)?;
     // SAFETY: `check_tail` refused a count behind NULL and bounded both counts; the lists are
