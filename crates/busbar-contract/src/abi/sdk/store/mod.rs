@@ -27,8 +27,6 @@ pub mod dedupe;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
-// A forked chain, in one wording for every store.
-pub mod fork;
 
 use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;
