@@ -632,7 +632,11 @@ fn resolved(secret: Blob) -> ResolveOut {
     let mut out: ResolveOut = zeroed();
     // No lease: a resolved value is written into the host's buffer (the credential chip, row 6: host-owned secret bytes).
     out.head = ready_head(0);
-    out.secret = secret;
+    // Flagged secret, as every READY resolve's material is.
+    out.secret = Blob {
+        flags: crate::abi::mechanism::call::BLOB_SECRET,
+        ..secret
+    };
     out
 }
 

@@ -185,4 +185,11 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     assert_eq!(c.outcome, Outcome::Ready);
     assert_eq!(c.out.error_kind, ERROR_KIND_UNSET);
     assert_eq!(c.owned.material(), b"value");
+
+    // A value that resolved to nothing is FAILED, INVALID, in words (S3): never READY empty.
+    let c = resolve_with(br#"{"key":""}"#);
+    assert_eq!(c.outcome, Outcome::Failed);
+    assert_eq!(c.out.error_kind, ERROR_KIND_INVALID);
+    assert_eq!(c.error.as_deref(), Some(crate::abi::sdk::cred::EMPTY_VALUE));
+    assert!(c.owned.material().is_empty());
 }

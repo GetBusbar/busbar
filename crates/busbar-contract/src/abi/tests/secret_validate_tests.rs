@@ -276,4 +276,3 @@ fn needed_over_the_hard_max_faults() {
     out.needed = HARD_MAX_BYTES + 1;
     assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
 }
-

@@ -8,14 +8,15 @@
 //! Per outcome: the secret blob's pointer/length pairing, its size and the `error_kind` range are
 //! judged on every outcome (a PENDING or REFUSED `out` the host zeroed passes them). No answer
 //! carries a lease: the material is in the HOST'S buffer (the credential chip, row 6: host-owned secret bytes). READY states no
-//! `error_kind` and names bytes at the start of that buffer, within its capacity; FAILED carries no
+//! `error_kind` and names at least one byte, flagged [`BLOB_SECRET`], at the start of that buffer,
+//! within its capacity; FAILED carries no
 //! material and either names its `error_kind` or is the short-buffer answer (M-SB: `needed` above
 //! the capacity, `error_kind` unset).
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{ResolveOut, ERROR_KIND_INTERNAL, ERROR_KIND_UNSET};
-use crate::abi::mechanism::call::Outcome;
+use crate::abi::mechanism::call::{Outcome, BLOB_SECRET};
 use crate::abi::mechanism::check::{blob, fault, result, Filled, HARD_MAX_BYTES};
 
 /// Validates `resolve`'s `out` against the host buffer the call was lent: its address `buf` and
@@ -65,6 +66,14 @@ pub fn check_resolve(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault
             // never lent, and would have to be copied and released.
             if written > 0 && out.secret.ptr as usize != buf {
                 return Err(fault(Rule::Foreign, "resolve.secret_outside_buffer"));
+            }
+            // A READY resolve IS its material: none is no secret (fail-closed, never resolved
+            // empty), and what it names is secret on the host side, so it says so.
+            if ready && written == 0 {
+                return Err(fault(Rule::Missing, "resolve.secret_on_ready"));
+            }
+            if ready && out.secret.flags & BLOB_SECRET == 0 {
+                return Err(fault(Rule::Missing, "resolve.secret.flags"));
             }
         }
     }
