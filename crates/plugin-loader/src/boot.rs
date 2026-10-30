@@ -357,8 +357,17 @@ impl Candidate {
     }
 
     /// Whether config names this plugin by `word` (its name or an alias).
-    fn answers(&self, word: &str) -> bool {
+    pub(crate) fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
+    }
+
+    /// This candidate, answering also to the former names `former_of` gives for any of its words
+    /// (its name or an alias): a LINKED row's earlier releases' names, as a dropped-in copy states
+    /// them in its signed manifest (compiled in = dropped in).
+    #[must_use]
+    pub(crate) fn answering_former(self, former_of: impl Fn(&str) -> Vec<String>) -> Self {
+        let words: Vec<String> = self.words().flat_map(former_of).collect();
+        self.answering(words)
     }
 
     /// LAW 7 FOR A TRANSPORT, off its Statement alone (nothing is opened): a URL scheme the
@@ -1027,8 +1036,9 @@ fn open_ready<K: crate::dispatch::Kind>(
     i.generation = 1;
     let mut f = crate::dispatch::Frame::new(i, blank_out::<OpenOut>());
     let opened = plugin.call(slot::OPEN, &mut f);
+    // The bytes went straight to `open`; they are wiped now, whatever it answered.
     drop(blobs);
-    held.wipe();
+    drop(held);
     if opened.outcome != Outcome::Ready {
         return Err(opened.open_failure(plugin.name()));
     }
@@ -1041,9 +1051,9 @@ fn open_ready<K: crate::dispatch::Kind>(
 /// `OpenIn::secrets` entry, in the Statement's order. A key the block does not set is an empty
 /// entry (its place is kept); a reference that does not parse or resolve refuses, naming the key
 /// and never a byte of the secret. Then each WILDCARD path's (`*` = any key or index) matches, in
-/// document order: a reference is resolved, a string is lent as written, and each is appended to
-/// the secrets and replaced in the block by its `{"$secret": <index>}` marker
-/// (`busbar_contract::secret_fields::lend`).
+/// document order: each is read and resolved as an exact path's is (a literal there refuses as it
+/// does at an exact path, lead ruling item 7b), appended to the secrets and replaced in the block
+/// by its `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`).
 ///
 /// # Errors
 /// The key whose reference is malformed or does not resolve.
@@ -1052,16 +1062,13 @@ pub fn resolve_secrets(
     keys: &[String],
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Vec<busbar_contract::redacted::Secret<Vec<u8>>>, String> {
     busbar_contract::secret_fields::lend(
         block,
         keys,
         false,
         |path, found| resolve_one(found, path, resolver, scope),
-        |at, found| match found {
-            serde_json::Value::String(s) => Ok(s.into_bytes()),
-            reference => resolve_one(Some(reference), at, resolver, scope),
-        },
+        |at, found| resolve_one(Some(found), at, resolver, scope),
     )
 }
 
@@ -1074,9 +1081,9 @@ fn resolve_one(
     path: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Vec<u8>, String> {
+) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
     let Some(found) = found else {
-        return Ok(Vec::new());
+        return Ok(busbar_contract::redacted::Secret::default());
     };
     let r: busbar_contract::secret_ref::SecretRef =
         serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
@@ -1103,40 +1110,26 @@ pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> S
     }
 }
 
-/// Resolved secret bytes, held for one `open` and overwritten with zeroes when it returns.
-struct Secrets(Vec<Vec<u8>>);
+/// Resolved secret bytes, held for one `open` in the holders the secret plugins wrote them into
+/// (the credential chip, row 6: host-owned secret bytes: never a `String`, never copied) and wiped when it returns.
+struct Secrets(Vec<busbar_contract::redacted::Secret<Vec<u8>>>);
 
 impl Secrets {
     /// One `BLOB_SECRET` blob per secret, in order, over the bytes held here.
-    fn blobs(&self) -> Vec<busbar_contract::abi::mechanism::call::Blob> {
+    fn blobs(&mut self) -> Vec<busbar_contract::abi::mechanism::call::Blob> {
         use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
         self.0
-            .iter()
-            .map(|b| Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_OCTETS,
-                flags: BLOB_SECRET,
+            .iter_mut()
+            .map(|b| {
+                let (ptr, len) = b.lend_mut();
+                Blob {
+                    ptr: ptr.cast_const(),
+                    len,
+                    fmt: BLOB_OCTETS,
+                    flags: BLOB_SECRET,
+                }
             })
             .collect()
-    }
-
-    /// Overwrite every secret byte with zero.
-    #[allow(unsafe_code)] // REVIEWED: a volatile write, so the zeroing is never elided
-    fn wipe(&mut self) {
-        for b in &mut self.0 {
-            for byte in b.iter_mut() {
-                // SAFETY: `byte` is a live, exclusively borrowed `u8`; the volatile write keeps the
-                // compiler from dropping the zeroing of memory about to be freed.
-                unsafe { std::ptr::write_volatile(byte, 0) };
-            }
-        }
-    }
-}
-
-impl Drop for Secrets {
-    fn drop(&mut self) {
-        self.wipe();
     }
 }
 

@@ -466,7 +466,13 @@ impl sealed::Take for crate::abi::secret::ResolveOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> SecretCopy {
-        judged(crate::abi::secret::validate::check_resolve(self));
+        // The `in` is the test's own, so the host buffer is judged where the answer names it: the
+        // dispatcher judges it against the buffer it lent (`check_resolve`'s `buf`/`cap`).
+        judged(crate::abi::secret::validate::check_resolve(
+            self,
+            self.secret.ptr as usize,
+            self.secret.len as u64,
+        ));
         let mut copy = Zeroizing::new(Vec::new());
         copy.extend_from_slice(lent(self.secret.ptr, self.secret.len, "resolve.secret"));
         SecretCopy(copy)
@@ -565,6 +571,22 @@ impl sealed::Take for crate::abi::export::ScrapeOut {
     }
 }
 impl Reply for crate::abi::export::ScrapeOut {
+    type Owned = ();
+}
+
+impl sealed::Take for crate::abi::auth::IdentifyOut {
+    fn head(&mut self) -> &mut OutHead {
+        &mut self.head
+    }
+    fn clear(&mut self, _: Token) {
+        clear_head(&mut self.head);
+    }
+    /// Every identity field is a span into the host's buffers, which the caller lent and holds, so
+    /// the caller reads them; the kind's check (`check_identify`) needs those buffers and is the
+    /// caller's to run.
+    fn take(&self, _: Outcome, _: Token) {}
+}
+impl Reply for crate::abi::auth::IdentifyOut {
     type Owned = ();
 }
 

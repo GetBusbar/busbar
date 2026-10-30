@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/breaker.rs`.
+//! Tests for the contract's status-class vocabulary.
 
-use super::*;
+use busbar_contract::upstream::StatusClass;
+
+fn status_class_from_str(s: &str) -> Option<StatusClass> {
+    StatusClass::parse(s)
+}
 
 #[test]
 fn status_class_from_str_maps_known_values_and_rejects_unknown() {

@@ -96,9 +96,13 @@ pub fn binding_generation(generation_hash: &str) -> Option<&str> {
 /// Whether a presented token's generation claim matches the binding row's CURRENT generation —
 /// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
 /// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
-/// rotation can never be defeated by simply omitting the claim.
+/// rotation can never be defeated by simply omitting the claim. The two generations are compared
+/// with the contract's timing-safe primitive: it is stored key material on the bearer path.
 pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
-    binding_generation(generation_hash) == presented
+    match (binding_generation(generation_hash), presented) {
+        (Some(held), Some(claimed)) => busbar_contract::redacted::constant_time_eq(held, claimed),
+        (held, claimed) => held.is_none() && claimed.is_none(),
+    }
 }
 
 /// THE ONE 128-bit random hex draw: 128 bits of OS CSPRNG as 32 lowercase hex chars. Fails closed on
@@ -165,6 +169,8 @@ struct BudgetCell {
     /// The fee base split by the card era each billable request was admitted under, so each fee
     /// prices at the card in force when that request was admitted.
     fee_eras: busbar_kernel_ledger::usage::FeeEras,
+    /// The fee eras' flush baseline (twin of `flushed_billable_requests`, per dated era).
+    flushed_fee_eras: busbar_kernel_ledger::usage::FeeEras,
     /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
     /// a newer window moves what the old window held past its last acknowledged flush here
     /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
@@ -229,20 +235,44 @@ impl BudgetCell {
     /// the eras of one model are one delta on the wire (the durable row is per model and carries no
     /// era — Q14's wire step), byte-identical to an undated cell's.
     fn unflushed(&self) -> UsageDelta {
-        let deltas = self.models.iter().map(|m| {
-            // The UNION of unit keys in cur+flushed (freshly accrued, or refunded away).
-            let keys = m.cur.keys().chain(m.flushed.keys());
-            let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
-                signed(side.get(k).copied().unwrap_or(0))
-            };
-            let d = keys.map(|k| (k.clone(), at(&m.cur, k) - at(&m.flushed, k)));
-            (&*m.model, d.collect())
-        });
+        let deltas = (self.models.iter()).map(|m| (&*m.model, units_delta(&m.cur, &m.flushed)));
         UsageDelta {
             requests: signed(self.requests) - signed(self.flushed_requests),
             billable_requests: signed(self.billable_requests)
                 - signed(self.flushed_billable_requests),
             models: model_deltas(deltas),
+        }
+    }
+
+    /// The DATED part of [`Self::unflushed`], for the bucket's card-era row ([`era_bucket`]): each
+    /// dated (model, era) segment under `"<era>\u{1f}<model>"`, each dated fee era under `"<era>"`
+    /// with unit [`ERA_FEE_UNIT`]. Era zero is not written: it is the plain row minus these.
+    fn unflushed_eras(&self) -> UsageDelta {
+        let mut rows: Vec<(String, std::collections::BTreeMap<String, i64>)> = (self.models.iter())
+            .filter(|m| m.era != 0)
+            .map(|m| {
+                (
+                    format!("{}\u{1f}{}", m.era, m.model),
+                    units_delta(&m.cur, &m.flushed),
+                )
+            })
+            .collect();
+        let fees =
+            |f: &busbar_kernel_ledger::usage::FeeEras| -> std::collections::BTreeMap<String, u64> {
+                let fee = f.dated().iter();
+                fee.map(|(era, n)| (era.to_string(), *n)).collect()
+            };
+        let (cur, flushed) = (fees(&self.fee_eras), fees(&self.flushed_fee_eras));
+        for (era, n) in units_delta(&cur, &flushed) {
+            rows.push((
+                era,
+                std::collections::BTreeMap::from([(ERA_FEE_UNIT.into(), n)]),
+            ));
+        }
+        UsageDelta {
+            requests: 0,
+            billable_requests: 0,
+            models: model_deltas(rows.iter().map(|(m, d)| (m.as_str(), d.clone()))),
         }
     }
 
@@ -349,6 +379,31 @@ impl BudgetCell {
             acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
         })
     }
+}
+
+/// `cur - flushed` per unit, over the UNION of their units (freshly accrued, or taken back).
+fn units_delta(
+    cur: &std::collections::BTreeMap<String, u64>,
+    flushed: &std::collections::BTreeMap<String, u64>,
+) -> std::collections::BTreeMap<String, i64> {
+    let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
+        signed(side.get(k).copied().unwrap_or(0))
+    };
+    let keys = cur.keys().chain(flushed.keys());
+    keys.map(|k| (k.clone(), at(cur, k) - at(flushed, k)))
+        .collect()
+}
+
+/// The unit a card-era row counts a dated fee era's billable requests under.
+const ERA_FEE_UNIT: &str = "billable_requests";
+
+/// THE CARD-ERA ROW of `bucket` (owner 2026-10-27, #79, Q14): a sibling usage row holding the
+/// bucket's dated counts, so a restart (or another node) prices each count at the card in force when
+/// it was ledgered. `"e:" ++ hex(SHA-256(bucket)[..16])`, 34 bytes whatever the bucket's length; the
+/// plain row stays exactly the 1.5.5 row.
+fn era_bucket(bucket: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bucket.as_bytes());
+    format!("e:{}", hex::encode(&digest.as_ref()[..16]))
 }
 
 /// Clamp a u64 counter into the signed delta domain.
@@ -861,6 +916,14 @@ pub mod group_provision;
 // `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
 // busbar-core reaches them through this crate.
 mod state;
+pub use state::{
+    metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
+    ADJUST_UP_BUCKET,
+};
+// TICKETS (row 132): short-lived single-use credentials minted for a unit's principal through the
+// same token stamp, and admitted once on a route that takes them.
+mod tickets;
+pub use tickets::{TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -944,13 +1007,15 @@ pub async fn mint_self_offloaded(
     op: SelfMintOp,
     user_sub: String,
     provider: String,
-    allowed_pools: Option<Vec<String>>,
+    allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     exp: u64,
     now: u64,
 ) -> Result<(VirtualKey, String), SelfMintError> {
     tokio::task::spawn_blocking(move || match op {
-        SelfMintOp::Issue => gov.issue_self(&user_sub, &provider, allowed_pools, exp, now),
-        SelfMintOp::Refresh => gov.refresh_self(&user_sub, &provider, allowed_pools, exp, now),
+        SelfMintOp::Issue => gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now),
+        SelfMintOp::Refresh => {
+            gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+        }
     })
     .await
     .unwrap_or_else(|e| {
@@ -1077,21 +1142,62 @@ pub(crate) fn granting_bindings<'a>(
     }
 }
 
-/// The pool union across granting bindings. OMITTED `allowed_pools` on any granting binding widens
-/// the union to ALL pools (`None`, the runtime encoding too); otherwise the union is the
-/// de-duplicated concatenation of every binding's explicit list (an explicit `[]` contributes
-/// nothing, so an every-binding-`[]` union is `Some(vec![])`).
-pub(crate) fn pool_union(granting: &[&crate::config::RoleBindingCfg]) -> Option<Vec<String>> {
-    let mut pool_names: Vec<String> = Vec::new();
+/// THE GRANT UNION across granting bindings, over EVERY scope kind (W9). A binding that names no
+/// grant field at all grants everything (`None`), and one such binding widens the union to
+/// everything (`None`, the runtime encoding too); otherwise the union is the de-duplicated
+/// concatenation of every binding's kind-tagged grant (an explicit `[]` contributes nothing, so an
+/// every-binding-`[]` union is `Some(vec![])`). A binding that names any kind is exhaustive across
+/// kinds, as a minted key's grant is ([`busbar_contract::records::VirtualKey::scope_allowed`]).
+pub(crate) fn grant_union(
+    granting: &[&crate::config::RoleBindingCfg],
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    let mut union: Vec<busbar_contract::records::ScopeRef> = Vec::new();
     for b in granting {
-        let list = b.allowed_pools.as_deref()?;
-        for p in list {
-            if !pool_names.contains(p) {
-                pool_names.push(p.clone());
+        for scope in b.scope_grant()? {
+            if !union.contains(&scope) {
+                union.push(scope);
             }
         }
     }
-    Some(pool_names)
+    Some(union)
+}
+
+/// THE GRANT a mint or a role binding states, intent carried intact, from its `allowed_pools`
+/// field and its plane-kind `allowed_{kind}s` fields (`plane`: `None` when it named no plane-kind
+/// field, `Some(list)` when it named at least one, the list possibly empty). Naming NO field at all is
+/// everything (`None`); naming any field makes the grant exactly the scopes named, across every
+/// kind, so a field left out beside a named one grants nothing of its kind (fail closed, as
+/// [`busbar_contract::records::VirtualKey::scope_allowed`] reads it), and every field `[]` is
+/// nothing at all.
+pub fn grant_scopes(
+    pools: Option<Vec<String>>,
+    plane: Option<Vec<busbar_contract::records::ScopeRef>>,
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    if pools.is_none() && plane.is_none() {
+        return None;
+    }
+    let mut list: Vec<busbar_contract::records::ScopeRef> = pools
+        .into_iter()
+        .flatten()
+        .map(busbar_contract::records::ScopeRef::pool)
+        .collect();
+    list.extend(plane.into_iter().flatten());
+    Some(list)
+}
+
+/// The scope kind a PLANE grant field names (`allowed_{kind}s`, the frozen wire convention), or
+/// `None` when the field is not one: not an `allowed_*s` field, an empty kind, or core's own
+/// `allowed_pools` (a named field everywhere it is accepted).
+pub fn plane_grant_kind(field: &str) -> Option<String> {
+    busbar_contract::records::scope_kinds::kind_for_wire_field(field)
+        .filter(|kind| !kind.is_empty() && kind != "pool")
+}
+
+/// Whether an installed plane declares the scope kind `kind` (`PlaneDecl.scope_kinds`, every plane
+/// linked or dropped in): the kinds a mint or a role binding may grant beside pools. A kind no plane
+/// declares is refused rather than stored, so a typo never sits inert as a grant.
+pub fn plane_declares_kind(kind: &str) -> bool {
+    kind != "pool" && crate::plane_driver::registry::scope_kind_index(kind).is_some()
 }
 
 /// A pool grant as key scopes, intent carried intact: `None` = all pools; `Some([])` = none.
@@ -1135,7 +1241,7 @@ fn synthesize_key(
     }
     // An all-bindings-empty union = the EMPTY SET = no data-plane access (fail closed: no key at
     // all - nothing to admit).
-    let allowed_pools = match pool_union(&granting) {
+    let allowed_scopes = match grant_union(&granting) {
         Some(list) if list.is_empty() => return None,
         union => union,
     };
@@ -1151,7 +1257,7 @@ fn synthesize_key(
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_scopes: pool_scopes(allowed_pools),
+        allowed_scopes,
         enabled: true,
         created_at: 0,
         group,
@@ -1730,6 +1836,11 @@ pub struct NewKeySpec {
     /// Pool grants with the intent carried intact: `None` = the mint body OMITTED
     /// `allowed_pools` = ALL pools; `Some(list)` = exactly those; `Some([])` = NO pools.
     pub allowed_pools: Option<Vec<String>>,
+    /// Plane-kind grants (`allowed_{kind}s` at mint, W9): `None` = the mint named no plane-kind
+    /// field; `Some(list)` = it named at least one (the list possibly empty). Combined with
+    /// `allowed_pools` by [`grant_scopes`]: naming any grant field makes the key's grant exactly
+    /// the scopes named, across every kind.
+    pub plane_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     /// Optional `groups:` binding (validated to exist at mint).
     pub group: Option<String>,
     /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).

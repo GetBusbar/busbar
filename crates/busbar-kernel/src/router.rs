@@ -8,10 +8,9 @@ use axum::Router;
 
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plugin_routes, profile, state, store, telemetry, tls, transport,
-    trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
+    plugin_routes, profile, state, store, telemetry, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -122,7 +121,7 @@ pub(crate) async fn method_not_allowed_handler(
         uri.path(),
         target_of(&uri),
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
-        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+        busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
     )
 }
@@ -660,6 +659,9 @@ fn mount_plane_route(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
@@ -673,6 +675,7 @@ fn mount_plane_route(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -687,9 +690,14 @@ fn mount_plane_route(
                     gov: gov.map(|axum::extract::Extension(g)| g),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
+                    ticket,
                     consumed_fields,
                     engine,
                     slot,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                 };
                 handler(ctx).await
             }
@@ -730,6 +738,9 @@ fn mount_plane_session(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
@@ -742,6 +753,7 @@ fn mount_plane_session(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -758,6 +770,11 @@ fn mount_plane_session(
                     engine,
                     slot,
                     caller_credential,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
+                    ticket,
                     consumed_fields,
                 };
                 match handler(ctx).await {
