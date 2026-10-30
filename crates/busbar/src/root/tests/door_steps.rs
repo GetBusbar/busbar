@@ -2557,15 +2557,17 @@ pub(crate) mod tool_door {
             ));
             // The transport doors bind on this dispatcher and reach its host services (the clock
             // the program carrier supervises a member's program by), as main.rs hands the process's
-            // one dispatcher to `root::doors` before any door binds.
-            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
+            // one dispatcher to `root::doors` before any door binds. The rig is a composition of its
+            // own, so they are opened on it directly (`root::connector::entries_on`), never through the process's
+            // transport dispatcher, which another cell in this process may have taken first.
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
             let connector = busbar_core_connector::process::build_with_secrets(
                 || {
-                    crate::root::connector::entries(
+                    crate::root::connector::entries_on(
+                        &dispatcher,
                         crate::LINKED_TRANSPORT_DOORS,
                         &busbar_contract::transport::TransportSettings::default(),
                     )
