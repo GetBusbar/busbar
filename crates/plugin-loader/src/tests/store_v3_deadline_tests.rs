@@ -31,7 +31,7 @@ struct HangsWriteBehind;
 impl Slot for HangsWriteBehind {
     type In = AddUsageBatchIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &AddUsageBatchIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &AddUsageBatchIn, _: &mut OutHead) -> Outcome {
         Outcome::Pending
     }
 }
@@ -41,7 +41,7 @@ struct HangsCall;
 impl Slot for HangsCall {
     type In = RecordGetIn;
     type Out = HostBytesOut;
-    fn call(_: *mut c_void, _: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
         Outcome::Pending
     }
 }

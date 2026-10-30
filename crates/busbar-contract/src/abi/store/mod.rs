@@ -558,7 +558,7 @@ super::sdk::door::slot_structs!(
     /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
     /// #     struct $n;
     /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
     /// # } }
     /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
     /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);

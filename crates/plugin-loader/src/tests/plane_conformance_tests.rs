@@ -511,7 +511,7 @@ mod door {
     impl Slot for LifecycleOpen {
         type In = OpenIn;
         type Out = OpenOut;
-        fn call(_: *mut std::ffi::c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
+        unsafe fn call(_: *mut std::ffi::c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
             out.instance = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
             Outcome::Ready
         }
@@ -527,7 +527,7 @@ mod door {
     impl Slot for LifecycleClose {
         type In = busbar_contract::abi::mechanism::call::InHead;
         type Out = busbar_contract::abi::mechanism::call::OutHead;
-        fn call(
+        unsafe fn call(
             _: *mut std::ffi::c_void,
             _: &busbar_contract::abi::mechanism::call::InHead,
             _: &mut busbar_contract::abi::mechanism::call::OutHead,

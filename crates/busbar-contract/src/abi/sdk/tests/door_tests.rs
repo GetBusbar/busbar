@@ -46,7 +46,7 @@ struct Validate;
 impl Slot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
         match input.settings.len {
             PANIC_LEN => panic!("a slot body panics"),
             _ => Outcome::Ready,
@@ -58,7 +58,7 @@ struct Open;
 impl Slot for Open {
     type In = OpenIn;
     type Out = OpenOut;
-    fn call(_: *mut c_void, input: &OpenIn, out: &mut OpenOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &OpenIn, out: &mut OpenOut) -> Outcome {
         assert_ne!(input.generation, PANIC_GEN, "open panics");
         out.instance = input.generation as usize as *mut c_void;
         Outcome::Ready
@@ -69,7 +69,7 @@ struct Refresh;
 impl Slot for Refresh {
     type In = RefreshIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &RefreshIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &RefreshIn, _: &mut OutHead) -> Outcome {
         Outcome::Refused
     }
 }
@@ -78,7 +78,7 @@ struct Retire;
 impl Slot for Retire {
     type In = GenIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
         Outcome::Ready
     }
 }
@@ -87,7 +87,7 @@ struct Tick;
 impl Slot for Tick {
     type In = TickIn;
     type Out = TickOut;
-    fn call(_: *mut c_void, input: &TickIn, out: &mut TickOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &TickIn, out: &mut TickOut) -> Outcome {
         out.next_tick_ns = input.now_ns + 1;
         if input.now_ns == PEND_AT {
             Outcome::Pending
@@ -101,7 +101,7 @@ struct Drive;
 impl Slot for Drive {
     type In = DriveIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &DriveIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &DriveIn, _: &mut OutHead) -> Outcome {
         Outcome::Ready
     }
 }
@@ -110,7 +110,7 @@ struct Cancel;
 impl Slot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
-    fn call(_: *mut c_void, input: &CancelIn, out: &mut CancelOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &CancelIn, out: &mut CancelOut) -> Outcome {
         out.disposition = input.ticket.slot + 6;
         Outcome::Failed
     }
@@ -120,7 +120,7 @@ struct Release;
 impl Slot for Release {
     type In = ReleaseIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &ReleaseIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &ReleaseIn, _: &mut OutHead) -> Outcome {
         Outcome::Ready
     }
 }
@@ -129,7 +129,7 @@ struct Close;
 impl Slot for Close {
     type In = InHead;
     type Out = OutHead;
-    fn call(instance: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
+    unsafe fn call(instance: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
         if instance.is_null() {
             Outcome::Failed
         } else {
@@ -629,7 +629,7 @@ struct First;
 impl Slot for First {
     type In = InHead;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
         Outcome::Ready
     }
 }
@@ -638,7 +638,7 @@ struct Second;
 impl Slot for Second {
     type In = GenIn;
     type Out = TickOut;
-    fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
         assert_ne!(input.generation, PANIC_GEN, "a kind op panics");
         out.next_tick_ns = input.generation;
         Outcome::Refused
@@ -765,7 +765,7 @@ mod auth_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }
@@ -852,7 +852,7 @@ mod secret_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }
@@ -925,7 +925,7 @@ mod secret_check_plugin {
     impl Slot for Resolve {
         type In = ResolveIn;
         type Out = ResolveOut;
-        fn call(_: *mut c_void, _: &ResolveIn, _: &mut ResolveOut) -> Outcome {
+        unsafe fn call(_: *mut c_void, _: &ResolveIn, _: &mut ResolveOut) -> Outcome {
             Outcome::Ready
         }
     }
@@ -933,7 +933,7 @@ mod secret_check_plugin {
     impl Slot for Check {
         type In = CheckIn;
         type Out = OutHead;
-        fn call(_: *mut c_void, input: &CheckIn, _: &mut OutHead) -> Outcome {
+        unsafe fn call(_: *mut c_void, input: &CheckIn, _: &mut OutHead) -> Outcome {
             if input.settings.len == 0 {
                 Outcome::Failed
             } else {
@@ -986,7 +986,7 @@ mod export_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }
@@ -1064,7 +1064,7 @@ mod hook_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }
@@ -1158,7 +1158,7 @@ mod store_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }
@@ -1344,7 +1344,7 @@ mod plane_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }
@@ -1405,7 +1405,7 @@ mod plane_plugin {
     impl Slot for Open {
         type In = PlaneOpenIn;
         type Out = PlaneOpenOut;
-        fn call(_: *mut c_void, input: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
+        unsafe fn call(_: *mut c_void, input: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
             PROVIDERS_READ.with(|n| n.set(input.providers_len));
             out.snapshot = SNAPSHOT;
             Outcome::Ready
@@ -1417,7 +1417,7 @@ mod plane_plugin {
     impl Slot for Cancel {
         type In = crate::abi::plane::PlaneCancelIn;
         type Out = crate::abi::plane::PlaneCancelOut;
-        fn call(
+        unsafe fn call(
             _: *mut c_void,
             input: &crate::abi::plane::PlaneCancelIn,
             out: &mut crate::abi::plane::PlaneCancelOut,
@@ -1432,7 +1432,7 @@ mod plane_plugin {
     impl Slot for Drive {
         type In = PlaneDriveIn;
         type Out = PlaneDriveOut;
-        fn call(_: *mut c_void, input: &PlaneDriveIn, out: &mut PlaneDriveOut) -> Outcome {
+        unsafe fn call(_: *mut c_void, input: &PlaneDriveIn, out: &mut PlaneDriveOut) -> Outcome {
             if input.sessions_cap == 0 {
                 out.sessions_needed = 1;
                 return Outcome::Failed;
@@ -1595,7 +1595,7 @@ mod transport_plugin {
             impl Slot for $name {
                 type In = $in;
                 type Out = $out;
-                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                     $outcome
                 }
             }

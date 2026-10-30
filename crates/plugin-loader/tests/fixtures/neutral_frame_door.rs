@@ -193,7 +193,7 @@ pub struct Validate;
 impl Slot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &ValidateIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &ValidateIn, _: &mut OutHead) -> Outcome {
         Outcome::Ready
     }
 }
@@ -203,7 +203,7 @@ pub struct Open;
 impl Slot for Open {
     type In = OpenIn;
     type Out = OpenOut;
-    fn call(_: *mut c_void, _: &OpenIn, o: &mut OpenOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &OpenIn, o: &mut OpenOut) -> Outcome {
         o.instance = Box::into_raw(Box::new(Instance {
             framings: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
@@ -218,7 +218,7 @@ pub struct Close;
 impl Slot for Close {
     type In = InHead;
     type Out = OutHead;
-    fn call(p: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
+    unsafe fn call(p: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
         if !p.is_null() {
             // SAFETY: `open`'s box, closed once.
             drop(unsafe { Box::from_raw(p.cast::<Instance>()) });
@@ -232,7 +232,7 @@ pub struct Cancel;
 impl Slot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
-    fn call(_: *mut c_void, _: &CancelIn, o: &mut CancelOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &CancelIn, o: &mut CancelOut) -> Outcome {
         o.disposition = CANCEL_NOTHING_MOVED;
         Outcome::Ready
     }
@@ -245,7 +245,7 @@ macro_rules! answer {
         impl Slot for $name {
             type In = $in;
             type Out = $out;
-            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+            unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                 $outcome
             }
         }
@@ -275,7 +275,7 @@ pub struct Locate;
 impl Slot for Locate {
     type In = LocateIn;
     type Out = LocateOut;
-    fn call(_: *mut c_void, i: &LocateIn, o: &mut LocateOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, i: &LocateIn, o: &mut LocateOut) -> Outcome {
         let target = text(&i.target);
         let authority = target.strip_prefix(b"frame://").unwrap_or(target);
         if authority.is_empty() || authority.contains(&b'/') {
@@ -303,7 +303,7 @@ pub struct Begin;
 impl Slot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
         let inst = instance(p);
         let token = inst.next.fetch_add(1, Ordering::Relaxed);
         inst.framings.lock().expect("framings").insert(
@@ -323,7 +323,7 @@ pub struct Adopt;
 impl Slot for Adopt {
     type In = AdoptIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &AdoptIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &AdoptIn, o: &mut FramerOut) -> Outcome {
         let inst = instance(p);
         let token = inst.next.fetch_add(1, Ordering::Relaxed);
         let mut f = Framing::default();
@@ -359,7 +359,7 @@ pub struct Ingest;
 impl Slot for Ingest {
     type In = IngestIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &IngestIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &IngestIn, o: &mut FramerOut) -> Outcome {
         let bytes = raw(i.bytes, i.len);
         let mut framings = instance(p).framings.lock().expect("framings");
         if let Some(f) = framings.get_mut(&i.framing).filter(|f| f.stream) {
@@ -379,7 +379,7 @@ pub struct Emit;
 impl Slot for Emit {
     type In = EmitIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &EmitIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &EmitIn, o: &mut FramerOut) -> Outcome {
         let bytes = raw(i.bytes, i.len);
         let ends = i.end_of_frame != 0;
         with(p, i.framing, &i.sink, o, |f| {
@@ -402,7 +402,7 @@ pub struct Refuse;
 impl Slot for Refuse {
     type In = RefuseIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &RefuseIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &RefuseIn, o: &mut FramerOut) -> Outcome {
         let bytes = raw(i.bytes, i.len);
         let status = i.status;
         with(p, i.framing, &i.sink, o, |f| {
@@ -427,7 +427,7 @@ pub struct Timer;
 impl Slot for Timer {
     type In = FramingIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
         with(p, i.framing, &i.sink, o, |_| {})
     }
 }
@@ -437,7 +437,7 @@ pub struct Finish;
 impl Slot for Finish {
     type In = FinishIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &FinishIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &FinishIn, o: &mut FramerOut) -> Outcome {
         let removed = instance(p)
             .framings
             .lock()
@@ -485,7 +485,7 @@ pub struct Detach;
 impl Slot for Detach {
     type In = FramingIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
         let mut framings = instance(p).framings.lock().expect("framings");
         let Some(f) = framings.get_mut(&i.framing) else {
             err(&mut o.head, "detach: no such framing");
@@ -509,7 +509,7 @@ pub struct Encode;
 impl Slot for Encode {
     type In = EncodeIn;
     type Out = FramerOut;
-    fn call(_: *mut c_void, i: &EncodeIn, o: &mut FramerOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, i: &EncodeIn, o: &mut FramerOut) -> Outcome {
         if i.fields_len != 0 {
             err(&mut o.head, "encode: a byte stream carries no fields");
             return Outcome::Failed;

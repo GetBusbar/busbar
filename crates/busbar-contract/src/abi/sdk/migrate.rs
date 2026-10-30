@@ -111,7 +111,7 @@ pub struct Migrator<M>(PhantomData<M>);
 impl<M: Migrate> Slot for Migrator<M> {
     type In = ValidateIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, input: &ValidateIn, out: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &ValidateIn, out: &mut OutHead) -> Outcome {
         // SAFETY: the host lent `settings`, `head.extensions` and `err_buf` (`err_cap` bytes,
         // writable) for this call, as the MIGRATE op states (`abi::mechanism::lifecycle`).
         let (settings, from) = unsafe {

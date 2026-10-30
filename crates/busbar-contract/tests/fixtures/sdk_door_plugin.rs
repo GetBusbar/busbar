@@ -44,7 +44,7 @@ struct Open;
 impl Slot for Open {
     type In = OpenIn;
     type Out = OpenOut;
-    fn call(_: *mut c_void, input: &OpenIn, _: &mut OpenOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &OpenIn, _: &mut OpenOut) -> Outcome {
         assert_ne!(input.generation, PANIC_GEN, "the dropped-in open panics");
         Outcome::Ready
     }
@@ -54,7 +54,7 @@ struct Echo;
 impl Slot for Echo {
     type In = GenIn;
     type Out = TickOut;
-    fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
         assert_ne!(input.generation, PANIC_GEN, "the dropped-in kind op panics");
         out.next_tick_ns = input.generation;
         Outcome::Ready
@@ -67,7 +67,7 @@ macro_rules! ready {
         impl Slot for $name {
             type In = $in;
             type Out = $out;
-            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+            unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                 Outcome::Ready
             }
         }
@@ -78,7 +78,7 @@ struct Validate;
 impl Slot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
         if input.settings.len == 13 {
             panic!("the dropped-in slot panics");
         }
@@ -90,7 +90,7 @@ struct Cancel;
 impl Slot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
-    fn call(_: *mut c_void, _: &CancelIn, out: &mut CancelOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &CancelIn, out: &mut CancelOut) -> Outcome {
         out.disposition = 7;
         Outcome::Failed
     }

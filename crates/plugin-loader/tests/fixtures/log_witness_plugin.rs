@@ -133,7 +133,7 @@ macro_rules! ready {
         impl Slot for $name {
             type In = $in;
             type Out = $out;
-            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+            unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                 Outcome::Ready
             }
         }
@@ -145,7 +145,7 @@ struct Open;
 impl Slot for Open {
     type In = OpenIn;
     type Out = OpenOut;
-    fn call(_: *mut c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
         out.instance = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
         Outcome::Ready
     }
@@ -167,7 +167,7 @@ pub mod a {
     impl Slot for Tick {
         type In = TickIn;
         type Out = TickOut;
-        fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
+        unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
             match mode(input) {
                 LOG => log_everything("a"),
                 FLOOD => {
@@ -204,7 +204,7 @@ pub mod b {
     impl Slot for Tick {
         type In = TickIn;
         type Out = TickOut;
-        fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
+        unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
             if mode(input) == LOG {
                 tracing::warn!(target: TARGET, "b, inside");
             }

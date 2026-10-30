@@ -75,7 +75,7 @@ struct WedgedGet;
 impl Slot for WedgedGet {
     type In = RecordGetIn;
     type Out = HostBytesOut;
-    fn call(_: *mut c_void, i: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, i: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
         GET_GATE.hold_then_read(i.key.ptr, i.key.len);
         Outcome::Ready
     }
@@ -86,7 +86,7 @@ struct WedgedPlaneGet;
 impl Slot for WedgedPlaneGet {
     type In = GetPlaneRecordIn;
     type Out = HostBytesOut;
-    fn call(_: *mut c_void, i: &GetPlaneRecordIn, _: &mut HostBytesOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, i: &GetPlaneRecordIn, _: &mut HostBytesOut) -> Outcome {
         PLANE_GATE.hold_then_read(i.id.ptr, i.id.len);
         Outcome::Ready
     }

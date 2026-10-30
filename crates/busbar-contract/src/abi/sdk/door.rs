@@ -195,7 +195,7 @@ slot_structs!(Lifecycle {
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
 /// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
@@ -230,7 +230,7 @@ slot_structs!(Lifecycle {
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
 /// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
@@ -302,7 +302,7 @@ unsafe impl KindOps for crate::abi::transport::Ops {
 /// impl Slot for Peek {
 ///     type In = GenIn;
 ///     type Out = OutHead;
-///     fn call(instance: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+///     unsafe fn call(instance: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
 ///         // The call contract: `instance` is the pointer this plugin's `open` answered.
 ///         let _ = unsafe { instance.cast::<u64>().read() };
 ///         Outcome::Ready
@@ -344,13 +344,22 @@ pub trait Slot {
     /// The body. `input` is a private copy of the host's `in` (tail zero-filled), `out` a private
     /// copy of the host's `out`; the trampoline writes `out` back and mirrors the returned outcome
     /// into `out.head.outcome`, so the body need not set it.
-    fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
+    ///
+    /// # Safety
+    /// [`Entry::enter`]'s contract: called only by the trampoline, `instance` NULL or the pointer
+    /// this plugin's `open` answered READY and `close` has not, and every pointer in `input` valid
+    /// for the call as the kind's ABI states it. A body may read them on that word alone.
+    unsafe fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
 }
 
 /// What a table entry runs: a raw [`Slot`], or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot)
 /// behind [`Safe`](crate::abi::sdk::safe::Safe). The trampoline is generic over this, so
 /// [`plugin_door!`](crate::plugin_door) takes either in any slot position.
-pub trait Entry {
+///
+/// # Safety
+/// [`SAFE`](Self::SAFE) is `true` only when `enter` reads the instance as the SDK's typed state
+/// and, in `open`, answers only an instance the SDK minted: the SDK's slots trust it.
+pub unsafe trait Entry {
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -374,11 +383,14 @@ pub trait Entry {
     ) -> Outcome;
 }
 
-impl<S: Slot> Entry for S {
+// SAFETY: a raw slot states `SAFE = false`, and its body runs under the contract `enter` is
+// called under, which is `Slot::call`'s.
+unsafe impl<S: Slot> Entry for S {
     type In = S::In;
     type Out = S::Out;
     unsafe fn enter(instance: *mut c_void, _: u32, input: &S::In, out: &mut S::Out) -> Outcome {
-        S::call(instance, input, out)
+        // SAFETY: the caller keeps `enter`'s contract, which is `call`'s.
+        unsafe { S::call(instance, input, out) }
     }
 }
 
