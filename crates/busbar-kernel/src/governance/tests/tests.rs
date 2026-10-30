@@ -6271,3 +6271,51 @@ fn a_virtual_keys_generation_is_compared_in_constant_time() {
     assert!(super::generation_matches(legacy, None));
     assert!(!super::generation_matches(legacy, Some("g7")));
 }
+
+/// THE DURABLE USAGE LEDGER HAS A PURGE PATH (open160 ST6): the engine keeps a window's cell in
+/// memory for 31 days at most, and nothing reads a durable window older than that, yet with the
+/// store's window purge slot gone every window a store ever recorded stayed forever, so a
+/// durable store grew by one row per bucket per window, without bound. The write-behind flusher
+/// now purges, through the store's calls, every window past the horizon; the all-time window
+/// (`0`) and the live window are kept.
+#[tokio::test]
+async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
+    use busbar_contract::store_calls::StoreAxis as _;
+    use busbar_contract::store_calls::StoreDoor;
+    let opened = crate::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(crate::test_support::store_double::door),
+            crate::test_support::store_double::NAME,
+            b"{}",
+        )
+        .expect("the store double opens through its door");
+    let records = opened.records.clone();
+    let gov = GovState::new(opened.records, None).expect("gov");
+    assert!(gov.attach_store_calls(opened.calls.expect("a door-opened store has its calls")));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    let live = crate::governance::budget_window(crate::governance::WINDOW_DAY, now);
+    let old = crate::governance::budget_window(
+        crate::governance::WINDOW_DAY,
+        now - 40 * crate::governance::SECS_PER_DAY,
+    );
+    let mut one = UsageLedger::default();
+    one.requests = 1;
+    for w in [old, 0, live] {
+        records.put_usage("vk_horizon", w, &one).expect("put");
+    }
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let flusher = crate::governance::spawn_budget_flusher(Arc::new(gov), shutdown_rx);
+    shutdown_tx.send(()).expect("the flusher listens");
+    flusher.await.expect("the flusher ends");
+    let requests = |w| records.get_usage("vk_horizon", w).expect("get").requests;
+    assert_eq!(
+        requests(old),
+        0,
+        "a window 40 days old is still in the durable store"
+    );
+    assert_eq!(requests(0), 1, "the all-time window is never purged");
+    assert_eq!(requests(live), 1, "the live window is kept");
+}
