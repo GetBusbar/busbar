@@ -1105,6 +1105,7 @@ pub fn build_app_from_config(
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
             &plugin_registry.secret_slots(&store_cfg.module),
+            &plugin_registry.reference_slots(&store_cfg.module),
             &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1269,6 +1270,7 @@ pub fn build_app_from_config(
             false => config::secret::resolve_settings(
                 &g.settings,
                 &plugin_registry.secret_slots(&g.module),
+                &plugin_registry.reference_slots(&g.module),
                 &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1730,41 +1732,7 @@ pub fn build_app_from_config(
         fallback_runtime_key,
         config_tables,
         store,
-        // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
-        // way the HTTP client pool and governance state are — a config swap must not un-trip a
-        // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
-        // store-or-RAM rule).
-        // "What is not configured must not be loaded": a config with NO plane content — no mounted
-        // plane slot, no registration in a declared section, no plane pool — gets the
-        // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
-        // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
-        // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
-        // including one that removes the last plane section); an inert prior is upgraded HERE — at
-        // apply, boot-only work — the first time plane content appears, losing nothing (an inert
-        // handle never recorded anything). Note the `runtime_slot_key(<its decl key>)` companion slot
-        // is inserted on every build with that container plane compiled in, so the gate reads the
-        // DECL keys (config-conditional), never it.
-        plane_breakers: {
-            let planes_configured = crate::plane_driver::registry::plane_decls()
-                .iter()
-                .any(|d| plane_slots.contains_key(d.key))
-                || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
-                || cfg.plane_pools.values().any(|p| !p.is_empty());
-            match prior {
-                Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
-                    Arc::clone(&p.plane_breakers)
-                }
-                // Built under THIS generation's limits (THE DESIGN §1: every plane honours the
-                // operator's `limits.*`); a reused prior takes them at the swap
-                // (`App::publish_limits`), never during the build.
-                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new_with_limits(
-                    cfg.limits.hard_down_cooldown_secs,
-                    cfg.limits.max_honored_retry_after_secs,
-                )),
-                _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
-            }
-        },
-        // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
+        // The neutral per-session substrate: PROCESS-LIFETIME, reused across an
         // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
         // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
         // memory-safety bound the substrate is built around.
