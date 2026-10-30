@@ -1898,9 +1898,10 @@ async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnsw
 
 /// THE ADMIN DOOR ON THE OPERATOR'S DOOR: the operator credential's verify is AWAITED, and an
 /// identity admits while a bad credential, a pass, an overloaded verifier and one that answered no
-/// verdict are each 1.5.5's refusal (Denied, the 401). The admin-door 503 (Q134) is not a signed
-/// accepted difference, so 1.5.5's answer stands. RED: an overloaded or failed verify read as a
-/// pass would admit through a later module; read as an outage it would be a new status.
+/// verdict each deny the chain. The door answers the first three 1.5.5's 401 (the admin-door 503
+/// for an overloaded verifier is not a signed accepted difference) and the verdict-less one 503
+/// with `Retry-After` (SIGN-auth-kind 2026-10-30; on the wire below). RED: an overloaded or failed
+/// verify read as a pass would admit through a later module.
 #[tokio::test]
 async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusal() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
@@ -2050,10 +2051,12 @@ fn the_admin_head_hands_the_request_through_as_presented() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict is a REJECT
-// on the data plane — 1.5.5's 401, never a pass to the next position. A door whose `max_inflight`
-// is full stops the chain too, never a pass; the data plane answers it 503 with `Retry-After`
-// (owner ruling Q134, 2026-10-07, which supersedes L2-AUTH-1 for that one answer).
+// L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict stops the
+// chain refused, never a pass to the next position. A door whose `max_inflight` is full stops the
+// chain too, never a pass; the data plane answers it 503 with `Retry-After` (owner ruling Q134,
+// 2026-10-07). A door with no verdict is answered the same 503, where L2-AUTH-1 answered 1.5.5's
+// 401 (SIGN-auth-kind 2026-10-30, lead-signed under owner delegation, extending the owner-signed
+// 2026-10-30 rule "an IdP outage answers 503, never 401").
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// A kind-neutral double of one opened auth instance that answers every `verify` with `verified`
@@ -2148,11 +2151,13 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
 }
 
 /// Q134 (owner ruling 2026-10-07): the walk the data-plane middleware runs hands an overloaded
-/// door back APART, so the middleware can answer it 503; a door with no verdict is still the
-/// denial, and in neither case is the identifier behind it reached. RED: were `Overloaded` folded
-/// into a reject (as before Q134), the first assertion would read `Ok(Denied)`.
+/// door back APART, so the middleware can answer it 503. SIGN-auth-kind 2026-10-30 (lead-signed
+/// under owner delegation, extending the owner-signed 2026-10-30 rule "an IdP outage answers 503,
+/// never 401"): a door with NO VERDICT is handed back apart too, for the same 503; a REJECT is
+/// still the denial. In no case is the identifier behind the door reached. RED before the
+/// decision: the door with no verdict read `Ok(Denied)`, the 401.
 #[tokio::test]
-async fn the_data_plane_walk_hands_an_overloaded_door_back_apart() {
+async fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
     use busbar_contract::auth_calls::Verified;
     let judged = |verified: Verified| async move {
         let auth = std::sync::Arc::new(door_then_identifier(verified));
@@ -2167,13 +2172,31 @@ async fn the_data_plane_walk_hands_an_overloaded_door_back_apart() {
     };
     assert_eq!(
         judged(Verified::Overloaded).await,
-        Err(VerifierOverloaded),
+        Err(VerifierUnavailable::Overloaded),
         "an overloaded door is handed back apart, never a reject or a pass"
     );
     assert_eq!(
         judged(Verified::Failed).await,
+        Err(VerifierUnavailable::NoVerdict),
+        "a door with no verdict is handed back apart (SIGN-auth-kind 2026-10-30)"
+    );
+    assert_eq!(
+        judged(Verified::Reject).await,
         Ok(ChainVerdict::Denied),
-        "a door with no verdict is still the denial"
+        "a REJECT is the denial"
+    );
+    let auth = std::sync::Arc::new(faulting_door_then_identifier());
+    assert_eq!(
+        AuthMiddleware::judge_chain_on_request_path(
+            &auth,
+            Some("grp:admins".into()),
+            ChainHead::default(),
+            None,
+            None,
+        )
+        .await,
+        Err(VerifierUnavailable::NoVerdict),
+        "a FAULTED door is handed back apart, never admitted on its answer"
     );
 }
 
@@ -2358,7 +2381,8 @@ async fn a_data_plane_door_without_a_verdict_answers_503_like_an_overloaded_one_
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // L2-AUTH-4 (ARCHITECT ruling 2026-10-03): admin_auth's EXTERNAL modules open on the auth axis.
 // A door among them is awaited, lent the request's head and 1.5.5's candidate (`bearer.or(header)`),
-// never cached by the kernel, and an overloaded or verdict-less door is 1.5.5's refusal (401).
+// never cached by the kernel; an overloaded door is 1.5.5's refusal (401), a verdict-less one is
+// refused 503 with `Retry-After` (SIGN-auth-kind 2026-10-30).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// An external admin door that identifies `ext:<who>` only when the lent credential is `tok`, and
@@ -2440,8 +2464,8 @@ fn external_door_app(
 /// The external admin door judges the candidate it is lent — the Bearer, else the admin header, as
 /// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot (the kernel keeps
 /// no verdict: R3, a door caches inside itself); a reject, a pass, an overloaded door and one with no
-/// verdict are each 1.5.5's refusal (the 401: the admin-door 503 is not a signed accepted
-/// difference).
+/// verdict each deny the chain (the verdict-less one is then answered 503, SIGN-auth-kind
+/// 2026-10-30: `an_external_admin_door_without_a_verdict_answers_503_and_a_reject_401`).
 #[tokio::test]
 async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_the_1_5_5_refusal()
 {
@@ -2927,7 +2951,7 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
     let headers = admin_headers(Some("signed"), None);
     let mut strips = Vec::new();
     let first = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
-    assert!(matches!(first, AdminDoor::Identified(..)), "{first:?}");
+    assert!(matches!(first, Ok(AdminDoor::Identified(..))), "{first:?}");
     assert_eq!(strips, vec![Strip::field("x-hook-secret")]);
     assert_eq!(
         admin_door(&app, "GET", "/", &headers),
