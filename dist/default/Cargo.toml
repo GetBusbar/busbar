@@ -941,7 +941,7 @@ busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory"
 # every build's tests. The pin is the plane repo's dev head, so what its conformance suite judges is
 # what ships.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "311ce7965ca88fffbdd4c6f318f8d82218179ffe" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "aa73f2fed557043b6852313c7450f7d74c18d475" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`; the plane repo's dev
 # head). Its
