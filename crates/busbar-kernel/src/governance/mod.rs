@@ -1007,13 +1007,15 @@ pub async fn mint_self_offloaded(
     op: SelfMintOp,
     user_sub: String,
     provider: String,
-    allowed_pools: Option<Vec<String>>,
+    allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     exp: u64,
     now: u64,
 ) -> Result<(VirtualKey, String), SelfMintError> {
     tokio::task::spawn_blocking(move || match op {
-        SelfMintOp::Issue => gov.issue_self(&user_sub, &provider, allowed_pools, exp, now),
-        SelfMintOp::Refresh => gov.refresh_self(&user_sub, &provider, allowed_pools, exp, now),
+        SelfMintOp::Issue => gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now),
+        SelfMintOp::Refresh => {
+            gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+        }
     })
     .await
     .unwrap_or_else(|e| {
@@ -1140,21 +1142,62 @@ pub(crate) fn granting_bindings<'a>(
     }
 }
 
-/// The pool union across granting bindings. OMITTED `allowed_pools` on any granting binding widens
-/// the union to ALL pools (`None`, the runtime encoding too); otherwise the union is the
-/// de-duplicated concatenation of every binding's explicit list (an explicit `[]` contributes
-/// nothing, so an every-binding-`[]` union is `Some(vec![])`).
-pub(crate) fn pool_union(granting: &[&crate::config::RoleBindingCfg]) -> Option<Vec<String>> {
-    let mut pool_names: Vec<String> = Vec::new();
+/// THE GRANT UNION across granting bindings, over EVERY scope kind (W9). A binding that names no
+/// grant field at all grants everything (`None`), and one such binding widens the union to
+/// everything (`None`, the runtime encoding too); otherwise the union is the de-duplicated
+/// concatenation of every binding's kind-tagged grant (an explicit `[]` contributes nothing, so an
+/// every-binding-`[]` union is `Some(vec![])`). A binding that names any kind is exhaustive across
+/// kinds, as a minted key's grant is ([`busbar_contract::records::VirtualKey::scope_allowed`]).
+pub(crate) fn grant_union(
+    granting: &[&crate::config::RoleBindingCfg],
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    let mut union: Vec<busbar_contract::records::ScopeRef> = Vec::new();
     for b in granting {
-        let list = b.allowed_pools.as_deref()?;
-        for p in list {
-            if !pool_names.contains(p) {
-                pool_names.push(p.clone());
+        for scope in b.scope_grant()? {
+            if !union.contains(&scope) {
+                union.push(scope);
             }
         }
     }
-    Some(pool_names)
+    Some(union)
+}
+
+/// THE GRANT a mint or a role binding states, intent carried intact, from its `allowed_pools`
+/// field and its plane-kind `allowed_{kind}s` fields (`plane`: `None` when it named no plane-kind
+/// field, `Some(list)` when it named at least one, the list possibly empty). Naming NO field at all is
+/// everything (`None`); naming any field makes the grant exactly the scopes named, across every
+/// kind, so a field left out beside a named one grants nothing of its kind (fail closed, as
+/// [`busbar_contract::records::VirtualKey::scope_allowed`] reads it), and every field `[]` is
+/// nothing at all.
+pub fn grant_scopes(
+    pools: Option<Vec<String>>,
+    plane: Option<Vec<busbar_contract::records::ScopeRef>>,
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    if pools.is_none() && plane.is_none() {
+        return None;
+    }
+    let mut list: Vec<busbar_contract::records::ScopeRef> = pools
+        .into_iter()
+        .flatten()
+        .map(busbar_contract::records::ScopeRef::pool)
+        .collect();
+    list.extend(plane.into_iter().flatten());
+    Some(list)
+}
+
+/// The scope kind a PLANE grant field names (`allowed_{kind}s`, the frozen wire convention), or
+/// `None` when the field is not one: not an `allowed_*s` field, an empty kind, or core's own
+/// `allowed_pools` (a named field everywhere it is accepted).
+pub fn plane_grant_kind(field: &str) -> Option<String> {
+    busbar_contract::records::scope_kinds::kind_for_wire_field(field)
+        .filter(|kind| !kind.is_empty() && kind != "pool")
+}
+
+/// Whether an installed plane declares the scope kind `kind` (`PlaneDecl.scope_kinds`, every plane
+/// linked or dropped in): the kinds a mint or a role binding may grant beside pools. A kind no plane
+/// declares is refused rather than stored, so a typo never sits inert as a grant.
+pub fn plane_declares_kind(kind: &str) -> bool {
+    kind != "pool" && crate::plane_driver::registry::scope_kind_index(kind).is_some()
 }
 
 /// A pool grant as key scopes, intent carried intact: `None` = all pools; `Some([])` = none.
@@ -1198,7 +1241,7 @@ fn synthesize_key(
     }
     // An all-bindings-empty union = the EMPTY SET = no data-plane access (fail closed: no key at
     // all - nothing to admit).
-    let allowed_pools = match pool_union(&granting) {
+    let allowed_scopes = match grant_union(&granting) {
         Some(list) if list.is_empty() => return None,
         union => union,
     };
@@ -1214,7 +1257,7 @@ fn synthesize_key(
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_scopes: pool_scopes(allowed_pools),
+        allowed_scopes,
         enabled: true,
         created_at: 0,
         group,
@@ -1755,6 +1798,11 @@ pub struct NewKeySpec {
     /// Pool grants with the intent carried intact: `None` = the mint body OMITTED
     /// `allowed_pools` = ALL pools; `Some(list)` = exactly those; `Some([])` = NO pools.
     pub allowed_pools: Option<Vec<String>>,
+    /// Plane-kind grants (`allowed_{kind}s` at mint, W9): `None` = the mint named no plane-kind
+    /// field; `Some(list)` = it named at least one (the list possibly empty). Combined with
+    /// `allowed_pools` by [`grant_scopes`]: naming any grant field makes the key's grant exactly
+    /// the scopes named, across every kind.
+    pub plane_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     /// Optional `groups:` binding (validated to exist at mint).
     pub group: Option<String>,
     /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).
