@@ -20,8 +20,8 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_TEXT,
-    PIECE_WRITABLE, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_INTERIM,
+    PIECE_TEXT, PIECE_WRITABLE, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
     YIELD_STREAM_FULL,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
@@ -51,7 +51,7 @@ pub struct Knobs {
     /// The far end's bytes are SCRIPTED messages on this stream, one piece per byte: `b` an empty
     /// binary message, `t` an empty text message, `e` the stream's end (`PIECE_END`), any other
     /// byte a one-byte binary message; `i` an interim head (an empty field block stating code
-    /// `103` with the flag bit `1024`), `h` a final head (an empty field block stating `200`).
+    /// `103`, `PIECE_INTERIM`), `h` a final head (an empty field block stating `200`).
     pub messages: Option<u64>,
     /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
     /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
@@ -264,7 +264,10 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
             let (len, flags) = match b {
                 b'i' => {
                     code = 103;
-                    (0, PIECE_FIELDS | PIECE_HAS_CODE | PIECE_END_OF_FRAME | 1024)
+                    (
+                        0,
+                        PIECE_FIELDS | PIECE_HAS_CODE | PIECE_END_OF_FRAME | PIECE_INTERIM,
+                    )
                 }
                 b'h' => {
                     code = 200;

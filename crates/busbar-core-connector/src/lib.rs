@@ -1940,7 +1940,11 @@ impl Connector {
                         end: got.end_of_frame,
                         status: class(got.status_class),
                         status_code: got.status_code,
-                        status_namespace: None,
+                        // A handshake's code is in the status-line numbering; any other is in the
+                        // claim's own, which the reader names.
+                        status_namespace: got.handoff.then(|| {
+                            busbar_contract::transport::registry::status_ns::HTTP.to_owned()
+                        }),
                         retry_after_secs: got.retry_after_secs,
                         fault: WireFault::from_code(got.fault),
                         reason: None,

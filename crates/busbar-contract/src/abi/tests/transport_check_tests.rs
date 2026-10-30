@@ -506,6 +506,67 @@ fn a_field_set_without_its_flag_is_fault() {
     }
 }
 
+/// An interim head is a field block with its code, never the end or a declared length; a code in
+/// the handshake's numbering is a code.
+#[test]
+fn an_interim_head_and_a_handshake_code_are_heads_with_codes() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let head = piece(0, 4);
+    let head_flags = PIECE_FIELDS | PIECE_HAS_CODE | PIECE_END_OF_FRAME;
+    let coded = |code, flags| FramePiece {
+        code,
+        flags,
+        ..head
+    };
+    let with = |flags| coded(0, flags);
+    assert_eq!(
+        check_framer(
+            Ready,
+            &o,
+            &[coded(103, head_flags | PIECE_INTERIM)],
+            8,
+            8,
+            8
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        check_framer(
+            Ready,
+            &o,
+            &[coded(403, head_flags | PIECE_CODE_HANDOFF)],
+            8,
+            8,
+            8
+        ),
+        Ok(())
+    );
+    for flags in [
+        PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_INTERIM,
+        PIECE_HAS_CODE | PIECE_END_OF_FRAME | PIECE_INTERIM,
+        head_flags | PIECE_INTERIM | PIECE_HAS_DECLARED_LEN,
+    ] {
+        assert_eq!(
+            check_framer(Ready, &o, &[with(flags)], 8, 8, 8),
+            f(Rule::Contradiction, "framer.piece.interim_not_head"),
+            "{flags:#x}"
+        );
+    }
+    assert_eq!(
+        check_framer(
+            Ready,
+            &o,
+            &[with(PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_CODE_HANDOFF)],
+            8,
+            8,
+            8
+        ),
+        f(Rule::Contradiction, "framer.piece.handoff_without_code")
+    );
+}
+
 /// RED (ARCHITECT, the stream-end ruling): an EMPTY piece is a message, text or binary, never the
 /// stream's end; PIECE_END is the end, and only on its own empty piece: with bytes it would
 /// swallow a message, with a field block or a failure's reason it is not the whole end.
@@ -622,8 +683,8 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
     );
     let mut bad = piece(0, 1);
     // The first bit no piece flag holds (`1 << 8` is PIECE_WRITABLE, `1 << 9`
-    // PIECE_HAS_DECLARED_LEN).
-    bad.flags = 1 << 10;
+    // PIECE_HAS_DECLARED_LEN, `1 << 10` PIECE_INTERIM, `1 << 11` PIECE_CODE_HANDOFF).
+    bad.flags = 1 << 12;
     assert_eq!(
         check_framer(Ready, &o, &[bad], 8, 8, 8),
         f(Rule::UnknownCode, "framer.piece.flags")

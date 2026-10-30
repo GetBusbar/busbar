@@ -24,9 +24,10 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
-    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
+    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -168,6 +169,9 @@ pub struct Got {
     pub end_of_frame: bool,
     /// The status number, where the piece carries one.
     pub status_code: Option<u32>,
+    /// `status_code` is in the numbering of the handshake the connection opened with, the
+    /// status-line one (`PIECE_CODE_HANDOFF`), not the claim's own.
+    pub handoff: bool,
     /// The status class (`STATUS_*`).
     pub status_class: u8,
     /// The fault reading (`FAULT_*`), the breaker's leg.
@@ -238,6 +242,10 @@ pub struct Yielded {
     /// The streams the framer says are writable again (`PIECE_WRITABLE` pieces), in order. Such a
     /// piece is a signal to the host and never a frame: it is not among [`Yielded::pieces`].
     pub writable: Vec<u64>,
+    /// The INTERIM heads (`PIECE_INTERIM` field blocks, a `1xx` ahead of the final head), in
+    /// order. Never the answer's head: they are not among [`Yielded::pieces`], whose first field
+    /// block on a stream stays its final head.
+    pub interim: Vec<Got>,
     /// The protocol the framer last stated it agreed on an accepted connection
     /// (`FramerYield::agreed`): a 1-based position in its accepting offer; `0` = not stated.
     pub agreed: u32,
@@ -495,11 +503,12 @@ impl Buffers {
                     outcome: Outcome::Fault,
                     error: format!("the framer's field block is refused: {why}"),
                 })?;
-            into.pieces.push(Got {
+            let got = Got {
                 stream: p.stream,
                 bytes: bytes.to_vec(),
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
                 status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
+                handoff: p.flags & PIECE_CODE_HANDOFF != 0,
                 status_class: p.status_class,
                 fault: p.fault,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
@@ -510,7 +519,13 @@ impl Buffers {
                 reason: None,
                 failed: p.flags & PIECE_STREAM_FAILED != 0,
                 end: p.flags & PIECE_END != 0,
-            });
+            };
+            if p.flags & PIECE_INTERIM != 0 {
+                // AN INTERIM HEAD (a `1xx`): kept apart, so the stream's head stays its final one.
+                into.interim.push(got);
+            } else {
+                into.pieces.push(got);
+            }
         }
         let heads = self
             .heads
@@ -1839,6 +1854,7 @@ fn merge(into: &mut Yielded, y: Yielded) {
     into.heads.extend(y.heads);
     into.wire.extend(y.wire);
     into.pieces.extend(y.pieces);
+    into.interim.extend(y.interim);
     into.ended |= y.ended;
     into.deadline_ns = y.deadline_ns.or(into.deadline_ns);
     if y.agreed != 0 {

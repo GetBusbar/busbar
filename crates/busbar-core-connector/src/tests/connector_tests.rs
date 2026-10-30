@@ -406,7 +406,7 @@ fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
     assert_eq!(head_through_the_table(None).declared_len, None);
 }
 
-/// A head whose code the framer states in the HANDSHAKE's numbering (flag bit `2048`: an upgrade's
+/// A head whose code the framer states in the HANDSHAKE's numbering (`PIECE_CODE_HANDOFF`: an upgrade's
 /// handshake answered, e.g. refused `403`) reaches the table's head piece in that numbering, the
 /// status-line one, never as a code of the claim's own; a head without the bit names none (the
 /// claim's).
@@ -420,7 +420,7 @@ fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() 
             ..crate::support::Knobs::default()
         })
     };
-    let handshake = head(2048);
+    let handshake = head(busbar_contract::abi::transport::PIECE_CODE_HANDOFF);
     assert_eq!(handshake.status_code, Some(403));
     assert_eq!(
         handshake.status_namespace.as_deref(),

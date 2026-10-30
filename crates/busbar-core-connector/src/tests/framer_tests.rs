@@ -839,6 +839,12 @@ fn an_interim_head_is_never_handed_up_as_the_final_head() {
         "only the final head is the head: {y:?}"
     );
     assert_eq!(y.pieces.len(), 2, "the head, then the message");
+    let interim: Vec<Option<u32>> = y.interim.iter().map(|p| p.status_code).collect();
+    assert_eq!(
+        interim,
+        vec![Some(103)],
+        "the interim head is kept apart, not lost"
+    );
 }
 
 /// A `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never

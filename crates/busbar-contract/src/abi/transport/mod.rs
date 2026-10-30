@@ -632,6 +632,18 @@ pub const PIECE_WRITABLE: u16 = 256;
 /// message's head declared on the wire. Never on any other piece.
 pub const PIECE_HAS_DECLARED_LEN: u16 = 512;
 
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`] and [`PIECE_HAS_CODE`]: the field block is an
+/// INTERIM head (a status-line `1xx` other than the switch an upgrade takes): informational, never
+/// the answer's head; the final head follows on the same stream. On every piece of the block; never
+/// with [`PIECE_END`] or [`PIECE_HAS_DECLARED_LEN`]. The host never reads it as the final head.
+pub const PIECE_INTERIM: u16 = 1024;
+
+/// [`FramePiece::flags`], with [`PIECE_HAS_CODE`]: `code` (and the `status_class` and `fault` read
+/// from it) is in the numbering of the HANDSHAKE the connection opened with, the status-line one
+/// (`http`), not the claim's own: an upgrade's handshake answer, e.g. a refused upgrade's `403`.
+/// The host reads the code in that numbering.
+pub const PIECE_CODE_HANDOFF: u16 = 2048;
+
 /// The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`].
 /// [`TransportTail::frame_piece_size`] states it, so a framer built against another piece layout
 /// is refused at load, never read wrong.

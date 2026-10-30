@@ -2086,6 +2086,7 @@ impl Connection {
                     bytes: bytes.to_vec(),
                     end_of_frame,
                     status_code: None,
+                    handoff: false,
                     status_class: 0,
                     fault: FAULT_NONE,
                     retry_after_secs: None,

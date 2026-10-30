@@ -17,11 +17,11 @@ use super::{
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_ACCEPTS, FACT_ADOPTS, FACT_DECODES_PAYLOAD,
     FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM,
-    MAX_ADDR, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
-    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
-    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
-    YIELD_STREAM_FULL,
+    MAX_ADDR, PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
+    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
+    SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
@@ -248,7 +248,9 @@ pub fn check_framer(
                     | PIECE_TEXT
                     | PIECE_END
                     | PIECE_HAS_DECLARED_LEN
-                    | PIECE_WRITABLE,
+                    | PIECE_WRITABLE
+                    | PIECE_INTERIM
+                    | PIECE_CODE_HANDOFF,
             ),
             "framer.piece.flags",
         )?;
@@ -287,6 +289,20 @@ pub fn check_framer(
             return Err(fault(
                 Rule::Contradiction,
                 "framer.piece.declared_len_not_fields",
+            ));
+        }
+        // An interim head is a head with its code, and never the end or a body's statement.
+        if p.flags & PIECE_INTERIM != 0
+            && (p.flags & (PIECE_FIELDS | PIECE_HAS_CODE) != PIECE_FIELDS | PIECE_HAS_CODE
+                || p.flags & (PIECE_END | PIECE_HAS_DECLARED_LEN) != 0)
+        {
+            return Err(fault(Rule::Contradiction, "framer.piece.interim_not_head"));
+        }
+        // A handshake's numbering is a reading of a code: a piece with none states no numbering.
+        if p.flags & PIECE_CODE_HANDOFF != 0 && p.flags & PIECE_HAS_CODE == 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.handoff_without_code",
             ));
         }
         // A field block is never a failure's reason.
