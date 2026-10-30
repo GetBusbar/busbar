@@ -11566,22 +11566,21 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
 }
 
-// ── A KEY ROW'S `expires_at` ON THE DOOR: UNENFORCED, AS 1.5.5 ──────────────────────────────────────
+// ── A KEY ROW'S `expires_at` ON THE DOOR: ENFORCED (owner-signed 2026-10-30, SEC-VKEY) ─────────────
 //
-// MOVED HERE from `crates/busbar/tests/key_expires_at_cross_plane.rs`, assertions unchanged
-// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the request is served by the door serving the
-// `pools` map, through the data router built with its claims.
+// MOVED HERE from `crates/busbar/tests/key_expires_at_cross_plane.rs` (DEV-GREEN row 83, ARCHITECT
+// option (a) on #1161): the request is served by the door serving the `pools` map, through the data
+// router built with its claims. 1.5.5 admitted this request (shadow-oracle script
+// key-expired-out-of-band.sh measured 200); the owner ruled on 2026-10-30 that a stored expires_at
+// in the past is refused.
 
-/// LEGACY `crates/busbar/tests/key_expires_at_cross_plane.rs::a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane`.
-/// End to end on the data plane through the `keys` chain: the request is admitted (200 from the far
-/// end) with the key row's `expires_at` stamped 30 days in the past (the token's own `exp` still in
-/// the future), while a wrong token is still refused (401) on the same app — so the admission is a
-/// real gate, not an open chain. Measured on the published 1.5.5 AND on HEAD's release binary
-/// (shadow-oracle script cell key-expired-out-of-band.sh): both answer 200.
-/// RED: a stored `expires_at` enforced on the data plane (the request refused).
+/// End to end on the data plane through the `keys` chain: the same token is admitted (200) while
+/// its key row carries no `expires_at`, then refused with the SAME 401 status and body a bad token
+/// gets once the row's `expires_at` is stamped 30 days in the past (the token's own `exp` still in
+/// the future), so the refusal names no reason a caller could probe.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
+async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-key-row-expired";
     let far = seat_far_end(200, door_word("messages_answer")).await;
@@ -11595,6 +11594,20 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
         },
     )
     .await;
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let (before, _, body) = rig.send("POST", path, Some(ask.clone())).await;
+    assert_eq!(
+        before,
+        200,
+        "with no expires_at on its row the key is admitted: {}",
+        String::from_utf8_lossy(&body)
+    );
+
     // Stamp the minted key's row with an `expires_at` in the past, as an operator (or a migrated
     // 1.5.5 database) would, and reload the caches. Mint never stamps it.
     let store = rig.gov.store();
@@ -11606,24 +11619,19 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
         row.expires_at, None,
         "mint never stamps expires_at; it is a stored field nothing in the engine writes"
     );
-    row.expires_at = Some(busbar_kernel::store::now() - 30 * 86_400);
+    let past = busbar_kernel::store::now() - 30 * 86_400;
+    row.expires_at = Some(past);
     store.put_key(&row).expect("rewrite the row");
     rig.gov.refresh().expect("reload caches");
 
-    let ask = serde_json::json!({
-        "model": "p",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 8
-    });
-    let path = door_word("messages_path");
-    let (admitted, _, body) = rig.send("POST", path, Some(ask.clone())).await;
+    let (expired, _, expired_body) = rig.send("POST", path, Some(ask.clone())).await;
     assert_eq!(
-        admitted,
-        200,
-        "a key row with a past expires_at is still admitted (1.5.5 never enforced it; measured): {}",
-        String::from_utf8_lossy(&body)
+        expired,
+        401,
+        "a key row with a past expires_at is refused (owner-signed 2026-10-30): {}",
+        String::from_utf8_lossy(&expired_body)
     );
-    let (refused, _, _) = rig
+    let (refused, _, refused_body) = rig
         .send_bare(
             "POST",
             path,
@@ -11634,6 +11642,19 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     assert_eq!(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&expired_body),
+        String::from_utf8_lossy(&refused_body),
+        "an expired key row is refused with the same body as any bad credential"
+    );
+    assert_eq!(
+        rig.gov
+            .lookup_by_sub(&rig.key_id)
+            .expect("the binding stays resolvable")
+            .expires_at,
+        Some(past),
+        "the stored expires_at is kept, so the admin views keep showing it"
     );
 }
 
