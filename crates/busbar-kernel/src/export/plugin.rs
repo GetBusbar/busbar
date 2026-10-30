@@ -158,11 +158,34 @@ pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) ->
     word_one_instance(module, &names, found)
 }
 
-/// THE ONE-INSTANCE REFUSAL, for `names` (configuration order) of `module`, given what the
-/// module's LIMITS check `found`.
+/// Why a second instance of a `one_instance` module cannot run, when its check gives no reason.
+const ONE_INSTANCE_WHY: &str = "The module runs as one instance, so a second instance could only \
+                                be silently ignored — keep a single instance.";
+
+/// THE ONE-INSTANCE REFUSAL, worded by the host (export ABI defect 8): one line for each of
+/// `names` (configuration order) after the first, naming the first, around the reason `module`'s
+/// LIMITS check `found` (its lines joined), or [`ONE_INSTANCE_WHY`] when it found none. A plugin
+/// built on an SDK that worded the whole line (`export.<name>: …`) keeps its lines verbatim.
 pub(crate) fn word_one_instance(module: &str, names: &[String], found: Vec<String>) -> Vec<String> {
-    let _ = (module, names);
-    found
+    if found.iter().any(|line| line.starts_with("export.")) {
+        return found;
+    }
+    let Some((first, rest)) = names.split_first() else {
+        return Vec::new();
+    };
+    let why = if found.is_empty() {
+        ONE_INSTANCE_WHY.to_string()
+    } else {
+        found.join(" ")
+    };
+    rest.iter()
+        .map(|name| {
+            format!(
+                "export.{name}: a second `module: {module}` instance (already defined as \
+                 '{first}'). {why}"
+            )
+        })
+        .collect()
 }
 
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
