@@ -1926,34 +1926,92 @@ async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusa
     }
 }
 
-/// On the wire: an operator-credential door that is overloaded, or answered no verdict, is answered
-/// 1.5.5's admin 401, byte for byte the refusal a bad credential earns — no 503.
+/// `(status, retry-after, body)` of an admin `GET` presenting the Bearer `tok` on `app`.
+async fn admin_get(app: std::sync::Arc<crate::state::App>) -> (u16, Option<String>, String) {
+    let (base, handle) = serve_app(app).await;
+    let r = reqwest::Client::new()
+        .get(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("tok")
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let retry_after = r
+        .headers()
+        .get("retry-after")
+        .map(|v| v.to_str().unwrap_or_default().to_string());
+    let text = r.text().await.unwrap();
+    handle.abort();
+    (status, retry_after, text)
+}
+
+/// On the wire: an operator-credential door that is overloaded is answered 1.5.5's admin 401, byte
+/// for byte the refusal a bad credential earns (the admin-door 503 for an overloaded verifier is not
+/// a signed accepted difference). One that answered NO VERDICT (FAILED: a module failure, e.g. an
+/// IdP whose key set is unavailable) is a server-side failure, not the caller's bad credential: the
+/// request is refused and answered 503 with `Retry-After`, in the frozen admin envelope's
+/// `unavailable` code (SIGN-auth-kind 2026-10-30, lead-signed under owner delegation, extending the
+/// owner-signed 2026-10-30 rule "an IdP outage answers 503, never 401"). RED before the decision:
+/// the verdict-less door answered the 401.
 #[tokio::test]
-async fn an_unjudged_operator_door_answers_the_1_5_5_admin_401() {
+async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_the_1_5_5_admin_401()
+{
     use busbar_contract::auth_calls::Verified;
     crate::snapshot::init();
-    let mut answers = Vec::new();
-    for verified in [Verified::Reject, Verified::Overloaded, Verified::Failed] {
-        let (base, handle) = serve_app(operator_app(verified)).await;
-        let r = reqwest::Client::new()
-            .get(format!("{base}/api/v1/admin/keys"))
-            .bearer_auth("tok")
-            .send()
-            .await
-            .unwrap();
-        let status = r.status().as_u16();
-        answers.push((status, r.text().await.unwrap()));
-        handle.abort();
-    }
-    assert_eq!(answers[0].0, 401, "a bad credential is the admin 401");
+    let rejected = admin_get(operator_app(Verified::Reject)).await;
+    assert_eq!(rejected.0, 401, "a bad credential is the admin 401");
+    assert_eq!(rejected.1, None, "a 401 names no Retry-After");
+    let overloaded = admin_get(operator_app(Verified::Overloaded)).await;
     assert_eq!(
-        answers[1], answers[0],
+        overloaded, rejected,
         "an overloaded verifier: the same bytes"
     );
+    let failed = admin_get(operator_app(Verified::Failed)).await;
     assert_eq!(
-        answers[2], answers[0],
-        "a verdict-less verifier: the same bytes"
+        (failed.0, failed.1.as_deref()),
+        (503, Some("1")),
+        "a verdict-less verifier: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {failed:?}"
     );
+    let body: serde_json::Value = serde_json::from_str(&failed.2).expect("the admin envelope");
+    assert_eq!(body["error"]["code"], "unavailable", "{failed:?}");
+}
+
+/// An EXTERNAL admin door that answered no verdict — FAILED or a FAULT — is answered as the
+/// operator's door is: refused, 503 with `Retry-After` (SIGN-auth-kind 2026-10-30). A REJECT stays
+/// the admin 401. RED before the decision: each answered the 401.
+#[tokio::test]
+async fn an_external_admin_door_without_a_verdict_answers_503_and_a_reject_401() {
+    use busbar_contract::auth_calls::Verified;
+    crate::snapshot::init();
+    let door = |calls: std::sync::Arc<dyn AuthCalls>| {
+        crate::test_support::TestApp::new()
+            .admin_chain(vec!["ext".to_string()])
+            .admin_door("ext", calls)
+            .build()
+    };
+    let rejected = admin_get(door(std::sync::Arc::new(AnswersOnly(Verified::Reject)))).await;
+    assert_eq!(
+        (rejected.0, rejected.1.as_deref()),
+        (401, None),
+        "{rejected:?}"
+    );
+    for (what, calls) in [
+        (
+            "FAILED",
+            std::sync::Arc::new(AnswersOnly(Verified::Failed)) as std::sync::Arc<dyn AuthCalls>,
+        ),
+        (
+            "FAULT",
+            std::sync::Arc::new(FaultingDoor) as std::sync::Arc<dyn AuthCalls>,
+        ),
+    ] {
+        let answered = admin_get(door(calls)).await;
+        assert_eq!(
+            (answered.0, answered.1.as_deref()),
+            (503, Some("1")),
+            "{what}: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {answered:?}"
+        );
+    }
 }
 
 /// The synchronous admin door (the dry run, the root's admin unit) PROBES the operator credential
@@ -2119,18 +2177,110 @@ async fn the_data_plane_walk_hands_an_overloaded_door_back_apart() {
     );
 }
 
-/// On the wire: the request a verdict-less data-plane door refuses is answered with 1.5.5's 401,
-/// byte for byte the refusal an all-pass chain earns. An OVERLOADED door (its `max_inflight` full)
-/// is answered 503 with `Retry-After: 1` and the gateway's at-capacity body, the bytes the inbound
-/// cap sheds with: no new customer string (owner ruling Q134, 2026-10-07). RED before Q134: the
-/// overloaded door answered the 401.
+/// A door whose every `verify` FAULTS (the plugin broke its contract): its answer reads as an
+/// identity, and the host must still never admit on it.
+struct FaultingDoor;
+
+/// A faulted `verify`, answered before anything crossed.
+struct FaultedCall(Option<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for FaultedCall {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(self.0.take().expect("polled once"))
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for FaultedCall {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn faulted(&self) -> bool {
+        true
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for FaultingDoor {
+    fn name(&self) -> &str {
+        "faulting-door"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+        Box::new(FaultedCall(Some(
+            Verified::Identity(VerifiedIdentity {
+                subject: "faulted".into(),
+                ..VerifiedIdentity::default()
+            })
+            .into(),
+        )))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// The chain `[faulting door, test-groups stand-in]`: a first position read as a pass would admit.
+fn faulting_door_then_identifier() -> AuthMiddleware {
+    let identifier = crate::auth::stand_in::InProcessAuth::new(
+        crate::test_support::auth_modules::open(
+            crate::test_support::auth_modules::TEST_GROUPS_MODULE,
+        )
+        .expect("the test groups module"),
+    );
+    AuthMiddleware::from_doors_for_test(vec![
+        (
+            "door".to_string(),
+            std::sync::Arc::new(FaultingDoor) as std::sync::Arc<dyn AuthCalls>,
+        ),
+        (
+            "test-groups-module".to_string(),
+            std::sync::Arc::new(identifier),
+        ),
+    ])
+}
+
+/// The data-plane 503 an auth door that judged nothing earns: the at-capacity answer the inbound cap
+/// sheds with, byte for byte (`limits::admission`; owner ruling Q134, 2026-10-07).
+fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
+    (
+        503,
+        Some(busbar_contract::protocol::APPLICATION_JSON.to_string()),
+        Some("1".to_string()),
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#
+            .to_string(),
+    )
+}
+
+/// On the wire (SIGN-auth-kind 2026-10-30, lead-signed under owner delegation, extending the
+/// owner-signed 2026-10-30 rule "an IdP outage answers 503, never 401"): a data-plane door that
+/// answered NO VERDICT — FAILED (a module failure, e.g. an OIDC plugin whose key set is
+/// unavailable) or a FAULT — is a server-side failure, not the caller's bad credential: the request
+/// is refused (the identifier behind the door is never reached) and answered 503 with
+/// `Retry-After`, the bytes an OVERLOADED door earns (Q134). A REJECT stays 1.5.5's 401, byte for
+/// byte the refusal an all-pass chain earns. RED before the decision: FAILED and FAULT answered the
+/// 401 ("as 1.5.5 rejected on a module failure").
 #[tokio::test]
-async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overloaded_one_503() {
+async fn a_data_plane_door_without_a_verdict_answers_503_like_an_overloaded_one_and_a_reject_401() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
     use busbar_contract::auth_calls::Verified;
     crate::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
-    let ask = |auth: AuthMiddleware| {
+    let ask = |auth: AuthMiddleware, path: &'static str| {
         let app = TestApp::new()
             .lane(LaneSpec::new("m", LANE_PROTOCOL, &server.base_url()).api_key("up"))
             .pool("pa", &[(0, 1)])
@@ -2140,8 +2290,10 @@ async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overlo
             let (addr, handle) = dp_serve(app).await;
             let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
             let r = reqwest::Client::new()
-                .post(format!("http://{addr}/pa/v1/messages"))
-                .bearer_auth("not-a-credential-anyone-knows")
+                .post(format!("http://{addr}{path}"))
+                // A credential the identifier behind the door WOULD admit: a door read as a pass
+                // would let it through.
+                .bearer_auth("grp:admins")
                 .body(body)
                 .send()
                 .await
@@ -2158,29 +2310,47 @@ async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overlo
             (status, content_type, retry_after, text)
         }
     };
-    // The 1.5.5 refusal: a configured chain whose every position passed.
-    let all_pass = ask(AuthMiddleware::new_builtin(&chain_cfg(&[
-        "test-groups-module",
-    ])))
+    // 1.5.5's refusal: a configured chain whose every position passed.
+    let all_pass = ask(
+        AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"])),
+        "/pa/v1/messages",
+    )
     .await;
     assert_eq!(all_pass.0, 401, "the all-pass refusal: {all_pass:?}");
-    let no_verdict = ask(door_then_identifier(Verified::Failed)).await;
+    let rejected = ask(door_then_identifier(Verified::Reject), "/pa/v1/messages").await;
+    assert_eq!(rejected, all_pass, "a REJECT: the 1.5.5 401, byte for byte");
+    // The at-capacity 503 the inbound cap sheds with (Q134).
+    let overloaded = ask(
+        door_then_identifier(Verified::Overloaded),
+        "/pa/v1/messages",
+    )
+    .await;
+    assert_eq!(overloaded, at_capacity_503(), "an overloaded door (Q134)");
+    let failed = ask(door_then_identifier(Verified::Failed), "/pa/v1/messages").await;
     assert_eq!(
-        no_verdict, all_pass,
-        "a door with no verdict: the 1.5.5 401, byte for byte"
+        failed,
+        at_capacity_503(),
+        "a FAILED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-    // The at-capacity 503 the inbound cap sheds with, byte for byte (`limits::admission`).
-    let overloaded = ask(door_then_identifier(Verified::Overloaded)).await;
+    let faulted = ask(faulting_door_then_identifier(), "/pa/v1/messages").await;
     assert_eq!(
-        overloaded,
-        (
-            503,
-            Some(busbar_contract::protocol::APPLICATION_JSON.to_string()),
-            Some("1".to_string()),
-            r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#
-                .to_string(),
-        ),
-        "an overloaded door: 503, Retry-After, the at-capacity body (Q134)"
+        faulted,
+        at_capacity_503(),
+        "a FAULTED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
+    );
+    // The token exchange runs the same chain itself: a door with no verdict mints nothing and is
+    // answered the same 503, never the exchange's 401.
+    let exchanged = ask(door_then_identifier(Verified::Failed), "/auth/token").await;
+    assert_eq!(
+        (exchanged.0, exchanged.2.as_deref()),
+        (503, Some("1")),
+        "the exchange behind a FAILED door: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {exchanged:?}"
+    );
+    let exchanged = ask(faulting_door_then_identifier(), "/auth/token").await;
+    assert_eq!(
+        (exchanged.0, exchanged.2.as_deref()),
+        (503, Some("1")),
+        "the exchange behind a FAULTED door: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {exchanged:?}"
     );
     server.shutdown().await;
 }
