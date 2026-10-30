@@ -224,7 +224,7 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         lanes: [("patient".to_string(), 0), ("plain".to_string(), 1)]
             .into_iter()
             .collect(),
-        app: Arc::new(move || Arc::clone(&app)),
+        app: crate::root::model_egress::LiveApp::fixed(app),
     };
     let route = |provider: &str| busbar_kernel::plane_driver::MemberRoute {
         need: busbar_contract::conn::NeedId(0),

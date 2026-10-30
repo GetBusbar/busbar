@@ -698,6 +698,7 @@ impl AdminAuthChain {
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
+                        &registry.reference_slots(other),
                         other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -796,6 +797,7 @@ impl AuthMiddleware {
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
+                        &registry.reference_slots(other),
                         other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),

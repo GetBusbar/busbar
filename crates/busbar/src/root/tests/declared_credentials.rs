@@ -1330,7 +1330,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         };
         let routes = crate::root::door_steps::member_routes(
             &section,
-            &crate::root::door_steps::DoorPools::of(&section).expect("the pools"),
+            &crate::root::door_steps::DoorPools::of(&section, served.section).expect("the pools"),
             &served,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),

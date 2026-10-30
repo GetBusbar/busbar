@@ -55,8 +55,6 @@ pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
 
-// Re-export status_class_from_str for config validation
-pub use crate::breaker::status_class_from_str;
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
@@ -945,9 +943,8 @@ fn check_failover_pool(
             def.members.len()
         ));
     }
-    // The plane breaker store's lane table is FIXED (process-lifetime, sized
-    // `store::MAX_POOL_MEMBERS`; see `store/breaker_admission.rs` for why it cannot track config), so a pool
-    // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
+    // A plane consumer's pool is capped at `store::MAX_POOL_MEMBERS` members, refused here where the
+    // operator can act.
     if def.members.len() > crate::store::MAX_POOL_MEMBERS {
         errors.push(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
@@ -1843,7 +1840,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         let module = def.module.trim();
         // The module is asked of the export axis: the streams its sink declares (so the projection
         // is resolved against them now) and its own verdict on the settings.
-        let axis = crate::export::plugin::probe(name, module, &settings);
+        let axis = crate::export::plugin::probe(name, module, &def.settings);
         let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,

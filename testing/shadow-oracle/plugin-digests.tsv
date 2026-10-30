@@ -67,7 +67,10 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # loader refuses a door built against another layout, so these nine rows are each plugin's r5-repin
 # branch built against #1845 (584b6cefb9; the four store rows at f053f4f3b4, whose store table carries record retention): the store rows above merged onto it (31 slots), the vault
 # answering into the host-lent buffer (#1704).
-store-sqlite	src:6f5787ceae37e2d91e0b8eb044cd3b5d30a6e3d5	build:busbar-store-sqlite	-	1.6
+# 2026-10-29 (item 7b: a declared secret path refuses a literal, wildcard or exact): store-sqlite is
+# bc7755b (pin-r5-secret-fields): 6f5787c with `secret_refs: ["license_key"]` (c6adc1e), not `*`, so
+# BOOT-170/171's literal db_path is a plain setting, as in 1.5.5.
+store-sqlite	src:bc7755bf7f94d745715850ced5ed46e8b887f6aa	build:busbar-store-sqlite	-	1.6
 store-postgres	src:bc531d07efd9ad4c2479af63c4ac83280c26cda1	build:busbar-store-postgres	-	1.6
 store-valkey	src:55622a7acbc88d1d0e6d7580b4d179c8e986d1c4	build:busbar-store-valkey	-	1.6
 store-mysql	src:7d985a3d01ef6c49bb017f1465253a9f4cc498f5	build:busbar-store-mysql	-	1.6
