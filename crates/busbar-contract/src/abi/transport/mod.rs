@@ -346,7 +346,7 @@ pub mod slot {
     pub const INGEST: u32 = LIFECYCLE_SLOTS + 10;
     /// Framer: bytes for the far side, on one stream.
     pub const EMIT: u32 = LIFECYCLE_SLOTS + 11;
-    /// Framer: render an envelope (fields + body), WHOLE: an answer with [`YIELD_MORE`] is a FAULT.
+    /// Framer: render an envelope (fields + body), WHOLE: an answer with `YIELD_MORE` is a FAULT.
     pub const ENCODE: u32 = LIFECYCLE_SLOTS + 12;
     /// Framer: render a refusal.
     pub const REFUSE: u32 = LIFECYCLE_SLOTS + 13;

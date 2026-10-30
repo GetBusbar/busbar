@@ -136,8 +136,8 @@ pub enum Framing {
 /// reading it wanted, and a family this tree has never heard of costs it nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct WireStatus {
-    /// The numbering that spelled this status, as the reporting transport declares it in
-    /// `TransportMeta::STATUS_NAMESPACE`.
+    /// The numbering that spelled this status, as the reporting transport declares it in its
+    /// claim row ([`crate::abi::transport::Claim::status_namespace`]).
     ///
     /// The kernel reserves the two the arrival grammar already reads against — see
     /// `registry::status_ns` — and a transport with a numbering of its own names it whatever it
@@ -470,11 +470,9 @@ impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo f
 /// a plaintext binding, a rustls-backed one for a TLS binding) is built on the far side of the
 /// seam, which this crate does not name; everything on this side of the seam sees only `wrap`.
 ///
-/// A transport that can call `wrap` on its accepted/dialled stream declares
-/// [`super::TransportMeta::WRAPPABLE_BYTE_STREAM`]; one that cannot (e.g. a transport that talks to
-/// a child process over its pipes, which has no byte stream to wrap at all) leaves it at its
-/// default `false` and the composition root fails closed rather than hand it a `TLS`-configured
-/// binding it would have to silently downgrade.
+/// The connector calls `wrap` on a carrier's accepted or dialled byte stream, between the carrier
+/// and the framer (`carrier -> [TLS] -> framer`); a carrier with no byte stream to wrap (e.g. one
+/// that talks to a child process over its pipes) has nothing for it to secure.
 pub trait ConnectionSecurity: Send + Sync {
     /// Apply this binding's connection security to a freshly accepted/dialled raw stream, handing
     /// back the secured stream the transport serves from then on.

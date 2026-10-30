@@ -500,7 +500,7 @@ extern "C" {
 #define BB_TRANSPORT_SLOT_BEGIN UINT32_C(18) /* Framer: begin framing a connection. */
 #define BB_TRANSPORT_SLOT_INGEST UINT32_C(19) /* Framer: bytes from the far side. */
 #define BB_TRANSPORT_SLOT_EMIT UINT32_C(20) /* Framer: bytes for the far side, on one stream. */
-#define BB_TRANSPORT_SLOT_ENCODE UINT32_C(21) /* Framer: render an envelope (fields + body), WHOLE: an answer with [`YIELD_MORE`] is a FAULT. */
+#define BB_TRANSPORT_SLOT_ENCODE UINT32_C(21) /* Framer: render an envelope (fields + body), WHOLE: an answer with `YIELD_MORE` is a FAULT. */
 #define BB_TRANSPORT_SLOT_REFUSE UINT32_C(22) /* Framer: render a refusal. */
 #define BB_TRANSPORT_SLOT_FINISH UINT32_C(23) /* Framer: close the framing. */
 #define BB_TRANSPORT_SLOT_DETACH UINT32_C(24) /* Framer: hand back the unconsumed bytes (an upgrade). */
