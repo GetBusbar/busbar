@@ -156,6 +156,15 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     /// the row resolves to nothing, states none, or states a Statement that does not read back.
     fn secret_slots(&self, name_or_alias: &str) -> Vec<String>;
 
+    /// The REFERENCE-CAPABLE, NOT-SECRET settings paths the row `name_or_alias` resolves to states
+    /// in its Statement's extensions (`reference_fields`, lead ruling item 7a): a reference there is
+    /// resolved in place to its string, a literal passes as written, and nothing is lent. Empty when
+    /// the row resolves to nothing, states none, or states a Statement that does not read back.
+    fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
+        let _ = name_or_alias;
+        Vec::new()
+    }
+
     /// The rows as the composition root's own type, for the root's per-kind axes over them.
     fn as_any(&self) -> &dyn Any;
 

@@ -467,6 +467,10 @@ pub struct Instance {
     /// The settings keys its Statement names as secret references (`Statement::secret_refs`), in
     /// order: the host resolves each and lends the material in `open`/`refresh`'s `secrets`.
     secret_refs: Box<[String]>,
+    /// The REFERENCE-CAPABLE, NOT-SECRET settings paths its Statement's extensions state
+    /// (`reference_fields`, lead ruling item 7a): a reference there is resolved in place by the
+    /// host, never lent.
+    reference_fields: Box<[String]>,
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
@@ -1741,6 +1745,7 @@ impl<K: Kind> Plugin<K> {
                     .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
             })
             .collect::<Result<_, _>>()?;
+        let reference_fields = super::load::reference_fields(&st)?.into_boxed_slice();
         let _ = wake.caller.set(busbar_contract::services::Caller {
             instance: Arc::clone(&bind.instance),
             plugin: Arc::from(String::from_utf8_lossy(name).as_ref()),
@@ -1755,6 +1760,7 @@ impl<K: Kind> Plugin<K> {
                 instance,
                 needs: declared_needs,
                 secret_refs,
+                reference_fields,
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
@@ -1854,6 +1860,13 @@ impl<K: Kind> Plugin<K> {
     #[must_use]
     pub fn secret_refs(&self) -> &[String] {
         &self.inner.secret_refs
+    }
+
+    /// The reference-capable, not-secret settings paths its Statement's extensions state
+    /// (`reference_fields`, lead ruling item 7a), in order.
+    #[must_use]
+    pub fn reference_fields(&self) -> &[String] {
+        &self.inner.reference_fields
     }
 
     /// The instance's identity on the host's connection table (minted at bind, one per instance).
@@ -2081,7 +2094,7 @@ pub(crate) fn resolve_owned(owned: &serde_json::Value, at: &str) -> Option<Strin
 /// # Safety
 ///
 /// `blob` is the host's own, its `ptr` valid for `len` bytes for as long as the slice is read.
-unsafe fn blob_bytes<'b>(blob: Blob) -> &'b [u8] {
+pub(crate) unsafe fn blob_bytes<'b>(blob: Blob) -> &'b [u8] {
     if blob.ptr.is_null() || blob.len == 0 {
         &[]
     } else {
