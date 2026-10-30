@@ -168,7 +168,7 @@ use super::{
     answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
     ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
 };
-use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
+use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane, ServedFacts};
 use crate::dispatch::{now_ns, Called, DispatchConfig, Dispatcher, Frame, Lent, Plugin};
 
 #[path = "plane_host.rs"]
@@ -1409,6 +1409,11 @@ fn far_end<'a>(
     }
 }
 
+/// THE SETTINGS `open` AND `refresh` ARE HANDED: the section as written.
+fn handed(_facts: &ServedFacts, settings: &[u8]) -> Vec<u8> {
+    settings.to_vec()
+}
+
 /// `open` of generation 1 over `settings`, under `public_url` when one is named.
 fn open(p: &Plugin<Plane>, settings: &[u8], public_url: Option<&[u8]>) -> String {
     let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -1482,10 +1487,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("validate", 1, || called(&validate(&p, &dealt(&settings))));
     // No instance yet: the host refuses without a crossing.
     r.line("arrive unopened", 0, || arrive(&p, &k.claimed, &k.request));
-    r.line("open", 1, || open(&p, &settings, url));
+    let opened = handed(&p.served(), &settings);
+    r.line("open", 1, || open(&p, &opened, url));
     ready_step(&mut r, s, &p, &d);
     // One open per instance: the host refuses without a crossing.
-    r.line("open again", 0, || open(&p, &settings, url));
+    r.line("open again", 0, || open(&p, &opened, url));
     // The instance's DRIVER ticket, as the kernel mints it once the instance is open: `drive` and
     // `tick` are submitted on it.
     let driver = d.driver(&p, 0);
@@ -1673,7 +1679,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let (c, snap) = p.refresh(&mut f);
         format!("{} {}", called(&c), snapshot(snap.as_ref()))
     };
-    r.line("refresh", 1, || refresh(&k.refresh));
+    r.line("refresh", 1, || refresh(&handed(&p.served(), &k.refresh)));
     r.line("retire", 1, || generation(&p, life::RETIRE, 1));
     r.line("close", 1, || called(&close(&p)));
     // Closed: the host answers FAULT without a crossing.
@@ -2242,3 +2248,7 @@ mod tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_host_tests.rs"]
 mod host_tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_plane_settings_tests.rs"]
+mod settings_tests;
