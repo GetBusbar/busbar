@@ -289,6 +289,53 @@ unsafe impl KindOps for crate::abi::transport::Ops {
 
 /// One slot body. A plugin implements it on a type of its own, one per slot, and names that type
 /// in [`plugin_door!`](crate::plugin_door).
+///
+/// A body reads `instance` and the pointers in `input` on the trampoline's word (the call
+/// contract), so safe code that names the slot type cannot call the body with pointers it made up:
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::GenIn;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// use std::ffi::c_void;
+/// pub struct Peek;
+/// impl Slot for Peek {
+///     type In = GenIn;
+///     type Out = OutHead;
+///     fn call(instance: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+///         // The call contract: `instance` is the pointer this plugin's `open` answered.
+///         let _ = unsafe { instance.cast::<u64>().read() };
+///         Outcome::Ready
+///     }
+/// }
+/// fn main() {
+///     // SAFETY: `GenIn` and `OutHead` are plain integers and pointers.
+///     let (i, mut o): (GenIn, OutHead) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+///     // Safe code, a made-up instance: refused.
+///     let _ = Peek::call(8 as *mut c_void, &i, &mut o);
+/// }
+/// ```
+///
+/// Nor can safe code state an [`Entry`] the trampoline would trust:
+///
+/// ```compile_fail,E0200
+/// use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_contract::abi::sdk::door::Entry;
+/// use std::ffi::c_void;
+/// pub struct Forged;
+/// impl Entry for Forged {
+///     type In = OpenIn;
+///     type Out = OpenOut;
+///     // A claim that `open` installed the SDK's typed state, which it did not.
+///     const SAFE: bool = true;
+///     unsafe fn enter(_: *mut c_void, _: u32, _: &OpenIn, out: &mut OpenOut) -> Outcome {
+///         out.instance = 8 as *mut c_void;
+///         Outcome::Ready
+///     }
+/// }
+/// fn main() {}
+/// ```
 pub trait Slot {
     /// The slot's `in`.
     type In: AbiIn;
