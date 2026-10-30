@@ -123,7 +123,11 @@ fn base64_encode_into_appends_rfc4648_vectors() {
     ] {
         let mut out = b"prefix:".to_vec();
         base64_encode_into(raw, &mut out);
-        assert_eq!(out, [&b"prefix:"[..], enc.as_bytes()].concat(), "encode {raw:?}");
+        assert_eq!(
+            out,
+            [&b"prefix:"[..], enc.as_bytes()].concat(),
+            "encode {raw:?}"
+        );
         assert_eq!(base64_encode(raw), enc, "base64_encode {raw:?}");
     }
 }
@@ -136,7 +140,11 @@ fn base64_encode_into_reuses_capacity_without_reallocating() {
         out.clear();
         base64_encode_into(b"foobar", &mut out);
         assert_eq!(out, b"Zm9vYmFy");
-        assert_eq!(out.as_ptr(), ptr, "buffer must not reallocate when capacity suffices");
+        assert_eq!(
+            out.as_ptr(),
+            ptr,
+            "buffer must not reallocate when capacity suffices"
+        );
         assert_eq!(out.capacity(), 64);
     }
 }
