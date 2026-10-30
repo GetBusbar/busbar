@@ -2771,6 +2771,175 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// R6 (security): a verified identity's replay claim is won only once the request is ADMITTED —
+// after every deny decision the auth gate makes (role binding, key synth, admin scope), before the
+// request proceeds. A request the gate refuses leaves its replay key unclaimed, so the sender's
+// redelivery after the operator fixes the cause is admitted, and the claim store holds no claim for
+// a refused request.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An app whose data-plane chain is `[door]` over `answer`, on governance `gov`; its `hooks` group
+/// bound when `bound` (the identity earns a key), else no binding at all (the identity earns none
+/// and is refused `NoGrant`).
+fn replay_app(
+    answer: busbar_contract::auth_calls::VerifyAnswer,
+    gov: std::sync::Arc<crate::governance::GovState>,
+    bound: bool,
+) -> std::sync::Arc<crate::state::App> {
+    let mut rb = crate::config::RoleBindings::default();
+    if bound {
+        rb.entry("door".to_string())
+            .or_default()
+            .entry("hooks".to_string())
+            .or_default();
+    }
+    crate::test_support::TestApp::new()
+        .auth(naming_chain(answer))
+        .role_bindings(rb)
+        .governance(gov)
+        .build()
+}
+
+/// Whether `<provider>/<key>` is still unclaimed in `gov`'s record store (claiming it if so).
+async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key: &str) -> bool {
+    let replay = busbar_contract::auth_calls::Replay {
+        key: key.to_string(),
+        ttl_secs: 300,
+    };
+    replay_claimed(Some(gov), provider, &replay, busbar_kernel::store::now()).await
+}
+
+/// RED (R6): on the wire, a delivery whose verified identity earns no grant (its group is unbound)
+/// is refused for that, and its replay key stays unclaimed: the identical redelivery is refused for
+/// the same cause again (not as a replay), and once the operator binds the group the same delivery
+/// is served — once; its replay then is refused. RED before: the walk won the claim before the
+/// role-binding decision, so the refused delivery burned the key and the fixed redelivery was 401.
+#[tokio::test]
+async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
+    crate::snapshot::init();
+    let gov = replay_gov();
+    let answer = hook_answer(Some("standard-webhooks/msg_r6"), Vec::new());
+    let deliver = |base: String| async move {
+        reqwest::Client::new()
+            .post(format!("{base}/echo"))
+            .bearer_auth("signed")
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    let (unbound, served) =
+        echo_behind_the_gate(replay_app(answer.clone(), gov.clone(), false)).await;
+    assert_eq!(deliver(unbound.clone()).await, 401, "no grant: refused");
+    assert_eq!(deliver(unbound).await, 401, "no grant again: refused");
+    served.abort();
+    let (bound, served) = echo_behind_the_gate(replay_app(answer, gov, true)).await;
+    assert_eq!(
+        deliver(bound.clone()).await,
+        200,
+        "the group bound, the redelivery is served: the refused ones claimed nothing"
+    );
+    assert_eq!(deliver(bound).await, 401, "its replay is refused");
+    served.abort();
+}
+
+/// RED (R6): the same, through the chain walk a carrier's own admission runs
+/// (`admit_session`): a session refused `NoGrant` claims nothing, so it is refused `NoGrant` again
+/// (not `Denied` as a replay) and the key is still free in the store afterwards.
+#[tokio::test]
+async fn a_session_refused_for_its_grant_claims_no_replay_key() {
+    let gov = replay_gov();
+    let answer = hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new());
+    for _ in 0..2 {
+        let refused = crate::auth::admit::admit_session(
+            replay_app(answer.clone(), gov.clone(), false),
+            Some("signed".into()),
+            String::new(),
+        )
+        .await
+        .expect_err("no grant: refused");
+        assert_eq!(refused, IdentityRefusal::NoGrant, "refused for its grant");
+    }
+    assert!(
+        still_unclaimed(&gov, "door", "standard-webhooks/msg_r6s").await,
+        "a refused session holds no claim"
+    );
+}
+
+/// RED (R6, the admin door): an admin identity the door refuses for scope (a read-only grant asking
+/// a `Full` verb) claims nothing: the same replay key then admits an authorized request — once, its
+/// replay refused. RED before: the door won the claim before the scope decision, so the scope-refused
+/// request burned the key and the authorized one was `Denied` as a replay.
+#[tokio::test]
+async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
+    use busbar_contract::authz::Scope;
+    let app = naming_admin_app(hook_answer(Some("signed/admin_r6"), Vec::new()));
+    let headers = admin_headers(Some("signed"), None);
+    let mut strips = Vec::new();
+    for _ in 0..2 {
+        let refused = judge_admin_door(&app, "POST", "/", &headers, false, true, &mut strips).await;
+        let AdminDoor::Identified(_, grants) = &refused else {
+            panic!("identified, not authorized, not a replay: {refused:?}");
+        };
+        assert!(!grants.allows(Scope::Full), "{grants:?}");
+    }
+    assert!(
+        matches!(
+            admin_door(&app, "POST", "/", &headers),
+            AdminDoor::Identified(..)
+        ),
+        "the probe refuses for scope too, claiming nothing"
+    );
+    let admitted = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
+    assert!(
+        matches!(admitted, AdminDoor::Identified(..)),
+        "the authorized request wins the still-free claim: {admitted:?}"
+    );
+    assert_eq!(
+        admin_door(&app, "GET", "/", &headers),
+        AdminDoor::Denied,
+        "its replay is refused"
+    );
+}
+
+/// R6, no TOCTOU: two identical deliveries racing through the gate admit at most one — the claim
+/// moved to the end of admission is still one atomic redeem per admitted request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_racing_identical_deliveries_admit_at_most_one() {
+    crate::snapshot::init();
+    let app = replay_app(
+        hook_answer(Some("standard-webhooks/msg_race"), Vec::new()),
+        replay_gov(),
+        true,
+    );
+    let (base, served) = echo_behind_the_gate(app).await;
+    let deliver = || {
+        let base = base.clone();
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{base}/echo"))
+                .bearer_auth("signed")
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        })
+    };
+    let racing: Vec<_> = (0..8).map(|_| deliver()).collect();
+    let mut statuses = Vec::new();
+    for one in racing {
+        statuses.push(one.await.unwrap());
+    }
+    served.abort();
+    statuses.sort_unstable();
+    let mut expected = vec![200];
+    expected.extend([401; 7]);
+    assert_eq!(statuses, expected, "exactly one admitted");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE AUTH x DISPATCH ROWS, DRIVEN THROUGH THE SERVED DOOR (F25 rehome of the retired engine crate's
 // `engine/tests/auth_dispatch_tests.rs`). The served data plane installs each plane claim as a
 // door route at the data-plane bar (`RouteAuth::Key`, `build_split_routers_serving_doors`), so the
