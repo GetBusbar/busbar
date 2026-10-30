@@ -5074,6 +5074,50 @@
         "by": "2026-12-31"
       },
       "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): the frame's `:exception-type` header value moves from `InternalServerException` to `internalServerException`, as the ConverseStream output union names it; the payload `{\"message\":\"The response stream was interrupted.\"}` is unchanged (the frame CRCs change with the header; the recording holds the decoded frames). A transform: only that one exception-name string is read back as 1.5.5's; every other frame stays judged."
+    },
+    {
+      "id": "GA-SESSION the pre-R10 mint asks the provider's GA client_secrets endpoint for a type:realtime session",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served; only the provider sees it, the caller's bytes are unchanged.",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 1)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-30",
+        "ruling": "OWNER SIGNED 2026-10-30, SIGN-ga-session.md row 1: streams|mint|client-secrets, /upstream/0/body, before {\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}} (content-length 83), after the same with \"type\":\"realtime\" in session (content-length 101); measured on #1912, plane-streaming f536805c3a (pre-R10)."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "streams|mint|client-secrets",
+        "pointer": "/steps/0/status",
+        "equals": 200
+      },
+      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-ga-session.md row 1), judged against golden/1.6.0-pre (no 1.5.5 cell moves). The provider's GA endpoint reads a session discriminated by type:\"realtime\"; plane-streaming 60a4fe8 sends the GA shape. Only the provider sees it; the caller's bytes are unchanged. Exact values: the upstream request's body, its content-length (83 -> 101) and its raw bytes (the same request). Applies only while dist pins the pre-R10 streaming head (#1912); under R10 (#1957) the mint dials no provider and this entry never fires.",
+      "values": [
+        {
+          "pointer": "/body/json/upstream/0/body",
+          "golden": "{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+          "candidate": "{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\",\"type\":\"realtime\"}}"
+        },
+        {
+          "pointer": "/body/json/upstream/0/headers/4/1",
+          "golden": "83",
+          "candidate": "101"
+        },
+        {
+          "pointer": "/body/json/upstream/0/raw",
+          "golden": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 83\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+          "candidate": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 101\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\",\"type\":\"realtime\"}}"
+        }
+      ]
     }
   ]
 }
