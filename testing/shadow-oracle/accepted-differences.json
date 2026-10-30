@@ -5074,6 +5074,257 @@
         "by": "2026-12-31"
       },
       "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): the frame's `:exception-type` header value moves from `InternalServerException` to `internalServerException`, as the ConverseStream output union names it; the payload `{\"message\":\"The response stream was interrupted.\"}` is unchanged (the frame CRCs change with the header; the recording holds the decoded frames). A transform: only that one exception-name string is read back as 1.5.5's; every other frame stays judged."
+    },
+    {
+      "id": "ACCEPT-DEFAULT-A2A the a2a card fetch carries the http door's default accept (predev fence)",
+      "cells": "^a2a\\|fence\\|egress-message-send$",
+      "expected_cells": 1,
+      "expires": {
+        "baseline": "predev-275cbd80b",
+        "by": "2026-12-31"
+      },
+      "rationale": "OWNER-SIGNED 2026-10-30 (SIGN-accept.md): the http door (transport-http, pinned by busbar #1960) states `accept: */*` as its own head line where the caller set no `accept`, and busbar adds it before the auth signs the head (busbar #1961), placed before `host`, as 1.5.5's reqwest client did. The predev / 1.6.0-pre baselines were recorded from a door that sent none. Forgiven exactly: each named upstream request's `headers` gaining `[\"accept\",\"*/*\"]` before `host`, and its `raw` gaining the line `accept: */*` before `host:`; any other difference on these cells stays a divergence. No 1.5.5 cell moves.",
+      "values": [
+        {
+          "pointer": "/body/json/upstream/0/headers",
+          "golden": [
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ]
+          ],
+          "candidate": [
+            [
+              "accept",
+              "*/*"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ]
+          ]
+        },
+        {
+          "pointer": "/body/json/upstream/0/raw",
+          "golden": "GET /.well-known/agent-card.json HTTP/1.1\r\nhost: 127.0.0.1:<PORT>\r\n\r\n",
+          "candidate": "GET /.well-known/agent-card.json HTTP/1.1\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\n\r\n"
+        },
+        {
+          "pointer": "/body/json/upstream/1/headers",
+          "golden": [
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ]
+          ],
+          "candidate": [
+            [
+              "accept",
+              "*/*"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ]
+          ]
+        },
+        {
+          "pointer": "/body/json/upstream/1/raw",
+          "golden": "GET /.well-known/agent-card.json HTTP/1.1\r\nhost: 127.0.0.1:<PORT>\r\n\r\n",
+          "candidate": "GET /.well-known/agent-card.json HTTP/1.1\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\n\r\n"
+        },
+        {
+          "pointer": "/body/json/upstream/2/headers",
+          "golden": [
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ]
+          ],
+          "candidate": [
+            [
+              "accept",
+              "*/*"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ]
+          ]
+        },
+        {
+          "pointer": "/body/json/upstream/2/raw",
+          "golden": "GET /.well-known/agent-card.json HTTP/1.1\r\nhost: 127.0.0.1:<PORT>\r\n\r\n",
+          "candidate": "GET /.well-known/agent-card.json HTTP/1.1\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\n\r\n"
+        }
+      ],
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "No 1.5.5 difference: these rows are predev / 1.6.0-pre baselines. 1.5.5's own client (reqwest 0.12) sent `accept: */*` on a request that set none (transport-http tests/h2_parity.rs capture); the 1.6.0 http door states the same default.",
+      "by": "owner (Matthew Jackson), 2026-10-30 (SIGN-accept.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (~/Developer/tmp/cleanup/OWNER-QUEUE.md 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
+        "when": "2026-10-30",
+        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (~/Developer/tmp/cleanup/SIGN-accept.md): keep the http door's default `accept: */*`"
+      },
+      "classes": [
+        "body"
+      ]
+    },
+    {
+      "id": "ACCEPT-DEFAULT-MINT the streams client-secrets mint carries the http door's default accept (1.6.0-pre)",
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "rationale": "OWNER-SIGNED 2026-10-30 (SIGN-accept.md): the http door (transport-http, pinned by busbar #1960) states `accept: */*` as its own head line where the caller set no `accept`, and busbar adds it before the auth signs the head (busbar #1961), placed before `host`, as 1.5.5's reqwest client did. The predev / 1.6.0-pre baselines were recorded from a door that sent none. Forgiven exactly: each named upstream request's `headers` gaining `[\"accept\",\"*/*\"]` before `host`, and its `raw` gaining the line `accept: */*` before `host:`; any other difference on these cells stays a divergence. No 1.5.5 cell moves.",
+      "values": [
+        {
+          "pointer": "/body/json/upstream/0/headers",
+          "golden": [
+            [
+              "authorization",
+              "Bearer oracle-cred-streams-0002"
+            ],
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "openai-safety-identifier",
+              "<OWNER>"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ],
+            [
+              "content-length",
+              "83"
+            ]
+          ],
+          "candidate": [
+            [
+              "authorization",
+              "Bearer oracle-cred-streams-0002"
+            ],
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "openai-safety-identifier",
+              "<OWNER>"
+            ],
+            [
+              "accept",
+              "*/*"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ],
+            [
+              "content-length",
+              "83"
+            ]
+          ]
+        },
+        {
+          "pointer": "/body/json/upstream/0/raw",
+          "golden": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 83\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+          "candidate": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 83\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}"
+        }
+      ],
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "No 1.5.5 difference: these rows are predev / 1.6.0-pre baselines. 1.5.5's own client (reqwest 0.12) sent `accept: */*` on a request that set none (transport-http tests/h2_parity.rs capture); the 1.6.0 http door states the same default.",
+      "by": "owner (Matthew Jackson), 2026-10-30 (SIGN-accept.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (~/Developer/tmp/cleanup/OWNER-QUEUE.md 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
+        "when": "2026-10-30",
+        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (~/Developer/tmp/cleanup/SIGN-accept.md): keep the http door's default `accept: */*`"
+      },
+      "classes": [
+        "body"
+      ]
+    },
+    {
+      "id": "ACCEPT-DEFAULT-SDP the streams SDP call post carries the http door's default accept (1.6.0-pre)",
+      "cells": "^streams\\|sdp\\|calls$",
+      "expected_cells": 1,
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "rationale": "OWNER-SIGNED 2026-10-30 (SIGN-accept.md): the http door (transport-http, pinned by busbar #1960) states `accept: */*` as its own head line where the caller set no `accept`, and busbar adds it before the auth signs the head (busbar #1961), placed before `host`, as 1.5.5's reqwest client did. The predev / 1.6.0-pre baselines were recorded from a door that sent none. Forgiven exactly: each named upstream request's `headers` gaining `[\"accept\",\"*/*\"]` before `host`, and its `raw` gaining the line `accept: */*` before `host:`; any other difference on these cells stays a divergence. No 1.5.5 cell moves.",
+      "values": [
+        {
+          "pointer": "/body/json/upstream/0/headers",
+          "golden": [
+            [
+              "authorization",
+              "Bearer oracle-cred-streams-0006"
+            ],
+            [
+              "content-type",
+              "application/sdp"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ],
+            [
+              "content-length",
+              "54"
+            ]
+          ],
+          "candidate": [
+            [
+              "authorization",
+              "Bearer oracle-cred-streams-0006"
+            ],
+            [
+              "content-type",
+              "application/sdp"
+            ],
+            [
+              "accept",
+              "*/*"
+            ],
+            [
+              "host",
+              "127.0.0.1:<PORT>"
+            ],
+            [
+              "content-length",
+              "54"
+            ]
+          ]
+        },
+        {
+          "pointer": "/body/json/upstream/0/raw",
+          "golden": "POST /v1/realtime/calls HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0006\r\ncontent-type: application/sdp\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 54\r\n\r\nv=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n",
+          "candidate": "POST /v1/realtime/calls HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0006\r\ncontent-type: application/sdp\r\naccept: */*\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 54\r\n\r\nv=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n"
+        }
+      ],
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "No 1.5.5 difference: these rows are predev / 1.6.0-pre baselines. 1.5.5's own client (reqwest 0.12) sent `accept: */*` on a request that set none (transport-http tests/h2_parity.rs capture); the 1.6.0 http door states the same default.",
+      "by": "owner (Matthew Jackson), 2026-10-30 (SIGN-accept.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "signed": "owner direct 2026-10-30T19:08:05Z, verbatim 'all prooved go' in reply to the pending list item 'yes, sign the 3 accept rows on #1960' (~/Developer/tmp/cleanup/OWNER-QUEUE.md 'OWNER APPROVED 2026-10-30T19:08:05Z'; NEXT.md)",
+        "when": "2026-10-30",
+        "ruling": "owner-signed 2026-10-30, SIGN-accept.md (~/Developer/tmp/cleanup/SIGN-accept.md): keep the http door's default `accept: */*`"
+      },
+      "classes": [
+        "body"
+      ]
     }
   ]
 }

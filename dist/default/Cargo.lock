@@ -837,15 +837,19 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=2399f89e628faeb7644beb2373c9fa33550d356e#2399f89e628faeb7644beb2373c9fa33550d356e"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=fdb6a882df00b0a5ba2b448ef30add6eb53d8535#fdb6a882df00b0a5ba2b448ef30add6eb53d8535"
 dependencies = [
  "busbar-contract",
  "bytes",
+ "futures-channel",
  "http",
  "http-body-util",
+ "httpdate",
  "hyper",
+ "hyper-util",
  "memchr",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]

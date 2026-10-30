@@ -756,6 +756,24 @@ pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
     }
 }
 
+/// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
+/// the emit that carries an ACCEPTED stream's answer head (`answers_head`), and on no other. The
+/// framer refuses the emit that breaks it, before any byte of it reaches the wire.
+///
+/// # Errors
+///
+/// The rule the emit breaks.
+pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
+    if i._status_reserved != 0 {
+        return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
+    }
+    match (answers_head, i.status) {
+        (true, 0) => Err(fault(Rule::Missing, "emit.status")),
+        (false, s) if s != 0 => Err(fault(Rule::Contradiction, "emit.status")),
+        _ => Ok(()),
+    }
+}
+
 /// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
 /// `FAULT_NONE`: a code the table does not cover already reads none).
 ///
