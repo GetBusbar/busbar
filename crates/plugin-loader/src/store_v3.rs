@@ -106,15 +106,24 @@ impl LoadedStore {
         settings: &[u8],
         mint: OpIdMint,
     ) -> Result<Self, String> {
-        let facts = *plugin
+        let facts = plugin
             .context::<StoreFacts>()
+            .cloned()
             .ok_or_else(|| "the store states no tail".to_string())?;
-        // The settings the `open` lends, owned so they outlive its crossing ([`Lent`]).
-        let settings: Arc<Vec<u8>> = Arc::new(settings.to_vec());
+        // THE DECLARED SECRETS, as every kind's `open` takes them: each path the Statement names
+        // in `secret_refs` (its value already resolved by the kernel) is taken OUT of the settings
+        // and lent as a `BLOB_SECRET` blob, in the Statement's order.
+        let (settings, secrets) = split_secrets(&facts.secret_refs, settings);
+        // The settings and secrets the `open` lends, owned so they outlive its crossing ([`Lent`]).
+        let lent = Arc::new(OpenLent::new(settings, secrets));
         // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
         // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
-        let o = open_frame(octets(&settings));
-        let c = Self::open_on_ticket(&plugin, &dispatcher, o, settings);
+        let mut o = open_frame(octets(&lent.settings));
+        if !lent.blobs.is_empty() {
+            o.input.secrets = lent.blobs.as_ptr();
+            o.input.secrets_len = lent.blobs.len();
+        }
+        let c = Self::open_on_ticket(&plugin, &dispatcher, o, lent);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
@@ -140,7 +149,7 @@ impl LoadedStore {
         plugin: &Plugin<Store>,
         dispatcher: &Dispatcher,
         mut o: Frame<OpenIn, OpenOut>,
-        settings: Arc<Vec<u8>>,
+        settings: Arc<OpenLent>,
     ) -> crate::dispatch::Called {
         let Some(worker) = pick_worker(dispatcher, 0) else {
             return plugin.call(life::OPEN, &mut o);
@@ -191,7 +200,7 @@ impl LoadedStore {
 
     /// What the store states in its tail.
     pub fn facts(&self) -> StoreFacts {
-        self.facts
+        self.facts.clone()
     }
 
     /// The store's name, as its Statement states it.
@@ -1741,6 +1750,70 @@ impl RecordStore for LoadedStore {
         bridge(ran.ok().map(|()| ran.out.verdict == VERDICT_YES))
     }
 }
+
+/// THE STORE'S DECLARED SECRETS OUT OF ITS SETTINGS: each exact path `refs` names is taken out of
+/// the `settings` object (its value already resolved by the kernel) and handed back as the secret's
+/// bytes, in order (an unset or non-string one as empty bytes); then each wildcard path's string
+/// matches, each replaced in the settings by its `{"$secret": <index>}` marker
+/// (`busbar_contract::secret_fields::lend`), as the auth host splits an auth instance's. Settings
+/// that are not a JSON object, or a store declaring none, pass as written.
+fn split_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Zeroing>) {
+    let Some(mut block) = (!refs.is_empty())
+        .then(|| serde_json::from_slice::<serde_json::Value>(settings).ok())
+        .flatten()
+        .filter(serde_json::Value::is_object)
+    else {
+        return (settings.to_vec(), Vec::new());
+    };
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut block,
+        refs,
+        false,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
+    let settings = serde_json::to_vec(&block).unwrap_or_default();
+    (settings, secrets.into_iter().map(Zeroing).collect())
+}
+
+/// What a store's `open` is lent, held until its crossing returns (even past a watchdog fault):
+/// the settings, the secrets (zeroed when this drops) and the `BLOB_SECRET` list over them.
+struct OpenLent {
+    settings: Vec<u8>,
+    #[allow(dead_code)] // held: `blobs` points into it
+    secrets: Vec<Zeroing>,
+    blobs: Vec<Blob>,
+}
+
+impl OpenLent {
+    fn new(settings: Vec<u8>, secrets: Vec<Zeroing>) -> Self {
+        let blobs = secrets
+            .iter()
+            .map(|s| Blob {
+                ptr: s.0.as_ptr(),
+                len: s.0.len(),
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            })
+            .collect();
+        Self {
+            settings,
+            secrets,
+            blobs,
+        }
+    }
+}
+
+// SAFETY: `blobs` points only into `secrets`' heap buffers, which this value owns and never
+// moves or writes while it lives; nothing reaches the bytes through `OpenLent` but a read.
+unsafe impl Send for OpenLent {}
+// SAFETY: as `Send`: shared access only reads.
+unsafe impl Sync for OpenLent {}
 
 /// Serialized secret material, zeroed when dropped.
 struct Zeroing(Vec<u8>);

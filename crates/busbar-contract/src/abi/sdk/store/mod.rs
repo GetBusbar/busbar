@@ -89,13 +89,20 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// The store's own refusal text, carried verbatim to the operator.
     fn validate(settings: &[u8]) -> Result<(), String>;
 
-    /// Open an instance from the operator's settings (the section's JSON), with the host tables
-    /// `open` was handed (`OpenIn.host`; `None` when none): its connector is reached per op through
-    /// [`Op`].
+    /// Open an instance from the operator's settings (the section's JSON), its resolved `secrets`
+    /// and the host tables `open` was handed (`OpenIn.host`; `None` when none): its connector is
+    /// reached per op through [`Op`].
+    ///
+    /// THE DECLARED SECRETS (`OpenIn.secrets`), as every kind's `open` takes them: one entry per
+    /// Statement `secret_refs` key, in that order (a key the operator left unset is an empty
+    /// entry), then each wildcard path's matches, whose places in `settings` hold a
+    /// `{"$secret": <index>}` marker (`busbar_contract::secret_fields`). The host takes each
+    /// declared key OUT of `settings`, so a DSN password is read here and never from the settings.
+    /// The bytes are lent for the call: a store that keeps one copies it.
     ///
     /// # Errors
     /// A text naming why the settings do not open a store, carried verbatim to the operator.
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
+    fn open(settings: &[u8], secrets: &[&[u8]], host: Option<Host>) -> Result<Self, String>;
 
     /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
     /// before the host counts it opened (its backend's first round trip, a schema check). It runs

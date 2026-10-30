@@ -144,7 +144,7 @@ impl StoreSlots for Canned {
     fn validate(_: &[u8]) -> Result<(), String> {
         Ok(())
     }
-    fn open(_: &[u8], _: Option<Host>) -> Result<Self, String> {
+    fn open(_: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Self, String> {
         Ok(Self)
     }
     fn append_plane_record_op(

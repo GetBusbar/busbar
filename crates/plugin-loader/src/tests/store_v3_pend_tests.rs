@@ -656,6 +656,7 @@ struct PendsInOpen;
 impl Hooks for PendsInOpen {
     fn open(
         settings: &[u8],
+        _: &[&[u8]],
         host: Option<busbar_contract::abi::sdk::conn::Host>,
     ) -> Result<Arc<MemoryStore>, String> {
         let _ = (settings, host);

@@ -43,7 +43,7 @@ fn opened(settings: &[u8], refuse_newer: bool) -> Result<Arc<MemoryStore>, Strin
 struct Honest;
 impl Hooks for Honest {
     const EPHEMERAL: bool = false;
-    fn open(settings: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+    fn open(settings: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
         opened(settings, true)
     }
 }
@@ -52,7 +52,7 @@ impl Hooks for Honest {
 struct Lax;
 impl Hooks for Lax {
     const EPHEMERAL: bool = false;
-    fn open(settings: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+    fn open(settings: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
         opened(settings, false)
     }
 }

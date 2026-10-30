@@ -729,7 +729,8 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
             };
         }
         // A FRESH open: open the store on its settings, then run its connect step.
-        let store = match B::open(input.field(|i| &i.settings).bytes(), host) {
+        let secrets: Vec<&[u8]> = input.secrets().iter().map(Lent::<Blob>::bytes).collect();
+        let store = match B::open(input.field(|i| &i.settings).bytes(), &secrets, host) {
             Ok(store) => store,
             // No instance exists to hold the reason: it goes into the host's lent reason buffer.
             Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),

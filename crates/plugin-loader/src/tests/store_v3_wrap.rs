@@ -29,8 +29,12 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::validate(settings)
     }
     /// The backing store an open serves.
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Arc<MemoryStore>, String> {
-        let _ = (settings, host);
+    fn open(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Arc<MemoryStore>, String> {
+        let _ = (settings, secrets, host);
         Ok(Arc::new(MemoryStore::new()))
     }
     /// `open`'s connect step.
@@ -323,8 +327,8 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::validate(settings)
     }
 
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
-        H::open(settings, host).map(|m| Self(m, PhantomData))
+    fn open(settings: &[u8], secrets: &[&[u8]], host: Option<Host>) -> Result<Self, String> {
+        H::open(settings, secrets, host).map(|m| Self(m, PhantomData))
     }
 
     fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>> {

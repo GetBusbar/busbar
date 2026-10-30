@@ -19,17 +19,24 @@ use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, 
 use crate::store_v3::wrap::{Hooks, Wrapped};
 use crate::store_v3::LoadedStore;
 
-/// What the store's `open` was handed: its settings.
-static SEEN: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+/// What the store's `open` was handed: its settings and its secrets.
+static SEEN: Mutex<Vec<(Vec<u8>, Vec<Vec<u8>>)>> = Mutex::new(Vec::new());
 
 /// A store that keeps what its `open` read.
 struct Keeps;
 
 impl Hooks for Keeps {
-    fn open(settings: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+    fn open(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        _: Option<Host>,
+    ) -> Result<Arc<MemoryStore>, String> {
         SEEN.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(settings.to_vec());
+            .push((
+                settings.to_vec(),
+                secrets.iter().map(|s| s.to_vec()).collect(),
+            ));
         Ok(Arc::new(MemoryStore::new()))
     }
 }
@@ -65,7 +72,7 @@ fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
     // The settings as the kernel hands them: the declared reference already resolved in place.
     let settings = br#"{"host":"db.internal","password":"hunter2"}"#;
     let _store = LoadedStore::open(p, d, settings, mint).expect("it opens");
-    let seen = SEEN
+    let (seen, secrets) = SEEN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .pop()
@@ -75,5 +82,10 @@ fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
     assert!(
         read.get("password").is_none(),
         "the declared secret rode the plain settings `open` reads: {read}"
+    );
+    assert_eq!(
+        secrets,
+        vec![b"hunter2".to_vec()],
+        "the declared secret is lent to `open` as its one secret"
     );
 }

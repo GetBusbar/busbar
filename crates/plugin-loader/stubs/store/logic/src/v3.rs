@@ -224,7 +224,7 @@ impl StoreSlots for MemoryStore {
         Ok(())
     }
 
-    fn open(_settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+    fn open(_settings: &[u8], _secrets: &[&[u8]], _host: Option<Host>) -> Result<Self, String> {
         Ok(Self::new())
     }
 

@@ -146,7 +146,7 @@ fn leased_strs(a: &Answer, field: &'static str) -> Result<(), Fault> {
 
 /// What a store states in its Statement ([`store::StoreTail`] and the `MARK_EPHEMERAL` mark), read
 /// once at bind: the instance's [`Kind::context`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreFacts {
     /// What it holds is lost on restart.
     pub ephemeral: bool,
@@ -154,6 +154,9 @@ pub struct StoreFacts {
     pub durable_plane: bool,
     /// A different record at a used `seq` is refused as a fork.
     pub fork_refusal: bool,
+    /// The settings paths the Statement declares secret (`secret_refs`): taken out of the settings
+    /// and lent to `open` as `OpenIn.secrets`, as every other kind's are.
+    pub secret_refs: Vec<String>,
 }
 
 /// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
@@ -168,11 +171,24 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         1 => Ok(true),
         n => Err(format!("the store tail's {name} is {n}, not 0 or 1")),
     };
+    // SAFETY: the loader's Statement check ran on `st`: every Statement list is its stated count of
+    // `'static` entries, and the rendering bounds each list and string before it reads it.
+    let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(st) }
+        .map_err(|e| e.to_string())?;
+    let secret_refs = busbar_contract::abi::mechanism::rendering::read(&rendering)
+        .map_err(|e| {
+            format!(
+                "the store Statement rendering does not read back: byte {} is not {}",
+                e.at, e.what
+            )
+        })?
+        .secret_refs;
     Ok(StoreFacts {
         // One Statement: `ephemeral` is the Statement's mark, not a tail fact.
         ephemeral: st.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0,
         durable_plane: flag(t.durable_plane, "durable_plane")?,
         fork_refusal: flag(t.fork_refusal, "fork_refusal")?,
+        secret_refs,
     })
 }
 
