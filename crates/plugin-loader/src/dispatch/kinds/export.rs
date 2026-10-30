@@ -6,8 +6,8 @@
 //! once at bind, through the kind's own `check_tail` / `check_tail_entries`, into [`ExportFacts`].
 
 use busbar_contract::abi::export::{
-    self, slot, validate, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
-    StatusOut, Tail,
+    self, slot, validate, CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn,
+    ServeOut, StatusOut, Tail,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
@@ -146,6 +146,22 @@ impl Kind for Export {
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
         Ok(Some(Box::new(facts(st)?)))
+    }
+
+    /// THE OPS A PUSH OR PULL SINK NEVER HEARS (export ABI defect 2): `scrape` when it carries no
+    /// `metrics` stream, `serve` when it declares no route, `deliver` when it carries no stream
+    /// but `metrics` (the host delivers every other stream, never `metrics`).
+    fn optional_by_statement(s: u32, st: &Statement) -> bool {
+        let Ok(f) = facts(st) else {
+            return false;
+        };
+        let metrics = ExportStream::Metrics as u8;
+        match s {
+            slot::DELIVER => f.streams.iter().all(|&b| b == metrics),
+            slot::SCRAPE => !f.streams.contains(&metrics),
+            slot::SERVE => f.routes.is_empty(),
+            _ => false,
+        }
     }
 
     fn op_name(s: u32) -> &'static str {
