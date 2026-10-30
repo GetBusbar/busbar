@@ -98,8 +98,8 @@ use tokio::sync::{watch, Notify};
 pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, MemberSignals, MemberStanding,
-    ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    fixed_breaker, AuthBinding, BreakerSource, Egress, EgressFarEnd, MemberFacts, MemberRoute,
+    MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
