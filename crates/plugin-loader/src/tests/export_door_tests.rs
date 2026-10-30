@@ -403,3 +403,107 @@ fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
         "leases the plugin still holds after FAILED/REFUSED answers"
     );
 }
+
+/// A PUSH-ONLY export door: it carries `logs`, declares no route and states no `scrape` and no
+/// `serve` (both NULL in its table); `ROUTED` declares a route and still states no `serve`.
+mod push_only {
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ExportStream, Route, StatusOut, Tail, ROUTE_AUTH_KEY,
+    };
+    use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::Safe;
+
+    use super::leaky::Ready;
+
+    const STREAMS: &[u8] = &[ExportStream::Logs as u8];
+    const TAIL: Tail = Tail {
+        head: KindTailHead {
+            size: std::mem::size_of::<Tail>() as u32,
+            ..KindTailHead::ZERO
+        },
+        streams: STREAMS.as_ptr(),
+        streams_len: STREAMS.len(),
+        ..Tail::ZERO
+    };
+    const STATEMENT: Statement = Statement {
+        kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+        ..busbar_contract::abi::sdk::door::statement("push-only-export-witness", "0", 4)
+    };
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(super::leaky::Leaky),
+        kind_ops: {
+            deliver: Safe<Ready<DeliverIn, OutHead>>,
+            status: Safe<Ready<InHead, StatusOut>>,
+            check: Safe<Ready<CheckIn, CheckOut>>,
+        },
+    }
+
+    pub mod routed {
+        use super::*;
+
+        const PATH: &str = "/exports/routed/state";
+        const ROUTES: &[Route] = &[Route {
+            path: AbiStr {
+                ptr: PATH.as_ptr(),
+                len: PATH.len(),
+            },
+            method: AbiStr {
+                ptr: "GET".as_ptr(),
+                len: 3,
+            },
+            auth: ROUTE_AUTH_KEY,
+            _reserved: 0,
+        }];
+        const TAIL: Tail = Tail {
+            routes: ROUTES.as_ptr(),
+            routes_len: ROUTES.len(),
+            ..super::TAIL
+        };
+        const STATEMENT: Statement = Statement {
+            kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+            ..busbar_contract::abi::sdk::door::statement("routed-export-witness", "0", 4)
+        };
+
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::export::Ops,
+            statement: STATEMENT,
+            lifecycle: life(super::super::leaky::Leaky),
+            kind_ops: {
+                deliver: Safe<Ready<DeliverIn, OutHead>>,
+                status: Safe<Ready<InHead, StatusOut>>,
+                check: Safe<Ready<CheckIn, CheckOut>>,
+            },
+        }
+    }
+}
+
+/// RED (export ABI defect 2): the export kind's own ops a door's Statement makes unreachable are
+/// optional — `scrape` with no `metrics` stream, `serve` with no route, `deliver` with no stream
+/// but `metrics` — so a push sink states neither `scrape` nor `serve`. A door that declares a route
+/// still owes `serve`. Before, every export slot was mandatory and the push sink was refused.
+#[test]
+fn a_push_sink_may_leave_scrape_and_serve_unstated() {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let bind = |name: &str| Bind {
+        instance: Arc::from(name),
+        max_inflight_cap: 4,
+        sink: Arc::new(NoSink),
+        dispatcher: dispatcher.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(push_only::door).expect("the door states itself");
+    let plugin = load_linked::<Export>(&row, bind("export.push")).expect("the push sink loads");
+    ExportInstance::open(plugin, dispatcher.clone(), b"{}").expect("the push sink opens");
+    let routed = LinkedRow::of(push_only::routed::door).expect("the door states itself");
+    let refused = load_linked::<Export>(&routed, bind("export.routed"))
+        .err()
+        .expect("a door that declares a route owes serve");
+    assert_eq!(
+        refused.to_string(),
+        crate::dispatch::LoadError::NullSlot(slot::SERVE).to_string()
+    );
+}
