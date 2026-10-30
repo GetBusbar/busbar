@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Instant;
 
 use busbar_core_connector::datagram::{
-    Across, Associations, DatagramFraming, Leg, LegSink, Pairing,
+    Across, Answered, DatagramFraming, Leg, LegSink, Pairing, PortAssociations,
 };
 use busbar_core_connector::framer::Got;
 use busbar_core_connector::udp::{ReadyPort, MAX_DATAGRAM};
@@ -101,9 +101,10 @@ impl ClaimDoors {
 /// session leg.
 pub struct ClaimDoor {
     port: ReadyPort,
-    assocs: Mutex<Associations>,
+    assocs: PortAssociations,
     legs: Mutex<HashMap<u64, Arc<CallerLeg>>>,
-    /// Woken when an association joins, so the port's task keeps its clock.
+    /// Woken when an association joins, or a writer ran what the port's task queued for an
+    /// association it had out, so the port's task keeps its clock.
     joined: Notify,
 }
 
@@ -122,7 +123,7 @@ impl ClaimDoor {
     pub fn serve(port: ReadyPort) -> Arc<Self> {
         let door = Arc::new(ClaimDoor {
             port,
-            assocs: Mutex::new(Associations::new()),
+            assocs: PortAssociations::new(),
             legs: Mutex::new(HashMap::new()),
             joined: Notify::new(),
         });
@@ -136,10 +137,20 @@ impl ClaimDoor {
         self.port.local_addr()
     }
 
-    /// Send what every association owes the port; a send that would block drops the datagram.
-    fn flush(&self, assocs: &mut Associations) {
-        while let Some((to, d)) = assocs.poll_send() {
-            let _ = self.port.send_to(&d, to);
+    /// Send one datagram an association owes the port; a send that would block drops it.
+    fn send(&self, to: SocketAddr, d: &[u8]) {
+        let _ = self.port.send_to(d, to);
+    }
+
+    /// What the port's associations answered, to each one's leg.
+    fn answer(&self, answered: Answered, now: Instant) {
+        for (id, answer) in answered {
+            let leg = lock(&self.legs).get(&id).cloned();
+            match (leg, answer) {
+                (Some(leg), Ok(y)) => leg.yielded(y.pieces, now),
+                (Some(leg), Err(_)) => leg.failed(),
+                (None, _) => {}
+            }
         }
     }
 
@@ -148,7 +159,7 @@ impl ClaimDoor {
     async fn run(self: Arc<Self>) {
         let mut buf = vec![0_u8; MAX_DATAGRAM];
         loop {
-            let deadline = lock(&self.assocs).deadline();
+            let deadline = self.assocs.deadline();
             let read = std::future::poll_fn(|cx| {
                 self.port
                     .poll_recv_from(cx, &mut buf)
@@ -173,28 +184,14 @@ impl ClaimDoor {
             let now = Instant::now();
             let answered = match woke {
                 Woke::Read(Ok((datagram, from))) => {
-                    let mut assocs = lock(&self.assocs);
-                    let one = assocs.datagram(from, &datagram, now);
-                    self.flush(&mut assocs);
-                    one.into_iter().collect::<Vec<_>>()
+                    self.assocs
+                        .datagram(from, &datagram, now, &|to, d| self.send(to, d))
                 }
                 // A per-datagram error (an unreachable far end reported back): the port stands.
                 Woke::Read(Err(_)) | Woke::Joined => Vec::new(),
-                Woke::Clock => {
-                    let mut assocs = lock(&self.assocs);
-                    let due = assocs.timeout(now);
-                    self.flush(&mut assocs);
-                    due
-                }
+                Woke::Clock => self.assocs.timeout(now, &|to, d| self.send(to, d)),
             };
-            for (id, answer) in answered {
-                let leg = lock(&self.legs).get(&id).cloned();
-                match (leg, answer) {
-                    (Some(leg), Ok(y)) => leg.yielded(y.pieces, now),
-                    (Some(leg), Err(_)) => leg.failed(),
-                    (None, _) => {}
-                }
-            }
+            self.answer(answered, now);
         }
     }
 
@@ -204,7 +201,7 @@ impl ClaimDoor {
         framing: DatagramFraming,
         leg: &Arc<CallerLeg>,
     ) -> Result<u64, busbar_core_connector::datagram::NotAdded> {
-        let id = lock(&self.assocs).add(framing)?;
+        let id = self.assocs.add(framing)?;
         leg.bind(id);
         lock(&self.legs).insert(id, Arc::clone(leg));
         self.joined.notify_one();
@@ -221,20 +218,20 @@ impl ClaimDoor {
         text: bool,
         now: Instant,
     ) -> bool {
-        let mut assocs = lock(&self.assocs);
-        let Some(f) = assocs.get_mut(id) else {
-            return false;
-        };
-        let ok = f.emit(stream, bytes, end, text, now).is_ok();
-        self.flush(&mut assocs);
+        let (ok, answered) = self
+            .assocs
+            .emit(id, stream, bytes, end, text, now, &|to, d| self.send(to, d));
+        if !answered.is_empty() {
+            self.joined.notify_one();
+        }
+        self.answer(answered, now);
         ok
     }
 
     /// Stop carrying association `id`: its framing finishes as it drops.
     fn leave(&self, id: u64) {
         lock(&self.legs).remove(&id);
-        let gone = lock(&self.assocs).remove(id);
-        drop(gone);
+        self.assocs.remove(id);
     }
 }
 
@@ -345,7 +342,9 @@ impl CallerLeg {
 
 impl LegSink for CallerLeg {
     fn line(&self, across: Across, now: Instant) {
-        if let (Some(door), Some(id)) = (self.door.upgrade(), *lock(&self.id)) {
+        // The id is copied out first: no guard is live across the emit's crossing.
+        let id = *lock(&self.id);
+        if let (Some(door), Some(id)) = (self.door.upgrade(), id) {
             door.emit(
                 id,
                 across.stream,

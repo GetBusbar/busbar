@@ -135,6 +135,22 @@ struct Scripted {
     facts: DoorFacts,
     knobs: Knobs,
     st: Mutex<St>,
+    /// A crossing parked once: the call it parks, said when it is in, and held until released.
+    park: Mutex<Option<Park>>,
+}
+
+/// Which crossing a [`Park`] holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parks {
+    Ingest,
+    Emit,
+    Finish,
+}
+
+struct Park {
+    call: Parks,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 fn scripted(knobs: Knobs) -> Arc<Scripted> {
@@ -158,6 +174,7 @@ fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripte
             local,
             ..St::default()
         }),
+        park: Mutex::new(None),
     })
 }
 
@@ -318,6 +335,21 @@ impl FramerDoor for Scripted {
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {
+        let parks = match call {
+            Call::Ingest(..) => Some(Parks::Ingest),
+            Call::Emit(..) => Some(Parks::Emit),
+            Call::Finish(..) => Some(Parks::Finish),
+            _ => None,
+        };
+        let mut park = self.park.lock().unwrap();
+        if park.as_ref().is_some_and(|p| Some(p.call) == parks) {
+            let p = park.take().unwrap();
+            drop(park);
+            let _ = p.entered.send(());
+            let _ = p.release.recv();
+        } else {
+            drop(park);
+        }
         let ok = Crossed {
             outcome: Outcome::Ready,
             error: None,
@@ -1020,6 +1052,7 @@ fn only_a_datagram_framer_is_driven_over_the_port() {
         },
         knobs: Knobs::default(),
         st: Mutex::new(St::default()),
+        park: Mutex::new(None),
     });
     let cert = Arc::new(SessionCert::mint().unwrap());
     let e = DatagramFraming::accept(not.clone(), Arc::clone(&cert), p("198.51.100.1:3478"))
@@ -1175,6 +1208,7 @@ fn book() -> crate::Connector {
             local: (HOST_UFRAG, HOST_PWD),
             ..St::default()
         }),
+        park: Mutex::new(None),
     });
     let view = crate::registry::Transports::new(vec![
         crate::registry::Entry {
@@ -1528,4 +1562,184 @@ fn a_message_written_in_parts_past_its_bound_is_refused() {
         assert_eq!(wrote, Err(ConnError::Refused), "1 MiB unended is refused");
         d.close();
     });
+}
+
+const C_UFRAG: &str = "cfrag";
+const C_PWD: &str = "c-password-0123456789";
+
+/// Arm `door` to park its next `call` crossing: told when it is in, held until released.
+fn park(
+    door: &Scripted,
+    call: Parks,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (entered, in_) = std::sync::mpsc::channel();
+    let (out, release) = std::sync::mpsc::channel();
+    *door.park.lock().unwrap() = Some(Park {
+        call,
+        entered,
+        release,
+    });
+    (in_, out)
+}
+
+/// §11.13 M1: no plugin code runs under the port's lock. While `parked` holds association a's
+/// framer (or a refused framing's) in a `call` crossing on its own thread, every other caller of
+/// the port completes within a bounded wait: another association's emit, an admission, a datagram
+/// to another association, and a teardown. The park is released before anything is asserted, so a
+/// failure never hangs.
+fn others_complete_while_parked(
+    call: Parks,
+    arm: impl FnOnce(&Arc<Scripted>) -> Arc<Scripted>,
+    parked: impl FnOnce(&super::PortAssociations, u64) + Send + 'static,
+) {
+    let (da, db) = (
+        scripted(Knobs::default()),
+        scripted_as(Knobs::default(), (B_UFRAG, B_PWD)),
+    );
+    let port = Arc::new(super::PortAssociations::new());
+    let a = port.add(settled(da.clone())).unwrap();
+    let b = port.add(settled(db.clone())).unwrap();
+    let pb = p("203.0.113.2:2000");
+    let none = |_: SocketAddr, _: &[u8]| {};
+    let now = Instant::now();
+    let answered = port.datagram(pb, &check(B_UFRAG, FAR_UFRAG, B_PWD, 2), now, &none);
+    assert!(matches!(answered.as_slice(), [(id, Ok(_))] if *id == b));
+
+    let (entered, release) = park(&arm(&da), call);
+    let holder = {
+        let port = Arc::clone(&port);
+        std::thread::spawn(move || parked(&port, a))
+    };
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the parked crossing is in");
+
+    let (done, finished) = std::sync::mpsc::channel();
+    let other = {
+        let port = Arc::clone(&port);
+        std::thread::spawn(move || {
+            let none = |_: SocketAddr, _: &[u8]| {};
+            let now = Instant::now();
+            let (ok, _) = port.emit(b, 1, b"m", true, false, now, &none);
+            let _ = done.send(("emit", ok));
+            let c = port.add(settled(scripted_as(Knobs::default(), (C_UFRAG, C_PWD))));
+            let _ = done.send(("admit", c.is_ok()));
+            let routed = port.datagram(pb, &[0x80, 0x6f, 0, 1], now, &none);
+            let _ = done.send((
+                "datagram",
+                matches!(routed.as_slice(), [(id, _)] if *id == b),
+            ));
+            port.remove(b);
+            let _ = done.send(("teardown", true));
+        })
+    };
+    let mut seen = Vec::new();
+    while let Ok(step) = finished.recv_timeout(Duration::from_secs(2)) {
+        seen.push(step);
+        if seen.len() == 4 {
+            break;
+        }
+    }
+    let _ = release.send(());
+    holder.join().unwrap();
+    other.join().unwrap();
+    assert_eq!(
+        seen,
+        [
+            ("emit", true),
+            ("admit", true),
+            ("datagram", true),
+            ("teardown", true)
+        ],
+        "another association's callers waited on a framer parked in {call:?}"
+    );
+}
+
+#[test]
+fn a_framer_parked_in_ingest_holds_no_other_caller_of_its_port() {
+    others_complete_while_parked(Parks::Ingest, Arc::clone, |port, a| {
+        let pa = p("203.0.113.1:1000");
+        let none = |_: SocketAddr, _: &[u8]| {};
+        let check = check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1);
+        let _ = port.datagram(pa, &check, Instant::now(), &none);
+        let _ = a;
+    });
+}
+
+#[test]
+fn a_framer_parked_in_emit_holds_no_other_caller_of_its_port() {
+    others_complete_while_parked(Parks::Emit, Arc::clone, |port, a| {
+        let none = |_: SocketAddr, _: &[u8]| {};
+        let _ = port.emit(a, 1, b"m", true, false, Instant::now(), &none);
+    });
+}
+
+/// A refused admission's framing finishes as it is handed back: never under the port's lock.
+#[test]
+fn a_refused_framing_parked_in_finish_holds_no_other_caller_of_its_port() {
+    let dup = scripted(Knobs::default());
+    let refused = settled(dup.clone());
+    others_complete_while_parked(
+        Parks::Finish,
+        move |_| dup,
+        move |port, _| {
+            assert_eq!(port.add(refused), Err(super::NotAdded::UserTaken));
+        },
+    );
+}
+
+/// What a caller owes an association out on another caller's crossing does not wait for it: it is
+/// queued, and the holder runs it, in order, before putting the association back (one crossing
+/// per association at a time). Removed while out, the holder finishes it on the way back and runs
+/// nothing more on it.
+#[test]
+fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
+    let da = scripted(Knobs::default());
+    let port = Arc::new(super::PortAssociations::new());
+    let a = port.add(settled(da.clone())).unwrap();
+    let none = |_: SocketAddr, _: &[u8]| {};
+    let parked = |port: &Arc<super::PortAssociations>| {
+        let (entered, release) = park(&da, Parks::Emit);
+        let holder = {
+            let port = Arc::clone(port);
+            std::thread::spawn(move || {
+                let none = |_: SocketAddr, _: &[u8]| {};
+                port.emit(a, 1, b"first", true, false, Instant::now(), &none)
+            })
+        };
+        entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the parked crossing is in");
+        (holder, release)
+    };
+
+    let (holder, release) = parked(&port);
+    let before = lanes(&da).len();
+    let check = check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1);
+    let pa = p("203.0.113.1:1000");
+    assert!(
+        port.datagram(pa, &check, Instant::now(), &none).is_empty(),
+        "queued for the holder"
+    );
+    let (ok, ran) = port.emit(a, 1, b"second", true, false, Instant::now(), &none);
+    assert!(ok && ran.is_empty(), "queued for the holder");
+    let _ = release.send(());
+    let (ok, answered) = holder.join().unwrap();
+    assert!(ok);
+    assert!(matches!(answered.as_slice(), [(id, Ok(_))] if *id == a));
+    assert_eq!(
+        lanes(&da)[before..],
+        [0, LANE_CLEAR, 0],
+        "the parked emit, then what was owed, in order"
+    );
+    assert_eq!(port.len(), 1, "put back");
+
+    let (holder, release) = parked(&port);
+    let before = lanes(&da).len();
+    port.remove(a);
+    let _ = port.emit(a, 1, b"late", true, false, Instant::now(), &none);
+    let _ = release.send(());
+    let _ = holder.join().unwrap();
+    assert_eq!(lanes(&da).len(), before + 1, "only the parked call crossed");
+    assert!(port.is_empty(), "removed while out, finished by its holder");
 }
