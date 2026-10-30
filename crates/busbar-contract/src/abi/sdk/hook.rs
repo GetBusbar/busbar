@@ -30,7 +30,9 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;
 
 use crate::abi::hook::validate::{check_notify_in, check_prompt_view};
@@ -48,6 +50,7 @@ use crate::abi::hook::{
 };
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
@@ -805,7 +808,59 @@ pub const fn statement_with_tail(base: Statement, tail: &'static Tail) -> Statem
 /// One open hook instance: the hook its settings opened, swapped whole on `refresh`.
 pub struct HookLife<P> {
     hook: RwLock<Arc<dyn Hook>>,
+    short: Shorted,
     open: PhantomData<fn() -> P>,
+}
+
+/// A verdict a `decide` / `transform` lowered and answered SHORT (its host buffers too small).
+#[derive(Debug)]
+enum Lowered {
+    Decide(Verdict),
+    Transform(RewriteVerdict),
+}
+
+/// THE VERDICTS AWAITING THEIR ONE SHORT-BUFFER RE-CALL (hook ABI defect 5). A `decide` or
+/// `transform` whose verdict does not fit the host's buffers answers the one short FAILED, and the
+/// host re-calls the op once, on the same ticket, with grown buffers: that re-call answers the
+/// verdict the first run lowered, so the hook runs (and asks its far end) once per op.
+///
+/// Kept by the ticket's slot, each entry naming its whole ticket: an entry is taken by the next
+/// entry on its slot, whatever it is, and answered only to the same ticket's same op, so a later
+/// ticket on the slot (a recycled one) never reads another op's verdict, and the table never
+/// holds more than one entry per host slot.
+#[derive(Debug, Default)]
+struct Shorted {
+    /// How many entries `held` holds: no lock is taken while it is zero.
+    count: AtomicUsize,
+    held: Mutex<HashMap<u32, (Ticket, Lowered)>>,
+}
+
+impl Shorted {
+    /// The verdict `ticket`'s short answer lowered, if this entry is its re-call (the same ticket,
+    /// the same op); any entry kept on the ticket's slot is let go either way.
+    fn take(&self, ticket: Ticket, decide: bool) -> Option<Lowered> {
+        if ticket == Ticket::NONE || self.count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let (kept, lowered) = held.remove(&ticket.slot)?;
+        self.count.store(held.len(), Ordering::Release);
+        let same_op = matches!(
+            (&lowered, decide),
+            (Lowered::Decide(_), true) | (Lowered::Transform(_), false)
+        );
+        (kept == ticket && same_op).then_some(lowered)
+    }
+
+    /// Keep `lowered` for `ticket`'s re-call. A ticket-less call is never re-called.
+    fn keep(&self, ticket: Ticket, lowered: Lowered) {
+        if ticket == Ticket::NONE {
+            return;
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        held.insert(ticket.slot, (ticket, lowered));
+        self.count.store(held.len(), Ordering::Release);
+    }
 }
 
 impl<P> std::fmt::Debug for HookLife<P> {
@@ -853,6 +908,7 @@ impl<P: HookOpen> Life for HookLife<P> {
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Self {
             hook: RwLock::new(opened::<P>(settings)?),
+            short: Shorted::default(),
             open: PhantomData,
         })
     }
@@ -898,17 +954,30 @@ fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
 }
 
 hook_op!(
-    /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake.
+    /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake. A short answer's
+    /// re-call answers the verdict the first run lowered ([`Shorted`]).
     Decide, DecideIn, DecideOut, |held, i, input, out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
-        let op = Op::new(&i, held.host());
-        let Poll::Ready(v) = held.life().hook().decide(&Decoded::of(input), &op) else {
-            return Outcome::Pending;
+        let life = held.life();
+        let v = match life.short.take(i.ticket(), true) {
+            Some(Lowered::Decide(v)) => v,
+            _ => {
+                let op = Op::new(&i, held.host());
+                let Poll::Ready(v) = life.hook().decide(&Decoded::of(input), &op) else {
+                    return Outcome::Pending;
+                };
+                v
+            }
         };
         match (write_verdict(&v, input, out.raw()), v) {
             (Outcome::Failed, Verdict::Failed(m)) => out.fail(Refusal::failed(m)),
+            // Short: the host re-calls once with grown buffers; the re-call answers this verdict.
+            (Outcome::Failed, v) => {
+                life.short.keep(i.ticket(), Lowered::Decide(v));
+                Outcome::Failed
+            }
             (outcome, _) => outcome,
         }
     }
@@ -920,12 +989,24 @@ hook_op!(
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
-        let op = Op::new(&i, held.host());
-        let Poll::Ready(v) = held.life().hook().transform(&Decoded::of(input), &op) else {
-            return Outcome::Pending;
+        let life = held.life();
+        let v = match life.short.take(i.ticket(), false) {
+            Some(Lowered::Transform(v)) => v,
+            _ => {
+                let op = Op::new(&i, held.host());
+                let Poll::Ready(v) = life.hook().transform(&Decoded::of(input), &op) else {
+                    return Outcome::Pending;
+                };
+                v
+            }
         };
         match (write_rewrite(&v, input, out.raw()), v) {
             (Outcome::Failed, RewriteVerdict::Failed(m)) => out.fail(Refusal::failed(m)),
+            // Short: as `decide`'s.
+            (Outcome::Failed, v) => {
+                life.short.keep(i.ticket(), Lowered::Transform(v));
+                Outcome::Failed
+            }
             (outcome, _) => outcome,
         }
     }

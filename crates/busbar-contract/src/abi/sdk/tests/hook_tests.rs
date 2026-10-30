@@ -1345,7 +1345,8 @@ fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_ho
         call::<Decide<OpenAsks>>(p, slot::DECIDE, &input, &mut out),
         Outcome::Failed
     );
-    let mut later = frame.regrown_decide(&out).input();
+    let regrown = frame.regrown_decide(&out);
+    let mut later = regrown.input();
     later.head.ticket = Ticket {
         generation: TICKET.generation + 1,
         ..TICKET
