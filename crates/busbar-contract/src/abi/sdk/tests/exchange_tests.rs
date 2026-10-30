@@ -1243,3 +1243,60 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
         observed.runs
     );
 }
+
+/// An op's parking place, in memory: what [`Op`] parks on a PENDING entry, resumed on the next.
+struct Parked(std::cell::RefCell<Option<Box<Exchange>>>);
+
+impl Parks for Parked {
+    fn ticket(&self) -> Ticket {
+        TICKET
+    }
+    fn park(&self, exchange: Exchange) {
+        *self.0.borrow_mut() = Some(Box::new(exchange));
+    }
+    fn resume(&self) -> Option<Box<Exchange>> {
+        self.0.borrow_mut().take()
+    }
+}
+
+/// [`Op::exchange_with`] run to completion under `reply`, its reply capped at `limit` bytes.
+fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, ConnFailure> {
+    *SCRIPT.lock().unwrap() = Some(Script {
+        reply,
+        ..Script::default()
+    });
+    let h = host();
+    let parked = Parked(std::cell::RefCell::new(None));
+    let op = Op {
+        on: &parked,
+        host: Some(&h),
+    };
+    for _ in 0..40 {
+        if let Poll::Ready(r) = op.exchange_with(0, None, limit, || Ok(post())) {
+            SCRIPT.lock().unwrap().take();
+            return r;
+        }
+    }
+    panic!("the op never completed");
+}
+
+/// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
+/// at 1 MiB) without buffering up to `REPLY_MAX`: past it the reply is refused as one past
+/// `REPLY_MAX` is; at it, it passes whole.
+#[test]
+fn an_ops_exchange_takes_its_reply_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        op_run(body_reply(60, 41), 100).expect_err("the reply passes the limit"),
+        ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+    assert_eq!(
+        op_run(body_reply(60, 40), 100)
+            .expect("at the limit")
+            .body
+            .len(),
+        100
+    );
+}
