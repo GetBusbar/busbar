@@ -4,9 +4,13 @@
 //! count. The plane delimits units from frames; the kernel constructs them and is the sole writer
 //! of their identity. Everything below is read-only from a plugin's side.
 
-use crate::bounded::{BoundedVec, Facts, Ir, ScratchBytes, MAX_RESPONSE_PTRS, MAX_USAGE_LINES};
+use crate::bounded::{
+    BoundedVec, Facts, Ir, Labels, ScratchBytes, MAX_RESPONSE_PTRS, MAX_USAGE_LINES,
+};
 use crate::grammar::Location;
-use crate::ids::{CorrelationRef, OpClassId, PrincipalId, SessionId, StreamId, UnitKey};
+use crate::ids::{
+    CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId, UnitKey,
+};
 use crate::plugin::KernelSeal;
 use crate::wire::Direction;
 use core::fmt;
@@ -313,6 +317,30 @@ pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass
     }
 }
 
+/// Where a plane found the values the metering step folds.
+///
+/// A plane returns locators, never amounts: the type carries a class, where the value was found,
+/// and the value itself when the plane read it out of a response it already parsed. The kernel's
+/// own accrual is the floor these are checked against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct UsageLocator {
+    /// Which class the value is for.
+    pub class: MeterClassId,
+    /// Where in the response the value was found.
+    pub location: Option<Location>,
+    /// The value, in the class's own quantity.
+    pub quantity: Option<u64>,
+    /// The lane the response itself named, where the dialect names one.
+    pub lane: Option<LaneId>,
+}
+
+/// Every locator one unit's metering step folds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsageLocators {
+    /// The lines, one per class the plane read.
+    pub lines: BoundedVec<UsageLocator, MAX_USAGE_LINES>,
+}
+
 /// What the audit step seals about a unit.
 ///
 /// The operation class here is checked against the one the draft declared, because the draft's is
@@ -384,6 +412,160 @@ impl AdmitFacts {
                 _ => None,
             }
         })
+    }
+}
+
+/// The node's read-only clock.
+///
+/// A plane is pure over its inputs, and time is an input, so it comes from here rather than from
+/// the system. The determinism meta-test depends on that being the only source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct Clock {
+    /// Wall-clock seconds since the epoch, as the node reads them.
+    pub unix_secs: u64,
+    /// A monotonic reading in nanoseconds, for elapsed measurements.
+    pub monotonic_nanos: u128,
+}
+
+/// The configuration a plugin declared a schema for, as a read-only view.
+///
+/// A plugin reads its own block and nothing else. There is no way from here to another plugin's
+/// configuration, to policy, or to a secret.
+pub trait ConfigView: Send + Sync {
+    /// A string value from this plugin's own configuration block.
+    fn get_str(&self, key: &str) -> Option<&str>;
+
+    /// A whole-number value from this plugin's own configuration block.
+    fn get_int(&self, key: &str) -> Option<i64>;
+
+    /// A flag from this plugin's own configuration block.
+    fn get_bool(&self, key: &str) -> Option<bool>;
+}
+
+/// The session's kernel-owned fact maps, as a read-only view.
+///
+/// Both maps are pre-allocated at session open from the declared key sets, and both are
+/// last-write-wins. A plane writes session facts through its own answers; a transport writes
+/// transport facts at accept, dial, upgrade and handoff. Neither can write the other's.
+pub trait SessionView: Send + Sync {
+    /// Which session this is.
+    fn id(&self) -> SessionId;
+
+    /// Whether the session's principal is cached, or every unit re-authenticates.
+    fn is_bound(&self) -> bool;
+
+    /// A session fact, by declared key.
+    fn session_fact(&self, key: &str) -> Option<&str>;
+
+    /// A transport fact, by declared key.
+    fn transport_fact(&self, key: &str) -> Option<&str>;
+
+    /// How many upstreams this session has paired with itself.
+    fn upstream_count(&self) -> usize;
+}
+
+/// The transport stack under this unit, as a read-only view.
+pub trait TransportView: Send + Sync {
+    /// The top transport's key.
+    fn key(&self) -> &'static str;
+
+    /// The composed stack, bottom layer first.
+    fn chain(&self) -> &[&'static str];
+
+    /// A transport fact, by declared key.
+    fn fact(&self, key: &str) -> Option<&str>;
+}
+
+/// Everything a plugin call is given besides its own arguments.
+///
+/// The context carries exactly one resource — the arena — and the rest are borrowed views. There
+/// is no handle here that reaches the kernel, no way to mount a route, and no way to open a
+/// connection. The host's codec services (its entropy and wall clock) arrive here as a borrowed
+/// [`CodecHost`](crate::codec::CodecHost): a plane holds no random source of its own, so a codec it
+/// drives mints from the host the context hands it, and a context cannot be built without one.
+pub struct Ctx<'u> {
+    clock: Clock,
+    config: &'u dyn ConfigView,
+    session: Option<&'u dyn SessionView>,
+    transport: &'u dyn TransportView,
+    labels: &'u Labels<'u>,
+    arena: &'u dyn crate::bounded::PlaneAlloc,
+    host: &'u dyn crate::codec::CodecHost,
+}
+
+impl<'u> Ctx<'u> {
+    /// Assemble a context. The kernel builds every one of these, handing its own codec host.
+    #[must_use]
+    pub fn new(
+        clock: Clock,
+        config: &'u dyn ConfigView,
+        session: Option<&'u dyn SessionView>,
+        transport: &'u dyn TransportView,
+        labels: &'u Labels<'u>,
+        arena: &'u dyn crate::bounded::PlaneAlloc,
+        host: &'u dyn crate::codec::CodecHost,
+    ) -> Self {
+        Self {
+            clock,
+            config,
+            session,
+            transport,
+            labels,
+            arena,
+            host,
+        }
+    }
+
+    /// The host's codec services for this call: the entropy a minted identifier is drawn from.
+    #[must_use]
+    pub fn host(&self) -> &'u dyn crate::codec::CodecHost {
+        self.host
+    }
+
+    /// The node's clock reading for this call.
+    #[must_use]
+    pub fn clock(&self) -> Clock {
+        self.clock
+    }
+
+    /// This plugin's own configuration.
+    #[must_use]
+    pub fn config(&self) -> &'u dyn ConfigView {
+        self.config
+    }
+
+    /// The session, on a session transport. A one-shot transport has none.
+    #[must_use]
+    pub fn session(&self) -> Option<&'u dyn SessionView> {
+        self.session
+    }
+
+    /// The transport stack under this unit.
+    #[must_use]
+    pub fn transport(&self) -> &'u dyn TransportView {
+        self.transport
+    }
+
+    /// The metric labels for this unit.
+    #[must_use]
+    pub fn labels(&self) -> &'u Labels<'u> {
+        self.labels
+    }
+
+    /// The per-unit arena — the one resource handle.
+    #[must_use]
+    pub fn arena(&self) -> &'u dyn crate::bounded::PlaneAlloc {
+        self.arena
+    }
+}
+
+impl fmt::Debug for Ctx<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Ctx")
+            .field("clock", &self.clock)
+            .field("transport", &self.transport.key())
+            .field("session", &self.session.map(SessionView::id))
+            .finish()
     }
 }
 

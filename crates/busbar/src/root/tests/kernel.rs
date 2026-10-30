@@ -290,10 +290,10 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     assert_eq!(priced.minor(), 13, "each era at the plane fee in force");
 }
 
-/// The arrival door is the admission unit's, and a hold it opens reserves nothing — the point
-/// of the arrival hold is that even a refusal is an event with a cell of its own to settle.
+/// The arrival door is the admission unit's, and the hold it opens is the caller's — the point of
+/// the arrival hold is that even a refusal is an event with a cell of its own to settle.
 #[test]
-fn the_arrival_door_opens_a_hold_that_reserves_nothing() {
+fn the_arrival_door_opens_the_callers_hold() {
     let kernel = new_kernel();
     let door = AdmissionDoor;
     let hold = busbar_kernel::inflight::arrival_hold(
@@ -302,7 +302,6 @@ fn the_arrival_door_opens_a_hold_that_reserves_nothing() {
         PrincipalId::new("k-7"),
         kernel.next_call(),
     );
-    assert_eq!(hold.reserved(), 0);
     assert_eq!(hold.principal(), &PrincipalId::new("k-7"));
 }
 
@@ -318,7 +317,6 @@ fn the_units_assemble_from_values_configuration_decided() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
 
@@ -326,7 +324,6 @@ fn the_units_assemble_from_values_configuration_decided() {
     let units = ProductionUnits::new(
         &kernel,
         durability,
-        crate::root::adapters::BreakerPolicy::new(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
@@ -335,11 +332,10 @@ fn the_units_assemble_from_values_configuration_decided() {
         None,
     );
 
-    // The journal opened nothing and the ledger is dual-writing. Both are the safe end of a choice
-    // that had an unsafe end, and both are checkable here rather than at the first request.
+    // The journal opened nothing: the safe end of a choice that had an unsafe end, checkable here
+    // rather than at the first request.
     let durability = units.durability.lock().expect("durability lock");
     assert!(!durability.on_disk());
-    assert!(durability.ledger.is_dual_writing());
 }
 
 /// A store that writes down every primitive it is asked for, so a test can say WHICH store a call
@@ -647,74 +643,31 @@ fn open_book(
         },
         7,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(move || holder.pin()),
         Some(holder),
     )
     .expect("the journal opens");
     Arc::new(Mutex::new(book))
 }
 
-fn bucket(name: &str) -> busbar_kernel_ledger::totals::TotalsKey {
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-    TotalsKey::new(
-        BucketId::new(name),
-        CapDimension::NanoUnits,
-        BucketScope::All,
+/// What a million `input` tokens earned on `lane` at `at` cost, in nano-units: the counts priced by
+/// the card `holder`'s history holds in force at `at` (money is counts x the card, MONEY-DESIGN §3).
+fn earned(holder: &RootHistory, lane: &str, at: u64) -> u64 {
+    let price = holder
+        .history()
+        .expect("a history")
+        .current()
+        .card_at(at)
+        .and_then(|(_, card)| card.lane_rates(lane).map(|r| r.nanos_per_unit("input")))
+        .expect("a card prices the lane");
+    1_000_000 * price
+}
+
+/// What a million tokens earned at A and a million at B come to on each lane, at `holder`'s history.
+fn figures(holder: &RootHistory) -> (u64, u64) {
+    (
+        earned(holder, FLAT_LANE, EARNED_A) + earned(holder, FLAT_LANE, EARNED_B),
+        earned(holder, PLANE_LANE, EARNED_A) + earned(holder, PLANE_LANE, EARNED_B),
     )
-}
-
-/// One unit of `input` tokens on `lane`, arriving at `arrived_ms` and settled at `amount` — the
-/// figure the unit's exit priced at the card it pinned.
-fn settle(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-    name: &str,
-    lane: &str,
-    input: u64,
-    amount: u64,
-    arrived_ms: u64,
-) {
-    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, WriteMoney};
-    let money = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
-    let posted = Posted::settle_late(
-        HoldAccrual::after_terminal(PrincipalId::new(name), amount, &money),
-        &money,
-    );
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    let key = bucket(name);
-    book.lock()
-        .expect("the book")
-        .settle_counted(
-            &crate::root::durability::Settling {
-                key: &key,
-                window: 86_400,
-                durability: &token,
-                step: busbar_contract::caps::StepName::Meter,
-                stamp: crate::root::durability::PostingStamp {
-                    rate_card_version: 0,
-                    wall: arrived_ms / 1_000,
-                    mono: arrived_ms,
-                },
-            },
-            posted,
-            &crate::root::durability::UnitCounts {
-                lane: lane.to_string(),
-                fee_count: 0,
-                classes: std::collections::BTreeMap::from([("input".to_string(), input)]),
-            },
-            arrived_ms,
-        )
-        .expect("the journal takes the posting");
-}
-
-/// The settled figure on `name`'s balance, in nano-units.
-fn settled(book: &Arc<Mutex<crate::root::durability::Durability>>, name: &str) -> i128 {
-    book.lock()
-        .expect("the book")
-        .ledger
-        .book()
-        .get(&bucket(name), 86_400)
-        .settled
 }
 
 /// How many applied cards the chain holds.
@@ -776,8 +729,8 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
 ///
 /// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (a plane's lane, [`PLANE_LANE`],
 /// at 6); a million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another
-/// million is earned on each. The node restarts. Every posting on the chain is replayed at the card
-/// in force when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
+/// million is earned on each. The node restarts. Every count is priced, through the history the
+/// restart rebuilt from the chain, at the card in force when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
 /// 6,000,000,000 + 10,000,000,000 = 16,000,000,000 — the figures the node served before the
 /// restart. Before the applied cards were journalled, the rebuilt history was the boot card B from
 /// instant zero and the same chain replayed as 10,000,000,000 and 20,000,000,000.
@@ -797,27 +750,9 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
         let book = boot_book(holder, &dir);
-        settle(&book, "flat", FLAT_LANE, 1_000_000, 3_000_000_000, EARNED_A);
-        settle(
-            &book,
-            "plane",
-            PLANE_LANE,
-            1_000_000,
-            6_000_000_000,
-            EARNED_A,
-        );
         apply_at(holder, 5.0, APPLIED_B);
-        settle(&book, "flat", FLAT_LANE, 1_000_000, 5_000_000_000, EARNED_B);
-        settle(
-            &book,
-            "plane",
-            PLANE_LANE,
-            1_000_000,
-            10_000_000_000,
-            EARNED_B,
-        );
         assert_eq!(cards_on_chain(&book), 2, "the boot card and the live apply");
-        (settled(&book, "flat"), settled(&book, "plane"))
+        figures(holder)
     };
     assert_eq!(figures_before, (8_000_000_000, 16_000_000_000));
 
@@ -826,9 +761,9 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     apply_at(holder, 5.0, REBOOT);
     let book = boot_book(holder, &dir);
     assert_eq!(
-        (settled(&book, "flat"), settled(&book, "plane")),
+        figures(holder),
         figures_before,
-        "a restart repriced a posting at a card that was not in force when it arrived"
+        "a restart repriced counts at a card that was not in force when they arrived"
     );
     assert!(book.lock().expect("the book").restart_findings.is_empty());
     assert_eq!(
@@ -851,10 +786,7 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     let holder = process_holder();
     apply_at(holder, 7.0, REBOOT_CHANGED);
     let book = boot_book(holder, &dir);
-    assert_eq!(
-        (settled(&book, "flat"), settled(&book, "plane")),
-        figures_before
-    );
+    assert_eq!(figures(holder), figures_before);
     assert_eq!(holder.len(), 3);
     assert_eq!(cards_on_chain(&book), 3);
     let history = holder.history().expect("a history");
@@ -922,10 +854,9 @@ fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arri
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A + 1);
         let book = boot_book(holder, &dir);
-        settle(&book, "flat", FLAT_LANE, 1_000_000, 3_000_000_000, EARNED_A);
         apply_at(holder, 5.0, APPLIED_B);
-        settle(&book, "flat", FLAT_LANE, 1_000_000, 5_000_000_000, EARNED_B);
-        settled(&book, "flat")
+        drop(book);
+        figures(holder).0
     };
     assert_eq!(figures_before, 8_000_000_000);
     roll_at(&dir, roll);
@@ -935,9 +866,9 @@ fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arri
     apply_at(holder, 5.0, REBOOT);
     let book = boot_book(holder, &dir);
     assert_eq!(
-        settled(&book, "flat"),
+        figures(holder).0,
         figures_before,
-        "a restart after a roll repriced a posting at a card that was not in force when it arrived"
+        "a restart after a roll repriced counts at a card that was not in force when they arrived"
     );
     assert_eq!(cards_on_chain(&book), 2, "card A from segment zero, card B");
     assert!(book.lock().expect("the book").restart_findings.is_empty());
@@ -1322,8 +1253,6 @@ fn a_rate_apply_before_the_book_is_bound_is_refused() {
         },
         7,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(move || holder.pin()),
         Some(holder),
     )
     .expect("the journal opens");
@@ -1545,8 +1474,6 @@ fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
         &crate::root::durability::DurabilityConfig { data_dir: None },
         7,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(move || holder.pin()),
         Some(holder),
     )
     .expect("memory-buffered cannot fail");
@@ -1579,8 +1506,6 @@ fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
         },
         7,
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(move || unarmed.pin()),
         Some(unarmed),
     )
     .expect("the journal opens");
@@ -1684,8 +1609,8 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
 /// record ahead of its append (item 30), and the boot's rebuild reads it back as the entry it
 /// appended. Card A prices [`FLAT_LANE`] at 3; a million tokens arrive at 10,000 ms; a correction
 /// signed at 20,000 ms reprices `[0, 86,400,000)` (one whole UTC day, #32) at 4. After a restart
-/// the rebuilt book prices that unit at the correction, 4,000,000,000 nano-units, and a unit the
-/// next day, outside the window, stays at A.
+/// the rebuilt history prices that unit's counts at the correction, 4,000,000,000 nano-units, and a
+/// unit the next day, outside the window, stays at A.
 /// Before the rebuild read corrections, a restart dropped it: the history was the boot card alone
 /// and the same unit replayed at 3,000,000,000.
 #[cfg(feature = "root-admin")]
@@ -1701,22 +1626,6 @@ fn a_back_dated_correction_survives_a_restart() {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
         let book = boot_book(holder, &dir);
-        settle(
-            &book,
-            "inside",
-            FLAT_LANE,
-            1_000_000,
-            3_000_000_000,
-            EARNED_A,
-        );
-        settle(
-            &book,
-            "outside",
-            FLAT_LANE,
-            1_000_000,
-            3_000_000_000,
-            OUTSIDE,
-        );
         // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first
         // (sealing the corrected card), then the append.
         let journal = crate::root::units_admin::AmendmentJournal::new(
@@ -1765,7 +1674,10 @@ fn a_back_dated_correction_survives_a_restart() {
     apply_at(holder, 3.0, REBOOT);
     let book = boot_book(holder, &dir);
     assert_eq!(
-        (settled(&book, "inside"), settled(&book, "outside")),
+        (
+            earned(holder, FLAT_LANE, EARNED_A),
+            earned(holder, FLAT_LANE, OUTSIDE)
+        ),
         (4_000_000_000, 3_000_000_000),
         "the correction reprices exactly its window after a restart, and nothing outside it"
     );
@@ -1845,20 +1757,8 @@ fn seal_correction(
 
 /// Every journalled correction `book`'s restart refused, as its restart findings name them.
 #[cfg(feature = "root-admin")]
-fn refused_corrections(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-) -> Vec<super::CorrectionRefused> {
-    book.lock()
-        .expect("the book")
-        .restart_findings
-        .iter()
-        .filter_map(|finding| match finding {
-            crate::root::durability::JournalDisagreement::CorrectionRefused(refused) => {
-                Some(refused.clone())
-            }
-            _ => None,
-        })
-        .collect()
+fn refused_corrections(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<String> {
+    book.lock().expect("the book").restart_findings.clone()
 }
 
 /// Whether any entry on `holder`'s history is a signed correction.
@@ -1923,7 +1823,8 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
                     .digest(),
             },
             cause: super::BaseMismatch::MissingBase,
-        }],
+        }
+        .to_string()],
         "the correction is refused by name, not dropped with a log line or rebuilt over card A"
     );
     assert!(
@@ -1969,7 +1870,8 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
             appended_at: SIGNED_AT,
             sealed_over,
             cause: super::BaseMismatch::BaseDigest,
-        }]
+        }
+        .to_string()]
     );
     assert!(!holds_a_correction(holder));
     assert_eq!(holder.len(), 1, "the opening card alone");
@@ -2083,8 +1985,6 @@ fn boot_book_on_store(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             7,
             lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(move || holder.pin()),
             Some(holder),
         )
         .expect("the store reads back"),
@@ -2111,14 +2011,6 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
         let book = boot_book_on_store(holder, &slots);
-        settle(
-            &book,
-            "inside",
-            FLAT_LANE,
-            1_000_000,
-            3_000_000_000,
-            EARNED_A,
-        );
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
             busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
@@ -2171,9 +2063,9 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
 
     let holder = process_holder();
     apply_at(holder, 3.0, REBOOT);
-    let book = boot_book_on_store(holder, &slots);
+    let _book = boot_book_on_store(holder, &slots);
     assert_eq!(
-        settled(&book, "inside"),
+        earned(holder, FLAT_LANE, EARNED_A),
         4_000_000_000,
         "the correction reprices its window after a restart over the store"
     );
@@ -2218,8 +2110,6 @@ fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
         &crate::root::durability::DurabilityConfig { data_dir: None },
         7,
         lane,
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(move || holder.pin()),
         Some(holder),
     )
     .err()

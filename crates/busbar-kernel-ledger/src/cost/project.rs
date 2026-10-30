@@ -16,8 +16,8 @@ use busbar_contract::caps::UsageLine;
 
 use crate::cost::rate::RateCard;
 use crate::cost::{
-    plane_fee_lane, price_in_view, split_plane_lane, whole, HistoryView, LedgerEntry, MoneyError,
-    Tally, PER_REQUEST, STANDARD_TIER_BP,
+    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, HistoryView, LedgerEntry,
+    MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
 };
 
 /// Derive what a ledger view costs, in minor units, against one card: every lane the bucket used,
@@ -158,8 +158,23 @@ impl<'r> MeteredRow<'r> {
         arrived_ms: u64,
         view: &HistoryView<'_>,
     ) -> Result<i64, MoneyError> {
+        price_in_view(&self.entries(arrived_ms), view)?.micros_i64()
+    }
+
+    /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
+    /// ([`price_exact`]), so a reader that sums many rows truncates once, over the sum.
+    pub fn exact_in_view(
+        &self,
+        arrived_ms: u64,
+        view: &HistoryView<'_>,
+    ) -> Result<i128, MoneyError> {
+        price_exact(&self.entries(arrived_ms), view)
+    }
+
+    /// The row as the ledger slice the one function prices, at `arrived_ms`.
+    fn entries(&self, arrived_ms: u64) -> Vec<LedgerEntry> {
         let (lanes, fee_count) = self.lanes();
-        let entries: Vec<LedgerEntry> = lanes
+        lanes
             .iter()
             .map(|(lane, counts)| {
                 let entry = counts.iter().fold(
@@ -171,8 +186,7 @@ impl<'r> MeteredRow<'r> {
                     None => entry,
                 }
             })
-            .collect();
-        price_in_view(&entries, view)?.micros_i64()
+            .collect()
     }
 
     /// What the row cost, in micro-units, at one `card`: the reading when no dated history is

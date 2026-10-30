@@ -664,7 +664,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         )
         .unwrap();
     // Two responses metered against one model (split preserved), one against another model.
-    let usage = busbar_kernel::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 700,
         output: 200,
         cache_read: Some(100),
@@ -9185,6 +9185,13 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
                 "listen": "127.0.0.1:0",
                 "store": {"module": migrated_store_module()},
                 "store": { "module": migrated_store_module() },
+                "tls": { "cert": { "file": "/etc/busbar/tls/cert.pem" }, "key": { "file": "/etc/busbar/tls/key.pem" } },
+                "admin_listen": "127.0.0.1:0",
+                "admin_tls": {
+                    "cert": { "file": "/etc/busbar/tls/admin-cert.pem" },
+                    "key": { "file": "/etc/busbar/tls/admin-key.pem" },
+                    "client_ca": { "file": "/etc/busbar/tls/admin-ca.pem" }
+                },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -9204,6 +9211,14 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         flagged.contains(&"listen") && flagged.contains(&"store"),
         "process-level binds flagged reload-to-apply: {flagged:?}"
     );
+    // Rotation is a restart (security.md): the TLS material of both listeners is read once at
+    // boot, so a PUT touching `tls` / `admin_tls` / `admin_listen` is stored but flagged too.
+    for field in ["tls", "admin_tls", "admin_listen"] {
+        assert!(
+            flagged.contains(&field),
+            "{field} is read at boot, so a change to it is flagged reload-to-apply: {flagged:?}"
+        );
+    }
     assert!(
         !flagged.contains(&"per_request_fee"),
         "a live-swappable field is NOT flagged: {flagged:?}"
@@ -9218,6 +9233,14 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         doc.root.unwrap().listen.as_deref(),
         Some("127.0.0.1:0"),
         "the reload-to-apply field is still durably persisted"
+    );
+    let root = busbar_kernel::config::overlay::read(&overlay)
+        .expect("overlay written")
+        .root
+        .unwrap();
+    assert!(
+        root.tls.is_some() && root.admin_tls.is_some(),
+        "the tls / admin_tls changes are durably stored too, for the next boot"
     );
 
     handle.abort();
@@ -9375,7 +9398,8 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 /// legitimate workflow — and `tls`, the block beside it with the identical failure mode, already
 /// accepts exactly that. The operator gets a loud warn naming the field and the restart
 /// consequence; rejecting instead would make a config they can legally write into `config.yaml`
-/// un-PUT-able.
+/// un-PUT-able. The reference sits at `token`, the field the memory store declares secret (a
+/// reference at an undeclared field is refused, G14).
 #[tokio::test]
 async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
     let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("storesecret").await;
@@ -9389,7 +9413,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": migrated_store_module(), "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": migrated_store_module(), "settings": { "token": { "env": var } } }
             })
             .to_string(),
         )
@@ -9409,7 +9433,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         doc.root
             .as_ref()
             .and_then(|r| r.store.as_ref())
-            .is_some_and(|s| s.settings.contains_key("licenseKey")),
+            .is_some_and(|s| s.settings.contains_key("token")),
         "the staged reference reaches the overlay"
     );
 

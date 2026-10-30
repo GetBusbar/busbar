@@ -260,18 +260,6 @@ impl Cred {
         self.seal(v)
     }
 
-    /// HMAC-SHA256 of `data` keyed by the credential, as lowercase hex.
-    pub fn hmac_sha256_hex(&self, data: &[u8]) -> Seal {
-        let mac = hmac_sha256(self.wire(), data);
-        self.seal(Zeroizing::new(hex::encode(&mac[..]).into_bytes()))
-    }
-
-    /// Whether `signature` is HMAC-SHA256 of `data` under the credential (constant time).
-    pub fn verify_hmac_sha256(&self, data: &[u8], signature: &[u8]) -> bool {
-        let mac = hmac_sha256(self.wire(), data);
-        crate::constant_time_eq(&mac[..], signature)
-    }
-
     /// Whether `presented` equals the credential, compared over SHA-256 digests so neither content
     /// nor length leaks through timing.
     pub fn verify_eq(&self, presented: &[u8]) -> bool {

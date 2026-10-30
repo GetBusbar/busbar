@@ -11,7 +11,7 @@
 //! [`HostIo`] implements the contract's [`IoHost`]: the loader's `io` slots dispatch every carrier
 //! instance's `io.*` call into it, and a handle belongs to the instance whose call made it.
 //!
-//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5, OWNER ruling 2026-10-02): the connector
+//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5): the connector
 //!   judges and pins every address before it asks a carrier to dial, and ADMITS exactly what it
 //!   judged for the dial's ticket ([`HostIo::admit`]); `open` reaches only an admitted address,
 //!   `listen` binds only an admitted bind, `spawn` starts only the admitted program. Anything else is
@@ -184,6 +184,31 @@ impl Table {
         }
         free.live -= 1;
         slot.swap(None)
+    }
+
+    /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
+    /// from here on.
+    fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut gone = Vec::new();
+        for slot in self
+            .segments
+            .iter()
+            .filter_map(OnceLock::get)
+            .flat_map(|s| s.iter())
+        {
+            if !slot.load_full().is_some_and(|e| e.owner == owner) {
+                continue;
+            }
+            if let Some(e) = slot.swap(None) {
+                if let Some(next) = e.id.checked_add(GENERATION) {
+                    free.released.push(next);
+                }
+                free.live -= 1;
+                gone.push(e);
+            }
+        }
+        gone
     }
 }
 
@@ -428,6 +453,17 @@ impl HostListener {
     }
 }
 
+/// A released handle's end: a program is its handle's own, and ends with it.
+fn ended(e: &Entry) {
+    if let Kind::Program(p) = &e.kind {
+        let _ = p
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .start_kill();
+    }
+}
+
 fn shutdown(how: u32) -> Shutdown {
     match how {
         DIR_READ => Shutdown::Read,
@@ -635,15 +671,12 @@ impl IoHost for HostIo {
 
     fn close(&self, owner: u64, id: u64) -> IoResult<()> {
         let e = self.release(owner, id)?;
-        // A program is its handle's own: it ends with it.
-        if let Kind::Program(p) = &e.kind {
-            let _ = p
-                .child
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .start_kill();
-        }
+        ended(&e);
         Ok(())
+    }
+
+    fn reap(&self, owner: u64) {
+        self.handles.reap(owner).iter().for_each(|e| ended(e));
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
@@ -682,9 +715,9 @@ impl IoHost for HostIo {
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         // The command (and the child's ends of the pipes it holds) is dropped with this statement,
-        // so the child sees the end of its input when the host closes its end.
-        // The held values are revealed into the child's environment under the kernel's seal (Part
-        // 2 #54): the one place a program's secret leaves the host's records.
+        // so the child sees the end of its input when the host closes its end. The held values are
+        // revealed into the child's environment under the kernel's seal: the one place a program's
+        // secret leaves the host's records.
         let seal = busbar_kernel::seal::lend();
         let child = tokio::process::Command::new(spawn.program)
             .args(spawn.args)

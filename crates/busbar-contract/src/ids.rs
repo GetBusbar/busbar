@@ -71,6 +71,10 @@ declare_id! {
     /// destination, located in the request by the admit facts, located in the response by the
     /// plane's own facts, and all three readings are compared through the lane-alias map.
     LaneId => "a lane";
+    /// One credential scheme key.
+    SchemeKey => "an auth scheme";
+    /// One alternative a plane may narrow a claim's scheme to.
+    SchemeAlt => "a declared scheme alternative";
 }
 
 /// A stream inside one connection.
@@ -213,6 +217,23 @@ pub enum ClassDirection {
     CacheWrite,
     /// Sized by the kernel's own rule, outside the ingress partition.
     Kernel,
+}
+
+/// A plane's declaration of one meter class.
+///
+/// The divisor converts bytes to the class's own quantity and has a pinned default here so that
+/// class caps work with no rate card at all; a card may override it but may not re-family the
+/// class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct MeterClassDecl {
+    /// The class key.
+    pub key: MeterClassId,
+    /// The family name this class rolls up into.
+    pub family: &'static str,
+    /// Which side of the bytes the class is sized from.
+    pub direction: ClassDirection,
+    /// Bytes per unit of the class's own quantity.
+    pub default_divisor: u32,
 }
 
 /// The closed shape of a cappable dimension over an open key.

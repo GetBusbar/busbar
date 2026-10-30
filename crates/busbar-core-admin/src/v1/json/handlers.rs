@@ -2018,12 +2018,13 @@ pub(crate) async fn put_auth(
             ));
         }
         // Known-module validation (the boot rule, by MODULE): a provider backed by the operator
-        // credential, under any name the effective `identity-providers:` gives it; the test-only
-        // stand-in exists in test builds only. An unknown name can never silently drop auth.
+        // credential, under any name the effective `identity-providers:` gives it, or a module the
+        // build's auth axis answers in process. An unknown name can never silently drop auth.
         let operator = busbar_kernel::config::operator_provider();
+        let in_process = busbar_kernel::preflight::root_rows().in_process_auth;
         for name in &req.admin_auth {
             let known = current.admin_modules.operator.is(name)
-                || (cfg!(any(test, feature = "test-support")) && name == "test-scope-module");
+                || in_process.is_some_and(|answers| answers(name));
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \
@@ -3895,7 +3896,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // pass, which looks each path up by the key inserted here.
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(openapi) = decl.openapi {
-            if let Some(obj) = openapi().as_object() {
+            if let Some(obj) = openapi(decl).as_object() {
                 for (path, item) in obj {
                     paths.insert(path.clone(), item.clone());
                 }
@@ -4648,7 +4649,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // those calls had.
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {
-            schemas(&mut gen, &mut req_gen, &mut paths);
+            schemas(decl, &mut gen, &mut req_gen, &mut paths);
         }
     }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);

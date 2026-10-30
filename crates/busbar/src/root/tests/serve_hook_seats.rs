@@ -36,7 +36,7 @@ use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::planes_tests::{composed_services, Published, PUBLISHING};
+use super::planes_tests::{composed_services, PUBLISHING};
 use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -499,6 +499,9 @@ pub(crate) struct RigOpts<'a> {
     /// Every provider's `api_key`, a secret reference as written (YAML) (`None`: a credential file
     /// of the rig's own, gone once the door composed).
     pub api_key: Option<&'a str>,
+    /// Each member's provider `api_key` VALUE, by member, written to a credential file of the
+    /// rig's own (gone once the door composed); a member past the end takes [`Self::api_key`].
+    pub member_keys: &'a [&'a str],
     /// More fields of every provider entry, as written (YAML, one level below the provider's name:
     /// `error_map:`, `health:`).
     pub provider_yaml: &'a str,
@@ -561,8 +564,6 @@ pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durabilit
             &crate::root::durability::DurabilityConfig { data_dir: None },
             0,
             lane,
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-            Box::new(|| None),
             None,
         )
         .expect("the store reads back"),
@@ -891,11 +892,26 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if opts.api_key.is_none() {
         std::fs::write(&key_file, "sk-seats").expect("the credential file");
     }
+    let member_key_files: Vec<std::path::PathBuf> = opts
+        .member_keys
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let file = key_file.with_extension(format!("m{i}"));
+            std::fs::write(&file, value).expect("the member's credential file");
+            file
+        })
+        .collect();
     let mut yaml = String::from("providers:\n");
     for (i, _) in opts.members.iter().enumerate() {
+        let member_key = member_key_files
+            .get(i)
+            .map(|file| format!("{{ file: '{}' }}", file.display()));
         yaml.push_str(&format!(
             "  oai{i}:\n    api_key: {}\n",
-            opts.api_key.unwrap_or(&own_key)
+            member_key
+                .as_deref()
+                .unwrap_or(opts.api_key.unwrap_or(&own_key))
         ));
         yaml.push_str(&indented(opts.provider_yaml, 4));
     }
@@ -1033,7 +1049,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let pin = opts.pin.unwrap_or(card_pin);
-    let book = crate::root::durability::node_book_over(Box::new(pin));
+    let book = crate::root::durability::node_book();
     let durability = if opts.full_journal {
         full_journal_book()
     } else {
@@ -1155,16 +1171,14 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools.clone(),
         lanes: (0..opts.members.len())
             .map(|i| (format!("m{i}"), i))
             .collect(),
-        app: {
-            let app = Arc::clone(&app);
-            Arc::new(move || Arc::clone(&app))
-        },
+        app: crate::root::model_egress::LiveApp::fixed(Arc::clone(&app)),
     };
     let clock: Arc<dyn busbar_kernel_egress::ports::Clock> = match opts.clock {
         Some(clock) => Arc::clone(clock),
@@ -1205,8 +1219,12 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         Some(&stage),
         &clock,
         &busbar_contract::config_time::ConfigScope::config_time(),
+        &app.serve_tables,
     );
     let _ = std::fs::remove_file(&key_file);
+    for file in &member_key_files {
+        let _ = std::fs::remove_file(file);
+    }
     let mut served = served?;
     served.post = Some(Arc::clone(&post));
     let appliers = served.appliers();
@@ -1224,10 +1242,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             let models = crate::root::model_egress::ModelServing {
                 pools: model_pools.clone(),
                 lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
-                app: {
-                    let app = Arc::clone(&app);
-                    Arc::new(move || Arc::clone(&app))
-                },
+                app: crate::root::model_egress::LiveApp::fixed(Arc::clone(&app)),
             };
             let reach = DoorReach {
                 providers: &providers,
@@ -1317,7 +1332,6 @@ impl DoorRig {
 async fn migrated_request_hook_seats_after_admit_before_candidate() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-reject";
-    let _published = Published(instance);
     let ran = run(instance, true).await;
     assert_eq!(
         ran.status, 451,
@@ -1375,7 +1389,6 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
 async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-serve";
-    let _published = Published(instance);
     let ran = run(instance, false).await;
     assert_eq!(ran.status, 200, "the live lane serves the request");
     assert!(
@@ -1532,7 +1545,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
         ("serve-hook-seats-one-posting-buffered", false),
         ("serve-hook-seats-one-posting-streamed", true),
     ] {
-        let _published = Published(instance);
         let far = if streamed {
             far_end_with_the_split_streamed().await
         } else {
@@ -1594,7 +1606,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 async fn a_served_units_usage_is_accrued_exactly_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-accrued-once";
-    let _published = Published(instance);
     let far = far_end_answering(200, SPLIT_ANSWER).await;
     let rig = rig(
         instance,
@@ -1710,7 +1721,6 @@ async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() 
         ("serve-hook-seats-rerank-rewrite", false),
         ("serve-hook-seats-rerank-bare", true),
     ] {
-        let _published = Published(instance);
         // An answer billing no search units: the rig's card prices none, and this cell is about the
         // request, not its price.
         let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_unbilled")).await;

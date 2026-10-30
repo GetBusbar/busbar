@@ -176,8 +176,8 @@ pub use count::{
     MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
-    ClientMode, DestinationFacts, DestinationId, Leg, RoutePlan, SecretOnce, SecretSlot,
-    TransportKeyHandle, UpstreamAddress, VerifiedDestination,
+    ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan, SecretOnce,
+    SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
 };
 
 pub use grammar::{
@@ -186,10 +186,17 @@ pub use grammar::{
 };
 pub use ids::{
     AdminVerbId, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection, ClassEstimate,
-    CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassId, OpClassId, PrincipalId,
-    RecordSchemaId, SessionId, StreamId, TransportId, UnitKey, UpstreamIdx,
+    CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl, MeterClassId, OpClassId,
+    PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId, StreamId, TransportId, UnitKey,
+    UpstreamIdx,
 };
-pub use kinds::{Challenge, ChallengeState, Head, RecordBytes, SecretRef, StoreError};
+pub use kinds::{
+    Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, RecordBytes,
+    SecretRef, StoreError,
+};
+pub use plane::{
+    Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
+};
 // `KernelSeal` is deliberately absent: it is reachable as `plugin::KernelSeal` and nowhere else, so
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
@@ -200,13 +207,15 @@ pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{
-    AbortBy, AdmitFacts, AuditFacts, FailureReason, FinishClass, LegResult, Origin, Refusal,
-    RefusalReason, ResourceLocator, ScopeFacts, Step, Unit, UnitEnd,
+    AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
+    Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,
+    Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
-    Encode, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger, RawIo, RawStream,
-    StatusAt, TransportError, Unit0Trigger, WireFault, WireStatus, WireStatusClass,
+    Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
+    RawIo, RawStream, StatusAt, TransportEnvelope, TransportError, Unit0Trigger, WireFault,
+    WireStatus, WireStatusClass,
 };
 
 /// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated
