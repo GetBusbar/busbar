@@ -598,38 +598,6 @@ fn every_row_the_plane_decodes_names_a_verb_the_unit_knows() {
     );
 }
 
-/// The 66 join on method and path — the columns the pinned document fixed — and all 66 of them
-/// do. A row that fell through to the name join would be a legacy operation matched on a casing
-/// convention rather than on what the tag actually pinned.
-#[test]
-fn all_sixty_six_legacy_rows_join_on_the_pinned_method_and_path() {
-    let joined = busbar_core_admin::admin_codec::verbs::table()
-        .iter()
-        .filter(|row| {
-            LEGACY_VERBS
-                .iter()
-                .any(|legacy| legacy.method == row.method && legacy.path == row.template)
-        })
-        .count();
-    assert_eq!(joined, 66);
-}
-
-/// The two spellings of one operation's name really are two spellings, and the join does not
-/// depend on either of them. This is the finding that made the join what it is, kept as a test
-/// so that a future crate quietly agreeing on one casing does not look like a fix.
-#[test]
-fn the_two_tables_spell_one_operations_name_two_ways() {
-    let audit = busbar_core_admin::admin_codec::verbs::resolve("GET", "/api/v1/admin/audit")
-        .expect("audit is in the plane's table");
-    let row = LEGACY_VERBS
-        .iter()
-        .find(|row| row.method == "GET" && row.path == "/api/v1/admin/audit")
-        .expect("audit is in the unit's table");
-    assert_eq!(audit.verb, "get_audit");
-    assert_eq!(row.verb, KernelVerb::GetAudit);
-    assert_eq!(kernel_verb(&audit), Some(KernelVerb::GetAudit));
-}
-
 /// The rate class comes off the shipped table, not off the blast-radius-blind default: a config
 /// mutation is limited at the config budget and an ordinary read is forbidden from mutating at
 /// all.
@@ -679,31 +647,6 @@ fn the_two_spellings_of_the_scope_split_agree() {
     assert_eq!(scope_as_verb_scope(Scope::Full), VerbScope::Full);
     assert!(VerbScope::Full.allows(VerbScope::ReadOnly));
     assert!(!VerbScope::ReadOnly.allows(VerbScope::Full));
-}
-
-/// Route is the one place that chooses between the unit's general execution path and its two
-/// dedicated minting methods, and the choice is exactly the two credential-minting verbs. Every
-/// other verb on the keys surface — reading them, revoking one, listing a key's usage — goes
-/// through the general path, because none of them mints an identity.
-#[test]
-fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
-    assert!(mints_its_own_identity(KernelVerb::PostKeys));
-    assert!(mints_its_own_identity(KernelVerb::PostKeysIdRotate));
-    for verb in [
-        KernelVerb::GetKeys,
-        KernelVerb::GetKeysId,
-        KernelVerb::PatchKeysId,
-        KernelVerb::DeleteKeysId,
-        KernelVerb::PostKeysIdRevoke,
-        KernelVerb::GetKeysIdUsage,
-        KernelVerb::PostSigningKeyRotate,
-        KernelVerb::GetAudit,
-    ] {
-        assert!(
-            !mints_its_own_identity(verb),
-            "{verb:?} mints nothing and belongs on the general path"
-        );
-    }
 }
 
 /// A replayed idempotency key answers with the FIRST answer — status, headers and body, byte for

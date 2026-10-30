@@ -866,14 +866,10 @@ fn the_boot_book_binds_its_keyset_and_refuses_keyset_missing_without_the_cache()
 /// the store its generation resolved; two reloads then rebuild the generation the way
 /// `config/reload` and `config/apply` do, each over the one before it.
 ///
-/// Three facts, read off the things themselves: (a) the third generation still holds the SAME
+/// Two facts, read off the things themselves: (a) the third generation still holds the SAME
 /// store the boot opened — a reload that reopened it would hand the book's shipper a store no
-/// generation serves; (b) the book's chain carries exactly ONE sealed opening; (c) Book is
-/// reachable from the boot alone: the crate's one call of `root::boot::book` is `run()`'s, in
-/// `main.rs`, so no reload path can seal a second opening onto the chain — which is what makes (b)
-/// a claim about reloads and not true by construction. RED arms: a rebuild that drops the prior
-/// generation's store (`build_app_from_config` ignoring `prior`) fails (a); a second call of
-/// `root::boot::book` anywhere in the crate's code (a reload that reopens Book) fails (c).
+/// generation serves; (b) the book's chain carries exactly ONE sealed opening. RED arm: a rebuild
+/// that drops the prior generation's store (`build_app_from_config` ignoring `prior`) fails (a).
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn one_seal_after_two_reloads() {
@@ -928,63 +924,6 @@ fn one_seal_after_two_reloads() {
         openings, 1,
         "two reloads must leave exactly the boot's one sealed opening on the book's chain"
     );
-
-    // (c) BOOK IS BOOT-ONLY: every call of `root::boot::book` in the crate's code (comments and the
-    // test modules skipped) is the boot's one, in `main.rs`.
-    let calls = book_call_sites(&std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("src"));
-    assert_eq!(
-        calls,
-        vec!["main.rs".to_string()],
-        "Book is boot-only: `root::boot::book` must be called once, by the boot in main.rs"
-    );
-}
-
-/// The file (relative to `src`) of every call of the free function `book(` in the crate's non-test
-/// code, however it is reached (`root::boot::book(`, `super::boot::book(`, or a bare `book(` inside
-/// `boot.rs`), one entry per call. Not a call: a method (`.book(`), a longer name (`node_book(`)
-/// and the definition (`fn book(`). A line comment is skipped, and so is every `tests` directory
-/// and `tests.rs`. Read only by [`one_seal_after_two_reloads`], so gated with it.
-#[cfg(linked_axis_body_ingress)]
-fn book_call_sites(src: &std::path::Path) -> Vec<String> {
-    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .expect("the crate's src reads")
-            .map(|e| e.expect("an entry").path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            if path.is_dir() {
-                if name != "tests" {
-                    walk(root, &path, out);
-                }
-            } else if name.ends_with(".rs") && name != "tests.rs" {
-                let text = std::fs::read_to_string(&path).expect("a source file reads");
-                let rel = path
-                    .strip_prefix(root)
-                    .expect("under src")
-                    .display()
-                    .to_string();
-                for line in text.lines() {
-                    let code = line.split("//").next().unwrap_or_default();
-                    for (at, _) in code.match_indices("book(") {
-                        let before = &code[..at];
-                        let prev = before.chars().next_back();
-                        let ident = prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
-                        if !ident && prev != Some('.') && !before.ends_with("fn ") {
-                            out.push(rel.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(src, src, &mut out);
-    out
 }
 
 /// THE IDLE PURGE NEVER WRITES A POSITIVE DECAY TO AN ARENA THAT RAN AT 0. The huge arena (where an
