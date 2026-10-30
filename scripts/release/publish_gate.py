@@ -42,7 +42,8 @@ builders"):
   artifacts/       busbar-<target>.<archive> for every published target, busbar-openapi-v<V>.json
   plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, for every plugin and plugin target
   sboms/           busbar-v<V>-<target>.cdx.json for every published target and image platform
-  internal/        busbar-<musl target>.tar.gz (the binaries the image carries; not published)
+  internal/        busbar-<target>.tar.gz for any unpublished binary row (none since W17: the image
+                   carries the published linux-gnu binary from artifacts/)
   oci/             busbar.oci.tar (an OCI layout of the multi-platform image)
   SHA256SUMS       every file of artifacts/ and sboms/ (bare names)
   IMAGES           `busbar sha256:<index digest>`
@@ -500,7 +501,10 @@ def g10_image(inp: Inputs, cj: dict, vd: Verdict) -> None:
     arch_to_internal = {}
     for t in release_targets(inp.root):
         if t.get("kind") == "binary" and t.get("packaged_into", "").startswith("image-linux-"):
-            arch_to_internal[t["packaged_into"].rsplit("-", 1)[1]] = inp.cand / "internal" / f"busbar-{t['target']}.{t['archive']}"
+            # W17: the image packages the PUBLISHED linux-gnu binary (artifacts/); an unpublished
+            # feeding row (the retired musl builds) would be in internal/.
+            sub = "artifacts" if t.get("published") else "internal"
+            arch_to_internal[t["packaged_into"].rsplit("-", 1)[1]] = inp.cand / sub / f"busbar-{t['target']}.{t['archive']}"
     try:
         images = read_images(inp.cand / "IMAGES")
         want = images["busbar"]
@@ -535,7 +539,7 @@ def g10_image(inp: Inputs, cj: dict, vd: Verdict) -> None:
                     continue
                 src = arch_to_internal.get(arch)
                 if src is None or not src.is_file():
-                    vd.refuse("G-10", f"image linux/{arch}", "its musl binary in internal/", "missing", "Rebuild.")
+                    vd.refuse("G-10", f"image linux/{arch}", "the binary its packaged_into row built", "missing", "Rebuild.")
                     continue
                 if sha256_bytes(found) != sha256_bytes(unpack_binary(src)):
                     vd.refuse("G-10", f"image linux/{arch}", f"/busbar == {src.name}'s binary",

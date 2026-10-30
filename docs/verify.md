@@ -147,7 +147,7 @@ candidate.json   {"version","commit","repo","test_kit":{"tag","commit"},"plugins
 artifacts/       busbar-<target>.<archive> per published target in .github/release-targets.json; busbar-openapi-v<V>.json
 plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, per plugins.yaml entry and plugin target
 sboms/           busbar-v<V>-<target>.cdx.json per published target and image platform
-internal/        busbar-<musl target>.tar.gz (the binaries inside the image)
+internal/        (empty since W17: the image carries the published linux-gnu binary)
 oci/             busbar.oci.tar (OCI layout of the multi-platform image)
 SHA256SUMS       every file in artifacts/ and sboms/
 IMAGES           busbar sha256:<image index digest>

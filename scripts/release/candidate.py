@@ -10,8 +10,13 @@ by the gate, which refuses by rule name; a mistake is never shipped.
 
   candidate.py core <target> --out DIR
       scripts/release-build.sh for one row of .github/release-targets.json. A published row goes
-      to DIR/artifacts; an image-feeding musl row goes to DIR/internal. Then its CycloneDX SBOM goes
-      to DIR/sboms (named by the target, or by the image platform the row feeds).
+      to DIR/artifacts (an unpublished one to DIR/internal). Then its CycloneDX SBOM goes to
+      DIR/sboms, named by the target, plus one named by the image platform the row feeds, if any.
+      Then the W17 linking proof: the in-tree stub store is built for the target and packed
+      (scripts/release/dropin-probe.sh, kept as DIR/evidence/<target>/dropin-probe.tar.gz), and
+      scripts/release/linking-proof.py requires the built binary to need only the OS C runtime
+      (glibc <= the row's glibc_max) and to boot with that plugin dropped in. A linux-gnu row runs
+      all of this inside the glibc baseline (scripts/release/in-baseline.sh).
   candidate.py pgo-train <target> --out DIR
       trains the PGO profile for one row (scripts/pgo-build.sh with PGO_TRAIN_ONLY) on a backend
       native to it, and writes DIR/<target>.profdata plus DIR/<target>.profdata.meta (toolchain,
@@ -26,10 +31,13 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       pass scripts/fleet/verify-abi-completeness.sh against this tree; then it is built for <target>
       (cargo at the pin, or the C sources from busbar_plugin.h) and packed UNSIGNED with this tree's
       busbar-plugin-pack. Writes DIR/plugins/ and DIR/plugins.json.
-  candidate.py image <amd64|arm64> --out DIR
-      that platform's image: its musl binary (DIR/internal/), then a single-platform OCI layout
-      archive (DIR/oci/busbar-<arch>.oci.tar) on the musl runtime pinned in release/rust-alpine.txt.
-      Refuses a BuildKit older than 0.13 (rewrite-timestamp).
+  candidate.py image <amd64|arm64> --from COREDIR --out DIR
+      that platform's image, PACKAGING the linux-gnu binary `core` already built into COREDIR (the
+      row whose packaged_into names this platform), byte for byte: a single-platform OCI layout
+      archive (DIR/oci/busbar-<arch>.oci.tar) on the Dockerfile's distroless glibc base. No second
+      build, and no musl: a static musl binary cannot dlopen a dropped-in plugin (W17). Then the
+      image is loaded and linking-proof.py requires it to carry those bytes and to boot with
+      COREDIR's drop-in probe mounted. Refuses a BuildKit older than 0.13 (rewrite-timestamp).
   candidate.py assemble --kit-tag TAG --kit-commit SHA --out OUT DIR...
       merges the slices (the owner runs it locally from the `artifact` downloads), joins the
       per-platform images into one multi-platform index (OUT/oci/busbar.oci.tar), copies the
@@ -121,7 +129,23 @@ def cmd_core(target: str, out: Path) -> None:
     v = version()
     triple = row.get("triple", target)
     feeds = row.get("packaged_into", "")
-    sbom(triple, f"busbar-v{v}-{feeds or target}.cdx.json", out)
+    sbom(triple, f"busbar-v{v}-{target}.cdx.json", out)
+    if feeds:
+        # The image packages these very bytes, so its SBOM is this build's.
+        shutil.copy(out / "sboms" / f"busbar-v{v}-{target}.cdx.json", out / "sboms" / f"busbar-v{v}-{feeds}.cdx.json")
+    linking_proof(row, out / sub / f"busbar-{target}.{row['archive']}", out / "evidence" / target)
+
+
+def linking_proof(row: dict, archive: Path, evidence: Path) -> None:
+    """W17: the built binary needs only the OS C runtime and loads a dropped-in plugin."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    probe = evidence / "dropin-probe.tar.gz"
+    for script in ("scripts/release/dropin-probe.sh", "scripts/release/linking-proof.py"):
+        if not (ROOT / script).is_file():
+            sys.exit(f"candidate: {script} is missing; this tree predates the W17 linking design")
+    sh(["scripts/release/dropin-probe.sh", row.get("triple", row["target"]), str(probe)], cwd=ROOT)
+    sh([sys.executable, "scripts/release/linking-proof.py", "--target", row["target"],
+        "--archive", str(archive), "--dropin-plugin", str(probe)], cwd=ROOT)
 
 
 def plugin_tag(repo: str, kit: str) -> tuple:
@@ -242,14 +266,6 @@ def cmd_plugins(target: str, out: Path) -> None:
     (out / "plugins.json").write_text(json.dumps(rows, indent=2) + "\n")
 
 
-def rust_alpine() -> str:
-    pin = [l.strip() for l in (ROOT / "release" / "rust-alpine.txt").read_text().splitlines()
-           if l.strip() and not l.startswith("#")]
-    if len(pin) != 1 or not re.fullmatch(r"rust:alpine@sha256:[0-9a-f]{64}", pin[0]):
-        sys.exit("candidate: release/rust-alpine.txt must hold exactly one rust:alpine@sha256:<64 hex>")
-    return pin[0]
-
-
 def require_buildkit() -> None:
     info = sh(["docker", "buildx", "inspect", "--bootstrap"], out=True)
     m = re.search(r"BuildKit version:\s*v?(\d+)\.(\d+)", info) or re.search(r"Buildkit:\s*v?(\d+)\.(\d+)", info)
@@ -257,33 +273,42 @@ def require_buildkit() -> None:
         sys.exit(f"candidate: BuildKit >= 0.13 is required (rewrite-timestamp); found {m.group(0) if m else 'no version'}")
 
 
-def cmd_image(arch: str, out: Path) -> None:
+def cmd_image(arch: str, out: Path, core: Path) -> None:
     rows = [t for t in pg.release_targets(ROOT) if t.get("kind") == "binary" and t.get("packaged_into") == f"image-linux-{arch}"]
     if len(rows) != 1:
-        sys.exit(f"candidate: no single musl row feeds image-linux-{arch} in .github/release-targets.json")
+        sys.exit(f"candidate: no single linux-gnu row feeds image-linux-{arch} in .github/release-targets.json")
     t = rows[0]
-    base = rust_alpine()
+    archive = core / ("artifacts" if t.get("published") else "internal") / f"busbar-{t['target']}.{t['archive']}"
+    probe = core / "evidence" / t["target"] / "dropin-probe.tar.gz"
+    for f in (archive, probe):
+        if not f.is_file():
+            sys.exit(f"candidate: {f} is missing; run `candidate.py core {t['target']} --out {core}` first. "
+                     "The image packages that build's bytes and never builds its own.")
     require_buildkit()
-    cmd_core(t["target"], out)
     ctx = Path(tempfile.mkdtemp())
     (ctx / "binaries" / arch).mkdir(parents=True)
-    with tarfile.open(out / "internal" / f"busbar-{t['target']}.{t['archive']}") as tf:
+    with tarfile.open(archive) as tf:
         m = next(x for x in tf.getmembers() if x.isfile() and x.name.rsplit("/", 1)[-1] == "busbar")
         (ctx / "binaries" / arch / "busbar").write_bytes(tf.extractfile(m).read())
     os.chmod(ctx / "binaries" / arch / "busbar", 0o755)
-    lib = ctx / "plugins" / arch / "lib"
-    lib.mkdir(parents=True)
-    sh(["docker", "run", "--rm", "--platform", f"linux/{arch}", "-v", f"{lib}:/out", base, "sh", "-ec",
-        "cp /lib/ld-musl-*.so.1 /usr/lib/libgcc_s.so.1 /usr/lib/libstdc++.so.6 /out/"])
     for f in ("Dockerfile", "providers.yaml"):
         shutil.copy(ROOT / f, ctx / f)
     shutil.copytree(ROOT / "docker", ctx / "docker")
     (out / "oci").mkdir(parents=True, exist_ok=True)
+    oci = out / "oci" / f"busbar-{arch}.oci.tar"
     epoch = sh(["git", "log", "-1", "--format=%ct"], cwd=ROOT, out=True).strip()
     sh(["docker", "buildx", "build", "--platform", f"linux/{arch}", "--provenance=false", "--sbom=false",
         "--build-arg", f"SOURCE_DATE_EPOCH={epoch}", "--label", f"org.opencontainers.image.version={version()}",
-        "--output", f"type=oci,dest={out / 'oci' / f'busbar-{arch}.oci.tar'},rewrite-timestamp=true", str(ctx)],
+        "--output", f"type=oci,dest={oci},rewrite-timestamp=true", str(ctx)],
        env={"SOURCE_DATE_EPOCH": epoch})
+    # The linking proof on the image itself: load the exact OCI archive, then require it to carry
+    # the core build's bytes and to boot with the drop-in probe mounted.
+    loaded = sh(["docker", "load", "-i", str(oci)], out=True)
+    m = re.search(r"Loaded image(?: ID)?: (\S+)", loaded)
+    if not m:
+        sys.exit(f"candidate: docker load named no image: {loaded!r}")
+    sh([sys.executable, "scripts/release/linking-proof.py", "--target", f"image-linux-{arch}", "--image", m.group(1),
+        "--packaged-from", str(ctx / "binaries" / arch / "busbar"), "--dropin-plugin", str(probe)], cwd=ROOT)
     shutil.rmtree(ctx)
 
 
@@ -380,8 +405,8 @@ def main(argv: list) -> None:
         cmd_core(pos[0], out)
     elif cmd == "plugins" and len(pos) == 1:
         cmd_plugins(pos[0], out)
-    elif cmd == "image" and len(pos) == 1 and pos[0] in ("amd64", "arm64"):
-        cmd_image(pos[0], out)
+    elif cmd == "image" and len(pos) == 1 and pos[0] in ("amd64", "arm64") and opts.get("from"):
+        cmd_image(pos[0], out, Path(opts["from"]))
     elif cmd == "assemble" and pos and opts.get("kit-tag") and opts.get("kit-commit"):
         cmd_assemble(out, pos, opts["kit-tag"], opts["kit-commit"])
     else:
