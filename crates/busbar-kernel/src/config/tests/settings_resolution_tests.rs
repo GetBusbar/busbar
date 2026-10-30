@@ -563,3 +563,99 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
     };
     assert!(e.contains("url") && e.contains("'acme'"), "{e}");
 }
+
+/// A resolver whose config-time text comes from an allocation it records: where the value it
+/// handed out lives.
+#[derive(Default)]
+struct Recorded(std::sync::Mutex<Vec<usize>>);
+
+impl busbar_contract::secret::SecretResolve for Recorded {
+    fn resolve(
+        &self,
+        _secret: &SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+        Err("refused off config time".to_string())
+    }
+
+    fn resolve_string(
+        &self,
+        _secret: &SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        Err("refused off config time".to_string())
+    }
+
+    fn resolve_string_at_config(
+        &self,
+        _secret: &SecretRef,
+        _scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        let text = String::from("MOVED-NEVER-COPIED");
+        self.0.lock().unwrap().push(text.as_ptr() as usize);
+        Ok(busbar_contract::redacted::Secret::new(text))
+    }
+}
+
+/// RED (S4): a resolved setting reaches the plugin's bag MOVED out of the resolver's zeroizing
+/// holder, never copied into a second plain `String` (the bag wipes what it holds when it drops;
+/// a copy made on the way would be a second home for the secret). Both a declared secret and a
+/// reference-capable field.
+#[test]
+fn a_resolved_setting_is_moved_into_the_bag_never_copied() {
+    let reference = serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): "UNUSED" });
+    let settings = obj(&[("licenseKey", reference.clone()), ("url", reference)]);
+    let resolver = Recorded::default();
+    let out = resolve_settings(
+        &settings,
+        &declared(&["licenseKey"]),
+        &declared(&["url"]),
+        "test-plugin",
+        &resolver,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("resolves");
+    let handed = resolver.0.lock().unwrap().clone();
+    let held: Vec<usize> = ["licenseKey", "url"]
+        .iter()
+        .map(|k| out[*k].as_str().expect("a string").as_ptr() as usize)
+        .collect();
+    assert_eq!(held, handed, "each value is the resolver's own allocation");
+}
+
+/// RED (S4): a refusal keeps the source's `error_kind` through the kernel's resolver: a linked
+/// source's (an unset variable is NOT_FOUND) and a plugin's (its own code), its text unchanged.
+#[test]
+fn a_refusal_carries_its_error_kind_through_the_resolver() {
+    use busbar_contract::abi::secret::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
+    use busbar_contract::secret::{SecretRefused, SecretResolve as _};
+    let var = format!("BUSBAR_KIND_CARRIED_UNSET_{}", std::process::id());
+    std::env::remove_var(&var);
+    let unset: SecretRef = serde_json::from_value(
+        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): var }),
+    )
+    .expect("a reference");
+    let builtins = SecretResolver::builtins_only();
+    let refused = builtins
+        .resolve_refusing(&unset, None)
+        .expect_err("an unset variable does not resolve");
+    assert_eq!(refused.error_kind, ERROR_KIND_NOT_FOUND);
+    assert_eq!(
+        Some(refused.text),
+        builtins.resolve(&unset).err(),
+        "the text is the resolver's own"
+    );
+
+    let plugin = SecretResolver::with_scoped_plugin(Box::new(|_, _, _| {
+        Err(SecretRefused {
+            error_kind: ERROR_KIND_DENIED,
+            text: "not entitled".to_string(),
+        })
+    }));
+    let other: SecretRef =
+        serde_json::from_value(serde_json::json!({ "module": "kind-carrier", "settings": {} }))
+            .expect("a reference");
+    let refused = plugin
+        .resolve_refusing(&other, None)
+        .expect_err("the plugin refuses");
+    assert_eq!(refused.error_kind, ERROR_KIND_DENIED);
+    assert!(refused.text.ends_with(": not entitled"), "{}", refused.text);
+}
