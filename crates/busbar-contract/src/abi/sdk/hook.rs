@@ -776,14 +776,49 @@ pub trait Hook: Send + Sync {
     }
 }
 
+/// What a hook opens over ([`HookOpen::open_with`]): its settings, the secrets the host resolved
+/// for it and the generation it opens (or refreshes) to.
+#[derive(Clone, Copy)]
+pub struct Opening<'a> {
+    /// The operator's section exactly as the host lent it (empty when none, as 1.5.5 handed it).
+    pub settings: &'a str,
+    /// The secrets the host resolved for the instance, in the order its settings name them.
+    pub secrets: &'a [&'a [u8]],
+    /// The generation: the one `open` opens, or the one `refresh` moves to (`0` for `validate`,
+    /// which opens nothing it keeps).
+    pub generation: u64,
+}
+
+impl std::fmt::Debug for Opening<'_> {
+    /// Never the secrets' bytes: only how many.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Opening")
+            .field("settings", &self.settings)
+            .field("secrets", &self.secrets.len())
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
 /// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
-/// none, as 1.5.5 handed it), to a [`Hook`].
+/// none, as 1.5.5 handed it), to a [`Hook`]. A hook that reads its secrets or its generation opens
+/// through [`HookOpen::open_with`]; one that reads its settings alone implements `open`.
 pub trait HookOpen: 'static {
-    /// Open an instance.
+    /// Open an instance over its settings.
     ///
     /// # Errors
     /// Why the settings cannot open one (the operator reads it).
     fn open(settings: &str) -> Result<Box<dyn Hook>, String>;
+
+    /// Open an instance over its settings, its secrets and its generation. The SDK opens every
+    /// instance (and re-opens it on `refresh`) through this. Default: [`HookOpen::open`] over the
+    /// settings.
+    ///
+    /// # Errors
+    /// As [`HookOpen::open`].
+    fn open_with(opening: &Opening<'_>) -> Result<Box<dyn Hook>, String> {
+        Self::open(opening.settings)
+    }
 }
 
 /// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
@@ -890,12 +925,21 @@ fn settings_text(bytes: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-/// [`HookOpen::open`] over `settings`, verbatim (an empty blob stays empty, so the plugin answers
-/// it in its own 1.5.5 words); its refusal is the plugin's own words.
-fn opened<P: HookOpen>(settings: &[u8]) -> Result<Arc<dyn Hook>, Refusal> {
-    P::open(&String::from_utf8_lossy(settings))
-        .map(Arc::<dyn Hook>::from)
-        .map_err(Refusal::failed)
+/// [`HookOpen::open_with`] over `settings`, verbatim (an empty blob stays empty, so the plugin
+/// answers it in its own 1.5.5 words), `secrets` and `generation`; its refusal is the plugin's own
+/// words.
+fn opened<P: HookOpen>(
+    settings: &[u8],
+    secrets: &[&[u8]],
+    generation: u64,
+) -> Result<Arc<dyn Hook>, Refusal> {
+    P::open_with(&Opening {
+        settings: &String::from_utf8_lossy(settings),
+        secrets,
+        generation,
+    })
+    .map(Arc::<dyn Hook>::from)
+    .map_err(Refusal::failed)
 }
 
 impl<P: HookOpen> Life for HookLife<P> {
@@ -906,20 +950,25 @@ impl<P: HookOpen> Life for HookLife<P> {
     /// dropped. `--validate` refuses what boot's `open` would refuse.
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings)?;
-        opened::<P>(settings).map(drop)
+        opened::<P>(settings, &[], 0).map(drop)
     }
 
-    fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+    fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
         Ok(Self {
-            hook: RwLock::new(opened::<P>(settings)?),
+            hook: RwLock::new(opened::<P>(settings, secrets, generation)?),
             short: Shorted::default(),
             open: PhantomData,
         })
     }
 
     /// Re-open the hook over the new settings; the old one serves until the swap.
-    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        let hook = opened::<P>(settings)?;
+    fn refresh(
+        &self,
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+    ) -> Result<Refreshed, Refusal> {
+        let hook = opened::<P>(settings, secrets, generation)?;
         *self.hook.write().unwrap_or_else(PoisonError::into_inner) = hook;
         Ok(Refreshed::default())
     }
