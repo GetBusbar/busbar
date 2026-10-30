@@ -21,7 +21,9 @@ on:
     - test
     - deny
     - oracle
-    - windows-compile
+    # W23 windows-compile: non-blocking until the xwin runner has clang-cl (see dev.yaml).
+    - checks: [windows-compile]
+      blocks: false
     # The conformance suites (testing/conformance/suites.tsv): every move and every landing, never
     # blocking (owner 2026-10-26: a suite not run or not passed in dev is a gap in our CI).
     - checks: [conformance]
