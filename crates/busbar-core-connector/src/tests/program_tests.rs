@@ -892,3 +892,127 @@ fn a_forgotten_instance_leaves_no_member_program_running() {
         c.forget(OWNER);
     });
 }
+
+/// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
+/// does not come back until the test lets it.
+struct HangingRead {
+    inner: TestDoor,
+    gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl crate::framer::FramerDoor for HangingRead {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Read(..)) {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// RED while a member's lock was held across its program's carrier crossings (`BUSBAR-1.6.0.md`
+/// §11.13 M1: no plugin code runs under a host lock): one lease's read hung in the carrier's
+/// `read` held the member, so every other caller of it (a new lease, its write, a wait on it, its
+/// close, a re-declaration retiring the member) waited on the plugin for as long as it hung. Now
+/// each returns while the read still hangs.
+#[test]
+fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
+    let rt = worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let door = Arc::new(HangingRead {
+            inner: TestDoor::identity("bytes"),
+            gate: std::sync::Mutex::new(None),
+        });
+        let c = Arc::new(Connector::serving(
+            Transports::new(vec![Entry {
+                door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+                alpn: Vec::new(),
+            }])
+            .unwrap(),
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        ));
+        declare(&c, &[("m", sh(ECHO_PID, &[]))]).unwrap();
+        let a = open(&c, "m", b"").unwrap();
+        assert_eq!(generation(&c, a).await, 1);
+        pid_of(&c, a, "a").await;
+
+        // LEASE A READS, and the carrier's read hangs with the member's program in its hands.
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *door.gate.lock().unwrap() = Some((entered_tx, held_back));
+        let reading = Arc::clone(&c);
+        let on = handle.clone();
+        let reader = std::thread::spawn(move || {
+            let _rt = on.enter();
+            let mut buf = [0_u8; 64];
+            let _ = reading.read(OWNER, a, 7, &mut buf);
+        });
+        let reached = entered.recv_timeout(Duration::from_secs(10));
+
+        // BESIDE IT: a second lease opens, writes, waits, closes; then the member is retired.
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let beside = Arc::clone(&c);
+        let on = handle.clone();
+        let other = std::thread::spawn(move || {
+            let _rt = on.enter();
+            let b = open(&beside, "m", b"b\n");
+            let wrote = b
+                .as_ref()
+                .ok()
+                .map(|b| beside.write(OWNER, *b, b"c\n", false, false));
+            let waited = b.as_ref().ok().map(|b| beside.wait(OWNER, &[*b], 8));
+            let closed = b.as_ref().ok().map(|b| beside.close(OWNER, *b));
+            let retired = declare(&beside, &[("m", sh("exec cat", &[]))]);
+            done_tx
+                .send((b.map(|_| ()), wrote, waited, closed, retired))
+                .unwrap();
+        });
+        let answered = done.recv_timeout(Duration::from_secs(5));
+
+        // Let the hung read go before asserting, so nothing is left waiting on it.
+        release.send(()).unwrap();
+        reader.join().unwrap();
+        other.join().unwrap();
+        reached.expect("lease A's read reaches the carrier");
+        let (opened, wrote, waited, closed, retired) = answered.expect(
+            "a lease's open, write, wait and close, and the member's retirement, beside a hung \
+             carrier read returned while it still hangs",
+        );
+        assert_eq!(
+            opened,
+            Ok(()),
+            "a second lease opens on the running program"
+        );
+        assert!(
+            matches!(wrote, Some(Ok(2) | Err(ConnError::Pending))),
+            "the write is taken or pends: {wrote:?}"
+        );
+        assert!(waited.is_some(), "the wait answered");
+        assert_eq!(closed, Some(Ok(())), "the lease closes");
+        assert_eq!(retired, Ok(()), "the re-declaration retires the member");
+        c.close(OWNER, a).unwrap();
+    });
+}
