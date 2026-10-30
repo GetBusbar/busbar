@@ -678,3 +678,56 @@ fn with_operator_states_the_fact_and_the_principal() {
     assert_eq!(principal, b"admin");
     assert_eq!(OPERATOR.head.size as usize, size_of::<AuthTail>());
 }
+
+/// RED (open160 WH1/ADM1): the verify kit's `validate` answered READY whatever the settings, so
+/// `busbar --validate` accepted a webhook-signature or admin-tokens configuration that boot's
+/// `open` then refused. `validate` now refuses what `open` refuses, in the plugin's own words.
+#[test]
+fn red_validate_refuses_the_settings_open_refuses() {
+    let validate = |settings: &[u8]| {
+        let mut buf = vec![0_u8; 128];
+        let input = crate::abi::mechanism::lifecycle::ValidateIn {
+            head: head::<crate::abi::mechanism::lifecycle::ValidateIn>(life::VALIDATE),
+            settings: blob(settings, BLOB_JSON, 0),
+            err_buf: buf.as_mut_ptr(),
+            err_cap: buf.len(),
+        };
+        let mut out = out_head(size_of::<OutHead>());
+        let o = cross(ops().head.validate, ptr::null_mut(), &input, &mut out);
+        let text = if out.error.ptr.is_null() {
+            String::new()
+        } else {
+            // SAFETY: the answer's error text, `len` bytes in the lent buffer or the program.
+            String::from_utf8_lossy(unsafe {
+                std::slice::from_raw_parts(out.error.ptr, out.error.len)
+            })
+            .into_owned()
+        };
+        (o, text)
+    };
+    assert_eq!(
+        validate(b"\"nope\""),
+        (Outcome::Failed, "settings: not this plugin's".to_string())
+    );
+}
+
+/// RED (open160 A9): an op the verify door does not serve answered REFUSED with no text, so the
+/// host's log could not say what was refused.
+#[test]
+fn red_an_unserved_op_is_refused_saying_why() {
+    let (_, opened) = open(b"\"ok\"");
+    // SAFETY: plain C data; all-zero is valid.
+    let mut input: crate::abi::auth::FieldsIn = unsafe { std::mem::zeroed() };
+    input.head = head::<crate::abi::auth::FieldsIn>(slot::FIELDS);
+    // SAFETY: as above.
+    let mut out: crate::abi::auth::FieldsOut = unsafe { std::mem::zeroed() };
+    out.head = out_head(size_of::<crate::abi::auth::FieldsOut>());
+    assert_eq!(
+        cross(ops().fields, opened.instance, &input, &mut out),
+        Outcome::Refused
+    );
+    assert!(
+        !out.head.error.ptr.is_null() && out.head.error.len > 0,
+        "an unserved op was refused saying nothing"
+    );
+}

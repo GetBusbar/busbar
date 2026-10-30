@@ -1264,3 +1264,141 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     );
     assert!(a.refresh().is_ok(), "refresh is still lent the kept secret");
 }
+
+// ── open160 A1 / AQ2: a reject's and a sign-in outage's reason reach the operator ───────────────
+
+/// A door that says WHY: its `verify` rejects every credential naming the reason in the answer's
+/// error text, and its `complete_login` answers an outage naming the IdP's status the same way.
+mod reasons {
+    use busbar_contract::abi::auth::{
+        AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
+        IdentifyOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+        DECISION_STOP, LOGIN_OUTAGE, VERDICT_REJECT,
+    };
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::auth_door::{
+        verify_tail, with_tail, NotServed, Verifier, VerifyPlugin,
+    };
+    use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::abi::sdk::life::Held;
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+
+    /// What the reject says.
+    pub(super) const REJECTED: &str = "the signature timestamp is 400 s old (window 300 s)";
+    /// What the outage says.
+    pub(super) const OUTAGE: &str = "the IdP token endpoint answered 503";
+
+    pub(super) struct Says;
+
+    impl VerifyPlugin for Says {
+        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+            Ok(Says)
+        }
+    }
+
+    pub(super) struct RejectSaying;
+    impl SafeSlot for RejectSaying {
+        type In = VerifyIn;
+        type Out = IdentifyOut;
+        type State = Held<Verifier<Says>>;
+        fn call(
+            _: Instance<'_, Held<Verifier<Says>>>,
+            _: Lent<'_, VerifyIn>,
+            mut out: Out<'_, IdentifyOut>,
+        ) -> Outcome {
+            out.set(|o| &o.verdict, VERDICT_REJECT);
+            out.set(|o| &o.decision, DECISION_STOP);
+            out.error(REJECTED);
+            Outcome::Ready
+        }
+    }
+
+    pub(super) struct OutageSaying;
+    impl SafeSlot for OutageSaying {
+        type In = CompleteLoginIn;
+        type Out = IdentifyOut;
+        type State = Held<Verifier<Says>>;
+        fn call(
+            _: Instance<'_, Held<Verifier<Says>>>,
+            _: Lent<'_, CompleteLoginIn>,
+            mut out: Out<'_, IdentifyOut>,
+        ) -> Outcome {
+            out.set(|o| &o.verdict, LOGIN_OUTAGE);
+            out.error(OUTAGE);
+            Outcome::Ready
+        }
+    }
+
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::auth::Ops,
+        statement: with_tail(statement("says", "1.0.0", 8), TAIL),
+        lifecycle: life(Verifier<Says>),
+        kind_ops: {
+            verify: Safe<RejectSaying>,
+            begin_login: Safe<NotServed<Says, BeginLoginIn, BeginLoginOut>>,
+            complete_login: Safe<OutageSaying>,
+            open_outbound: Safe<NotServed<Says, OpenOutboundIn, OpenOutboundOut>>,
+            outbound_ready: Safe<NotServed<Says, OutboundReadyIn, OutboundReadyOut>>,
+            fields: Safe<NotServed<Says, FieldsIn, FieldsOut>>,
+        },
+    }
+}
+
+/// RED (open160 A1, HIGH; AQ2): a `verify` REJECT and a `complete_login` OUTAGE carried no reason
+/// the host read, so the operator's log could not say why a credential was rejected, nor what the
+/// IdP answered during a sign-in outage. The host now reads the reason the answer names and writes
+/// it to the instance's own plugin log (never to the client: the verdict is the same 401).
+#[test]
+fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door("says", reasons::door)])
+        .expect("the linked door registers");
+    let a = AuthRows::new(Arc::new(registry), dispatcher())
+        .with_logs(log_config)
+        .open("says", "auth.says", &serde_json::json!("ok"))
+        .expect("the linked door opens");
+    let answer = a
+        .verify_now(&request(Some("anything"), None))
+        .expect("a verdict on the spot");
+    assert_eq!(answer.verified, Verified::Reject);
+    assert_eq!(answer.decision, Decision::Stop);
+
+    let mut call = a.complete_login(busbar_contract::auth_calls::LoginCallback {
+        state: "s".into(),
+        ..Default::default()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let outcome = loop {
+        if let Some(o) = call.settled() {
+            break o;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "complete_login never answered"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(outcome, busbar_contract::auth::LoginOutcome::Outage);
+
+    let path = log_config().path_for("auth.says", busbar_contract::abi::mechanism::KindCode::Auth);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains(reasons::REJECTED) && text.contains(reasons::OUTAGE) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        text.contains(reasons::REJECTED),
+        "the reject's reason is not in the instance's log {}: {text:?}",
+        path.display()
+    );
+    assert!(
+        text.contains(reasons::OUTAGE),
+        "the outage's reason is not in the instance's log {}: {text:?}",
+        path.display()
+    );
+}

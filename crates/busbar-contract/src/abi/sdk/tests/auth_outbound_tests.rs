@@ -1133,3 +1133,57 @@ fn staged_diagnostics_read_back_in_order() {
         vec![(0, SEVERITY_WARN, "one"), (2, SEVERITY_INFO, "two")]
     );
 }
+
+/// RED (open160 A9, "every refusal says why"): an outbound door's REFUSED answers named no text,
+/// so the host's log of the refusal could not say what was refused. An op the door does not serve,
+/// a style that is not UTF-8 and a `fields` on a handle the plugin does not hold each answer
+/// REFUSED saying why.
+#[test]
+fn red_every_outbound_refusal_says_why() {
+    let t = ops();
+    let inst = opened(t);
+
+    // SAFETY: plain C data; all-zero is valid.
+    let mut input: VerifyIn = unsafe { std::mem::zeroed() };
+    input.head = head::<VerifyIn>(slot::VERIFY);
+    input.credential = absent();
+    // SAFETY: as above.
+    let mut out: IdentifyOut = unsafe { std::mem::zeroed() };
+    out.head = out_head(size_of::<IdentifyOut>());
+    assert_eq!(cross(t.verify, inst, &input, &mut out), Outcome::Refused);
+    assert!(
+        !error_text(&out.head).is_empty(),
+        "an op the door does not serve was refused saying nothing"
+    );
+
+    let not_utf8 = [0xff_u8, 0xfe];
+    let input = OpenOutboundIn {
+        head: head::<OpenOutboundIn>(slot::OPEN_OUTBOUND),
+        style: AbiStr {
+            ptr: not_utf8.as_ptr(),
+            len: not_utf8.len(),
+        },
+        credential: absent(),
+        settings: blob(b"{}", BLOB_JSON, 0),
+    };
+    let mut out = OpenOutboundOut {
+        head: out_head(size_of::<OpenOutboundOut>()),
+        handle: 0,
+    };
+    assert_eq!(
+        cross(t.open_outbound, inst, &input, &mut out),
+        Outcome::Refused
+    );
+    assert!(
+        !error_text(&out.head).is_empty(),
+        "a style that is not UTF-8 was refused saying nothing"
+    );
+
+    let mut host = Host::new(256, 4);
+    let (o, out, _) = fields(t, inst, 999, &mut host);
+    assert_eq!(o, Outcome::Refused);
+    assert!(
+        !error_text(&out.head).is_empty(),
+        "a handle the plugin does not hold was refused saying nothing"
+    );
+}
