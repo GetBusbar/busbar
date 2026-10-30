@@ -1359,3 +1359,66 @@ fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_ho
     assert_eq!(ASKED.load(Ordering::SeqCst), 4);
     closed::<OpenAsks>(p);
 }
+
+// ── configure says why (H3) ─────────────────────────────────────────────────────────────────────
+
+/// A hook that refuses any pushed settings naming `"bad"`, saying why.
+struct Picky;
+impl Hook for Picky {
+    fn configure(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        _: u64,
+    ) -> Result<(), String> {
+        if settings.contains_key("bad") {
+            return Err("settings.bad is not a setting this hook reads".to_owned());
+        }
+        Ok(())
+    }
+}
+struct OpenPickyConfigure;
+impl HookOpen for OpenPickyConfigure {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Picky))
+    }
+}
+
+/// `configure` over `raw` at `version` on `p`: its outcome, the version it acked and its text.
+fn configured<P: HookOpen>(p: *mut c_void, raw: &[u8], version: u64) -> (Outcome, u64, String) {
+    let mut input: crate::abi::hook::ConfigureIn = zeroed();
+    input.version = version;
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    let mut out: crate::abi::hook::ConfigureOut = zeroed();
+    let o = call::<Configure<P>>(p, slot::CONFIGURE, &input, &mut out);
+    let text = if o == Outcome::Ready {
+        String::new()
+    } else {
+        error_text(&out.head)
+    };
+    (o, out.acked_version, text)
+}
+
+/// RED (hook ABI defect 3): a hook that will not take pushed settings says WHY, and the operator
+/// reads its words, not only that the version was not acknowledged.
+#[test]
+fn red_a_configure_refusal_states_the_hooks_reason() {
+    let p = opened_with::<OpenPickyConfigure>(&zeroed());
+    assert_eq!(
+        configured::<OpenPickyConfigure>(p, br#"{"bad": 1}"#, 7),
+        (
+            Outcome::Failed,
+            0,
+            "settings.bad is not a setting this hook reads".to_owned()
+        )
+    );
+    assert_eq!(
+        configured::<OpenPickyConfigure>(p, br#"{"good": 1}"#, 8),
+        (Outcome::Ready, 8, String::new())
+    );
+    closed::<OpenPickyConfigure>(p);
+}
