@@ -65,7 +65,7 @@ pub struct DoorPools {
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
     /// Each entry's reserved `timeout:`, in milliseconds (`busbar_contract::section::ENTRY_TIMEOUT_KEY`),
-    /// a registration that writes none at the core's default: its member's attempt bound.
+    /// a tool-server registration that writes none at the core's default: its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
@@ -79,12 +79,13 @@ pub struct DoorPools {
 pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
-    /// The pools `section` states. REFUSED where a member written `{name, tier}` carries a tier
+    /// The pools `section` states, `declared` the section key its plane's Statement declares (whose
+    /// registrations the core's default `timeout:` bounds). REFUSED where a member written `{name, tier}` carries a tier
     /// that is no unsigned integer that fits `u32` (a member that writes no tier states none, tier
     /// `0`): the tier is core-owned
     /// ([`crate::root::serve::pools_into`] writes each member's declared index), so a bad one is a
     /// core bug, and defaulting it to `0` would route that member at the top tier in silence.
-    pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
+    pub fn of(section: &serde_yaml::Value, declared: &str) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
             return Ok(Self::default());
         };
@@ -172,8 +173,10 @@ impl DoorPools {
             .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
-        // A REGISTRATION that writes none is held to the core's default; a model entry that writes
-        // none keeps the walk's budget (1.5.5's bound on a model).
+        // A TOOL-SERVER REGISTRATION that writes none is held to the core's default (the section its
+        // plane declares, `default_entry_timeout_ms`); any other entry that writes none, a model or
+        // another plane's registration, keeps the walk's budget (1.5.5's bound).
+        let registration_default = busbar_contract::section::default_entry_timeout_ms(declared);
         let timeouts = entries
             .iter()
             .filter_map(|entry| {
@@ -185,7 +188,7 @@ impl DoorPools {
                     .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok());
                 let ms = match (written, models) {
                     (Some(ms), _) => ms,
-                    (None, None) => busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS,
+                    (None, None) => registration_default?,
                     (None, Some(_)) => return None,
                 };
                 Some((entry.clone(), ms))
@@ -209,8 +212,9 @@ impl DoorPools {
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`, else, for a
-    /// registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = a model entry that
-    /// writes none, which the walk's own budget bounds.
+    /// tool-server registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = any other
+    /// entry that writes none (a model, another plane's registration), which the walk's own budget
+    /// bounds.
     #[must_use]
     pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
         self.timeouts.get(entry).copied()
@@ -1546,7 +1550,7 @@ pub fn compose_egress(
     }
     // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
     // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
-    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // top-level pools are (`busbar_kernel::store::pool_breaker_cfg`), else the default ladder (BUSBAR-1.6.0.md
     // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
     // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
     // reads exactly the ladder it always did.
@@ -1579,9 +1583,8 @@ pub fn compose_egress(
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::new(
-            Arc::new(unit),
-            policy,
+        breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(
+            crate::root::adapters::BreakerAdapter::new(unit, policy),
         )),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock,
@@ -1593,7 +1596,6 @@ pub fn compose_egress(
                 &facts.metric_lanes,
             )),
         ),
-        floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
@@ -2797,6 +2799,18 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
 
     fn hold_authority(&self, owner: busbar_contract::conn::InstanceId) {
         self.inner.hold_authority(owner);
+    }
+
+    /// The head the open's target completes, as [`PresentingConns::open`] dials it (any userinfo
+    /// taken out).
+    fn request_head(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+    ) -> busbar_contract::conn::HeadDefaults {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(target);
+        self.inner.request_head(owner, need, &target)
     }
 
     fn bind_auth(

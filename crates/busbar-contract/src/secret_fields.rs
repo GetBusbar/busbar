@@ -17,6 +17,13 @@
 //!   `{module:, settings:}`) at a position no declared path names is refused: the plugin did not
 //!   declare the field secret, so the kernel will not resolve a secret into it (OWNER RULING,
 //!   CHIP-REVIEW-v4 change 2).
+//! * **Reference-capable, not-secret fields** ([`resolve_declared_fields`], lead ruling item 7a).
+//!   A Statement may also name paths that take a reference WITHOUT being secret (its extensions'
+//!   [`crate::abi::mechanism::extensions::EXT_REFERENCE_FIELDS`]; a store, exporter or hook
+//!   `url`). A reference there is resolved in place to its string ([`resolve_references`]); a
+//!   literal passes as written; the value is never lent and never refused as a secret literal. A
+//!   path named in both lists is a contradiction ([`contradiction`]), refused at load. A position a
+//!   secret path and a reference-capable path both name (through `*`) is secret.
 
 use serde_json::Value;
 use zeroize::Zeroize;
@@ -124,6 +131,68 @@ pub fn declared_literal_refusal(field: &str, plugin: &str) -> String {
     )
 }
 
+/// The first path the reference-capable list `reference` names that the secret list `secret` also
+/// names, or `None`: a field is secret or reference-capable, never both (lead ruling item 7a).
+#[must_use]
+pub fn contradiction(secret: &[String], reference: &[String]) -> Option<String> {
+    reference.iter().find(|p| secret.contains(p)).cloned()
+}
+
+/// The refusal for a Statement of `plugin` naming `path` both secret and reference-capable.
+#[must_use]
+pub fn contradiction_refusal(path: &str, plugin: &str) -> String {
+    format!(
+        "the plugin '{plugin}' declares the settings path '{path}' both secret and \
+         reference-capable (not secret); a field is one or the other, so its Statement is refused"
+    )
+}
+
+/// Every position (its segments) under `tree` that a `reference` path names, that holds a secret
+/// reference, and that no `secret` path names, in the list's order and then document order.
+#[must_use]
+pub fn reference_positions(
+    tree: &Value,
+    secret: &[String],
+    reference: &[String],
+) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for path in reference {
+        for at in declared_references(tree, path) {
+            if !secret.iter().any(|s| covers(s, &at)) && !out.contains(&at) {
+                out.push(at);
+            }
+        }
+    }
+    out
+}
+
+/// RESOLVE the REFERENCE-CAPABLE positions of `tree` in place (lead ruling item 7a): each secret
+/// reference at a position a `reference` path names (and no `secret` path names) is replaced by the
+/// string `resolve(field, reference)` answers. A literal there is left as written; nothing is
+/// lent. The undeclared-reference and declared-literal refusals are the caller's
+/// ([`resolve_declared_fields`] runs both).
+///
+/// # Errors
+/// The first error `resolve` answers.
+pub fn resolve_references(
+    tree: &mut Value,
+    secret: &[String],
+    reference: &[String],
+    mut resolve: impl FnMut(&str, &crate::secret_ref::SecretRef) -> Result<String, String>,
+) -> Result<(), String> {
+    for at in reference_positions(tree, secret, reference) {
+        let field = at.join(".");
+        let Some(slot) = at_mut(tree, &at) else {
+            continue;
+        };
+        let Ok(r) = serde_json::from_value::<crate::secret_ref::SecretRef>(slot.clone()) else {
+            continue;
+        };
+        *slot = Value::String(resolve(&field, &r)?);
+    }
+    Ok(())
+}
+
 /// RESOLVE a plugin's settings `tree` as the kernel does before they cross the ABI: a reference
 /// at a position `declared` does not name is refused ([`undeclared_refusal`], naming `plugin`), a
 /// literal at a declared position, exact or wildcard, is refused ([`declared_literal_refusal`]), and
@@ -136,9 +205,30 @@ pub fn resolve_declared(
     tree: &mut Value,
     declared: &[String],
     plugin: &str,
+    resolve: impl FnMut(&str, &crate::secret_ref::SecretRef) -> Result<String, String>,
+) -> Result<(), String> {
+    resolve_declared_fields(tree, declared, &[], plugin, resolve)
+}
+
+/// [`resolve_declared`] with the plugin's REFERENCE-CAPABLE, NOT-SECRET paths `reference` beside
+/// its secret paths `declared` (lead ruling item 7a): a reference at a reference-capable position
+/// is not undeclared and is resolved in place to its string ([`resolve_references`]); a literal
+/// there passes as written. A path in both lists refuses ([`contradiction_refusal`]) and resolves
+/// nothing.
+///
+/// # Errors
+/// The refusal, or the first error `resolve` answers.
+pub fn resolve_declared_fields(
+    tree: &mut Value,
+    declared: &[String],
+    reference: &[String],
+    plugin: &str,
     mut resolve: impl FnMut(&str, &crate::secret_ref::SecretRef) -> Result<String, String>,
 ) -> Result<(), String> {
-    if let Some(at) = undeclared_reference(tree, declared) {
+    if let Some(path) = contradiction(declared, reference) {
+        return Err(contradiction_refusal(&path, plugin));
+    }
+    if let Some(at) = undeclared_reference(tree, &[declared, reference].concat()) {
         return Err(undeclared_refusal(&format!("settings.{at}"), plugin));
     }
     if let Some(at) = declared_literal(tree, declared) {
@@ -150,15 +240,13 @@ pub fn resolve_declared(
             let Some(slot) = at_mut(tree, &at) else {
                 continue;
             };
-            let Ok(reference) =
-                serde_json::from_value::<crate::secret_ref::SecretRef>(slot.clone())
-            else {
+            let Ok(r) = serde_json::from_value::<crate::secret_ref::SecretRef>(slot.clone()) else {
                 continue;
             };
-            *slot = Value::String(resolve(&field, &reference)?);
+            *slot = Value::String(resolve(&field, &r)?);
         }
     }
-    Ok(())
+    resolve_references(tree, declared, reference, &mut resolve)
 }
 
 /// LEND the declared secrets out of `block` (see the module docs). `keep_exact`: an exact path's
