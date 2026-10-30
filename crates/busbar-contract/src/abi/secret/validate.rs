@@ -15,9 +15,9 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
-use super::{ResolveOut, ERROR_KIND_INTERNAL, ERROR_KIND_UNSET};
+use super::{ResolveOut, ERROR_KIND_INTERNAL, ERROR_KIND_UNSET, MAX_SECRET_BYTES};
 use crate::abi::mechanism::call::{Outcome, BLOB_SECRET};
-use crate::abi::mechanism::check::{blob, fault, result, Filled, HARD_MAX_BYTES};
+use crate::abi::mechanism::check::{blob, fault, result, Filled};
 
 /// Validates `resolve`'s `out` against the host buffer the call was lent: its address `buf` and
 /// capacity `cap` (`ResolveIn::secret_buf`/`secret_cap`). Pure, `u64` math, no statics.
@@ -50,7 +50,8 @@ pub fn check_resolve(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault
         written,
         out.needed,
         cap,
-        HARD_MAX_BYTES,
+        // The kind's own cap, below the mechanism's hard max (which `blob` holds `len` to).
+        MAX_SECRET_BYTES as u64,
         "resolve.needed",
     )? {
         Filled::Short => {

@@ -159,7 +159,7 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     let instance = c.take_instance().expect("an instance");
 
     // The host lends the buffer a READY value is written into (row 6); the reply copies it out.
-    let resolve_with = |settings: &'static [u8]| {
+    let resolve_with = |settings: &[u8]| {
         let mut secret = [0u8; 64];
         reply::call_in(
             resolve,
@@ -192,4 +192,16 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     assert_eq!(c.out.error_kind, ERROR_KIND_INVALID);
     assert_eq!(c.error.as_deref(), Some(crate::abi::sdk::cred::EMPTY_VALUE));
     assert!(c.owned.material().is_empty());
+
+    // A value over the secret cap is FAILED, INVALID, in words (S5): never a short answer asking
+    // the host for a buffer that large.
+    let big = format!(
+        r#"{{"key":"{}"}}"#,
+        "x".repeat(crate::abi::secret::MAX_SECRET_BYTES + 1)
+    );
+    let c = resolve_with(big.as_bytes());
+    assert_eq!(c.outcome, Outcome::Failed);
+    assert_eq!(c.out.error_kind, ERROR_KIND_INVALID);
+    assert_eq!(c.out.needed, 0);
+    assert!(c.error.as_deref().is_some_and(|e| e.contains("over the")));
 }

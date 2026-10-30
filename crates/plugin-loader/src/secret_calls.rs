@@ -27,13 +27,12 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::check::HARD_MAX_BYTES;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
     slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
-    ERROR_KIND_UNSET, FIRST_SECRET_CAP,
+    ERROR_KIND_UNSET, FIRST_SECRET_CAP, MAX_SECRET_BYTES,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
 use busbar_contract::conn::DeclaredConns;
@@ -153,10 +152,12 @@ fn resolve_out() -> ResolveOut {
     }
 }
 
-/// The buffer a short answer asks for: what it `needed`, within the hard bound the answer check
+/// The buffer a short answer asks for: what it `needed`, within the secret cap the answer check
 /// already enforced.
 fn regrown(out: &ResolveOut) -> usize {
-    usize::try_from(out.needed.min(HARD_MAX_BYTES)).unwrap_or(FIRST_SECRET_CAP)
+    usize::try_from(out.needed)
+        .unwrap_or(FIRST_SECRET_CAP)
+        .min(MAX_SECRET_BYTES)
 }
 
 fn refused(error_kind: u32, text: String) -> SecretRefused {
