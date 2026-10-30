@@ -1582,7 +1582,10 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     })
 }
 
-/// `unit.hand_in`: as [`auth_call`], over the matched line's ref.
+/// `unit.hand_in`: as [`auth_call`], over the matched line's ref. A line the host lent as `none`
+/// ([`super::auth_handle::lend_none_line`]) needs no verdict and names nothing to strip: the
+/// request's unit is minted here and the answer is continue. Any other line is
+/// [`AUTH_HANDLE_NOT_SERVED`].
 extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitHandInIn>(ctx, input, out, op::UNIT_HAND_IN, |i, owner| {
         if let Some(r) = refused_ref(owner, &i.auth).or_else(|| refused_unit(&i.unit)) {
@@ -1591,7 +1594,22 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
         if svc::check_unit_hand_in_in(&i).is_err() {
             return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
         }
-        Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED)
+        if !super::auth_handle::is_none_line(owner, i.auth.id) {
+            return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
+        }
+        let Some(unit) = super::auth_handle::mint_none_unit(owner, i.line) else {
+            return Answered::bare(Outcome::Failed, super::auth_handle::REF_NO_KEY);
+        };
+        // SAFETY: `check_unit_hand_in_in` refused a NULL answer slot; the slot is the caller's own
+        // `AuthAnswer`, live for the call.
+        unsafe {
+            i.answer.write_unaligned(svc::AuthAnswer {
+                size: size_of::<svc::AuthAnswer>() as u32,
+                flow: svc::FLOW_CONTINUE,
+                unit,
+            });
+        }
+        Answered::ready(0, 0)
     })
 }
 

@@ -729,7 +729,7 @@ fn mount_plane_session(
         path,
         RouteMethod::Get,
         auth,
-        move |upgrade: axum::extract::ws::WebSocketUpgrade,
+        move |upgrade: busbar_kernel::ingress::duplex_ws::SessionUpgrade,
               axum::extract::State(handle): axum::extract::State<
             std::sync::Arc<state::AppHandle>,
         >,
@@ -780,7 +780,7 @@ fn mount_plane_session(
                 match handler(ctx).await {
                     busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
                     busbar_kernel::plane_routes::SessionAnswer::Accepted(pipe) => {
-                        busbar_kernel::ingress::duplex_ws::bridge(upgrade, pipe)
+                        busbar_kernel::ingress::duplex_ws::bridge_either(upgrade, pipe)
                     }
                 }
             }

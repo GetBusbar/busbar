@@ -2998,3 +2998,50 @@ fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
     );
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 2);
 }
+
+/// RED (R3, the data listener served through its framer's accept side): `unit.hand_in` on a line
+/// the host lent as `none` mints the request's unit and answers continue (no verdict is needed
+/// and nothing is named to strip); a minted ref the host never lent as `none` is still not served,
+/// and a `none` line lent to another owner does not verify for this one.
+#[test]
+fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
+    let d = double();
+    let lent = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65)
+        .expect("the host lends the line");
+    let hand_in = |auth: AuthRef| {
+        let mut slot = answer_slot();
+        let i = UnitHandInIn {
+            head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+            auth,
+            unit: UnitRef::NONE,
+            line: 1,
+            _reserved: 0,
+            conn: 1,
+            stream: 1,
+            request: get_view(),
+            answer: &mut slot,
+        };
+        let mut o = blank();
+        let f = HOST_SLOTS.unit_hand_in.unwrap();
+        let ret = f(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o, slot)
+    };
+    let (outcome, o, slot) = hand_in(lent);
+    assert_eq!(outcome, Outcome::Ready, "{}", error(&o));
+    assert_eq!(slot.flow, svc::FLOW_CONTINUE);
+    assert_eq!(slot.size as usize, size_of::<AuthAnswer>());
+    assert!(!slot.unit.is_none(), "the request's unit is minted here");
+    let (_, _, again) = hand_in(lent);
+    assert_ne!(again.unit, slot.unit, "each request its own unit");
+
+    let other = mint_auth_ref(owner(&d), generation(), 0x006f_7468_6572).expect("minted");
+    let (outcome, o, _) = hand_in(other);
+    assert_eq!(outcome, Outcome::Refused);
+    assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED);
+
+    let foreign = crate::dispatch::auth_handle::lend_none_line(owner(&d) + 1, 0x6e6f_6e65)
+        .expect("lent to another owner");
+    let (outcome, o, _) = hand_in(foreign);
+    assert_eq!(outcome, Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+}

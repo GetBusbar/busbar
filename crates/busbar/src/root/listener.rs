@@ -418,6 +418,26 @@ pub async fn serve_admitted(
     accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
 }
 
+/// [`serve_admitted`] with every connection FRAMED by `framer` where one is given (the data
+/// listener's framer's accept side, [`framed`]): the same accept, placement, connection security
+/// and drain, each connection's bytes served through the framer instead of the hyper loop.
+///
+/// # Errors
+///
+/// None today; the signature matches [`serve`]'s.
+pub async fn serve_admitted_framed(
+    admits: impl Admits,
+    router: Router,
+    security: Option<Arc<dyn ConnectionSecurity>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<ConnBalancer>,
+    framer: Option<framed::DataFramer>,
+) -> io::Result<()> {
+    let mut served = Served::new(router, security);
+    served.framer = framer;
+    accept_loop(admits, shutdown, balancer, served).await
+}
+
 /// THE ONE ACCEPT LOOP both socket listeners run ([`serve`] and [`serve_plain`]): accept until
 /// `shutdown`, place each connection (see [`ConnBalancer`]) and serve it under the graceful watcher,
 /// then serve the late hand-offs and drain in-flight connections.
@@ -428,6 +448,10 @@ async fn accept_loop(
     served: Served,
 ) -> io::Result<()> {
     let graceful = GracefulShutdown::new();
+    // A FRAMED connection's drain: it ends once nothing is in flight after `stop` flips, and holds
+    // a `live` sender until it ends, so the drain waits for every one.
+    let (stop_tx, stop) = tokio::sync::watch::channel(false);
+    let (live, mut lived) = tokio::sync::mpsc::channel::<()>(1);
     let mut shutdown = std::pin::pin!(shutdown);
     // Each served connection releases its placement count (if it holds one) and the listener's
     // hold when it ends.
@@ -435,7 +459,13 @@ async fn accept_loop(
         let Ok(stream) = tokio::net::TcpStream::from_std(a.stream) else {
             return;
         };
-        let conn = served.clone().accepted(stream, a.peer, graceful.watcher());
+        let drain = Drain {
+            stop: stop.clone(),
+            _live: live.clone(),
+        };
+        let conn = served
+            .clone()
+            .accepted(stream, a.peer, graceful.watcher(), drain);
         let hold = a.hold;
         tokio::spawn(async move {
             conn.await;
@@ -480,8 +510,17 @@ async fn accept_loop(
 
     // Stop accepting; drain in-flight connections (the watched futures complete on their own once
     // their requests finish or their clients hang up).
+    let _ = stop_tx.send(true);
+    drop(live);
     graceful.shutdown().await;
+    let _ = lived.recv().await;
     Ok(())
+}
+
+/// What a framed connection holds of its listener's drain.
+struct Drain {
+    stop: tokio::sync::watch::Receiver<bool>,
+    _live: tokio::sync::mpsc::Sender<()>,
 }
 
 /// An inbound-body wrapper that bounds the wall-clock time a request body may occupy a connection,
@@ -798,6 +837,8 @@ struct Served {
     security: Option<Arc<dyn ConnectionSecurity>>,
     /// The scheme a log line names.
     scheme: &'static str,
+    /// The framer whose accept side serves each connection; `None` = the hyper loop.
+    framer: Option<framed::DataFramer>,
 }
 
 /// The scheme a listener states on every request it serves: secure where the connector
@@ -823,21 +864,28 @@ impl Served {
             router,
             security,
             scheme,
+            framer: None,
         }
     }
 
     /// Serve a single accepted connection: as it arrived on a plain listener (the stream itself,
     /// no compat layer), through the wrap on a TLS one. Any failure is contained to this connection.
-    async fn accepted(self, stream: tokio::net::TcpStream, peer: SocketAddr, watcher: Watcher) {
+    async fn accepted(
+        self,
+        stream: tokio::net::TcpStream,
+        peer: SocketAddr,
+        watcher: Watcher,
+        drain: Drain,
+    ) {
         // No-delay parity with axum::serve (which sets it by default on accepted streams).
         if let Err(e) = stream.set_nodelay(true) {
             tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
         }
         if self.security.is_none() {
-            return self.io(stream, peer, watcher).await;
+            return self.io(stream, peer, watcher, drain).await;
         }
         let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
-        self.raw(raw, peer, watcher).await;
+        self.raw(raw, peer, watcher, drain).await;
     }
 
     /// Handshake + serve a single accepted connection's byte stream. Any failure is contained to
@@ -848,7 +896,13 @@ impl Served {
     /// nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
     /// bridge on either side of `wrap` is the same seam the core connection-security `Tls` wrap
     /// crosses inside it. No wrap serves the stream as it arrived.
-    async fn raw(self, raw: Box<dyn RawIo>, peer: impl std::fmt::Display + Send, watcher: Watcher) {
+    async fn raw(
+        self,
+        raw: Box<dyn RawIo>,
+        peer: impl std::fmt::Display + Send,
+        watcher: Watcher,
+        drain: Drain,
+    ) {
         // Bound the handshake (see `handshake_timeout()`): on elapse the `wrap` future is dropped,
         // which closes the half-open connection and frees the task + FDs. Cancel-safe.
         let wrapped = match &self.security {
@@ -870,15 +924,22 @@ impl Served {
                 }
             }
         };
-        self.io(FuturesAsyncReadCompatExt::compat(wrapped), peer, watcher)
-            .await;
+        self.io(
+            FuturesAsyncReadCompatExt::compat(wrapped),
+            peer,
+            watcher,
+            drain,
+        )
+        .await;
     }
 
     /// Serve one connection's (already secured) bytes. Any failure is contained to it.
-    async fn io<I>(self, io: I, peer: impl std::fmt::Display, watcher: Watcher)
+    async fn io<I>(self, io: I, peer: impl std::fmt::Display, watcher: Watcher, drain: Drain)
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        // RED: the framer is not yet what serves the connection.
+        let _ = (&self.framer, &drain);
         let service = BodyTimeoutService::new(
             self.router,
             body_read_timeout(),
@@ -994,6 +1055,9 @@ where
         });
     }
 }
+
+#[path = "listener_framed.rs"]
+pub mod framed;
 
 #[cfg(test)]
 #[path = "tests/listener_tests.rs"]

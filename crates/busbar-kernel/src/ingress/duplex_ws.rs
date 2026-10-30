@@ -182,3 +182,62 @@ pub fn bridge(upgrade: WebSocketUpgrade, pipe: crate::plane_routes::SessionPipe)
             }
         })
 }
+
+/// A SESSION ROUTE'S UPGRADE, either way its connection is served: the hyper loop's own upgrade
+/// (the axum extractor), or a connection the data listener frames through its framer's accept side
+/// ([`crate::plane_routes::FramedSession`], a request extension), where the framer that claims the
+/// upgrade answers it. A framed request is taken as an upgrade when it is a `GET` naming a
+/// WebSocket key at version 13 (the connection-level lines that ask for it are its framer's); any
+/// other request is judged by the axum extractor, and refused as it refuses it.
+pub enum SessionUpgrade {
+    /// The hyper loop's upgrade.
+    Ws(WebSocketUpgrade),
+    /// A framed connection's slot for the admitted pipe.
+    Framed(crate::plane_routes::FramedSession),
+}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for SessionUpgrade {
+    type Rejection = axum::extract::ws::rejection::WebSocketUpgradeRejection;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        if let Some(slot) = parts
+            .extensions
+            .get::<crate::plane_routes::FramedSession>()
+            .cloned()
+        {
+            let named = |name: &str| {
+                parts
+                    .headers
+                    .get(name)
+                    .map(axum::http::HeaderValue::as_bytes)
+            };
+            if parts.method == axum::http::Method::GET
+                && named("sec-websocket-key").is_some()
+                && named("sec-websocket-version") == Some(b"13".as_slice())
+            {
+                return Ok(Self::Framed(slot));
+            }
+        }
+        <WebSocketUpgrade as axum::extract::FromRequestParts<S>>::from_request_parts(parts, state)
+            .await
+            .map(Self::Ws)
+    }
+}
+
+/// BRIDGE an admitted session onto its pipe, either way ([`SessionUpgrade`]): over the hyper
+/// loop's upgrade ([`bridge`]); or, on a framed connection, the pipe left in its slot and the
+/// answer a bare `101`, for the listener to hand the connection to the upgrade's framer.
+pub fn bridge_either(upgrade: SessionUpgrade, pipe: crate::plane_routes::SessionPipe) -> Response {
+    match upgrade {
+        SessionUpgrade::Ws(upgrade) => bridge(upgrade, pipe),
+        SessionUpgrade::Framed(slot) => {
+            slot.put(pipe);
+            let mut r = Response::new(axum::body::Body::empty());
+            *r.status_mut() = axum::http::StatusCode::SWITCHING_PROTOCOLS;
+            r
+        }
+    }
+}

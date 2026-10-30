@@ -119,6 +119,8 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
 pub struct Dispatched {
     live: Arc<Live>,
     facts: DoorFacts,
+    /// Its tail states `FACT_ACCEPTS`.
+    accepts: bool,
 }
 
 /// ONE OPENED TRANSPORT INSTANCE, as a config apply refreshes it: the instance, the setting paths
@@ -275,6 +277,7 @@ impl Dispatched {
         // DISCOVERY AT BOOT (ARCHITECT 2026-10-02): a door that states `ready` is awaited here,
         // after its `open` and before any listener binds; its refusal refuses the boot.
         plugin.ready(dispatcher(), super::loader::dispatch::ready::READY_DEADLINE)?;
+        let accepts = stated.accepts;
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
@@ -300,7 +303,11 @@ impl Dispatched {
         LIVE.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(Arc::downgrade(&live));
-        Ok(Self { live, facts })
+        Ok(Self {
+            live,
+            facts,
+            accepts,
+        })
     }
 
     /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
@@ -367,6 +374,14 @@ fn go_inline<I: InFrame, O: OutFrame>(
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn accepts(&self) -> bool {
+        self.accepts
+    }
+
+    fn instance(&self) -> Option<u64> {
+        Some(self.live.plugin.instance().0)
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {

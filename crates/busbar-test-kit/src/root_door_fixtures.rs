@@ -454,3 +454,313 @@ pub mod migrate_stub {
         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
     }
 }
+
+/// A TEST HTTP/1.1 FRAMER'S ACCEPTING SIDE, in Rust behind the connector's [`FramerDoor`] seam: the
+/// least an accepting framer does, for the composition root's data door cells (core never tests a
+/// plugin). Each whole request (a request line, field lines, a `content-length` body) comes up as
+/// one field block with its method and target in the stream's head slots, then its body; an
+/// answer's first emit is its head (a field block, with the status on the emit), every later one
+/// its body. It records what crossed: each `begin`'s lent guest list and each head emit's status.
+///
+/// [`FramerDoor`]: busbar_core_connector::framer::FramerDoor
+pub mod h1_accept {
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::transport::{
+        fields, FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END,
+        PIECE_END_OF_FRAME, PIECE_FIELDS, ROLE_FRAMER, YIELD_ENDED,
+    };
+    use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+
+    /// The instance identity the fixture states.
+    pub const INSTANCE: u64 = 0x5eed;
+
+    /// What one `begin` was lent: each line's id, auth points and whether it carries a handle.
+    pub type Lent = Vec<(u32, u32, bool)>;
+
+    #[derive(Default)]
+    struct State {
+        inbound: Vec<u8>,
+        outbound: VecDeque<u8>,
+        next: u64,
+        ended: bool,
+    }
+
+    /// The fixture.
+    pub struct H1Accept {
+        facts: DoorFacts,
+        accepts: bool,
+        framings: Mutex<HashMap<u64, State>>,
+        next: AtomicU64,
+        /// The guest list every `begin` was lent, in order.
+        pub begun: Mutex<Vec<Lent>>,
+        /// The status every head emit carried, in order.
+        pub statuses: Mutex<Vec<u32>>,
+    }
+
+    impl H1Accept {
+        /// The fixture answering `http`; `accepts` = its tail states `FACT_ACCEPTS`.
+        #[must_use]
+        pub fn new(accepts: bool) -> Self {
+            Self {
+                facts: DoorFacts {
+                    name: "test-h1-accept".into(),
+                    claims: vec!["http"],
+                    role: ROLE_FRAMER,
+                    composes_over: Vec::new(),
+                    ported: false,
+                    status_rows: Vec::new(),
+                    duplex: Vec::new(),
+                    datagram: false,
+                },
+                accepts,
+                framings: Mutex::new(HashMap::new()),
+                next: AtomicU64::new(1),
+                begun: Mutex::new(Vec::new()),
+                statuses: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    fn raw<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+        if ptr.is_null() || len == 0 {
+            return &[];
+        }
+        // SAFETY: host-borrowed input of `len` bytes, valid for the call.
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
+    fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// One request as it came up: method, target, field block, body.
+    type Request = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
+    /// One whole request off the front of `inbound`.
+    fn request(inbound: &mut Vec<u8>) -> Option<Request> {
+        let head_end = find(inbound, b"\r\n\r\n")?;
+        let head = String::from_utf8_lossy(&inbound[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let mut start = lines.next()?.split(' ');
+        let (method, target) = (start.next()?.to_owned(), start.next()?.to_owned());
+        let mut block = Vec::new();
+        let mut len = 0_usize;
+        for line in lines {
+            let (name, value) = line.split_once(':')?;
+            let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
+            if name == "content-length" {
+                len = value.parse().ok()?;
+                continue;
+            }
+            if fields::hop_by_hop(&name, std::iter::empty()) {
+                continue;
+            }
+            block.extend_from_slice(name.as_bytes());
+            block.extend_from_slice(fields::SEPARATOR);
+            block.extend_from_slice(value.as_bytes());
+            block.extend_from_slice(fields::LINE_END);
+        }
+        if inbound.len() < head_end + 4 + len {
+            return None;
+        }
+        let body = inbound[head_end + 4..head_end + 4 + len].to_vec();
+        inbound.drain(..head_end + 4 + len);
+        Some((method.into_bytes(), target.into_bytes(), block, body))
+    }
+
+    /// Answer what the framing owes: its wire bytes, and every whole request it holds.
+    fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut) {
+        let y = &mut o.yielded;
+        let w = st.outbound.len().min(sink.wire_cap);
+        for i in 0..w {
+            let b = st.outbound.pop_front().unwrap_or_default();
+            // SAFETY: a host buffer of `wire_cap` bytes; `i < w <= wire_cap`.
+            unsafe { sink.wire.add(i).write(b) };
+        }
+        y.wire_len = w as u64;
+        let (mut frame, mut pieces, mut heads) = (0_usize, 0_usize, 0_usize);
+        let put = |bytes: &[u8], frame: &mut usize| -> u64 {
+            let at = *frame;
+            // SAFETY: the host's frame buffer; the cells' requests fit it.
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), sink.frame.add(at), bytes.len());
+            }
+            *frame += bytes.len();
+            at as u64
+        };
+        while pieces + 2 <= sink.pieces_cap && heads < sink.heads_cap {
+            let Some((method, target, block, body)) = request(&mut st.inbound) else {
+                break;
+            };
+            let stream = st.next * 2 + 1;
+            st.next += 1;
+            let m = put(&method, &mut frame);
+            let t = put(&target, &mut frame);
+            let b = put(&block, &mut frame);
+            // SAFETY: `heads < heads_cap` and `pieces + 2 <= pieces_cap`.
+            unsafe {
+                sink.heads.add(heads).write(HeadSlots {
+                    stream,
+                    method: FrameSpan {
+                        offset: m,
+                        len: method.len() as u64,
+                    },
+                    target: FrameSpan {
+                        offset: t,
+                        len: target.len() as u64,
+                    },
+                    ..HeadSlots::default()
+                });
+                let end = if body.is_empty() { PIECE_END } else { 0 };
+                sink.pieces.add(pieces).write(FramePiece {
+                    stream,
+                    offset: b,
+                    len: block.len() as u64,
+                    code: 0,
+                    status_class: 0,
+                    flags: PIECE_FIELDS | PIECE_END_OF_FRAME | end,
+                    fault: 0,
+                    retry_after_secs: 0,
+                    declared_len: 0,
+                });
+                pieces += 1;
+                if !body.is_empty() {
+                    let at = put(&body, &mut frame);
+                    sink.pieces.add(pieces).write(FramePiece {
+                        stream,
+                        offset: at,
+                        len: body.len() as u64,
+                        code: 0,
+                        status_class: 0,
+                        flags: PIECE_END_OF_FRAME | PIECE_END,
+                        fault: 0,
+                        retry_after_secs: 0,
+                        declared_len: 0,
+                    });
+                    pieces += 1;
+                }
+            }
+            heads += 1;
+        }
+        y.frame_len = frame as u64;
+        y.pieces_len = pieces as u32;
+        y.heads_len = heads as u32;
+        if st.ended && st.outbound.is_empty() {
+            y.flags |= YIELD_ENDED;
+        }
+    }
+
+    /// The reason phrase of the statuses the cells answer.
+    fn reason(status: u32) -> &'static str {
+        match status {
+            200 => "OK",
+            404 => "Not Found",
+            _ => "",
+        }
+    }
+
+    impl FramerDoor for H1Accept {
+        fn facts(&self) -> &DoorFacts {
+            &self.facts
+        }
+
+        fn accepts(&self) -> bool {
+            self.accepts
+        }
+
+        fn instance(&self) -> Option<u64> {
+            Some(INSTANCE)
+        }
+
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            let ok = Crossed {
+                outcome: Outcome::Ready,
+                error: None,
+            };
+            let failed = Crossed {
+                outcome: Outcome::Failed,
+                error: Some(b"no such framing".to_vec()),
+            };
+            let mut framings = self.framings.lock().unwrap_or_else(|e| e.into_inner());
+            match call {
+                Call::Locate(_, _) => ok,
+                Call::Begin(i, o) => {
+                    let lines = if i.lines.is_null() {
+                        &[][..]
+                    } else {
+                        // SAFETY: the host's line table, `lines_len` live entries for the call.
+                        unsafe { std::slice::from_raw_parts(i.lines, i.lines_len) }
+                    };
+                    self.begun.lock().unwrap_or_else(|e| e.into_inner()).push(
+                        lines
+                            .iter()
+                            .map(|l| (l.line, l.points, !l.auth.is_none()))
+                            .collect(),
+                    );
+                    let token = self.next.fetch_add(1, Ordering::Relaxed);
+                    let mut st = State::default();
+                    answer(&mut st, &i.sink, o);
+                    framings.insert(token, st);
+                    o.framing = token;
+                    ok
+                }
+                Call::Ingest(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        st.inbound.extend_from_slice(raw(i.bytes, i.len));
+                        st.ended |= i.end != 0;
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Emit(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        let bytes = raw(i.bytes, i.len);
+                        if i.status != 0 {
+                            self.statuses
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(i.status);
+                            let line = format!("HTTP/1.1 {} {}\r\n", i.status, reason(i.status));
+                            st.outbound.extend(line.as_bytes());
+                            st.outbound.extend(bytes);
+                            st.outbound.extend(b"\r\n");
+                        } else {
+                            st.outbound.extend(bytes);
+                        }
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Timer(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Refuse(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Finish(i, o) => {
+                    framings.remove(&i.framing);
+                    o.yielded.flags = YIELD_ENDED;
+                    ok
+                }
+                Call::Encode(_, _) | Call::Detach(_, _) | Call::Adopt(_, _) => Crossed {
+                    outcome: Outcome::Refused,
+                    error: Some(b"not this fixture's".to_vec()),
+                },
+            }
+        }
+    }
+}

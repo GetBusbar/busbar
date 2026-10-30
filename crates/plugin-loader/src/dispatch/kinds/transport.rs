@@ -89,6 +89,9 @@ pub struct TransportFacts {
     /// Its tail states `FRAMING_DATAGRAM`: a framer over the host's datagram port, whose calls
     /// carry the datagram lane, never a stream's framer.
     pub datagram: bool,
+    /// Its tail states `FACT_ACCEPTS` (`TransportTail::facts`): its framer begins on the accepting
+    /// side, so a listener may be framed by it.
+    pub accepts: bool,
     /// The auth points it offers, its Statement's `extensions` record
     /// (`abi::transport::EXT_OFFERED_POINTS`): `{Head, HeadBody}` when it states none.
     pub offered: busbar_contract::abi::transport::AuthPoints,
@@ -230,6 +233,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     Ok(TransportFacts {
         name: owned(st.name, "Statement name")?,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
+        accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         offered,
         role: tail.role,
