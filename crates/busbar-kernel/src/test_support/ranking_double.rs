@@ -212,8 +212,8 @@ fn strategy_of(settings: &str) -> Result<Strategy, String> {
     Strategy::of(word).ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))
 }
 
-busbar_contract::hook_door! {
-    open: Open,
+busbar_contract::export_plugin! {
+    hook: Open,
     statement: STATEMENT,
 }
 
