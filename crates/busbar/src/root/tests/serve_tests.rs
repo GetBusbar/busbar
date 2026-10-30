@@ -1529,6 +1529,21 @@ pub(super) mod session_door {
             &mut self,
             bound: std::time::Duration,
         ) -> (StatusCode, Option<String>, Option<String>) {
+            let (status, location, heard, _browser) = self.offer_driven(bound).await;
+            (status, location, heard)
+        }
+
+        /// [`Self::offer_within`], with the browser's association task: it ends when busbar (or
+        /// the browser's own failure) closes the association.
+        async fn offer_driven(
+            &mut self,
+            bound: std::time::Duration,
+        ) -> (
+            StatusCode,
+            Option<String>,
+            Option<String>,
+            Option<tokio::task::JoinHandle<()>>,
+        ) {
             use tower::ServiceExt as _;
             let (mut browser, offer) = Peer::browser();
             let req = axum::http::Request::builder()
@@ -1549,15 +1564,26 @@ pub(super) mod session_door {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned);
             let answer = body_of(response).await;
-            if status == StatusCode::CREATED {
+            let browser = (status == StatusCode::CREATED).then(|| {
                 browser.answered(&answer);
-                tokio::spawn(browser.run());
-            }
+                tokio::spawn(browser.run())
+            });
             let heard = tokio::time::timeout(bound, self.heard.recv())
                 .await
                 .ok()
                 .flatten();
-            (status, location, heard)
+            (status, location, heard, browser)
+        }
+
+        /// Whether every unit the door opened has ended within `bound`.
+        async fn ended_within(&self, bound: std::time::Duration) -> bool {
+            tokio::time::timeout(bound, async {
+                while self.post.open_units() != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok()
         }
 
         /// A keyed mint read to its end: its status, and whether the provider heard it.
@@ -1593,14 +1619,25 @@ pub(super) mod session_door {
     /// stuck.
     const MAX_FAILURES: usize = 8;
 
-    /// Mint until the route's breaker cell refuses a mint before its dial, the provider failing every
-    /// dial it hears: the dials it heard first, each one refused to the caller. `None` if the cell
-    /// never opened.
+    /// How long an offer's call is given to reach the provider: the browser's association comes up
+    /// first (ICE, DTLS), then busbar dials.
+    const DIAL_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// R10 (row 132): the door's one dial is busbar's call, which a browser's SDP offer places. Offer
+    /// until the route's breaker cell refuses busbar's call before its dial, the provider failing
+    /// every call it hears: the calls it heard first, none of them served (no offer's unit
+    /// completes on the route). `None` if the cell never opened.
     async fn trip(s: &mut SessionDoor) -> Option<usize> {
         for n in 0..=MAX_FAILURES {
-            let (status, heard) = s.mint_once().await;
-            assert_ne!(status, StatusCode::OK, "mint {n} is not served");
-            if !heard {
+            let (status, _, heard) = s.offer_within(DIAL_BOUND).await;
+            assert_eq!(status, StatusCode::CREATED, "offer {n} is opened");
+            // Not served: busbar's call is refused (by the provider, or by the cell before its
+            // dial), so busbar ends the offer's session.
+            assert!(
+                s.ended_within(DIAL_BOUND).await,
+                "offer {n} is not served: its session ended"
+            );
+            if heard.is_none() {
                 return Some(n);
             }
         }
@@ -1724,9 +1761,11 @@ pub(super) mod session_door {
         assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
-    /// BREAKER-TRIP, at the session door: a provider failing every mint records each failure into
-    /// the ONE breaker cell of the door's route, and the cell OPENS: the next mint is refused before
-    /// it is dialled, and the provider's failures are counted under the route's lane on the scrape.
+    /// BREAKER-TRIP, at the session door: a provider failing every call busbar places for an SDP
+    /// offer (R10, row 132: the door's one dial; the mint dials nothing) records each failure into
+    /// the ONE breaker cell of the door's route, and the cell OPENS: the next offer's call is refused
+    /// before it is dialled, and the provider's failures are counted under the route's lane on the
+    /// scrape.
     /// RED: a breaker port that records no failure leaves the cell closed, and every mint is dialled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_provider_opens_the_breaker_cell_of_the_doors_route() {
@@ -1749,7 +1788,7 @@ pub(super) mod session_door {
 
         let dialled = trip(&mut s)
             .await
-            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing offers never opened the cell"));
         assert!(dialled >= 1, "the cell opened on a failure it recorded");
         assert!(
             counted(
@@ -1763,9 +1802,10 @@ pub(super) mod session_door {
     }
 
     /// BREAKER-FASTFAIL, at the session door: once the route's breaker cell has opened, the next
-    /// mint is refused BEFORE its dial and at once: the provider, which now holds every connection
-    /// open unanswered, is never dialled, and the refusal comes back in well under a second. RED: a
-    /// breaker port that admits an open cell dials the provider, which holds the mint past the bound.
+    /// offer's call (R10, row 132) is refused BEFORE its dial and at once: the provider, which now
+    /// holds every connection open unanswered, is never dialled, and the session ends in well under
+    /// a second once the browser's association is up (the dial waits for it). RED: a breaker port
+    /// that admits an open cell dials the provider, which holds the call past the bound.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_provider_is_refused_at_the_session_door_before_the_dial_at_once() {
         let _one = PUBLISHING.lock().await;
@@ -1788,23 +1828,26 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         trip(&mut s)
             .await
-            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing offers never opened the cell"));
 
-        // From here a dialled provider never answers: only the breaker can answer the next mint.
+        // From here a dialled provider never answers: only the breaker can answer the next call.
         holding.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (status, _, heard) = s.offer_within(std::time::Duration::ZERO).await;
+        assert_eq!(status, StatusCode::CREATED, "the offer is opened");
+        // The call's dial waits for the browser's association; from there the breaker answers at once.
         let started = std::time::Instant::now();
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), s.mint())
-            .await
-            .expect("the tripped route's mint is answered, not held at its provider");
-        let took = started.elapsed();
-        assert_ne!(response.status(), StatusCode::OK, "the mint is refused");
         assert!(
-            s.heard.try_recv().is_err(),
-            "the refused mint never reached the provider"
+            s.ended_within(DIAL_BOUND).await,
+            "the tripped route's call is refused, not held at its provider"
         );
         assert!(
-            took < std::time::Duration::from_secs(1),
-            "refused before the dial, in milliseconds: {took:?}"
+            heard.is_none() && s.heard.try_recv().is_err(),
+            "the refused call never reached the provider"
+        );
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "refused before the dial: {took:?}"
         );
     }
 
@@ -1916,22 +1959,28 @@ pub(super) mod session_door {
         );
     }
 
-    /// METRICS, at the session door: a served mint's dial to the provider appears on the real
-    /// `/metrics` scrape, once, under the door's route lane. RED: an egress whose telemetry counts no
-    /// attempt leaves the scrape where it was.
+    /// METRICS, at the session door: busbar's call for an SDP offer (R10, row 132: the door's one
+    /// dial) appears on the real `/metrics` scrape, once, under the door's route lane. RED: an egress
+    /// whose telemetry counts no attempt leaves the scrape where it was.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_served_mint_counts_its_upstream_attempt_under_the_doors_route() {
         let _one = PUBLISHING.lock().await;
-        let mut s = session_served("serve-door-session-metrics", None)
-            .await
-            .expect("the build links the session door");
+        let mut s = session_with(
+            "serve-door-session-metrics",
+            Opts {
+                far: Some(Arc::new(|_| Far::Places)),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
         let before = counted(
             &s.scrape().await,
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         );
-        let (status, heard) = s.mint_once().await;
-        assert_eq!(status, StatusCode::OK, "served");
-        assert!(heard, "dialled");
+        let (status, _, heard) = s.offer_within(DIAL_BOUND).await;
+        assert_eq!(status, StatusCode::CREATED, "served");
+        assert!(heard.is_some(), "dialled");
         let exposition = s.scrape().await;
         assert_eq!(
             counted(
