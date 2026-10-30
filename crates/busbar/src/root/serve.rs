@@ -86,12 +86,11 @@ pub fn compose(
     late: &LateServices,
     credentials: crate::root::credentials::AppCredentials,
 ) {
-    let kernel = Arc::new(kernel_services(dest));
-    let services = crate::root::credentials::CredentialServices::new(
-        Arc::clone(&kernel) as Arc<dyn HostServices>,
-        Arc::new(credentials),
-    );
-    if late.install_kernel(kernel, Arc::new(services)).is_err() {
+    let kernel = Arc::new(kernel_services(dest).with_credentials(Arc::new(credentials)));
+    if late
+        .install_kernel(Arc::clone(&kernel), kernel as Arc<dyn HostServices>)
+        .is_err()
+    {
         tracing::debug!("the kernel's host services were already installed");
     }
 }

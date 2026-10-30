@@ -61,7 +61,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     match services.records_secret("a-kind", "an-id", Box::new(|_| {})) {
         Ran::Now(stored) => assert_eq!(
             stored,
-            Stored::refused(crate::root::credentials::NOT_READABLE)
+            Stored::refused(busbar_kernel::host_services::NOT_READABLE)
         ),
         Ran::Later => panic!("the credential read answers at once"),
     }

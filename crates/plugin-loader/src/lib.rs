@@ -85,6 +85,9 @@ pub mod conformance;
 #[path = "../../busbar-test-kit/src/https_conns.rs"]
 pub mod https_conns;
 #[cfg(test)]
+#[path = "../../busbar-test-kit/src/services_double.rs"]
+pub mod services_double;
+#[cfg(test)]
 #[path = "../../busbar-test-kit/src/stand_in.rs"]
 pub mod stand_in;
 #[cfg(test)]
