@@ -17,6 +17,9 @@ pub use busbar_plugin_loader::{
     auth_door, dispatch, plugin_library_filename, sign, store_v3, LinkedPlugin, PluginRegistry,
 };
 
+/// The counting allocator a plugin's allocation gates install as their `#[global_allocator]`.
+pub mod alloc_counter;
+
 /// The auth axis's stand-in: a build with no composition root opens its auth rows on a
 /// dispatcher of its own.
 pub mod auth_axis;

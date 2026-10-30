@@ -570,43 +570,68 @@ impl Services {
 
     /// `ticket.mint`: a ticket for the principal of the unit this crossing serves, living
     /// `ttl_secs` (the host clamps it to its mint ceiling), with `record` stored beside it. Ready:
-    /// the ticket credential (UTF-8) in the caller's preallocated `buf`, and its expiry. Never
-    /// pends.
+    /// the ticket and its expiry.
+    ///
+    /// THE TICKET IS SEALED (R7: a plane never holds credential bytes). It is a bearer credential,
+    /// so the host writes it into a zeroizing buffer the SDK owns and the plane gets it only as a
+    /// [`Cred`](crate::abi::sdk::cred::Cred), which it can hand on in its answer
+    /// ([`SealedJson::sealed`](crate::abi::sdk::cred::SealedJson::sealed)) but never read. A ticket
+    /// longer than the first buffer is the short answer: this re-calls ONCE, on the same handle,
+    /// with the size the host named, inside this call. Never pends.
     ///
     /// # Errors
     ///
-    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
-    /// service: unserved, declined (no unit, no principal, no declared issued-id prefix, a lifetime
-    /// of zero or a record over the cap), or broken (a ticket not UTF-8 is broken).
-    pub fn ticket_mint<'b>(
+    /// As every service: unserved, declined (no unit, no principal, no declared issued-id prefix, a
+    /// lifetime of zero or a record over the cap), or broken (a ticket not UTF-8, or a second short
+    /// answer, is broken).
+    pub fn ticket_mint(
         &self,
         handle: CompletionHandle,
         ttl_secs: u64,
         record: &[u8],
-        buf: &'b mut [u8],
-    ) -> Result<Minted<'b>, ServiceError> {
-        let input = TicketMintIn {
-            head: head::<TicketMintIn>(op::TICKET_MINT, handle),
-            ttl_secs,
-            record: blob(record, BLOB_OCTETS),
-            into: bufs(buf, &mut []),
-        };
-        if check_ticket_mint_in(&input).is_err() {
-            return Err(ServiceError::Declined(Outcome::Refused));
+    ) -> Result<Minted, ServiceError> {
+        let mut size = TICKET_FIRST_BYTES;
+        for _ in 0..2 {
+            let mut buf = Zeroizing::new(vec![0_u8; size]);
+            let input = TicketMintIn {
+                head: head::<TicketMintIn>(op::TICKET_MINT, handle),
+                ttl_secs,
+                record: blob(record, BLOB_OCTETS),
+                into: bufs(buf.as_mut_slice(), &mut []),
+            };
+            if check_ticket_mint_in(&input).is_err() {
+                return Err(ServiceError::Declined(Outcome::Refused));
+            }
+            let crossed = self.cross(
+                op::TICKET_MINT,
+                |t| t.ticket_mint,
+                &input,
+                check_ticket_mint,
+            );
+            let out = match crossed.and_then(ready) {
+                Ok(out) => out,
+                Err(ServiceError::Short { bytes, .. }) => {
+                    // The check held it within the service caps.
+                    let Ok(bytes) = usize::try_from(bytes) else {
+                        return Err(ServiceError::Broken);
+                    };
+                    size = bytes.max(size);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            // The check held `len` within the buffer. The ticket stays in the zeroizing buffer
+            // it was written into: truncated in place, never copied out as text.
+            buf.truncate(out.len as usize);
+            if std::str::from_utf8(&buf).is_err() {
+                return Err(ServiceError::Broken);
+            }
+            return Ok(Minted {
+                ticket: crate::abi::sdk::cred::Cred::captured(buf),
+                expires_at_unix: out.value,
+            });
         }
-        let out = ready(self.cross(
-            op::TICKET_MINT,
-            |t| t.ticket_mint,
-            &input,
-            check_ticket_mint,
-        )?)?;
-        let buf: &'b [u8] = buf;
-        let ticket =
-            std::str::from_utf8(&buf[..out.len as usize]).map_err(|_| ServiceError::Broken)?;
-        Ok(Minted {
-            ticket,
-            expires_at_unix: out.value,
-        })
+        Err(ServiceError::Broken)
     }
 
     /// `ticket.take`: the record of the ticket that admitted the unit this crossing serves, once.
@@ -1991,13 +2016,24 @@ pub struct Signed<'b> {
     pub named: &'b str,
 }
 
-/// What `ticket.mint` answered: the ticket and its expiry, a view into the caller's buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Minted<'b> {
-    /// The ticket credential, shown to its holder once.
-    pub ticket: &'b str,
+/// What `ticket.mint` answered: the ticket, sealed, and its expiry. Its `Debug` gives the ticket's
+/// length only.
+#[derive(Clone)]
+pub struct Minted {
+    /// The ticket credential, shown to its holder once: sealed, so the plane hands it on in its
+    /// answer ([`SealedJson::sealed`](crate::abi::sdk::cred::SealedJson::sealed)) and never reads it.
+    pub ticket: crate::abi::sdk::cred::Cred,
     /// When it expires, in Unix seconds.
     pub expires_at_unix: u64,
+}
+
+impl std::fmt::Debug for Minted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Minted")
+            .field("ticket", &format_args!("<{} bytes>", self.ticket.len()))
+            .field("expires_at_unix", &self.expires_at_unix)
+            .finish()
+    }
 }
 
 /// What `sign` answered: the key id the signature verifies under and the signature, views into
@@ -2055,6 +2091,10 @@ impl ZeroizeOnDrop for CredentialSecret {}
 /// The bytes the first `records.secret` crossing lends: above any secret a credential kind holds
 /// today; a longer one is the short answer's one re-call.
 const SECRET_FIRST_BYTES: usize = 256;
+
+/// The bytes the first `ticket.mint` crossing lends: above a ticket's prefix and signed body; a
+/// longer ticket is the short answer's one re-call.
+const TICKET_FIRST_BYTES: usize = 512;
 
 /// The head of an `I` for `service`, under `handle`.
 const fn head<I>(service: u32, handle: CompletionHandle) -> ServiceHead {

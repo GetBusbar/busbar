@@ -3056,7 +3056,10 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
     let latch = crate::dispatch::handle::Latch::new();
     assert!(crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some());
     std::thread::scope(|scope| {
-        let caller = scope.spawn(|| hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
+        let caller = scope.spawn(|| {
+            hung.call(TICK, &mut frame(b"hang:ticketless-revoke"))
+                .outcome
+        });
         until("the watchdog faults the ticket-less hang", || {
             hung.is_faulted()
         });
@@ -3067,7 +3070,7 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
         let releaser =
             load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
         assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
-        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless"));
+        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless-revoke"));
         let _ = caller.join();
     });
     assert_eq!(
@@ -4082,5 +4085,50 @@ fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
         d.services().held(),
         0,
         "a dropped inline ticket's kept results outlive it"
+    );
+}
+
+/// REFERENCE-CAPABLE FIELDS AT LOAD (lead ruling item 7a): a Statement whose extensions name a path
+/// under `reference_fields` that its `secret_refs` also names states a contradiction and is
+/// refused, as is a `reference_fields` value that is not a JSON list of paths; a list beside
+/// distinct secret paths loads.
+#[test]
+fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
+    use busbar_contract::abi::mechanism::extensions::{
+        encode, statement_blob, EXT_REFERENCE_FIELDS,
+    };
+    // SAFETY: the real door is `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st = unsafe { *real.statement() };
+    let refs: &'static [busbar_contract::abi::mechanism::call::AbiStr] = Box::leak(Box::new([
+        busbar_contract::abi::sdk::door::abi_str("token"),
+        busbar_contract::abi::sdk::door::abi_str("url"),
+    ]));
+    let with = |reference: &[u8]| {
+        let ext: &'static [u8] =
+            Box::leak(encode(&[(EXT_REFERENCE_FIELDS, reference)]).into_boxed_slice());
+        let stated: &'static Statement = Box::leak(Box::new(Statement {
+            secret_refs: refs.as_ptr(),
+            secret_refs_len: refs.len(),
+            extensions: statement_blob(ext),
+            ..st
+        }));
+        let mut d = real.parts();
+        d.statement = stated;
+        // SAFETY: a copy of the real door with its Statement replaced by a `'static` one.
+        validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
+    };
+    assert_eq!(
+        with(br#"["base", "endpoint.*"]"#),
+        None,
+        "distinct lists load"
+    );
+    let Some(LoadError::BadStatement(why)) = with(br#"["base", "url"]"#) else {
+        panic!("a path in both lists is refused");
+    };
+    assert!(why.contains("url"), "{why}");
+    assert!(
+        matches!(with(br#"{"url": true}"#), Some(LoadError::BadStatement(_))),
+        "a malformed list is refused"
     );
 }

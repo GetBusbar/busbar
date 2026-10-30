@@ -19,9 +19,12 @@
 //! contract's own public surfaces directly. What a cell needs and this rig does not offer is added
 //! HERE, never reached for past it.
 //!
-//! The rig compiles iff an enabled door's cells name it (`build.rs` sets `door_rig`), and it
-//! carries no allow: an item no compiled cell calls is dead code and refused, so the surface is
-//! exactly what the cells use.
+//! The rig compiles in every test build that serves the `pools` section, so a root change that
+//! breaks it fails on that change, not at the next plane repin. Where an enabled door's cells name
+//! it (`build.rs` sets `door_rig`) it carries no allow: an item no compiled cell calls is dead code
+//! and refused, so the surface is exactly what the cells use. Only a build whose cells name no rig
+//! item lets the surface stand unused.
+#![cfg_attr(not(door_rig), allow(dead_code, unused_imports))]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -47,10 +50,10 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::loader::sign::BreakerDecl;
 
-pub(crate) use super::planes_tests::{Published, PUBLISHING};
+pub(crate) use super::planes_tests::PUBLISHING;
 pub(crate) use super::with_pools;
 pub(crate) use crate::root::door_steps::Rules;
-pub(crate) use crate::root::durability::{Durability, UnitCounts};
+pub(crate) use crate::root::durability::Durability;
 pub(crate) use crate::root::kernel::RootHistory;
 pub(crate) use crate::root::loader::dispatch::LinkedRow;
 pub(crate) use crate::root::loader::sign::NeedLevel;
@@ -310,11 +313,6 @@ pub(crate) fn unpriced_card(now_ms: u64) -> RootHistory {
     holder
 }
 
-/// The node's book, its units priced against the history `pin` answers.
-pub(crate) fn node_book(pin: fn() -> Option<PinnedHistory>) -> NodeBook {
-    crate::root::durability::node_book_over(Box::new(pin))
-}
-
 /// A store opened through a linked store door, as the governance book's store is opened: its
 /// records and its record slots are the kernel's record store (ARCHITECT Q-L3B-RECORDS).
 pub(crate) struct DoorStore {
@@ -397,6 +395,7 @@ impl EgressRig {
                 crate::LINKED.auths,
                 None,
                 ConnTable::Host(table),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns,
             stream_ceiling_secs: 600,
@@ -438,6 +437,7 @@ pub(crate) struct DoorCompose<'a> {
     hooks: Option<HookStage>,
     post: Option<Arc<NodeEndPost>>,
     framers: Option<Arc<Connector>>,
+    tables: Option<&'a busbar_kernel::plane_driver::serve::ServeTables>,
 }
 
 impl<'a> DoorCompose<'a> {
@@ -460,7 +460,20 @@ impl<'a> DoorCompose<'a> {
             hooks: None,
             post: None,
             framers: None,
+            tables: None,
         }
+    }
+
+    /// THE ADMIN TABLE the doors are published into (busbar #1834: a value each generation
+    /// carries), so a cell lends the same table to the App it builds and the admin router answers
+    /// the doors' routes off it. Unset: a table of the composition's own, which no App reads.
+    #[must_use]
+    pub(crate) fn tables(
+        mut self,
+        tables: &'a busbar_kernel::plane_driver::serve::ServeTables,
+    ) -> Self {
+        self.tables = Some(tables);
+        self
     }
 
     /// The deployment's public base URL.
@@ -525,6 +538,7 @@ impl<'a> DoorCompose<'a> {
     }
 
     fn composed(&self, egress: Option<&DoorEgress<'_>>) -> Result<Served, String> {
+        let own = busbar_kernel::plane_driver::serve::ServeTables::default();
         super::compose_planes(
             &self.doors,
             self.dispatcher,
@@ -534,6 +548,7 @@ impl<'a> DoorCompose<'a> {
             self.money,
             egress,
             self.hooks.as_ref(),
+            self.tables.unwrap_or(&own),
         )
     }
 }
@@ -583,6 +598,12 @@ pub(crate) fn admissions(
         .collect()
 }
 
+/// THE NODE'S BOOK with no store behind it (memory-buffered over the null shipper): its journal and
+/// audit chain, which a cell binds its node to and reads a unit's audit record back from.
+pub(crate) fn node_book() -> NodeBook {
+    crate::root::durability::node_book()
+}
+
 /// THE NODE'S ADMIN SURFACE over `admin`, as boot mounts it: the generic verbs over `book` and the
 /// kernel's services in `late`, the default breaker policy.
 pub(crate) fn mount_node_admin(
@@ -614,7 +635,7 @@ pub(crate) fn hook_env(
 ) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::test_support::test_hook_env(
         aliases,
-        crate::root::loader::sign::HookNeeds { prompt, user },
+        busbar_kernel::test_support::HookNeeds { prompt, user },
     )
 }
 

@@ -126,7 +126,7 @@ mod alloc_gate_instrument {
 // ── THE KERNEL LOOP (absorbed from the pre-1.6.0 busbar-kernel crate; W4.a #19/#37) ───────────────
 // busbar-kernel now IS the engine: the Teller loop plus everything the busbar-core engine held.
 // These modules are the original busbar-kernel's own — the loop, the pump, the in-flight/session
-// tables, recovery, the registry, the closed grammars, the ticks and the per-unit scratch pad —
+// tables, the registry, the closed grammars, the ticks and the per-unit scratch pad —
 // plus the settlement table the loop re-exports (`teller::settle_written` and its evidence).
 pub mod door;
 pub mod grammar;
@@ -135,7 +135,6 @@ pub mod inflight;
 pub mod plane_driver;
 pub mod probe;
 pub mod pump;
-pub mod recovery;
 pub mod registry;
 pub mod scratch;
 pub mod seal;
@@ -197,11 +196,9 @@ pub mod audit;
 /// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
 pub mod audit_ring;
 pub mod auth;
-pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
 pub mod boot;
-pub mod breaker;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;
@@ -213,9 +210,6 @@ pub mod diagnostics;
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
 pub mod durable;
-// The kernel's outbound vocabulary and the destinations seam; the kernel dials nothing. See the
-// module header.
-pub mod egress;
 pub mod endpoints;
 pub mod export;
 /// The pool vocabulary's historical path. The failover module is deleted (row 82 D2); the one
@@ -226,7 +220,6 @@ pub mod failover {
     pub use crate::config::pools::CandidatePoolCfg;
 }
 pub mod governance;
-pub mod handlers;
 pub mod hooks;
 pub mod host_chains;
 pub mod host_disk;
@@ -241,7 +234,6 @@ pub mod ir;
 pub mod host_services;
 pub mod json;
 pub mod limits;
-pub mod lineage;
 pub mod oauth_as;
 pub mod observability;
 pub mod snapshot;
@@ -280,9 +272,6 @@ pub mod profile;
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
 pub mod ratelimit;
-/// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
-/// carried usage counts no billing class records (MONEY LAW). See the module header.
-pub mod residual_log;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
@@ -291,11 +280,6 @@ pub mod residual_log;
 pub mod session;
 pub mod state;
 pub mod store;
-/// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
-/// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
-/// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
-/// admin HTTP API.
-pub(crate) mod taxonomy;
 
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
@@ -320,11 +304,19 @@ pub mod test_support;
 /// kernel's own test binary reads its protocol set.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
-pub mod tls;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.
 pub use busbar_contract::transport::transport;
 
+#[cfg(test)]
+#[path = "tests/billing_tests.rs"]
+mod billing_tests;
+#[cfg(test)]
+#[path = "tests/breaker_tests.rs"]
+mod breaker_tests;
+#[cfg(test)]
+#[path = "tests/handler_contract_tests.rs"]
+mod handler_contract_tests;
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;

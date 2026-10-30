@@ -45,8 +45,7 @@
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
 //! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
-//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
-//! plane's `trust.due` sees the marks.
+//! answer.
 //!
 //! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
 //! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
@@ -60,7 +59,6 @@ mod cancel;
 mod close;
 pub mod dispatch;
 pub mod door;
-mod epoch;
 mod far_end;
 mod govern;
 pub(crate) mod hooks;
@@ -99,10 +97,9 @@ use tokio::sync::{watch, Notify};
 
 pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
-pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, MemberSignals, MemberStanding,
-    ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    fixed_breaker, AuthBinding, BreakerSource, Egress, EgressFarEnd, MemberFacts, MemberRoute,
+    MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
@@ -114,7 +111,7 @@ pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
+pub use money::{EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
@@ -131,7 +128,8 @@ use busbar_contract::ids::RecordSchemaId;
 /// The capacities of the host buffers the driver hands a plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferCaps {
-    /// Reply bytes per `on_piece` (the backpressure window).
+    /// Reply bytes per `on_piece` (the backpressure window); a caller's piece's window adds its
+    /// arrival's body length.
     pub reply: usize,
     /// Unit counts.
     pub units: usize,
@@ -456,7 +454,6 @@ impl PlaneDriver {
         let mut at = 0;
         let mut cause = Cause::Timer;
         loop {
-            self.services.mark_due();
             let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
                 return;
             };
@@ -750,9 +747,10 @@ pub trait DriverSteps {
         Evidence::default()
     }
 
-    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]).
-    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
-        Ok(accrual.amount())
+    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]): nothing refused,
+    /// by default.
+    fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
+        Ok(())
     }
 
     /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
@@ -833,7 +831,7 @@ pub trait DriverSteps {
     fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
     /// The plane's answer for the unit, read in its `dialect`, carried a USAGE-TAP FAULT of
     /// `reason` (`abi::plane::OnPieceOut::tap_fault`): the steps count it, once per answer that
-    /// carries it (`handlers::usage_tap_fault`).
+    /// carries it (`snapshot::usage_tap_fault`).
     fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}
     /// How the unit's answer went, as the driver saw it, handed just before its audit seat: a byte
     /// of a SUCCESS answer reached the caller (`streamed`: its head stated a 2xx, or no status, and
@@ -1724,7 +1722,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
         self.steps.evidence(ctx)
     }
 
-    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
+    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<(), Refusal> {
         self.steps.at_parent_exit(ctx, accrual)
     }
 

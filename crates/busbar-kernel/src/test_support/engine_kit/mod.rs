@@ -22,7 +22,7 @@
 //! installs — precisely what the construction gate's uninstalled-seam rule exists to refuse.
 //!
 //! Every type on these signatures is neutral: the substrate's own `EngineHost` / `PlaneSlots` /
-//! `LiveHostFactory` / `BreakerState` / `TokenSigner` / `NewKeySpec`, the
+//! `LiveHostFactory` / `TokenSigner` / `NewKeySpec`, the
 //! `busbar_contract` store contracts (`Store`, `VirtualKey`, `MeteringRow`, `AuditRecord`), axum's
 //! `Router` / `Method`, `serde_json::Value` for config documents the engine parses itself, and an
 //! opaque `Box<dyn Any>` for the one fixture (the hook plugin environment) that has no neutral shape.
@@ -35,7 +35,6 @@ use crate::governance::{DerivedUsage, NewKeySpec};
 use crate::plane_driver::dispatch::PlaneAdmission;
 use crate::plane_driver::slots::PlaneSlots;
 use crate::plane_driver::{EngineHost, LiveHostFactory};
-use crate::store::BreakerState;
 use crate::trust::validate::GovResolve;
 use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use std::any::Any;
@@ -216,12 +215,6 @@ pub trait EngineApp: PlaneSlots + Any + Send + Sync {
     fn engine_host(self: Arc<Self>) -> Arc<dyn EngineHost>;
     /// Wrap this snapshot in a fresh swappable handle.
     fn handle(self: Arc<Self>) -> Arc<dyn EngineHandle>;
-    /// The breaker cell state under `key` (the plane's own `tool:<server>` spelling), lane 0.
-    fn breaker_state(&self, key: &str) -> BreakerState;
-    /// The breaker cell state under `key` at pool lane `lane`.
-    fn breaker_state_at(&self, key: &str, lane: usize) -> BreakerState;
-    /// Close the breaker cell under `key` (lane 0) by hand — the supervisor's reset.
-    fn breaker_reset(&self, key: &str);
     /// The mounted data-plane route paths — which paths appear — so a plane asserts what an
     /// (un)configured deployment mounts.
     fn data_route_paths(&self) -> Vec<String>;
