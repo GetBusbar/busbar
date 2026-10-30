@@ -188,12 +188,11 @@ impl Node {
         Egress {
             caller: InstanceId(1),
             conns: self.conns.clone(),
-            breaker: self.breaker.clone(),
+            breaker: crate::plane_driver::fixed_breaker(self.breaker.clone()),
             capacity: self.capacity.clone(),
             clock: self.clock.clone(),
             journal: self.journal.clone(),
             telemetry: self.telemetry.clone(),
-            floor: WeightedFloor::new(),
             pools: self.timed_pools(),
             routes: self
                 .lanes
@@ -412,7 +411,6 @@ fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> 
         capacity: node.capacity.as_ref(),
         clock: node.clock.as_ref(),
         telemetry: node.telemetry.as_ref(),
-        floor: &node.floor,
         pools,
     }
 }
