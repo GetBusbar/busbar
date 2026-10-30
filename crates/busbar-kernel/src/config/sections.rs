@@ -432,14 +432,14 @@ pub struct RateEntryCfg {
 
 impl RateEntryCfg {
     /// **THE MONEY INTAKE**: this entry's four rates, converted ONCE and exactly into the integer
-    /// nano-units per token every later hop carries ([`crate::billing::RawTierRates`]), by the
+    /// nano-units per token every later hop carries ([`busbar_contract::billing::RawTierRates`]), by the
     /// ledger's one conversion (`representable_nano_rate`: exact, on the decimal's own digits, #81).
     /// `None` is a configured rate the card cannot hold — not a whole number of nano-units, or out of
     /// range (item 22, OWNER rule 21: refused, never rounded) — which boot validation refuses and the
     /// card records unpriced. No float leaves this function.
-    pub fn raw_tier_rates(&self) -> crate::billing::RawTierRates {
+    pub fn raw_tier_rates(&self) -> busbar_contract::billing::RawTierRates {
         let nanos = busbar_kernel_ledger::cost::representable_nano_rate;
-        crate::billing::RawTierRates {
+        busbar_contract::billing::RawTierRates {
             input: nanos(self.input_utok),
             output: nanos(self.output_utok),
             cache_read: nanos(self.cache_read_utok),

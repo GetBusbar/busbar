@@ -23,14 +23,12 @@ use crate::state::App;
 use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
-    observability, operation, plugin_routes, profile, ratelimit, snapshot, state, store, telemetry,
-    tls, transport, trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
+    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, transport, trust,
 };
 use busbar_kernel::plane_driver::route_input::{
-    AffinityInput, AuthStyleInput, FailoverInput, HealthInput, HealthModeInput, LaneInput,
-    OnExhaustedInput, PoolInput, PoolMemberInput,
+    LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
@@ -146,62 +144,6 @@ pub fn stateful_plane_ephemeral_store_warn(
         )
     } else {
         None
-    }
-}
-
-/// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
-/// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
-/// is bound under, on the auth plugin serving that style.
-/// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
-/// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
-/// on the mint as 1.5.5's reqwest POST did (v1.5.5's client-credentials mint, lines 119-126 of
-/// its egress-auth tree). A plane never receives a
-/// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
-pub(crate) fn lane_token_endpoint(
-    written: Option<&str>,
-) -> (Option<String>, Option<crate::bound_credential::UrlUserinfo>) {
-    let Some(written) = written else {
-        return (None, None);
-    };
-    (
-        Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
-        crate::bound_credential::UrlUserinfo::of(written),
-    )
-}
-
-fn auth_style_of(auth: Option<&config::ProviderAuth>) -> AuthStyleInput {
-    auth.map_or(AuthStyleInput::Default, |style| {
-        AuthStyleInput::Named(style.as_str().to_string())
-    })
-}
-
-/// Mirror a provider `health:` block into the neutral [`HealthInput`] carrier field.
-fn health_input_of(h: &config::HealthCfg) -> HealthInput {
-    HealthInput {
-        mode: match h.mode {
-            config::HealthMode::None => HealthModeInput::None,
-            config::HealthMode::Dead => HealthModeInput::Dead,
-            config::HealthMode::Active => HealthModeInput::Active,
-        },
-        interval_secs: h.interval_secs,
-        timeout_secs: h.timeout_secs,
-    }
-}
-
-/// Mirror a pool `failover:` block into the neutral [`FailoverInput`] carrier field.
-fn failover_input_of(f: &config::FailoverCfg) -> FailoverInput {
-    FailoverInput {
-        timeout_secs: f.timeout_secs,
-        exclusions: f.exclusions.clone(),
-        max_hops: f.max_hops,
-    }
-}
-
-/// Mirror a pool `affinity:` block into the neutral [`AffinityInput`] carrier field (the single
-/// supported `session` mode is implied by presence; only the header name is carried).
-fn affinity_input_of(a: &config::AffinityCfg) -> AffinityInput {
-    AffinityInput {
-        header_name: a.header_name.clone(),
     }
 }
 
@@ -596,7 +538,7 @@ impl ResolvedRates {
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
 struct ResolvedRates {
-    lanes: Vec<(String, crate::billing::RawTierRates)>,
+    lanes: Vec<(String, busbar_contract::billing::RawTierRates)>,
     units: Vec<(String, String, u64)>,
     flat_minor: i64,
     present: bool,
@@ -819,21 +761,12 @@ pub fn build_app_from_config(
     // missing provider), so the lane-build loop reuses that handle instead of re-looking it up —
     // there is no second lookup and no `expect` on the startup path.
     let mut lane_provider_cfgs: Vec<&config::ResolvedProvider> = Vec::new();
-    // Each lane's MODEL-ENTRY FACTS, captured in the same lockstep: what the model entry states of
-    // its lane beyond the breaker's identity and limits. The breaker store holds none of them (it
-    // reads none of them); they ride beside it to the lane input below.
-    let mut lane_model_facts: Vec<LaneModelFacts> = Vec::new();
     let mut by_model = HashMap::new();
-    // Per-model configured default_max_tokens (injected at the translation seam for protocols that
-    // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
-    let mut model_default_max_tokens: std::collections::HashMap<String, Option<u32>> =
-        std::collections::HashMap::new();
-    // Single source of truth for each provider's resolved API key. The secret-bearing read happens
-    // exactly once per provider here and the later `Lane.api_key` population reuses it, so we never
-    // read the same env var (or call the same secret plugin) twice. An entry exists IFF the
-    // provider's reference resolved or was declared `none`: an unresolvable reference returns Err
-    // from this loop, so no App is built at all.
-    let mut provider_api_keys: HashMap<String, config::secret::HeldText> = HashMap::new();
+    // Each provider's credential reference is resolved exactly once (so the same env var is never
+    // read, nor the same secret plugin called, twice). An unresolvable reference returns Err from
+    // this loop, so no App is built at all.
+    let mut resolved_providers: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // Build lanes in a DETERMINISTIC order (sorted by model name) rather than `cfg.models`'
     // HashMap iteration order, which is randomized per process start. Lane index is assigned here
     // (`by_model` → `lanes_data.len()`), so a random iteration order gave each lane a different
@@ -877,7 +810,6 @@ pub fn build_app_from_config(
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
     for (model, mc) in sorted_models {
-        model_default_max_tokens.insert(model.clone(), mc.default_max_tokens);
         let Some(provider_cfg) = cfg.providers.get(&mc.provider) else {
             return Err(format!(
                 "model '{model}' references unknown provider '{}'",
@@ -895,34 +827,27 @@ pub fn build_app_from_config(
         //
         // The message names the provider and the reference (`env:VAR`, `file:/path`, `none`) and
         // never a value: the resolver's own errors are value-free for exactly this reason.
-        if let std::collections::hash_map::Entry::Vacant(slot) =
-            provider_api_keys.entry(mc.provider.clone())
-        {
-            let resolved = if provider_cfg.api_key.is_none() {
-                config::secret::HeldText::default()
-            } else {
-                secret_resolver
-                    .resolve_string_at_config(
-                        &provider_cfg.api_key,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
+        if resolved_providers.insert(mc.provider.clone()) && !provider_cfg.api_key.is_none() {
+            secret_resolver
+                .resolve_string_at_config(
+                    &provider_cfg.api_key,
+                    &busbar_contract::config_time::ConfigScope::config_time(),
+                )
+                .map_err(|e| {
+                    diag_error!(
+                        PROVIDER_API_KEY_UNRESOLVABLE,
+                        provider = %mc.provider,
+                        reference = %provider_cfg.api_key.describe(),
+                        "provider api_key did not resolve: {e}"
+                    );
+                    format!(
+                        "provider '{}' api_key ({}) did not resolve: {e}. A provider \
+                         credential that cannot resolve refuses boot; if this upstream takes \
+                         NO credential (a local ollama / vLLM), declare it: `api_key: none`",
+                        mc.provider,
+                        provider_cfg.api_key.describe()
                     )
-                    .map_err(|e| {
-                        diag_error!(
-                            PROVIDER_API_KEY_UNRESOLVABLE,
-                            provider = %mc.provider,
-                            reference = %provider_cfg.api_key.describe(),
-                            "provider api_key did not resolve: {e}"
-                        );
-                        format!(
-                            "provider '{}' api_key ({}) did not resolve: {e}. A provider \
-                             credential that cannot resolve refuses boot; if this upstream takes \
-                             NO credential (a local ollama / vLLM), declare it: `api_key: none`",
-                            mc.provider,
-                            provider_cfg.api_key.describe()
-                        )
-                    })?
-            };
-            slot.insert(resolved);
+                })?;
         }
         let limited = mc.max_requests >= 0;
         // `max_concurrent` is an OPT-IN limiter: omitted (None) = UNBOUNDED. Realize "unbounded" as a
@@ -936,12 +861,6 @@ pub fn build_app_from_config(
             .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS);
         by_model.insert(model.clone(), lanes_data.len());
         lane_provider_cfgs.push(provider_cfg);
-        lane_model_facts.push(LaneModelFacts {
-            upstream_model: mc.upstream_model.clone(),
-            attempt_timeout_ms: mc.attempt_timeout_ms,
-            reasoning: mc.reasoning.unwrap_or(false),
-            prompt_caching: mc.prompt_caching.unwrap_or(false),
-        });
         lanes_data.push(LaneData {
             member: model.clone(),
             route: mc.provider.clone(),
@@ -986,7 +905,7 @@ pub fn build_app_from_config(
     // iteration happened to land on — defeating the context-length failover exclusion in proxy engine
     // and losing pool-specific limits without a diagnostic. Resolve it deterministically and fail
     // loud on a genuine conflict instead.
-    let model_context_max = resolve_model_context_max(&cfg.pools)?;
+    resolve_model_context_max(&cfg.pools)?;
 
     // Every lane, flattened into the NEUTRAL `LaneInput` carrier (1.6.0 money-path Phase 3-4 C):
     // the fallback plane's `build_runtime` reconstructs its own concrete lane object (egress targets,
@@ -1000,91 +919,37 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let facts = &lane_model_facts[idx];
-        let legacy = crate::plane_driver::route_input::LegacyLaneKeys::of(provider_cfg);
-        // The provider entry's lane-capability keys, carried unread in its table and resolved
-        // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
-        let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
         // The "supported:" roster is the planes' DECLARED provider dialects
         // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
         // literal and not a codec list: a build with the plane that declares them compiled out names
         // only what it actually serves, and a build with a new dialect names it. Empty roster is a
         // real answer.
         let providers = crate::plane_driver::dispatch::provider_dialects();
-        let Some(protocol) = providers
-            .iter()
-            .copied()
-            .find(|d| *d == provider_cfg.dialect())
-        else {
+        if !providers.iter().any(|d| *d == provider_cfg.dialect()) {
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.route,
                 provider_cfg.dialect(),
                 providers.join(", ")
             ));
-        };
-        // Reuse the single env read captured in the lanes_data loop above (same source of truth as
-        // the empty-key warning); no second read of the secret-bearing env var. This PLAINTEXT is
-        // carried into the neutral carrier because the plane cannot re-resolve a secret ref.
-        // OWED (row 7): the lane carrier takes the key as a plain `String`.
-        let api_key = provider_api_keys
-            .get(&ld.route)
-            .map(|k| k.expose(&crate::seal::lend()).clone())
-            .unwrap_or_default();
-        // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
-        // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
+        }
+        // The base URL, trailing-slash-trimmed once here, its userinfo stripped as 1.5.5 did
         // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
         // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
         let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
             provider_cfg.base_url.trim_end_matches('/'),
         )
         .into_owned();
-        // ...and the Basic that userinfo spelled, held opaque (see `UrlUserinfo`): the plane never
-        // reads it, and no kernel hop presents it (the kernel's outbound engine is deleted, u30; a
-        // member's userinfo reaches its attempts through its binding, `root::userinfo`).
-        // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
-        let url_userinfo = crate::bound_credential::UrlUserinfo::of(&provider_cfg.base_url);
-        let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
             model: ld.member.clone(),
             provider: ld.route.clone(),
-            protocol: protocol.to_string(),
             base_url,
-            url_userinfo,
-            path: provider_cfg.path.clone(),
-            path_base: provider_cfg.path_base.clone(),
-            upstream_model: facts.upstream_model.clone(),
-            api_key: busbar_contract::redacted::Secret::new(api_key),
-            auth_style: auth_style_of(provider_cfg.auth.as_ref()),
-            scope: provider_cfg.scope.clone(),
-            token_url,
-            token_userinfo,
-            subject: provider_cfg.subject.clone(),
-            error_map: provider_cfg
-                .error_map()
-                .map(|(code, class)| (code.to_string(), class.to_string()))
-                .collect(),
-            health: provider_cfg.health.as_ref().map(health_input_of),
-            allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
-            context_max: model_context_max.get(&ld.member).copied().flatten(),
-            lane_default_max_tokens: model_default_max_tokens.get(&ld.member).copied().flatten(),
-            attempt_timeout_ms: facts.attempt_timeout_ms,
-            reasoning: facts.reasoning,
-            prompt_caching: facts.prompt_caching,
-            lane_caps,
             max_concurrent: ld.max,
-            limited: ld.limited,
-            budget: ld.budget,
         });
     }
 
-    // Every pool, flattened into the NEUTRAL `PoolInput` carrier: member (weight/meta) projections
-    // plus the pool's neutral `failover`/`affinity`/`on_exhausted`/`upstream_credentials` config. The
-    // plane's `build_runtime` rebuilds the `WeightedLane`/`PoolRuntime` tables from these; the pool's
-    // ROUTING POLICY / gates / rewrites are NOT carried (they resolve core-side behind
-    // `App::resolve_pool_*` — their value is the core-owned `ResolvedPolicy`, which must not cross the
-    // downcast). The member `by_model` lookup stays here so an unknown-model pool member fails boot
-    // LOUD at the composition root (not deep inside the plane).
+    // Every pool, flattened into the NEUTRAL `PoolInput` carrier. The member `by_model` lookup stays
+    // here so an unknown-model pool member fails boot LOUD at the composition root.
     let mut pool_inputs: Vec<PoolInput> = Vec::with_capacity(cfg.pools.len());
     for (name, pool) in &cfg.pools {
         let mut members: Vec<PoolMemberInput> = Vec::with_capacity(pool.members.len());
@@ -1096,20 +961,8 @@ pub fn build_app_from_config(
                 ));
             };
             members.push(PoolMemberInput {
-                model: m.model.clone(),
                 lane_idx,
                 weight: m.weight, // from config PoolMember.weight (default 1)
-                reasoning: m.reasoning,
-                attempt_timeout_ms: m.attempt_timeout_ms,
-                tier: m.tier.clone(),
-                // The routing cost scalar derives from the member's MODEL's rate_card entry — cost
-                // lives on no pool member; resolved core-side (the plane has no rate card).
-                cost_per_mtok: cfg
-                    .rate_card
-                    .as_ref()
-                    .and_then(|card| card.get(&m.model))
-                    .map(crate::config::rate_entry_per_mtok),
-                tags: m.tags.clone(),
             });
         }
         if let Some(ref on_exc) = pool.on_exhausted {
@@ -1122,23 +975,11 @@ pub fn build_app_from_config(
         pool_inputs.push(PoolInput {
             name: name.clone(),
             members,
-            failover: pool.failover.as_ref().map(failover_input_of),
-            affinity: pool.affinity.as_ref().map(affinity_input_of),
             on_exhausted: pool
                 .on_exhausted
                 .as_ref()
                 .map(|o| on_exhausted_input_of(&o.to_runtime()))
                 .unwrap_or_default(),
-            upstream_credentials: pool.upstream_credentials,
-            // The pool's `breaker:` block, RESOLVED core-side into the runtime cfg
-            // (`store::breaker_cfg_to_runtime` does the config→runtime lowering + ADR-0002 trip
-            // defaults) then flattened to the neutral carrier; the plane's `build_runtime`
-            // reconstructs it via `BreakerCfg::from_breaker_input`.
-            breaker: pool
-                .breaker
-                .as_ref()
-                .map(crate::store::breaker_cfg_to_runtime)
-                .map(|b| b.to_breaker_input()),
         });
     }
 
@@ -1264,6 +1105,7 @@ pub fn build_app_from_config(
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
             &plugin_registry.secret_slots(&store_cfg.module),
+            &plugin_registry.reference_slots(&store_cfg.module),
             &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1428,6 +1270,7 @@ pub fn build_app_from_config(
             false => config::secret::resolve_settings(
                 &g.settings,
                 &plugin_registry.secret_slots(&g.module),
+                &plugin_registry.reference_slots(&g.module),
                 &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1889,41 +1732,7 @@ pub fn build_app_from_config(
         fallback_runtime_key,
         config_tables,
         store,
-        // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
-        // way the HTTP client pool and governance state are — a config swap must not un-trip a
-        // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
-        // store-or-RAM rule).
-        // "What is not configured must not be loaded": a config with NO plane content — no mounted
-        // plane slot, no registration in a declared section, no plane pool — gets the
-        // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
-        // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
-        // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
-        // including one that removes the last plane section); an inert prior is upgraded HERE — at
-        // apply, boot-only work — the first time plane content appears, losing nothing (an inert
-        // handle never recorded anything). Note the `runtime_slot_key(<its decl key>)` companion slot
-        // is inserted on every build with that container plane compiled in, so the gate reads the
-        // DECL keys (config-conditional), never it.
-        plane_breakers: {
-            let planes_configured = crate::plane_driver::registry::plane_decls()
-                .iter()
-                .any(|d| plane_slots.contains_key(d.key))
-                || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
-                || cfg.plane_pools.values().any(|p| !p.is_empty());
-            match prior {
-                Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
-                    Arc::clone(&p.plane_breakers)
-                }
-                // Built under THIS generation's limits (THE DESIGN §1: every plane honours the
-                // operator's `limits.*`); a reused prior takes them at the swap
-                // (`App::publish_limits`), never during the build.
-                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new_with_limits(
-                    cfg.limits.hard_down_cooldown_secs,
-                    cfg.limits.max_honored_retry_after_secs,
-                )),
-                _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
-            }
-        },
-        // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
+        // The neutral per-session substrate: PROCESS-LIFETIME, reused across an
         // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
         // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
         // memory-safety bound the substrate is built around.
@@ -2154,19 +1963,6 @@ pub fn build_app_from_config(
             rules: std::sync::Arc::clone(rules),
         },
     ))
-}
-
-/// What a `models:` entry states of its lane beyond the breaker's identity and limits, carried
-/// beside the breaker store's [`LaneData`] (which reads none of it) to the lane input.
-struct LaneModelFacts {
-    /// The wire model name the lane sends in place of its config name.
-    upstream_model: Option<String>,
-    /// The entry's per-attempt time-to-headers cap (ms).
-    attempt_timeout_ms: Option<u64>,
-    /// The entry's reasoning-capability flag.
-    reasoning: bool,
-    /// The entry's prompt-caching capability flag.
-    prompt_caching: bool,
 }
 
 #[cfg(test)]

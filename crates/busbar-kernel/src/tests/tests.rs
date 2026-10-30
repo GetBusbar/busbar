@@ -414,7 +414,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         axum::http::StatusCode::NOT_FOUND,
         // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
         // an OpenAI-inferred 404 carries `{"error":{"type":"not_found_error"}}`, not `not_found`.
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(
@@ -436,7 +436,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
         &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
-        crate::taxonomy::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert!(
@@ -2580,102 +2580,6 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 // tests pin the two things Step 2.3 actually promises — the slot mirrors the typed field's SAME
 // `Arc` when a plane is configured, and is absent exactly when the typed field is `None`.
 
-// ── PLANELESS CONFIGS GET AN INERT `PlaneBreakers` (idle-RSS doctrine) ───────────────────────
-//
-// "What is not configured must not be loaded": a config with no mounted plane, no `tools:`/
-// `agents:` registration and no plane pools must not pay for the 8 placeholder breaker cells
-// (a preallocated 1024-slot outcome window each, plus per-worker padded counter stripes —
-// ~130 KiB of idle RSS). These pin the four arms of the apply-time decision in
-// `build_app_from_config` and the inert handle's fail-closed guards.
-
-/// Boot with a planeless config yields the INERT handle; a second planeless apply REUSES it
-/// (same `Arc`); the first apply that carries plane content upgrades to a PROVISIONED handle at
-/// apply time; and a provisioned prior is reused even when the plane content disappears again
-/// (learned reliability survives every apply).
-#[test]
-fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
-    let planeless = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
-        ))
-    };
-    let build = |cfg, prior: Option<&crate::state::App>| {
-        crate::build_app_from_config(
-            cfg,
-            crate::config::PluginsCfg::default(),
-            None,
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-            (None, None),
-            prior,
-            &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-                as std::sync::Arc<dyn crate::appbuild::RootRules>),
-        )
-        .expect("boot must succeed")
-        .0
-    };
-
-    // Arm 1: no plane content, no prior → inert.
-    let app = build(planeless(), None);
-    assert!(
-        !app.plane_breakers.is_provisioned(),
-        "a planeless config must get the inert handle"
-    );
-    // The inert guards fail CLOSED (refuse / no-op), never index the empty lane table.
-    assert!(
-        matches!(
-            app.plane_breakers.try_admit("tool:x", 0),
-            Err(busbar_kernel::store::Unavailable::Shedding)
-        ),
-        "inert admit must refuse, not panic"
-    );
-    app.plane_breakers.record_success("tool:x", 0);
-    app.plane_breakers.release("tool:x", 0, Some(7));
-    assert_eq!(app.plane_breakers.retry_after_secs("tool:x", 0), 1);
-
-    // Arm 2: still planeless with an inert prior → the SAME handle (no re-allocation per apply).
-    let app2 = build(planeless(), Some(&app));
-    assert!(
-        std::sync::Arc::ptr_eq(&app.plane_breakers, &app2.plane_breakers),
-        "an inert prior must be reused across a planeless apply"
-    );
-
-    // Arm 3: plane content appears (a plane pool here — any of the plane signals works) →
-    // upgraded to a provisioned handle AT APPLY, not on a request path.
-    let mut with_pool = planeless();
-    with_pool
-        .plane_pools
-        .entry("search-section")
-        .or_default()
-        .insert(
-            "search".to_string(),
-            crate::config::pools::CandidatePoolCfg {
-                members: vec!["search-eu".to_string(), "search-us".to_string()],
-                ..Default::default()
-            },
-        );
-    let app3 = build(with_pool, Some(&app2));
-    assert!(
-        app3.plane_breakers.is_provisioned(),
-        "the first apply carrying plane content must provision the breakers"
-    );
-    assert!(
-        !std::sync::Arc::ptr_eq(&app2.plane_breakers, &app3.plane_breakers),
-        "the provisioned handle is a fresh build, not the inert prior"
-    );
-
-    // Arm 4: plane content removed again → the PROVISIONED prior is kept (learned reliability
-    // survives every apply; an apply never downgrades).
-    let app4 = build(planeless(), Some(&app3));
-    assert!(
-        std::sync::Arc::ptr_eq(&app3.plane_breakers, &app4.plane_breakers),
-        "a provisioned prior must survive an apply that removes the plane content"
-    );
-}
-
 // ── A GENERATION'S LIMITS GO LIVE WITH IT, AND REACH EVERY PLANE (Q128 p1#6, p12#4, p6#1) ──────
 
 /// Puts the process-wide limits back exactly as a test found them, failure path included.
@@ -2823,79 +2727,6 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     // The commit after the swap republishes the same values.
     unkept.keep();
     assert_eq!(live_limits(), after);
-}
-
-/// THE OPERATOR'S BREAKER LIMITS REACH EVERY PLANE'S CELLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any
-/// plugin gets all functionality ... A capability one plane has and a sibling plane lacks is a gap
-/// to close"). The first plane's store has always been built under `limits.hard_down_cooldown_secs`
-/// / `limits.max_honored_retry_after_secs`; the store every other plane's cells live in now is too,
-/// and — being process-lifetime — takes a subsequent generation's values at the swap that puts that
-/// generation live, not during its build. Under the default config nothing changes: the defaults
-/// the config layer resolves are the values the store was hard-wired to.
-///
-/// RED before the fix: the plane store was built with the hard-wired 1800s sticky cooldown and
-/// never refreshed, so the first hard-down below read ~1800, not <= 60.
-#[test]
-fn the_operator_breaker_limits_reach_every_planes_cells() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D):
-    // without it the fixture's provider is refused before any limit is read.
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
-    let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestorePublished(crate::config::limits::installed());
-    let hard_down = crate::breaker::CanonicalSignal {
-        class: crate::breaker::StatusClass::Auth,
-        provider_signal: None,
-        retry_after: None,
-    };
-    let cfg = |hard_down_cooldown_secs: u64| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_PLANE_LIMITS",
-        ));
-        // Any plane content provisions the plane store; a pool of opaque members is the smallest.
-        cfg.plane_pools.entry("p-section").or_default().insert(
-            "p".to_string(),
-            crate::config::pools::CandidatePoolCfg {
-                members: vec!["m1".to_string(), "m2".to_string()],
-                ..Default::default()
-            },
-        );
-        cfg.limits.hard_down_cooldown_secs = hard_down_cooldown_secs;
-        cfg
-    };
-
-    let (first, _) = build_with(cfg(60), None).expect("builds");
-    assert!(first.plane_breakers.is_provisioned());
-    first.plane_breakers.record_signal("k:a", 0, &hard_down);
-    let ra = first.plane_breakers.retry_after_secs("k:a", 0);
-    assert!(
-        (1..=60).contains(&ra),
-        "the operator's 60s sticky cooldown on a plane cell, got {ra}"
-    );
-
-    // A subsequent generation REUSES the process-lifetime store; its build does not touch the live cells.
-    let (second, _) = build_with(cfg(120), Some(&first)).expect("builds");
-    assert!(std::sync::Arc::ptr_eq(
-        &first.plane_breakers,
-        &second.plane_breakers
-    ));
-    second.plane_breakers.record_signal("k:b", 0, &hard_down);
-    let ra = second.plane_breakers.retry_after_secs("k:b", 0);
-    assert!(
-        (1..=60).contains(&ra),
-        "a generation not yet live must not change the live cells' limits, got {ra}"
-    );
-
-    // Swapped in: the next hard-down arms the new generation's value.
-    let handle = crate::state::AppHandle::new(std::sync::Arc::new(first));
-    handle.swap(std::sync::Arc::new(second));
-    let live = handle.load();
-    live.plane_breakers.record_signal("k:c", 0, &hard_down);
-    let ra = live.plane_breakers.retry_after_secs("k:c", 0);
-    assert!(
-        (61..=120).contains(&ra),
-        "the swapped-in generation's 120s sticky cooldown, got {ra}"
-    );
 }
 
 // ── THE REQUEST-PANIC BOUNDARY (1.6.0 item 148) ──────────────────────────────────────────────────
@@ -3143,44 +2974,6 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     assert_eq!(v["error"]["code"], "internal", "got {v}");
 }
 
-/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
-/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
-/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
-#[test]
-fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
-    use crate::ir::lane_caps::{
-        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
-    };
-    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
-    let provider = ProviderLaneCaps {
-        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
-        ..ProviderLaneCaps::default()
-    };
-    let rules = [
-        ModelCapabilities {
-            models: vec!["model-a*".to_string()],
-            native_structured_output: Some(true),
-            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
-            ..ModelCapabilities::default()
-        },
-        ModelCapabilities {
-            models: vec!["model-a-2*".to_string()],
-            native_structured_output: Some(false),
-            ..ModelCapabilities::default()
-        },
-    ];
-    assert_eq!(
-        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
-        LaneCaps::NONE
-    );
-    let other = resolve_lane_caps(provider, &rules, "model-b");
-    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
-    assert!(!other.native_structured_output);
-    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
-    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
-    assert!(first_match.native_structured_output);
-}
-
 /// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
 /// `tests/fixtures/frozen_customer_text.yaml`, the golden input DATA that holds the store spellings and
 /// credential kind operators see, byte-for-byte as 1.5.5 shipped them — so no test source spells them.
@@ -3283,7 +3076,7 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
             path,
             &format!("{path}?q=1"),
             axum::http::StatusCode::METHOD_NOT_ALLOWED,
-            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         )
     };

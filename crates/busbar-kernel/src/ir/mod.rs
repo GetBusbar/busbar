@@ -8,7 +8,5 @@
 //! contract's (`busbar_contract::ir`), and the kernel names it there. The concrete chat IR and the
 //! leaf-op IR are the llm plane's.
 
-/// A lane's declared request-shape capabilities, resolved from its provider entry and model rules
-/// (`resolve_lane_caps`) into the `LaneCaps` that `busbar_contract::ir::egress_prep` carries, named
-/// at `busbar_kernel::ir::lane_caps`, beside the parameter bag it fills.
+/// A provider entry's lane-capability config keys (`max_output_key`, `model_capabilities`).
 pub mod lane_caps;

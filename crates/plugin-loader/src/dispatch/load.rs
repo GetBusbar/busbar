@@ -1074,6 +1074,7 @@ pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
     unsafe { check_statement(&st) }
         .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
     kind_layout(door, &st)?;
+    reference_fields(&st)?;
     for i in 0..st.families_len {
         // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
         let fam: MetricFamily = unsafe { st.families.add(i).read_unaligned() };
@@ -1094,6 +1095,36 @@ pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
     }
     kind_tail(&st)?;
     Ok(st)
+}
+
+/// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS PATHS `st`'s extensions state
+/// (`EXT_REFERENCE_FIELDS`, lead ruling item 7a), judged at load for either origin: a value that is
+/// not a JSON list of paths is refused, and so is a path the Statement's `secret_refs` also names (a
+/// field is secret or reference-capable, never both).
+pub(crate) fn reference_fields(st: &Statement) -> Result<Vec<String>, LoadError> {
+    // SAFETY: a door's Statement is `'static` plugin data; its extensions blob holds its stated
+    // length (a NULL one reads as none).
+    let ext = unsafe { super::plugin::blob_bytes(st.extensions) };
+    let reference = busbar_contract::abi::mechanism::extensions::reference_fields(ext)
+        .map_err(LoadError::BadStatement)?;
+    if reference.is_empty() {
+        return Ok(reference);
+    }
+    let secret: Vec<String> = (0..st.secret_refs_len)
+        .filter_map(|i| {
+            // SAFETY: `check_statement` bounded the list; it holds `secret_refs_len` `'static`
+            // strings.
+            let key = unsafe { st.secret_refs.add(i).read_unaligned() };
+            super::plugin::str_bytes(key).map(|k| String::from_utf8_lossy(k).into_owned())
+        })
+        .collect();
+    match busbar_contract::secret_fields::contradiction(&secret, &reference) {
+        Some(path) => Err(LoadError::BadStatement(format!(
+            "extensions.reference_fields names '{path}', which secret_refs also names: a settings \
+             field is secret or reference-capable, never both"
+        ))),
+        None => Ok(reference),
+    }
 }
 
 /// THE KIND LAYOUT (status row 188): the door states the layout fingerprint of its kind's shapes as
