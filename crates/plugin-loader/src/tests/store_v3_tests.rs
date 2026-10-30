@@ -365,3 +365,29 @@ fn a_failed_op_reaches_the_record_store_as_the_stores_own_text() {
         "store error: the store is at its in-flight limit"
     );
 }
+
+/// A STORE'S `refresh` NEVER CLAIMS IT APPLIED SETTINGS (open160 ST15): the host never refreshes a
+/// store (a changed store section reaches it through a fresh instance, on a restart or a reload),
+/// so a `refresh` that answered READY would tell a caller the new settings were applied when they
+/// were not. The SDK's default refuses, naming the restart that applies them.
+#[test]
+fn a_store_refresh_refuses_naming_the_restart_that_applies_settings() {
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, RefreshIn};
+    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+    let s = open();
+    let mut i: RefreshIn = blank_in();
+    i.generation = 2;
+    let mut f = crate::dispatch::Frame::new(i, blank_out::<OutHead>());
+    let c = s.plugin().call(life::REFRESH, &mut f);
+    assert_ne!(
+        c.outcome,
+        Outcome::Ready,
+        "a store refresh claimed it applied new settings"
+    );
+    let text = String::from_utf8_lossy(&c.error.unwrap_or_default()).into_owned();
+    assert!(
+        text.contains("restart"),
+        "the refusal names the restart: {text:?}"
+    );
+}
