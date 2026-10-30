@@ -690,7 +690,7 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
     assert_eq!(two_stream.outcome, RawOutcome::of(Outcome::Ready));
     assert_eq!((opens(&one_table), opens(&two_table)), (1, 1));
 
-    forget(one.instance(), first);
+    drop(forget(one.instance(), first));
     let replayed = establish_on(&two, 0, "127.0.0.1:9", first);
     assert_eq!(
         (replayed.outcome, replayed.value),
@@ -1488,7 +1488,7 @@ fn a_replayed_handle_never_runs_its_service_twice() {
         "the replay answers the stored result, not a second head"
     );
     assert_eq!(replayed.len, h.len);
-    super::forget(q.instance(), T);
+    drop(super::forget(q.instance(), T));
     let fresh = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
     assert_eq!(
         fresh.outcome,
@@ -2271,7 +2271,7 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
         table.script.lock().unwrap().is_empty(),
         "every piece was read from the far end once"
     );
-    super::forget(p.instance(), T);
+    drop(super::forget(p.instance(), T));
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");

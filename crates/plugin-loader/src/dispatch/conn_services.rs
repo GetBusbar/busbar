@@ -446,6 +446,11 @@ impl ConnState {
     /// the op that asked for it ended without its re-call. The map is let go before anything is
     /// closed.
     fn drop_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) {
+        drop(self.take_dialling(table, gone));
+    }
+
+    /// [`ConnState::drop_dialling`]'s dials, taken out of the map and closed when the answer drops.
+    fn take_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
         let left: Vec<ConnId> = {
             let mut all = lock(&self.dialling);
             let keys: Vec<Ticket> = all.keys().filter(|k| gone(k)).copied().collect();
@@ -453,8 +458,19 @@ impl ConnState {
                 .filter_map(|k| all.remove(k).map(|(_, conn)| conn))
                 .collect()
         };
-        if let Some((id, table)) = table {
-            for conn in left {
+        Closes(table.filter(|_| !left.is_empty()).cloned(), left)
+    }
+}
+
+/// DIALS TO CLOSE ON A TABLE, closed when this drops. A close may cross into a transport door
+/// (THE DESIGN §11.13 M1), so a caller under a lock keeps this until it has let the lock go.
+#[must_use = "dropped, it closes its dials at once"]
+pub(crate) struct Closes(Option<ArmedConns>, Vec<ConnId>);
+
+impl Drop for Closes {
+    fn drop(&mut self) {
+        if let Some((id, table)) = &self.0 {
+            for conn in self.1.drain(..) {
                 let _ = table.close(*id, conn);
             }
         }
@@ -807,13 +823,14 @@ impl ConnState {
         a
     }
 
-    /// Forget every answer kept, and close on `table` every dial left in flight, on `ticket`; how
-    /// many answers there were.
-    fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> usize {
-        self.drop_dialling(table, |t| *t == ticket);
-        lock(&self.kept)
+    /// Forget every answer kept on `ticket`: how many there were, and every dial it left in flight,
+    /// to be closed on `table` once the caller holds no lock ([`Closes`]).
+    fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> (usize, Closes) {
+        let closes = self.take_dialling(table, |t| *t == ticket);
+        let kept = lock(&self.kept)
             .remove(&ticket)
-            .map_or(0, |issued| issued.len())
+            .map_or(0, |issued| issued.len());
+        (kept, closes)
     }
 }
 
@@ -837,8 +854,11 @@ fn replay_read(input: *const c_void, (piece, kept): &(ReplyPiece, Box<[u8]>)) {
 /// well as by ticket: tickets are minted per dispatcher, so another dispatcher's instance may hold
 /// an identical ticket, and its kept answers are never its neighbour's to drop (dropping them would
 /// make it run a stored establish or write a second time).
-pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
-    super::handle::supplier_of(id).map_or(0, |w| w.conn_state.forget(w.conn.get(), ticket))
+pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Closes) {
+    super::handle::supplier_of(id).map_or_else(
+        || (0, Closes(None, Vec::new())),
+        |w| w.conn_state.forget(w.conn.get(), ticket),
+    )
 }
 
 /// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.

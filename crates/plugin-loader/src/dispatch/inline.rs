@@ -175,7 +175,8 @@ impl InlineTickets {
             if let Some(store) = self.services.upgrade() {
                 store.forget(t);
             }
-            super::conn_services::forget(instance, t);
+            // No lock is held here: the dials it left in flight close at once.
+            drop(super::conn_services::forget(instance, t));
         }
     }
 
@@ -303,7 +304,8 @@ impl InlineTickets {
                 store.forget(dropped);
             }
             if let Some(instance) = instance {
-                super::conn_services::forget(instance, dropped);
+                // No lock is held here: the dials it left in flight close at once.
+                drop(super::conn_services::forget(instance, dropped));
             }
         }
         if next.is_some() {
