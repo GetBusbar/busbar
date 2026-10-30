@@ -938,8 +938,19 @@ impl Served {
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        // RED: the framer is not yet what serves the connection.
-        let _ = (&self.framer, &drain);
+        if let Some(framer) = self.framer {
+            let secured = self.security.is_some();
+            framed::serve(
+                io,
+                framer,
+                self.router,
+                secured,
+                body_read_timeout(),
+                drain.stop,
+            )
+            .await;
+            return;
+        }
         let service = BodyTimeoutService::new(
             self.router,
             body_read_timeout(),
