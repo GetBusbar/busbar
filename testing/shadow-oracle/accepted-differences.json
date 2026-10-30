@@ -5108,6 +5108,44 @@
           "candidate": ""
         }
       ]
+    },
+    {
+      "id": "R10-MINT-EXPIRY busbar mints its own ek_ ticket, expiring at the request time + 600 s",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served.",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 2)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-30",
+        "ruling": "OWNER SIGNED 2026-10-30, SIGN-ga-session.md row 2: streams|mint|client-secrets, /steps/0/body/json/expires_at_unix, before 1767225600 (the provider's fixed answer, relayed), after busbar's own ticket expiry = now + 600 s; measured on #1957 at dac4586105, plane-streaming 3071e3d8ff (R10)."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "streams|mint|client-secrets",
+        "pointer": "/steps/0/status",
+        "equals": 200
+      },
+      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-ga-session.md row 2), judged against golden/1.6.0-pre (no 1.5.5 cell moves). R10 (owner product row): busbar mints the ek_ ticket itself and dials no provider, so the caller's expires_at_unix is busbar's own ticket expiry, the request time + 600 s. Forgiven only as that relative instant: the recorded step 0's observed send time + 600 s, within 5 s; any other value, or no recorded clock, stays a divergence.",
+      "values": [
+        {
+          "pointer": "/body/json/steps/0/body/json/expires_at_unix",
+          "golden": 1767225600,
+          "candidate_request_time_plus": {
+            "step": 0,
+            "secs": 600,
+            "tolerance_secs": 5
+          }
+        }
+      ]
     }
   ]
 }
