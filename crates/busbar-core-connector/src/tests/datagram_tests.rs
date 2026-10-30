@@ -1687,3 +1687,59 @@ fn a_refused_framing_parked_in_finish_holds_no_other_caller_of_its_port() {
         },
     );
 }
+
+/// What a caller owes an association out on another caller's crossing does not wait for it: it is
+/// queued, and the holder runs it, in order, before putting the association back (one crossing
+/// per association at a time). Removed while out, the holder finishes it on the way back and runs
+/// nothing more on it.
+#[test]
+fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
+    let da = scripted(Knobs::default());
+    let port = Arc::new(super::PortAssociations::new());
+    let a = port.add(settled(da.clone())).unwrap();
+    let none = |_: SocketAddr, _: &[u8]| {};
+    let parked = |port: &Arc<super::PortAssociations>| {
+        let (entered, release) = park(&da, Parks::Emit);
+        let holder = {
+            let port = Arc::clone(port);
+            std::thread::spawn(move || {
+                let none = |_: SocketAddr, _: &[u8]| {};
+                port.emit(a, 1, b"first", true, false, Instant::now(), &none)
+            })
+        };
+        entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the parked crossing is in");
+        (holder, release)
+    };
+
+    let (holder, release) = parked(&port);
+    let before = lanes(&da).len();
+    let check = check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1);
+    let pa = p("203.0.113.1:1000");
+    assert!(
+        port.datagram(pa, &check, Instant::now(), &none).is_empty(),
+        "queued for the holder"
+    );
+    let (ok, ran) = port.emit(a, 1, b"second", true, false, Instant::now(), &none);
+    assert!(ok && ran.is_empty(), "queued for the holder");
+    let _ = release.send(());
+    let (ok, answered) = holder.join().unwrap();
+    assert!(ok);
+    assert!(matches!(answered.as_slice(), [(id, Ok(_))] if *id == a));
+    assert_eq!(
+        lanes(&da)[before..],
+        [0, LANE_CLEAR, 0],
+        "the parked emit, then what was owed, in order"
+    );
+    assert_eq!(port.len(), 1, "put back");
+
+    let (holder, release) = parked(&port);
+    let before = lanes(&da).len();
+    port.remove(a);
+    let _ = port.emit(a, 1, b"late", true, false, Instant::now(), &none);
+    let _ = release.send(());
+    let _ = holder.join().unwrap();
+    assert_eq!(lanes(&da).len(), before + 1, "only the parked call crossed");
+    assert!(port.is_empty(), "removed while out, finished by its holder");
+}

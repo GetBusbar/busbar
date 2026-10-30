@@ -103,7 +103,8 @@ pub struct ClaimDoor {
     port: ReadyPort,
     assocs: PortAssociations,
     legs: Mutex<HashMap<u64, Arc<CallerLeg>>>,
-    /// Woken when an association joins, so the port's task keeps its clock.
+    /// Woken when an association joins, or a writer ran what the port's task queued for an
+    /// association it had out, so the port's task keeps its clock.
     joined: Notify,
 }
 
@@ -220,6 +221,9 @@ impl ClaimDoor {
         let (ok, answered) = self
             .assocs
             .emit(id, stream, bytes, end, text, now, &|to, d| self.send(to, d));
+        if !answered.is_empty() {
+            self.joined.notify_one();
+        }
         self.answer(answered, now);
         ok
     }
@@ -338,7 +342,9 @@ impl CallerLeg {
 
 impl LegSink for CallerLeg {
     fn line(&self, across: Across, now: Instant) {
-        if let (Some(door), Some(id)) = (self.door.upgrade(), *lock(&self.id)) {
+        // The id is copied out first: no guard is live across the emit's crossing.
+        let id = *lock(&self.id);
+        if let (Some(door), Some(id)) = (self.door.upgrade(), id) {
             door.emit(
                 id,
                 across.stream,
