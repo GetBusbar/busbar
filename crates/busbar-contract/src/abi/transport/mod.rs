@@ -45,7 +45,10 @@
 //! buffer answers READY with [`YIELD_MORE`] and the host calls the same op again once it has
 //! drained them. That RE-CALL CARRIES NO NEW BYTES (an `ingest` or `emit` of length `0`): the bytes
 //! of the first call were taken whole, and the re-call answers only what the first could not hold,
-//! continuing where it stopped. A framer that answers any byte or piece twice is wrong.
+//! continuing where it stopped. A framer that answers any byte or piece twice is wrong. `encode` is
+//! the exception: it has no framing to continue, so it answers WHOLE into a `wire` the host sizes
+//! for the message, and an `encode` answered with [`YIELD_MORE`] is a FAULT (the host never sends
+//! a truncated message as the whole one).
 //!
 //! A FRAMER PENDS ONLY ON A TICKETED AUTH CALL. `begin`, `ingest` and `emit` are TICKETED ops (their
 //! contracts state `may_pend`, deadline class Stream): each runs on a ticket of its own and may call
@@ -343,7 +346,7 @@ pub mod slot {
     pub const INGEST: u32 = LIFECYCLE_SLOTS + 10;
     /// Framer: bytes for the far side, on one stream.
     pub const EMIT: u32 = LIFECYCLE_SLOTS + 11;
-    /// Framer: render an envelope (fields + body).
+    /// Framer: render an envelope (fields + body), WHOLE: an answer with [`YIELD_MORE`] is a FAULT.
     pub const ENCODE: u32 = LIFECYCLE_SLOTS + 12;
     /// Framer: render a refusal.
     pub const REFUSE: u32 = LIFECYCLE_SLOTS + 13;
@@ -394,7 +397,7 @@ pub struct Ops {
     /// [`slot::EMIT`]: in [`EmitIn`], out [`FramerOut`].
     pub emit: Option<Op>,
     /// [`slot::ENCODE`]: in [`EncodeIn`], out [`FramerOut`]; a refusal to render is FAILED with the
-    /// reason in `head.error`.
+    /// reason in `head.error`. It answers whole: READY with [`YIELD_MORE`] is a FAULT, never re-called.
     pub encode: Option<Op>,
     /// [`slot::REFUSE`]: in [`RefuseIn`], out [`FramerOut`].
     pub refuse: Option<Op>,
@@ -652,7 +655,8 @@ pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
-/// [`FramerYield::flags`]: a buffer filled; call the same op again once drained.
+/// [`FramerYield::flags`]: a buffer filled; call the same op again once drained. Never on `encode`
+/// (it answers whole; the host FAULTs it).
 pub const YIELD_MORE: u32 = 2;
 /// [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then.
 pub const YIELD_HAS_DEADLINE: u32 = 4;

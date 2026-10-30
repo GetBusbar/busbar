@@ -500,7 +500,7 @@ extern "C" {
 #define BB_TRANSPORT_SLOT_BEGIN UINT32_C(18) /* Framer: begin framing a connection. */
 #define BB_TRANSPORT_SLOT_INGEST UINT32_C(19) /* Framer: bytes from the far side. */
 #define BB_TRANSPORT_SLOT_EMIT UINT32_C(20) /* Framer: bytes for the far side, on one stream. */
-#define BB_TRANSPORT_SLOT_ENCODE UINT32_C(21) /* Framer: render an envelope (fields + body). */
+#define BB_TRANSPORT_SLOT_ENCODE UINT32_C(21) /* Framer: render an envelope (fields + body), WHOLE: an answer with [`YIELD_MORE`] is a FAULT. */
 #define BB_TRANSPORT_SLOT_REFUSE UINT32_C(22) /* Framer: render a refusal. */
 #define BB_TRANSPORT_SLOT_FINISH UINT32_C(23) /* Framer: close the framing. */
 #define BB_TRANSPORT_SLOT_DETACH UINT32_C(24) /* Framer: hand back the unconsumed bytes (an upgrade). */
@@ -573,7 +573,7 @@ extern "C" {
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
-#define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
+#define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. Never on `encode` */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
 #define BB_TRANSPORT_YIELD_STREAM_FULL UINT32_C(8) /* [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its */
 #define BB_TRANSPORT_METHOD_GET UINT32_C(1) /* `GET`. */
