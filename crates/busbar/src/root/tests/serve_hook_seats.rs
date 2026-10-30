@@ -1178,10 +1178,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         lanes: (0..opts.members.len())
             .map(|i| (format!("m{i}"), i))
             .collect(),
-        app: {
-            let app = Arc::clone(&app);
-            Arc::new(move || Arc::clone(&app))
-        },
+        app: crate::root::model_egress::LiveApp::fixed(Arc::clone(&app)),
     };
     let clock: Arc<dyn busbar_kernel_egress::ports::Clock> = match opts.clock {
         Some(clock) => Arc::clone(clock),
@@ -1245,10 +1242,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             let models = crate::root::model_egress::ModelServing {
                 pools: model_pools.clone(),
                 lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
-                app: {
-                    let app = Arc::clone(&app);
-                    Arc::new(move || Arc::clone(&app))
-                },
+                app: crate::root::model_egress::LiveApp::fixed(Arc::clone(&app)),
             };
             let reach = DoorReach {
                 providers: &providers,
