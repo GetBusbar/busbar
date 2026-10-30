@@ -48,7 +48,7 @@ impl SafeSlot for Flush {
         _: Lent<'_, ConnIn>,
         mut out: Out<'_, OutHead>,
     ) -> Outcome {
-        match carried(&i, "flush") {
+        match crate::carried!(i, "flush") {
             Ok(_) => Outcome::Ready,
             Err(r) => out.fail(r),
         }
