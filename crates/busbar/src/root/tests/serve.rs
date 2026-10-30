@@ -124,7 +124,7 @@ impl HostServices for Judges {
 }
 
 fn judged(s: &LateServices) -> Stored {
-    match s.dest_judge("https://example.test/", 0, 0, None) {
+    match s.served().dest_judge("https://example.test/", 0, 0, None) {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("the late services never pend"),
     }
@@ -134,8 +134,8 @@ fn judged(s: &LateServices) -> Stored {
 fn a_service_called_before_the_install_answers_refused_and_never_panics() {
     let late = LateServices::new();
     assert_eq!(judged(&late), Stored::refused(NOT_INSTALLED));
-    let a = late.now();
-    let b = late.now();
+    let a = late.served().now();
+    let b = late.served().now();
     assert!(a.wall_ns > 1_600_000_000_000_000_000, "the system clock");
     assert!(b.mono_ns >= a.mono_ns);
 }
@@ -149,7 +149,7 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
         Stored::ready(1),
         "the installed services answer"
     );
-    assert_eq!(late.now().wall_ns, 7);
+    assert_eq!(late.served().now().wall_ns, 7);
     assert_eq!(
         late.install(Arc::new(Judges)),
         Err(AlreadyInstalled),
@@ -159,7 +159,8 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
 }
 
 /// Every caller-scoped service's answer, in the order [`Judges`] numbers them.
-fn every_service(s: &LateServices) -> Vec<Stored> {
+fn every_service(late: &LateServices) -> Vec<Stored> {
+    let s = late.served();
     let caller = Caller {
         instance: Arc::from("the-instance"),
         plugin: Arc::from("the-plugin"),
@@ -229,7 +230,8 @@ fn dest_judge_asks_the_deployments_one_guard() {
     let late = LateServices::new();
     late.install(Arc::new(kernel(&["metadata.corp.example"], false)))
         .expect("the install");
-    let judged = |dest| verdict(late.as_ref(), dest, DEFAULT_EGRESS_CLASS).value;
+    let served = late.served();
+    let judged = |dest| verdict(&*served, dest, DEFAULT_EGRESS_CLASS).value;
     assert_eq!(
         judged("https://169.254.169.254/latest/meta-data/"),
         svc::DEST_METADATA
@@ -242,7 +244,7 @@ fn dest_judge_asks_the_deployments_one_guard() {
     assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
     assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
     assert_eq!(
-        verdict(late.as_ref(), "https://93.184.216.34/", 9).value,
+        verdict(&*served, "https://93.184.216.34/", 9).value,
         svc::DEST_NO_HOST,
         "a class the guard does not know dials nothing"
     );
@@ -591,7 +593,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     };
     let sight = |hash| {
         let (tx, rx) = std::sync::mpsc::channel();
-        match late.trust_sight(
+        match late.served().trust_sight(
             &caller,
             "peer",
             hash,
@@ -606,7 +608,10 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
             ),
         }
     };
-    assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
+    assert_eq!(
+        late.served().sign(&caller, b"data").outcome,
+        Outcome::Refused
+    );
     // A declared fingerprint is pending until the operator approves it (coordinator 2026-10-07,
     // #555): nothing drifts before the approval.
     assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
@@ -622,7 +627,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         &demotions,
         &[&plane("owner", &[KIND_DEMOTION])],
     );
-    let signed = late.sign(&caller, b"data");
+    let signed = late.served().sign(&caller, b"data");
     assert_eq!(
         (signed.outcome, signed.bytes),
         (Outcome::Ready, b"k:kiddata".to_vec())

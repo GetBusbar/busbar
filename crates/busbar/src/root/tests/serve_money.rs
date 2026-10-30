@@ -178,7 +178,7 @@ fn governed_full(
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+        services.served(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
@@ -814,7 +814,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+        services.served(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
