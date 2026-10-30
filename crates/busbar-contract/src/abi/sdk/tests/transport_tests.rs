@@ -151,6 +151,31 @@ fn a_key_a_transport_does_not_read_is_refused_naming_it() {
     assert_eq!(refused(b"[]", &reads), "settings: must be a JSON object");
 }
 
+/// A value its setting's declared kind refuses is refused naming the key: a count that is zero or
+/// not a count, a flag that is not `true`/`false`, text that is not a string.
+#[test]
+fn a_value_its_declared_kind_refuses_is_refused_naming_it() {
+    let reads = ["limits.request_body_max_bytes", "h2", "name"];
+    let count = "settings: limits.request_body_max_bytes must be a count above 0";
+    for (bytes, words) in [
+        (r#"{"limits.request_body_max_bytes":0}"#, count),
+        (r#"{"limits.request_body_max_bytes":"5"}"#, count),
+        (r#"{"limits.request_body_max_bytes":-1}"#, count),
+        (r#"{"h2":"yes"}"#, "settings: h2 must be true or false"),
+        (r#"{"name":5}"#, "settings: name must be text"),
+    ] {
+        let r = settings_reading(bytes.as_bytes(), &reads).expect_err(bytes);
+        assert_eq!(r.outcome(), Outcome::Failed, "{bytes}");
+        assert_eq!(r.text(), Some(words), "{bytes}");
+    }
+    let object = settings_reading(
+        br#"{"limits.request_body_max_bytes":5,"h2":true,"name":"x"}"#,
+        &reads,
+    )
+    .expect("every value its kind");
+    assert_eq!(object.len(), 3);
+}
+
 /// The declared default is the host's bound, in decimal.
 #[test]
 fn the_declared_body_bound_is_the_hosts() {
