@@ -1099,7 +1099,11 @@ hook_op!(
 hook_op!(
     /// `status`: the 1.5.5 envelope, held under a lease.
     Status, InHead, StatusOut, |held, _i, _input, out| {
-        let bytes = serde_json::to_vec(&held.life().hook().status()).unwrap_or_default();
+        // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
+        let bytes = match serde_json::to_vec(&held.life().hook().status()) {
+            Ok(bytes) => bytes,
+            Err(e) => return out.fail(Refusal::failed(format!("status: {e}"))),
+        };
         let o = out.raw();
         o.status = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
         Outcome::Ready
@@ -1109,7 +1113,11 @@ hook_op!(
 hook_op!(
     /// `describe`: the 1.5.5 envelope, held under a lease.
     Describe, InHead, DescribeOut, |held, _i, _input, out| {
-        let bytes = serde_json::to_vec(&held.life().hook().describe()).unwrap_or_default();
+        // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
+        let bytes = match serde_json::to_vec(&held.life().hook().describe()) {
+            Ok(bytes) => bytes,
+            Err(e) => return out.fail(Refusal::failed(format!("describe: {e}"))),
+        };
         let o = out.raw();
         o.describe = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
         Outcome::Ready
