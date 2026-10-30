@@ -1667,6 +1667,49 @@ fn refusals_over_the_hold_are_counted_and_sealed() {
     assert_eq!(over, Some(3));
 }
 
+/// THE DESIGN §11.13 M1 ("no plugin code runs under a host lock"): sealing a held refusal crosses
+/// the audit store, which is plugin code. A refusal raised while the open is parked in that crossing
+/// is not parked behind the hold's lock: it returns at once, and is still sealed after everything
+/// held, in raise order.
+#[test]
+fn a_refusal_raised_while_the_open_is_parked_in_the_store_is_not_held_behind_it() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let hold = RefusalHold::new();
+    hold.raise(held(1), |_| panic!("the chain is not open"));
+    let sealed = Mutex::new(Vec::new());
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let (done_tx, done) = mpsc::channel();
+    let (hold, sealed) = (&hold, &sealed);
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            hold.open(
+                |r| {
+                    if r.ts == 1 {
+                        entered_tx.send(()).unwrap();
+                        let _ = release_rx.recv_timeout(Duration::from_secs(30));
+                    }
+                    sealed.lock().unwrap().push(r.clone());
+                },
+                |_| panic!("nothing was over the bound"),
+            );
+        });
+        entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the open reached the store");
+        s.spawn(move || {
+            hold.raise(held(2), |r| sealed.lock().unwrap().push(r.clone()));
+            let _ = done_tx.send(());
+        });
+        let raised = done.recv_timeout(Duration::from_secs(5));
+        release.send(()).unwrap();
+        raised.expect("a refusal raised while the open was in the store waited on the hold's lock");
+    });
+    assert_eq!(*sealed.lock().unwrap(), vec![held(1), held(2)]);
+}
+
 /// Every part of a refusal's resource is clamped to host words: a `|`, a newline or a long run of
 /// plugin bytes cannot move a field boundary or carry text onto the chain.
 #[test]
