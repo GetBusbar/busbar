@@ -14,7 +14,7 @@
 //!
 //! What it copies is the shipped ranking door (the ranking hook row the root's `Cargo.toml`
 //! pins): the same four `MARK_WORD_HOOK` words, the same tail and `max_inflight`, the same `open`
-//! refusals (in its own name). Its ranking rules are 1.5.5's (hook behaviour is frozen at 1.5.5):
+//! refusals (bare: the host names the plugin in front of them). Its ranking rules are 1.5.5's (hook behaviour is frozen at 1.5.5):
 //! each rule cites the v1.5.5 line it copies; its `NaN` rule is the door's (the coordinator's
 //! ruling of 2026-10-18, a total order: a `NaN` sorts after every number); and each literal names
 //! the door item it copies. Its Statement name is its OWN, never the plugin's: the kernel spells no
@@ -33,7 +33,7 @@ use busbar_contract::abi::sdk::hook::{
     statement_with_tail, tail, Decoded, DecodedCandidate, Hook, HookOpen, Verdict,
 };
 
-/// The double's own Statement name, and the prefix of its refusals: not the plugin's (C1).
+/// The double's own Statement name: not the plugin's (C1).
 pub const NAME: &str = "strategy-double";
 
 /// The strategy words, in order (`hook-ranking/src/lib.rs`, `WORDS`).
@@ -187,8 +187,8 @@ impl Hook for Ranking {
 }
 
 /// How the double opens (`hook-ranking/src/door.rs`, `HookOpen::open`): settings must carry
-/// `policy`, one of [`WORDS`]. Each refusal is the door's, prefixed with [`NAME`] where the door
-/// prefixes its own.
+/// `policy`, one of [`WORDS`]. Each refusal is the door's bare words: the host names the plugin in
+/// front of them (`plugin '<name>' open failed: ...`), so neither spells its own name.
 #[derive(Debug)]
 pub struct Open;
 
@@ -200,16 +200,16 @@ impl HookOpen for Open {
 
 /// The strategy `settings` names, parsed as the door parses it.
 fn strategy_of(settings: &str) -> Result<Strategy, String> {
-    // `hook-ranking/src/door.rs`, `open`: "<door>: the settings are not JSON: {e}".
+    // `hook-ranking/src/door.rs`, `open`: "the settings are not JSON: {e}".
     let v: serde_json::Value = serde_json::from_str(settings)
-        .map_err(|e| format!("{NAME}: the settings are not JSON: {e}"))?;
-    // `hook-ranking/src/door.rs`, `open`: "<door>: settings.policy is required".
+        .map_err(|e| format!("the settings are not JSON: {e}"))?;
+    // `hook-ranking/src/door.rs`, `open`: "settings.policy is required".
     let word = v
         .get("policy")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("{NAME}: settings.policy is required"))?;
-    // `hook-ranking/src/door.rs`, `open`: "<door>: no strategy '{word}' (one of {WORDS:?})".
-    Strategy::of(word).ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))
+        .ok_or_else(|| "settings.policy is required".to_string())?;
+    // `hook-ranking/src/door.rs`, `open`: "no strategy '{word}' (one of {WORDS:?})".
+    Strategy::of(word).ok_or_else(|| format!("no strategy '{word}' (one of {WORDS:?})"))
 }
 
 busbar_contract::hook_door! {
