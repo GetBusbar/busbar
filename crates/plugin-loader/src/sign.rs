@@ -28,6 +28,9 @@
 //!   First-party anti-downgrade is PER-PLUGIN: rollback pins (`first_party_floors`) and
 //!   `plugins.min_versions` floors, both hard rejects. There is no automatic binary-version
 //!   floor — first-party plugins version on independent lines (1.0.x/2.x under a 1.5.0 engine).
+//! - **Retired**: a first-party manifest signed by a key on [`RETIRED_RELEASE_KEYS`] is REFUSED
+//!   (`retired_key`) even when the build embeds that key, unless the operator names the key under
+//!   `plugins.trust.publishers`; then it loads as an explicit opt-in the boot WARNs about.
 //! - **Third-party**: `plugins.trust.publishers` allowlists third-party signing keys. A valid
 //!   signature from an allowlisted publisher is TRUSTED. `plugins.min_versions` pins per-plugin
 //!   anti-downgrade floors (first- and third-party alike).
@@ -82,19 +85,53 @@ pub const HOST_IDENTITY: &str = "busbar";
 /// builds): first-party verification is then impossible and a `publisher: busbar` plugin is treated
 /// as unsigned (loadable only under `allow_unsigned`).
 ///
-/// THE RELEASE KEY. The public half is the `BUSBAR_RELEASE_PUBKEY` repository variable, committed
-/// for local builds in `.cargo/config.toml` `[env]`; the private half lives only in the
-/// `BUSBAR_SIGN_KEY` CI secret and never in this tree. No key is written in this file. Three guards
-/// hold that: the removed `build-artifact.yml` sets the variable on the release build step,
+/// THE RELEASE KEY. The public half is the `BUSBAR_RELEASE_PUBKEY` build input; no private half is
+/// ever in this tree. `.cargo/config.toml` commits no key while the 1.6.0 key ceremony is pending
+/// (the retired 1.5 key, [`RETIRED_RELEASE_KEYS`], is not trusted), so a local build embeds none.
 /// `scripts/release-key-guard.sh` refuses to build a release binary without a well-formed 64-hex
 /// key, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row when the published
-/// artifact does not embed it.
+/// artifact does not embed it. A build that embeds a RETIRED key still refuses what it signed
+/// ([`evaluate`]).
 /// (Owner ruling 2026-09-30, N3 / Q90: a statement of the contract, not a deferral.)
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
     let hex_key: &str = option_env!("BUSBAR_RELEASE_PUBKEY")?;
     // A malformed build-time key is a build/packaging bug; fail closed to "no first-party key"
     // rather than panic in the engine (the plugin then simply cannot verify as first-party).
     public_key_from_hex(hex_key).ok()
+}
+
+/// THE RETIRED RELEASE KEYS: `(hex ed25519 public key, why it is retired)`. A first-party manifest
+/// whose signature verifies against one of these is REFUSED ([`RejectKind::RetiredKey`]), whatever
+/// key the build embeds (a build whose `BUSBAR_RELEASE_PUBKEY` still names a retired key trusts
+/// nothing it signed), unless the operator names the key under `plugins.trust.publishers`. Compiled
+/// in, so no configuration can be missing it.
+pub const RETIRED_RELEASE_KEYS: &[(&str, &str)] = &[(
+    "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7",
+    "the busbar 1.5 CI release key, retired 2026-10-28: its private seed was held in a GitHub \
+     organisation secret every repository could read, and a copy was found on disk, so its \
+     signature no longer proves busbar made the plugin",
+)];
+
+/// The retired key (`hex`, `why`) of `list` whose signature `manifest` carries, judged over the
+/// canonical manifest bytes alone: WHO signed decides the refusal, before the library binding is
+/// judged.
+fn retired_signer<'a>(
+    manifest: &Manifest,
+    list: &[(&'a str, &'a str)],
+) -> Option<(VerifyingKey, &'a str, &'a str)> {
+    let sig: [u8; 64] = hex::decode(manifest.signature.trim())
+        .ok()?
+        .as_slice()
+        .try_into()
+        .ok()?;
+    let sig = Signature::from_bytes(&sig);
+    let canonical = canonical_manifest_bytes(manifest);
+    list.iter().find_map(|&(hex_key, why)| {
+        let key = public_key_from_hex(hex_key).ok()?;
+        key.verify_strict(&canonical, &sig)
+            .is_ok()
+            .then_some((key, hex_key, why))
+    })
 }
 
 /// The signed manifest that travels inside every plugin tarball. Every field except `signature` is
@@ -489,6 +526,9 @@ pub enum AllowReason {
     /// The artifact is VALIDLY signed but by a publisher NOT in the allowlist, and
     /// `allow_third_party` is set.
     ThirdParty,
+    /// The artifact is a first-party manifest signed by a RETIRED release key
+    /// ([`RETIRED_RELEASE_KEYS`]) that the operator names under `plugins.trust.publishers`.
+    RetiredKey,
 }
 
 /// The resolved trust policy: the embedded first-party key, the allowlisted third-party publisher
@@ -710,6 +750,29 @@ pub enum RejectKind {
     /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
     /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
     EgressGrant,
+    /// An older build of a plugin whose newer build is in the same directory (the registry's
+    /// supersede pass): not loaded, the newer build is.
+    Superseded,
+    /// A first-party manifest signed by a RETIRED release key ([`RETIRED_RELEASE_KEYS`]) the
+    /// operator does not name under `plugins.trust.publishers`, and `allow_unsigned` is off.
+    RetiredKey,
+}
+
+impl RejectKind {
+    /// The category as one host word: what the audit chain records for a skipped plugin.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::AntiDowngrade => "anti_downgrade",
+            Self::UntrustedFloored => "untrusted_floored",
+            Self::Unsigned => "unsigned",
+            Self::Tampered => "tampered",
+            Self::UnknownPublisher => "unknown_publisher",
+            Self::EgressGrant => "egress_grant",
+            Self::Superseded => "superseded",
+            Self::RetiredKey => "retired_key",
+        }
+    }
 }
 
 /// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
@@ -1081,6 +1144,14 @@ enum Untrusted {
     /// be verified here (no key held), so it is a third-party artifact. Opt-in is
     /// `allow_third_party`.
     ThirdParty { publisher: String },
+    /// A first-party manifest signed by a RETIRED release key: `key` (hex), `why` it is retired,
+    /// and the `plugins.trust.publishers` entry naming it when the operator trusts it explicitly
+    /// (its signature then also bound to the library).
+    Retired {
+        key: String,
+        why: String,
+        trusted_as: Option<String>,
+    },
 }
 
 /// PHASE 2 - TRUST evaluation of a structurally-valid manifest + its exact library bytes against
@@ -1109,14 +1180,53 @@ pub fn evaluate(
     manifest: &Manifest,
     policy: &TrustPolicy,
 ) -> Result<Verdict, Rejected> {
+    evaluate_against(bytes, manifest, policy, RETIRED_RELEASE_KEYS)
+}
+
+/// [`evaluate`] against the retired release keys `retired` (production: [`RETIRED_RELEASE_KEYS`]).
+fn evaluate_against(
+    bytes: &[u8],
+    manifest: &Manifest,
+    policy: &TrustPolicy,
+    retired: &[(&str, &str)],
+) -> Result<Verdict, Rejected> {
     // Trust determination first: which key (if any) proves this manifest? A manifest with NO
     // signature at all is UNSIGNED regardless of its (unverifiable, self-declared) publisher -
     // only a PRESENT signature from a non-allowlisted publisher counts as third-party.
+    let by_retired = (manifest.publisher == FIRST_PARTY_PUBLISHER)
+        .then(|| retired_signer(manifest, retired))
+        .flatten();
     let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.signature.trim().is_empty() {
         Err(Untrusted::Unsigned {
             reason: "manifest carries no signature".to_string(),
             tampered: false,
         })
+    } else if let Some((key, hex_key, why)) = by_retired {
+        // A RETIRED release key signed this first-party manifest. It is judged before the embedded
+        // key, so a build that still embeds a retired key trusts nothing it signed. The operator's
+        // explicit trust is a `plugins.trust.publishers` entry naming the key; the signature must
+        // then also bind this library, exactly as every trusted signature must.
+        match policy.publishers.iter().find(|(_, k)| **k == key) {
+            None => Err(Untrusted::Retired {
+                key: hex_key.to_string(),
+                why: why.to_string(),
+                trusted_as: None,
+            }),
+            Some((name, _)) => match signature_ok(manifest, bytes, &key) {
+                Ok(()) => Err(Untrusted::Retired {
+                    key: hex_key.to_string(),
+                    why: why.to_string(),
+                    trusted_as: Some(name.clone()),
+                }),
+                Err(reason) => Err(Untrusted::Unsigned {
+                    reason: format!(
+                        "first-party signature by the retired release key {hex_key} failed: \
+                         {reason}"
+                    ),
+                    tampered: true,
+                }),
+            },
+        }
     } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
         match &policy.first_party_key {
             None => Err(Untrusted::Unsigned {
@@ -1275,6 +1385,46 @@ pub fn evaluate(
                         "publisher '{publisher}' is not in the allowlist; refusing to load a \
                          third-party plugin. Add the publisher to plugins.trust.publishers, or set \
                          plugins.trust.allow_third_party=true to permit third-party plugins."
+                    ),
+                ))
+            }
+        }
+        // The operator names the retired key: it loads, as an explicit opt-in the boot WARNs about
+        // (`PLUGIN_LOADED_UNVERIFIED`), never as a current first-party plugin.
+        Err(Untrusted::Retired {
+            key,
+            why,
+            trusted_as: Some(name),
+        }) => Ok(Verdict::Allowed {
+            reason: format!(
+                "first-party manifest signed by the RETIRED busbar release key {key} ({why}); \
+                 loaded only because plugins.trust.publishers['{name}'] names that key. Replace \
+                 the plugin with a release signed by a current key, then remove the entry."
+            ),
+            allow: AllowReason::RetiredKey,
+        }),
+        Err(Untrusted::Retired {
+            key,
+            why,
+            trusted_as: None,
+        }) => {
+            let reason = format!(
+                "first-party manifest signed by the RETIRED busbar release key {key} ({why})"
+            );
+            if policy.allow_unsigned {
+                // allow_unsigned admits code no current key vouches for: this is such code.
+                Ok(Verdict::Allowed {
+                    reason,
+                    allow: AllowReason::Unsigned,
+                })
+            } else {
+                Err(Rejected::new(
+                    RejectKind::RetiredKey,
+                    format!(
+                        "{reason}; refusing to load it. Install the plugin's release signed by a \
+                         current busbar key. To keep running this exact plugin, trust the retired \
+                         key explicitly: add it under plugins.trust.publishers (any name but \
+                         '{FIRST_PARTY_PUBLISHER}', public_key: {key})."
                     ),
                 ))
             }

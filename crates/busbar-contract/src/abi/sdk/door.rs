@@ -632,6 +632,7 @@ pub const unsafe fn door<T: KindOps>(
             statement,
             ops: ptr::from_ref(ops).cast::<OpsHead>(),
             ready,
+            layout: T::KIND.layout_fingerprint(),
         })
     }
 }
@@ -656,6 +657,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     };
 /// }
 /// ```
@@ -674,6 +676,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     });
 /// }
 /// ```
@@ -691,6 +694,7 @@ pub const unsafe fn door<T: KindOps>(
 ///             statement: core::ptr::null(),
 ///             ops: core::ptr::null(),
 ///             ready: None,
+///             layout: 0,
 ///         })
 ///     };
 /// }
@@ -1064,6 +1068,10 @@ impl MacroDoor {
 ///   (`abi::mechanism::lifecycle`, READY): the host calls [`Life::ready`](crate::abi::sdk::life::Life::ready)
 ///   after `open`, on a real ticket, before any listener binds, and boot awaits it. Without
 ///   `ready` the door states none and the plugin is opened exactly as before.
+/// * `lifecycle: plane_life(P)` — instead of the nine: a plane's lifecycle slots over its
+///   [`PlaneLife`](crate::abi::sdk::plane_life::PlaneLife) `P` (`abi::sdk::plane_life`), every one
+///   a [`Safe`](crate::abi::sdk::safe::Safe) slot over `P`. It takes `ready:`, `migrate:` and
+///   `kind_ops:` as the forms above do.
 /// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a raw [`Slot`] or a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) one reading `ReadyIn` and writing `OutHead`.
 /// * `migrate: S` (optional, after `ready`) — the door's `migrate` (`abi::mechanism::lifecycle`,
@@ -1269,6 +1277,7 @@ macro_rules! plugin_door {
         statement: $statement:expr,
         lifecycle: plane_life($plane:ty)
         $(, ready: $ready:ty)?
+        $(, migrate: $migrate:ty)?
         $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
         $(,)?
     ) => {
@@ -1287,6 +1296,7 @@ macro_rules! plugin_door {
                 close: $crate::abi::sdk::Safe<$crate::abi::sdk::plane_life::Close<$plane>>,
             }
             $(, ready: $ready)?
+            $(, migrate: $migrate)?
             $(, kind_ops: { $($field : $slot),* })?
         }
     };

@@ -38,8 +38,8 @@ use busbar_contract::abi::plane::{
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
     PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_RETRY,
+    REFUSAL_ARRIVE, REFUSED_AFTER_ADMISSION, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE_LOCAL,
+    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
@@ -287,6 +287,10 @@ const NOT_FOR_THE_CALLER: &[u8] = b"not-for-the-caller";
 
 /// The words the double's `/refuse-words` arrival states for its refusal.
 const REFUSAL_WORDS: &[u8] = b"the body is not a document";
+
+/// The plane's own code and status for the double's refusals about an entry (`/refuse-entry`).
+const ENTRY_REFUSED: u32 = 11;
+const ENTRY_REFUSED_STATUS: u32 = 409;
 
 unsafe fn text<'a>(s: AbiStr) -> &'a [u8] {
     if s.ptr.is_null() || s.len == 0 {
@@ -769,6 +773,21 @@ impl PlaneCalls for Double {
                     out.head.error = AbiStr::over(REFUSAL_WORDS);
                     return Outcome::Refused;
                 }
+                b"/refuse-entry" | b"/refuse-entry-after" => {
+                    // A REFUSAL ABOUT AN ENTRY (rule 6): it names the pool it concerns, with its
+                    // operation class and dialect, and wears the plane's own code and status;
+                    // `-after` states it rendered after that entry's admission.
+                    out.refusal = ENTRY_REFUSED;
+                    out.refusal_status = ENTRY_REFUSED_STATUS;
+                    out.route = ROUTE_POOL;
+                    out.pool = AbiStr::over(b"entry-pool");
+                    out.op_class = 0;
+                    out.dialect = 0;
+                    if target.as_slice() == b"/refuse-entry-after" {
+                        out.refusal_flags = REFUSED_AFTER_ADMISSION;
+                    }
+                    return Outcome::Refused;
+                }
                 b"/scope-local" | b"/scope-local-far" => {
                     // A unit the plane answers itself at its scope's one entry (ROUTE_SCOPE_LOCAL).
                     out.route = ROUTE_SCOPE_LOCAL;
@@ -957,7 +976,10 @@ impl PlaneCalls for Double {
     /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
     /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
     /// applied by replacing the turns with its messages' `role:content`, unless the target is
-    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project, and
+    /// `/no-rewrite` (a rewrite the plane cannot read) or `/rewrite-not-applicable` (an operation
+    /// with no conversation to frame a rewrite into, which answers READY with no rewritten body and
+    /// `PROJECT_REWRITE_NOT_APPLICABLE` to a project with a rewrite); `/unprojectable` refuses to
+    /// project, and
     /// `/refuses-rewrite` refuses to project with a rewrite (one naming a model other than the
     /// routed one, say) while it projects the caller's own request; `/faults-rewrite` answers FAULT
     /// to a project with a rewrite (a redaction the plane cannot apply), and `/unparseable` to every
@@ -1016,7 +1038,8 @@ impl PlaneCalls for Double {
         if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {
             return Outcome::Refused;
         }
-        let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite")
+        let not_applicable = target == b"/rewrite-not-applicable" && !rewrite.is_empty();
+        let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite" && !not_applicable)
             .then(|| serde_json::from_slice::<serde_json::Value>(&rewrite).ok())
             .flatten()
             .and_then(|v| v.get("messages").and_then(|m| m.as_array()).cloned())
@@ -1099,7 +1122,11 @@ impl PlaneCalls for Double {
                 message_count: turns.len() as u64,
                 total_chars: turns.iter().map(|(_, t)| t.len() as u64).sum(),
                 max_tokens: 0,
-                flags: 0,
+                flags: if not_applicable {
+                    busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+                } else {
+                    0
+                },
                 signals: input.signals_buf.cast_const(),
                 signals_len: 0,
                 session: Blob {
@@ -1338,18 +1365,6 @@ impl ServeInFlight for NoServe {
 struct SendOut(OnPieceOut);
 // SAFETY: plain data the double wrote; its pointers are never dereferenced.
 unsafe impl Send for SendOut {}
-
-/// The flush epoch is one counter however many handles hold it: the flush tick bumps it, and every
-/// money seam reading a clone sees the same epoch.
-#[test]
-fn the_flush_epoch_is_one_counter_across_its_clones() {
-    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
-    let reader = epoch.clone();
-    assert_eq!(reader.now(), 0);
-    epoch.bump();
-    epoch.bump();
-    assert_eq!(reader.now(), 2, "a clone reads the bumps of the tick");
-}
 
 // ── record writes ────────────────────────────────────────────────────────────────────────────────
 
@@ -1738,6 +1753,8 @@ fn declaring() -> Double {
                 mechanisms: &[],
             }],
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
         ..Double::default()
     }
@@ -1778,10 +1795,13 @@ fn a_built_driver_admits_its_instance_to_the_host_services() {
     );
 }
 
-/// THE KERNEL TICK MARKS DUE BEFORE THE INSTANCE TICKS (ARCHITECT S7-TICK scope c): a registration
-/// never verified is listed by `trust.due` once a tick ran, not before.
+/// NO BACKGROUND TIMER RE-VERIFIES AN IDLE UPSTREAM (tool-and-agent-trust.md:61-62): a
+/// counterparty is re-fetched when a unit uses it, never because time passed. The kernel's tick
+/// marks nothing, so `trust.due` invites no plane to fetch an upstream nobody called, however many
+/// ticks run past its declared cadence. RED before: the tick marked every counterparty past its
+/// cadence due (`TrustBook::mark_due`), marks nothing acted on.
 #[tokio::test]
-async fn a_due_subject_shows_in_trust_due_after_a_tick() {
+async fn an_uncalled_upstream_is_never_fetched_over_time() {
     let services = stored();
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
@@ -1790,7 +1810,10 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
         .await
         .expect("one tick");
-    assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
+    assert!(
+        due(&services).is_empty(),
+        "an upstream nobody called is not due after the tick"
+    );
 }
 
 // ── the kernel's Approve over the trust facts a plane states ────────────────────────────────────
@@ -2105,6 +2128,242 @@ async fn a_refused_arrival_is_rendered_in_the_planes_own_words() {
     assert!(
         body.starts_with("words:refused:400:the body is not a document:7@"),
         "{body}"
+    );
+}
+
+// ── a refusal about an entry, and its order against admission (abi/plane rule 6) ────────────────
+
+/// Units whose door refuses: the caller's group has no requests left.
+fn spent_caller() -> common::TestUnits {
+    common::TestUnits {
+        refuse_at: Some((
+            busbar_contract::caps::StepName::Admit,
+            busbar_contract::caps::ReasonCode::RateLimited,
+        )),
+        ..common::TestUnits::passing()
+    }
+}
+
+/// The plane's own rendering of its refusal about the entry: its status, and its code beside the
+/// unit.
+fn the_planes_refusal(rendered: &busbar_kernel::plane_driver::Rendered) -> bool {
+    let body = String::from_utf8_lossy(&rendered.body);
+    rendered.status == ENTRY_REFUSED_STATUS && body.contains(&format!(":{ENTRY_REFUSED}@"))
+}
+
+/// RULE 6 AS IT WAS (flag `0`): a refusal about an entry is rendered BEFORE admission. A caller
+/// whose group has no requests left is answered the plane's refusal, never the 429: the door is
+/// never asked, so nothing is counted or charged, and nothing is sent.
+#[tokio::test]
+async fn a_held_refusal_is_rendered_before_admission_and_charges_nothing() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (steps, far, caller) = (
+        spent_caller(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/refuse-entry", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                _,
+                busbar_contract::caps::ReasonCode::DecodeFailed
+            )
+        ),
+        "{outcome:?}"
+    );
+    let rendered = units.take_rendered().expect("the refusal is rendered");
+    assert!(the_planes_refusal(&rendered), "{rendered:?}");
+    assert!(
+        !steps
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&busbar_contract::caps::StepName::Admit),
+        "the door was never asked: nothing counted, nothing charged"
+    );
+    assert!(far.sent().is_empty());
+}
+
+/// RED (`REFUSED_AFTER_ADMISSION`, the previous release's order): a refusal about an entry the
+/// plane states after admission waits for the entry's admission, and an admission refusal WINS.
+/// The caller whose group has no requests left is answered admission's 429; the plane's refusal
+/// never renders. RED before the flag was read: the plane's refusal, rendered before admission.
+#[tokio::test]
+async fn a_refusal_after_admission_loses_to_admissions_own_refusal() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (steps, far, caller) = (
+        spent_caller(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/refuse-entry-after", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Admit,
+                busbar_contract::caps::ReasonCode::RateLimited
+            )
+        ),
+        "admission's refusal, not the plane's: {outcome:?}"
+    );
+    let rendered = units
+        .take_rendered()
+        .expect("admission's refusal is rendered");
+    assert_eq!(rendered.status, 429);
+    assert!(!the_planes_refusal(&rendered), "{rendered:?}");
+    assert!(far.sent().is_empty());
+}
+
+/// RED (`REFUSED_AFTER_ADMISSION`): a caller within its limits is admitted, and then answered the
+/// plane's refusal in the plane's status and code, with no walk (nothing sent), no hook (a
+/// gate-first binder is never asked) and no meter; the fee admission charged is refunded at the
+/// unit's end on the refusal's status, so the unit nets no charge. RED before the flag was read:
+/// the door was never asked.
+#[tokio::test]
+async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charge() {
+    use busbar_kernel::config::groups::{ExhaustionMode, GroupCfg};
+    use busbar_kernel::governance::{GovState, WINDOW_TOTAL};
+    use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+    struct NoPost;
+    impl EndPost for NoPost {
+        fn post(&self, _: &busbar_kernel::teller::UnitCtx, _: busbar_kernel::teller::Ended) {}
+    }
+    const AT: u64 = 1_700_000_000;
+    // WHAT ADMISSION HOLDS for this unit, as the composition root's door opens it on a pass: the
+    // request fee charged by the governance book's one check-then-charge, and the unit's money
+    // facts open on the money steps, the plane's report its one fee decider.
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
+    let groups = std::collections::BTreeMap::from([(
+        "g".to_string(),
+        GroupCfg {
+            enabled: true,
+            ..Default::default()
+        },
+    )]);
+    let card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 1.0,
+            output_utok: 1.0,
+            ..Default::default()
+        },
+    )]);
+    let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&card),
+        5,
+        &groups,
+    ));
+    let key = Arc::new(busbar_contract::records::VirtualKey {
+        id: "k".into(),
+        generation_hash: "h:k".into(),
+        name: "k".into(),
+        enabled: true,
+        group: Some("g".into()),
+        revision: 1,
+        ..Default::default()
+    });
+    let spend = || {
+        gov.derived_bucket_usage(&cost, &key.id, WINDOW_TOTAL, true, AT)
+            .expect("usage")
+    };
+    let grant = gov
+        .try_admit(&cost, &key, "", AT)
+        .expect("admitted, the fee charged");
+    let unit = common::ctx(7).key;
+    money.open(
+        unit,
+        UnitMoney {
+            key: key.clone(),
+            cost: cost.clone(),
+            pool: String::new(),
+            lane: "m".into(),
+            classes: Arc::from(vec![busbar_contract::plane::PER_REQUEST.to_string()]),
+            arrived: AT,
+            mode: ExhaustionMode::FinishUnit,
+            fee: FeeRefund::PlaneFeeUnits(Arc::from(vec![0u32])),
+            charge: grant.charge().clone(),
+        },
+    );
+    assert_eq!(spend().spend_cents, 5, "admission charged its fee");
+
+    let r = rig(
+        Way::Double,
+        BufferCaps::default(),
+        cases::Book::forwarding(money.clone()),
+    );
+    let gate = Arc::new(Refuses {
+        abstains: true,
+        ..Refuses::default()
+    });
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/refuse-entry-after", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Failed(
+                _,
+                busbar_contract::caps::ReasonCode::DecodeFailed
+            )
+        ),
+        "refused after its admission, through the admitted finish: {outcome:?}"
+    );
+    let calls = steps.calls.lock().unwrap().clone();
+    assert!(
+        calls.contains(&busbar_contract::caps::StepName::Admit),
+        "admission ran: {calls:?}"
+    );
+    assert!(
+        !calls.contains(&busbar_contract::caps::StepName::Meter),
+        "nothing metered: {calls:?}"
+    );
+    assert!(far.sent().is_empty(), "no walk: nothing sent");
+    assert_eq!(gate.calls.load(Ordering::SeqCst), 0, "no hook ran");
+    assert!(binder.asked.lock().unwrap().is_empty(), "no hook was bound");
+    let rendered = units
+        .take_rendered()
+        .expect("the plane's refusal is rendered");
+    assert!(the_planes_refusal(&rendered), "{rendered:?}");
+    // The unit's end, on the status its caller was answered: the fee comes back.
+    money.settle_end(unit, rendered.status);
+    let usage = spend();
+    assert_eq!(
+        (usage.spend_cents, usage.tokens),
+        (0, 0),
+        "nothing net-charged, nothing ledgered"
     );
 }
 
