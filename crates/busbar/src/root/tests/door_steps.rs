@@ -4716,7 +4716,7 @@ pub(crate) mod door_boundary {
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 16
         });
-        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
         let mut walked: Vec<String> = Vec::new();
         for (pattern, verb, auth) in &routes {
@@ -4838,7 +4838,7 @@ pub(crate) mod door_boundary {
         );
 
         // Every route the data router answers: the kernel's core table and the door's.
-        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
         let admissible: Vec<String> = rig
             .door_table
