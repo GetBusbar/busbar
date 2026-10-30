@@ -404,6 +404,7 @@ fn chain_open_wipes_the_resolved_settings() {
     let mut resolved = crate::config::secret::resolve_settings(
         &settings,
         &["client_secret".to_string()],
+        &[],
         "busbar-auth-oidc",
         &crate::config::secret::SecretResolver::builtins_only(),
         &busbar_contract::config_time::ConfigScope::config_time(),

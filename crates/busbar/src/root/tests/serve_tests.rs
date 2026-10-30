@@ -3044,6 +3044,51 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
+    /// RED W11 (docs/mcp.md: `timeout:` defaults to `30s`, a core default): a registration that
+    /// writes NO `timeout:` is bounded all the same. A server that takes the relayed `tools/call`
+    /// and never answers it is answered to the caller at the 30 s default, in the timed-out words,
+    /// not at the walk's 120 s budget.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_tool_server_with_no_timeout_is_answered_at_the_default() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-stall-default";
+        let (port, mut heard) = tool_server_replying(Arc::new(|r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else {
+                (STALL, String::new())
+            }
+        }))
+        .await;
+        let rig = rig_tools(instance, port, registration("stall", port, ""), &|app| app);
+
+        let started = Instant::now();
+        let (status, answer) = tokio::time::timeout(
+            Duration::from_secs(60),
+            call(&rig, &rig.token, "stall_read_file", serde_json::json!({})),
+        )
+        .await
+        .expect("the stalled call was answered at the default, not the walk's 120 s budget");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(30) && took < Duration::from_secs(40),
+            "answered at the 30 s default: {took:?} {answer}"
+        );
+        assert!(
+            drain(&mut heard).contains(&"call"),
+            "the call reached the stalled server"
+        );
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
+        assert_eq!(answer["error"]["code"], -32030, "{answer}");
+        let message = answer["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("did not answer this call within the server's timeout"),
+            "the timed-out words: {message}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
     /// RED's control (ARCHITECT ruling on the timed-out answer): a dial that FAILS — the server
     /// answered its tool list, then stopped listening — keeps the not-dispatched words; only a
     /// dispatched call whose timeout ran out says it was dispatched.
@@ -4139,6 +4184,300 @@ mod tools_door {
         assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
     }
 
+    /// The wire field a grant of the door's scope kind `row` (`scope_server` / `scope_tool`) is
+    /// minted and bound under: the frozen `allowed_{kind}s` convention.
+    fn grant_field(row: &str) -> String {
+        busbar_contract::records::scope_kinds::wire_field_for(surface(row))
+    }
+
+    /// One admin request on `rig`'s admin router: its status and JSON body.
+    #[cfg(linked_section_pools)]
+    async fn over_admin(
+        rig: &Rig,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> (u16, serde_json::Value) {
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(format!("/api/v1/admin{path}"))
+            .header(
+                "x-admin-token",
+                crate::root::door_steps::tests::tool_door::ADMIN_TOKEN,
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                body.map(|b| b.to_string()).unwrap_or_default(),
+            ))
+            .expect("a request");
+        let response = busbar_core_admin::build_router(Arc::clone(&rig.app))
+            .oneshot(req)
+            .await
+            .expect("answers");
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// A mint body named `name` carrying each `(wire field, value)` of `grants`.
+    fn mint_body(name: &str, grants: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut body = serde_json::Map::new();
+        body.insert("name".to_string(), serde_json::json!(name));
+        for (field, value) in grants {
+            body.insert((*field).to_string(), value.clone());
+        }
+        serde_json::Value::Object(body)
+    }
+
+    /// W9 — PER-TOOL GRANTS ARE SET AT MINT, THROUGH THE ADMIN API. The three states hold for the
+    /// door's own scope kinds exactly as they hold for `allowed_pools`: a key minted naming one
+    /// server and one tool reaches that tool and is refused another as not granted before the server
+    /// is dialled; a key minted with the tool grant `[]` reaches nothing; a key minted naming no
+    /// grant reaches everything, and its mint and read-back bodies carry no plane grant field at all
+    /// (the 1.5.5 body). A grant field no plane declares, or a grant that is not a list of names, is
+    /// refused as any unknown or malformed mint field is.
+    #[cfg(linked_section_pools)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_grant_minted_over_the_admin_api_reaches_only_that_tool() {
+        use crate::root::door_steps::tests::door_boundary::{registry, row};
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-admin-grant";
+        let (port, mut heard) =
+            tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "cat:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
+             write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
+            tool_digest(),
+            surface("write_digest"),
+            surface("stat_digest"),
+        ))
+        .expect("a section");
+        // The door's row in the plane registry, as the composition root installs it, and the
+        // operator credential the admin router authenticates `x-admin-token` with.
+        registry(row());
+        busbar_kernel::preflight::install_linked_auth(
+            crate::LINKED.auths,
+            crate::root::auth_bindings::operator_words(),
+        );
+        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        let rig = rig_tools(instance, port, tools, &|app| app.admin_chain(chain.clone()));
+        let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
+
+        // EXACTLY THOSE: one server, one tool.
+        let (status, reader) = over_admin(
+            &rig,
+            "POST",
+            "/keys",
+            Some(mint_body(
+                "reader",
+                &[
+                    (&server, serde_json::json!(["cat"])),
+                    (&tool, serde_json::json!(["cat_read_file"])),
+                ],
+            )),
+        )
+        .await;
+        assert_eq!(status, 201, "a tool grant is a mint field: {reader}");
+        assert_eq!(
+            reader[&tool],
+            serde_json::json!(["cat_read_file"]),
+            "{reader}"
+        );
+        assert_eq!(reader[&server], serde_json::json!(["cat"]), "{reader}");
+        assert_eq!(
+            reader["allowed_pools"],
+            serde_json::json!([]),
+            "a grant that names a kind is exhaustive across kinds: {reader}"
+        );
+        let token = reader["token"].as_str().expect("the token").to_string();
+        assert_eq!(listed(&rig, &token).await, ["cat_read_file"]);
+        let (status, answer) = call(&rig, &token, "cat_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
+        drain(&mut heard);
+        let (status, answer) = call(&rig, &token, "cat_write_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 404, "{answer}");
+        assert_eq!(answer["error"]["data"]["reason"], "not_granted", "{answer}");
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the ungranted call was never dialled"
+        );
+        let id = reader["id"].as_str().expect("the id");
+        let (status, read) = over_admin(&rig, "GET", &format!("/keys/{id}"), None).await;
+        assert_eq!(status, 200, "{read}");
+        assert_eq!(read[&tool], serde_json::json!(["cat_read_file"]), "{read}");
+        assert_eq!(read[&server], serde_json::json!(["cat"]), "{read}");
+
+        // NOTHING: the tool grant `[]`.
+        let (status, nobody) = over_admin(
+            &rig,
+            "POST",
+            "/keys",
+            Some(mint_body("nobody", &[(&tool, serde_json::json!([]))])),
+        )
+        .await;
+        assert_eq!(status, 201, "{nobody}");
+        let token = nobody["token"].as_str().expect("the token").to_string();
+        assert!(listed(&rig, &token).await.is_empty(), "granted nothing");
+        let (status, answer) = call(&rig, &token, "cat_read_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 404, "{answer}");
+        assert_eq!(answer["error"]["data"]["reason"], "not_granted", "{answer}");
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the ungranted call was never dialled"
+        );
+
+        // EVERYTHING: no grant named, and the 1.5.5 body (no plane grant field).
+        let (status, everyone) =
+            over_admin(&rig, "POST", "/keys", Some(mint_body("everyone", &[]))).await;
+        assert_eq!(status, 201, "{everyone}");
+        let token = everyone["token"].as_str().expect("the token").to_string();
+        assert_eq!(
+            listed(&rig, &token).await,
+            ["cat_read_file", "cat_stat", "cat_write_file"]
+        );
+        let (status, answer) = call(&rig, &token, "cat_write_file", serde_json::json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an omitted grant is everything: {answer}"
+        );
+        let id = everyone["id"].as_str().expect("the id");
+        let (status, read) = over_admin(&rig, "GET", &format!("/keys/{id}"), None).await;
+        assert_eq!(status, 200, "{read}");
+        for body in [&everyone, &read] {
+            assert_eq!(body["allowed_pools"], serde_json::Value::Null, "{body}");
+            assert!(
+                body.as_object()
+                    .expect("an object")
+                    .keys()
+                    .all(|k| k == "allowed_pools" || !k.starts_with("allowed_")),
+                "an unscoped key's body gains no grant field: {body}"
+            );
+        }
+
+        // REFUSED: a kind no plane declares, and a grant that is not a list of names, answer as an
+        // unknown mint field does.
+        let (unknown_status, unknown) = over_admin(
+            &rig,
+            "POST",
+            "/keys",
+            Some(mint_body("typo", &[("bogus", serde_json::json!(1))])),
+        )
+        .await;
+        assert_eq!(unknown_status, 400, "{unknown}");
+        for (field, value) in [
+            ("allowed_widgets", serde_json::json!(["x"])),
+            (tool.as_str(), serde_json::json!("cat_read_file")),
+            (tool.as_str(), serde_json::json!([1])),
+        ] {
+            let (status, body) = over_admin(
+                &rig,
+                "POST",
+                "/keys",
+                Some(mint_body("refused", &[(field, value.clone())])),
+            )
+            .await;
+            assert_eq!(
+                (status, &body),
+                (unknown_status, &unknown),
+                "`{field}: {value}` is refused as an unknown field is"
+            );
+        }
+    }
+
+    /// W9 — A ROLE BINDING GRANTS THE DOOR'S SCOPE KINDS AS A MINT DOES. `role_bindings.<p>.<role>`
+    /// takes the same `allowed_{kind}s` fields, and the principal re-keyed through it reaches exactly
+    /// the granted tool, is refused another as not granted before the server is dialled, is admitted
+    /// nowhere when the binding grants `[]`, and reaches everything when the binding names no grant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_role_binding_grants_the_tools_a_minted_key_does() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-role-grant";
+        let (port, mut heard) =
+            tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "cat:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
+             write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
+            tool_digest(),
+            surface("write_digest"),
+            surface("stat_digest"),
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, port, tools, &|app| app);
+        let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
+        let bound = |yaml: &str| {
+            let binding: busbar_kernel::config::RoleBindingCfg =
+                serde_yaml::from_str(yaml).expect("a plane grant is a role-binding key");
+            let table = std::collections::BTreeMap::from([("readers".to_string(), binding)]);
+            let principal = busbar_kernel::auth::Principal {
+                id: "sso-reader".to_string(),
+                name: None,
+                roles: vec!["readers".to_string()],
+                ttl_secs: None,
+            };
+            busbar_kernel::governance::synthesize_principal_key(&principal, Some(&table))
+        };
+        // The re-keyed grant, carried onto a key on the rig's book: its bearer token.
+        let presenting = |granted: &busbar_contract::records::VirtualKey| {
+            let (mut key, token) = rig
+                .gov
+                .mint_signed(
+                    busbar_kernel::governance::NewKeySpec {
+                        name: "sso".to_string(),
+                        ..Default::default()
+                    },
+                    4_000_000_000,
+                    1_700_000_000,
+                )
+                .expect("mint");
+            key.allowed_scopes = granted.allowed_scopes.clone();
+            rig.gov.store().put_key(&key).expect("the key is stored");
+            rig.gov.refresh().expect("the book refreshes");
+            token.expose(&busbar_kernel::seal::lend()).to_string()
+        };
+
+        let reader =
+            bound(&format!("{server}: [cat]\n{tool}: [cat_read_file]\n")).expect("the role binds");
+        assert!(reader.scope_allowed(surface("scope_tool"), "cat_read_file"));
+        assert!(!reader.scope_allowed(surface("scope_tool"), "cat_write_file"));
+        assert!(
+            !reader.scope_allowed("pool", "cat"),
+            "a tool grant is never a pool grant"
+        );
+        let token = presenting(&reader);
+        assert_eq!(listed(&rig, &token).await, ["cat_read_file"]);
+        let (status, answer) = call(&rig, &token, "cat_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
+        drain(&mut heard);
+        let (status, answer) = call(&rig, &token, "cat_write_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 404, "{answer}");
+        assert_eq!(answer["error"]["data"]["reason"], "not_granted", "{answer}");
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the ungranted call was never dialled"
+        );
+
+        assert!(
+            bound(&format!("{tool}: []\n")).is_none(),
+            "a binding granting nothing admits nothing"
+        );
+
+        let everyone = bound("{}").expect("the role binds");
+        assert_eq!(
+            everyone.allowed_scopes, None,
+            "no grant named is everything"
+        );
+        let token = presenting(&everyone);
+        let (status, answer) = call(&rig, &token, "cat_write_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+
     // ── THE WALK'S EXHAUSTION ON THIS DOOR: PREDEV'S BYTES ──────────────────────────────────────
     //
     // The kernel hands every plane the walk's own sentence for an exhausted walk
@@ -4473,7 +4812,7 @@ impl Serving {
 
     /// Whether the model's member's breaker cell would take a request now (the walk's own filter).
     fn ready(&self) -> bool {
-        self.egress.breaker.ready(
+        (self.egress.breaker)().ready(
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
@@ -4483,7 +4822,7 @@ impl Serving {
 
     /// The seconds of cooldown the member's breaker cell has left; zero for a closed cell.
     fn cooldown(&self) -> u64 {
-        self.egress.breaker.cooldown_remaining(
+        (self.egress.breaker)().cooldown_remaining(
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
