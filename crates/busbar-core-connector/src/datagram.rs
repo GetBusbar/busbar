@@ -1127,6 +1127,116 @@ impl Associations {
     }
 }
 
+/// What a port's associations answered: each association's number and what it yielded or why it
+/// failed (a failed one is no longer carried).
+pub type Answered = Vec<(u64, Result<Yielded, Refused>)>;
+
+/// THE PORT'S ASSOCIATIONS, SHARED by every caller of one port: the port's task (datagrams, the
+/// clock), the sessions' writers (emits), admissions and teardowns. `send` hands each datagram an
+/// association owes the port to the port.
+#[derive(Debug, Default)]
+pub struct PortAssociations {
+    assocs: std::sync::Mutex<Associations>,
+}
+
+impl PortAssociations {
+    /// An empty port.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Associations> {
+        self.assocs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Carry `framing` on this port; its number.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAdded`]: no terms yet, or its user name is another association's.
+    pub fn add(&self, framing: DatagramFraming) -> Result<u64, NotAdded> {
+        self.lock().add(framing)
+    }
+
+    /// Stop carrying association `id`: its framing finishes.
+    pub fn remove(&self, id: u64) {
+        let gone = self.lock().remove(id);
+        drop(gone);
+    }
+
+    /// How many associations the port carries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether the port carries none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The earliest deadline of any association.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.lock().deadline()
+    }
+
+    /// One datagram the port read from `from`, to the association it belongs to.
+    pub fn datagram(
+        &self,
+        from: SocketAddr,
+        bytes: &[u8],
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> Answered {
+        let mut assocs = self.lock();
+        let one = assocs.datagram(from, bytes, now);
+        while let Some((to, d)) = assocs.poll_send() {
+            send(to, &d);
+        }
+        one.into_iter().collect()
+    }
+
+    /// The clock, for every association whose deadline has passed.
+    pub fn timeout(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
+        let mut assocs = self.lock();
+        let due = assocs.timeout(now);
+        while let Some((to, d)) = assocs.poll_send() {
+            send(to, &d);
+        }
+        due
+    }
+
+    /// One message's bytes for `stream` on association `id`: whether it was taken (`false` = no
+    /// such association, or its framer refused them), and what the port's associations answered
+    /// meanwhile.
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit(
+        &self,
+        id: u64,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> (bool, Answered) {
+        let mut assocs = self.lock();
+        let Some(f) = assocs.get_mut(id) else {
+            return (false, Vec::new());
+        };
+        let ok = f.emit(stream, bytes, end_of_frame, text, now).is_ok();
+        while let Some((to, d)) = assocs.poll_send() {
+            send(to, &d);
+        }
+        (ok, Vec::new())
+    }
+}
+
 /// The user name a connectivity check names its receiver by: the part of its first USERNAME
 /// field before the `:`. `None` for anything that is not a Binding request carrying one.
 fn check_user(d: &[u8]) -> Option<&str> {
