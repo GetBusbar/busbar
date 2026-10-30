@@ -1849,3 +1849,7 @@ mod axis_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_lent_tests.rs"]
 mod lent_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_secrets_tests.rs"]
+mod secrets_tests;
