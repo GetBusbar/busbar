@@ -52,8 +52,8 @@ use busbar_contract::abi::store::{
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
-    UsageLedger, VirtualKey,
+    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, Retention,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
@@ -1402,10 +1402,13 @@ impl StoreCalls for LoadedStore {
         boxed(async move {
             let r = fixed::<_, CountOut>(
                 slot::PURGE_PLANE_RECORDS_BEFORE,
+                // The age rule, as the bridge's `purge_plane_records_before` states it.
                 owned_in(|o, head| KindBeforeIn {
                     head,
                     kind: o.text(kind),
                     before,
+                    retention: Retention::Age.code(),
+                    _reserved: 0,
                 }),
             );
             let (ran, _) = run!(self, submit, r);
@@ -1682,12 +1685,23 @@ impl RecordStore for LoadedStore {
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
+        self.purge_plane_records(kind, before, Retention::Age)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
         self.count(
             slot::PURGE_PLANE_RECORDS_BEFORE,
             owned_in(|o, head| KindBeforeIn {
                 head,
                 kind: o.text(kind),
                 before,
+                retention: retention.code(),
+                _reserved: 0,
             }),
         )
     }

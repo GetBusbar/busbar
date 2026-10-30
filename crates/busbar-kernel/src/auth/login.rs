@@ -214,6 +214,7 @@ impl LoginMethods {
             let mut resolved = crate::config::secret::resolve_settings(
                 &mc.settings,
                 &registry.secret_slots(&mc.module),
+                &registry.reference_slots(&mc.module),
                 &mc.module,
                 secret_resolver,
                 &busbar_contract::config_time::ConfigScope::config_time(),
@@ -225,6 +226,7 @@ impl LoginMethods {
             if let Some(bl) = &mc.browser_login {
                 if let Some(cid) = &bl.client_id {
                     resolved
+                        .map_mut()
                         .entry("client_id".to_string())
                         .or_insert_with(|| serde_json::Value::String(cid.clone()));
                 }
@@ -292,7 +294,7 @@ impl LoginMethods {
                         format!("identity-providers.{name} browser_login.client_secret: {e}")
                     })?;
                 // OWED (row 7): the client secret is lent inline, as a JSON string.
-                resolved.insert(
+                resolved.map_mut().insert(
                     CLIENT_SECRET_SLOT.to_string(),
                     serde_json::Value::String(secret.expose(&crate::seal::lend()).clone()),
                 );
@@ -300,12 +302,12 @@ impl LoginMethods {
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
             // provider NAME (the instance): two named providers may share one login plugin with
             // different issuers/clients.
-            let mut lent = serde_json::Value::Object(resolved);
-            let opened = axis.open(&mc.module, &login_label(name), &lent);
+            let opened = axis.open(&mc.module, &login_label(name), resolved.as_value());
             // The kernel's copy of the lent settings (the resolved client secret and every
             // resolved secret reference among them) is wiped the moment `open` answers, whatever
-            // it answered (THE DESIGN §6 K2: "auth material is zeroised").
-            wipe_lent_settings(&mut lent);
+            // it answered (THE DESIGN §6 K2: "auth material is zeroised"): the holder overwrites
+            // every string in it as it drops.
+            drop(resolved);
             let calls = opened.map_err(&refused)?;
             // The plugin's login kind, as its tail states it (read without a `begin_login`).
             // A plugin whose tail states no login serves only the headless method; a
@@ -353,18 +355,6 @@ fn states_secret_slot(
     key: &str,
 ) -> bool {
     registry.secret_slots(module).iter().any(|k| k == key)
-}
-
-/// Wipe every string the lent settings document holds (THE DESIGN §6 K2: auth material is
-/// zeroised): the kernel keeps no copy of what it lent a login plugin at `open`.
-fn wipe_lent_settings(lent: &mut serde_json::Value) {
-    use zeroize::Zeroize as _;
-    match lent {
-        serde_json::Value::String(s) => s.zeroize(),
-        serde_json::Value::Array(items) => items.iter_mut().for_each(wipe_lent_settings),
-        serde_json::Value::Object(map) => map.values_mut().for_each(wipe_lent_settings),
-        _ => {}
-    }
 }
 
 /// The host's instance label of a hosted-login method's plugin instance: the provider's name, set
@@ -473,7 +463,7 @@ pub async fn issue_self_key(
     let SelfMint {
         principal,
         team,
-        granted_pools: pools,
+        granted_scopes: pools,
         ttl,
     } = match admit_self_mint(
         &verdict,

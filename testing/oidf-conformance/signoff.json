@@ -1,0 +1,41 @@
+{
+  "_comment": "OWNER SIGN-OFF of OIDF REVIEW modules. testing/oidf-conformance/oidf.py counts a REVIEW module as passed ONLY when it is listed here AND the error page this run's browser captured for it hashes to page_sha256 (sha256 of the page source, UTF-8). A changed page is back to awaiting review. WARNING is never signed off here.",
+  "signed": [
+    {
+      "module": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+      "condition": "ExpectAuthorizationRequestWithoutRequestObjectErrorPage",
+      "owner": "Matthew Jackson (busbar owner)",
+      "date": "2026-10-27",
+      "page_sha256": "a7deac7f68f83664ec833279c75057a6e0164925e2ca68d1f59aaabd362b4dd9",
+      "evidence_test_id": "jFnWYg5j4rzIKCV",
+      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+    },
+    {
+      "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+      "condition": "ExpectInvalidRequestUriErrorPage",
+      "owner": "Matthew Jackson (busbar owner)",
+      "date": "2026-10-27",
+      "page_sha256": "9f70fcfb94172bbcb925e474267bc77fd04f8d6a00f107408ce0ac577209b9a9",
+      "evidence_test_id": "s0CpTmuPMUwj0Hi",
+      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+    },
+    {
+      "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+      "condition": "ExpectInvalidRequestUriErrorPage",
+      "owner": "Matthew Jackson (busbar owner)",
+      "date": "2026-10-27",
+      "page_sha256": "7631ccd261784c0df73265b0918f0438c22dc603dffc7b3629ff75d23ee2a089",
+      "evidence_test_id": "I5CUClchIXgqiZ8",
+      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+    },
+    {
+      "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+      "condition": "ExpectInvalidRequestUriErrorPage",
+      "owner": "Matthew Jackson (busbar owner)",
+      "date": "2026-10-27",
+      "page_sha256": "cc0a979822403b186fb698a45788970143ab04e6ec8e6a08ac236b9d733ad655",
+      "evidence_test_id": "j8PBa9wAi2sn9Zk",
+      "record": "~/Developer/tmp/cleanup/audits/ORACLE-SIGNOFF.md, 'Owner-signed 2026-10-27: OIDF FAPI2 REVIEW modules (4)'"
+    }
+  ]
+}

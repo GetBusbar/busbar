@@ -73,9 +73,7 @@ impl PinnedHistory {
     }
 
     /// The history as it stood at `at`, never past this pin: a sealed checkpoint's totals are
-    /// re-derived against the snapshot they were sealed at ([`Checkpoint::history_seq`]).
-    ///
-    /// [`Checkpoint::history_seq`]: busbar_kernel_ledger::checkpoint::Checkpoint::history_seq
+    /// re-derived against the snapshot they were sealed at (the checkpoint's `history_seq`).
     #[must_use]
     pub fn view_at(
         &self,
@@ -1603,13 +1601,6 @@ pub type VerbStoreHandle = Option<Arc<dyn busbar_contract::verb_store::Store + S
 /// functions or unit structs the step calls with the facts it was handed — and holding an empty
 /// value for each of them would be furniture rather than structure.
 pub struct ProductionUnits {
-    /// Every `(pool, destination)` breaker cell and every destination's lifetime budget, behind the
-    /// port the egress unit reaches it through.
-    ///
-    /// There is exactly one of these and it is reached only here. Two breaker units would be two
-    /// sets of cells: a trip recorded through one would be invisible to the other, and a lane the
-    /// walk had benched would still read as ready at Verify.
-    pub breaker: crate::root::adapters::BreakerAdapter,
     /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
     /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
     /// second one here would be a second answer to "has this credential been seen" that an
@@ -1669,14 +1660,12 @@ impl ProductionUnits {
     pub fn new(
         kernel: &busbar_kernel::teller::Kernel,
         durability: crate::root::durability::Durability,
-        breaker_policy: crate::root::adapters::BreakerPolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits::new_sharing(
             kernel,
             Arc::new(Mutex::new(durability)),
-            breaker_policy,
             #[cfg(feature = "root-admin")]
             admin,
             store,
@@ -1694,12 +1683,10 @@ impl ProductionUnits {
     pub fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
-        breaker_policy: crate::root::adapters::BreakerPolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits {
-            breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
             // The unbound posture, which is the one a node has until it is handed a directory:
             // the cache is real, and the two authorities are absent rather than permissive. A
             // deployment whose keys are busbar's own binds them through
@@ -1734,52 +1721,19 @@ impl ProductionUnits {
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
     ) -> Self {
-        // One value, two halves. The ledger is handed the write half and keeps it for the life of
-        // the node; the read half stays here so the ledger views have somewhere to read the
-        // previous release's rows from. They are the same rows because they are the same value —
-        // a second recorder would be a second answer to what the dual write wrote.
-        let rows = busbar_kernel_ledger::legacy::SummedRows::new();
-        ProductionUnits::admin_only_over(dispatch, door, Box::new(rows.clone()), Arc::new(rows))
-    }
-
-    /// The same composition, over legacy rows the caller supplies both halves of.
-    ///
-    /// Split out because the two halves are one obligation: whatever the ledger dual-writes onto is
-    /// what the reconciliation view has to read back, and a constructor that took only the write
-    /// half would leave the view reading a different set of rows from the one the node writes. A
-    /// caller passing two halves of different values is making that mistake explicitly rather than
-    /// inheriting it.
-    #[cfg(feature = "root-admin")]
-    #[must_use]
-    pub fn admin_only_over(
-        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
-        door: crate::root::units_admin::AdminDoorFn,
-        write: Box<dyn busbar_kernel_ledger::legacy::LegacyRows>,
-        read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
-    ) -> Self {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_kernel_wal::NullShipper::new()),
-            write,
         )
         .expect("a memory-buffered journal cannot fail to open");
-        // An admin-only node over a book of its own has no configured store behind it.
-        ProductionUnits::admin_only_sharing(
-            dispatch,
-            door,
-            Arc::new(Mutex::new(durability)),
-            read,
-            None,
-        )
+        // An admin-only node over a journal of its own has no configured store behind it.
+        ProductionUnits::admin_only_sharing(dispatch, door, Arc::new(Mutex::new(durability)), None)
     }
 
-    /// THE BOOTED NODE'S ADMIN UNITS: [`ProductionUnits::admin_only_sharing`] over the one book
-    /// boot opened, its legacy rows, and the store boot bound beside them (row 113, ruling (B)).
-    ///
-    /// The book carries the store for the same reason it carries the rows: they are halves of what
-    /// boot composed, and a caller that took the book but not its store would serve the three
-    /// disaster-recovery verbs over nothing — refused as a store failure on a node whose store is
-    /// right there. `None` is a node with no configured store.
+    /// THE BOOTED NODE'S ADMIN UNITS: [`ProductionUnits::admin_only_sharing`] over the one journal
+    /// boot opened and the store boot bound beside it (row 113, ruling (B)). A caller that took the
+    /// journal but not its store would serve the three disaster-recovery verbs over nothing. `None`
+    /// is a node with no configured store.
     #[cfg(feature = "root-admin")]
     #[must_use]
     pub fn admin_over_book(
@@ -1791,7 +1745,6 @@ impl ProductionUnits {
             dispatch,
             door,
             Arc::clone(&book.durability),
-            Arc::clone(&book.rows) as Arc<dyn crate::root::units_admin::LegacyRowsRead>,
             book.verb_store.clone(),
         )
     }
@@ -1813,31 +1766,18 @@ impl ProductionUnits {
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
-        read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
         store: VerbStoreHandle,
     ) -> Self {
         let kernel = new_kernel();
         let mut units = ProductionUnits::new_sharing(
             &kernel,
             Arc::clone(&durability),
-            crate::root::adapters::BreakerPolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch, door),
             store,
         );
-        // The views are bound after the units are assembled rather than through the constructor,
-        // because what they read is the durability the constructor took ownership of — the handle
-        // does not exist until it has. Binding it here is what makes the served figures this node's
-        // rather than an empty table that looks like a balanced one.
-        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
-            Arc::clone(&durability),
-            read,
-        ));
-        // The three audit-chain reads are bound off the SAME handle, for the same reason and at the
-        // same moment. A chain read and a ledger view answer different halves of what this node
-        // holds — evidence and money — and binding one is not binding the other, but both read the
-        // durability this constructor took ownership of and neither exists before it has.
-        //
-        // Until this line the three verbs resolved and refused: a node served its own chain to
+        // The ledger views read the live governance state, bound by the mount that holds it
+        // (`units_admin::mount_node`). The three audit-chain reads are bound off the journal here:
+        // until this line the three verbs resolved and refused, and a node served its own chain to
         // nobody, which makes a signed chain a claim rather than evidence.
         // A sealed rate-card amendment is recorded on this SAME book's journal, with its figures,
         // before it touches the history (item 30). Without this binding `amend_rate_history`
@@ -1851,19 +1791,6 @@ impl ProductionUnits {
             Arc::clone(&durability),
             kernel.durability_token(),
         )));
-        // Item 271: an idempotency claim the admin plane's replay cache takes goes on this SAME
-        // journal — on a node with a data directory only. A memory-buffered node keeps the
-        // previous release's shape: nothing extra is shipped to its store.
-        let on_disk = durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .on_disk();
-        if on_disk {
-            units.admin.claims = Some(Arc::new(crate::root::units_admin::RootClaimJournal::new(
-                Arc::clone(&durability),
-                kernel.durability_token(),
-            )));
-        }
         units.admin.audit = Some(Arc::new(crate::root::units_admin::NodeAudit::new(
             durability,
         )));

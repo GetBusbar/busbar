@@ -1109,11 +1109,12 @@ impl Journal {
             // Sealed with a bare `Entry`, the break carries `wall: 0` — 1970 — because
             // [`Entry::new`] stamps both clocks at zero and only [`Entry::at`] moves them. Every
             // retention pass in this tree is the same predicate over a record's own instant
-            // (`r.ts < before` in `purge_plane_records_before`, and each `compact(before)` above
-            // it), so a record dated 0 is older than EVERY positive cutoff and the FIRST sweep at
-            // any window deletes it. The one record that says entries were lost here would be the
-            // first thing lost — the audit evidence a store outage most needs to keep, and the same
-            // defect already fixed on the plane-record path where `append_scoped` hardcoded `ts: 0`.
+            // (`r.ts < before` in `purge_plane_records_before`, under either retention rule the
+            // host passes, and each `compact(before)` above it), so a record dated 0 is older than
+            // EVERY positive cutoff and the FIRST sweep at any window deletes it. The one record
+            // that says entries were lost here would be the first thing lost — the audit evidence a
+            // store outage most needs to keep, and the same defect already fixed on the
+            // plane-record path where `append_scoped` hardcoded `ts: 0`.
             //
             // The break marks the moment THIS batch displaced the older records, so it takes the
             // latest clock the batch carries. A batch is stamped from the unit's pinned arrival
