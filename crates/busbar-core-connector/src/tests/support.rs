@@ -76,6 +76,11 @@ pub struct Knobs {
     /// An accepting `begin` states this agreed protocol (`FramerYield::agreed`, a 1-based position
     /// in the accepting offer).
     pub agreed: Option<u32>,
+    /// `locate` states these head lines of its own (`LocateIn::defaults_buf`, `name: value\r\n`
+    /// each), which the host adds to a head that does not carry them.
+    pub head_lines: Option<&'static [u8]>,
+    /// `locate` states the body's length is the host's to state (`LocateOut::states_length`).
+    pub states_length: bool,
 }
 
 #[derive(Default)]
@@ -147,7 +152,9 @@ impl TestDoor {
             || knobs.silence.is_some()
             || knobs.authority.is_some()
             || knobs.authority_needed.is_some()
-            || knobs.messages.is_some();
+            || knobs.messages.is_some()
+            || knobs.head_lines.is_some()
+            || knobs.states_length;
         Self {
             facts: DoorFacts {
                 name: name.to_owned(),
@@ -415,6 +422,18 @@ impl FramerDoor for TestDoor {
                     }
                     o.alpn_written = offer.len() as u64;
                 }
+                if let Some(lines) = self.knobs.head_lines {
+                    // SAFETY: host buffer of `defaults_cap` bytes; the test's lines fit.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            lines.as_ptr(),
+                            i.defaults_buf,
+                            lines.len().min(i.defaults_cap),
+                        );
+                    }
+                    o.defaults_written = lines.len() as u64;
+                }
+                o.states_length = u8::from(self.knobs.states_length);
                 ("locate", ok)
             }
             Call::Begin(i, o) => {
