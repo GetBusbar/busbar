@@ -18,7 +18,6 @@ use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey
 use busbar_kernel::governance::signing::TokenSigner;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::plane_driver::{EngineHost, LiveHostFactory};
-use busbar_kernel::store::BreakerState;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -345,15 +344,6 @@ impl EngineApp for crate::state::App {
     }
     fn handle(self: Arc<Self>) -> Arc<dyn EngineHandle> {
         Arc::new(crate::state::AppHandle::new(self))
-    }
-    fn breaker_state(&self, key: &str) -> BreakerState {
-        self.plane_breakers.state(key)
-    }
-    fn breaker_state_at(&self, key: &str, lane: usize) -> BreakerState {
-        self.plane_breakers.state_at(key, lane)
-    }
-    fn breaker_reset(&self, key: &str) {
-        self.plane_breakers.reset(key);
     }
     fn data_route_paths(&self) -> Vec<String> {
         crate::base_data_core_lines(self)

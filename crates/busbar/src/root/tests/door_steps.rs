@@ -8,10 +8,18 @@
 
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
 
+use busbar_contract::section::TOOL_CALL_SECTION_KEY;
+
 use super::DoorPools;
 
+/// The pools of `yaml`, a tool-call section's (`TOOL_CALL_SECTION_KEY`).
 fn pools(yaml: &str) -> DoorPools {
-    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml")).expect("the pools")
+    declared_by(yaml, TOOL_CALL_SECTION_KEY)
+}
+
+/// The pools of `yaml`, the section `declared` (the key its plane's Statement declares).
+fn declared_by(yaml: &str, declared: &str) -> DoorPools {
+    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml"), declared).expect("the pools")
 }
 
 fn routed(p: &DoorPools, class: u8, named: Option<&str>) -> Option<(String, Vec<String>)> {
@@ -86,6 +94,35 @@ fn a_registration_that_writes_no_timeout_is_bounded_at_the_core_default() {
         m.timeout_ms("m"),
         None,
         "a model entry keeps 1.5.5's walk budget"
+    );
+}
+
+/// RED W11b (lead ruling: the 30 s default call-leg bound is scoped to tool calls): a registration
+/// of any OTHER plane's section (here an agent registration under `agents:`) that writes no
+/// `timeout:` is NOT held to the tool-call default. Its call leg is bounded by its walk's own budget
+/// (the pool's, 120 s by default), as before the default existed; a long-running agent call is not
+/// cut at 30 s. A written `timeout:` still wins, on every section.
+#[test]
+fn a_registration_that_is_no_tool_server_keeps_the_walk_budget() {
+    let p = declared_by(
+        "planner: { url: \"http://up.example/a2a\" }\nslow: { timeout: 2m }",
+        "agents",
+    );
+    assert_eq!(
+        p.timeout_ms("planner"),
+        None,
+        "none written on a section that relays no tool calls: the walk's own budget, not 30 s"
+    );
+    assert_eq!(
+        p.timeout_ms("slow"),
+        Some(120_000),
+        "a written timeout wins"
+    );
+    let t = pools("fs: { url: \"http://up.example/rpc\" }");
+    assert_eq!(
+        t.timeout_ms("fs"),
+        Some(busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS),
+        "a tool server that writes none keeps the 30 s default"
     );
 }
 
@@ -329,7 +366,7 @@ fn a_member_with_a_bad_tier_is_refused_at_the_section_build() {
         let section: serde_yaml::Value =
             serde_yaml::from_str(&format!("a: {{}}\npools:\n  u:\n    members: [{member}]"))
                 .expect("yaml");
-        let refused = DoorPools::of(&section)
+        let refused = DoorPools::of(&section, TOOL_CALL_SECTION_KEY)
             .err()
             .unwrap_or_else(|| panic!("{what}: a member written {member} built"));
         assert!(
@@ -357,7 +394,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
         .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section).expect("the pools");
+    let p = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools");
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("twins")),
         owned("twins", &["b", "a"])
@@ -411,7 +448,7 @@ fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
     .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section).expect("the pools");
+    let p = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools");
     assert_eq!(
         p.breaker("tuned"),
         Some(&block),
@@ -891,7 +928,7 @@ fn resolve_upgrading(
     };
     super::member_routes(
         &section,
-        &DoorPools::of(&section).expect("the pools"),
+        &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
         served,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1593,7 +1630,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         };
         let routes = super::member_routes(
             &section,
-            &DoorPools::of(&section).expect("the pools"),
+            &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
             &facts,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1777,7 +1814,7 @@ fn jwt_bearer_routes(
     };
     let routes = super::member_routes(
         &section,
-        &DoorPools::of(&section).expect("the pools"),
+        &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
         &facts,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -8455,7 +8492,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     super::compose_egress(
         &facts,
-        &DoorPools::of(&section).expect("the pools"),
+        &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
         instance,
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
