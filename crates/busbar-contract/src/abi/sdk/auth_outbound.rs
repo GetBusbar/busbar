@@ -298,25 +298,6 @@ impl<'a> FieldsWriter<'a> {
         });
     }
 
-    /// Stage the field `name` whose value is `value`'s public and sealed pieces in order (an
-    /// `authorization` the chip made, a session token): the plugin never reads the value; the kit
-    /// writes it into the host's buffer. `flags` as for [`FieldsWriter::push`] (the wire's bytes are
-    /// the flags' to decide, as a public field's are).
-    pub fn push_sealed(&mut self, name: &[u8], value: crate::abi::sdk::cred::Parts, flags: u32) {
-        if flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
-            self.stray = true;
-            return;
-        }
-        let value = crate::abi::sdk::cred::SealedWrite::new(value);
-        self.stage(name);
-        self.stage(&value.buf);
-        self.fields.push(Staged {
-            name: name.len(),
-            value: value.buf.len(),
-            flags,
-        });
-    }
-
     /// How many fields are staged.
     #[must_use]
     pub fn len(&self) -> usize {

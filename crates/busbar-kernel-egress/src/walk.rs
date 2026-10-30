@@ -34,7 +34,7 @@ use crate::exhaustion::{least_bad, retry_after_secs};
 use crate::pool::{Member, OnExhausted, Pool};
 use crate::ports::{Breaker, Capacity, Clock, DestinationId, Permit, Telemetry, Unavailable};
 use crate::race;
-use crate::select::{pick_among, PickInput, RequestCtx, WeightedFloor};
+use crate::select::{pick_among, PickInput, RequestCtx};
 use crate::wire::Shed;
 
 /// Everything the walk reads, borrowed for one step. Shared across every unit of the generation;
@@ -48,8 +48,6 @@ pub struct WalkPorts<'p> {
     pub clock: &'p dyn Clock,
     /// The counters.
     pub telemetry: &'p dyn Telemetry,
-    /// The weighted floor's rotation memory.
-    pub floor: &'p WeightedFloor,
     /// The pools, by name.
     pub pools: &'p HashMap<String, Pool>,
 }
@@ -376,7 +374,7 @@ impl Walk {
             &PickInput {
                 breaker: ports.breaker,
                 capacity: ports.capacity,
-                floor: ports.floor,
+                floor: &pool.floor,
                 pool: &pool.name,
                 members: &members,
                 affinity,

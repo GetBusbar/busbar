@@ -129,9 +129,8 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 // verbatim to `busbar-core-connector` (DECISIONS #40, the core-side connection-security seam):
 // this crate's own inbound listener now names no rustls/cert type of its own for that job — it is
 // handed an already-built, opaque `ConnectionSecurity` wrap (`serve`'s `security` parameter, below)
-// and calls nothing on it but `wrap`. `read_pem` stays behind in `busbar_kernel::tls`, called only
-// by the connector's `tls:` block resolution: the connector is the only holder of TLS keys and mTLS
-// identity (THE DESIGN §8, `BUSBAR-1.6.0.md` l.1141), and no plane reads PEM bytes through it.
+// and calls nothing on it but `wrap`. `read_pem` is the connector's own: the connector is the only
+// holder of TLS keys and mTLS identity (THE DESIGN §8, `BUSBAR-1.6.0.md` l.1141), and no plane reads PEM bytes through it.
 
 /// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
 ///
@@ -665,22 +664,91 @@ impl BodyTimeoutService {
 }
 
 impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTimeoutService {
-    type Response = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Response;
-    type Error = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Error;
-    type Future = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Future;
+    type Response = axum::response::Response;
+    type Error = std::convert::Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
         let timeout = self.timeout;
-        let mut req = req.map(|body| TimeoutBody::new(body, timeout));
-        req.extensions_mut().insert(self.scheme);
-        self.inner.call(req)
+        let inner = self.inner.clone();
+        let scheme = self.scheme;
+        if !defers_dispatch(&req) {
+            let mut req = req.map(|body| TimeoutBody::new(body, timeout));
+            req.extensions_mut().insert(scheme);
+            return Box::pin(inner.call(req));
+        }
+        Box::pin(async move {
+            let (mut parts, body) = req.into_parts();
+            parts.extensions.insert(scheme);
+            let mut body = TimeoutBody::new(body, timeout);
+            match read_whole(
+                &mut body,
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            )
+            .await
+            {
+                Ok(bytes) => {
+                    let req = hyper::Request::from_parts(parts, axum::body::Body::from(bytes));
+                    inner.call(req).await
+                }
+                // The stream broke while its request was still arriving (h2 has already answered
+                // the peer with the stream error it owes, RFC 9113 8.1.1): no request is dispatched.
+                Err(status) => Ok(status_response(status)),
+            }
+        })
     }
+}
+
+/// An HTTP/2 request of a method whose body has no defined meaning (RFC 9110 9.3: GET, HEAD,
+/// OPTIONS, TRACE) that arrived with its stream still open. Such a request is not dispatched until
+/// its stream is complete.
+///
+/// Why: hyper dispatches an HTTP/2 request at its HEADERS frame, and a handler that answers at once
+/// completes the stream, which h2 then closes with RST_STREAM(NO_ERROR). Whatever the peer sends on
+/// the stream afterwards, malformed or not, is ignored as frames on a reset stream. So a request
+/// that is malformed in its later frames (a second HEADERS frame without END_STREAM, DATA that does
+/// not add up to its content-length: RFC 9113 8.1, 8.1.2.6) was answered with a normal response,
+/// where the RFC wants the stream error. A request that rides one HEADERS frame with END_STREAM
+/// (every real GET) is unaffected and not delayed.
+fn defers_dispatch(req: &hyper::Request<hyper::body::Incoming>) -> bool {
+    use hyper::body::Body as _;
+    req.version() == hyper::Version::HTTP_2
+        && !req.body().is_end_stream()
+        && matches!(
+            *req.method(),
+            hyper::Method::GET
+                | hyper::Method::HEAD
+                | hyper::Method::OPTIONS
+                | hyper::Method::TRACE
+        )
+}
+
+/// Read `body` to its end, at most `cap` bytes; the status to answer when it breaks or is too big.
+async fn read_whole(
+    body: &mut TimeoutBody<hyper::body::Incoming>,
+    cap: usize,
+) -> Result<bytes::Bytes, hyper::StatusCode> {
+    let mut whole = bytes::BytesMut::new();
+    loop {
+        match std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await {
+            None => return Ok(whole.freeze()),
+            Some(Err(_)) => return Err(hyper::StatusCode::BAD_REQUEST),
+            Some(Ok(frame)) => {
+                if let Ok(mut data) = frame.into_data() {
+                    if whole.len() + data.remaining() > cap {
+                        return Err(hyper::StatusCode::PAYLOAD_TOO_LARGE);
+                    }
+                    whole.extend_from_slice(&data.copy_to_bytes(data.remaining()));
+                }
+            }
+        }
+    }
+}
+
+fn status_response(status: hyper::StatusCode) -> axum::response::Response {
+    let mut r = axum::response::Response::new(axum::body::Body::empty());
+    *r.status_mut() = status;
+    r
 }
 
 /// Build the hyper auto connection builder shared by BOTH the plain-HTTP and TLS serve loops.
@@ -818,11 +886,112 @@ impl Served {
         );
         let conn = self
             .builder
-            .serve_connection_with_upgrades(TokioIo::new(io), service);
+            .serve_connection_with_upgrades(TokioIo::new(Lingering(Some(io))), service);
         if let Err(e) = watcher.watch(conn).await {
             // Per-connection serving error (client reset, malformed request framing). Contained.
             tracing::debug!(error = %e, %peer, "{}: connection error", self.scheme);
         }
+    }
+}
+
+/// How long a closed connection may go on draining what its client still sends, in all (nginx's
+/// `lingering_time`), and between two reads (its `lingering_timeout`).
+const LINGER_TOTAL: Duration = Duration::from_secs(30);
+const LINGER_IDLE: Duration = Duration::from_secs(5);
+
+/// A served connection's bytes, CLOSED LINGERING: when hyper lets the connection go, its write
+/// half is shut (the client reads EOF after the last answer) and what the client is still sending
+/// is read and discarded until it closes, for at most [`LINGER_TOTAL`]. A plain close with the
+/// client's unread bytes still arriving makes the kernel answer them with a reset, which can
+/// destroy an answer sent before the request was read to its end (an oversize body's 413) before
+/// the client reads it.
+struct Lingering<I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
+    Option<I>,
+);
+
+impl<I> Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn io(&mut self) -> Pin<&mut I> {
+        Pin::new(
+            self.0
+                .as_mut()
+                .expect("the connection's bytes are held until drop"),
+        )
+    }
+}
+
+impl<I> tokio::io::AsyncRead for Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.get_mut().io().poll_read(cx, buf)
+    }
+}
+
+impl<I> tokio::io::AsyncWrite for Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.get_mut().io().poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.get_mut().io().poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.get_mut().io().poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        self.get_mut().io().poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(tokio::io::AsyncWrite::is_write_vectored)
+    }
+}
+
+impl<I> Drop for Lingering<I>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    fn drop(&mut self) {
+        let (Some(mut io), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        runtime.spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let _ = io.shutdown().await;
+            let mut sink = [0_u8; 16 * 1024];
+            let _ = tokio::time::timeout(LINGER_TOTAL, async {
+                while let Ok(Ok(n)) = tokio::time::timeout(LINGER_IDLE, io.read(&mut sink)).await {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            })
+            .await;
+        });
     }
 }
 
@@ -833,3 +1002,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/listener_h2_tests.rs"]
 mod h2_tests;
+
+#[cfg(test)]
+#[path = "tests/listener_h2_early_dispatch_tests.rs"]
+mod h2_early_dispatch_tests;
