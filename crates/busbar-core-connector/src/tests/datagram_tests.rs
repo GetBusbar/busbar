@@ -1385,7 +1385,7 @@ fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_
 }
 
 /// Lines that do not mirror refuse the open: the description settles nothing attached, and the
-/// pairing closes (RED: one caller line against none upstream never half-bridges).
+/// pairing closes (RED: a caller's audio line against an upstream video line never half-bridges).
 #[test]
 fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1396,6 +1396,12 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
         pairing.sort(
             super::Leg::Caller,
             vec![got(10, b"kind: audio\r\n", true)],
+            Instant::now(),
+        );
+        // The upstream leg names a line that does not mirror the caller's before its answer settles.
+        pairing.sort(
+            super::Leg::Upstream,
+            vec![got(20, b"kind: video\r\n", true)],
             Instant::now(),
         );
         let d = leg(&pairing);
@@ -1410,6 +1416,64 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
         );
         assert!(pairing.closed());
         assert_eq!(closes(&sink), 1);
+    });
+}
+
+/// AN UPSTREAM LEG THAT NAMES ITS LINES ONCE ITS ASSOCIATION IS UP (a WebRTC framer names them when
+/// ICE and DTLS complete, never at the rendezvous): its settled answer, naming none yet, is attached,
+/// and nothing crosses until its lines mirror the caller's. Lines it names later that mirror bridge;
+/// lines that do not close the session, both legs once, nothing having crossed. RED: the open was
+/// refused for an answer whose lines were not named yet, so a real browser's call never placed.
+#[test]
+fn an_upstream_leg_naming_its_lines_after_its_answer_is_held_to_the_caller_s() {
+    use busbar_contract::conn::PieceKind;
+    use busbar_contract::transport::wire::WireStatusClass;
+    crate::support::worker().block_on(async {
+        for (named, bridges) in [
+            (&b"kind: audio\r\n"[..], true),
+            (&b"kind: video\r\n"[..], false),
+        ] {
+            let sink = Arc::new(Sink::default());
+            let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+            pairing.sort(
+                super::Leg::Caller,
+                vec![got(10, b"kind: audio\r\n", true)],
+                Instant::now(),
+            );
+            let d = leg(&pairing);
+            d.exchanged(head(WireStatusClass::Success), b"").unwrap();
+            let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+            let answer = format!("{FAR_UFRAG} {FAR_PWD} {fp} 203.0.113.9:50000");
+            d.exchanged(piece(PieceKind::Body), answer.as_bytes())
+                .unwrap();
+            assert_eq!(
+                d.exchanged(piece(PieceKind::Completion), b""),
+                Ok(None),
+                "an answer that named no line yet is attached"
+            );
+            assert!(!pairing.closed());
+            // Nothing crosses before the upstream names its lines.
+            pairing.sort(
+                super::Leg::Caller,
+                vec![got(10, b"frame", false)],
+                Instant::now(),
+            );
+            pairing.sort(
+                super::Leg::Upstream,
+                vec![got(20, named, true)],
+                Instant::now(),
+            );
+            assert_eq!(
+                !pairing.closed(),
+                bridges,
+                "{}",
+                String::from_utf8_lossy(named)
+            );
+            if !bridges {
+                assert_eq!(closes(&sink), 1, "both legs closed once");
+            }
+            d.close();
+        }
     });
 }
 

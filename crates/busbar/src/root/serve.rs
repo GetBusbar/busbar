@@ -3558,6 +3558,10 @@ impl DataRoutes {
             unit,
             credential: door.credential,
             far: OnceLock::new(),
+            book: Some(
+                (self.served.session_book.clone())
+                    .unwrap_or_else(|| Arc::clone(crate::root::connector::the())),
+            ),
         };
         let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
         let Some((opened, ctx, slot)) = node
@@ -4060,6 +4064,7 @@ impl DataRoutes {
             unit,
             credential,
             far: OnceLock::new(),
+            book: None,
         };
         let units = served.driver.unit(&steps, &far, caller, arrival, 0);
         let money = Arc::clone(&served.money);
@@ -4238,7 +4243,17 @@ struct DoorFar<'d, 's> {
     /// The caller's verified credential, lent to the walk for a passthrough member alone.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     far: OnceLock<Option<EgressFarEnd<'d>>>,
+    /// The session book a datagram session's pairing is registered in: its upstream leg waits there
+    /// for the caller's leg to name what it carries ([`CALLER_NAMED_WAIT`]). `None` for a unit that
+    /// opens no session.
+    book: Option<Arc<busbar_core_connector::Connector>>,
 }
+
+/// HOW LONG A DATAGRAM SESSION'S UPSTREAM DIAL WAITS FOR THE CALLER'S LEG to name its lines and
+/// channels (row 132): the caller's association comes up only after the open is answered (the
+/// browser reads the answer, then runs ICE and DTLS), and the upstream leg mirrors what it names.
+/// Past it the dial goes ahead and is refused for having nothing to mirror.
+const CALLER_NAMED_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl<'d> DoorFar<'d, '_> {
     fn far(&self) -> Option<&EgressFarEnd<'d>> {
@@ -4310,6 +4325,11 @@ impl FarEnd for DoorFar<'_, '_> {
     }
 
     async fn send(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+        // A DATAGRAM SESSION'S UPSTREAM LEG mirrors the caller's: it is dialled once the caller's
+        // leg has named what it carries (at once for a unit no session registered).
+        if let Some(book) = &self.book {
+            book.caller_named(self.unit.get(), CALLER_NAMED_WAIT).await;
+        }
         match self.far() {
             Some(far) => far.send(token, request).await,
             None => false,

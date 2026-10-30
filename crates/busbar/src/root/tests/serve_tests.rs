@@ -2682,21 +2682,33 @@ pub(super) mod session_door {
         );
 
         // The sideband naming busbar's call dials the provider's socket attached to the provider's
-        // call it placed.
+        // call it placed, once the provider's answer to busbar's call has named that call (the
+        // provider was heard above before it answered): asked again until then, within the bound.
         let attached = SIDEBAND.replace("{call_id}", &call);
-        let (mut caller, head) = open_socket(addr, &attached, &plain).await;
-        assert!(
-            head.as_deref()
-                .is_some_and(|h| h.starts_with("HTTP/1.1 101")),
-            "the sideband to the caller's own call opens: {head:?}"
-        );
-        caller
-            .write_all(&client_text(append))
-            .await
-            .expect("a readable event");
-        let dial = next_report(&mut s.heard)
-            .await
-            .expect("the sideband dials the provider");
+        let deadline = tokio::time::Instant::now() + ANSWER_BOUND;
+        let (_caller, dial) = loop {
+            let (mut caller, head) = open_socket(addr, &attached, &plain).await;
+            assert!(
+                head.as_deref()
+                    .is_some_and(|h| h.starts_with("HTTP/1.1 101")),
+                "the sideband to the caller's own call opens: {head:?}"
+            );
+            caller
+                .write_all(&client_text(append))
+                .await
+                .expect("a readable event");
+            let heard = tokio::time::timeout(std::time::Duration::from_secs(1), s.heard.recv())
+                .await
+                .ok()
+                .flatten();
+            if let Some(dial) = heard {
+                break (caller, dial);
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the sideband dials the provider"
+            );
+        };
         assert!(
             dial.starts_with(&format!("DIAL GET /v1/realtime?call_id={PLACED_CALL} ")),
             "the sideband attaches to the call it names: {dial}"

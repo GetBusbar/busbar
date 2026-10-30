@@ -2402,6 +2402,19 @@ impl Connector {
         Ok(())
     }
 
+    /// WAIT, AT MOST `bound`, FOR UNIT `unit`'S CALLER LEG TO NAME WHAT IT CARRIES before its
+    /// upstream leg is dialled ([`datagram::Pairing::caller_named`]): the upstream dial mirrors the
+    /// caller's lines and channels, which a datagram framer names only once the caller's association
+    /// is up. `true` at once for a unit no session registered (nothing to wait for); `false` when
+    /// the bound passes or the session closes first (the dial is then refused as it would be).
+    pub async fn caller_named(&self, unit: u64, bound: Duration) -> bool {
+        let pairing = self.pairs.lock().expect("pairs").get(&unit).cloned();
+        match pairing {
+            Some(p) => p.caller_named(bound).await,
+            None => true,
+        }
+    }
+
     /// THE SESSION'S CLEANUP (once): its pairing leaves the book and closes, both legs with it, so
     /// a unit key the slot is given again never finds a stale leg.
     pub fn unpair(&self, unit: u64) {

@@ -1360,6 +1360,9 @@ pub struct Pairing {
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host
     /// address.
     local: SocketAddr,
+    /// Woken when the caller's leg names its first line or channel, and when the pairing closes
+    /// ([`Pairing::caller_named`]).
+    named: tokio::sync::Notify,
 }
 
 struct PairState {
@@ -1390,6 +1393,7 @@ impl Pairing {
                 closed: false,
             }),
             local,
+            named: tokio::sync::Notify::new(),
         })
     }
 
@@ -1411,6 +1415,35 @@ impl Pairing {
         self.lock().closed
     }
 
+    /// THE CALLER'S LEG HAS NAMED WHAT IT CARRIES: a line or a channel, which its framer names once
+    /// the caller's association is up (a WebRTC framer names its lines when ICE and DTLS complete,
+    /// not at the rendezvous). Until then the upstream dial has nothing to mirror.
+    #[must_use]
+    pub fn named(&self) -> bool {
+        let st = self.lock();
+        !st.bridge.caller.is_empty() || !st.bridge.channels.is_empty()
+    }
+
+    /// WAIT, AT MOST `bound`, FOR THE CALLER'S LEG TO NAME WHAT IT CARRIES ([`Self::named`]): `true`
+    /// once it has, `false` when the bound passes or the pairing closes first.
+    pub async fn caller_named(&self, bound: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + bound;
+        loop {
+            let notified = self.named.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.closed() {
+                return false;
+            }
+            if self.named() {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
+
     /// The upstream dial's opening: the caller's lines mirrored, then its channels.
     #[must_use]
     pub fn opening(&self) -> Vec<(String, Vec<u8>)> {
@@ -1428,7 +1461,26 @@ impl Pairing {
     ) -> Vec<crate::framer::Got> {
         let (session, across, to) = {
             let mut st = self.lock();
+            let named = !st.bridge.caller.is_empty() || !st.bridge.channels.is_empty();
             let (session, across) = st.bridge.sort(leg, pieces);
+            // AN ATTACHED UPSTREAM LEG THAT NAMES ITS LINES ONCE ITS ASSOCIATION IS UP: once it has
+            // named as many as the caller's (or more) and they do not mirror, the session is no
+            // bridge: it closes, both legs with it, as a refused open would (nothing crossed).
+            if leg == Leg::Upstream
+                && st.upstream.is_some()
+                && st.bridge.upstream.len() >= st.bridge.caller.len()
+                && st.bridge.mirrored().is_err()
+            {
+                drop(st);
+                self.close();
+                return Vec::new();
+            }
+            if leg == Leg::Caller
+                && !named
+                && (!st.bridge.caller.is_empty() || !st.bridge.channels.is_empty())
+            {
+                self.named.notify_waiters();
+            }
             let to = match leg {
                 Leg::Caller => st.upstream.clone(),
                 Leg::Upstream => st.caller.clone(),
@@ -1443,8 +1495,11 @@ impl Pairing {
         session
     }
 
-    /// Attach the upstream leg once its lines are known (sorted from its answer): refused, and
-    /// nothing attached, unless they mirror the caller's or the pairing is closed.
+    /// Attach the upstream leg once its answer settled it: refused, and nothing attached, when the
+    /// lines its answer named do not mirror the caller's, or the pairing is closed. A leg whose
+    /// framer names its lines only once its association is up (a WebRTC framer names them when ICE
+    /// and DTLS complete, not at the rendezvous) has named none yet: it is attached, and nothing
+    /// crosses until its lines mirror the caller's ([`Bridge::across`]), so nothing half-bridges.
     ///
     /// # Errors
     ///
@@ -1454,7 +1509,9 @@ impl Pairing {
         if st.closed {
             return Err("the session closed before its upstream leg answered".into());
         }
-        st.bridge.mirrored()?;
+        if !st.bridge.upstream.is_empty() {
+            st.bridge.mirrored()?;
+        }
         st.upstream = Some(upstream);
         Ok(())
     }
@@ -1470,6 +1527,7 @@ impl Pairing {
             st.bridge.stop();
             [st.caller.take(), st.upstream.take()]
         };
+        self.named.notify_waiters();
         for leg in legs.into_iter().flatten() {
             leg.close();
         }
