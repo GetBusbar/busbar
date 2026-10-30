@@ -22,6 +22,7 @@ fn req<'a>(
     MintRequest {
         roles,
         requested_pools: pools,
+        grants_other_kinds: false,
         requested_ttl_secs: ttl,
         explicit_ttl: explicit,
         requested_mode: None,
@@ -37,6 +38,41 @@ fn role_policy(role: &str, ceiling: RoleCeiling, block_max_ttl: Option<u64>) -> 
         block_binding_modes: None,
         ceilings,
     }
+}
+
+/// W9: a role whose ceiling names its pools mints POOL grants only. A grant of another kind (a
+/// plane's `allowed_{kind}s`) is refused under that ceiling, as it was unmintable before; with no
+/// pool ceiling, or none held, the same mint is admitted.
+#[test]
+fn mint_ceiling_of_named_pools_refuses_a_grant_of_another_kind() {
+    let policy = role_policy(
+        "app-admin",
+        RoleCeiling {
+            allowed_pools: Some(vec!["fast".to_string()]),
+            ..Default::default()
+        },
+        None,
+    );
+    let roles = vec!["app-admin".to_string()];
+    let pools = vec!["fast".to_string()];
+    let other = MintRequest {
+        grants_other_kinds: true,
+        ..req(&roles, Some(&pools), DAY, true)
+    };
+    let err = policy
+        .check_mint(&other)
+        .expect_err("another kind under a pool ceiling must be refused");
+    assert!(err.contains("auth.policy.mint_ceilings"), "got: {err}");
+    assert!(policy
+        .check_mint(&req(&roles, Some(&pools), DAY, true))
+        .is_ok());
+    let unceilinged = vec!["someone-else".to_string()];
+    assert!(policy
+        .check_mint(&MintRequest {
+            grants_other_kinds: true,
+            ..req(&unceilinged, Some(&pools), DAY, true)
+        })
+        .is_ok());
 }
 
 /// A role AT its TTL ceiling: a default (non-explicit) over-long request is CLAMPED down to the

@@ -9,7 +9,7 @@
 //! [`OutHead`](super::call::OutHead); [`result`] and [`results`] enforce it, and [`within`] is the
 //! check for an op with no short path.
 
-use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
+use super::call::{AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome};
 use super::decl::abi_op;
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
@@ -402,6 +402,67 @@ pub fn lease(
     }
     Ok(())
 }
+
+/// A FAILED answer's error text by [`text`]; other outcomes state nothing here.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`].
+pub fn failed_error(head: &OutHead, field: &'static str) -> Result<(), Fault> {
+    if head.outcome.0 == (Outcome::Failed as u8) {
+        return text(head.error, field);
+    }
+    Ok(())
+}
+
+/// The `serve` answer of the hook and export kinds: the `headers_out` list (at most `max_headers`
+/// entries), the body [`blob`], and the [`lease`] over both.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn served(
+    head: &OutHead,
+    headers_out: *const AbiStr,
+    headers_out_len: usize,
+    max_headers: u64,
+    body: &Blob,
+) -> Result<(), Fault> {
+    listed(headers_out, headers_out_len, "serve.headers_out")?;
+    if headers_out_len as u64 > max_headers {
+        return Err(fault(Rule::OverMax, "serve.headers_out_len"));
+    }
+    blob(body, "serve.body", "serve.body.len")?;
+    lease(
+        head.outcome,
+        head.lease,
+        headers_out_len > 0 || body.len > 0,
+        "serve.lease",
+        "serve.lease_without_material",
+    )
+}
+
+/// An answer whose one blob `$out.$blob` is its material: [`blob`], then [`lease`]. The arms are
+/// `<op>.<blob>`, `<op>.<blob>.len`, `<op>.lease` and `<op>.lease_without_material`.
+macro_rules! leased_blob {
+    ($out:expr, $op:literal, $blob:ident) => {
+        $crate::abi::mechanism::check::blob(
+            &$out.$blob,
+            concat!($op, ".", stringify!($blob)),
+            concat!($op, ".", stringify!($blob), ".len"),
+        )
+        .and_then(|()| {
+            $crate::abi::mechanism::check::lease(
+                $out.head.outcome,
+                $out.head.lease,
+                $out.$blob.len > 0,
+                concat!($op, ".lease"),
+                concat!($op, ".lease_without_material"),
+            )
+        })
+    };
+}
+pub(crate) use leased_blob;
 
 /// A string that must be present: non-empty, and never counted with a NULL pointer.
 ///

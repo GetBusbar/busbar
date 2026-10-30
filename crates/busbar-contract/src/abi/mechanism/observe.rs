@@ -415,28 +415,6 @@ impl Observations {
         self.diagnostics.push(d);
         self
     }
-
-    /// Wrap a kind-specific `result` in the envelope these observations belong to.
-    ///
-    /// Serializing here — rather than letting the wire carry `Vec<PluginMetric>` — is what makes one
-    /// malformed entry cost that entry and nothing else on the host side (see this module's doc). An
-    /// entry that will not serialize at all is dropped here, for the same reason: a plugin's
-    /// telemetry must never be able to cost it its answer.
-    pub fn into_envelope<R>(self, result: R) -> Envelope<R> {
-        Envelope {
-            result,
-            metrics: self
-                .metrics
-                .into_iter()
-                .filter_map(|m| serde_json::to_value(m).ok())
-                .collect(),
-            diagnostics: self
-                .diagnostics
-                .into_iter()
-                .filter_map(|d| serde_json::to_value(d).ok())
-                .collect(),
-        }
-    }
 }
 
 /// One metric SERIES a plugin's signed manifest DECLARES it emits (`declares.metrics[]`) — the

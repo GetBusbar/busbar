@@ -66,7 +66,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
         let parse = tools
             .parse_section
             .expect("the plane parses its own section");
-        let cfg = parse(&section).expect("the `tools:` section parses");
+        let cfg = parse(tools, &section).expect("the `tools:` section parses");
         match tools.build_runtime {
             Some(build) => {
                 builder.install_plane_runtime(
@@ -86,7 +86,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
                     prior: None,
                     providers: None,
                 };
-                let slot = (tools.build)(&ctx).expect("the plane builds from its section");
+                let slot = (tools.build)(tools, &ctx).expect("the plane builds from its section");
                 builder.install_plane_runtime(tools.key, slot);
             }
         }

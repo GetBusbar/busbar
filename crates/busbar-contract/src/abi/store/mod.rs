@@ -102,7 +102,7 @@ pub const ABI_VERSION: u32 = 3;
 /// the store table. A door states it as built
 /// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
 /// `tests/layout_fingerprint.rs` holds it to its fold.
-pub const LAYOUT_FINGERPRINT: u64 = 0x5d3e3b766528fa66;
+pub const LAYOUT_FINGERPRINT: u64 = 0x56bdc8a89ba6e6e0;
 
 /// The store kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 /// crossing its table, each with every field. A struct `abi/store/` gains is listed here (gate
@@ -489,7 +489,7 @@ store_slots! {
     21 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
         "`list_plane_record_parents`. In [`IdIn`] (kind), out [`LeasedStrListOut`]. The boot enumeration.";
     22 PURGE_PLANE_RECORDS_BEFORE purge_plane_records_before KindBeforeIn, CountOut, Off, Call, Fixed,
-        "`purge_plane_records_before`. In [`KindBeforeIn`], out [`CountOut`]. Honours `disposition`.";
+        "`purge_plane_records_before`. In [`KindBeforeIn`], out [`CountOut`]. Honours `disposition` under the `retention` rule the host passes.";
     23 DELETE_PLANE_RECORD delete_plane_record KindIdIn, OutHead, Request, Call, Fixed,
         "`delete_plane_record`. In [`KindIdIn`], out [`OutHead`]. Absent is READY.";
     24 REDEEM_PLANE_TOKEN redeem_plane_token TokenIn, VerdictOut, Request, Call, Fixed,
