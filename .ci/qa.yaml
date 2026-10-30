@@ -16,13 +16,18 @@
 # Mac (x86_64-apple-darwin's PGO needs an Intel Mac), and no backend builds Windows. Whether 1.6.0
 # builds those elsewhere or ships without them is an OWNER DECISION (PUBLISH-PIPELINE-1.6.0 §10, D6).
 # Kept outputs are capped at 256 MiB per check, and each slice below is one target, well under that.
+#
+# W17 (linking): every linux-gnu slice (core, plugins, pgo-train) builds inside the pinned glibc 2.28
+# baseline (scripts/release/in-baseline.sh), and each image slice is packaged from its own arch's
+# linux-gnu core in the SAME check, on gcr.io/distroless/cc: there is no musl build and no separate
+# image build, because a static musl binary cannot dlopen a dropped-in plugin.
 to: main
 on_green: none
 approve: true
 deadline: 8h
 on:
-  move: [fmt, clippy, test, deny, oracle, gate-selftest, candidate-core-x86_64-linux-gnu, candidate-core-aarch64-linux-gnu, candidate-core-aarch64-linux-gnu-armv8, candidate-core-x86_64-apple-darwin, candidate-core-aarch64-apple-darwin, candidate-core-x86_64-windows, candidate-image-amd64, candidate-image-arm64, candidate-plugins-x86_64-linux-gnu, candidate-plugins-aarch64-linux-gnu, candidate-plugins-x86_64-apple-darwin, candidate-plugins-aarch64-apple-darwin, candidate-plugins-x86_64-windows]
-  manual: [tls-assess, pgo-train-x86_64-linux-gnu, pgo-train-aarch64-linux-gnu, pgo-train-aarch64-linux-gnu-armv8, pgo-train-x86_64-linux-musl, pgo-train-aarch64-linux-musl, pgo-train-x86_64-apple-darwin, pgo-train-aarch64-apple-darwin]
+  move: [fmt, clippy, test, deny, oracle, gate-selftest, candidate-core-x86_64-linux-gnu, candidate-core-aarch64-linux-gnu, candidate-core-aarch64-linux-gnu-armv8, candidate-core-x86_64-apple-darwin, candidate-core-aarch64-apple-darwin, candidate-core-x86_64-windows, candidate-plugins-x86_64-linux-gnu, candidate-plugins-aarch64-linux-gnu, candidate-plugins-x86_64-apple-darwin, candidate-plugins-aarch64-apple-darwin, candidate-plugins-x86_64-windows]
+  manual: [tls-assess, pgo-train-x86_64-linux-gnu, pgo-train-aarch64-linux-gnu, pgo-train-aarch64-linux-gnu-armv8, pgo-train-x86_64-apple-darwin, pgo-train-aarch64-apple-darwin]
   schedule:
     cron: "17 */6 * * *"
     checks: [rekor-watch]
@@ -301,31 +306,42 @@ checks:
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
     outputs: [target/oracle/reports/]
   candidate-core-x86_64-linux-gnu:
-    # busbar-x86_64-unknown-linux-gnu: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
-    requires: [cc, arch-x86_64]
+    # busbar-x86_64-unknown-linux-gnu: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core),
+    # and the linux/amd64 image slice packaged from it.
+    requires: [cc, docker, arch-x86_64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
-      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
-      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core x86_64-unknown-linux-gnu --out target/candidate/core-x86_64-linux-gnu
-    outputs: [target/candidate/core-x86_64-linux-gnu/]
+      # W17: built INSIDE the pinned glibc 2.28 baseline (release-targets.json linux_build_image), so
+      # the binary runs on every glibc distro from RHEL 8 / Debian 10 on; release-build.sh refuses
+      # any newer host glibc. cargo-cyclonedx is built in the baseline too (a host build would not run there).
+      scripts/release/in-baseline.sh bash -ec 'C=/cache/cargo-cyclonedx-0.5.7; [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7; CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core x86_64-unknown-linux-gnu --out target/candidate/core-x86_64-linux-gnu'
+      # The image packages THIS check's binary, byte for byte (image_matches_packaged_binary): one
+      # build, two artifacts, on gcr.io/distroless/cc rather than scratch so dropped-in plugins load.
+      python3 scripts/release/candidate.py image amd64 --from target/candidate/core-x86_64-linux-gnu --out target/candidate/image-amd64
+    outputs: [target/candidate/core-x86_64-linux-gnu/, target/candidate/image-amd64/]
   candidate-core-aarch64-linux-gnu:
-    # busbar-aarch64-unknown-linux-gnu: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
-    requires: [cc, arch-aarch64]
+    # busbar-aarch64-unknown-linux-gnu: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core),
+    # and the linux/arm64 image slice packaged from it.
+    requires: [cc, docker, arch-aarch64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
-      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
-      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-unknown-linux-gnu --out target/candidate/core-aarch64-linux-gnu
-    outputs: [target/candidate/core-aarch64-linux-gnu/]
+      # W17: built INSIDE the pinned glibc 2.28 baseline (release-targets.json linux_build_image), so
+      # the binary runs on every glibc distro from RHEL 8 / Debian 10 on; release-build.sh refuses
+      # any newer host glibc. cargo-cyclonedx is built in the baseline too (a host build would not run there).
+      scripts/release/in-baseline.sh bash -ec 'C=/cache/cargo-cyclonedx-0.5.7; [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7; CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-unknown-linux-gnu --out target/candidate/core-aarch64-linux-gnu'
+      # The image packages THIS check's binary, byte for byte (image_matches_packaged_binary): one
+      # build, two artifacts, on gcr.io/distroless/cc rather than scratch so dropped-in plugins load.
+      python3 scripts/release/candidate.py image arm64 --from target/candidate/core-aarch64-linux-gnu --out target/candidate/image-arm64
+    outputs: [target/candidate/core-aarch64-linux-gnu/, target/candidate/image-arm64/]
   candidate-core-aarch64-linux-gnu-armv8:
     # busbar-aarch64-unknown-linux-gnu-armv8.0: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
-    requires: [cc, arch-aarch64]
+    requires: [cc, docker, arch-aarch64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
-      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
-      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-unknown-linux-gnu-armv8.0 --out target/candidate/core-aarch64-linux-gnu-armv8
+      # W17: built INSIDE the pinned glibc 2.28 baseline (release-targets.json linux_build_image), so
+      # the binary runs on every glibc distro from RHEL 8 / Debian 10 on; release-build.sh refuses
+      # any newer host glibc. cargo-cyclonedx is built in the baseline too (a host build would not run there).
+      scripts/release/in-baseline.sh bash -ec 'C=/cache/cargo-cyclonedx-0.5.7; [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7; CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-unknown-linux-gnu-armv8.0 --out target/candidate/core-aarch64-linux-gnu-armv8'
     outputs: [target/candidate/core-aarch64-linux-gnu-armv8/]
   candidate-core-x86_64-apple-darwin:
     # busbar-x86_64-apple-darwin: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
@@ -354,32 +370,10 @@ checks:
       [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
       CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core x86_64-pc-windows-msvc --out target/candidate/core-x86_64-windows
     outputs: [target/candidate/core-x86_64-windows/]
-  candidate-image-amd64:
-    # linux/amd64: its static musl binary and a single-platform OCI layout on the rust:alpine digest
-    # pinned in release/rust-alpine.txt. candidate.py refuses BuildKit older than 0.13. The owner's
-    # local assemble joins amd64 and arm64 into one index.
-    requires: [cc, docker, arch-x86_64]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
-      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
-      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py image amd64 --out target/candidate/image-amd64
-    outputs: [target/candidate/image-amd64/]
-  candidate-image-arm64:
-    # linux/arm64: its static musl binary and a single-platform OCI layout on the rust:alpine digest
-    # pinned in release/rust-alpine.txt. candidate.py refuses BuildKit older than 0.13. The owner's
-    # local assemble joins amd64 and arm64 into one index.
-    requires: [cc, docker, arch-aarch64]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
-      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
-      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py image arm64 --out target/candidate/image-arm64
-    outputs: [target/candidate/image-arm64/]
   candidate-plugins-x86_64-linux-gnu:
     # Every plugin in release/plugin-pins.tsv at its pinned commit, built for x86_64-unknown-linux-gnu and packed
     # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
-    requires: [cc, arch-x86_64]
+    requires: [cc, docker, arch-x86_64]
     inputs:
       - release/plugin-pins.tsv
       - scripts/release/candidate.py
@@ -392,12 +386,13 @@ checks:
       - .cargo/**
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py plugins x86_64-unknown-linux-gnu --out target/candidate/plugins-x86_64-linux-gnu
+      # W17: plugin cdylibs follow the binary's rules, so they are built in the same glibc baseline.
+      scripts/release/in-baseline.sh python3 scripts/release/candidate.py plugins x86_64-unknown-linux-gnu --out target/candidate/plugins-x86_64-linux-gnu
     outputs: [target/candidate/plugins-x86_64-linux-gnu/]
   candidate-plugins-aarch64-linux-gnu:
     # Every plugin in release/plugin-pins.tsv at its pinned commit, built for aarch64-unknown-linux-gnu and packed
     # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
-    requires: [cc, arch-aarch64]
+    requires: [cc, docker, arch-aarch64]
     inputs:
       - release/plugin-pins.tsv
       - scripts/release/candidate.py
@@ -410,7 +405,8 @@ checks:
       - .cargo/**
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py plugins aarch64-unknown-linux-gnu --out target/candidate/plugins-aarch64-linux-gnu
+      # W17: plugin cdylibs follow the binary's rules, so they are built in the same glibc baseline.
+      scripts/release/in-baseline.sh python3 scripts/release/candidate.py plugins aarch64-unknown-linux-gnu --out target/candidate/plugins-aarch64-linux-gnu
     outputs: [target/candidate/plugins-aarch64-linux-gnu/]
   candidate-plugins-x86_64-apple-darwin:
     # Every plugin in release/plugin-pins.tsv at its pinned commit, built for x86_64-apple-darwin and packed
@@ -506,47 +502,29 @@ checks:
     # MANUAL. Trains the PGO profile for x86_64-unknown-linux-gnu on a native backend (candidate.py pgo-train). A person
     # reviews the .meta, and commits x86_64-unknown-linux-gnu.profdata and its .meta to release/pgo/. Releases build only
     # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
-    requires: [cc, arch-x86_64]
+    requires: [cc, docker, arch-x86_64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py pgo-train x86_64-unknown-linux-gnu --out target/pgo-train-x86_64-linux-gnu
+      scripts/release/in-baseline.sh python3 scripts/release/candidate.py pgo-train x86_64-unknown-linux-gnu --out target/pgo-train-x86_64-linux-gnu
     outputs: [target/pgo-train-x86_64-linux-gnu/]
   pgo-train-aarch64-linux-gnu:
     # MANUAL. Trains the PGO profile for aarch64-unknown-linux-gnu on a native backend (candidate.py pgo-train). A person
     # reviews the .meta, and commits aarch64-unknown-linux-gnu.profdata and its .meta to release/pgo/. Releases build only
     # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
-    requires: [cc, arch-aarch64]
+    requires: [cc, docker, arch-aarch64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-gnu --out target/pgo-train-aarch64-linux-gnu
+      scripts/release/in-baseline.sh python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-gnu --out target/pgo-train-aarch64-linux-gnu
     outputs: [target/pgo-train-aarch64-linux-gnu/]
   pgo-train-aarch64-linux-gnu-armv8:
     # MANUAL. Trains the PGO profile for aarch64-unknown-linux-gnu-armv8.0 on a native backend (candidate.py pgo-train). A person
     # reviews the .meta, and commits aarch64-unknown-linux-gnu-armv8.0.profdata and its .meta to release/pgo/. Releases build only
     # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
-    requires: [cc, arch-aarch64]
+    requires: [cc, docker, arch-aarch64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-gnu-armv8.0 --out target/pgo-train-aarch64-linux-gnu-armv8
+      scripts/release/in-baseline.sh python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-gnu-armv8.0 --out target/pgo-train-aarch64-linux-gnu-armv8
     outputs: [target/pgo-train-aarch64-linux-gnu-armv8/]
-  pgo-train-x86_64-linux-musl:
-    # MANUAL. Trains the PGO profile for x86_64-unknown-linux-musl on a native backend (candidate.py pgo-train). A person
-    # reviews the .meta, and commits x86_64-unknown-linux-musl.profdata and its .meta to release/pgo/. Releases build only
-    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
-    requires: [cc, arch-x86_64]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py pgo-train x86_64-unknown-linux-musl --out target/pgo-train-x86_64-linux-musl
-    outputs: [target/pgo-train-x86_64-linux-musl/]
-  pgo-train-aarch64-linux-musl:
-    # MANUAL. Trains the PGO profile for aarch64-unknown-linux-musl on a native backend (candidate.py pgo-train). A person
-    # reviews the .meta, and commits aarch64-unknown-linux-musl.profdata and its .meta to release/pgo/. Releases build only
-    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
-    requires: [cc, arch-aarch64]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-musl --out target/pgo-train-aarch64-linux-musl
-    outputs: [target/pgo-train-aarch64-linux-musl/]
   pgo-train-x86_64-apple-darwin:
     # MANUAL. Trains the PGO profile for x86_64-apple-darwin on a native backend (candidate.py pgo-train). A person
     # reviews the .meta, and commits x86_64-apple-darwin.profdata and its .meta to release/pgo/. Releases build only
