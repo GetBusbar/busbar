@@ -292,6 +292,31 @@ fn a_written_owned_trust_anchor_that_does_not_parse_refuses_the_need() {
     }
 }
 
+/// A `settings.` trust anchor that resolved to nothing is OPTIONAL, as an owned one is: an auth
+/// plugin with an optional private CA declares the need, and with no CA configured its connections
+/// trust the public roots alone (a private CA's far end is still refused). RED before the fix: the
+/// need was refused, and an audit record written at every open and refresh for a correct config.
+#[test]
+fn an_absent_settings_trust_anchor_declares_the_need_over_the_public_roots_alone() {
+    let (_, leaf, key) = private_ca();
+    worker().block_on(async move {
+        let far = tls_far_end(leaf, key).await;
+        let c = secure_connector();
+        let need = trusting_need("settings.ca_cert_pem");
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, None),
+            Ok(()),
+            "a settings anchor the operator did not configure refuses nothing"
+        );
+        assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(0)), Some(Ok(())));
+        assert_eq!(
+            exchange(&c, &far).await,
+            Err(ConnError::Refused),
+            "the public roots alone refuse a private CA's certificate"
+        );
+    });
+}
+
 /// A `settings.` anchor keeps today's REQUIRED semantics: one that resolved to nothing still refuses
 /// the need (the owned namespace's optionality is keyed to the namespace, nothing else).
 #[test]
