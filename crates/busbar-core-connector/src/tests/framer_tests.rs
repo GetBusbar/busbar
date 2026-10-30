@@ -812,6 +812,35 @@ fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
     );
 }
 
+/// An INTERIM head (a `1xx` the framer flags interim) is never the answer's head: the final head
+/// that follows it is the one field block handed up as the head.
+#[test]
+fn an_interim_head_is_never_handed_up_as_the_final_head() {
+    let door = Arc::new(TestDoor::new(
+        "messages",
+        &["messages"],
+        &[],
+        Knobs {
+            messages: Some(1),
+            ..Knobs::default()
+        },
+    ));
+    let (mut f, _) = Framing::begin(door, SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
+    let y = f.ingest(b"ihx", false).unwrap();
+    let heads: Vec<Option<u32>> = y
+        .pieces
+        .iter()
+        .filter(|p| p.fields)
+        .map(|p| p.status_code)
+        .collect();
+    assert_eq!(
+        heads,
+        vec![Some(200)],
+        "only the final head is the head: {y:?}"
+    );
+    assert_eq!(y.pieces.len(), 2, "the head, then the message");
+}
+
 /// A `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
 /// a frame: it is never handed up as a piece (relayed, it reached a reader as an empty body piece,
 /// ahead of the head on a dialled stream). The messages around it are handed up as they came.

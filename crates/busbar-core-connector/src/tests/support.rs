@@ -20,8 +20,9 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, PIECE_WRITABLE,
-    READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_TEXT,
+    PIECE_WRITABLE, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -49,7 +50,8 @@ pub struct Knobs {
     pub accept_offer: Option<&'static [u8]>,
     /// The far end's bytes are SCRIPTED messages on this stream, one piece per byte: `b` an empty
     /// binary message, `t` an empty text message, `e` the stream's end (`PIECE_END`), any other
-    /// byte a one-byte binary message.
+    /// byte a one-byte binary message; `i` an interim head (an empty field block stating code
+    /// `103` with the flag bit `1024`), `h` a final head (an empty field block stating `200`).
     pub messages: Option<u64>,
     /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
     /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
@@ -60,6 +62,10 @@ pub struct Knobs {
     /// Every field block the framing yields states this declared body length
     /// (`PIECE_HAS_DECLARED_LEN`).
     pub declared_len: Option<u64>,
+    /// Every field block the framing yields states this code (`PIECE_HAS_CODE`).
+    pub head_code: Option<u32>,
+    /// Every field block the framing yields carries these piece flags too.
+    pub head_flags: u16,
     /// Every byte the framing ingests is also answered back to the far end (as a framer answers a
     /// ping with a pong, unasked by the caller).
     pub echo: bool,
@@ -95,6 +101,8 @@ struct State {
     piece: Option<usize>,
     fields: bool,
     declared_len: Option<u64>,
+    head_code: Option<u32>,
+    head_flags: u16,
     echo: bool,
     spin: bool,
     full_at: Option<usize>,
@@ -252,7 +260,16 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
             let Some(b) = st.inbound.pop_front() else {
                 break;
             };
+            let mut code = 0;
             let (len, flags) = match b {
+                b'i' => {
+                    code = 103;
+                    (0, PIECE_FIELDS | PIECE_HAS_CODE | PIECE_END_OF_FRAME | 1024)
+                }
+                b'h' => {
+                    code = 200;
+                    (0, PIECE_FIELDS | PIECE_HAS_CODE | PIECE_END_OF_FRAME)
+                }
                 b'b' => (0, PIECE_END_OF_FRAME),
                 b't' => (0, PIECE_TEXT | PIECE_END_OF_FRAME),
                 b'e' => (0, PIECE_END | PIECE_END_OF_FRAME),
@@ -272,7 +289,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                     stream,
                     offset: frame_len as u64,
                     len,
-                    code: 0,
+                    code,
                     status_class: 0,
                     flags,
                     fault: 0,
@@ -302,6 +319,11 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 PIECE_HAS_DECLARED_LEN
             } else {
                 0
+            }
+            | if st.fields && st.head_code.is_some() {
+                PIECE_HAS_CODE | st.head_flags
+            } else {
+                0
             };
         // SAFETY: a host buffer of at least one piece.
         unsafe {
@@ -309,7 +331,11 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 stream: 0,
                 offset: 0,
                 len: n as u64,
-                code: 0,
+                code: if st.fields {
+                    st.head_code.unwrap_or(0)
+                } else {
+                    0
+                },
                 status_class: 0,
                 flags,
                 fault: 0,
@@ -461,6 +487,8 @@ impl FramerDoor for TestDoor {
                     piece: self.knobs.piece,
                     fields: self.knobs.fields,
                     declared_len: self.knobs.declared_len,
+                    head_code: self.knobs.head_code,
+                    head_flags: self.knobs.head_flags,
                     echo: self.knobs.echo,
                     spin: self.knobs.spin,
                     full_at: self.knobs.full_at,

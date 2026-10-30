@@ -331,6 +331,15 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
 /// body length (or states none), read through the connection table from a far end that answers a
 /// one-field head.
 fn head_through_the_table(declared: Option<u64>) -> Piece {
+    head_through_the_table_with(crate::support::Knobs {
+        fields: true,
+        declared_len: declared,
+        ..crate::support::Knobs::default()
+    })
+}
+
+/// The table's head piece from a framer of `knobs`, read as [`head_through_the_table`] reads it.
+fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
     worker().block_on(async {
         let (l, far) = far_end().await;
         tokio::spawn(async move {
@@ -340,16 +349,7 @@ fn head_through_the_table(declared: Option<u64>) -> Piece {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             drop(s);
         });
-        let door = Arc::new(TestDoor::new(
-            "bytes",
-            &["bytes"],
-            &[],
-            crate::support::Knobs {
-                fields: true,
-                declared_len: declared,
-                ..crate::support::Knobs::default()
-            },
-        ));
+        let door = Arc::new(TestDoor::new("bytes", &["bytes"], &[], knobs));
         let view = Transports::new(vec![
             Entry {
                 door,
@@ -404,6 +404,31 @@ fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
         Some(1 << 40)
     );
     assert_eq!(head_through_the_table(None).declared_len, None);
+}
+
+/// A head whose code the framer states in the HANDSHAKE's numbering (flag bit `2048`: an upgrade's
+/// handshake answered, e.g. refused `403`) reaches the table's head piece in that numbering, the
+/// status-line one, never as a code of the claim's own; a head without the bit names none (the
+/// claim's).
+#[test]
+fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() {
+    let head = |flags| {
+        head_through_the_table_with(crate::support::Knobs {
+            fields: true,
+            head_code: Some(403),
+            head_flags: flags,
+            ..crate::support::Knobs::default()
+        })
+    };
+    let handshake = head(2048);
+    assert_eq!(handshake.status_code, Some(403));
+    assert_eq!(
+        handshake.status_namespace.as_deref(),
+        Some(busbar_contract::transport::registry::status_ns::HTTP)
+    );
+    let own = head(0);
+    assert_eq!(own.status_code, Some(403));
+    assert_eq!(own.status_namespace, None);
 }
 
 /// RED: a metadata target is refused through the table even when a transport serves the need.
