@@ -4087,3 +4087,48 @@ fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
         "a dropped inline ticket's kept results outlive it"
     );
 }
+
+/// REFERENCE-CAPABLE FIELDS AT LOAD (lead ruling item 7a): a Statement whose extensions name a path
+/// under `reference_fields` that its `secret_refs` also names states a contradiction and is
+/// refused, as is a `reference_fields` value that is not a JSON list of paths; a list beside
+/// distinct secret paths loads.
+#[test]
+fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
+    use busbar_contract::abi::mechanism::extensions::{
+        encode, statement_blob, EXT_REFERENCE_FIELDS,
+    };
+    // SAFETY: the real door is `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st = unsafe { *real.statement() };
+    let refs: &'static [busbar_contract::abi::mechanism::call::AbiStr] = Box::leak(Box::new([
+        busbar_contract::abi::sdk::door::abi_str("token"),
+        busbar_contract::abi::sdk::door::abi_str("url"),
+    ]));
+    let with = |reference: &[u8]| {
+        let ext: &'static [u8] =
+            Box::leak(encode(&[(EXT_REFERENCE_FIELDS, reference)]).into_boxed_slice());
+        let stated: &'static Statement = Box::leak(Box::new(Statement {
+            secret_refs: refs.as_ptr(),
+            secret_refs_len: refs.len(),
+            extensions: statement_blob(ext),
+            ..st
+        }));
+        let mut d = real.parts();
+        d.statement = stated;
+        // SAFETY: a copy of the real door with its Statement replaced by a `'static` one.
+        validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
+    };
+    assert_eq!(
+        with(br#"["base", "endpoint.*"]"#),
+        None,
+        "distinct lists load"
+    );
+    let Some(LoadError::BadStatement(why)) = with(br#"["base", "url"]"#) else {
+        panic!("a path in both lists is refused");
+    };
+    assert!(why.contains("url"), "{why}");
+    assert!(
+        matches!(with(br#"{"url": true}"#), Some(LoadError::BadStatement(_))),
+        "a malformed list is refused"
+    );
+}

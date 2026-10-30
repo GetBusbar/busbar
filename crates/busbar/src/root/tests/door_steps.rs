@@ -8,10 +8,18 @@
 
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
 
+use busbar_contract::section::TOOL_CALL_SECTION_KEY;
+
 use super::DoorPools;
 
+/// The pools of `yaml`, a tool-call section's (`TOOL_CALL_SECTION_KEY`).
 fn pools(yaml: &str) -> DoorPools {
-    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml")).expect("the pools")
+    declared_by(yaml, TOOL_CALL_SECTION_KEY)
+}
+
+/// The pools of `yaml`, the section `declared` (the key its plane's Statement declares).
+fn declared_by(yaml: &str, declared: &str) -> DoorPools {
+    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml"), declared).expect("the pools")
 }
 
 fn routed(p: &DoorPools, class: u8, named: Option<&str>) -> Option<(String, Vec<String>)> {
@@ -46,20 +54,76 @@ fn a_pool_route_walks_its_named_pools_members_under_its_label() {
 
 /// RED (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): an entry's reserved `timeout:` is
 /// its member's attempt bound, read for every entry alike — a section's own entries and a
-/// model-serving section's `models` entries; an entry that writes none has no bound of its own.
+/// model-serving section's `models` entries; a registration that writes none is held to the core's
+/// default, and a model entry that writes none has no bound of its own.
 #[test]
 fn an_entrys_timeout_is_its_members_attempt_bound() {
     let p = pools("a: { timeout: 10s }\nb: {}\npools:\n  both:\n    members: [a, b]");
     assert_eq!(p.timeout_ms("a"), Some(10_000));
     assert_eq!(
         p.timeout_ms("b"),
-        None,
-        "none written: the walk's own budget"
+        Some(busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS),
+        "none written: the core's default"
     );
     assert_eq!(p.timeout_ms("both"), None, "a pool is no entry");
     let m = pools("models:\n  m1: { provider: p, timeout: 2m }\n  m2: { provider: p }");
     assert_eq!(m.timeout_ms("m1"), Some(120_000));
     assert_eq!(m.timeout_ms("m2"), None);
+}
+
+/// RED W11 (docs/mcp.md: a registration's `timeout:` defaults to `30s`; owner: a CORE default): a
+/// REGISTRATION that writes no `timeout:` is still bounded. Its member's attempt bound is the core
+/// default, 30 seconds, never the walk's whole budget (the pool's 120 s), so an upstream that takes
+/// a call and never answers it holds its caller 30 s. A written `timeout:` wins. A model-serving
+/// section's entries keep 1.5.5's rule: no bound of their own, the walk's budget.
+#[test]
+fn a_registration_that_writes_no_timeout_is_bounded_at_the_core_default() {
+    let p = pools("fs: { url: \"http://up.example/rpc\" }\nslow: { timeout: 2m }");
+    assert_eq!(
+        p.timeout_ms("fs"),
+        Some(30_000),
+        "none written: the core's 30 s default, not the walk's budget"
+    );
+    assert_eq!(
+        p.timeout_ms("slow"),
+        Some(120_000),
+        "a written timeout wins"
+    );
+    let m = pools("models:\n  m: { provider: p }");
+    assert_eq!(
+        m.timeout_ms("m"),
+        None,
+        "a model entry keeps 1.5.5's walk budget"
+    );
+}
+
+/// RED W11b (lead ruling: the 30 s default call-leg bound is scoped to tool calls): a registration
+/// of any OTHER plane's section (here an agent registration under `agents:`) that writes no
+/// `timeout:` is NOT held to the tool-call default. Its call leg is bounded by its walk's own budget
+/// (the pool's, 120 s by default), as before the default existed; a long-running agent call is not
+/// cut at 30 s. A written `timeout:` still wins, on every section.
+#[test]
+fn a_registration_that_is_no_tool_server_keeps_the_walk_budget() {
+    let p = declared_by(
+        "planner: { url: \"http://up.example/a2a\" }\nslow: { timeout: 2m }",
+        "agents",
+    );
+    assert_eq!(
+        p.timeout_ms("planner"),
+        None,
+        "none written on a section that relays no tool calls: the walk's own budget, not 30 s"
+    );
+    assert_eq!(
+        p.timeout_ms("slow"),
+        Some(120_000),
+        "a written timeout wins"
+    );
+    let t = pools("fs: { url: \"http://up.example/rpc\" }");
+    assert_eq!(
+        t.timeout_ms("fs"),
+        Some(busbar_contract::section::DEFAULT_ENTRY_TIMEOUT_MS),
+        "a tool server that writes none keeps the 30 s default"
+    );
 }
 
 #[test]
@@ -302,7 +366,7 @@ fn a_member_with_a_bad_tier_is_refused_at_the_section_build() {
         let section: serde_yaml::Value =
             serde_yaml::from_str(&format!("a: {{}}\npools:\n  u:\n    members: [{member}]"))
                 .expect("yaml");
-        let refused = DoorPools::of(&section)
+        let refused = DoorPools::of(&section, TOOL_CALL_SECTION_KEY)
             .err()
             .unwrap_or_else(|| panic!("{what}: a member written {member} built"));
         assert!(
@@ -330,7 +394,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
         .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section).expect("the pools");
+    let p = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools");
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("twins")),
         owned("twins", &["b", "a"])
@@ -384,7 +448,7 @@ fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
     .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section).expect("the pools");
+    let p = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools");
     assert_eq!(
         p.breaker("tuned"),
         Some(&block),
@@ -864,7 +928,7 @@ fn resolve_upgrading(
     };
     super::member_routes(
         &section,
-        &DoorPools::of(&section).expect("the pools"),
+        &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
         served,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1566,7 +1630,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         };
         let routes = super::member_routes(
             &section,
-            &DoorPools::of(&section).expect("the pools"),
+            &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
             &facts,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1750,7 +1814,7 @@ fn jwt_bearer_routes(
     };
     let routes = super::member_routes(
         &section,
-        &DoorPools::of(&section).expect("the pools"),
+        &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
         &facts,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -7543,6 +7607,83 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A LEASED CREDENTIAL EXPIRES ON BUSBAR'S OWN CLOCK (website a2a: "a leased credential is bound
+/// to its target and expired on busbar's clock"): one resolution is presented for its
+/// `lease_ttl_ms` and no longer. With no refresh at all (the refresher stalled, erred or skipped
+/// it), the first hop past the lease is refused (the handle answers none, so the hop is refused as
+/// `credential_unavailable` and nothing is presented), hop after hop; a refresh that re-resolves
+/// the credential renews the lease from its own resolution. Driven through the hop's clock seam
+/// (`handle_at`), never a sleep.
+/// RED before the fix: the lease was only the refresher's interval, and a held credential was
+/// presented for as long as no refresh emptied it.
+#[test]
+fn an_expired_lease_is_refused_on_the_next_hop() {
+    use std::time::{Duration, Instant};
+    let path = own_secret("lease-expiry", "tok");
+    let reach = own_reach();
+    let bound = Instant::now();
+    let (_, per) = super::upstream_credential(
+        "planner",
+        &registration(&path, ""),
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let lease = Duration::from_millis(60_000);
+    let first = per.handle_at(bound).expect("a fresh lease is presented");
+    assert_eq!(
+        per.handle_at(bound + lease - Duration::from_millis(1)),
+        Some(first),
+        "inside its lease the credential is presented"
+    );
+    let resolved = Instant::now();
+    for hop in 0..8 {
+        assert_eq!(
+            per.handle_at(resolved + lease + Duration::from_millis(1 + hop)),
+            None,
+            "past its lease, with no refresh, the hop is refused, never presented"
+        );
+    }
+    let before = Instant::now();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
+    let after = Instant::now();
+    assert!(
+        per.handle_at(before + lease - Duration::from_millis(1))
+            .is_some(),
+        "a refresh that re-resolves it renews the lease"
+    );
+    assert_eq!(
+        per.handle_at(after + lease + Duration::from_millis(1)),
+        None,
+        "and the renewed lease expires on the same clock"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A FRESH LEASE IS PRESENTED (the control for the expiry above): a hop made now, inside the lease
+/// of the resolution the build just made, presents the credential.
+#[test]
+fn a_fresh_lease_is_presented() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("lease-fresh", "tok");
+    let reach = own_reach();
+    let (binding, per) = super::upstream_credential(
+        "planner",
+        &registration(&path, ""),
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let handle = per.handle_now().expect("a fresh lease is presented");
+    assert_eq!(
+        presents(&*binding.auth, handle),
+        vec![("authorization".to_string(), "Bearer tok".to_string())]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A SECRET PASTED WHERE ITS REFERENCE BELONGS IS NEVER ECHOED (secret-hygiene Check 3; coordinator
 /// ruling 2026-10-07: the refusal names the binding, member and key, never the value or a decoder
 /// error over the secret input). Each `secret:` below carries a real-looking value in a shape the
@@ -7657,8 +7798,10 @@ fn per_hop_over(
         held: arc_swap::ArcSwapOption::from_pointee(super::Held {
             digest: busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
             handle,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(60),
         }),
         refreshing: std::sync::Mutex::new(()),
+        lapsed: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
@@ -8349,7 +8492,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     super::compose_egress(
         &facts,
-        &DoorPools::of(&section).expect("the pools"),
+        &DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("the pools"),
         instance,
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
