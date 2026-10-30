@@ -242,7 +242,7 @@ extern "C" {
 #define BB_AUTH_POINT_FRAME UINT32_C(8) /* [`AuthPoints`] bit of [`AuthPoint::Frame`]: RESERVED. No set may hold it yet */
 
 /* hook */
-#define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`. */
+#define BB_HOOK_ABI_VERSION UINT32_C(2) /* The hook kind's ABI version: `2` (the version before this layout was `1`). */
 #define BB_HOOK_LAYOUT_FINGERPRINT UINT64_C(0xe66698e71abe2054) /* The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_HOOK_SLOT_DECIDE UINT32_C(9) /* `decide`. */
 #define BB_HOOK_SLOT_TRANSFORM UINT32_C(10) /* `transform`. */
@@ -252,16 +252,16 @@ extern "C" {
 #define BB_HOOK_SLOT_DESCRIBE UINT32_C(14) /* `describe`. */
 #define BB_HOOK_SLOT_SERVE UINT32_C(15) /* `serve`. */
 #define BB_HOOK_SLOTS UINT32_C(16) /* How many slots the hook kind's whole table holds (the lifecycle plus its seven own ops). */
-#define BB_HOOK_SIGNAL_REQUESTED_MODEL UINT32_C(0) /* OLD `Signal::RequestedModel`. */
-#define BB_HOOK_SIGNAL_REQUEST_TOTAL_CHARS UINT32_C(1) /* OLD `Signal::RequestTotalChars`. */
-#define BB_HOOK_SIGNAL_REQUEST_MESSAGE_COUNT UINT32_C(2) /* OLD `Signal::RequestMessageCount`. */
-#define BB_HOOK_SIGNAL_REQUEST_TOOL_COUNT UINT32_C(3) /* OLD `Signal::RequestToolCount`. */
-#define BB_HOOK_SIGNAL_REQUEST_SYSTEM_CHARS UINT32_C(4) /* OLD `Signal::RequestSystemChars`. */
-#define BB_HOOK_SIGNAL_CANDIDATE_BREAKER_STATE UINT32_C(5) /* OLD `Signal::CandidateBreakerState`. */
-#define BB_HOOK_SIGNAL_CANDIDATE_ERROR_RATE UINT32_C(6) /* OLD `Signal::CandidateErrorRate`. */
-#define BB_HOOK_SIGNAL_CANDIDATE_LATENCY_P95_MS UINT32_C(7) /* OLD `Signal::CandidateLatencyP95Ms`. */
-#define BB_HOOK_SIGNAL_ROUTING_POLICY UINT32_C(8) /* OLD `Signal::RoutingPolicy`. */
-#define BB_HOOK_SIGNAL_RESPONSE_TOKENS_OUT UINT32_C(9) /* OLD `Signal::ResponseTokensOut`. */
+#define BB_HOOK_SIGNAL_REQUESTED_MODEL UINT32_C(0) /* The model the request asked for. */
+#define BB_HOOK_SIGNAL_REQUEST_TOTAL_CHARS UINT32_C(1) /* The request's total text size, in characters. */
+#define BB_HOOK_SIGNAL_REQUEST_MESSAGE_COUNT UINT32_C(2) /* How many messages the request carries. */
+#define BB_HOOK_SIGNAL_REQUEST_TOOL_COUNT UINT32_C(3) /* How many tools the request declares. */
+#define BB_HOOK_SIGNAL_REQUEST_SYSTEM_CHARS UINT32_C(4) /* The request's system text size, in characters. */
+#define BB_HOOK_SIGNAL_CANDIDATE_BREAKER_STATE UINT32_C(5) /* The candidate's circuit-breaker state. */
+#define BB_HOOK_SIGNAL_CANDIDATE_ERROR_RATE UINT32_C(6) /* The candidate's error rate. */
+#define BB_HOOK_SIGNAL_CANDIDATE_LATENCY_P95_MS UINT32_C(7) /* The candidate's p95 latency, milliseconds. */
+#define BB_HOOK_SIGNAL_ROUTING_POLICY UINT32_C(8) /* The pool's routing policy. */
+#define BB_HOOK_SIGNAL_RESPONSE_TOKENS_OUT UINT32_C(9) /* The response's output tokens. */
 #define BB_HOOK_SIGNAL_TAG_U64 UINT32_C(0) /* [`SignalEntry::tag`]: the payload is [`SignalValue::u64_`]. */
 #define BB_HOOK_SIGNAL_TAG_I64 UINT32_C(1) /* [`SignalEntry::tag`]: the payload is [`SignalValue::i64_`]. */
 #define BB_HOOK_SIGNAL_TAG_F64 UINT32_C(2) /* [`SignalEntry::tag`]: the payload is [`SignalValue::f64_`]. */
@@ -279,33 +279,33 @@ extern "C" {
 #define BB_HOOK_BUDGET_HAS_REMAINING_MICROS UINT32_C(1) /* [`BudgetBucketState::present`]: `remaining_micros` is present. */
 #define BB_HOOK_VIEW_HAS_PROMPT UINT32_C(1) /* [`DecideIn`]'s `present`: the prompt view/body are populated. */
 #define BB_HOOK_VIEW_HAS_USER UINT32_C(2) /* [`DecideIn`]'s `present`: the user view is populated. */
-#define BB_HOOK_VIEW_HAS_BUDGET_REMAINING UINT32_C(4) /* [`DecideIn`]'s `present`: `budget_remaining` (the OLD `HookContext::budget_remaining`) is */
-#define BB_HOOK_VERB_PREFER UINT32_C(1) /* [`DecideOut::verbs`]: prefer an order (`order_buf`/`order_written` hold it) — OLD */
-#define BB_HOOK_VERB_ABSTAIN UINT32_C(2) /* [`DecideOut::verbs`]: no opinion — OLD `RoutingDecision::Abstain`. */
-#define BB_HOOK_VERB_REJECT UINT32_C(4) /* [`DecideOut::verbs`]: refuse the request — OLD `RoutingDecision::Reject`. */
-#define BB_HOOK_VERB_RESTRICT UINT32_C(8) /* [`DecideOut::verbs`]: narrow to `restrict_tags` — OLD `RoutingDecision::Restrict`. */
+#define BB_HOOK_VIEW_HAS_BUDGET_REMAINING UINT32_C(4) /* [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is */
+#define BB_HOOK_VERB_PREFER UINT32_C(1) /* [`DecideOut::verbs`]: prefer an order (`order_buf`/`order_written` hold it). */
+#define BB_HOOK_VERB_ABSTAIN UINT32_C(2) /* [`DecideOut::verbs`]: no opinion. */
+#define BB_HOOK_VERB_REJECT UINT32_C(4) /* [`DecideOut::verbs`]: refuse the request. */
+#define BB_HOOK_VERB_RESTRICT UINT32_C(8) /* [`DecideOut::verbs`]: narrow to `restrict_tags`. */
 #define BB_HOOK_VERB_HAS_REJECT_STATUS UINT32_C(16) /* [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the */
-#define BB_HOOK_VERB_REWRITE UINT32_C(1) /* [`TransformOut::verbs`]: apply the rewrite bytes — OLD `TransformOutcome::Rewrite`. */
-#define BB_HOOK_STAGE_HAS_PROJECTION UINT32_C(1) /* [`StageView::stage_present`]: the OLD `HookStageProjection` block is present at all (a */
+#define BB_HOOK_VERB_REWRITE UINT32_C(1) /* [`TransformOut::verbs`]: apply the rewrite bytes. */
+#define BB_HOOK_STAGE_HAS_PROJECTION UINT32_C(1) /* [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets */
 #define BB_HOOK_STAGE_HAS_MODEL UINT32_C(2) /* [`StageView::stage_present`]: `model` is present. */
 #define BB_HOOK_STAGE_HAS_ATTEMPT_NUMBER UINT32_C(4) /* [`StageView::stage_present`]: `attempt_number` is present. */
 #define BB_HOOK_STAGE_HAS_REMAINING_CANDIDATES UINT32_C(8) /* [`StageView::stage_present`]: `remaining_candidates` is present. */
 #define BB_HOOK_STAGE_HAS_PREVIOUS_FAILURE UINT32_C(16) /* [`StageView::stage_present`]: `previous_failure` is present. */
 #define BB_HOOK_STAGE_HAS_OUTCOME UINT32_C(32) /* [`StageView::stage_present`]: `outcome` is present. */
 #define BB_HOOK_STAGE_HAS_STATUS UINT32_C(64) /* [`StageView::stage_present`]: `status` is present. */
-#define BB_HOOK_STAGE_AT_CANDIDATE UINT32_C(0) /* [`StageView::at`]: the OLD `HookStageProjection::at == "candidate"`. */
-#define BB_HOOK_STAGE_AT_ROUTING UINT32_C(1) /* [`StageView::at`]: the OLD `HookStageProjection::at == "routing"`. */
-#define BB_HOOK_STAGE_AT_RESPONSE UINT32_C(2) /* [`StageView::at`]: the OLD `HookStageProjection::at == "response"`. */
-#define BB_HOOK_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */
-#define BB_HOOK_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`. */
-#define BB_HOOK_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
-#define BB_HOOK_CLASS_GATE UINT32_C(0) /* [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD */
-#define BB_HOOK_CLASS_TAP UINT32_C(1) /* [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only) — OLD `HookKind::Tap`. */
-#define BB_HOOK_PROMPT_NO UINT32_C(0) /* [`Tail::prompt_access`]: no prompt view/body — OLD `PromptAccess::No` (the default). */
-#define BB_HOOK_PROMPT_RO UINT32_C(1) /* [`Tail::prompt_access`]: read-only prompt view/body — OLD `PromptAccess::Ro`. */
+#define BB_HOOK_STAGE_AT_CANDIDATE UINT32_C(0) /* [`StageView::at`]: the candidate stage. */
+#define BB_HOOK_STAGE_AT_ROUTING UINT32_C(1) /* [`StageView::at`]: the routing stage. */
+#define BB_HOOK_STAGE_AT_RESPONSE UINT32_C(2) /* [`StageView::at`]: the response stage. */
+#define BB_HOOK_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve`. */
+#define BB_HOOK_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve`. */
+#define BB_HOOK_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener. */
+#define BB_HOOK_CLASS_GATE UINT32_C(0) /* [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain). */
+#define BB_HOOK_CLASS_TAP UINT32_C(1) /* [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only). */
+#define BB_HOOK_PROMPT_NO UINT32_C(0) /* [`Tail::prompt_access`]: no prompt view/body (the default). */
+#define BB_HOOK_PROMPT_RO UINT32_C(1) /* [`Tail::prompt_access`]: read-only prompt view/body. */
 #define BB_HOOK_PROMPT_RW UINT32_C(2) /* [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite */
-#define BB_HOOK_USER_NO UINT32_C(0) /* [`Tail::user_access`]: no user view — OLD `UserAccess::No` (the default). */
-#define BB_HOOK_USER_RO UINT32_C(1) /* [`Tail::user_access`]: read-only user view — OLD `UserAccess::Ro`. */
+#define BB_HOOK_USER_NO UINT32_C(0) /* [`Tail::user_access`]: no user view (the default). */
+#define BB_HOOK_USER_RO UINT32_C(1) /* [`Tail::user_access`]: read-only user view. */
 #define BB_HOOK_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced a verdict/response; `on_error` runs as */
 #define BB_HOOK_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
 #define BB_HOOK_HARD_MAX_ORDER_SLOTS UINT64_C(0x10000) /* The most `order_buf` slots (`u32` entries, not bytes) one answer may state. */
@@ -2069,7 +2069,7 @@ struct bb_hook_Ops {
     bb_mech_Op serve;
 };
 
-/* One signal's value, tagged by [`SignalEntry::tag`] (ARCHITECT review ruling 3: 1.5.5's */
+/* One signal's value, tagged by [`SignalEntry::tag`] (not every signal is a number: the routing */
 union bb_hook_SignalValue {
     uint64_t u64_;
     int64_t i64_;
@@ -2085,7 +2085,7 @@ struct bb_hook_SignalEntry {
     bb_hook_SignalValue value;
 };
 
-/* The request view (OLD `RoutingRequest`/`HookReqProjection`): what `decide`/`transform` see */
+/* The request view: what `decide`/`transform` see */
 struct bb_hook_RequestView {
     uint64_t request_id;
     bb_mech_AbiStr pool;
@@ -2099,7 +2099,7 @@ struct bb_hook_RequestView {
     bb_mech_Blob session;
 };
 
-/* The STATIC half of one candidate (OLD `Candidate`'s pool-config fields): built once at */
+/* The STATIC half of one candidate (its pool-config fields): built once at */
 struct bb_hook_CandidateStatic {
     uint32_t idx;
     uint32_t _reserved;
@@ -2116,7 +2116,7 @@ struct bb_hook_CandidateStatic {
     uint32_t _reserved2;
 };
 
-/* The DYNAMIC half of one candidate (OLD `Candidate`'s live fields): filled per request, parallel */
+/* The DYNAMIC half of one candidate (its live fields): filled per request, parallel */
 struct bb_hook_CandidateDynamic {
     double latency_ms;
     uint64_t available_concurrency;
@@ -2128,7 +2128,7 @@ struct bb_hook_CandidateDynamic {
     uint32_t _reserved;
 };
 
-/* The prompt view and body blob (OLD `PromptProjection`): present, and IDENTICAL, whenever */
+/* The prompt view and body blob: present, and IDENTICAL, whenever */
 struct bb_hook_PromptView {
     bb_mech_AbiStr system;
     uint64_t message_count;
@@ -2137,20 +2137,20 @@ struct bb_hook_PromptView {
     size_t messages_len;
 };
 
-/* One message of the prompt view (OLD `HookMessage`): its role and its flattened text, as 1.5.5's */
+/* One message of the prompt view: its role and its flattened text. */
 struct bb_hook_MessageView {
     bb_mech_AbiStr role;
     bb_mech_AbiStr text;
 };
 
-/* The user view (OLD `CallerIdentity`): present iff `user` access is granted */
+/* The user view (the caller's identity): present iff `user` access is granted */
 struct bb_hook_UserView {
     bb_mech_AbiStr key_id;
     bb_mech_AbiStr key_name;
     bb_mech_AbiStr user;
 };
 
-/* One bucket of the OLD `HookContext::budget`'s budget-chain (the caller key's own bucket, or an */
+/* One bucket of the request's budget chain (the caller key's own bucket, or an */
 struct bb_hook_BudgetBucketState {
     bb_mech_AbiStr bucket_id;
     bb_mech_AbiStr budget_group;
@@ -2213,7 +2213,7 @@ struct bb_hook_TransformOut {
     size_t rewrite_needed;
 };
 
-/* The stage view a tap receives (OLD "stage projection"): [`RequestView`] with NO prompt and NO */
+/* The stage view a tap receives: [`RequestView`] with NO prompt and NO */
 struct bb_hook_StageView {
     uint64_t request_id;
     bb_mech_AbiStr pool;
@@ -2259,13 +2259,13 @@ struct bb_hook_ConfigureOut {
     uint64_t acked_version;
 };
 
-/* `status`'s `out`: the 1.5.5 status blob, unchanged. OFF-PATH: `status` is a plugin-owned */
+/* `status`'s `out`: the hook's status blob (JSON). OFF-PATH: `status` is a plugin-owned */
 struct bb_hook_StatusOut {
     bb_mech_OutHead head;
     bb_mech_Blob status;
 };
 
-/* `describe`'s `out`: the 1.5.5 describe blob, unchanged. OFF-PATH: `describe` is a plugin-owned */
+/* `describe`'s `out`: the hook's self-description blob (JSON). OFF-PATH: `describe` is a plugin-owned */
 struct bb_hook_DescribeOut {
     bb_mech_OutHead head;
     bb_mech_Blob describe;
@@ -2300,7 +2300,7 @@ struct bb_hook_Route {
     uint32_t _reserved;
 };
 
-/* The hook kind's Statement tail (B.4's "Tail"): the OLD `HookKind`, `PromptAccess`, */
+/* The hook kind's Statement tail (B.4's "Tail"): the hook's class, its prompt and user grants, */
 struct bb_hook_Tail {
     bb_mech_KindTailHead head;
     uint32_t kind_class;
