@@ -515,6 +515,55 @@ pub fn drive_kept<T: 'static>(
     run(cx, Some(pool), start)
 }
 
+/// ONE STORE OP'S SESSION on a kept connection: what a wire store opens over the op's [`Wire`]
+/// (its handshake, skipped on a [`Wire::reused`] connection), and how it hands the connection
+/// back when the op's body has answered (closed, released or reset for the next op).
+pub trait Kept: Sized + Send + 'static {
+    /// What a session opens from: the instance's shared state, moved into the op.
+    type Shared: Send + 'static;
+    /// Why a session did not open, in the driver's words.
+    type Error: Send + 'static;
+
+    /// Open a session on `wire`.
+    fn open(
+        wire: Wire,
+        from: Self::Shared,
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send;
+
+    /// Hand the session's connection back once the op's body has answered.
+    fn done(self) -> impl Future<Output = ()> + Send;
+}
+
+/// What an op's body is handed: its open session, for the body's lifetime.
+pub type OnKept<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
+
+/// RUN ONE OP on a session of the store's kept set `pool` ([`drive_kept`]): open a [`Kept`]
+/// session `K` from `from` (a failure answers `fail` of its error), run `body` on it, then hand it
+/// back ([`Kept::done`]). Every argument the body names is moved into it (the body runs across the
+/// op's entries). The one kept-connection step every wire store's slots share.
+///
+/// # Panics
+/// As [`drive`].
+pub fn on_kept<K: Kept, T: Send + 'static>(
+    cx: &mut Op<'_>,
+    pool: &Arc<Pool>,
+    from: K::Shared,
+    fail: impl FnOnce(K::Error) -> T + Send + 'static,
+    body: impl for<'s> FnOnce(&'s mut K) -> OnKept<'s, T> + Send + 'static,
+) -> Step<T> {
+    drive_kept(cx, pool, move |wire| -> Body<T> {
+        Box::pin(async move {
+            let mut session = match K::open(wire, from).await {
+                Ok(s) => s,
+                Err(e) => return fail(e),
+            };
+            let answer = body(&mut session).await;
+            session.done().await;
+            answer
+        })
+    })
+}
+
 fn run<T: 'static>(
     cx: &mut Op<'_>,
     pool: Option<&Arc<Pool>>,
@@ -948,3 +997,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
         },
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/store_wire_kept_tests.rs"]
+mod kept_tests;

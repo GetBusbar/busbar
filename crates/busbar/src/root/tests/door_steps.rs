@@ -1538,7 +1538,7 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::with_services(
         crate::root::loader::dispatch::DispatchConfig::default(),
-        crate::root::serve::LateServices::new(),
+        crate::root::serve::LateServices::new().served(),
     ));
     assert!(
         dispatcher.host_services().is_some(),
@@ -2551,7 +2551,7 @@ pub(crate) mod tool_door {
             let dispatcher = Arc::new(Dispatcher::with_services(
                 DispatchConfig::default(),
                 Arc::new(Clocked {
-                    inner: Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
+                    inner: late.served(),
                     wall: Arc::clone(&wall),
                 }),
             ));
@@ -3031,6 +3031,22 @@ pub(crate) mod tool_door {
             bytes: &[u8],
         ) -> busbar_contract::services::Stored {
             self.inner.session_emit(caller, session, bytes)
+        }
+        fn ticket_mint(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ttl_secs: u64,
+            record: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.ticket_mint(caller, unit, ttl_secs, record)
+        }
+        fn ticket_take(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+        ) -> busbar_contract::services::Stored {
+            self.inner.ticket_take(caller, unit)
         }
         fn random_fill(&self, len: u64) -> busbar_contract::services::Stored {
             self.inner.random_fill(len)
@@ -4716,7 +4732,7 @@ pub(crate) mod door_boundary {
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 16
         });
-        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
         let mut walked: Vec<String> = Vec::new();
         for (pattern, verb, auth) in &routes {
@@ -4838,7 +4854,7 @@ pub(crate) mod door_boundary {
         );
 
         // Every route the data router answers: the kernel's core table and the door's.
-        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
         let admissible: Vec<String> = rig
             .door_table
