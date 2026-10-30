@@ -167,7 +167,15 @@ impl GovState {
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
             store_calls: std::sync::OnceLock::new(),
+            amendments: Arc::default(),
         })
+    }
+
+    /// THE NODE'S AMENDMENT JOURNAL this state owns: the one every hook and export read of this
+    /// node is sealed on.
+    #[must_use]
+    pub fn amendments(&self) -> &Arc<crate::audit::amend::NodeAmendments> {
+        &self.amendments
     }
 
     /// Keep the configured store's store v3 slots beside its 1.5.5 op set, once (boot opens the

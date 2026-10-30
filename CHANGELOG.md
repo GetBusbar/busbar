@@ -591,6 +591,14 @@ minted secret carries over.
 - 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
   `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
   **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: every recipe number in a `GET /api/v1/admin/audit/range` record is published as its decimal text in a JSON string.
+  That covers `seq`, `unit_key`, `incarnation`, `parent`, `wall`, `mono`, `node`, `hook_failed`,
+  `stale_policy`, `tier_bp`, `fee_count`, `rate_card_version`, `lease_epoch`, `policy_epoch`, the
+  group counts and every number inside a group. The sealing `node` is a uniform 64-bit draw, so a
+  JSON reader that maps numbers to doubles rounded it and reported an honest chain as tampered.
+  The digest framing is unchanged; the envelope members (`from`, `to`, `next_seq`, and a head's
+  `seq`/`wall`) stay JSON numbers. **Migration:** a third-party verifier parses each recipe number
+  from its decimal text, framing it by the kind column of `docs/audit-chain-digest-v4.md`.
 - 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation` and `node`.
   Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
   already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in
