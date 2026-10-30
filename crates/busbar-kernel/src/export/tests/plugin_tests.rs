@@ -348,3 +348,35 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         Value::Object(undeclared.clone())
     );
 }
+
+/// RED (export ABI defect 8): the HOST words the refusal of every instance of a `one_instance`
+/// module after the first, naming the first, around the reason the module's check gives — and
+/// in its own reason when the check gives none. Before, the plugin worded the whole line, and a
+/// module whose check found nothing let a second instance through unrefused and unresolved.
+#[test]
+fn the_host_words_the_one_instance_refusal() {
+    let names = ["a".to_string(), "b".to_string(), "c".to_string()];
+    let why = "The sink holds one port, so a second instance could only be ignored.";
+    assert_eq!(
+        word_one_instance("probe", &names, vec![why.to_string()]),
+        [
+            format!("export.b: a second `module: probe` instance (already defined as 'a'). {why}"),
+            format!("export.c: a second `module: probe` instance (already defined as 'a'). {why}"),
+        ]
+    );
+    let unworded = word_one_instance("probe", &names[..2], Vec::new());
+    assert_eq!(unworded.len(), 1, "{unworded:?}");
+    assert!(
+        unworded[0]
+            .starts_with("export.b: a second `module: probe` instance (already defined as 'a'). "),
+        "{unworded:?}"
+    );
+    // A plugin built on an SDK that worded the whole line keeps its line, verbatim.
+    let whole = vec![
+        "export.b: a second `module: probe` instance (already defined as 'a'). Old.".to_string(),
+    ];
+    assert_eq!(
+        word_one_instance("probe", &names[..2], whole.clone()),
+        whole
+    );
+}

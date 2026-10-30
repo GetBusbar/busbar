@@ -129,14 +129,15 @@ pub(crate) fn one_instance(module: &str) -> bool {
     axis().is_some_and(|axis| axis.one_instance(module))
 }
 
-/// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
-/// the configuration is resolved, for a `one_instance` module configured more than once: the
-/// plugin words its own refusal.
+/// The refusal of a `one_instance` module configured more than once, across `instances` — asked
+/// while the configuration is resolved; `module`'s own check at the LIMITS phase gives its reason
+/// ([`word_one_instance`]).
 ///
 /// Each instance is handed as its sink reads it ([`sink_settings`]); one whose declared reference
 /// does not resolve is already refused by [`probe`] and is left out.
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
-    axis()
+    let names: Vec<String> = instances.iter().map(|(n, _)| n.clone()).collect();
+    let found = axis()
         .and_then(|axis| {
             let instances: Vec<(String, Value)> = instances
                 .iter()
@@ -153,7 +154,15 @@ pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) ->
                 &instances,
             )
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    word_one_instance(module, &names, found)
+}
+
+/// THE ONE-INSTANCE REFUSAL, for `names` (configuration order) of `module`, given what the
+/// module's LIMITS check `found`.
+pub(crate) fn word_one_instance(module: &str, names: &[String], found: Vec<String>) -> Vec<String> {
+    let _ = (module, names);
+    found
 }
 
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
