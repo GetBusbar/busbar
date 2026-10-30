@@ -299,6 +299,24 @@ impl Held {
             .collect()
     }
 
+    /// The delay a `complete_login` LOGIN_OUTAGE states under `EXT_RETRY_AFTER` in its reply
+    /// extensions `ext`, read ONLY when the blob lies wholly inside this identity buffer, the one
+    /// memory the host still holds once the op completed; a blob anywhere else, or none, is no
+    /// delay. Unclamped: the host bounds it.
+    fn retry_after(&self, ext: Blob) -> Option<u64> {
+        if ext.ptr.is_null() || ext.len == 0 {
+            return None;
+        }
+        let off = (ext.ptr as usize).checked_sub(self.buf as usize)?;
+        if off.checked_add(ext.len)? > self.buf_cap {
+            return None;
+        }
+        // SAFETY: `off + len <= buf_cap` (checked above) inside the `buf_cap` bytes `Held` owns,
+        // and the op completed, so the plugin no longer writes the buffer.
+        let bytes = unsafe { std::slice::from_raw_parts(self.buf.add(off), ext.len) };
+        busbar_contract::abi::auth::retry_after_of(bytes)
+    }
+
     /// The text at `s` in the identity buffer; `None` when absent.
     fn text(&self, s: Span) -> Option<String> {
         if s.offset == SPAN_ABSENT {

@@ -1065,6 +1065,7 @@ each dialect translates, field by field, is listed in the generated
 - 1.6.0 Changed: a postgres store that cannot open names the server's SQLSTATE and message (or the TLS failure) where 1.5.5 printed `db error` / `error performing TLS handshake`.
 - 1.6.0 Changed: a plugin's `interface_version` is its kind's memory-ABI contract version (hook 2, store 3).
 - 1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.
+- 1.6.0 Changed: a sign-in whose identity provider answered its token or userinfo request with a 5xx or 429, or timed out, answers 503 with the identity provider's own `Retry-After` (clamped to 1 to 3600 seconds; 5 when the provider sent none), on the browser callback and the credential sign-in alike. A login plugin states it on its `LOGIN_OUTAGE` answer under the reply-extensions key `retry_after` (SDK: `auth_kit::login_outage`, `abi::auth::retry_after_secs`); only an RFC 6749 §5.2 credential error answers 401 (owner-signed 2026-10-30, OWNER-QUEUE.md item: IdP errors).
 - **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
   ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
   clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
