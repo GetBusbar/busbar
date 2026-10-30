@@ -123,16 +123,13 @@ fn now_for_test() -> u64 {
 mod in_memory;
 pub use in_memory::*;
 
-mod breaker_admission;
-pub use breaker_admission::{PlaneBreakers, MAX_POOL_MEMBERS};
+/// The CEILING on a plane consumer's pool member list, enforced at config validation
+/// (`config::check_failover_pool`).
+pub const MAX_POOL_MEMBERS: usize = 8;
 
 /// THE PLANE STORE SEAM: the `PlaneStore` trait a plane persists its own kind-tagged rows through,
 /// and the `PlaneStoreView` that narrows a real `RecordStore` to it (no audit-chain authority).
 pub mod plane_view;
-// `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with no plane
-// consumer compiled in nothing names it, so this re-export is unused in that config alone.
-#[allow(unused_imports)]
-pub(crate) use breaker_admission::Admission as PlaneAdmission;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

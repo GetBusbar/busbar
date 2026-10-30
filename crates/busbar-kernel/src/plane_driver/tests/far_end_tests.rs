@@ -32,7 +32,7 @@ use busbar_kernel_egress::{
         Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
         Unavailable, UpstreamStatus,
     },
-    Failover, Member, OnExhausted, Pool, WeightedFloor,
+    Failover, Member, OnExhausted, Pool,
 };
 
 use super::*;
@@ -65,6 +65,8 @@ type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
 type Words = (Vec<u8>, Vec<u8>);
 /// The facts one auth call saw: method, authority, path.
 type Facts = (Vec<u8>, String, Vec<u8>);
+/// One head's lines, name and value.
+type Lines = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// A connection table whose far ends answer from `scripts`, by the target's host.
 #[derive(Default)]
@@ -451,6 +453,8 @@ struct Bearer {
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
     /// The extensions blob each call lent.
     extensions: Mutex<Vec<Vec<u8>>>,
+    /// The head each call was handed to sign (`FieldsRequest::headers`).
+    heads: Mutex<Vec<Lines>>,
 }
 struct Done(Fields);
 /// A submitted call that never answers.
@@ -500,6 +504,7 @@ impl OutboundAuth for Bearer {
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         self.points.lock().unwrap().push((r.point, r.body.clone()));
         self.extensions.lock().unwrap().push(r.extensions.clone());
+        self.heads.lock().unwrap().push(r.headers.clone());
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -569,7 +574,8 @@ fn rig(
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
-                        style_flags: 0,
+                        // Every style reads the head it signs (`FieldsRequest::headers`).
+                        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
                         // m1's style signs the body (`HeadBody`); every other is over the head.
                         points: if k == 1 {
                             AuthPoints::HEAD_BODY
@@ -592,16 +598,16 @@ fn rig(
             exclusions: Vec::new(),
         },
         on_exhausted,
+        floor: Default::default(),
     };
     let egress = Egress {
         caller: InstanceId(9),
         conns: table.clone(),
-        breaker: book.clone(),
+        breaker: crate::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
         clock: Arc::new(Wall),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
-        floor: WeightedFloor::new(),
         pools: HashMap::from([(POOL.to_string(), pool)]),
         routes,
         stream_ceiling_secs: 600,
@@ -2165,6 +2171,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
             exclusions: Vec::new(),
         },
         on_exhausted: OnExhausted::Status503,
+        floor: Default::default(),
     };
     r.egress.pools.insert("fb".to_string(), fallback);
     let t = token();
@@ -3250,11 +3257,13 @@ async fn the_framers_own_head_lines_follow_the_planes_fields_in_the_head_that_go
 }
 
 /// A FRAMER THAT STATES ITS BODY'S LENGTH (`HeadDefaults::states_length`, THE DESIGN section 6,
-/// step 5) has the host add `content-length: <the opening body's length>` as the head's LAST line,
-/// after its own lines and before the auth signs the head (1.5.5's goldens: `..., accept, host,
-/// content-length`). An empty body gets no line, and a framer that does not state it gets none, so
-/// every other framer's head is unchanged. RED before: no head carried the length; the framer
-/// added it at encode, after the auth.
+/// step 5) has the host state `content-length: <the opening body's length>` as the head's LAST
+/// line, after its own lines and before the auth signs the head (1.5.5's goldens: `..., accept,
+/// host, content-length`). The auth is handed that whole head; the line itself is the connector's,
+/// stated at the open from the same located head (no opener's field may state a length: the
+/// connector refuses one), so the head the walk opens with ends at the framer's lines. An empty body
+/// gets no line, and a framer that does not state it gets none, so every other framer's head is
+/// unchanged. RED before: no head carried the length; the framer added it at encode, after the auth.
 #[tokio::test]
 async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head() {
     let r = rig(
@@ -3272,10 +3281,37 @@ async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head()
     let t = token();
     let names =
         |n: usize| -> Vec<(String, Vec<u8>)> { r.table.opened.lock().unwrap()[n].1.clone() };
+    let signed = |n: usize| -> Vec<(String, String)> {
+        r.auth.heads.lock().unwrap()[n]
+            .iter()
+            .map(|(k, v)| {
+                (
+                    String::from_utf8_lossy(k).into_owned(),
+                    String::from_utf8_lossy(v).into_owned(),
+                )
+            })
+            .collect()
+    };
+    let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+        p.iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    };
     let far = r.egress.unit(route());
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
     assert!(far.send(&t, request()).await);
     let _ = drain(&far, &t).await;
+    // The auth signs the whole head, the length last.
+    assert_eq!(
+        signed(0),
+        pairs(&[
+            ("content-type", "application/json"),
+            ("accept", "*/*"),
+            ("host", "a.test"),
+            ("content-length", "2"),
+        ])
+    );
+    // The walk opens with every line but the length, which the connector states last at the open.
     let head = names(0);
     let head: Vec<(&str, &[u8])> = head
         .iter()
@@ -3288,7 +3324,6 @@ async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head()
             ("content-type", b"application/json".as_slice()),
             ("accept", b"*/*".as_slice()),
             ("host", b"a.test".as_slice()),
-            ("content-length", b"2".as_slice()),
         ]
     );
 
@@ -3299,6 +3334,14 @@ async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head()
     req.body.clear();
     assert!(far.send(&t, req).await);
     let _ = drain(&far, &t).await;
+    assert_eq!(
+        signed(1),
+        pairs(&[
+            ("content-type", "application/json"),
+            ("accept", "*/*"),
+            ("host", "a.test"),
+        ])
+    );
     let head: Vec<String> = names(1).into_iter().map(|(n, _)| n).collect();
     assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
 
@@ -3310,6 +3353,14 @@ async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head()
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
     assert!(far.send(&t, request()).await);
     let _ = drain(&far, &t).await;
+    assert_eq!(
+        signed(2),
+        pairs(&[
+            ("content-type", "application/json"),
+            ("accept", "*/*"),
+            ("host", "a.test"),
+        ])
+    );
     let head: Vec<String> = names(2).into_iter().map(|(n, _)| n).collect();
     assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
 }
