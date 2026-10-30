@@ -5,11 +5,17 @@
 //! stated once. A sink keeps its own `Life`, its `deliver` and whatever it serves; the rest is here.
 //!
 //! * [`tail`] — the kind's Statement tail over a sink's streams and routes.
-//! * [`NoScrape`], [`NoServe`] — `scrape` on a sink that carries no `metrics` stream and `serve` on
-//!   one that declares no route: REFUSED, saying why ([`NO_EXPOSITION`], [`NO_ROUTE`]).
+//! * The ops a sink's Statement makes unreachable are optional: `scrape` on a sink that carries no
+//!   `metrics` stream, `serve` on one that declares no route, `deliver` on one that carries no
+//!   stream but `metrics`. A door leaves them unnamed in `plugin_door!` (NULL); the host never
+//!   calls them. [`NoScrape`], [`NoServe`] still answer them REFUSED, saying why
+//!   ([`NO_EXPOSITION`], [`NO_ROUTE`]), for a door that names every op.
 //! * [`Quiet`] — `status` with nothing to report: READY.
-//! * [`instance_names`] and [`second_instances`] — the `one_instance` limits check: every instance
-//!   after the first refused, naming the first.
+//! * [`instance_names`] and [`one_instance_reason`] — the `one_instance` limits check: the sink
+//!   says only WHY it runs one instance; the host words the refusal of every instance after the
+//!   first, naming the first.
+//! * A kind op that reads the open instance is a [`HeldSlot`](crate::abi::sdk::life::HeldSlot)
+//!   named as `Safe<Opened<_>>`: the SDK answers a call with no open instance in its own words.
 
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -105,21 +111,17 @@ pub fn instance_names(input: Lent<'_, CheckIn>) -> Vec<String> {
         .collect()
 }
 
-/// THE `one_instance` LIMITS CHECK of a sink whose module is `alias`: one finding per instance
-/// after the first, naming the first and saying `why` a second cannot run.
+/// THE `one_instance` LIMITS CHECK: with more than one instance of the sink configured (`names`,
+/// in configuration order), the sink's one finding is `why` a second instance cannot run; none
+/// otherwise. The host words the refusal of each instance after the first around it, naming the
+/// first (`export.<name>: a second `module: <m>` instance (already defined as '<first>'). <why>`).
 #[must_use]
-pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String> {
-    let Some((first, rest)) = names.split_first() else {
-        return Vec::new();
-    };
-    rest.iter()
-        .map(|name| {
-            format!(
-                "export.{name}: a second `module: {alias}` instance (already defined as \
-                 '{first}'). {why}"
-            )
-        })
-        .collect()
+pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
+    if names.len() > 1 {
+        vec![why.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

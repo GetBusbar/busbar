@@ -387,7 +387,10 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// Why it will not open.
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
-    /// `refresh` to `generation` with `settings` and `secrets`.
+    /// `refresh` to `generation` with `settings` and `secrets`. Only a kind the host refreshes
+    /// (`abi::mechanism::lifecycle`, WHICH KINDS THE HOST REFRESHES) states its own; for every
+    /// other kind the default answers, REFUSED in [`NOT_REFRESHED`]'s words: a changed
+    /// configuration reaches such an instance only through a fresh `open`.
     ///
     /// # Errors
     /// Why the refresh did not apply.
@@ -396,7 +399,10 @@ pub trait Life: Send + Sync + Sized + 'static {
         settings: &[u8],
         secrets: &[&[u8]],
         generation: u64,
-    ) -> Result<Refreshed, Refusal>;
+    ) -> Result<Refreshed, Refusal> {
+        let _ = (settings, secrets, generation);
+        Err(Refusal::refused(NOT_REFRESHED))
+    }
 
     /// `retire` of `generation`: nothing held per generation unless the kind says so.
     fn retire(&self, generation: u64) {
@@ -552,6 +558,55 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
 
 /// What `release` answers for a lease this instance does not hold.
 pub const NO_SUCH_LEASE: &str = "release: no such lease";
+
+/// What the default [`Life::refresh`] answers: the instance takes a changed configuration only
+/// through a fresh `open`.
+pub const NOT_REFRESHED: &str =
+    "refresh: this instance is not refreshed; a changed configuration applies when it is opened again";
+
+/// What an [`Opened`] op answers when the host calls it with no open instance (never, under the
+/// call contract: the host crosses a kind op only on an instance whose `open` answered READY).
+pub const NO_INSTANCE: &str = "this op runs only on an open instance, and none is open";
+
+/// A KIND OP OVER AN OPEN INSTANCE: [`SafeSlot`] with the no-instance answer stated once, by the
+/// SDK. The body is handed the instance's [`Held<L>`] (and the call's [`Instance`], for its ticket
+/// and what it parks); named in [`plugin_door!`](crate::plugin_door) as `Safe<Opened<S>>`.
+pub trait HeldSlot {
+    /// The slot's `in`.
+    type In: crate::abi::sdk::door::AbiIn;
+    /// The slot's `out`.
+    type Out: crate::abi::sdk::door::AbiOut;
+    /// The kind's lifecycle the instance is opened by.
+    type Life: Life;
+    /// The body, on the open instance `held`.
+    fn call(
+        held: &Held<Self::Life>,
+        instance: &Instance<'_, Held<Self::Life>>,
+        input: Lent<'_, Self::In>,
+        out: Out<'_, Self::Out>,
+    ) -> Outcome;
+}
+
+/// [`HeldSlot`] `S` as a [`SafeSlot`]: with no open instance it answers REFUSED in
+/// [`NO_INSTANCE`]'s words before `S`'s body runs.
+#[derive(Debug)]
+pub struct Opened<S>(PhantomData<S>);
+
+impl<S: HeldSlot> SafeSlot for Opened<S> {
+    type In = S::In;
+    type Out = S::Out;
+    type State = Held<S::Life>;
+    fn call(
+        instance: Instance<'_, Held<S::Life>>,
+        input: Lent<'_, S::In>,
+        mut out: Out<'_, S::Out>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return out.fail(Refusal::refused(NO_INSTANCE));
+        };
+        S::call(held, &instance, input, out)
+    }
+}
 
 macro_rules! life_slot {
     ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
