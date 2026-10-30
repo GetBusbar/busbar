@@ -40,6 +40,9 @@ use crate::records::{
 
 mod op;
 pub use op::{Checkout, Op, Services, Step};
+// A store that never pends, served whole over its `RecordStore`.
+mod sync_store;
+pub use sync_store::SyncStore;
 
 /// What `record_scan` answers: `(key, record)` in key order.
 pub type Scanned = Vec<(Vec<u8>, RecordBytes)>;
