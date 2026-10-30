@@ -1267,3 +1267,94 @@ fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {
     let input = frame.input();
     assert_eq!(Decoded::of(lend(&input)).session, None);
 }
+
+// ── the one short-buffer re-call (H5) ───────────────────────────────────────────────────────────
+
+/// How often [`Asks`] ran its `decide` / `transform`: each run is one POST to the far end.
+static ASKED: AtomicU32 = AtomicU32::new(0);
+
+/// A hook that asks the far end on every run (counted in [`ASKED`]) and answers more than the
+/// first frame's buffers hold.
+struct Asks;
+impl Hook for Asks {
+    fn decide(&self, _: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
+        ASKED.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Verdict::Prefer(vec![3, 2, 1, 0]))
+    }
+    fn transform(&self, _: &Decoded<'_>, _: &Op<'_>) -> Poll<RewriteVerdict> {
+        ASKED.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(RewriteVerdict::Rewrite(
+            br#"{"messages":[{"role":"user","content":"a longer rewrite"}]}"#.to_vec(),
+        ))
+    }
+}
+struct OpenAsks;
+impl HookOpen for OpenAsks {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Asks))
+    }
+}
+
+/// RED (hook ABI defect 5): a `decide` / `transform` whose verdict does not fit the host's buffers
+/// answers the one short FAILED; the host re-calls the op ONCE on the same ticket with grown
+/// buffers. That re-call answers the verdict the first run lowered, without running the hook again:
+/// a hook that POSTs (hook-webrequest) sends one request per op, never a second. A different ticket
+/// (a later op on the slot, a recycled ticket) runs the hook afresh.
+#[test]
+fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_hook_again() {
+    let p = opened_with::<OpenAsks>(&zeroed());
+    let frame = frame_with(caps(1, 4));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!((out.order_needed, out.order_written), (4, 0));
+    let grown = frame.regrown_decide(&out);
+    let mut again = grown.input();
+    again.head.ticket = TICKET;
+    let mut out2: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &again, &mut out2),
+        Outcome::Ready
+    );
+    assert_eq!(grown.order(out2.order_written), vec![3, 2, 1, 0]);
+    assert_eq!(ASKED.load(Ordering::SeqCst), 1, "decide ran again on the re-call");
+
+    let mut t: TransformOut = zeroed();
+    assert_eq!(
+        call::<Transform<OpenAsks>>(p, slot::TRANSFORM, &input, &mut t),
+        Outcome::Failed
+    );
+    let grown = frame.regrown_transform(&t);
+    let mut again = grown.input();
+    again.head.ticket = TICKET;
+    let mut t2: TransformOut = zeroed();
+    assert_eq!(
+        call::<Transform<OpenAsks>>(p, slot::TRANSFORM, &again, &mut t2),
+        Outcome::Ready
+    );
+    assert_eq!(ASKED.load(Ordering::SeqCst), 2, "transform ran again on the re-call");
+
+    // A short answer on one ticket is never another ticket's: a later ticket on the same slot
+    // runs the hook.
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    let mut later = frame.regrown_decide(&out).input();
+    later.head.ticket = Ticket {
+        generation: TICKET.generation + 1,
+        ..TICKET
+    };
+    let mut out2: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &later, &mut out2),
+        Outcome::Ready
+    );
+    assert_eq!(ASKED.load(Ordering::SeqCst), 4);
+    closed::<OpenAsks>(p);
+}
