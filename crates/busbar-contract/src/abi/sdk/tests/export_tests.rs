@@ -294,7 +294,9 @@ fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
 /// instance (restart to apply) — and the SDK's default answers it REFUSED, saying so.
 #[test]
 fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
-    let refused = Probe.refresh(b"{}", &[], 2).err().expect("refused");
+    let Err(refused) = Probe.refresh(b"{}", &[], 2) else {
+        panic!("the default refresh is refused");
+    };
     assert_eq!(refused.outcome(), Outcome::Refused);
     assert_eq!(refused.text(), Some(NOT_REFRESHED));
 }

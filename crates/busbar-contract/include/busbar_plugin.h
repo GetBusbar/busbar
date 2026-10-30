@@ -314,7 +314,7 @@ extern "C" {
 #define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
-#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version, `3`: `2` was the JSON export contract's, refused at scan. */
 #define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0x95a37b669466aab6) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */

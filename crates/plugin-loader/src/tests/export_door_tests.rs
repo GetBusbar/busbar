@@ -499,9 +499,9 @@ fn a_push_sink_may_leave_scrape_and_serve_unstated() {
     let plugin = load_linked::<Export>(&row, bind("export.push")).expect("the push sink loads");
     ExportInstance::open(plugin, dispatcher.clone(), b"{}").expect("the push sink opens");
     let routed = LinkedRow::of(push_only::routed::door).expect("the door states itself");
-    let refused = load_linked::<Export>(&routed, bind("export.routed"))
-        .err()
-        .expect("a door that declares a route owes serve");
+    let Err(refused) = load_linked::<Export>(&routed, bind("export.routed")) else {
+        panic!("a door that declares a route owes serve");
+    };
     assert_eq!(
         refused.to_string(),
         crate::dispatch::LoadError::NullSlot(slot::SERVE).to_string()
