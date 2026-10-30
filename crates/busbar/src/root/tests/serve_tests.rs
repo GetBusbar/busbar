@@ -745,6 +745,10 @@ pub(super) mod session_door {
     enum Far {
         /// A status line and a JSON body.
         Says(&'static str, &'static str),
+        /// THE PROVIDER PLACING BUSBAR'S CALL (R10, row 132): the offer the call form carries is
+        /// accepted by a real WebRTC peer ([`Peer::accept`]), whose answer is the `201`'s body, with
+        /// the placed call ([`PLACED_CALL`]) in its `Location`.
+        Places,
         /// Nothing: the request is read and the connection held open, unanswered.
         Holds,
     }
@@ -807,6 +811,24 @@ pub(super) mod session_door {
                     }
                     let (line, body) = match answer {
                         Far::Says(line, body) => (line, body),
+                        Far::Places => {
+                            let request = String::from_utf8_lossy(&got).to_string();
+                            let Some((peer, description)) = Peer::accept(&call_offer(&request))
+                            else {
+                                return;
+                            };
+                            tokio::spawn(peer.run());
+                            let reply = format!(
+                                "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
+                                 location: /v1/realtime/calls/{PLACED_CALL}\r\n\
+                                 content-length: {}\r\nconnection: close\r\n\r\n",
+                                description.len()
+                            );
+                            let _ = socket.write_all(reply.as_bytes()).await;
+                            let _ = socket.write_all(&description).await;
+                            let _ = socket.shutdown().await;
+                            return;
+                        }
                         Far::Holds => {
                             // Held past any bound a test waits for; the socket closes with the task.
                             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
@@ -824,6 +846,126 @@ pub(super) mod session_door {
             }
         });
         (port, heard)
+    }
+
+    /// The SDP offer a call form (`multipart/form-data`) carries: its `sdp` part's bytes.
+    fn call_offer(request: &str) -> Vec<u8> {
+        let body = request.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+        let sdp = body
+            .split("Content-Type: application/sdp\r\n\r\n")
+            .nth(1)
+            .unwrap_or_default();
+        let end = sdp.find("\r\n--").unwrap_or(sdp.len());
+        sdp.as_bytes()[..end].to_vec()
+    }
+
+    /// A REAL WEBRTC PEER on loopback (R10, row 132): the linked `webrtc` framer, driven by the
+    /// connector's own datagram framing and secure layer (ICE, DTLS, SCTP) over a UDP socket of its
+    /// own, as busbar drives an association. Dialling, it is the browser: it offers an audio line and
+    /// the realtime events channel, and completes the association with the SDP door's claim door the
+    /// way a browser does. Accepting, it is the provider answering busbar's call.
+    struct Peer {
+        framing: busbar_core_connector::datagram::DatagramFraming,
+        socket: tokio::net::UdpSocket,
+    }
+
+    impl Peer {
+        /// The linked `webrtc` framer.
+        fn framer() -> Arc<dyn busbar_core_connector::framer::FramerDoor> {
+            connector()
+                .framer_for("webrtc")
+                .expect("the build links the webrtc framer")
+        }
+
+        /// A loopback UDP socket on the current runtime.
+        fn socket() -> tokio::net::UdpSocket {
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("a loopback port");
+            socket.set_nonblocking(true).expect("non-blocking");
+            tokio::net::UdpSocket::from_std(socket).expect("on the runtime")
+        }
+
+        /// The description among a framing's pieces (stream 0, no fields).
+        fn description(pieces: Vec<busbar_core_connector::framer::Got>) -> Option<Vec<u8>> {
+            pieces
+                .into_iter()
+                .find(|g| g.stream == 0 && !g.fields)
+                .map(|g| g.bytes)
+        }
+
+        /// The browser: a dialling peer and its offer.
+        fn browser() -> (Self, Vec<u8>) {
+            let socket = Self::socket();
+            let opening = [
+                ("media".to_owned(), b"audio".to_vec()),
+                ("channel".to_owned(), b"oai-events".to_vec()),
+            ];
+            // A browser dials the one candidate the SDP door's answer advertises: loopback here.
+            let judge: Arc<dyn busbar_core_connector::DialJudge> =
+                Arc::new(|dest: &str, _class: u32, _done| Some(dest.parse().map_err(|_| 0_u64)));
+            let (framing, began) = busbar_core_connector::datagram::DatagramFraming::dial(
+                Self::framer(),
+                Arc::new(busbar_core_connector::dtls::SessionCert::mint().expect("a certificate")),
+                socket.local_addr().expect("its address"),
+                &opening,
+                judge,
+                busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+            )
+            .expect("the browser's framing begins");
+            let offer = Self::description(began.pieces).expect("the browser offers at once");
+            (Peer { framing, socket }, offer)
+        }
+
+        /// The provider: an accepting peer settled by `offer`, and its answer; `None` when the
+        /// offer is refused.
+        fn accept(offer: &[u8]) -> Option<(Self, Vec<u8>)> {
+            let socket = Self::socket();
+            let (mut framing, _) = busbar_core_connector::datagram::DatagramFraming::accept_minted(
+                Self::framer(),
+                socket.local_addr().ok()?,
+            )
+            .ok()?;
+            let settled = framing.rendezvous(offer, std::time::Instant::now()).ok()?;
+            let answer = Self::description(settled.pieces)?;
+            Some((Peer { framing, socket }, answer))
+        }
+
+        /// The far end's answer settles the browser's terms.
+        fn answered(&mut self, answer: &[u8]) {
+            self.framing
+                .rendezvous(answer, std::time::Instant::now())
+                .expect("the SDP door's answer settles the browser's terms");
+        }
+
+        /// Drive the association until it ends: its datagrams out, the socket's in, its clock.
+        async fn run(mut self) {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                while let Some((to, d)) = self.framing.poll_send() {
+                    let _ = self.socket.send_to(&d, to).await;
+                }
+                if self.framing.ended() {
+                    return;
+                }
+                let wait = self
+                    .framing
+                    .deadline()
+                    .map_or(std::time::Duration::from_millis(20), |at| {
+                        at.saturating_duration_since(std::time::Instant::now())
+                    })
+                    .min(std::time::Duration::from_millis(20));
+                let now = std::time::Instant::now;
+                let went = tokio::select! {
+                    got = self.socket.recv_from(&mut buf) => match got {
+                        Ok((n, from)) => self.framing.datagram(from, &buf[..n], now()).map(drop),
+                        Err(_) => return,
+                    },
+                    () = tokio::time::sleep(wait) => self.framing.timeout(now()).map(drop),
+                };
+                if went.is_err() {
+                    return;
+                }
+            }
+        }
     }
 
     /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`):
@@ -1377,6 +1519,45 @@ pub(super) mod session_door {
                 .expect("unpoisoned")
                 .audit_records
                 .clone()
+        }
+
+        /// A BROWSER'S CALL THROUGH THE SDP DOOR (R10, row 132): a real WebRTC peer's offer, keyed;
+        /// on a `201` the door's answer settles the browser's terms and its association with the
+        /// claim door is driven as a browser drives it. The open's status, its `Location`, and the
+        /// report of busbar's call if the provider heard one within `bound`.
+        async fn offer_within(
+            &mut self,
+            bound: std::time::Duration,
+        ) -> (StatusCode, Option<String>, Option<String>) {
+            use tower::ServiceExt as _;
+            let (mut browser, offer) = Peer::browser();
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/realtime/calls")
+                .header("content-type", "application/sdp")
+                .header("authorization", format!("Bearer {}", self.plain))
+                .body(axum::body::Body::from(offer))
+                .expect("a request");
+            let response = tokio::time::timeout(ANSWER_BOUND, self.router.clone().oneshot(req))
+                .await
+                .expect("the SDP door answers within the bound")
+                .expect("the router answers");
+            let status = response.status();
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let answer = body_of(response).await;
+            if status == StatusCode::CREATED {
+                browser.answered(&answer);
+                tokio::spawn(browser.run());
+            }
+            let heard = tokio::time::timeout(bound, self.heard.recv())
+                .await
+                .ok()
+                .flatten();
+            (status, location, heard)
         }
 
         /// A keyed mint read to its end: its status, and whether the provider heard it.
@@ -2288,24 +2469,6 @@ pub(super) mod session_door {
         );
     }
 
-    /// A BROWSER'S WebRTC OFFER (R10, row 132): busbar terminates the browser's media on the SDP
-    /// door's claim door, so the offer states the terms its association is settled by: a check
-    /// user and secret, a sha-256 certificate fingerprint and one loopback UDP candidate.
-    fn browser_offer() -> String {
-        let print = ["AB"; 32].join(":");
-        let terms = "a=ice-ufrag:root\r\na=ice-pwd:0123456789abcdef0123456789\r\n\
-                     a=setup:actpass\r\n";
-        format!(
-            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n\
-             a=fingerprint:sha-256 {print}\r\n\
-             m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\n{terms}\
-             a=sendrecv\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\n\
-             a=candidate:1 1 udp 2130706431 127.0.0.1 9 typ host\r\n\
-             m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n\
-             a=mid:1\r\n{terms}a=sctp-port:5000\r\n"
-        )
-    }
-
     /// The call the far end's SDP answer places, where its `Location` says it lives.
     const PLACED_CALL: &str = "rtc_root0001";
 
@@ -2315,7 +2478,6 @@ pub(super) mod session_door {
     /// line>` for each upgrade, and `TEXT <payload>` for every text frame a socket is sent. An
     /// offer's report carries its body after its head.
     async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback port");
@@ -2349,17 +2511,21 @@ pub(super) mod session_door {
                         if socket.read_exact(&mut body).await.is_err() {
                             return;
                         }
-                        let _ = sent.send(format!(
-                            "OFFER {head}\r\n{}",
-                            String::from_utf8_lossy(&body)
-                        ));
+                        let request = format!("{head}\r\n{}", String::from_utf8_lossy(&body));
+                        let _ = sent.send(format!("OFFER {request}"));
+                        // The provider places busbar's call: a real peer answers its offer.
+                        let Some((peer, answer)) = Peer::accept(&call_offer(&request)) else {
+                            return;
+                        };
+                        tokio::spawn(peer.run());
                         let reply = format!(
                             "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
                              location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
-                             connection: close\r\n\r\n{ANSWER}",
-                            ANSWER.len()
+                             connection: close\r\n\r\n",
+                            answer.len()
                         );
                         let _ = socket.write_all(reply.as_bytes()).await;
+                        let _ = socket.write_all(&answer).await;
                         let _ = socket.shutdown().await;
                         return;
                     };
@@ -2437,7 +2603,6 @@ pub(super) mod session_door {
     /// unplaced call, and attached to nothing for the placed one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_sideband_attaches_only_to_a_placed_call() {
-        use tower::ServiceExt as _;
         let _one = PUBLISHING.lock().await;
         let far_end = far_calls_and_socket().await;
         let mut s = session_with(
@@ -2477,25 +2642,10 @@ pub(super) mod session_door {
         );
         drop(caller);
 
-        // The caller's own offer places the call.
-        let offer = browser_offer();
-        let req = axum::http::Request::builder()
-            .method("POST")
-            .uri("/v1/realtime/calls")
-            .header("content-type", "application/sdp")
-            .header("authorization", format!("Bearer {plain}"))
-            .body(axum::body::Body::from(offer))
-            .expect("a request");
-        let placed = tokio::time::timeout(ANSWER_BOUND, router.clone().oneshot(req))
-            .await
-            .expect("the SDP door answers within the bound")
-            .expect("the router answers");
-        assert_eq!(placed.status().as_u16(), 201, "the offer placed a call");
-        let location = placed
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        // The caller's own offer places the call: a browser's, its association with the claim door
+        // completed as a browser completes it, so busbar's call goes to the provider.
+        let (status, location, posted) = s.offer_within(ANSWER_BOUND).await;
+        assert_eq!(status.as_u16(), 201, "the offer placed a call");
         // R10: the caller is told BUSBAR'S call (busbar terminates the browser's media and places
         // its own call), never the provider's.
         let call = location
@@ -2508,9 +2658,7 @@ pub(super) mod session_door {
             "the caller is told where busbar's call lives: {location:?}"
         );
         let call = call.unwrap_or_default();
-        let posted = next_report(&mut s.heard)
-            .await
-            .expect("the offer reached the provider");
+        let posted = posted.expect("the offer reached the provider");
         assert!(
             posted.starts_with("OFFER POST /v1/realtime/calls "),
             "{posted}"
