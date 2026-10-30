@@ -255,12 +255,17 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 /// `plugin`, and says to write the value itself. Core's own typed fields are not plugin settings
 /// and never come here.
 ///
-/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL (security.md:316): a value at an EXACT declared
-/// path that is not a reference (a string, a number, a `{ literal: … }` wrapper) is REFUSED in the
-/// words a core secret field answers ([`busbar_contract::secret_ref::INLINE_LITERAL_REFUSAL`]),
-/// naming the setting's position and never a byte of the value. An unset (or `null`) declared
-/// field is not a literal. A WILDCARD path (`servers.*.env.*`) names a map whose entries may be
-/// secret or not, so a literal there is left as written (the lending host lends it as written).
+/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL (security.md:316): a value at a declared path,
+/// EXACT or WILDCARD (`servers.*.env.*`, lead ruling item 7b), that is not a reference (a string, a
+/// number, a `{ literal: … }` wrapper) is REFUSED in the words a core secret field answers
+/// ([`busbar_contract::secret_fields::declared_literal_refusal`]), naming the setting's position and
+/// never a byte of the value. An unset (or `null`) declared position is not a literal.
+///
+/// REFERENCE-CAPABLE, NOT-SECRET FIELDS (lead ruling item 7a): at a position the plugin names in its
+/// Statement's reference-capable list (`reference`: its extensions' `reference_fields`, a store,
+/// exporter or hook `url`), a reference is resolved in place to its string by the same resolver and
+/// a literal passes as written; the value is never treated as a secret (no literal refusal). A path
+/// in both lists is refused ([`busbar_contract::secret_fields::contradiction_refusal`]).
 ///
 /// Runs CORE-SIDE at every `open` (boot, config apply/reload, AND hot plugin reload) BEFORE the
 /// settings JSON crosses the ABI - it does not touch the wire ABI or the manifest signature. The
@@ -275,23 +280,27 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 pub(crate) fn resolve_settings(
     settings: &serde_json::Map<String, serde_json::Value>,
     declared: &[String],
+    reference: &[String],
     plugin: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
     use busbar_contract::secret_fields;
+    if let Some(path) = secret_fields::contradiction(declared, reference) {
+        return Err(secret_fields::contradiction_refusal(&path, plugin));
+    }
     let mut held = ResolvedSettings(serde_json::Value::Object(settings.clone()));
     let tree = &mut held.0;
-    if let Some(at) = secret_fields::undeclared_reference(tree, declared) {
+    if let Some(at) = secret_fields::undeclared_reference(tree, &[declared, reference].concat()) {
         return Err(secret_fields::undeclared_refusal(
             &format!("settings.{at}"),
             plugin,
         ));
     }
-    if let Some(path) = declared_literal(tree, declared) {
-        return Err(format!(
-            "settings.{path}: the plugin '{plugin}' declares this setting secret; {}",
-            busbar_contract::secret_ref::INLINE_LITERAL_REFUSAL
+    if let Some(at) = secret_fields::declared_literal(tree, declared) {
+        return Err(secret_fields::declared_literal_refusal(
+            &format!("settings.{at}"),
+            plugin,
         ));
     }
     for path in declared {
@@ -330,6 +339,22 @@ pub(crate) fn resolve_settings(
             *slot = serde_json::Value::String(resolved);
         }
     }
+    // The REFERENCE-CAPABLE positions (not secret): each reference resolved in place by the same
+    // resolver; a literal there is left as written.
+    secret_fields::resolve_references(tree, declared, reference, |field, secret| {
+        tracing::info!(
+            setting = field,
+            reference = %secret.describe(),
+            "plugin setting resolved as a REFERENCE at a field the plugin declares \
+             reference-capable (not secret)"
+        );
+        resolver
+            .resolve_string_at_config(secret, scope)
+            .map(|value| value.expose(&crate::seal::lend()).clone())
+            .map_err(|e| {
+                format!("plugin setting '{field}' is a reference that did not resolve: {e}")
+            })
+    })?;
     // A top-level `{ literal: … }` wrapper is unwrapped in place (moved, never copied).
     if let serde_json::Value::Object(map) = tree {
         for value in map.values_mut() {
@@ -358,24 +383,6 @@ pub(crate) fn resolve_settings(
         }
     }
     Ok(held)
-}
-
-/// The first EXACT declared path (`.`-joined, as declared) whose value in `tree` is set and is not
-/// a secret reference: a literal written where the plugin declared a secret. `null` is unset.
-fn declared_literal(tree: &serde_json::Value, declared: &[String]) -> Option<String> {
-    declared
-        .iter()
-        .filter(|path| !busbar_contract::secret_fields::is_wildcard(path))
-        .find(|path| {
-            path.split('.')
-                .try_fold(tree, |v, k| match v {
-                    serde_json::Value::Object(m) => m.get(k),
-                    serde_json::Value::Array(a) => k.parse::<usize>().ok().and_then(|i| a.get(i)),
-                    _ => None,
-                })
-                .is_some_and(|v| !v.is_null() && !busbar_contract::secret_fields::is_reference(v))
-        })
-        .cloned()
 }
 
 /// A plugin's settings with its declared secret references RESOLVED ([`resolve_settings`]): the
