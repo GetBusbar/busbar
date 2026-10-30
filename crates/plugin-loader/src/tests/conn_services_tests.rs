@@ -869,6 +869,8 @@ struct Scripted {
     parked: Mutex<Vec<(InstanceId, u64)>>,
     /// Armed, a close parks here until released: a transport door wedged in its close.
     close_gate: Gate,
+    /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
+    landing: bool,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -957,6 +959,14 @@ impl DeclaredConns for Scripted {
 
     fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
         self.failing.as_ref().map(|(_, c)| c.clone())
+    }
+
+    fn landed(&self, caller: InstanceId, conn: ConnId, _: u64) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        if self.landing {
+            return Err(ConnError::Pending);
+        }
+        Ok(())
     }
 
     fn auth_of(
@@ -2703,6 +2713,57 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     );
     let t = minted.expect("a ticket");
     d.recycle(t);
+}
+
+/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"): a raw
+/// `ESTABLISH` that answered PENDING leaves its dial in flight on the ticket; the recycle that ends
+/// the ticket closes that dial, and the close reaches a transport door. The door double parks in
+/// its close: while it is parked, a ticket is still minted on that worker, because the worker's
+/// state lock is not held across the close.
+#[test]
+fn red_a_dial_left_in_flight_is_closed_with_no_worker_lock_held() {
+    let table = Arc::new(Scripted {
+        landing: true,
+        ..Scripted::default()
+    });
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, d.adopter());
+    assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
+    let driver = d.driver(&p, 0).expect("a driver ticket");
+    let pending = establish_on(&p, 0, "127.0.0.1:9", driver);
+    assert_eq!(
+        pending.outcome,
+        RawOutcome::of(Outcome::Pending),
+        "the dial is still connecting"
+    );
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "one dial in flight");
+    table.close_gate.armed.store(true, AtomicOrdering::SeqCst);
+    d.recycle(driver);
+    let parked = table
+        .close_gate
+        .entered_within(std::time::Duration::from_secs(10));
+    let minted = std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = &d;
+        s.spawn(move || {
+            let _ = tx.send(d.mint(0));
+        });
+        let minted = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Released whatever happened, so the scope's join never waits on the parked close.
+        table
+            .close_gate
+            .released
+            .store(true, AtomicOrdering::SeqCst);
+        minted
+    });
+    assert!(parked, "the dial left in flight was never closed");
+    let minted = minted.expect(
+        "a mint on the worker blocked while a transport close ran: the dial left in flight was \
+         closed under the worker's state lock",
+    );
+    let t = minted.expect("a ticket");
+    d.recycle(t);
+    drop(p);
 }
 
 /// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
