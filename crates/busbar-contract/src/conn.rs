@@ -435,6 +435,15 @@ pub trait DeclaredConns: Conns {
         let _ = owner;
     }
 
+    /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (empty = the need's
+    /// own), as [`PollConns::head_defaults`] reads it: what a plugin's whole request is completed
+    /// with ([`HeadDefaults::completing`]) in the head its member's auth call is handed, before the
+    /// open. The default is none.
+    fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let _ = (owner, need, target);
+        HeadDefaults::default()
+    }
+
     /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
     /// registration `member` ([`OpenDesc::member`]) and reach `origin` (`scheme://authority`,
     /// [`origin_of`]): that MEMBER's binding, which the plugin's own requests to that member are
@@ -517,10 +526,47 @@ pub fn origin_of(url: &str) -> &str {
 pub struct HeadDefaults {
     /// Its own head lines, `(name, value)`, in the framer's order.
     pub lines: Vec<(Vec<u8>, Vec<u8>)>,
-    /// Whether its head states the body's length (`LocateOut::states_length`): `content-length` is
-    /// the framer's OWN line, which the framer writes from the body length the host hands it,
-    /// before its auth call. The host never adds a line of that name.
+    /// Whether its head states the body's length (`LocateOut::states_length`): the framer renders
+    /// no length of its own, so the host states `content-length` for a non-empty body, last,
+    /// before the auth signs the head ([`HeadDefaults::completing`]).
     pub states_length: bool,
+}
+
+/// The one line the host states for a framer whose head states the body's length.
+pub const CONTENT_LENGTH: &[u8] = b"content-length";
+
+impl HeadDefaults {
+    /// THE LINES THE HOST ADDS to a request head (THE DESIGN section 6, step 5: nothing is added
+    /// after the auth runs): each of the framer's own lines the head does not carry (`carried`
+    /// reads a name, any case), in the framer's order, then `content-length: <body_len>` where the
+    /// framer states the length, the body is not empty and no line names it (1.5.5's client wrote
+    /// its defaults after every field the request carried and the length last, and sent no length
+    /// for an empty HTTP/1.1 body). The connector adds exactly these to the opening it dials, and an
+    /// opener that runs an auth call before the open hands the same lines to the auth, so the head
+    /// the auth signs is the head that goes out.
+    #[must_use]
+    pub fn completing(
+        &self,
+        carried: impl Fn(&[u8]) -> bool,
+        body_len: usize,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut added: Vec<(Vec<u8>, Vec<u8>)> = self
+            .lines
+            .iter()
+            .filter(|(name, _)| !carried(name))
+            .cloned()
+            .collect();
+        if self.states_length
+            && body_len != 0
+            && !carried(CONTENT_LENGTH)
+            && !added
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(CONTENT_LENGTH))
+        {
+            added.push((CONTENT_LENGTH.to_vec(), body_len.to_string().into_bytes()));
+        }
+        added
+    }
 }
 
 /// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
@@ -784,12 +830,9 @@ pub trait PollConns: Conns {
     /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (the transport ABI's
     /// `LocateIn::defaults_buf` and `LocateOut::states_length`): the field lines its wire adds to a
     /// head that does not state them, in the framer's order, and whether its head states the
-    /// body's length. The host's walk adds each line its request does not carry BEFORE the auth
+    /// body's length. The lines the host adds are [`HeadDefaults::completing`]'s, BEFORE the auth
     /// kind signs the head, so nothing is added after the auth runs (THE DESIGN section 6, step 5);
-    /// the framer then writes the head as handed. The body's length is never one of those: where
-    /// the framer states it, `content-length` is the framer's own line, written by the framer from
-    /// the body length the host hands it, before its auth call, and the host adds no line of that
-    /// name.
+    /// the framer then writes the head as handed.
     /// Host-side only, never lowered. The default is none: a table whose framers state none, and a
     /// framer that predates the fields, add theirs at encode as before.
     fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
