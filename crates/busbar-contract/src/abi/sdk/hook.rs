@@ -753,14 +753,18 @@ pub trait Hook: Send + Sync {
         let _ = (tap, op);
         Poll::Ready(())
     }
-    /// `configure`: `true` acknowledges the version. Default: acknowledge.
+    /// `configure`: `Ok` acknowledges the version; `Err` refuses it, saying why in the hook's own
+    /// bare words (the host names the hook). Default: acknowledge.
+    ///
+    /// # Errors
+    /// Why the hook will not take the pushed settings.
     fn configure(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
         version: u64,
-    ) -> bool {
+    ) -> Result<(), String> {
         let _ = (settings, version);
-        true
+        Ok(())
     }
     /// `status`: the 1.5.5 status envelope (`{"status": {...}}`, or `{}` = unsupported).
     fn status(&self) -> serde_json::Value {
@@ -1027,20 +1031,18 @@ hook_op!(
 );
 
 hook_op!(
-    /// `configure`: a nack is FAILED (READY must ack the pushed version).
+    /// `configure`: a refusal is FAILED with the hook's reason (READY must ack the pushed version).
     Configure, ConfigureIn, ConfigureOut, |held, _i, input, out| {
         let text = settings_text(input.field(|i| &i.settings).bytes());
         let Ok(serde_json::Value::Object(settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
         };
-        if held.life().hook().configure(&settings, input.version) {
-            out.set(|o| &o.acked_version, input.version);
-            Outcome::Ready
-        } else {
-            out.fail(Refusal::failed(format!(
-                "hook did not acknowledge settings_version {}",
-                input.version
-            )))
+        match held.life().hook().configure(&settings, input.version) {
+            Ok(()) => {
+                out.set(|o| &o.acked_version, input.version);
+                Outcome::Ready
+            }
+            Err(why) => out.fail(Refusal::failed(why)),
         }
     }
 );
