@@ -5074,6 +5074,40 @@
         "by": "2026-12-31"
       },
       "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): the frame's `:exception-type` header value moves from `InternalServerException` to `internalServerException`, as the ConverseStream output union names it; the payload `{\"message\":\"The response stream was interrupted.\"}` is unchanged (the frame CRCs change with the header; the recording holds the decoded frames). A transform: only that one exception-name string is read back as 1.5.5's; every other frame stays judged."
+    },
+    {
+      "id": "R10-SDP the caller's SDP offer is answered by busbar, not with the provider's relayed SDP answer",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served (family-baselines.tsv); no 1.5.5 client or operator sees it. The CHANGELOG's streaming-plane entry is the customer text.",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 3)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-30",
+        "ruling": "OWNER SIGNED 2026-10-30, SIGN-ga-session.md row 3: streams|sdp|calls, /steps/0/body/text, before the 1.6.0-pre golden's relayed provider SDP answer, after \"\" (measured on #1957 at dac4586105, R10). R10: busbar terminates the browser's media; the offer is answered 201 with busbar's own call id in Location and the provider's answer is not relayed to the caller."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|sdp\\|calls$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "streams|sdp|calls",
+        "pointer": "/steps/0/status",
+        "equals": 201
+      },
+      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-ga-session.md row 3), judged against the dated baseline golden/1.6.0-pre (NOT 1.5.5 evidence; no 1.5.5 cell moves). Under R10 (#1957, plane-streaming 3071e3d8ff) busbar terminates the browser's media: the caller's SDP offer is answered 201 and the provider's SDP answer is no longer relayed to the caller. A precise `values` spec: the caller's step body text is forgiven only from the golden's exact relayed answer to the exact empty body, on this one cell; every other leaf of the cell (step status, headers, header order, the upstream record) stays judged. PREMISE: the offer is still answered 201. Row 1 (the pre-R10 GA mint body) and row 2 (the R10 mint expiry, a wall-clock value no exact before/after can name) are not this entry.",
+      "values": [
+        {
+          "pointer": "/body/json/steps/0/body/text",
+          "golden": "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=oracle-answer\r\nt=0 0\r\n",
+          "candidate": ""
+        }
+      ]
     }
   ]
 }
