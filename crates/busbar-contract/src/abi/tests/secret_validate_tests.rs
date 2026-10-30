@@ -276,3 +276,23 @@ fn needed_over_the_hard_max_faults() {
     out.needed = HARD_MAX_BYTES + 1;
     assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
 }
+
+/// RED (S5): a short answer naming more than the kind's secret cap, though under the mechanism's
+/// hard max: the host never lends a buffer that large.
+#[test]
+fn needed_over_the_secret_cap_faults() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = crate::abi::secret::MAX_SECRET_BYTES as u64 + 1;
+    assert!(out.needed < HARD_MAX_BYTES);
+    assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
+}
+
+/// GREEN (S5): a short answer naming exactly the cap passes.
+#[test]
+fn needed_at_the_secret_cap_passes() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = crate::abi::secret::MAX_SECRET_BYTES as u64;
+    assert_eq!(check(&out, &[0; 16]), Ok(()));
+}

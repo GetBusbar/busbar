@@ -165,6 +165,11 @@ pub struct ResolveOut {
 /// chain) is the short-buffer answer and the host re-calls once with its size.
 pub const FIRST_SECRET_CAP: usize = 4096;
 
+/// THE LARGEST SECRET a `resolve` may answer, in bytes (1 MiB): the most a short answer may name in
+/// [`ResolveOut::needed`], so the host never lends a buffer larger, well below the mechanism's
+/// hard maximum for any host buffer. A PEM chain or a service-account key fits many times over.
+pub const MAX_SECRET_BYTES: usize = 1024 * 1024;
+
 /// `check`'s `in`: one reference's settings object and the host's reason buffer, as
 /// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
 #[repr(C)]
