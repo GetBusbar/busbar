@@ -29,8 +29,8 @@
 //! call is Ready or Pending(wake)).
 
 use std::borrow::Cow;
-use std::marker::PhantomData;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;

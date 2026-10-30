@@ -1321,7 +1321,11 @@ fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_ho
         Outcome::Ready
     );
     assert_eq!(grown.order(out2.order_written), vec![3, 2, 1, 0]);
-    assert_eq!(ASKED.load(Ordering::SeqCst), 1, "decide ran again on the re-call");
+    assert_eq!(
+        ASKED.load(Ordering::SeqCst),
+        1,
+        "decide ran again on the re-call"
+    );
 
     let mut t: TransformOut = zeroed();
     assert_eq!(
@@ -1336,7 +1340,11 @@ fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_ho
         call::<Transform<OpenAsks>>(p, slot::TRANSFORM, &again, &mut t2),
         Outcome::Ready
     );
-    assert_eq!(ASKED.load(Ordering::SeqCst), 2, "transform ran again on the re-call");
+    assert_eq!(
+        ASKED.load(Ordering::SeqCst),
+        2,
+        "transform ran again on the re-call"
+    );
 
     // A short answer on one ticket is never another ticket's: a later ticket on the same slot
     // runs the hook.
@@ -1425,9 +1433,11 @@ fn red_a_configure_refusal_states_the_hooks_reason() {
 
 // ── open is handed its secrets and generation (H6) ──────────────────────────────────────────────
 
-/// What [`OpenSecrets`] was handed: its settings, secrets and generation, in order.
-static OPENED_SECRETS: std::sync::Mutex<Vec<(String, Vec<Vec<u8>>, u64)>> =
-    std::sync::Mutex::new(Vec::new());
+/// One opening [`OpenSecrets`] was handed: its settings, secrets and generation.
+type Handed = (String, Vec<Vec<u8>>, u64);
+
+/// What [`OpenSecrets`] was handed, in order.
+static OPENED_SECRETS: std::sync::Mutex<Vec<Handed>> = std::sync::Mutex::new(Vec::new());
 
 struct OpenSecrets;
 impl HookOpen for OpenSecrets {
@@ -1491,7 +1501,11 @@ fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
     assert_eq!(
         *OPENED_SECRETS.lock().unwrap(),
         vec![
-            (r#"{"k": 1}"#.to_owned(), vec![one.to_vec(), two.to_vec()], 3),
+            (
+                r#"{"k": 1}"#.to_owned(),
+                vec![one.to_vec(), two.to_vec()],
+                3
+            ),
             (r#"{"k": 1}"#.to_owned(), vec![two.to_vec()], 4),
         ]
     );
@@ -1551,6 +1565,10 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
         error_text(&out.head),
         "unbuilt: the projection does not serialise"
     );
-    assert_eq!(ESTABLISHED.load(Ordering::SeqCst), before, "nothing was sent");
+    assert_eq!(
+        ESTABLISHED.load(Ordering::SeqCst),
+        before,
+        "nothing was sent"
+    );
     closed::<OpenUnsendable>(p);
 }

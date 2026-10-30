@@ -201,8 +201,8 @@ impl HookOpen for Open {
 /// The strategy `settings` names, parsed as the door parses it.
 fn strategy_of(settings: &str) -> Result<Strategy, String> {
     // `hook-ranking/src/door.rs`, `open`: "the settings are not JSON: {e}".
-    let v: serde_json::Value = serde_json::from_str(settings)
-        .map_err(|e| format!("the settings are not JSON: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(settings).map_err(|e| format!("the settings are not JSON: {e}"))?;
     // `hook-ranking/src/door.rs`, `open`: "settings.policy is required".
     let word = v
         .get("policy")
