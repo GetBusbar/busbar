@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THERE IS NO UNIX TRANSPORT (OWNER Q127, 2026-09-30; `BUSBAR-1.6.0.md` kind table: "there is no
-//! unix transport"). The carriers are tcp and a member program's pipe. A `unix://` target is
-//! refused, whichever way a need names it: declared over a `unix` scheme no entry serves, or named
-//! as the target of a need declared over a served scheme. Neither reaches a dial.
+//! THERE IS NO UNIX TRANSPORT (`BUSBAR-1.6.0.md` kind table: "there is no unix transport"). The
+//! carriers are tcp and a member program's pipe. A `unix://` target is refused, whichever way a
+//! need names it: declared over a `unix` scheme no entry serves, or named as the target of a need
+//! declared over a served scheme. Neither reaches a dial.
 //!
 //! What the connector DOES serve is a unix-domain SOCKET PATH as the target of a `tcp` need in the
 //! operator-infrastructure (or loopback-allowed) class, spelled `unix:/absolute/path` (`src/tests/unix_target_tests.rs`). That is no transport
@@ -18,7 +18,7 @@ const OWNER: InstanceId = InstanceId(1);
 const SOCKET: &str = "unix:///run/busbar.sock";
 
 /// A need declared over `unix` is refused at its declaration (no entry serves the scheme; the
-/// scheme match is made at declare, spec Part 2 #50), so it opens nothing.
+/// scheme match is made at declare), so it opens nothing.
 #[test]
 fn a_need_over_a_unix_scheme_is_refused() {
     let c = Connector::new();

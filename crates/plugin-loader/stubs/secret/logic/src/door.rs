@@ -7,20 +7,22 @@
 //!
 //! * `validate`, `open`, `refresh` — the source holds no settings and no state: any settings object
 //!   opens it.
-//! * `resolve` — a reference's `{ key: VAR }` to the variable's value, READY under a lease (the
-//!   SDK's [`Held`] leases, zeroed on release), or FAILED with its `ERROR_KIND_*` and 1.5.5's text.
-//!   It never pends.
+//! * `resolve` — a reference's `{ key: VAR }` to the variable's value, written by the SDK
+//!   ([`resolved`]) into the host's zeroed buffer and wiped here (the credential chip, row 6:
+//!   host-owned secret bytes; no lease, no copy left behind), or FAILED with its `ERROR_KIND_*` and
+//!   1.5.5's text. A value over the host's buffer is the short-buffer answer. It never pends.
 //! * `release`, `close`, `cancel`, `tick`, `retire`, `drive` — the SDK's.
 
-use busbar_contract::abi::mechanism::call::{Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::door::{
     Rewrite, Statement, REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE,
     REWRITE_SUGAR_SHOWN,
 };
+use busbar_contract::abi::sdk::cred::resolved;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
-use busbar_contract::abi::secret::{cancel, ResolveIn, ResolveOut, ERROR_KIND_UNSET};
+use busbar_contract::abi::secret::{cancel, ResolveIn, ResolveOut};
 
 use crate::{error_kind, settings_of};
 
@@ -70,7 +72,7 @@ impl Life for Env {
     }
 }
 
-/// `resolve`: READY with the variable's value under a lease, FAILED with its code and text.
+/// `resolve`: READY with the variable's value in the host's buffer, FAILED with its code and text.
 pub struct Resolve;
 
 impl SafeSlot for Resolve {
@@ -82,16 +84,12 @@ impl SafeSlot for Resolve {
         input: Lent<'_, ResolveIn>,
         mut out: Out<'_, ResolveOut>,
     ) -> Outcome {
-        let Some(held) = instance.get() else {
+        if instance.get().is_none() {
             return Outcome::Refused;
-        };
+        }
         let settings = input.field(|i| &i.settings).bytes();
         match settings_of(settings).and_then(|s| crate::resolve(&s)) {
-            Ok(material) => {
-                out.lease_secret(|o| &o.secret, held.leases(), material, BLOB_OCTETS);
-                out.set(|o| &o.error_kind, ERROR_KIND_UNSET);
-                Outcome::Ready
-            }
+            Ok(material) => resolved(input, &mut out, material),
             Err(e) => {
                 out.set(|o| &o.error_kind, error_kind(e.kind));
                 out.fail(Refusal::failed(e.message))

@@ -13,6 +13,7 @@
 //! that binds those outcomes is about them: a `needed_*` on anything but FAILED.
 
 use super::ledger::{HostRecords, RecordEntry};
+use super::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use super::{
     CountOut, HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
     VerdictOut, ABSENT, CANCEL_APPLIED, FOUND, VERDICT_YES,
@@ -94,6 +95,8 @@ pub const VERDICT_VOCABULARY: Fault = fault(Rule::UnknownCode, "store.verdict.ve
 pub const COUNT_FAILED_WRITTEN: Fault = fault(Rule::WrittenOnShort, "store.count.failed_written");
 /// A `cancel` disposition past APPLIED.
 pub const CANCEL_DISPOSITION: Fault = fault(Rule::UnknownCode, "store.cancel.disposition");
+/// A purge `in` whose `retention` names no rule.
+pub const KIND_BEFORE_RETENTION: Fault = fault(Rule::UnknownCode, "store.kind_before.retention");
 
 /// Every fault this module can answer with.
 pub const ALL: &[Fault] = &[
@@ -126,6 +129,7 @@ pub const ALL: &[Fault] = &[
     VERDICT_VOCABULARY,
     COUNT_FAILED_WRITTEN,
     CANCEL_DISPOSITION,
+    KIND_BEFORE_RETENTION,
 ];
 
 fn u(n: usize) -> u64 {
@@ -425,6 +429,16 @@ pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
 pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
     if outcome == Outcome::Failed && out.count != 0 {
         return Err(COUNT_FAILED_WRITTEN);
+    }
+    Ok(())
+}
+
+/// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`] or
+/// [`RETENTION_TERMINAL_ONLY`]. The host writes only those; a store refuses any other code rather
+/// than guess which rows it may drop.
+pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {
+    if input.retention != RETENTION_AGE && input.retention != RETENTION_TERMINAL_ONLY {
+        return Err(KIND_BEFORE_RETENTION);
     }
     Ok(())
 }

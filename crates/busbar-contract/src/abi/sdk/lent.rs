@@ -545,6 +545,7 @@ use crate::abi::plane::{
     ArriveIn, CatalogIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
     ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
+use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch, RouteView};
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
     Destination, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots,
@@ -585,6 +586,8 @@ macro_rules! lend_kinds_list {
                 buf(groups, groups_cap) -> Span;
             }
             ValidateIn { buf(err_buf, err_cap) -> u8; }
+            // THE SECRET KIND (`abi::secret`): the host's buffer a resolved value is written into.
+            crate::abi::secret::ResolveIn { buf(secret_buf, secret_cap) -> u8; }
             // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
             PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
             ArriveIn {
@@ -657,7 +660,9 @@ macro_rules! lend_kinds_list {
                 one(facts) -> ConnFacts;
                 list(fields, fields_len) -> Field;
                 one(lane) -> DatagramLane;
+                list(lines, lines_len) -> LineEntry;
             }
+            RouteMatch { list(fields, fields_len) -> FieldPredicate; }
             IngestIn {
                 bytes(bytes, len);
                 one(lane) -> DatagramLane;
@@ -1249,6 +1254,7 @@ macro_rules! lent_field_list {
             crate::abi::secret::ResolveIn {
                 sub head: crate::abi::mechanism::call::InHead;
                 blob settings;
+                val secret_cap: usize;
             }
             crate::abi::store::ledger::HostRecords {
                 val items_cap: usize;
@@ -1577,6 +1583,34 @@ lent_field_list!(lent_fields);
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]
 mod tests;
+
+impl<'a> Lent<'a, LineEntry> {
+    /// The line's route as the route vocabulary reads it ([`RouteView`]): what an accepting
+    /// transport matches a decoded head against, in table order (`path_and_fields_match`, then
+    /// `admits` for the method). `None` when the host lent a path or a predicate name that is not
+    /// UTF-8.
+    #[must_use]
+    pub fn route_view(self) -> Option<RouteView<'a>> {
+        let route = self.field(|l| &l.route);
+        let path = route.field(|r| &r.path).as_str().ok()?;
+        let fields = route
+            .fields()
+            .iter()
+            .map(|p| {
+                let name = p.field(|f| &f.name).as_str().ok()?;
+                Some((p.get().op, name, p.field(|f| &f.value).bytes()))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let r = route.get();
+        Some(RouteView {
+            methods: r.methods,
+            path_form: r.path_form,
+            path,
+            fields,
+            rung: r.rung,
+        })
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/expand_tests.rs"]

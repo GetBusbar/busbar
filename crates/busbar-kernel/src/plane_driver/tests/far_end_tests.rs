@@ -20,7 +20,8 @@ use busbar_contract::abi::transport::{
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
-    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
+    ConnError, ConnId, Conns, HeadDefaults, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
+    PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -31,7 +32,7 @@ use busbar_kernel_egress::{
         Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
         Unavailable, UpstreamStatus,
     },
-    Failover, Member, OnExhausted, Pool, WeightedFloor,
+    Failover, Member, OnExhausted, Pool,
 };
 
 use super::*;
@@ -54,6 +55,8 @@ enum Script {
     Ended(u32, WireStatusClass, Option<WireFault>, Vec<&'static [u8]>),
     Silent,
     Refused,
+    /// The open answers this error, after the dial was asked for.
+    OpenFails(ConnError),
 }
 
 /// One open: its target, head, body and timeout.
@@ -62,6 +65,8 @@ type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
 type Words = (Vec<u8>, Vec<u8>);
 /// The facts one auth call saw: method, authority, path.
 type Facts = (Vec<u8>, String, Vec<u8>);
+/// One head's lines, name and value.
+type Lines = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// A connection table whose far ends answer from `scripts`, by the target's host.
 #[derive(Default)]
@@ -83,6 +88,10 @@ struct Table {
     broken: Mutex<std::collections::HashSet<u64>>,
     /// The connections whose stream FAILS once their scripted pieces are read.
     failing: Mutex<Vec<u64>>,
+    /// The head lines the framer states for every target (`PollConns::head_defaults`).
+    defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// Whether the framer's head states the body's length (`HeadDefaults::states_length`).
+    states_length: std::sync::atomic::AtomicBool,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -144,6 +153,7 @@ impl Conns for Table {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let (pieces, bytes) = match script {
             Script::Refused => return Err(ConnError::Refused),
+            Script::OpenFails(err) => return Err(err),
             Script::Silent => (VecDeque::new(), VecDeque::new()),
             Script::Trailed(status, chunks, trailers) => {
                 let mut pieces = VecDeque::new();
@@ -240,6 +250,13 @@ impl Conns for Table {
 }
 
 impl PollConns for Table {
+    fn head_defaults(&self, _: InstanceId, _: NeedId, _: &str) -> HeadDefaults {
+        HeadDefaults {
+            lines: self.defaults.lock().unwrap().clone(),
+            states_length: self.states_length.load(std::sync::atomic::Ordering::SeqCst),
+        }
+    }
+
     fn poll_read(
         &self,
         _: InstanceId,
@@ -436,6 +453,8 @@ struct Bearer {
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
     /// The extensions blob each call lent.
     extensions: Mutex<Vec<Vec<u8>>>,
+    /// The head each call was handed to sign (`FieldsRequest::headers`).
+    heads: Mutex<Vec<Lines>>,
 }
 struct Done(Fields);
 /// A submitted call that never answers.
@@ -485,6 +504,7 @@ impl OutboundAuth for Bearer {
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         self.points.lock().unwrap().push((r.point, r.body.clone()));
         self.extensions.lock().unwrap().push(r.extensions.clone());
+        self.heads.lock().unwrap().push(r.headers.clone());
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -554,7 +574,8 @@ fn rig(
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
-                        style_flags: 0,
+                        // Every style reads the head it signs (`FieldsRequest::headers`).
+                        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
                         // m1's style signs the body (`HeadBody`); every other is over the head.
                         points: if k == 1 {
                             AuthPoints::HEAD_BODY
@@ -577,16 +598,16 @@ fn rig(
             exclusions: Vec::new(),
         },
         on_exhausted,
+        floor: Default::default(),
     };
     let egress = Egress {
         caller: InstanceId(9),
         conns: table.clone(),
-        breaker: book.clone(),
+        breaker: crate::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
         clock: Arc::new(Wall),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
-        floor: WeightedFloor::new(),
         pools: HashMap::from([(POOL.to_string(), pool)]),
         routes,
         stream_ceiling_secs: 600,
@@ -1561,6 +1582,47 @@ async fn an_attempt_whose_auth_refuses_records_nothing_against_the_member() {
     );
 }
 
+/// RED (an auth outcome is never the destination failing): a dial whose auth REFUSED the request
+/// or whose auth call FAILED (`ConnError::AuthRefused`, `ConnError::AuthFailed`) records nothing
+/// against the destination and moves on, as an auth that answers no fields does. The control: a
+/// dial the far end refused does record against it.
+#[tokio::test]
+async fn a_dial_whose_auth_refuses_or_fails_records_nothing_against_the_destination() {
+    for err in [ConnError::AuthRefused, ConnError::AuthFailed] {
+        let r = rig(
+            &[("a.test", Script::OpenFails(err))],
+            OnExhausted::Status503,
+            None,
+        );
+        let t = token();
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(!far.send(&t, request()).await, "{err:?}: nothing was sent");
+        assert_eq!(
+            r.table.opened.lock().unwrap().len(),
+            1,
+            "{err:?}: the dial was asked"
+        );
+        assert!(
+            r.book.observed.lock().unwrap().is_empty(),
+            "{err:?}: nothing recorded against the destination"
+        );
+    }
+    let r = rig(
+        &[("a.test", Script::OpenFails(ConnError::Refused))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(!far.send(&t, request()).await);
+    assert!(
+        !r.book.observed.lock().unwrap().is_empty(),
+        "the far end's refusal is recorded against it"
+    );
+}
+
 /// The head the framer encodes carries the auth values: it wipes them when it drops.
 #[test]
 fn the_head_wipes_its_auth_values() {
@@ -2109,6 +2171,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
             exclusions: Vec::new(),
         },
         on_exhausted: OnExhausted::Status503,
+        floor: Default::default(),
     };
     r.egress.pools.insert("fb".to_string(), fallback);
     let t = token();
@@ -3140,4 +3203,164 @@ async fn a_sent_attempt_that_fails_over_carries_no_pre_byte_reason() {
     let p = far.next(&t).await.expect("a piece");
     assert!(p.fail_over, "{p:?}");
     assert_eq!(far.unsent(&t), None, "the sent attempt clears it");
+}
+
+/// THE FRAMER'S OWN HEAD LINES GO OUT IN THE HEAD THE AUTH SIGNS (THE DESIGN section 6, step 5:
+/// nothing is added after the auth runs), in 1.5.5's order: the auth's fields, the plane's, then the
+/// client's defaults (v1.5.5 walk.rs:564-590 sets the auth's headers before the request's own,
+/// and its goldens read `authorization, content-type, accept, host`). A default the
+/// request already carries is the request's, never doubled. RED before the walk read them: the head
+/// went out without the framer's lines, which the framer then added at encode, after the auth.
+#[tokio::test]
+async fn the_framers_own_head_lines_follow_the_planes_fields_in_the_head_that_goes_out() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    *r.table.defaults.lock().unwrap() = vec![
+        (b"accept".to_vec(), b"*/*".to_vec()),
+        (b"host".to_vec(), b"a.test".to_vec()),
+    ];
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    let head: Vec<(&str, &[u8])> = opened[0]
+        .1
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("authorization", b"Bearer sk-test".as_slice()),
+            ("content-type", b"application/json".as_slice()),
+            ("accept", b"*/*".as_slice()),
+            ("host", b"a.test".as_slice()),
+        ]
+    );
+
+    // A default the request carries stays the request's.
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    req.fields
+        .push((b"Accept".to_vec(), b"text/plain".to_vec()));
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    let head: Vec<&str> = opened[1].1.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(head, ["authorization", "content-type", "Accept", "host"]);
+}
+
+/// A FRAMER THAT STATES ITS BODY'S LENGTH (`HeadDefaults::states_length`, THE DESIGN section 6,
+/// step 5) has the host state `content-length: <the opening body's length>` as the head's LAST
+/// line, after its own lines and before the auth signs the head (1.5.5's goldens: `..., accept,
+/// host, content-length`). The auth is handed that whole head; the line itself is the connector's,
+/// stated at the open from the same located head (no opener's field may state a length: the
+/// connector refuses one), so the head the walk opens with ends at the framer's lines. An empty body
+/// gets no line, and a framer that does not state it gets none, so every other framer's head is
+/// unchanged. RED before: no head carried the length; the framer added it at encode, after the auth.
+#[tokio::test]
+async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    *r.table.defaults.lock().unwrap() = vec![
+        (b"accept".to_vec(), b"*/*".to_vec()),
+        (b"host".to_vec(), b"a.test".to_vec()),
+    ];
+    r.table
+        .states_length
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let t = token();
+    let names =
+        |n: usize| -> Vec<(String, Vec<u8>)> { r.table.opened.lock().unwrap()[n].1.clone() };
+    let signed = |n: usize| -> Vec<(String, String)> {
+        r.auth.heads.lock().unwrap()[n]
+            .iter()
+            .map(|(k, v)| {
+                (
+                    String::from_utf8_lossy(k).into_owned(),
+                    String::from_utf8_lossy(v).into_owned(),
+                )
+            })
+            .collect()
+    };
+    let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+        p.iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    };
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    // The auth signs the whole head, the length last.
+    assert_eq!(
+        signed(0),
+        pairs(&[
+            ("content-type", "application/json"),
+            ("accept", "*/*"),
+            ("host", "a.test"),
+            ("content-length", "2"),
+        ])
+    );
+    // The walk opens with every line but the length, which the connector states last at the open.
+    let head = names(0);
+    let head: Vec<(&str, &[u8])> = head
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("authorization", b"Bearer sk-test".as_slice()),
+            ("content-type", b"application/json".as_slice()),
+            ("accept", b"*/*".as_slice()),
+            ("host", b"a.test".as_slice()),
+        ]
+    );
+
+    // An empty body: no length line.
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    req.body.clear();
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    assert_eq!(
+        signed(1),
+        pairs(&[
+            ("content-type", "application/json"),
+            ("accept", "*/*"),
+            ("host", "a.test"),
+        ])
+    );
+    let head: Vec<String> = names(1).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
+
+    // A framer that does not state it: no length line.
+    r.table
+        .states_length
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    assert_eq!(
+        signed(2),
+        pairs(&[
+            ("content-type", "application/json"),
+            ("accept", "*/*"),
+            ("host", "a.test"),
+        ])
+    );
+    let head: Vec<String> = names(2).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
 }

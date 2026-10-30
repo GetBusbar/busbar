@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/billing.rs`.
+//! Tests for the contract's billing types.
 
-use super::*;
+use busbar_contract::billing::{Billing, TokenUsage};
 
 #[test]
 fn billing_variants_are_distinct() {
