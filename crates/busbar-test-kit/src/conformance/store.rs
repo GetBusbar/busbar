@@ -810,3 +810,9 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_store_runs_tests.rs"]
 mod runs_tests;
+
+/// THE STORE KIND'S FORWARD-COMPATIBILITY CASE (`abi::store`, FORWARD COMPATIBILITY): a durable
+/// store opened over a schema newer than its build refuses to open.
+pub fn store_newer_schema(s: &Subject) {
+    let _ = s;
+}

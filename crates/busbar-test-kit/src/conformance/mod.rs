@@ -131,6 +131,8 @@ mod secret;
 mod store;
 mod transport;
 
+pub use store::store_newer_schema;
+
 /// How long the suite waits for one `ready`: the boot's own budget.
 pub const READY_DEADLINE: Duration = crate::dispatch::ready::READY_DEADLINE;
 
@@ -160,6 +162,12 @@ pub struct Subject {
     /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
     /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
     pub namespace: Option<(NamespaceHook, NamespaceHook)>,
+    /// THE NEWER-SCHEMA STAMP (`conformance_suite! { …, newer_schema: stamp }`): a DURABLE store's
+    /// own test client, called with a fold's namespace and settings after a store of this build
+    /// opened there, rewrites the schema version the store recorded to one newer than its build.
+    /// The store kind's forward-compatibility case ([`store_newer_schema`]) then requires the next
+    /// open to refuse. An ephemeral store keeps no schema and states none.
+    pub newer_schema: Option<NamespaceHook>,
     /// THE PLUGIN'S DECLARES (`conformance_suite!` reads its declares file, [`Subject::declared_in`]):
     /// what the suite judges a kind's script against when the plugin states a fact about itself
     /// (a hook's `hook.orders`). `None`: nothing stated, every fact at its default.
@@ -251,6 +259,7 @@ impl Subject {
             host: None,
             anchors: None,
             namespace: None,
+            newer_schema: None,
             declares: None,
         };
         s.apply_env();
@@ -292,6 +301,13 @@ impl Subject {
     #[must_use]
     pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
         self.namespace = Some((create, drop));
+        self
+    }
+
+    /// A durable store's schema is stamped newer than its build by `stamp` ([`Subject::newer_schema`]).
+    #[must_use]
+    pub fn with_newer_schema(mut self, stamp: NamespaceHook) -> Self {
+        self.newer_schema = Some(stamp);
         self
     }
 
@@ -2693,3 +2709,7 @@ mod tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_declared_tests.rs"]
 mod declared_tests;
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../tests/conformance_newer_schema_tests.rs"]
+mod newer_schema_tests;
