@@ -1,25 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ITEM 292: the plugin pre-flight exempts the compiled-in auth stand-ins under the SAME gate the
-//! auth chain registers them under.
+//! ITEM 292: the plugin pre-flight exempts the test auth modules exactly where the build's auth axis
+//! answers them in process (the install record's `in_process_auth`), the same answer the chain
+//! build opens them by.
 //!
-//! This file is an integration test on purpose. An integration test links `busbar_kernel` WITHOUT
-//! `cfg(test)` and WITH the `test-support` feature (the dev-dependency cycle through the plane
-//! crates turns it on) — exactly how a downstream crate's test binary links it, and the one build
-//! flavour in which `cfg!(test)` and `cfg!(any(test, feature = "test-support"))` answer differently.
-//! A unit test inside the crate cannot tell the two gates apart: both are true there.
+//! This file is an integration test on purpose: it links `busbar_kernel` WITHOUT `cfg(test)`, as a
+//! downstream crate's test binary does, so it proves the answer comes from the install record and
+//! not from how the kernel was compiled.
 
 use busbar_kernel::config::{IdentityProviderCfg, IdentityProviders};
 
-/// An `identity-providers:` definition naming a test stand-in is accepted by the pre-flight in the
-/// build that registers the stand-in.
-///
-/// `AdminAuthChain::build` skips `test-scope-module` / `test-groups-module` as inline stand-ins under
-/// `#[cfg(any(test, feature = "test-support"))]`. The definition-side exemption in
-/// `plugins_preflight` read `cfg!(test)` alone, so here — `test-support` on, `cfg(test)` off — it
-/// treated the stand-in as a `kind: auth` plugin reference and refused the config ("requires the
-/// plugin subsystem") that the same binary's auth chain accepts.
+/// An `identity-providers:` definition naming a test auth module is accepted by the pre-flight in
+/// a build whose auth axis answers it in process. The definition-side exemption once read
+/// `cfg!(test)` alone, so a downstream test binary treated the module as a `kind: auth` plugin
+/// reference and refused the config ("requires the plugin subsystem") that the same binary's auth
+/// chain accepts.
 #[test]
 fn a_test_support_build_accepts_the_identity_provider_stand_ins_its_auth_chain_registers() {
     // Only compiles where the stand-ins are registered: this build IS a `test-support` build.

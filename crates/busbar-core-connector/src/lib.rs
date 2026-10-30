@@ -124,7 +124,7 @@ use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
-/// the host blames for a ticket it never minted (#74).
+/// the host blames for a ticket it never minted.
 pub type WakeTicket = busbar_contract::conn::ConnWake;
 
 /// A `DEST_*` verdict (`busbar_contract::abi::host::service`) refusing a dial.
@@ -256,16 +256,16 @@ impl DialJudge for LiteralsOnly {
 /// loopback-allowed over connection security, or in plaintext only to a target whose host is
 /// WRITTEN as loopback ([`guard::names_loopback`]: a loopback literal in any spelling, `localhost`,
 /// `*.localhost`), as 1.5.5's collector and webrequest guards ruled on the URL's host and never on
-/// what a name resolved to (ARCHITECT parity ruling A3); every other
-/// class takes the scheme its target names (operator-infrastructure's plaintext included). Which
-/// addresses may be dialled at all is the destination guard's ([`guard`]), the same in every class.
-/// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
-/// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
-/// is refused at the connect, before any byte is written; an empty set states no pin.
-/// THE SCHEME RULE THE TARGET DECIDES ALONE, before any judgement: open-web dials over connection
-/// security only. An open holds its target to it ([`Conns::open`]), and so does a pinned need's
-/// admission at declare ([`Connector::admits_pinned`]); loopback-allowed's plaintext-to-loopback
-/// rule needs the pinned address and is [`class_admits`]'s.
+/// what a name resolved to; every other class takes the scheme its target names
+/// (operator-infrastructure's plaintext included). Which addresses may be dialled at all is the
+/// destination guard's ([`guard`]), the same in every class. THE LANDING RULE rides with it: a dial
+/// stated `within` an address set (`EstablishIn::within`) lands only on an address in it, so a name
+/// that resolves elsewhere since the plugin judged it is refused at the connect, before any byte is
+/// written; an empty set states no pin. THE SCHEME RULE THE TARGET DECIDES ALONE, before any
+/// judgement: open-web dials over connection security only. An open holds its target to it
+/// ([`Conns::open`]), and so does a pinned need's admission at declare
+/// ([`Connector::admits_pinned`]); loopback-allowed's plaintext-to-loopback rule needs the pinned
+/// address and is [`class_admits`]'s.
 fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
 }
@@ -285,14 +285,14 @@ fn class_admits(
         }
 }
 
-/// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER (ARCHITECT parity
-/// ruling A1). A name that did not resolve ([`DEST_UNRESOLVABLE`]), or resolved to no address
-/// ([`DEST_NO_ADDRESSES`]), is a FAILED connection, the same failure a dial that found no far end
-/// is ([`ConnError::Fault`], a FAILED outcome to a plugin): 1.5.5 held "a resolution FAILURE is not
-/// a rejection. A collector whose DNS is briefly down is an availability event, not a security one"
-/// (v1.5.5 `crates/busbar/src/observability.rs:588-590`, `otlp_resolves_to_internal`; its test
-/// `otlp_resolve_check_allows_a_name_that_does_not_resolve`, `:1482-1490`), and its exporter
-/// failed that batch and sent the next. Every other verdict is the guard's refusal
+/// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER. A name that did
+/// not resolve ([`DEST_UNRESOLVABLE`]), or resolved to no address ([`DEST_NO_ADDRESSES`]), is a
+/// FAILED connection, the same failure a dial that found no far end is ([`ConnError::Fault`], a
+/// FAILED outcome to a plugin): 1.5.5 held "a resolution FAILURE is not a rejection. A collector
+/// whose DNS is briefly down is an availability event, not a security one" (v1.5.5
+/// `crates/busbar/src/observability.rs:588-590`, `otlp_resolves_to_internal`; its test
+/// `otlp_resolve_check_allows_a_name_that_does_not_resolve`, `:1482-1490`), and its exporter failed
+/// that batch and sent the next. Every other verdict is the guard's refusal
 /// ([`ConnError::Refused`], a REFUSED outcome, which a sink reads as the run's answer). A verdict
 /// decided at once is never a resolution's ([`DialJudge::judge_dial`]), so only a pended one is
 /// read here.
@@ -303,16 +303,16 @@ fn pended_verdict(v: Verdict) -> ConnError {
     }
 }
 
-/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (ARCHITECT parity
-/// ruling A5; v1.5.5 `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`, `:893-907`
+/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (v1.5.5
+/// `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`, `:893-907`
 /// `sanitize_hop_header`): a CR, LF or NUL in the target, a head word, a field name or a field
-/// value, or a field that states the message's own framing (`content-length`,
-/// `transfer-encoding`, any case), refuses the whole open before anything is dialled or sent. The
-/// framer writes the framing for the bytes it sends; a plugin's own would describe another wire.
-/// Where the host writes the opener's authority (`authority_held`,
-/// [`DeclaredConns::hold_authority`]: every instance of the auth kind), a `host` field of the
-/// plugin's own refuses the open too, as 1.5.5 refused it on an auth module's request; every other
-/// opener (a plane's upstream, which may sign its `host`) keeps the field it wrote.
+/// value, or a field that states the message's own framing (`content-length`, `transfer-encoding`,
+/// any case), refuses the whole open before anything is dialled or sent. The framer writes the
+/// framing for the bytes it sends; a plugin's own would describe another wire. Where the host
+/// writes the opener's authority (`authority_held`, [`DeclaredConns::hold_authority`]: every
+/// instance of the auth kind), a `host` field of the plugin's own refuses the open too, as 1.5.5
+/// refused it on an auth module's request; every other opener (a plane's upstream, which may sign
+/// its `host`) keeps the field it wrote.
 fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
     const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
     const AUTHORITY: &str = "host";
@@ -330,7 +330,7 @@ fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
 }
 
 /// What the connector holds for one declared need: the entry serving its transport, resolved once
-/// at declare (a need no entry serves is refused there, never at its open; spec Part 2 #50).
+/// at declare (a need no entry serves is refused there, never at its open).
 #[derive(Clone)]
 struct DeclaredNeed {
     door: Arc<dyn FramerDoor>,
@@ -362,7 +362,7 @@ type Answer = Arc<
     )>,
 >;
 
-/// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
+/// The trust anchors sealed per destination (the transport pin), by the need's owner, the need and
 /// the destination's authority (lower-case, `host:port`).
 type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
@@ -511,9 +511,9 @@ fn unresolved_here(verdict: Verdict) -> bool {
 }
 
 /// What an exchange lent a pooled line keeps to redial it ONCE on a fresh connection when that line
-/// fails before any byte of the exchange left (ARCHITECT ruling Q-L18-RETRY, 1.5.5's pooled client
-/// re-sending a request its pooled connection closed under before it was written; never once a byte
-/// left, so nothing is sent twice, and no failover: the caller sees one exchange).
+/// fails before any byte of the exchange left (1.5.5's pooled client re-sending a request its
+/// pooled connection closed under before it was written; never once a byte left, so nothing is sent
+/// twice, and no failover: the caller sees one exchange).
 struct Redial {
     door: Arc<dyn FramerDoor>,
     dial: Dial,
@@ -922,14 +922,6 @@ impl Connector {
         }
     }
 
-    /// The same connector serving its carriers from `io`: the host I/O the process's dispatcher serves
-    /// every carrier instance (`io.*`), so what the connector admits is what the carriers reach.
-    #[must_use]
-    pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
-        self.io = io;
-        self
-    }
-
     /// The same connector resolving its programs' environment references through `secrets`, at
     /// config time: the need's declaration and the refresher's lease, never a spawn
     /// ([`spawn_env`]).
@@ -982,6 +974,30 @@ impl Connector {
                 "no carrier is loaded to reach an address".into(),
             )),
         }
+    }
+
+    /// The framer `owner`'s `need` rides, located at `target` (empty = the need's own, as an open
+    /// naming none dials it): its own head lines, and whether its head states the body's length.
+    /// A carrier carried as itself, a need nobody declared, or a target the framer refuses states
+    /// neither.
+    fn framer_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let need = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| {
+                (
+                    Arc::clone(&n.door),
+                    n.declared_target.clone().filter(|_| target.is_empty()),
+                )
+            });
+        need.and_then(|(door, declared)| self.located(&door, declared.as_deref().unwrap_or(target)))
+            .map(|located| HeadDefaults {
+                lines: located.defaults,
+                states_length: located.states_length,
+            })
+            .unwrap_or_default()
     }
 
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
@@ -1069,7 +1085,7 @@ impl Connector {
     }
 
     /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
-    /// arrived on that claim (ARCHITECT 4l, [`framed_stream`]).
+    /// arrived on that claim ([`framed_stream`]).
     #[must_use]
     pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
         self.transports
@@ -1136,10 +1152,9 @@ impl Connector {
         )
     }
 
-    /// THE SCHEME MATCH (spec Part 2 #50: "no match => fail closed"): the need is recorded over the
-    /// entry serving `transport`, resolved here once, or refused here; an open never meets an
-    /// unserved scheme. `tls` is the need's own client config when its `trust_from` named an
-    /// operator CA.
+    /// THE SCHEME MATCH: the need is recorded over the entry serving `transport`, resolved here
+    /// once, or refused here; an open never meets an unserved scheme. `tls` is the need's own
+    /// client config when its `trust_from` named an operator CA.
     fn record(
         &self,
         owner: InstanceId,
@@ -1769,10 +1784,9 @@ impl Connector {
         })
     }
 
-    /// THE ONE REDIAL (ARCHITECT ruling Q-L18-RETRY): `held` was lent a pooled line that failed
-    /// before any byte of its exchange left. The line is let go and the exchange's opening is
-    /// dialled afresh, judged as any dial is. `Ok(false)`: no redial is owed (none kept, already
-    /// spent, or a byte had left).
+    /// THE ONE REDIAL: `held` was lent a pooled line that failed before any byte of its exchange
+    /// left. The line is let go and the exchange's opening is dialled afresh, judged as any dial
+    /// is. `Ok(false)`: no redial is owed (none kept, already spent, or a byte had left).
     fn redial(&self, held: &Held) -> Result<bool, ConnError> {
         let mut kept = held.redial.lock().expect("redial");
         let Some((line, stream)) = held.line() else {
@@ -2055,23 +2069,23 @@ impl DeclaredConns for Connector {
     ) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class, and pinned to the target its config names when it names one (a
-        // `target_from` that resolved to nothing is refused, and so is a target carrying a
-        // userinfo its own settings did not give it: a credential never rides a dial target, it
-        // travels in the request's own headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any
-        // earlier pin is dropped), and refused when no loaded transport serves its scheme (spec
-        // Part 2 #50; the loader fails the boot on it, naming the plugin and the scheme). Its
-        // connections are secured with the operator CA its `trust_from` names added on top of the
-        // public roots (ARCHITECT ruling 2026-10-02): a `trust_from` that resolved to nothing, or to a PEM that does not parse
-        // into a trust anchor, refuses the need here, at declaration. An inbound need is recorded
-        // (the listener binds it), and refused on an unserved scheme alike.
+        // `target_from` that resolved to nothing is refused, and so is a target carrying a userinfo
+        // its own settings did not give it: a credential never rides a dial target, it travels in
+        // the request's own headers — FAIL-CLOSED; any earlier pin is dropped), and refused when no
+        // loaded transport serves its scheme (the loader fails the boot on it, naming the plugin
+        // and the scheme). Its connections are secured with the operator CA its `trust_from` names
+        // added on top of the public roots: a `trust_from` that resolved to nothing, or to a PEM
+        // that does not parse into a trust anchor, refuses the need here, at declaration. An
+        // inbound need is recorded (the listener binds it), and refused on an unserved scheme
+        // alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
         // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
         // is sealed at its own, and dials it like any need the plugin names per open.
         let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
         // A trust anchor in an OWNED section (`owned.<section>.<key>`) is optional by definition
-        // (the section is the operator's to write or not; ARCHITECT ruling 2026-10-14): absent, the
-        // need's connections trust the public roots alone, as one naming no anchor does; present, it
-        // is parsed below and refused when it is no trust anchor, exactly as a `settings.` one is.
+        // (the section is the operator's to write or not): absent, the need's connections trust the
+        // public roots alone, as one naming no anchor does; present, it is parsed below and refused
+        // when it is no trust anchor, exactly as a `settings.` one is.
         let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
         let unresolved =
             (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
@@ -2079,11 +2093,11 @@ impl DeclaredConns for Connector {
                     && !per_member(&spec.trust_from)
                     && !optional_trust
                     && trust.is_none());
-        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, row 159 audit,
-        // the settings-URL userinfo finding): a target read from the plugin's own settings through `target_from`
-        // is declared without its userinfo, which is dropped here — never recorded, judged or
-        // repeated; a credential the plugin means to send rides its request's own fields. Every
-        // other target carrying a userinfo is refused, and so is one this reading cannot clear.
+        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (the settings-URL userinfo finding): a
+        // target read from the plugin's own settings through `target_from` is declared without its
+        // userinfo, which is dropped here — never recorded, judged or repeated; a credential the
+        // plugin means to send rides its request's own fields. Every other target carrying a
+        // userinfo is refused, and so is one this reading cannot clear.
         let cleared = target
             .filter(|t| settings_derived(&spec.target_from) && carries_userinfo(t))
             .and_then(without_userinfo);
@@ -2152,7 +2166,7 @@ impl DeclaredConns for Connector {
         }
         let config = if verify_off {
             // The operator's opt-in to an unverified handshake: an operator-infrastructure need's
-            // only (ARCHITECT ruling 2026-10-03 on Q-L16-4).
+            // only.
             let class = self
                 .over
                 .lock()
@@ -2234,9 +2248,12 @@ impl DeclaredConns for Connector {
         }
     }
 
-    /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
-    /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
-    /// stream.
+    /// A need is framed when the entry serving its transport is a FRAMER (http's kind, over the
+    /// carrier the connector chose); a CARRIER entry is a raw stream.
+    fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        self.framer_head(owner, need, target)
+    }
+
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         self.over
             .lock()
@@ -2405,8 +2422,8 @@ impl Connector {
         Ok(())
     }
 
-    /// THE SESSION'S CLEANUP (once, K6): its pairing leaves the book and closes, both legs with it,
-    /// so a unit key the slot is given again never finds a stale leg.
+    /// THE SESSION'S CLEANUP (once): its pairing leaves the book and closes, both legs with it, so
+    /// a unit key the slot is given again never finds a stale leg.
     pub fn unpair(&self, unit: u64) {
         let gone = self.pairs.lock().expect("pairs").remove(&unit);
         if let Some(p) = gone {
@@ -2536,7 +2553,7 @@ impl Connector {
         // secured with it.
         let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
-        // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
+        // THE DESTINATION'S TRUST ANCHORS (the transport pin): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
         // key to hold, and is refused before any judgement or dial. An open naming a registration
         // sealed at this authority is held to THAT registration's anchors alone (or none, where it
@@ -2588,11 +2605,10 @@ impl Connector {
                 .expect("reach")
                 .get(&(caller, need, desc.member.to_owned()))
                 .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
-        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
-        // table, owner-signed 2026-09-27) in the egress default class only: its address is judged
-        // as operator infrastructure. An open-web need keeps its class (public https only, Q128
-        // ruling 14), and a provider need is refused a private address unless allowlisted
-        // (ARCHITECT ruling CRATES-14, `guard::judged_class`).
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class table)
+        // in the egress default class only: its address is judged as operator infrastructure. An
+        // open-web need keeps its class (public https only), and a provider need is refused a
+        // private address unless allowlisted (`guard::judged_class`).
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
@@ -2652,17 +2668,17 @@ impl Connector {
                         return Ok(held);
                     }
                     // The attach wrote the opening and THEN found the line failed (the far end's
-                    // close met in the same drive that flushed it): a byte of the exchange left,
-                    // so it is never re-sent (Q-L18-RETRY). It holds the failed line and its read
-                    // answers the failure, as a failure met at the first read does; the line is
-                    // let go when it closes. Whether the failure is met here or at that read is
-                    // the far end's timing; the verdict is the socket's count either way.
+                    // close met in the same drive that flushed it): a byte of the exchange left, so
+                    // it is never re-sent. It holds the failed line and its read answers the
+                    // failure, as a failure met at the first read does; the line is let go when it
+                    // closes. Whether the failure is met here or at that read is the far end's
+                    // timing; the verdict is the socket's count either way.
                     Err((stream, _)) if line.flushed() != redial.mark => {
                         let held = Held::over(Some((line, stream)), None, pooled);
                         return Ok(held);
                     }
-                    // The lent line failed before the exchange left (ARCHITECT ruling
-                    // Q-L18-RETRY): it is let go, and the exchange dials a fresh connection.
+                    // The lent line failed before the exchange left: it is let go, and the exchange
+                    // dials a fresh connection.
                     Err((stream, _)) => {
                         line.leave(stream, false);
                         self.pools.drop_line(*shard, key, &line);
@@ -2792,11 +2808,10 @@ impl Conns for Connector {
             )?;
             return self.slab.insert(caller, need, held);
         }
-        // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
-        // served to an operator-infrastructure need as a raw stream, every other class refused
-        // (loopback-allowed included: there is no address to judge, so its loopback rule and
-        // the node's own ports could not hold). A need whose config names its target dials that
-        // path and no other.
+        // A UNIX-DOMAIN TARGET (`unix:/path`): served to an operator-infrastructure need as a raw
+        // stream, every other class refused (loopback-allowed included: there is no address to
+        // judge, so its loopback rule and the node's own ports could not hold). A need whose config
+        // names its target dials that path and no other.
         if let Some(path) = socket::unix_path(target) {
             if egress_class != EGRESS_OPERATOR_INFRASTRUCTURE
                 || declared_target.as_deref().is_some_and(|d| d != target)
@@ -2989,18 +3004,7 @@ impl PollConns for Connector {
     /// states the body's length. A carrier carried as itself, a need nobody declared, or a target
     /// the framer refuses states neither.
     fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
-        let door = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .map(|n| Arc::clone(&n.door));
-        door.and_then(|door| self.located(&door, target))
-            .map(|located| HeadDefaults {
-                lines: located.defaults,
-                states_length: located.states_length,
-            })
-            .unwrap_or_default()
+        self.framer_head(owner, need, target)
     }
 
     fn poll_read(

@@ -26,9 +26,7 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
         (DestinationId::new(1), 3u32),
         (DestinationId::new(2), 1u32),
     ];
-    let picked: Vec<DestinationId> = (0..18)
-        .filter_map(|_| floor.take_turn("p", &members))
-        .collect();
+    let picked: Vec<DestinationId> = (0..18).filter_map(|_| floor.take_turn(&members)).collect();
     let expected: Vec<DestinationId> = [0, 1, 0, 2, 0, 1, 0, 1, 0, 0, 1, 0, 2, 0, 1, 0, 1, 0]
         .into_iter()
         .map(DestinationId::new)
@@ -36,8 +34,9 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
     assert_eq!(picked, expected, "the smooth weighted rotation over 5/3/1");
 
     // The same destination in a second pool is a second, independent rotation.
+    let second_pool = WeightedFloor::new();
     let other: Vec<DestinationId> = (0..3)
-        .filter_map(|_| floor.take_turn("q", &members))
+        .filter_map(|_| second_pool.take_turn(&members))
         .collect();
     let expected_other: Vec<DestinationId> =
         [0, 1, 0].into_iter().map(DestinationId::new).collect();
@@ -48,13 +47,13 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
 /// a pool already running.
 #[test]
 fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
-    let floor = WeightedFloor::new();
+    let (a, b) = (WeightedFloor::new(), WeightedFloor::new());
     let members = offered(3);
 
-    let first = floor.take_turn("a", &members);
-    floor.take_turn("b", &members);
-    floor.take_turn("b", &members);
-    let second = floor.take_turn("a", &members);
+    let first = a.take_turn(&members);
+    b.take_turn(&members);
+    b.take_turn(&members);
+    let second = a.take_turn(&members);
 
     assert_eq!(first, Some(DestinationId::new(0)));
     assert_eq!(

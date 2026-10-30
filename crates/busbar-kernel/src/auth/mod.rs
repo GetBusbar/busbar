@@ -693,15 +693,12 @@ impl AdminAuthChain {
             match entry.module.as_str() {
                 // The operator credential is opened beside the chain ([`open_operator`]).
                 module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
-                // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
-                // resolved as plugins. Compiled out of release binaries.
-                #[cfg(any(test, feature = "test-support"))]
-                "test-scope-module" | "test-groups-module" => {}
                 other => {
                     let name = entry.name.as_str();
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
+                        &registry.reference_slots(other),
                         other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -733,8 +730,10 @@ impl AdminAuthChain {
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
                     let label = format!("admin_auth.{name}");
+                    // `resolved` is wiped when it drops, at the end of this arm: once `open` has
+                    // answered, busbar's copy of the resolved secrets is gone.
                     let calls = axis
-                        .open(other, &label, &serde_json::Value::Object(resolved))
+                        .open(other, &label, resolved.as_value())
                         .map_err(refused)?;
                     // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
                     // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
@@ -784,40 +783,11 @@ impl AuthMiddleware {
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         let mut chain: Vec<ChainEntry> = Vec::new();
-        // An in-process TEST stand-in, as a chain position: the in-process adapter over the module,
-        // answered on the caller's thread (it cannot block).
-        #[cfg(any(test, feature = "test-support"))]
-        let stand_in = |provider: &str, module: Box<dyn AuthModule>| {
-            let calls = stand_in::InProcessAuth::new(module);
-            ChainEntry {
-                provider: provider.to_string(),
-                name: calls.name().to_string(),
-                calls: std::sync::Arc::new(calls),
-            }
-        };
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.chain {
             match entry.module.as_str() {
                 crate::config::KEYS_MODULE => {
                     keys_in_chain = true;
-                }
-                // TEST-ONLY external-module stand-in for the DATA-PLANE chain (the admin chain has
-                // its own): `grp:<role>` identifies as a principal carrying that role, so the
-                // governance re-key is e2e-testable. Compiled out of release binaries entirely.
-                #[cfg(any(test, feature = "test-support"))]
-                "test-groups-module" => {
-                    chain.push(stand_in(&entry.name, Box::new(TestGroupsModule)));
-                }
-                // TEST-ONLY stand-in for a real OIDC auth plugin: it verifies (here, pretends to
-                // verify) an issuer's signature and identifies the bearer. It is deliberately
-                // AUDIENCE-BLIND, because that is what the module ABI makes every such plugin —
-                // `AuthOutcome` has no shape for "and it was minted for you". Without a module of
-                // this shape in the tree, no test can tell an audience check that runs from one
-                // that does not: a keys-only chain refuses a foreign token anyway, for a different
-                // reason, and every assertion about the plane boundary passes vacuously.
-                #[cfg(any(test, feature = "test-support"))]
-                "test-idp-module" => {
-                    chain.push(stand_in(&entry.name, Box::new(TestIdpModule)));
                 }
                 other => {
                     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
@@ -827,6 +797,7 @@ impl AuthMiddleware {
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
+                        &registry.reference_slots(other),
                         other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -853,9 +824,11 @@ impl AuthMiddleware {
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
-                    let calls = axis
-                        .open(other, &entry.name, &serde_json::Value::Object(resolved))
-                        .map_err(refused)?;
+                    let opened = axis.open(other, &entry.name, resolved.as_value());
+                    // busbar's copy of the resolved secrets is wiped the moment `open` answers,
+                    // whatever it answered (security.md:318).
+                    drop(resolved);
+                    let calls = opened.map_err(refused)?;
                     chain.push(ChainEntry {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),
@@ -942,8 +915,8 @@ impl AuthMiddleware {
         })
     }
 
-    /// TEST-ONLY convenience: build the chain against an EMPTY plugin registry (only builtins +
-    /// the compiled-in `test-groups-module` resolve). Panics on a plugin-name entry — a test that
+    /// TEST-ONLY convenience: build the chain against an EMPTY plugin registry (only builtins and
+    /// the modules the test build's auth axis answers in process resolve). Panics on a plugin-name entry — a test that
     /// needs a real `kind: auth` plugin builds a registry and calls [`new`] directly. Keeps the
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
     #[cfg(any(test, feature = "test-support"))]
@@ -1479,59 +1452,6 @@ pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
 /// the type is now cross-crate, but it still never carries the credential.
 pub use busbar_contract::auth::AuthPrincipal;
 
-/// TEST-ONLY data-plane module (see the `test-groups-module` chain arm): credential `grp:<g>`
-/// identifies as `test:<g>` carrying exactly that group; anything else defers (`Pass`).
-#[cfg(any(test, feature = "test-support"))]
-struct TestGroupsModule;
-
-#[cfg(any(test, feature = "test-support"))]
-impl AuthModule for TestGroupsModule {
-    fn name(&self) -> &'static str {
-        "test-groups-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
-        match candidate.and_then(|t| t.strip_prefix("grp:")) {
-            Some(group) => {
-                let mut p = Principal::from_id(format!("test:{group}"));
-                p.roles = vec![group.to_string()];
-                AuthVerdict::Identify(p)
-            }
-            None => AuthVerdict::Pass,
-        }
-    }
-}
-
-/// TEST-ONLY data-plane module standing in for an operator's OIDC auth plugin: it identifies ANY
-/// non-empty credential and asks nothing about audience, exactly as the plugin ABI forces a real one
-/// to. See the `test-idp-module` chain arm for why the tree needs one.
-///
-/// The principal carries the role [`TEST_IDP_ROLE`], because an identified principal earns data-plane
-/// access ONLY through a key (no key, refuse) — a stand-in for a DEPLOYED IdP is one whose
-/// role the operator bound under `role_bindings`, which is what `TestApp::idp_chain` installs.
-#[cfg(any(test, feature = "test-support"))]
-struct TestIdpModule;
-
-/// The role the [`TestIdpModule`] stand-in asserts for every principal it identifies.
-#[cfg(any(test, feature = "test-support"))]
-pub const TEST_IDP_ROLE: &str = "idp-user";
-
-#[cfg(any(test, feature = "test-support"))]
-impl AuthModule for TestIdpModule {
-    fn name(&self) -> &'static str {
-        "test-idp-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
-        match candidate.filter(|c| !c.is_empty()) {
-            Some(_) => {
-                let mut p = Principal::from_id("idp:subject".to_string());
-                p.roles = vec![TEST_IDP_ROLE.to_string()];
-                AuthVerdict::Identify(p)
-            }
-            None => AuthVerdict::Pass,
-        }
-    }
-}
-
 /// One admin chain's answer: the chain verdict and the identifying module's scope ceiling.
 type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 
@@ -1575,20 +1495,6 @@ async fn run_admin_chain(
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
         let outcome = match name.as_str() {
-            // TEST-ONLY external-module stand-in: lets the e2e suite exercise group-mapped,
-            // NON-full principals (unreachable with the operator credential alone). Credential grammar:
-            // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
-            // of release binaries entirely.
-            #[cfg(any(test, feature = "test-support"))]
-            "test-scope-module" => Some(match candidate.and_then(|t| t.strip_prefix("grp:")) {
-                Some(group) => {
-                    let mut p = Principal::from_id(format!("test:{group}"));
-                    p.roles = vec![group.to_string()];
-                    Judgement::of(AuthVerdict::Identify(p))
-                }
-                // Not my credential shape — the next module is tried (the PAM contract).
-                None => Judgement::of(AuthVerdict::Pass),
-            }),
             // The operator credential (its row, opened through the auth axis by the provider key),
             // judged on the request's head through its door: an overloaded verifier or one that
             // answered no verdict is denied, as 1.5.5 refused (its 401) — the admin-door 503 is not

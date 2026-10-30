@@ -2099,8 +2099,8 @@ fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
 /// the plugin and saying to write the value itself. Boot refuses before it serves: a boot that did
 /// not refuse would still be running at the deadline, which fails the test.
 ///
-/// The memory store declares every TOP-LEVEL setting (`secret_refs: *`, the surface 1.5.5 resolved),
-/// so the reference sits one level down, at `pool.path`, which no declared path names.
+/// The memory store declares only `token` (`secret_refs: ["token"]`, its one secret field), so the
+/// reference at `pool.path` sits where no declared path names.
 #[test]
 fn validate_and_boot_refuse_a_reference_at_an_undeclared_plugin_field() {
     let dir = fixture_dir("undeclared-secret-ref");

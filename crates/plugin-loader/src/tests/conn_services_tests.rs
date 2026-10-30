@@ -2812,12 +2812,74 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
             None,
         ),
     ] {
-        let asked = super::auth_request(&binding, &head, target, b"", None)
+        let asked = super::auth_request(&binding, &head, target, b"", None, &[])
             .expect("a non-passthrough binding asks");
         assert_eq!(asked.authority, authority, "{target}");
         assert_eq!(asked.path, path, "{target}");
         assert_eq!(asked.query.as_deref(), query, "{target}");
     }
+}
+
+/// THE AUTH SIGNS THE HEAD THAT GOES OUT (THE DESIGN section 6, step 5): a style that reads the
+/// head is handed the plugin's fields and then the lines the connector completes the request with at
+/// its open (the framer's own lines the head lacks, then the body's length), in that order. RED
+/// before: the auth was handed the plugin's fields alone, and the length the http door needs was
+/// stated nowhere.
+#[test]
+fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
+    let binding = busbar_contract::conn::ConnAuth {
+        auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
+        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    };
+    let head = super::Head {
+        method: b"POST".to_vec(),
+        target: b"/x".to_vec(),
+        fields: vec![("content-type".to_owned(), b"application/json".to_vec())],
+        timeout_ms: 0,
+    };
+    let located = busbar_contract::conn::HeadDefaults {
+        lines: vec![
+            (b"accept".to_vec(), b"*/*".to_vec()),
+            (b"host".to_vec(), b"svc.example".to_vec()),
+        ],
+        states_length: true,
+    };
+    let added = located.completing(
+        |name| {
+            head.fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        2,
+    );
+    let asked = super::auth_request(
+        &binding,
+        &head,
+        "https://svc.example/x",
+        b"{}",
+        None,
+        &added,
+    )
+    .expect("a non-passthrough binding asks");
+    let signed: Vec<(&[u8], &[u8])> = asked
+        .headers
+        .iter()
+        .map(|(n, v)| (n.as_slice(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        signed,
+        [
+            (&b"content-type"[..], &b"application/json"[..]),
+            (b"accept", b"*/*"),
+            (b"host", b"svc.example"),
+            (b"content-length", b"2"),
+        ]
+    );
 }
 
 // ── AUDITED ON THE PLUGIN'S BEHALF (BIND-AUDIT): every refusal the host makes while an instance
@@ -2933,6 +2995,54 @@ fn a_declared_open_warning_is_audited_once() {
         vec![format!(
             "{:?}",
             crate::observe::BindRefusal::Open { code: "m1.note" }
+        )]
+    );
+}
+
+/// `tick` with `mode` as its extensions, ticket-less.
+fn tick_with(p: &Plugin<TestKind>, mode: &'static [u8]) -> Outcome {
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: mode.as_ptr(),
+        len: mode.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        busbar_contract::abi::mechanism::lifecycle::TickIn {
+            head,
+            now_ns: crate::dispatch::now_ns(),
+        },
+        busbar_contract::abi::mechanism::lifecycle::TickOut {
+            head: out_head(),
+            next_tick_ns: 0,
+        },
+    );
+    p.call(slot::TICK, &mut f).outcome
+}
+
+/// RED (security item 3, owner rule: every refusal audited): an op other than `open` or `refresh`
+/// that answers with a diagnostic its Statement declares, at ERROR, is handed to the host's audit,
+/// by that declared id, as an op's refusal. A declared id at warn (a retrying op's warning), a log
+/// line at error and an id the Statement does not declare are not; an op's ordinary envelope (its
+/// declared id at warn) hands the audit nothing.
+#[test]
+fn a_declared_error_an_op_raises_is_audited() {
+    let label = "op-audit-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert_eq!(tick_with(&p, b"answer:1"), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "a declared warning at an op is a log, not a record"
+    );
+    assert_eq!(tick_with(&p, plug::FLAG_OP), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Op { code: "m1.note" }
         )]
     );
 }

@@ -286,7 +286,7 @@ fn test_validate_rejects_bad_protocol() {
 #[test]
 fn test_error_map_invalid_class_message_lists_full_valid_set() {
     // The invalid-StatusClass diagnostic must enumerate EVERY class that
-    // breaker::status_class_from_str accepts; `context_length` was historically
+    // StatusClass::parse accepts; `context_length` was historically
     // omitted from the message even though it is a valid mapping target, so an
     // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
@@ -306,7 +306,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
     assert!(
             msg.contains("context_length"),
-            "valid-values list must include 'context_length' (it is accepted by status_class_from_str); got: {msg}"
+            "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
         );
 
     // Guard against drift in the other direction: every class the breaker accepts
@@ -323,7 +323,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         "context_length",
     ] {
         assert!(
-            crate::config::status_class_from_str(class).is_some(),
+            busbar_contract::upstream::StatusClass::parse(class).is_some(),
             "test invariant: '{class}' should be a real StatusClass"
         );
         assert!(
@@ -1700,6 +1700,41 @@ fn test_validate_rejects_unknown_failover_exclusion() {
     );
 }
 
+/// W9 — A ROLE BINDING'S PLANE GRANT NAMES A DECLARED KIND, OR IT IS REFUSED. `allowed_{kind}s`
+/// beside `allowed_pools` is a role-binding key, and a kind no installed plane declares is refused
+/// at validation naming the binding and the field, never left to sit inert while the operator
+/// believes it granted. A key that is not a grant field at all stays refused at parse.
+#[test]
+fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
+    let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
+        .expect("`allowed_{kind}s` is a role-binding key");
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    auth.chain = vec![config::AuthChainEntry::bare("keys")];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an undeclared kind must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings.keys.ops") && e.contains("allowed_widgets")),
+        "expected the undeclared-kind error naming the binding and field; got: {errs:?}"
+    );
+    for not_a_grant in [
+        "grop: x\n",
+        "allowed_widgets: x\n",
+        "allowed_widgets: [1]\n",
+    ] {
+        assert!(
+            serde_yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
+            "`{not_a_grant}` is not a role-binding grant"
+        );
+    }
+}
+
 #[test]
 fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
@@ -1721,6 +1756,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -1825,6 +1861,7 @@ fn validate_admin_scope_mint_now_errors() {
                 group: None,
                 admin_scope: Some("mint".to_string()),
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -5424,6 +5461,7 @@ fn test_validate_role_binding_group_must_exist() {
         group: Some("squad".to_string()),
         admin_scope: None,
         verbs: None,
+        plane_grants: Default::default(),
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -6698,12 +6736,12 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
+        wire_format_names: |_| &[],
         // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-        provider_dialects: crate::ingress::protocols::known_protocols,
+        provider_dialects: |_| crate::ingress::protocols::known_protocols(),
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -6724,6 +6762,7 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// One declared billable class in `family`.
@@ -7172,4 +7211,89 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
         warned("https://api.example.com", true, &[]).is_empty(),
         "a public host"
     );
+}
+
+/// Validate one provider's `base_url` as the boot path does.
+fn base_url_verdict(base: &str) -> Result<(), Vec<String>> {
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
+    validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+}
+
+/// security.md: plain `http://` is permitted only for a private literal, `localhost` or
+/// `*.localhost`. A single-label name such as a container-network hostname (`ollama`, a compose
+/// service) is not any of those: it is a name resolution decides, so it is refused with the https
+/// diagnostic, never taken for local.
+#[test]
+fn test_http_container_name_base_url_is_rejected() {
+    crate::test_support::register_neutral_test_plane();
+    for base in [
+        "http://ollama:11434",
+        "http://ollama",
+        "http://vllm-server:8000/v1",
+        "http://host.docker.internal:11434",
+        "http://localhost.example.com:11434", // `localhost` as a label, not the TLD
+        "http://notlocalhost:11434",
+    ] {
+        let errs = base_url_verdict(base).expect_err(&format!(
+            "'{base}' names no private literal and must be refused"
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("must use https for a public host")),
+            "'{base}': expected the https-for-public-host diagnostic; got: {errs:?}"
+        );
+    }
+    // The same name over https is fine (the rule is the scheme).
+    assert!(base_url_verdict("https://ollama:11434").is_ok());
+}
+
+/// security.md: `localhost` and every `*.localhost` name is local, so it may use plain `http://`.
+#[test]
+fn test_http_localhost_subdomain_base_url_is_accepted() {
+    crate::test_support::register_neutral_test_plane();
+    for base in [
+        "http://localhost:11434",
+        "http://ollama.localhost:11434",
+        "http://api.ollama.localhost/v1",
+        "http://LOCALHOST:11434",
+        "http://Ollama.LocalHost:11434",
+    ] {
+        assert!(
+            base_url_verdict(base).is_ok(),
+            "'{base}' is a localhost name and may use http; got: {:?}",
+            base_url_verdict(base)
+        );
+    }
+}
+
+/// FINDING (undocumented): a `base_url` that is an unresolved env placeholder skips the scheme check.
+/// A Lenient (`--validate` / admin dry-run) load splices an unset `${VAR}` in as the bare name `VAR`,
+/// and `validate_with_unset` then treats a scheme-less value naming an unset variable as a
+/// placeholder. So under `--validate` the value is exempt from the https rule, where the boot path
+/// (`validate`, no unset list) refuses the same bare value, and a value with a `://` scheme is
+/// checked either way, even when it names the unset variable.
+#[test]
+fn an_env_placeholder_base_url_skips_the_scheme_check_under_validate_only() {
+    crate::test_support::register_neutral_test_plane();
+    let unset = vec!["OLLAMA_BASE".to_string()];
+    let with_unset = |base: &str| {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
+        validate_with_unset(
+            &make_root_cfg(providers, HashMap::new(), HashMap::new()),
+            &unset,
+        )
+    };
+    // A bare placeholder (what an unset ${OLLAMA_BASE} leaves) is exempt under --validate...
+    assert!(
+        with_unset("OLLAMA_BASE").is_ok(),
+        "an unset-var placeholder skips the scheme check: {:?}",
+        with_unset("OLLAMA_BASE")
+    );
+    // ...is refused on the boot path, which has no unset list...
+    assert!(base_url_verdict("OLLAMA_BASE").is_err());
+    // ...and a real http:// URL to a public host is refused even when it names the unset variable.
+    assert!(with_unset("http://OLLAMA_BASE.example.com").is_err());
+    assert!(with_unset("http://api.example.com").is_err());
 }

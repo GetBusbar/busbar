@@ -350,7 +350,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
         if let Some(default_section) = decl.default_section {
-            if let Some(dialects) = default_section().known_dialects() {
+            if let Some(dialects) = default_section(decl).known_dialects() {
                 // A dialect already a wire codec's (the fallback plane's door declares its codecs'
                 // dialects too, #824) is listed once: the refusal names each legal protocol once.
                 for d in dialects.iter().copied() {
@@ -974,6 +974,19 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                                 ));
                             }
                         }
+                    }
+                }
+                // Rule (plane grants, W9): an `allowed_{kind}s` grant names a kind an installed
+                // plane declares. A grant of a kind nothing serves is refused, never left inert.
+                for field in binding.plane_grants.keys() {
+                    let declared = crate::governance::plane_grant_kind(field)
+                        .is_some_and(|kind| crate::governance::plane_declares_kind(&kind));
+                    if !declared {
+                        errors.push(format!(
+                            "role_bindings.{module}.{role}.{field} grants a scope kind no \
+                             installed plane declares; remove it, or install the plane whose \
+                             grants it names"
+                        ));
                     }
                 }
                 if let Some(group) = binding.group.as_deref() {
@@ -2415,7 +2428,7 @@ fn validate_providers_with(
         }
 
         for (code, mapped_class) in provider_cfg.error_map() {
-            if crate::config::status_class_from_str(mapped_class).is_none() {
+            if busbar_contract::upstream::StatusClass::parse(mapped_class).is_none() {
                 errors.push(format!(
                     "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
                 ));
