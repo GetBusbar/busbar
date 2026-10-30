@@ -1198,6 +1198,12 @@ pub struct ListenOut {
     /// The head.
     pub head: OutHead,
     /// The listener token.
+    ///
+    /// A RETIRED LISTENER (no op of its own): the listening handle the carrier's `listen` made
+    /// through the host's I/O is the host's, and the host closes it when it retires the listener
+    /// (its need retired, its generation replaced), so the address stops accepting at once. The
+    /// token then names a handle no longer held: an `accept` on it is FAILED, and the carrier
+    /// forgets the token there or at its instance's close.
     pub listener: u64,
     /// Bytes of `addr_buf` written (no short path: at most `addr_cap`).
     pub addr_written: u64,
