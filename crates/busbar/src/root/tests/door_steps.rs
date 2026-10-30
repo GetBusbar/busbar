@@ -7091,6 +7091,23 @@ pub(crate) mod program_member {
             "the child's own request was answered once: {second}"
         );
     }
+
+    /// RED: a rig is a composition of its own, so its program registration is served over the
+    /// transports it opened on its own dispatcher, whatever another composition in the same process
+    /// did first. Here the process's transport dispatcher was taken before the rig was built (as a
+    /// sibling cell that opens the linked doors on it does, `registration_pin`): the rig's program
+    /// carrier must still spawn its child on the rig's dispatcher, not on the one the process held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_registration_is_served_on_its_own_rig_whatever_the_process_opened_first() {
+        let _one = PUBLISHING.lock().await;
+        let _first = crate::root::doors::dispatcher();
+        let rig = rig_tools("door-program-member-own", 0, section(), &|app| app);
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let text = text(&body);
+        assert!(text.starts_with("from the server "), "{text}");
+        assert_eq!(fact(&text, "calls"), "1", "{text}");
+    }
 }
 
 /// THE PROGRAM'S SUPERVISOR, END TO END (THE DESIGN §2, l.388: the program's supervisor is its
