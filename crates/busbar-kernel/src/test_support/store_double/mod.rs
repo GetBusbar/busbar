@@ -29,8 +29,8 @@
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -799,17 +799,21 @@ impl Store for MemoryStore {
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
-        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
-        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
-        // work), every other kind drops any row older than `before`.
+        self.purge_plane_records(kind, before, Retention::Age)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        // WHICH rows go is the rule the host passes, never the kind's name: under `TerminalOnly`
+        // an older ACTIVE row is kept (the row nothing rewrites for the longest is exactly the one
+        // that must survive), under `Age` every row older than `before` goes.
         let mut records = self.plane_records();
         let before_len = records.len();
-        records.retain(|(k, _, _), r| {
-            if k != kind || r.ts >= before {
-                return true;
-            }
-            k == "task" && r.disposition != PlaneDisposition::Terminal
-        });
+        records.retain(|(k, _, _), r| k != kind || !retention.drops(r.ts, before, r.disposition));
         Ok((before_len - records.len()) as u64)
     }
 
@@ -872,11 +876,12 @@ impl Store for MemoryStore {
 pub const NAME: &str = "store-double";
 
 /// The settings paths the double's Statement declares may hold a secret reference (`secret_refs`):
-/// `*`, every top-level key, as the linked memory store declares (the surface 1.5.5 resolved). The
-/// stand-in registry states the same for the double's row (`test_support::rows::registry_stand_in`), so
-/// a test build's undeclared-reference refusal reads what the production registry reads off the
-/// linked door.
-pub const SECRET_REF_PATHS: &[&str] = &["*"];
+/// `token`, as the linked memory store declares (its secret field, G14; the key a 1.5.5 memory-store
+/// config held a reference at, oracle BOOT-W15). Not `*`: a declared path refuses a literal, wildcard
+/// or exact (item 7b). The stand-in registry states the same for the double's row
+/// (`test_support::rows::registry_stand_in`), so a test build's undeclared-reference refusal reads
+/// what the production registry reads off the linked door.
+pub const SECRET_REF_PATHS: &[&str] = &["token"];
 
 /// THE STAND-IN LINKED ENTRY: `(key, ephemeral, door, canonical)`, the shape of the root's linked
 /// store rows ([`crate::preflight::LinkedStore`]). Its key is the store a migrated 1.5.x config names

@@ -63,8 +63,8 @@ pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{
-    CredentialSecret, Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed,
-    StaticServices, StaticWake, TrustItem, TrustItems, Wake,
+    CredentialSecret, Judged, Minted, Names, Pend, Records, ServiceError, Services, Signature,
+    Signed, StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
@@ -80,8 +80,8 @@ pub mod auth_door;
 // THE AUTH KIND'S OUTBOUND DOOR over the safe layer (`auth_outbound_door!`, and
 // `auth_door!(verify_and_outbound: ..)` for a plugin that does both).
 pub mod auth_outbound;
-// THE AUTH LOGIN KIT's shared checks: the id-token nonce binding v1.5.5's core ran for every login.
-pub mod login;
+// THE AUTH KIND'S SHARED PLUGIN PIECES: the withheld decode error and a completed login's identity.
+pub mod auth_kit;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 // THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the

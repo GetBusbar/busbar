@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::abi::host::service::AuthRef;
 use crate::abi::mechanism::call::AbiStr;
 use crate::grammar::{one_level_under, segs_match, PathSeg, SegRef};
 
@@ -88,6 +89,31 @@ pub struct RouteMatch {
     pub rung: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+/// One line of an accepting transport's guest list, as the kernel lends it in `BeginIn::lines`.
+///
+/// THE DESIGN, Auth points and guest lists, items 3 and 4: the listener's transport matches a
+/// decoded head against `route`, in table order (the kernel's precedence order), calls the line's
+/// auth at `points` through [`op::AUTH_CALL`](crate::abi::host::service::op::AUTH_CALL) with
+/// `auth`, and hands the request in with `line`. A line whose auth is `none` has no points. A line
+/// with the body point holds the body up to `body_limit` bytes; over it the transport asks
+/// [`op::UNIT_REFUSE`](crate::abi::host::service::op::UNIT_REFUSE) with
+/// [`REFUSE_OVER_GATE`](crate::abi::host::service::REFUSE_OVER_GATE) before any verdict.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LineEntry {
+    /// The line's id, as the kernel numbers it; never `LINE_NONE`.
+    pub line: u32,
+    /// The auth points the line's auth needs: `POINT_PEER` | `POINT_HEAD` | `POINT_HEAD_BODY`;
+    /// `0` for a line whose auth is `none`.
+    pub points: u32,
+    /// The line's auth handle, owner-scoped to this listener's transport.
+    pub auth: AuthRef,
+    /// The body bound at the body point (the size gate's limit); `0` without that point.
+    pub body_limit: u64,
+    /// Which requests the line is for.
+    pub route: RouteMatch,
 }
 
 /// HOW THE ROUTE ROW IS MADE (status row 194): from [`RouteMatch::EMPTY`], its plain fields set
@@ -245,7 +271,7 @@ impl Interner {
 }
 
 /// Whether `path` matches a route's path in `form`, the one spelling of every form. A pattern that
-/// breaks the syntax matches nothing ([`crate::abi::transport::check::check_route`] refuses it).
+/// breaks the syntax matches nothing.
 #[must_use]
 pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
     match form {

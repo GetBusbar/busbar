@@ -9,6 +9,11 @@
 //! a field the plugin did not ask to hold one. The sentence names the field, the plugin and the
 //! instance, and says to write the value itself.
 //!
+//! A reference at a path the plugin names REFERENCE-CAPABLE (its Statement's extensions'
+//! `reference_fields`, lead ruling item 7a: a store, exporter or hook `url`) is not refused: the
+//! kernel resolves it in place to its string. A secret module's settings reach its open as written,
+//! so none of its fields is reference-capable.
+//!
 //! Core's own typed config fields (`auth.signing_key`, `providers.<name>.api_key`, a TLS key, an
 //! identity provider's `token:` and `browser_login.client_secret`, …) are not plugin settings and
 //! are not looked at here.
@@ -30,21 +35,36 @@ pub(crate) fn undeclared_secret_refs(
     registry: &dyn PluginRows,
     cfg: &RootCfg,
 ) -> Result<(), String> {
-    let check = |at: String,
-                 module: &str,
-                 settings: &serde_json::Map<String, serde_json::Value>|
+    let declared = |module: &str| {
+        let mut paths = registry.secret_slots(module);
+        paths.extend(registry.reference_slots(module));
+        paths
+    };
+    let policed = |at: String,
+                   module: &str,
+                   settings: &serde_json::Map<String, serde_json::Value>,
+                   paths: &[String]|
      -> Result<(), String> {
         let tree = serde_json::Value::Object(settings.clone());
-        match undeclared_reference(&tree, &registry.secret_slots(module)) {
+        match undeclared_reference(&tree, paths) {
             Some(field) => Err(undeclared_refusal(&format!("{at}.{field}"), module)),
             None => Ok(()),
         }
     };
+    let check = |at: String,
+                 module: &str,
+                 settings: &serde_json::Map<String, serde_json::Value>|
+     -> Result<(), String> { policed(at, module, settings, &declared(module)) };
     if let Some(store) = &cfg.store {
         check("store.settings".into(), &store.module, &store.settings)?;
     }
     for (module, m) in &cfg.secrets {
-        check(format!("secrets.{module}.settings"), module, &m.settings)?;
+        policed(
+            format!("secrets.{module}.settings"),
+            module,
+            &m.settings,
+            &registry.secret_slots(module),
+        )?;
     }
     let mut hooks: Vec<_> = cfg.hooks.iter().collect();
     hooks.sort_by(|a, b| a.0.cmp(b.0));

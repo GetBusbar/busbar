@@ -10,6 +10,7 @@
 //!   the field (a value that would not read back as itself).
 //! * [`clamp`] / [`read_u64`] — a counter into and out of a signed 64-bit column, pinned rather
 //!   than wrapped.
+//! * [`prefix_end`] — the exclusive upper bound of a key-prefix range scan (`record_scan`).
 
 use std::collections::BTreeMap;
 
@@ -95,6 +96,17 @@ pub fn clamp(v: u64) -> i64 {
 #[must_use]
 pub fn read_u64(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
+}
+
+/// The smallest key above every key that starts with `prefix`: the last byte that is not `0xff`
+/// incremented, the rest dropped. `None` when there is none (every byte `0xff`, or empty): the
+/// range is then unbounded above.
+#[must_use]
+pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let i = prefix.iter().rposition(|&b| b != u8::MAX)?;
+    let mut end = prefix[..=i].to_vec();
+    end[i] += 1;
+    Some(end)
 }
 
 #[cfg(test)]

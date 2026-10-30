@@ -61,6 +61,22 @@ pub struct RoleCeiling {
     pub binding_modes: Option<Vec<String>>,
 }
 
+/// A grant's ceiling-relevant shape for [`MintRequest`]: its `pool` values (3-state, as the grant
+/// states them: `None` = everything) and whether it names any other kind.
+pub fn requested_grant(
+    scopes: Option<&[busbar_contract::records::ScopeRef]>,
+) -> (Option<Vec<String>>, bool) {
+    let Some(list) = scopes else {
+        return (None, false);
+    };
+    let pools = list
+        .iter()
+        .filter(|s| s.kind == "pool")
+        .map(|s| s.value.clone())
+        .collect();
+    (Some(pools), list.iter().any(|s| s.kind != "pool"))
+}
+
 /// The RESOLVED runtime mint policy (`auth.policy:`), built once at boot from [`AuthCfg`] and read on
 /// every mint. The config half of the config-vs-store split, projected onto the App snapshot beside
 /// `self_key_ttl_secs`. `Default` = the empty policy (no caps) ⇒ byte-identical pre-1.6.0 behavior.
@@ -88,6 +104,10 @@ pub struct MintRequest<'a> {
     pub roles: &'a [String],
     /// The pools this mint requests — 3-state, as given (`None` = all).
     pub requested_pools: Option<&'a [String]>,
+    /// Whether the mint grants any scope of a kind other than `pool` (a plane's `allowed_{kind}s`,
+    /// W9). A role whose ceiling names its pools mints pool grants only: see
+    /// [`MintPolicy::check_mint`].
+    pub grants_other_kinds: bool,
     /// The resolved token lifetime in seconds.
     pub requested_ttl_secs: u64,
     /// Whether the operator NAMED the lifetime (`expires_in`/`expires_at`) — an explicit over-ask is
@@ -235,6 +255,16 @@ impl MintPolicy {
                         ));
                     }
                 }
+            }
+            // A role held to named pools could never mint a grant of another kind before the
+            // plane kinds were mintable (a pool-only grant reaches no other kind), so it still
+            // cannot: the ceiling names pools only, and refuses rather than widens.
+            if req.grants_other_kinds {
+                return Err(format!(
+                    "the mint grants scopes of a kind other than pools, but the caller's role \
+                     ceiling (auth.policy.mint_ceilings) allows only the pools [{}]",
+                    allowed.join(", ")
+                ));
             }
         }
 

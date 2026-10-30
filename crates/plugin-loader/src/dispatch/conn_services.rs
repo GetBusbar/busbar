@@ -60,12 +60,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
-    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
-    WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
+    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
@@ -117,19 +117,27 @@ pub const fn ticket_of(n: u64) -> Ticket {
 
 /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
 /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can tell
-/// it from the target's, the egress rules' or the far end's.
+/// it from the target's, the egress rules' or the far end's; an auth's refusal and an auth call's
+/// failure name theirs ([`CAUSE_AUTH_REFUSED`], [`CAUSE_AUTH_FAILED`]).
 const fn refusal(e: ConnError) -> Answered {
     let outcome = match e {
         ConnError::Pending => Outcome::Pending,
-        ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
+        ConnError::Timeout | ConnError::Closed | ConnError::Fault | ConnError::AuthFailed => {
+            Outcome::Failed
+        }
         ConnError::NotOwner
         | ConnError::UndeclaredNeed
         | ConnError::Refused
         | ConnError::Unarmed
-        | ConnError::CredentialUnavailable => Outcome::Refused,
+        | ConnError::CredentialUnavailable
+        | ConnError::AuthRefused => Outcome::Refused,
+        // A cause this host does not name is the host failing the call.
+        _ => Outcome::Fault,
     };
     let value = match e {
         ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+        ConnError::AuthRefused => CAUSE_AUTH_REFUSED,
+        ConnError::AuthFailed => CAUSE_AUTH_FAILED,
         _ => CAUSE_NONE,
     };
     Answered {
@@ -222,7 +230,7 @@ fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
 /// `in`, then `body` with the caller's identity, table and connector state. A panic answers FAULT;
-/// the whole `out` is written.
+/// the `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot<R: Into<Kept>>(
     ctx: HostCtx,
     input: *const c_void,
@@ -231,6 +239,18 @@ fn slot<R: Into<Kept>>(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, &ConnState, ServiceHead) -> R,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
@@ -257,8 +277,9 @@ fn slot<R: Into<Kept>>(
         held(wake, head.handle, || st.kept(head.handle, replay, run))
     }))
     .unwrap_or_else(|_| Answered::fault());
-    // SAFETY: the caller's `out`, as the call shape lends it.
-    unsafe { write_out(out, &a) }
+    // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
+    // stated.
+    unsafe { write_out(out, &a, lent) }
 }
 
 /// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL or over the hard
@@ -1183,7 +1204,14 @@ extern "C" fn write_request(
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
-                        Some(binding) => match auth_request(&binding, &h, &target, &body, scope) {
+                        Some(binding) => match auth_request(
+                            &binding,
+                            &h,
+                            &target,
+                            &body,
+                            scope,
+                            &completing(table, id, need, &target, &h, &body),
+                        ) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
                                 let handle = handle.unwrap_or(binding.handle);
@@ -1286,9 +1314,31 @@ fn open_with(
         .map_or_else(Conn::Failed, Conn::Open)
 }
 
+/// THE LINES THE CONNECTOR COMPLETES the plugin's whole request with at its open (THE DESIGN
+/// section 6, step 5; [`busbar_contract::conn::HeadDefaults::completing`]): the framer's own lines
+/// its head does not carry, then the body's length where the framer leaves it to the host. They are
+/// part of the head the member's auth call signs, so nothing is added after the auth runs.
+fn completing(
+    table: &Arc<dyn DeclaredConns>,
+    id: InstanceId,
+    need: NeedId,
+    target: &str,
+    h: &Head,
+    body: &[u8],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    table.request_head(id, need, target).completing(
+        |name| {
+            h.fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        body.len(),
+    )
+}
+
 /// The member binding's ONE auth call for a whole request to `target` (THE DESIGN, outbound auth: the facts at
-/// the style's point; the request's head when the style reads it; its stated `scope` in the
-/// extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
+/// the style's point; the request's head when the style reads it, completed with `added`, the lines
+/// the connector adds at the open; its stated `scope` in the extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
 /// serves (none presented: an empty one, so nothing is presented, never the operator's); a request
 /// made inside no unit has no caller, and opens nothing (`None`): an operator's own fetch never
 /// spends a caller's credential.
@@ -1298,6 +1348,7 @@ fn auth_request(
     target: &str,
     body: &[u8],
     scope: Option<Vec<u8>>,
+    added: &[(Vec<u8>, Vec<u8>)],
 ) -> Option<FieldsRequest> {
     use busbar_contract::abi::auth::{AuthPoint, STYLE_NEEDS_HEADERS};
     let caller_credential = if binding.passthrough {
@@ -1349,6 +1400,7 @@ fn auth_request(
             h.fields
                 .iter()
                 .map(|(n, v)| (n.as_bytes().to_vec(), v.clone()))
+                .chain(added.iter().cloned())
                 .collect()
         } else {
             Vec::new()
