@@ -935,8 +935,9 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # with `secret_refs: ["token"]` (busbar-store-memory #44): the undeclared-reference refusal reads only
 # the Statement (G14: each plugin declares its secret fields), a declared path refuses a literal,
 # wildcard or exact (item 7b), and `token` is the key a 1.5.5 memory-store config held a reference at
-# (oracle BOOT-W15).
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "5927d5e43343227c4fa331a61d33ced623be7687" }
+# (oracle BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
+# a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "d7a62c43e9340899792025ed1ecea3d5fafc463d" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
