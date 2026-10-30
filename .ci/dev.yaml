@@ -227,6 +227,24 @@ checks:
         cargo install --locked --quiet cargo-xwin --version =0.23.1 --root "$_xwin" || exit 1
       fi
       PATH="$_xwin/bin:$PATH"; export PATH
+      # The runner has no clang-cl (ring's build needs it) and no root: bring a pinned LLVM release
+      # (clang-cl, lld-link, llvm-lib), sha256-verified, cached beside cargo-xwin.
+      _llvm_v=18.1.8
+      _llvm_sha=54ec30358afcc9fb8aa74307db3046f5187f9fb89fb37064cdde906e062ebf36
+      _llvm_d=clang+llvm-$_llvm_v-x86_64-linux-gnu-ubuntu-18.04
+      _llvm=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/llvm-$_llvm_v
+      if [ ! -x "$_llvm/$_llvm_d/bin/clang-cl" ]; then
+        rm -rf "$_llvm.part"; mkdir -p "$_llvm.part" || exit 1
+        curl -fsSL --retry 3 -o "$_llvm.part/llvm.tar.xz" \
+          "https://github.com/llvm/llvm-project/releases/download/llvmorg-$_llvm_v/$_llvm_d.tar.xz" || exit 1
+        echo "$_llvm_sha  $_llvm.part/llvm.tar.xz" | sha256sum -c - || exit 1
+        tar -xJf "$_llvm.part/llvm.tar.xz" -C "$_llvm.part" || exit 1
+        rm -f "$_llvm.part/llvm.tar.xz"
+        rm -rf "$_llvm"; mv "$_llvm.part" "$_llvm" || exit 1
+      fi
+      PATH="$_llvm/$_llvm_d/bin:$PATH"; export PATH
+      CC_x86_64_pc_windows_msvc=clang-cl; AR_x86_64_pc_windows_msvc=llvm-lib
+      export CC_x86_64_pc_windows_msvc AR_x86_64_pc_windows_msvc
       rustup target add x86_64-pc-windows-msvc || exit 1
       XWIN_ACCEPT_LICENSE=1 XWIN_CACHE_DIR=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/xwin-sdk \
         cargo xwin check --locked --target x86_64-pc-windows-msvc -p busbar-plugin-loader --tests
