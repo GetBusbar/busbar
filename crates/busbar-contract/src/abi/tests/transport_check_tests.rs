@@ -457,6 +457,55 @@ fn a_declared_length_rides_a_field_block_only() {
     );
 }
 
+/// A field a flag says is present is set only with that flag: a nonzero `code` without
+/// PIECE_HAS_CODE, `retry_after_secs` without PIECE_HAS_RETRY_AFTER or `declared_len` without
+/// PIECE_HAS_DECLARED_LEN is FAULT (the host would read it as absent); with its flag it passes.
+#[test]
+fn a_field_set_without_its_flag_is_fault() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut head = piece(0, 4);
+    head.flags = PIECE_FIELDS | PIECE_END_OF_FRAME;
+    for (set, flag, what) in [
+        (
+            FramePiece { code: 200, ..head },
+            PIECE_HAS_CODE,
+            "framer.piece.code_without_flag",
+        ),
+        (
+            FramePiece {
+                retry_after_secs: 30,
+                ..head
+            },
+            PIECE_HAS_RETRY_AFTER,
+            "framer.piece.retry_after_without_flag",
+        ),
+        (
+            FramePiece {
+                declared_len: 9,
+                ..head
+            },
+            PIECE_HAS_DECLARED_LEN,
+            "framer.piece.declared_len_without_flag",
+        ),
+    ] {
+        assert_eq!(
+            check_framer(Ready, &o, &[set], 8, 8, 8),
+            f(Rule::Contradiction, what)
+        );
+        let flagged = FramePiece {
+            flags: set.flags | flag,
+            ..set
+        };
+        assert_eq!(
+            check_framer(Ready, &o, &[flagged], 8, 8, 8),
+            Ok(()),
+            "{what}"
+        );
+    }
+}
+
 /// RED (ARCHITECT, the stream-end ruling): an EMPTY piece is a message, text or binary, never the
 /// stream's end; PIECE_END is the end, and only on its own empty piece: with bytes it would
 /// swallow a message, with a field block or a failure's reason it is not the whole end.
