@@ -1422,3 +1422,78 @@ fn red_a_configure_refusal_states_the_hooks_reason() {
     );
     closed::<OpenPickyConfigure>(p);
 }
+
+// ── open is handed its secrets and generation (H6) ──────────────────────────────────────────────
+
+/// What [`OpenSecrets`] was handed: its settings, secrets and generation, in order.
+static OPENED_SECRETS: std::sync::Mutex<Vec<(String, Vec<Vec<u8>>, u64)>> =
+    std::sync::Mutex::new(Vec::new());
+
+struct OpenSecrets;
+impl HookOpen for OpenSecrets {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Err("opens through open_with".to_owned())
+    }
+    fn open_with(opening: &Opening<'_>) -> Result<Box<dyn Hook>, String> {
+        OPENED_SECRETS.lock().unwrap().push((
+            opening.settings.to_owned(),
+            opening.secrets.iter().map(|s| s.to_vec()).collect(),
+            opening.generation,
+        ));
+        Ok(Box::new(Forward))
+    }
+}
+
+/// RED (hook ABI defect 6): `open` and `refresh` hand the hook the secrets the host resolved for
+/// it and the generation, not its settings alone.
+#[test]
+fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
+    use crate::abi::mechanism::lifecycle::slot::REFRESH;
+    use crate::abi::mechanism::lifecycle::RefreshIn;
+    let (one, two) = (b"s3cret".as_slice(), b"t0ken".as_slice());
+    let lent = [
+        Blob {
+            ptr: one.as_ptr(),
+            len: one.len(),
+            fmt: crate::abi::mechanism::call::BLOB_SECRET,
+            flags: 0,
+        },
+        Blob {
+            ptr: two.as_ptr(),
+            len: two.len(),
+            fmt: crate::abi::mechanism::call::BLOB_SECRET,
+            flags: 0,
+        },
+    ];
+    let raw = br#"{"k": 1}"#;
+    let mut input: OpenIn = zeroed();
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    input.secrets = lent.as_ptr();
+    input.secrets_len = lent.len();
+    input.generation = 3;
+    let p = opened_with::<OpenSecrets>(&input);
+
+    let mut r: RefreshIn = zeroed();
+    r.settings = input.settings;
+    r.secrets = lent[1..].as_ptr();
+    r.secrets_len = 1;
+    r.generation = 4;
+    let mut out: OutHead = zeroed();
+    assert_eq!(
+        call::<life::Refresh<HookLife<OpenSecrets>>>(p, REFRESH, &r, &mut out),
+        Outcome::Ready
+    );
+    assert_eq!(
+        *OPENED_SECRETS.lock().unwrap(),
+        vec![
+            (r#"{"k": 1}"#.to_owned(), vec![one.to_vec(), two.to_vec()], 3),
+            (r#"{"k": 1}"#.to_owned(), vec![two.to_vec()], 4),
+        ]
+    );
+    closed::<OpenSecrets>(p);
+}
