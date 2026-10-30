@@ -55,6 +55,49 @@ fn bound(binding: &StyleBinding, credential: &str) -> Arc<dyn CredentialProvider
     })
 }
 
+/// THE SIGNED REFUSAL AT OPEN (owner, SIGN-sigv4-open.md; auth-sigv4 6b16cec): a signing credential
+/// that cannot sign is refused when its binding opens, with the `credential: <reason>` finding, and
+/// never opened to sign nothing per request. `binding` bound with `credential`: the refusal, or
+/// `None` when it opened.
+fn refused_at_open(binding: &StyleBinding, credential: &str) -> Option<String> {
+    bind(&*axis(), binding, credential.as_bytes()).err()
+}
+
+/// The `credential:` finding each malformed signing credential is refused at open with (SIGN-sigv4-open.md).
+const SIGV4_REFUSED: &[(&str, &str)] = &[
+    (
+        "not-a-valid-key",
+        "credential: expected ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]",
+    ),
+    (
+        "AKID\r\nINJECT:SECRET",
+        "credential: the access key id holds a byte no header value may carry",
+    ),
+    (
+        "AKID\u{0001}X:SECRET",
+        "credential: the access key id holds a byte no header value may carry",
+    ),
+    (
+        "AKID:SECRET:TOK\r\nEN",
+        "credential: the session token holds a byte no header value may carry",
+    ),
+    (
+        "AKID:SECRET:TOK\u{0001}EN",
+        "credential: the session token holds a byte no header value may carry",
+    ),
+];
+
+/// Every `credential:` finding the signature names (SIGN-sigv4-open.md).
+const SIGV4_FINDINGS: &[&str] = &[
+    "credential: expected ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]",
+    "credential: the access key id is empty",
+    "credential: the access key id holds a byte no header value may carry",
+    "credential: the secret access key is empty",
+    "credential: the session token holds a byte no header value may carry",
+    "credential: the session token is empty",
+    "credential: the credential is not UTF-8",
+];
+
 /// The binding the fixture records for `dialect` (`bindings`): the style its declared scheme is
 /// bound under and its parameters, a signing style's region added from `host` and its content type
 /// lent as the sent `content-type`, as the plane adds them (the plane's own suite holds its mapping
@@ -255,7 +298,8 @@ fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
 
 /// THE DIFFERENTIAL: presented under each dialect's declared scheme, through the linked auth
 /// plugins, the request carries exactly the credential headers that dialect's own builder wrote,
-/// for every credential, mode and request in the fixture.
+/// for every credential, mode and request in the fixture; a signing credential 1.5.5 presented
+/// nothing for is refused at open instead (owner-signed, SIGN-sigv4-open.md).
 #[test]
 fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
     let mut compared = 0usize;
@@ -281,10 +325,48 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
                 UpstreamCreds::Passthrough
             },
         };
+        // A SIGNING CREDENTIAL THAT CANNOT SIGN IS REFUSED AT OPEN (owner-signed,
+        // SIGN-sigv4-open.md: auth-sigv4 6b16cec): where 1.5.5 opened the lane and presented no
+        // header for it, the binding now does not open, with its `credential:` finding.
+        if row["mode"] == "own" {
+            let binding = binding_of(dialect, ctx.host, twin(dialect).static_headers);
+            if let Some(refused) = refused_at_open(&binding, &key) {
+                // Only for a fault the signature names: a malformed credential (1.5.5 presented
+                // nothing for it) or an empty session token (1.5.5 sent it as an empty
+                // `x-amz-security-token`).
+                assert!(
+                    SIGV4_FINDINGS.iter().any(|f| refused.contains(f)),
+                    "{dialect}: refused for a fault the signature names: {refused}"
+                );
+                if !refused.contains("credential: the session token is empty") {
+                    assert_eq!(
+                        row["headers"],
+                        serde_json::json!([]),
+                        "{dialect}: {refused}"
+                    );
+                }
+                compared += 1;
+                continue;
+            }
+        }
         let presented: Vec<serde_json::Value> = present(twin(dialect), &key, &ctx)
             .into_iter()
             .map(|(k, v)| serde_json::json!([k, hex::encode(v.as_bytes())]))
             .collect();
+        // A CALLER's signing credential with such a fault FAILS its request (owner-signed,
+        // SIGN-sigv4-open.md): nothing is presented, for exactly the faults the signature names.
+        if row["mode"] != "own" && presented.is_empty() && row["headers"] != serde_json::json!([]) {
+            let binding = binding_of(dialect, ctx.host, twin(dialect).static_headers);
+            let refused = refused_at_open(&binding, &key).unwrap_or_else(|| {
+                panic!("{dialect}: a caller credential that signs nothing has a signed fault")
+            });
+            assert!(
+                SIGV4_FINDINGS.iter().any(|f| refused.contains(f)),
+                "{dialect}: {refused}"
+            );
+            compared += 1;
+            continue;
+        }
         assert_eq!(
             serde_json::Value::Array(presented),
             row["headers"],
@@ -355,20 +437,31 @@ fn a_session_token_is_sent_and_signed_for_the_hosts_region() {
     assert!(auth.contains("x-amz-security-token"));
 }
 
+/// A MISCONFIGURED OR UNSENDABLE SIGNING CREDENTIAL IS REFUSED AT OPEN (owner-signed,
+/// SIGN-sigv4-open.md: auth-sigv4 6b16cec). 1.5.5 opened it and then signed nothing on every request;
+/// now the binding does not open, with the `credential:` finding naming the fault and never the
+/// credential's bytes, so no request is sent unsigned. A clean credential still signs, its session
+/// token sent and signed.
 #[test]
-fn a_misconfigured_or_unsendable_signing_credential_signs_nothing() {
-    let host = "bedrock-runtime.us-east-1.amazonaws.com";
-    for key in [
-        "not-a-valid-key",
-        "AKID\r\nINJECT:SECRET",
-        "AKID\u{0001}X:SECRET",
-        "AKID:SECRET:TOK\r\nEN",
-        "AKID:SECRET:TOK\u{0001}EN",
-    ] {
-        let h = signed(key, host, "/model/m/converse", b"{}");
-        assert!(h.is_empty(), "{key:?} must yield no headers, got {h:?}");
+fn a_misconfigured_or_unsendable_signing_credential_is_refused_at_open() {
+    let signing = binding_of("bedrock", SIGNING_HOST, &[]);
+    for (key, finding) in SIGV4_REFUSED {
+        let refused = refused_at_open(&signing, key)
+            .unwrap_or_else(|| panic!("{key:?} must be refused at open"));
+        assert!(refused.contains(finding), "{key:?}: {refused}");
+        for secret in ["AKID", "INJECT", "TOK\r", "TOK\u{0001}"] {
+            assert!(
+                !refused.contains(secret),
+                "the refusal never echoes the credential: {refused}"
+            );
+        }
     }
-    let ok = signed("AKID:SECRET:CLEANTOKEN", host, "/model/m/converse", b"{}");
+    let ok = signed(
+        "AKID:SECRET:CLEANTOKEN",
+        SIGNING_HOST,
+        "/model/m/converse",
+        b"{}",
+    );
     let auth = get(&ok, "authorization").expect("a clean credential signs");
     assert!(auth.contains("x-amz-security-token"));
     assert_eq!(
@@ -844,27 +937,29 @@ fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
     lines_in(binding, key, UpstreamCreds::Own)
 }
 
-/// A signing credential whose session token no header value may carry logs, word for word, the
-/// line the dialect's own signer logged in 1.5.5 — naming the declared service — and signs
-/// nothing. A malformed credential without that token logged nothing then and logs nothing now.
+/// A SIGNING CREDENTIAL WHOSE SESSION TOKEN NO HEADER VALUE MAY CARRY IS REFUSED AT OPEN, AND LOGS
+/// NO PER-REQUEST LINE (owner-signed, SIGN-sigv4-open.md: auth-sigv4 6b16cec). 1.5.5 opened it and
+/// logged, on every request, `Bedrock lane session token contains a byte rejected by HeaderValue;
+/// skipping signing ...`; that line and its diag are gone: the binding is refused with the
+/// `credential:` finding instead, and binding any malformed credential logs no such line.
 #[test]
-fn an_unsendable_session_token_logs_the_signers_own_line() {
+fn an_unsendable_session_token_is_refused_at_open_with_no_per_request_line() {
     let signing = named_binding("bedrock", "static-twin-signing");
-    assert_eq!(
-        lines(&signing, "AKID:SECRET:TOK\r\nEN"),
-        vec![
-            "Bedrock lane session token contains a byte rejected by HeaderValue; skipping \
-             signing to avoid a signed-but-absent x-amz-security-token header."
-                .to_string()
-        ]
+    let refused = refused_at_open(&signing, "AKID:SECRET:TOK\r\nEN").expect("refused at open");
+    assert!(
+        refused.contains("credential: the session token holds a byte no header value may carry"),
+        "{refused}"
     );
-    for quiet in [
-        "not-a-valid-key",
-        "AKID\r\nINJECT:SECRET",
-        "AKID:SECRET:CLEAN",
-    ] {
-        assert!(lines(&signing, quiet).is_empty(), "{quiet:?}");
+    for (key, _) in SIGV4_REFUSED {
+        let logged = main_log(|| {
+            let _ = refused_at_open(&signing, key);
+        });
+        assert!(
+            !logged.iter().any(|l| l.contains("skipping signing")),
+            "{key:?}: the per-request line is gone: {logged:?}"
+        );
     }
+    assert!(lines(&signing, "AKID:SECRET:CLEAN").is_empty());
 }
 
 /// A bearer credential with a byte no header value may carry logs the bearer builder's 1.5.5
@@ -972,8 +1067,10 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
 }
 
 /// A CALLER's credential no header value may carry logs its builder's line on the request that
-/// presents it, as 1.5.5 built (and logged) a passthrough header per request; a signing
-/// credential's unsendable token, likewise per request in either mode.
+/// presents it, as 1.5.5 built (and logged) a passthrough header per request. A caller's signing
+/// credential with an unsendable token FAILS its request with the reason, never answered ready
+/// with nothing to sign into (owner-signed, SIGN-sigv4-open.md: auth-sigv4 6b16cec), and logs no
+/// 1.5.5 per-request line.
 #[test]
 fn a_callers_unpresentable_credential_logs_on_its_request() {
     assert_eq!(
@@ -989,14 +1086,52 @@ fn a_callers_unpresentable_credential_logs_on_its_request() {
                 .to_string()
         ]
     );
-    assert_eq!(
+    let signing = named_binding("bedrock", "static-twin-signing");
+    assert!(
         lines_in(
-            &named_binding("bedrock", "static-twin-signing"),
+            &signing,
             "AKID:SECRET:TOK\r\nEN",
             UpstreamCreds::Passthrough
         )
-        .len(),
-        1
+        .iter()
+        .all(|l| !l.contains("skipping signing")),
+        "the per-request line is gone"
+    );
+    // The caller's credential reaches the style's one fields call on a lane that binds none of its
+    // own (passthrough): the call FAILS, never READY with no fields.
+    use busbar_contract::abi::auth::AuthPoint;
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    let serving = axis()
+        .serving(&signing.style, &signing.params)
+        .expect("the signing plugin opens")
+        .expect("a linked plugin serves the signing style");
+    let handle = serving
+        .auth
+        .open_outbound(&signing.style, b"", &signing.params)
+        .expect("a passthrough lane binds no credential of its own");
+    let request = || FieldsRequest {
+        point: AuthPoint::Head,
+        method: b"POST".to_vec(),
+        authority: SIGNING_HOST.into(),
+        path: b"/model/m/converse".to_vec(),
+        timestamp: 1_756_000_000,
+        caller_credential: Some(busbar_contract::redacted::Secret::new(
+            b"AKID:SECRET:TOK\r\nEN".to_vec(),
+        )),
+        ..Default::default()
+    };
+    // Answered in place, or (a style that cannot answer in place) by its awaited call, as the
+    // door-plane walk asks (`far_end.rs`).
+    let answered = serving.auth.fields_now(handle, &request()).or_else(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()
+            .map(|rt| rt.block_on(serving.auth.fields(handle, request(), 0)))
+    });
+    assert!(
+        matches!(answered, Some(Fields::Failed | Fields::Refused)),
+        "the caller's unsendable token fails its request: {answered:?}"
     );
 }
 
