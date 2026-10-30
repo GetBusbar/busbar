@@ -21,7 +21,7 @@ use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, OpenIn, OpenOut, Val
 use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use crate::abi::sdk::conn::ConnFailure;
 use crate::abi::sdk::door::Entry;
-use crate::abi::sdk::exchange::Request;
+use crate::abi::sdk::exchange::{OpFailure, Request};
 use crate::abi::sdk::{life, Safe};
 use crate::hooks::BudgetBucketState as K;
 use crate::signal::Signal;
@@ -1496,4 +1496,61 @@ fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
         ]
     );
     closed::<OpenSecrets>(p);
+}
+
+// ── a request the hook cannot build says why (H11) ──────────────────────────────────────────────
+
+/// A hook whose request cannot be built: the builder's text is its failure, told apart from the
+/// exchange's own.
+struct Unsendable;
+impl Hook for Unsendable {
+    fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+        op.exchange(0, Some("http://far.example"), || {
+            Err("the projection does not serialise".to_owned())
+        })
+        .map(|r| match r {
+            Ok(_) => Verdict::Abstain,
+            Err(OpFailure::Unbuilt(why)) => Verdict::Failed(format!("unbuilt: {why}")),
+            Err(OpFailure::Conn(e)) => Verdict::Failed(format!("exchange: {e}")),
+        })
+    }
+}
+struct OpenUnsendable;
+impl HookOpen for OpenUnsendable {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Unsendable))
+    }
+}
+
+/// RED (hook ABI defect 11): `Op::exchange`'s request builder returns its own text when it cannot
+/// build the request; the op answers it as the builder's, nothing sent, with no side channel.
+#[test]
+fn red_a_request_the_builder_refuses_answers_the_builders_text() {
+    let tables = HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: &PENDING_SLOTS,
+        services: std::ptr::null(),
+        io: std::ptr::null(),
+    };
+    let mut open: OpenIn = zeroed();
+    open.host = &tables;
+    let p = opened_with::<OpenUnsendable>(&open);
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let before = ESTABLISHED.load(Ordering::SeqCst);
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenUnsendable>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(
+        error_text(&out.head),
+        "unbuilt: the projection does not serialise"
+    );
+    assert_eq!(ESTABLISHED.load(Ordering::SeqCst), before, "nothing was sent");
+    closed::<OpenUnsendable>(p);
 }
