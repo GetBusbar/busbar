@@ -1175,6 +1175,10 @@ pub(crate) fn build_secret_resolver(
         config::secret::resolve_settings(
             &mcfg.settings,
             &registry.secret_slots(module),
+            // A secret module's settings reach its open AS WRITTEN (the secret axis lends its
+            // declared secrets; it holds no seal to read a resolved text), so no field of one is
+            // reference-capable: a reference there that is not a declared secret stays refused.
+            &[],
             module,
             &builtins,
             &busbar_contract::config_time::ConfigScope::config_time(),

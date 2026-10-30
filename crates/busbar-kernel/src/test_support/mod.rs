@@ -1691,7 +1691,6 @@ impl TestApp {
             root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
             config_projection: None,
             store: store.clone(),
-            plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             // A hand-built generation publishes no limits: a test's own posture stays in force.
             limits: None,
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
