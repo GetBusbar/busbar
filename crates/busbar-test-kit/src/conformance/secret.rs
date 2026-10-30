@@ -249,3 +249,7 @@ fn contract(fold: &Fold) {
         at("resolve after close")
     );
 }
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../tests/conformance_secret_contract_tests.rs"]
+mod contract_tests;
