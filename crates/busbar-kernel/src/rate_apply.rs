@@ -16,6 +16,7 @@
 //! line between them. Nothing in a plane reaches it: a plane reports what it consumed and never what
 //! it cost, and this seam carries a price.
 
+use crate::config::card::CardFields;
 use busbar_contract::billing::RawTierRates;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
@@ -60,21 +61,11 @@ pub trait RateApply: Send + Sync {
     /// them for its whole life, and the next request sees these.
     fn rates_applied(&self, rates: &RawRates<'_>);
 
-    /// STAGE the rates a config change is about to commit: make them durable BEFORE the change is
-    /// saved (MONEY-AUDIT D-6, ARCHITECT ruling 2026-10-02). `Err` refuses the WHOLE config change,
-    /// so the old configuration and the old card both stay; the message is the operator's. A
-    /// holder with no journal has nothing to make durable: the default stages nothing.
-    ///
-    /// # Errors
-    ///
-    /// The holder could not make the rates durable.
-    fn rates_staged(&self, _rates: &RawRates<'_>) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// The config change the staged rates were made durable for did NOT commit (its persist or its
-    /// swap never landed): the holder puts the card that stays in force back on its record.
-    fn rates_withdrawn(&self) {}
+    /// THE CARD THIS CONFIGURATION RESOLVED, raised at the same commit as
+    /// [`Self::rates_applied`], with who or what changed it (`origin`). When it differs from the
+    /// card in force, the holder appends a dated history entry for it, effective from now
+    /// (MONEY-DESIGN section 3a: the configuration is the source of the card, as in 1.5.5).
+    fn card_applied(&self, _card: &CardFields, _origin: &str) {}
 }
 
 /// **THE READ-SIDE TWIN**: a holder that can DATE a price — for an instant, the `effective_from`
@@ -151,19 +142,18 @@ pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::Hist
     dater().and_then(|holder| holder.history())
 }
 
-/// Stage the rates a config change is about to commit — see [`RateApply::rates_staged`]. `Ok` in
-/// a build that installed no holder: there is no journal to refuse.
-///
-/// # Errors
-///
-/// The installed holder could not make the rates durable; the config change must be refused.
-pub fn rates_staged(rates: &RawRates<'_>) -> Result<(), String> {
-    holder().map_or(Ok(()), |h| h.rates_staged(rates))
+/// Raise the card a configuration resolved ([`RateApply::card_applied`]), naming the change's
+/// origin as [`with_origin`] set it on this thread, or "a configuration change".
+pub fn card_applied(card: &CardFields) {
+    let origin = crate::config::card::origin::current();
+    holder()
+        .into_iter()
+        .for_each(|h| h.card_applied(card, &origin));
 }
 
-/// The staged rates' config change did not commit — see [`RateApply::rates_withdrawn`].
-pub fn rates_withdrawn() {
-    holder().into_iter().for_each(|h| h.rates_withdrawn());
+/// Run `f` with every card it raises attributed to `origin` ("config/reload by <actor>", ...).
+pub fn with_origin<T>(origin: &str, f: impl FnOnce() -> T) -> T {
+    crate::config::card::origin::with(origin, f)
 }
 
 /// Raise the seam: the configured rates are now `rates`.

@@ -48,6 +48,9 @@ busbar-core-connector = { path = "../../crates/busbar-core-connector" }
 # signs with). These are the composition root's, used only by the admin verb's effect half.
 serde_json = { workspace = true }
 hex = { workspace = true }
+# The fleet-shared rate-card history (`root::card_store`, MONEY-DESIGN §3a): its entry, VOID and
+# local-spool records are typed JSON.
+serde = { workspace = true }
 # The canary harness (`tests/canary/`) dlopens a dropped-in plugin's cdylib itself to wrap its door
 # in the recording shim; already the loader's dependency.
 libloading = { workspace = true }

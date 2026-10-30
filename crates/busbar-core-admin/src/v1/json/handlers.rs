@@ -327,6 +327,7 @@ pub(crate) async fn reload_plugins(
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("plugins/reload by {actor}");
     // Serialize against config applies/reloads AND against plugin install/remove — they all touch
     // the same plugins directory and rebuild-and-swap the App snapshot (: one global mutation
     // domain). The whole rebuild is disk I/O, so it is queued onto `spawn_blocking`.
@@ -359,7 +360,7 @@ pub(crate) async fn reload_plugins(
                     // Past the swap: the process-wide limits this build installed are the LIVE
                     // ones, so keep them. Dropped instead — on any path that never reaches here —
                     // they roll back to the generation still serving.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -446,6 +447,7 @@ pub(crate) async fn rollback_plugin(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("plugins/rollback by {actor}");
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -538,7 +540,7 @@ pub(crate) async fn rollback_plugin(
             Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
                 // Past the swap: keep the limits this build installed (dropped unkept everywhere
                 // else, including the pin-revert path above).
-                limits.keep();
+                busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                 if let Some(rotate) = gov_rotate {
                     rotate();
                 }
@@ -1371,6 +1373,7 @@ pub(crate) async fn reset_overlay_section(
 ) -> Response {
     use busbar_kernel::config::overlay::OverlaySection;
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("overlay reset by {actor}");
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     // LAW 7: a plane's named-map section is a section only while its plane is configured, so the
@@ -1588,7 +1591,7 @@ pub(crate) async fn reset_overlay_section(
                 },
                 move || {
                     // Past persist AND swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2231,6 +2234,7 @@ pub(crate) async fn reload_config(
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("config/reload by {actor}");
     // The whole rebuild is DISK I/O (config.yaml + providers.yaml + the overlay, then resolve +
     // build). It is queued as a store read so it runs on `spawn_blocking`: before, this ran inline
     // on a Tokio worker with the async mutation lock held, so a slow/large config stalled the
@@ -2250,7 +2254,7 @@ pub(crate) async fn reload_config(
                 || Ok(()),
                 move || {
                     // Past the swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2407,6 +2411,7 @@ pub(crate) async fn apply_config(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("config/apply by {actor}");
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -2505,7 +2510,7 @@ pub(crate) async fn apply_config(
                 || Ok(()),
                 move || {
                     // Past the swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2932,6 +2937,7 @@ pub(crate) async fn put_config_settings(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("config/settings by {actor}");
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -3072,7 +3078,7 @@ pub(crate) async fn put_config_settings(
                     // /config/settings` is the site where this matters most — the root section it
                     // merges CARRIES `limits:`, so a rejected settings apply is precisely a
                     // rejected set of process-wide caps.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
