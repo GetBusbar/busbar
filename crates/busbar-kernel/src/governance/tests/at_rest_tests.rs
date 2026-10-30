@@ -307,7 +307,8 @@ fn a_rewrap_never_revives_a_revoked_row() {
 }
 
 /// A row that opens under neither key does not authenticate: it answers as an unknown credential
-/// (the dummy, not live). The re-wrap leaves it as it is.
+/// (an empty secret, not live; the verifying auth swaps in its own dummy). The re-wrap leaves it
+/// as it is.
 #[test]
 fn a_row_under_neither_key_does_not_authenticate() {
     let store = Arc::new(MemoryStore::new());
@@ -316,7 +317,7 @@ fn a_row_under_neither_key_does_not_authenticate() {
     let (got, live) = read(&stranger, &public_id);
     assert!(!live);
     assert_ne!(got, secret);
-    assert_eq!(got, crate::auth::DUMMY_SECRET);
+    assert_eq!(got, "");
     let pass = stranger.rewrap_credentials(NOW).unwrap();
     assert_eq!((pass.resealed, pass.pending), (0, 0), "{pass:?}");
     assert_eq!(kid_of(&row(&store).secret), keys(1, None).kid());

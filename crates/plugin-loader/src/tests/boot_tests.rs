@@ -908,17 +908,26 @@ fn a_candidate_carries_its_statements_needs() {
 struct Resolver;
 
 impl busbar_contract::secret::SecretResolve for Resolver {
-    fn resolve(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        r: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         use crate::dispatch::ready::ready_plugins::auth;
         match r.env_var() {
-            Some("OIDC_SECRET") => Ok(auth::SECRET.to_vec()),
+            Some("OIDC_SECRET") => Ok(busbar_contract::redacted::Secret::new(
+                auth::SECRET.to_vec(),
+            )),
             _ => Err(format!("{} is not set", r.describe())),
         }
     }
 
-    fn resolve_string(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-        self.resolve(r)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    fn resolve_string(
+        &self,
+        r: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        self.resolve(r)?
+            .into_text()
+            .map_err(|e| format!("{} is not text: {e:?}", r.describe()))
     }
 }
 
@@ -1134,4 +1143,35 @@ fn a_plane_the_configuration_does_not_use_is_never_bound() {
         [plane.name.as_str()],
         "its verb selects it"
     );
+}
+
+/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL, AT A WILDCARD PATH TOO (security.md:316, lead
+/// ruling item 7b): a plain value matched by a declared WILDCARD path (`hosts.*.password`) refuses
+/// exactly as one at a declared EXACT path does: as not a secret reference, naming the position and
+/// never a byte of the value. RED before the fix: the wildcard match was lent as written.
+#[test]
+fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() {
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    for (keys, mut block, at) in [
+        (
+            vec!["client_secret".to_string()],
+            doc(r#"{"client_secret": "pasted-pw-7b"}"#),
+            "settings.client_secret",
+        ),
+        (
+            vec!["hosts.*.password".to_string()],
+            doc(r#"{"hosts": [{"password": "pasted-pw-7b"}]}"#),
+            "settings.hosts.0.password",
+        ),
+    ] {
+        // Matched, not `expect_err`: that would print the lent secrets.
+        let Err(e) = resolve_secrets(&mut block, &keys, &Resolver, &scope) else {
+            panic!("a literal at {at} refuses");
+        };
+        assert!(
+            e.starts_with(&format!("{at}: not a secret reference")),
+            "{at}: {e}"
+        );
+        assert!(!e.contains("pasted-pw-7b"), "the value is echoed: {e}");
+    }
 }

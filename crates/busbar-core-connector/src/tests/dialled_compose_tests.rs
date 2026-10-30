@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The composed open's exchange body (row 132): the description alone, or framed into the
-//! opener's form.
+//! The composed open's exchange body: the description alone, or framed into the opener's form.
 
 use super::composed_body;
 use busbar_contract::conn::ConnError;

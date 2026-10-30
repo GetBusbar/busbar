@@ -10,8 +10,6 @@ license = "Apache-2.0"
 [features]
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
-# Test seams for busbar-test-kit and dependents' [dev-dependencies]; never in a shipped build.
-test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -59,11 +57,6 @@ path = "tests/fixtures/hook_broken_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "store_broken_door"
-path = "tests/fixtures/store_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
 crate-type = ["cdylib"]
@@ -83,6 +76,7 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 getrandom = { workspace = true }

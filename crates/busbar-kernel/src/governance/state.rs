@@ -6,7 +6,7 @@ use busbar_kernel_ledger::{
     },
     usage::FeeEras,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
 
@@ -22,6 +22,15 @@ use crate::diagnostics::{
 /// (`caches_read`, `signing_material`, …) exactly as the methods did when they lived here.
 #[path = "self_serve.rs"]
 mod self_serve;
+
+/// The one ledger's admin read and its one correction (MONEY-DESIGN §4, PR-C): a child module, so
+/// it reaches this module's private helpers as the methods here do.
+#[path = "ledger_adjust.rs"]
+mod ledger_adjust;
+pub use ledger_adjust::{
+    metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
+    ADJUST_UP_BUCKET,
+};
 
 /// Prefix on the DEGRADED-BUT-APPLIED error [`GovState::delete_key`] returns when the durable
 /// tombstone committed but the full cache reconcile did not. A stable, greppable marker so an
@@ -54,12 +63,9 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
         // pre-rotation token is rejected by every node reading the same store.
         generation_hash: binding_marker(&id, &generation),
         name: spec.name,
-        // Intent carried intact from the mint body: None = all pools; Some([]) = none.
-        allowed_scopes: spec.allowed_pools.map(|list| {
-            list.into_iter()
-                .map(busbar_contract::records::ScopeRef::pool)
-                .collect()
-        }),
+        // Intent carried intact from the mint body: no grant field = everything; any grant field
+        // = exactly the scopes named, across every kind; every field `[]` = nothing.
+        allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
         enabled: true,
         created_at: now,
         group: spec.group,
@@ -227,6 +233,18 @@ impl GovState {
                 return None;
             }
         };
+        self.standing_key(&claims, now)
+    }
+
+    /// THE STATE HALF OF A SIGNED-TOKEN VERIFY, over claims whose signature, expiry and audience
+    /// already held: the subject not revoked, its binding enabled, and the token naming the
+    /// binding's current generation. Shared by [`Self::verify_token`] and the ticket gate, so a
+    /// ticket stands exactly when a key minted for its subject would.
+    pub(super) fn standing_key(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
         // Revocation: the ONE state read on the otherwise-stateless path. The set is a bounded-TTL
         // CACHE of the store's denylist, re-read here when stale so a peer's (or an out-of-band)
         // revoke is honoured within `REVOCATION_SYNC_TTL_SECS` instead of never.
@@ -445,21 +463,7 @@ impl GovState {
         Ok((binding, token.into(), public_id, secret_value))
     }
 
-    /// THE CALLER-REFERENCE KEY a door plane's units are lent their caller's opaque reference under
-    /// (`crate::auth::CallerRefKey`, HKDF label `busbar caller-ref v1`): derived from this node's
-    /// token-signing material, else from the DEPLOYMENT KEYSET the book binds
-    /// ([`Self::bind_deployment_caller_ref`]; row 159 H2). Either way the same principal has the same
-    /// reference on every node of the deployment and across restarts. A node with neither derives
-    /// it from its per-boot random key, so a verified principal is never lent an empty one.
-    #[must_use]
-    pub fn caller_ref_key(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
-        self.caller_refs
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    /// The live slot [`Self::caller_ref_key`] reads, shared with every plane driver.
+    /// THE CALLER-REFERENCE KEY's live slot (`crate::auth::CallerRefKey`), shared with every plane driver.
     #[must_use]
     pub fn caller_ref_slot(&self) -> crate::plane_driver::CallerRefs {
         Arc::clone(&self.caller_refs)
@@ -477,7 +481,7 @@ impl GovState {
         self.refresh_caller_refs();
     }
 
-    /// Re-derive [`Self::caller_ref_key`]: the signing material when the node has one, else the
+    /// Re-derive the caller-reference key: the signing material when the node has one, else the
     /// deployment keyset's material, else this boot's random key. Never none.
     fn refresh_caller_refs(&self) {
         let key = match self.signing_material() {
@@ -523,23 +527,6 @@ impl GovState {
             kid: format!("{prefix}{}", m.signer.kid()),
             issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
         })
-    }
-
-    /// SIGN a plane-framed card signing-input with the deployment's DOMAIN-DERIVED card subkey — the
-    /// host side of the plane `card_sign` seam. Resolves the card-signing domain from the built-in
-    /// plane declaration for the `agents` section (so this file names no specific plane's type), derives
-    /// the subkey and signs. The subkey secret is derived and used entirely here; the caller receives
-    /// only the 64 signature bytes. `None` when no signing key is configured or no plane declares a
-    /// card-signing domain.
-    // Reached only through the host `card_sign` vtable slot, which a plane declaring a card-signing
-    // domain wires; with no such plane installed this has no caller. Unconditional allow — the neutral
-    // host names no plane feature; the card-signing domain is resolved from the registry.
-    #[allow(dead_code)]
-    pub fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        let domain = crate::plane_driver::registry::plane_decl_for_config_section("agents")?
-            .card_signing_domain?;
-        let m = self.signing_material()?;
-        Some(m.signer.sign_with_subkey(domain, signing_input))
     }
 
     /// SIGN `input` with the subkey this node's signing key derives for `domain`: the key id and the
@@ -780,7 +767,7 @@ impl GovState {
         key_id: &str,
         model: &str,
         provider: &str,
-        usage: Option<&crate::billing::TokenUsage>,
+        usage: Option<&busbar_contract::billing::TokenUsage>,
         now: u64,
     ) {
         let add = MeterCounts {
@@ -1214,7 +1201,7 @@ impl GovState {
 
     /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
     /// never across the crypto).
-    fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
+    pub(super) fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
         self.signing
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -1251,11 +1238,7 @@ impl GovState {
             id,
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -1313,11 +1296,7 @@ impl GovState {
             id: id.clone(),
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::grant_scopes(spec.allowed_pools, spec.plane_scopes),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -1623,8 +1602,8 @@ impl GovState {
             .map(|b| (b.bucket_id.as_str(), b.window));
         for (bucket_id, period) in key_buckets.chain(group_buckets) {
             let window = budget_window(period, now);
-            let ledger = self.store.get_usage(bucket_id, window)?;
-            if ledger.requests == 0 && ledger.models.is_empty() {
+            let mut cell = self.stored_cell(bucket_id, window)?;
+            if cell.requests == 0 && cell.models.is_empty() {
                 continue;
             }
             // `billable_requests` is trusted UNCONDITIONALLY from the persisted ledger — it is
@@ -1641,17 +1620,10 @@ impl GovState {
             // production data yet, so there was no live refunded-to-zero row that migration could
             // have mis-fired against. From v6 onward every row is written correctly from the
             // start, so this function has nothing left to infer.
-            let mut cell = durable_cell(ledger, window);
             // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
             // TTL, so the first post-boot sweep would discard every restored key's history before
             // that key had served a single request.
             cell.last_touch = now;
-            // The store already holds every count restored here: the flush baselines start level.
-            cell.flushed_requests = cell.requests;
-            cell.flushed_billable_requests = cell.billable_requests;
-            for m in &mut cell.models {
-                m.flushed = m.cur.clone();
-            }
             self.budget
                 .write(bucket_id)
                 .insert(bucket_id.to_string(), cell);
@@ -1690,10 +1662,9 @@ impl GovState {
     }
 
     /// The DERIVED current-window usage of one bucket (key or group): cell-authoritative, durable
-    /// fallback, spend recomputed from tokens x the card in force per era (Q14; the durable row
-    /// carries no era, so the fallback prices it as the cell hydrated from it would: era zero, the
-    /// card in force when the window opened). `include_request_fee` controls whether
-    /// the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
+    /// fallback, spend recomputed from tokens x the card in force per era (Q14; the fallback prices
+    /// the durable rows as the cell hydrated from them would, [`durable_cell`]).
+    /// `include_request_fee` controls whether the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
     /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
     /// must pass `true` for both. The parameter exists only for callers that deliberately want
     /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
@@ -1723,12 +1694,7 @@ impl GovState {
     ) -> RecordStoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell(bucket_id, window)?;
-        self.price_cell(
-            cost,
-            (bucket_id, budget_period, window),
-            include_request_fee,
-            cell,
-        )
+        self.price_cell(cost, include_request_fee, cell)
     }
 
     /// **THE SCRAPE'S READ OF [`Self::derived_bucket_usage`]**, through the money view's memo: the
@@ -1749,8 +1715,7 @@ impl GovState {
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
-                let key = (bucket_id, budget_period, window);
-                let priced = self.price_cell(cost, key, include_request_fee, cell)?;
+                let priced = self.price_cell(cost, include_request_fee, cell)?;
                 self.money_view.keep(bucket_id, inputs, priced.clone());
                 priced
             }
@@ -1776,34 +1741,42 @@ impl GovState {
         self.money_view.pricings()
     }
 
-    /// The bucket's current-window cell: the live one, else the durable row read AS THE CELL
-    /// HYDRATED FROM IT (era zero, the card in force when the window opened), so a read that
-    /// reaches the store answers what the same read answers once the bucket is hydrated — never the
-    /// current card over stored history.
+    /// The bucket's current-window cell: the live one, else the durable rows read AS THE CELL
+    /// HYDRATED FROM THEM ([`durable_cell`]), so a read that reaches the store answers what the same
+    /// read answers once the bucket is hydrated — never the current card over stored history.
     fn bucket_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
             .cloned();
         Ok(match live {
             Some(cell) => cell,
-            None => durable_cell(self.store.get_usage(bucket_id, window)?, window),
+            None => self.stored_cell(bucket_id, window)?,
         })
     }
 
-    /// THE MONEY VIEW over one cell: its counts as corrected, priced by the one function.
+    /// The bucket's durable `window` as a cell ([`durable_cell`]): its plain row and, when that
+    /// holds anything, its card-era row.
+    fn stored_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
+        let row = self.store.get_usage(bucket_id, window)?;
+        let eras = if row.models.is_empty() && row.billable_requests == 0 {
+            busbar_contract::records::UsageLedger::default()
+        } else {
+            self.store.get_usage(&era_bucket(bucket_id), window)?
+        };
+        Ok(durable_cell(row, eras, window))
+    }
+
+    /// THE MONEY VIEW over one cell: its counts, priced by the one function.
     fn price_cell(
         &self,
         cost: &crate::cost::CostModel,
-        (bucket_id, budget_period, window): (&str, &str, u64),
         include_request_fee: bool,
-        mut cell: BudgetCell,
+        cell: BudgetCell,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         self.money_view.priced();
-        // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee derives
-        // from the BILLABLE (2xx-only) count; `requests` reports the admission count (the
-        // requests-limit truth).
-        let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
-        let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
+        // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the admission count
+        // (the requests-limit truth). An `adjust` is a usage-row delta, already in the counts.
+        let spend = cell.spend(cost, include_request_fee);
         Ok(spend
             .and_then(Money::minor_i64)
             .map(|spend_cents| DerivedUsage {
@@ -1813,74 +1786,11 @@ impl GovState {
             }))
     }
 
-    /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
-    /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
-    /// (key and group usage, the `/metrics` money gauges) AND the admission check
-    /// ([`Self::try_admit`]) price `segments` only after this folds in Σ (now − was) of each
-    /// correction that lands on the bucket ([`Self::landing_corrections`]). The delta lands on the
-    /// unit's lane in the latest era not after the epoch. A correction leaving a count fractional or
-    /// below zero REFUSES (`Overflow`), never clamps.
-    fn corrected(
-        &self,
-        cost: &crate::cost::CostModel,
-        bucket: (&str, &str, u64),
-        segments: &mut Vec<ModelCell>,
-    ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
-        let corrections = crate::audit::amend::node_corrections();
-        let landing = self.landing_corrections(cost, bucket, &corrections)?;
-        Ok(fold_corrections(segments, &landing))
-    }
-
-    /// The corrections among `corrections` that land on one bucket's window: its principal's own
-    /// bucket, or a bucket of that key's group chain the correction's pool participates in (Q64/Q67:
-    /// an unscoped bucket always, a pool-scoped one for its own pool; a sealed correction naming no
-    /// pool reaches the unscoped buckets only), whose window holds the unit's card epoch. The
-    /// principal's key is read from the key cache, and from the store only for a key the cache no
-    /// longer holds (a deleted key's row is kept), so a read and an admission resolve it the same way
-    /// and an admission makes no store round-trip for a live key.
-    fn landing_corrections<'c>(
-        &self,
-        cost: &crate::cost::CostModel,
-        (bucket_id, period, window): (&str, &str, u64),
-        corrections: &'c [crate::audit::amend::Amendment],
-    ) -> RecordStoreResult<Vec<&'c crate::audit::amend::Adjust>> {
-        use crate::audit::amend::{AmendBody, Subject};
-        let mut landing = Vec::new();
-        for amendment in corrections {
-            let AmendBody::Adjust(adj) = &amendment.body else {
-                continue;
-            };
-            let Subject::PrincipalId(p) = &adj.subject else {
-                continue;
-            };
-            if budget_window(period, adj.card_epoch_ms / 1_000) != window {
-                continue;
-            }
-            let lands = p == bucket_id || {
-                let key = match self.lookup_by_sub(p) {
-                    Some(key) => Some(key),
-                    None => self.store.get_key(p)?.map(Arc::new),
-                };
-                key.is_some_and(|k| {
-                    (cost.chain_for(&k).ok()).is_some_and(|c| {
-                        c.iter()
-                            .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
-                    })
-                })
-            };
-            if lands {
-                landing.push(adj);
-            }
-        }
-        Ok(landing)
-    }
-
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
     /// the authoritative cell when live, else the durable ledger. Off the hot path (the /metrics
     /// scrape); allocation here is fine.
     pub fn bucket_model_tokens(
         &self,
-        cost: &crate::cost::CostModel,
         bucket_id: &str,
         budget_period: &str,
         now: u64,
@@ -1893,16 +1803,9 @@ impl GovState {
             || (self.store.get_usage(bucket_id, window)).map(|l| durable_segments(l.models)),
             Ok,
         );
-        let Ok(mut models) = read else {
+        let Ok(models) = read else {
             return Vec::new();
         };
-        // Q51: the counts AS CORRECTED; a refused correction skips the series, as a failed read does.
-        if !matches!(
-            self.corrected(cost, (bucket_id, budget_period, window), &mut models),
-            Ok(Ok(()))
-        ) {
-            return Vec::new();
-        }
         // One series per MODEL: a model's eras are one set of counts to the scrape.
         let models = models.iter().map(|m| (&*m.model, m.cur.clone()));
         busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add)
@@ -1925,25 +1828,14 @@ impl GovState {
         let mut out = Vec::with_capacity(chain.len());
         for bucket in chain.iter() {
             let window = budget_window(bucket.window, now);
-            let live = {
+            let spend = {
                 let map = self.budget.read(bucket.bucket_id);
-                (map.get(bucket.bucket_id))
-                    .filter(|cell| cell.window_start == window)
-                    .cloned()
-            };
-            // Q51: the counts as corrected, as every other read of the book prices them; a
-            // correction that cannot be resolved reads as a refused figure.
-            let spend = match live {
-                Some(mut cell) => {
-                    let key = (bucket.bucket_id, bucket.window, window);
-                    match self.corrected(cost, key, &mut cell.models) {
-                        Ok(Ok(())) => {
-                            (cell.spend(cost, true).and_then(Money::micros_i64)).map_err(|_| ())
-                        }
-                        Ok(Err(_)) | Err(_) => Err(()),
+                match map.get(bucket.bucket_id) {
+                    Some(cell) if cell.window_start == window => {
+                        cell.spend(cost, true).and_then(Money::micros_i64)
                     }
+                    _ => Ok(0),
                 }
-                None => Ok(0),
             };
             // A REFUSED figure (#42: the card present and silent about a model or class the bucket
             // holds; item 28: an overflow) is not a figure, and the projection has no error channel
@@ -2037,16 +1929,14 @@ impl GovState {
     ///   in-flight admitted request (as with TPM, a hard token cap would need admit-time
     ///   reservation - out of scope).
     ///
-    /// SYNCHRONOUS and INFALLIBLE (in-memory cells, no await; the one store read is below). The
-    /// flat fee is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
+    /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
+    /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
     /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via
     /// [`GovState::refund_charge`]. This allocates a handful of chain-sized scratch `Vec`s per call
     /// (`chain_for`'s two Vecs, the collected bucket slice, the shard-index/order/guard Vecs sized
     /// to the chain depth, the grant's charged cells) — there are no fixed
-    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no `await`
-    /// anywhere on this path, and no store round-trip except one case: a sealed `adjust` whose
-    /// principal's key the key cache no longer holds (a deleted key) is read from the store, before
-    /// any shard lock is taken, to learn whether it lands on a capped bucket (Q51).
+    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
+    /// round-trip and no `await` anywhere on this path.
     ///
     /// PER-PLANE FEES (#47): a `pool` qualified `"<plane>\u{1f}<pool>"` is a request of THAT plane
     /// — the pool predicate reads the unqualified part — and it charges that plane's own
@@ -2148,26 +2038,6 @@ impl GovState {
             }
             grant.gauges.push(gauge);
         }
-
-        // Q51 AT THE DOOR: a capped bucket is checked on the counts every read of the book prices,
-        // corrected by each sealed `adjust` landing on it ([`Self::landing_corrections`]), so an
-        // upward correction is enforced and a downward one stops refusing. Resolved here, before any
-        // shard lock is taken; a landing that cannot be resolved (`None`) blocks the bucket, fail
-        // closed. No correction sealed on this node: nothing is resolved and nothing allocated.
-        let corrections = crate::audit::amend::node_corrections();
-        let landing: Vec<Option<Vec<&crate::audit::amend::Adjust>>> = (buckets.iter())
-            .map(|b| {
-                let capped = b.requests_cap.is_some()
-                    || b.tokens_cap.is_some()
-                    || !b.class_caps.is_empty()
-                    || b.budget_cap.is_some();
-                if corrections.is_empty() || !capped {
-                    return Some(Vec::new());
-                }
-                let bucket = (b.bucket_id, b.window, budget_window(b.window, now));
-                self.landing_corrections(cost, bucket, &corrections).ok()
-            })
-            .collect();
 
         // 3. WINDOWED limits: acquire every involved shard's write lock in ASCENDING shard order
         // (dedup) - scratch sized by the chain actually resolved. `guard_shards[j]` = the shard
@@ -2272,46 +2142,20 @@ impl GovState {
             // read only for a class that carries a cap — the same best-effort post-paid shape as
             // `tokens_cap`. A class counts only itself: a `tokens_input` cap reads the `input`
             // class, so a cache-read count never counts against it.
-            let live = match map.get(bucket.bucket_id) {
-                Some(cell) if cell.window_start >= window => Some(cell),
-                // stale or absent cell = fresh window = nothing used
-                _ => None,
-            };
-            // The counts as corrected (Q51): the live cell itself when nothing lands on it; a
-            // corrected copy when something does (a correction landing on a fresh window corrects
-            // an empty one); `Err` when a landing could not be resolved or the fold refused. In the
-            // straddle the live cell already holds a NEWER window, which this window's corrections
-            // do not land on.
-            let fixed: Option<Result<BudgetCell, ()>> = match &landing[bi] {
-                Some(l) if l.is_empty() => None,
-                Some(_) if live.is_some_and(|c| c.window_start > window) => None,
-                Some(l) => {
-                    let mut cell = live.cloned().unwrap_or_else(|| BudgetCell::fresh(window));
-                    Some(
-                        fold_corrections(&mut cell.models, l)
-                            .map(|()| cell)
-                            .map_err(|_| ()),
-                    )
-                }
-                None => Some(Err(())),
-            };
-            let (live, unresolved) = match &fixed {
-                None => (live, false),
-                Some(Ok(cell)) => (Some(cell), false),
-                Some(Err(())) => (live, true),
-            };
-            let (requests, tokens, derived) = match live {
-                Some(cell) => (
+            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
+                Some(cell) if cell.window_start >= window => (
                     cell.requests,
                     bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
+                    Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
                         (cell.spend(cost, true)).and_then(Money::minor_i64)
                     }),
                 ),
-                None => (0, 0, Ok(0)),
+                // stale or absent cell = fresh window = nothing used
+                _ => (0, 0, None, Ok(0)),
             };
             let class_blocked = (bucket.class_caps.iter())
-                .find(|c| unresolved || live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
+                .find(|c| live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
                 .map(|c| c.metric.as_str());
             // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
             // silent about a model or class this bucket holds, or an overflow — BLOCKS on the
@@ -2319,7 +2163,7 @@ impl GovState {
             // (`if let Some(rate)`), so a model the card did not name ran uncapped on spend. A
             // refusal is never downgraded: a cheaper pool is no answer to "this cannot be priced".
             let (derived, refused) = match derived {
-                Ok(d) => (d, unresolved),
+                Ok(d) => (d, false),
                 Err(_) => (0, true),
             };
             // `admission: estimate`: this bucket must also hold the unit's estimate; an
@@ -2334,10 +2178,7 @@ impl GovState {
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
             {
                 Some("requests")
-            } else if bucket
-                .tokens_cap
-                .is_some_and(|cap| unresolved || tokens >= cap)
-            {
+            } else if bucket.tokens_cap.is_some_and(|cap| tokens >= cap) {
                 Some("tokens")
             } else if class_blocked.is_some() {
                 class_blocked
@@ -2547,6 +2388,7 @@ impl GovState {
             requests: u64,
             billable_requests: u64,
             models: Vec<ModelCell>,
+            fee_eras: busbar_kernel_ledger::usage::FeeEras,
         }
         /// One delta to write: the PER-MODEL TOKEN delta payload for `Store::add_usage`, under the
         /// window it belongs to. `acked` is `Some` for the cell's live window and `None` for a
@@ -2556,6 +2398,8 @@ impl GovState {
             bucket_id: String,
             window: u64,
             delta: UsageDelta,
+            /// The dated part of a live window's delta, for its card-era row (empty when rolled).
+            eras: UsageDelta,
             acked: Option<Acked>,
         }
         // Snapshot dirty cells across ALL shards and clear their flags. One shard is locked at a
@@ -2572,6 +2416,7 @@ impl GovState {
                         bucket_id: id.clone(),
                         window,
                         delta,
+                        eras: UsageDelta::default(),
                         acked: None,
                     });
                 }
@@ -2579,10 +2424,12 @@ impl GovState {
                     bucket_id: id.clone(),
                     window: cell.window_start,
                     delta: cell.unflushed(),
+                    eras: cell.unflushed_eras(),
                     acked: Some(Acked {
                         requests: cell.requests,
                         billable_requests: cell.billable_requests,
                         models: cell.models.clone(),
+                        fee_eras: cell.fee_eras.clone(),
                     }),
                 });
                 cell.dirty = false;
@@ -2603,6 +2450,17 @@ impl GovState {
                 self.store
                     .add_usage(&snap.bucket_id, snap.window, &snap.delta)
             };
+            // The dated part goes to the card-era row once the plain row has it. Not retried: a
+            // retry would count the plain delta twice, and what it misses only reads at the
+            // window's opening card after a restart, as a row without an era always has.
+            if outcome.is_ok() && !snap.eras.is_zero() {
+                let eras =
+                    self.store
+                        .add_usage(&era_bucket(&snap.bucket_id), snap.window, &snap.eras);
+                if let Err(e) = eras {
+                    tracing::warn!(bucket = %snap.bucket_id, error = %e, "budget flush: the bucket's card-era row was not written; those counts price at the window's opening card after a restart");
+                }
+            }
             let mut map = self.budget.write(&snap.bucket_id);
             match outcome {
                 Ok(()) => {
@@ -2615,6 +2473,7 @@ impl GovState {
                         // Advance the acked baselines: the cell still holds the window written.
                         cell.flushed_requests = acked.requests;
                         cell.flushed_billable_requests = acked.billable_requests;
+                        cell.flushed_fee_eras = acked.fee_eras;
                         cell.advance_model_baselines(&acked.models);
                     } else if cell.window_start > snap.window {
                         // The cell rolled while this write was in flight, and the roll parked
@@ -2724,16 +2583,17 @@ impl GovState {
 
     /// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): the secret of `(kind, public_id)` and
     /// whether it may authenticate now (the credential live, its key enabled and not revoked). An
-    /// unknown pair, or a secret in an unrecognized envelope, answers the fixed dummy secret, not
-    /// live, through the SAME steps (the lookup, the copy, the revocation check), so the reply's
-    /// cost does not say whether the pair exists. The one place this rule lives.
+    /// unknown pair, or a secret in an unrecognized envelope, answers an EMPTY secret, not live,
+    /// through the SAME steps (the lookup, the copy, the revocation check), so the reply's cost
+    /// does not say whether the pair exists. The verifying auth swaps in its own dummy secret when
+    /// the answer is not live and runs its full verification over it, so a reject costs what a bad
+    /// signature costs (no identifier-enumeration oracle). The one place this rule lives.
     pub fn credential_secret(
         &self,
         kind: &str,
         public_id: &str,
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
-        let dummy = crate::auth::DUMMY_SECRET;
         let keys = self.at_rest_keys();
         // Owned copies, out of the cache lock before the revocation check takes its own. The
         // stored envelope is opened here, at the read: the cache holds it sealed.
@@ -2747,11 +2607,11 @@ impl GovState {
                 };
                 (key.id.clone(), plain, key.enabled)
             }
-            None => (dummy.to_string(), None, false),
+            None => (String::new(), None, false),
         };
         let revoked = self.is_revoked_at(&key, now);
         let live = enabled && plain.is_some() && !revoked;
-        let secret = plain.unwrap_or_else(|| dummy.to_string());
+        let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
     }
 
@@ -2879,51 +2739,70 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     ))
 }
 
-/// Fold `landing` corrections into a bucket's `segments`: each one's Σ (now − was) per class lands
-/// on its lane in the latest era not after its card epoch (a new segment at the era in force then
-/// when the bucket holds none). A count left fractional or below zero REFUSES (`Overflow`), never
-/// clamps. The one fold behind every read of the book and the admission check.
-fn fold_corrections(
-    segments: &mut Vec<ModelCell>,
-    landing: &[&crate::audit::amend::Adjust],
-) -> Result<(), busbar_kernel_ledger::cost::MoneyError> {
-    for adj in landing {
-        let at = adj.card_epoch_ms;
-        let seg = (segments.iter().enumerate())
-            .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
-            .max_by_key(|(_, m)| m.era)
-            .map(|(i, _)| i);
-        let i = seg.unwrap_or_else(|| {
-            segments.push(ModelCell {
-                model: std::sync::Arc::from(adj.lane.as_str()),
-                era: crate::rate_apply::effective_from_at(at),
-                cur: BTreeMap::new(),
-                flushed: BTreeMap::new(),
-            });
-            segments.len() - 1
-        });
-        for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
-            let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
-            let slot = segments[i].cur.entry(class.clone()).or_insert(0);
-            match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
-                Some(n) if frac == 0 => *slot = n,
-                _ => return Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The durable ledger's per-model rows as undated segments (the row carries no era).
-/// A bucket's durable window row as a cell: the counts it holds, each model at era zero (the row
-/// carries no era). The ONE reading of a durable row — boot hydration builds the cell it keeps from
-/// this, and a read of a bucket with no live cell prices this — so the two cannot answer different
-/// figures for the same row.
-fn durable_cell(row: busbar_contract::records::UsageLedger, window: u64) -> BudgetCell {
+/// A bucket's durable window row as a cell. The bucket's card-era row (`eras`, [`era_bucket`])
+/// gives back each dated segment and fee era, clamped to what the plain `row` holds; the rest of the
+/// plain row is era zero, the card in force when the window opened (all of it, where no era row
+/// exists). The flush baselines start level: the store holds every count. The ONE reading of a
+/// durable row — boot hydration, a read of a bucket with no live cell, and a correction's window —
+/// so they cannot answer different figures for the same row.
+fn durable_cell(
+    row: busbar_contract::records::UsageLedger,
+    eras: busbar_contract::records::UsageLedger,
+    window: u64,
+) -> BudgetCell {
     let mut cell = BudgetCell::fresh(window);
     cell.requests = row.requests;
     cell.billable_requests = row.billable_requests;
+    cell.flushed_requests = row.requests;
+    cell.flushed_billable_requests = row.billable_requests;
     cell.models = durable_segments(row.models);
+    let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
+    for e in eras.models {
+        let (era, model) = match e.model.split_once('\u{1f}') {
+            Some((era, model)) => (era, Some(model)),
+            None => (e.model.as_str(), None),
+        };
+        let Ok(era @ 1..) = era.parse::<u64>() else {
+            continue;
+        };
+        let Some(model) = model else {
+            let n = (e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0)).min(undated_fees);
+            undated_fees -= n;
+            fees.push((era, n));
+            continue;
+        };
+        let rest = (cell.models.iter_mut()).find(|m| m.era == 0 && *m.model == *model);
+        let Some(rest) = rest else {
+            continue;
+        };
+        let mut cur = BTreeMap::new();
+        for (unit, n) in e.usage_units {
+            let left = rest.cur.get(&unit).copied().unwrap_or(0);
+            let n = n.min(left);
+            if n == 0 {
+                continue;
+            }
+            if left == n {
+                rest.cur.remove(&unit);
+            } else {
+                rest.cur.insert(unit.clone(), left - n);
+            }
+            cur.insert(unit, n);
+        }
+        let model = rest.model.clone();
+        let flushed = BTreeMap::new();
+        cell.models.push(ModelCell {
+            model,
+            era,
+            cur,
+            flushed,
+        });
+    }
+    for m in &mut cell.models {
+        m.flushed = m.cur.clone();
+    }
+    cell.fee_eras = busbar_kernel_ledger::usage::FeeEras::of(fees);
+    cell.flushed_fee_eras = cell.fee_eras.clone();
     cell
 }
 

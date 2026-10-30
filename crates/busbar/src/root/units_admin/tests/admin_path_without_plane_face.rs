@@ -153,47 +153,29 @@ fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     ))
 }
 
-/// A node whose book this cell holds the other half of.
-///
-/// The book is built HERE rather than inside `ProductionUnits::admin_only` so that the rows the
-/// ledger dual-writes onto are rows this cell can read back. Same value, two holders.
+/// A node whose journal this cell holds.
 #[cfg(feature = "root-admin")]
 struct ANodeWhoseChainThisCellReads {
     router: axum::Router,
-    rows: busbar_kernel_ledger::legacy::RecordingRows,
     surface: Arc<SurfaceLog>,
 }
 
-#[cfg(feature = "root-admin")]
-impl ANodeWhoseChainThisCellReads {
-    /// Every money posting the node's book has taken, which for an administrative walk must be none.
-    ///
-    /// Read off the write half the node was built over, which is the half the ledger dual-writes
-    /// onto. A count taken anywhere else would be a count of something the walk does not touch.
-    fn postings(&self) -> usize {
-        self.rows.written().len()
-    }
-}
-
 /// The root's mount over `inner`, as `main.rs` composes it for `admin_listen`: a memory-buffered
-/// book whose ledger writes onto `rows`, `door` in front, the directory that minted the operator's
-/// credential behind it, and `tweak` applied to the units last.
+/// journal, `door` in front, the directory that minted the operator's credential behind it, and
+/// `tweak` applied to the units last.
 #[cfg(feature = "root-admin")]
 fn mounted_over(
     inner: axum::Router,
     request_body_max_bytes: usize,
     door: busbar_kernel_identity::AuthChain,
-    rows: busbar_kernel_ledger::legacy::RecordingRows,
     tweak: impl FnOnce(&mut crate::root::kernel::ProductionUnits),
 ) -> axum::Router {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     mount(
         inner,
         crate::root::kernel::new_kernel(),
@@ -203,7 +185,6 @@ fn mounted_over(
                 dispatch,
                 crate::root::units_admin::door_of_chain(door),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
@@ -219,21 +200,15 @@ fn mounted_over(
 #[cfg(feature = "root-admin")]
 fn a_node() -> ANodeWhoseChainThisCellReads {
     let surface = Arc::new(SurfaceLog::default());
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
     // configured rather than one this cell invented.
     let router = mounted_over(
         a_recording_surface(Arc::clone(&surface)),
         64 * 1024,
         a_door_that_identifies_the_operator(),
-        rows.clone(),
         |_| {},
     );
-    ANodeWhoseChainThisCellReads {
-        router,
-        rows,
-        surface,
-    }
+    ANodeWhoseChainThisCellReads { router, surface }
 }
 
 /// The REAL administrative surface, twice: bare (the leg a node without the root serves, which
@@ -269,7 +244,6 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         bare.clone(),
         1 << 20,
         a_door_that_identifies_the_operator(),
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
         |_| {},
     );
     (bare, mounted)
@@ -543,28 +517,6 @@ impl busbar_contract::verb_store::Store for AnApplyingStore {
     ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
 }
 
 /// The served rows for one resource that the operator (`admin`) is attributed, as
@@ -610,7 +562,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         bare,
         1 << 20,
         a_door_that_identifies_the_operator(),
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
         |units| units.store = Some(Arc::new(AnApplyingStore)),
     );
 
@@ -620,11 +571,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             "/api/v1/admin/store-restore",
             r#"{"backup_ref":"nightly"}"#,
             "store_restore",
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
         ),
     ];
     for (path, body, verb) in applied {
@@ -673,12 +619,11 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 ///
 /// The book is the one `root::boot::book` opens over a real App with a governance store, and the
 /// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The chain break
-/// and the reseal answer `204` and land on the book's journal and that store; the restore is
+/// answers `204` and lands on the book's journal and that store; the restore is
 /// refused `503` — the store has no restore operation (row 187). RED (the defect this
 /// replaced): the composition held a refusing stand-in, so each answered the store failure on a
 /// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then break -> restore -> reseal -> replay over the SAME store: a replay slot committed
-/// before them survives all three, and answers its first bytes.
+/// goes red.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
@@ -699,20 +644,10 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         .governance(gov)
         .build();
     let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
-    let store = book
-        .verb_store
-        .clone()
-        .expect("a node with a configured store carries it on its book");
-
-    // A replay slot committed BEFORE the recovery sequence.
-    let key = (
-        "idem-row-113".to_string(),
-        "POST /api/v1/admin/keys".to_string(),
+    assert!(
+        book.verb_store.is_some(),
+        "a node with a configured store carries it on its book"
     );
-    assert_eq!(store.replay_new_verb(&key).expect("the slot reads"), None);
-    store
-        .commit_new_verb_replay(&key, b"first answer")
-        .expect("the slot commits");
 
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -749,12 +684,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
             "store_restore",
             503,
         ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-            204,
-        ),
     ] {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
         assert_eq!(
@@ -763,13 +692,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
              operation"
         );
     }
-
-    // The slot survived the restore and the reseal, and replays the first answer's bytes.
-    assert_eq!(
-        store.replay_new_verb(&key).expect("the slot reads"),
-        Some(b"first answer".to_vec()),
-        "a committed replay slot survives break -> restore -> reseal"
-    );
 }
 
 /// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
@@ -810,13 +732,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let mounted = mounted_over(
-        bare,
-        1 << 20,
-        a_door_that_identifies_the_operator(),
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
-        |_| {},
-    );
+    let mounted = mounted_over(bare, 1 << 20, a_door_that_identifies_the_operator(), |_| {});
     let (unmounted_status, unmounted, _) = over(
         &mounted,
         "POST",
@@ -880,21 +796,15 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
 /// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.
 ///
 /// The admin surface declares NO meter classes, so the honest report is the empty one — and the
-/// empty report is a report, not an absence. Two things are observable about it from here and both
-/// are asserted, because either alone is satisfiable by a walk that is wrong:
-///
-/// * the unit COMPLETED. The meter step refuses with `Unpriced` when the usage grant will not take
-///   its report, and a refusal there renders as an error answer rather than the surface's bytes. A
-///   200 carrying the surface's own body is the walk having passed Meter;
-/// * NOTHING WAS POSTED. The node's book has taken no row for an administrative walk — which is the
-///   design's own statement that an admin verb's `requests` draw and its flat fee are both zero
-///   under a configured non-zero fee. A walk that started charging the operator for reading their
-///   own audit page would move this number, and nothing else in this file would notice.
+/// empty report is a report, not an absence. The unit COMPLETED: the meter step refuses with
+/// `Unpriced` when the usage grant will not take its report, and a refusal there renders as an
+/// error answer rather than the surface's bytes. A 200 carrying the surface's own body is the walk
+/// having passed Meter. (The node's second book, whose rows this also counted, is gone: the one
+/// ledger is governance's usage counts, which an admin-only node does not hold.)
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     let node = a_node();
-    assert_eq!(node.postings(), 0, "a fresh book has taken no rows");
 
     let (status, body, _headers) =
         over_the_listener(&node, "GET", "/api/v1/admin/audit", b"").await;
@@ -912,12 +822,6 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     )
     .await;
     assert_eq!(status, 200, "and so did the mutation");
-
-    assert_eq!(
-        node.postings(),
-        0,
-        "an administrative walk posts no money, on either side of the read/write split"
-    );
 }
 
 /// A PATH THE CLOSED TABLE DOES NOT DECLARE NEVER ENTERS THE LOOP AT ALL.
@@ -1023,23 +927,17 @@ fn a_q71_node_trusting(
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&kept);
-    let mounted = mounted_over(
-        bare,
-        1 << 20,
-        door,
-        busbar_kernel_ledger::legacy::RecordingRows::new(),
-        move |units| {
-            units.admin.planes =
-                Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
-            units.admin.records = Some(Arc::new(
-                move |record: &busbar_contract::records::PlaneRecord| {
-                    sink.lock().expect("the sink").push(record.clone());
-                    Ok(())
-                },
-            ));
-            units.admin.trust = trust;
-        },
-    );
+    let mounted = mounted_over(bare, 1 << 20, door, move |units| {
+        units.admin.planes =
+            Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
+        units.admin.records = Some(Arc::new(
+            move |record: &busbar_contract::records::PlaneRecord| {
+                sink.lock().expect("the sink").push(record.clone());
+                Ok(())
+            },
+        ));
+        units.admin.trust = trust;
+    });
     (mounted, kept)
 }
 
@@ -1228,6 +1126,92 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
 }
 
+/// EVERY REFUSED APPROVAL IS AUDITED AS REJECTED, AND NONE PINS AN UNVERIFIED SIGHTING (a2a.md
+/// 249-250 and 265). A malformed body (`400`), an unknown key (`404`) and a counterparty whose last
+/// sighting failed its verification (the plane sights it as `"unverified"`, `409`, explained) each
+/// seal one `rejected` row on the operator's ring, and the placeholder is never pinned.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_rejected_approval_is_audited() {
+    let _one = crate::root::PUBLISHING.lock().await;
+    use busbar_contract::services::{Caller, HostServices, Later};
+    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+
+    let kernel = Arc::new(KernelServices::new());
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "peer".to_string(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .expect("admitted");
+    let desk = Arc::clone(&kernel);
+    let (node, _) = a_q71_node_trusting(
+        a_door_that_identifies_the_operator(),
+        Arc::new(move || Some(Arc::clone(&desk))),
+    );
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+    let before = the_operators_rows_for(&node, "/api/v1/admin/trust/approve")
+        .await
+        .len();
+    let approve = |body: &'static str| {
+        let node = node.clone();
+        async move { over_as(&node, "POST", "/api/v1/admin/trust/approve", body, op).await }
+    };
+    let caller = Caller {
+        instance: Arc::from("inst"),
+        plugin: Arc::from("the-plane"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let later: Later = Box::new(|_| {});
+    let _ = kernel.trust_sight(&caller, "peer", "unverified", later);
+
+    assert_eq!(approve("not json").await.0, 400, "malformed");
+    assert_eq!(
+        approve(r#"{"key":"inst/stranger"}"#).await.0,
+        404,
+        "unknown"
+    );
+    // RED: the generic approve used to pin the placeholder and answer 200.
+    assert_eq!(
+        approve(r#"{"key":"inst/peer"}"#).await,
+        (
+            409,
+            r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was last sighted unverified: its document failed verification, so there is nothing to approve"}}"#
+                .to_string()
+        ),
+        "an unverified sighting is never approved"
+    );
+    assert!(
+        kernel.trust_rows().iter().all(|r| r.approved.is_none()),
+        "nothing was pinned"
+    );
+
+    let rows = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
+    assert_eq!(rows.len() - before, 3, "one row per refusal: {rows:?}");
+    // Newest first: this test's three rows lead the page.
+    assert!(
+        rows[..3]
+            .iter()
+            .all(|(verb, outcome)| verb == "trust_approve" && outcome == "rejected"),
+        "every refused approval is audited as rejected: {rows:?}"
+    );
+}
+
 /// THE VERBS UNIT'S MUTATION BUDGET OUTLIVES THE REQUEST (finding 5). The route step builds one
 /// `Verbs` per request, and each used to build its own limiter, so every call saw an empty window
 /// and none was ever refused. Walked over the real mount, which is the production construction: a
@@ -1391,9 +1375,10 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     {
         let kept = kept.lock().expect("the sink");
         assert_eq!(kept.len(), 1, "exactly one record written");
+        // The record lands in the plane's own rows: its declared kind, keyed by the plane.
         assert_eq!(
             (kept[0].kind.as_str(), kept[0].id.as_str(), kept[0].ts),
-            ("note", "n-1", at)
+            ("\u{1}plane\u{1}example\u{1}note", "n-1", at)
         );
         assert_eq!(kept[0].body, br#"{"text":"hello"}"#.to_vec());
         assert_eq!(

@@ -137,6 +137,7 @@ PY
 shard_filter() {  # shard_filter <k> <n> -> the anchored regex selecting exactly shard k's ids
   shard_ids "$1" "$2" | python3 -c 'import re,sys; ids=[l.rstrip("\n") for l in sys.stdin if l.strip()]; print("^(?:" + "|".join(re.escape(i) for i in ids) + ")$")'
 }
+if [ "${1:-}" = "shard-ids" ]; then shard_ids "${2:?shard-ids <k> <n>}" "${3:?shard-ids <k> <n>}"; exit 0; fi
 if [ "${1:-}" = "shard-filter" ]; then shard_filter "${2:?shard-filter <k> <n>}" "${3:?shard-filter <k> <n>}"; exit 0; fi
 if [ "${1:-}" = "shard-cover" ]; then
   n="${2:?shard-cover <n>}"
@@ -215,8 +216,267 @@ if [ "${1:-}" = "shard-selftest" ]; then
   printf 'a|1\nb|1\nc|1\nb|2\n' >"$st/rep/selected-ids.txt"
   BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
     && ok "a shard that selected all it owns (and premise context) is verified" || bad "a complete shard was refused"
+  # shard-spec: ORACLE_SHARD / MODERNCI_SHARD / MODERNCI_SHARD_INDEX+COUNT, i from 0, answered as k from 1.
+  spec() { env -u ORACLE_SHARD -u MODERNCI_SHARD -u MODERNCI_SHARD_INDEX -u MODERNCI_SHARD_COUNT "$@" bash "${me[@]}" shard-spec 2>/dev/null; }
+  [ "$(spec ORACLE_SHARD=0/4)" = "1 4" ] && [ "$(spec MODERNCI_SHARD=3/4)" = "4 4" ] \
+    && [ "$(spec MODERNCI_SHARD_INDEX=1 MODERNCI_SHARD_COUNT=4)" = "2 4" ] && [ -z "$(spec)" ] && [ -z "$(spec ORACLE_SHARD=0/1)" ] \
+    && ok "a shard named i/N (from 0) by any of its names is shard i+1 of N; none, or N=1, is the whole run" || bad "a shard spec was misread"
+  for s in "ORACLE_SHARD=4/4" "ORACLE_SHARD=x" "ORACLE_SHARD=0/4 MODERNCI_SHARD=1/4" "MODERNCI_SHARD_INDEX=1" "ORACLE_SHARD=0/0"; do
+    # shellcheck disable=SC2086
+    spec $s >/dev/null && bad "shard spec '$s' was answered" || true
+  done
+  ok "a shard spec that is not a shard, or two that disagree, is refused"
+  # shard-merge: green only for shards 1..N of one N, each once, each green, together every cell.
+  for k in 1 2; do
+    mkdir -p "$st/m$k"; BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-ids "$k" 2 >"$st/m$k/selected-ids.txt"
+    printf '%s\t2\t0\n' "$k" >"$st/m$k/shard.tsv"
+  done
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-merge "$st/m1" "$st/m2" >/dev/null 2>&1 \
+    && ok "two green shards that judged every cell merge green" || bad "a sound merge was refused"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-merge "$st/m1" >/dev/null 2>&1 \
+    && bad "a merge missing a shard was green" || ok "a merge missing a shard is red"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-merge "$st/m1" "$st/m1" >/dev/null 2>&1 \
+    && bad "a merge with a shard twice was green" || ok "a merge with a shard twice is red"
+  printf '2\t2\t1\n' >"$st/m2/shard.tsv"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-merge "$st/m1" "$st/m2" >/dev/null 2>&1 \
+    && bad "a merge with a red shard was green" || ok "a merge with a red shard is red"
   [ "$fail" = 0 ] && { echo "oracle shard-selftest: the shards cover the corpus exactly once, and a shard that judged less is red"; exit 0; }
   echo "oracle shard-selftest: FAILED"; exit 1
+fi
+# ── WHICH SHARD THIS RUN IS ─────────────────────────────────────────────────────────────────────
+# A sharded oracle check names its shard in the environment as `i/N`, i counted from 0 (oracle-1 is
+# 0/4): ORACLE_SHARD (the interim oracle-1..N checks set it in `run`), else MODERNCI_SHARD, else
+# MODERNCI_SHARD_INDEX with MODERNCI_SHARD_COUNT (ModernCI's native `shards: N`). The names are data,
+# not code: ORACLE_SHARD_VARS lists the `i/N` variables in order and ORACLE_SHARD_INDEX_VAR /
+# ORACLE_SHARD_COUNT_VAR name the pair, so a different engine's names are one assignment away.
+# Prints `k n` (k counted from 1, as shard-filter takes it), or nothing for an unsharded run
+# (none set, or N = 1). Two settings that disagree, or one that is not a shard, is a refusal: a
+# run must never judge a different share than the one it was given.
+shard_spec() {
+  local v val idx cnt found="" got
+  for v in ${ORACLE_SHARD_VARS:-ORACLE_SHARD MODERNCI_SHARD}; do
+    val="${!v:-}"; [ -n "$val" ] || continue
+    got="$val"; [ -z "$found" ] || [ "$found" = "$got" ] || { echo "oracle: the shard is named twice and the names disagree ($found, $v=$got). Refusing." >&2; return 2; }
+    found="$got"
+  done
+  idx="${ORACLE_SHARD_INDEX_VAR:-MODERNCI_SHARD_INDEX}"; cnt="${ORACLE_SHARD_COUNT_VAR:-MODERNCI_SHARD_COUNT}"
+  if [ -n "${!idx:-}${!cnt:-}" ]; then
+    got="${!idx:-}/${!cnt:-}"
+    [ -z "$found" ] || [ "$found" = "$got" ] || { echo "oracle: the shard is named twice and the names disagree ($found, $idx/$cnt=$got). Refusing." >&2; return 2; }
+    found="$got"
+  fi
+  [ -n "$found" ] || return 0
+  case "$found" in
+    [0-9]*/[0-9]*) ;;
+    *) echo "oracle: the shard '$found' is not i/N. Refusing." >&2; return 2 ;;
+  esac
+  local i="${found%%/*}" n="${found#*/}"
+  case "$i$n" in *[!0-9]*) echo "oracle: the shard '$found' is not i/N. Refusing." >&2; return 2 ;; esac
+  i=$((10#$i)); n=$((10#$n))
+  if [ "$n" -lt 1 ] || [ "$i" -ge "$n" ]; then echo "oracle: the shard '$found' is not a shard (0 <= i < N). Refusing." >&2; return 2; fi
+  [ "$n" -gt 1 ] || return 0
+  echo "$((i + 1)) $n"
+}
+if [ "${1:-}" = "shard-spec" ]; then shard_spec; exit $?; fi
+
+# shard-merge <report dir>... — ONE VERDICT FROM N SHARD REPORTS. Each sharded `ci-run` writes
+# `shard.tsv` (k, n, exit) into its report dir beside the engine's selected-ids.txt. Green only when
+# the N reports are shards 1..N of the same N, each exactly once, every one exited 0, and the ids
+# they selected together are every cell of cells.json (shard-cover proves the split itself).
+if [ "${1:-}" = "shard-merge" ]; then
+  shift; [ $# -ge 1 ] || { echo "oracle shard-merge: name the shard report dirs" >&2; exit 2; }
+  python3 - "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$@" <<'PY'
+import json, sys
+data, dirs = sys.argv[1], sys.argv[2:]
+ids = {c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]}
+seen, ns, bad, selected = {}, set(), [], set()
+for d in dirs:
+    try:
+        k, n, rc = open(f"{d}/shard.tsv").read().split()[:3]
+        selected |= set(filter(None, open(f"{d}/selected-ids.txt").read().split("\n")))
+    except (OSError, ValueError) as e:
+        bad.append(f"{d}: no shard verdict ({e})"); continue
+    ns.add(int(n))
+    if k in seen: bad.append(f"shard {k} reported twice ({seen[k]}, {d})")
+    seen[k] = d
+    if rc != "0": bad.append(f"shard {k}/{n} was red (exit {rc}): {d}")
+if len(ns) > 1: bad.append(f"the reports disagree on N: {sorted(ns)}")
+n = max(ns) if ns else 0
+missing_shards = [str(k) for k in range(1, n + 1) if str(k) not in seen]
+if missing_shards: bad.append(f"no report for shard(s) {', '.join(missing_shards)} of {n}")
+unjudged = sorted(ids - selected)
+if unjudged: bad.append(f"{len(unjudged)} cell(s) no shard judged: {unjudged[:10]}")
+if bad:
+    sys.exit("oracle shard-merge: RED\n  " + "\n  ".join(bad))
+print(f"oracle shard-merge: GREEN: {n} shards, each green, together judged all {len(ids)} cells")
+PY
+  exit $?
+fi
+
+# ── THE ORACLE CHECK, ONE COMMAND: `bin/oracle ci-run` ──────────────────────────────────────────
+# What the ModernCI oracle check runs after its toolchain setup, whole or as one shard (shard_spec).
+# It judges exactly what the check's old inline body judged: the judge from the config's pin, the
+# golden held add-only, the candidate recorded over the corpus (or this shard's share of it) and
+# replayed --strict against the 1.5.5 golden, the fences and the dated baselines, under the same
+# cells.json and accepted-differences.json for every shard. What changed is only the time:
+#  * each phase prints `[oracle-time] <phase> +<since start>s (<in phase>s)`;
+#  * the store backends start in the background while the candidate builds, and only when the run
+#    selects a cell that needs one (the three store-persist cells), with one readiness wait;
+#  * THE ONE BUILD. On a line whose plugins build from source (plugin-digests.tsv), the recorder
+#    builds the candidate it records itself, with the run's throwaway release key
+#    (busbar-release recorder::plugin_build::build_candidate), and reads the `--bin` it is handed
+#    for one thing only: `--version`, the release line. Building target/release/busbar for that was
+#    a whole second release build. So on such a line `--bin` is a LINE PROBE that prints the tree's
+#    own `busbar <version>`, and the recording is refused if the probe is what got recorded
+#    (meta.json's binary digest). On a released line the recorder records `--bin` itself, so the
+#    real binary is built, as before;
+#  * the release profile's LTO is thin with 16 codegen units for this check only
+#    (CARGO_PROFILE_RELEASE_LTO / _CODEGEN_UNITS; ORACLE_CI_LTO / ORACLE_CI_CODEGEN_UNITS override):
+#    the recorder builds with plain `--release`, so the environment is the one way to reach it. The
+#    stamp `busbar --build-info` prints is unchanged (profile=release; lto is read from rustflags,
+#    which this does not touch), and no cell records it;
+#  * the recorder's in-machine workers default to the machine's CPUs (at least the engine's 4).
+if [ "${1:-}" = "ci-run" ]; then
+  shift
+  T0=$(date +%s); TP=$T0
+  ts() { local n; n=$(date +%s); echo "[oracle-time] $1 +$((n - T0))s ($((n - TP))s)"; TP=$n; }
+  me="$here/bin/oracle"
+  cd "$here"
+  # A refusal to judge (no judge configured) is infra, never red or green: exit 97.
+  if ! j=$("$me" tool-dir 2>&1 >/dev/null); then
+    printf '%s\n' "$j"
+    case "$j" in *"NO JUDGE"*) echo "modernci: infra: the oracle has no judge configured"; exit 97 ;; esac
+    exit 1
+  fi
+  if [ -n "$j" ]; then printf '%s\n' "$j"; fi
+  if [ -n "${MODERNCI_TO_SHA:-}" ] && git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+    "$me" golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+  else
+    echo "golden-guard: the target (${MODERNCI_TO_SHA:-none}) holds no golden/1.5.5; nothing to hold add-only"
+  fi
+  ts judge+golden-guard
+  spec="$(shard_spec)" || exit 2
+  F=""; K=""; N=""
+  if [ -n "$spec" ]; then
+    read -r K N <<<"$spec"
+    F="$(shard_filter "$K" "$N")" || exit 3
+    echo "oracle ci-run: shard $K of $N ($(shard_ids "$K" "$N" | grep -c .) of the corpus's cells, and the premise cells they probe)"
+  fi
+  data="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
+  mkdir -p target/oracle
+  # THE STORE BACKENDS, only for a run that selects a cell gated on one (needs_fixture names its URL).
+  WIDE="$F"; [ -z "$F" ] || WIDE="$(widen_filter "$F" 2>/dev/null)" || exit 3
+  stores="$(python3 - "$data/cells.json" "$WIDE" <<'PY'
+import json, re, sys
+sel = re.compile(sys.argv[2]) if sys.argv[2] else None
+urls = {"BUSBAR_TEST_POSTGRES_URL", "BUSBAR_TEST_MYSQL_URL", "VALKEY_URL"}
+print(any(c.get("needs_fixture") in urls and (sel is None or sel.search(c["id"]))
+          for c in json.load(open(sys.argv[1]))["cells"]) and "yes" or "no")
+PY
+)" || exit 3
+  store_pid=""
+  svc=testing/shadow-oracle/scripts/oracle-box-store-services.sh
+  if [ "$stores" = yes ]; then
+    sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+    free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
+    export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
+    ORACLE_PG_PORT="$(free_port)"; ORACLE_MY_PORT="$(free_port)"; ORACLE_VK_PORT="$(free_port)"
+    export ORACLE_PG_PORT ORACLE_MY_PORT ORACLE_VK_PORT
+    export ORACLE_STORE_ENV_FILE="$here/target/oracle/store-services.env"
+    rm -f "$ORACLE_STORE_ENV_FILE"
+    trap 'bash "$here/$svc" down' EXIT
+    bash "$svc" up >"$here/target/oracle/store-services.log" 2>&1 &
+    store_pid=$!
+  else
+    echo "oracle ci-run: no selected cell needs a store backend; none is started"
+  fi
+  # THE BUILD (see THE ONE BUILD above).
+  export CARGO_PROFILE_RELEASE_LTO="${ORACLE_CI_LTO:-thin}"
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${ORACLE_CI_CODEGEN_UNITS:-16}"
+  if [ -f dist/default/Cargo.toml ]; then manifest=dist/default/Cargo.toml; else manifest=Cargo.toml; fi
+  ver="$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+v = [p["version"] for p in m["packages"] if any(t["name"] == "busbar" and "bin" in t["kind"] for t in p["targets"])]
+sys.exit("no package builds the busbar binary") if len(v) != 1 else print(v[0])')" || exit 3
+  line="$(printf '%s' "$ver" | sed -E 's/^([0-9]+)\.([0-9]+)\..*/\1.\2/')"
+  builds="$(python3 - "$data/plugin-digests.tsv" "$line" <<'PY'
+import re, sys
+line = sys.argv[2]
+def src(tag, asset):
+    return re.fullmatch(r"src:[0-9a-fA-F]{40}", tag) is not None and re.fullmatch(r"build:[A-Za-z0-9._-]+", asset) is not None
+rows = []
+try:
+    text = open(sys.argv[1]).read()
+except OSError:
+    text = ""
+for r in text.split("\n"):
+    if not r or r.startswith("#"):
+        continue
+    c = r.split("\t")
+    if len(c) < 4:
+        continue
+    rows.append((c[1], c[2], c[4] if len(c) > 4 and c[4] else "1.5"))
+released = any(l == line and not src(t, a) for t, a, l in rows)
+print("yes" if not released and any(l == line and src(t, a) for t, a, l in rows) else "no")
+PY
+)" || exit 3
+  probe=""
+  if [ "$builds" = yes ]; then
+    probe="$here/target/oracle/line-probe/busbar"
+    mkdir -p "$(dirname "$probe")"
+    printf '#!/bin/sh\n# bin/oracle ci-run LINE PROBE: answers --version for the tree under test; never a candidate.\necho "busbar %s"\n' "$ver" >"$probe"
+    chmod +x "$probe"
+    BIN="$probe"
+    echo "oracle ci-run: line $line builds its plugins from source, so the recorder builds the run-keyed candidate itself; --bin is the line probe (busbar $ver)"
+  else
+    if [ "$manifest" = dist/default/Cargo.toml ]; then
+      cargo build --locked --release --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target || exit 1
+    else
+      cargo build --locked --release -p busbar --bin busbar || exit 1
+    fi
+    BIN=target/release/busbar
+  fi
+  ts build
+  "$me" fetch-golden || exit 1
+  ts fetch-golden
+  if [ -n "$store_pid" ]; then
+    if ! wait "$store_pid" || [ ! -s "$ORACLE_STORE_ENV_FILE" ]; then
+      cat "$here/target/oracle/store-services.log"; echo "oracle: the store backends did not come up"; exit 1
+    fi
+    grep -v '^export ' "$here/target/oracle/store-services.log" || true
+    . "$ORACLE_STORE_ENV_FILE"
+    ts stores
+  fi
+  if [ -z "${ORACLE_RECORD_WORKERS:-}" ]; then
+    cpus="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+    [ "$cpus" -ge 4 ] 2>/dev/null || cpus=4
+    export ORACLE_RECORD_WORKERS="$cpus"
+  fi
+  echo "oracle ci-run: $ORACLE_RECORD_WORKERS recording workers"
+  rec=target/oracle/recordings/candidate rep=target/oracle/reports/dev
+  rm -rf "$rec" "$rep" target/oracle/recordings/w*
+  "$me" record --bin "$BIN" --plane all --out "$rec" ${F:+--filter "$F"} || exit $?
+  ts record
+  mt() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+  for f in target/oracle-candidate/release/busbar target/oracle/recordings/w*/record.log; do
+    if [ -e "$f" ]; then echo "[oracle-time]   $f done +$(( $(mt "$f") - T0 ))s"; fi
+  done
+  if [ -n "$probe" ]; then
+    psha="$( (sha256sum "$probe" 2>/dev/null || shasum -a 256 "$probe") | cut -d' ' -f1)"
+    if [ ! -f "$rec/meta.json" ] || grep -q "$psha" "$rec/meta.json"; then
+      echo "oracle: the recording names the line probe as its binary (or wrote no meta.json): the recorder did not build its own candidate. Refusing: nothing was judged." >&2
+      exit 3
+    fi
+  fi
+  rc=0
+  "$me" replay --golden testing/shadow-oracle/golden/1.5.5 --candidate "$rec" --out "$rep" --strict ${F:+--id-filter "$F"} || rc=$?
+  ts replay
+  if [ -n "$spec" ]; then
+    "$me" shard-verify "$K" "$N" "$rep" || { [ "$rc" -ne 0 ] || rc=1; }
+    printf '%s\t%s\t%s\n' "$K" "$N" "$rc" >"$rep/shard.tsv"
+  fi
+  exit "$rc"
 fi
 # `--filter` is record's flag; replay and diff select with `--id-filter`. Refused by name, before
 # anything runs (2026-10-07: a replay handed it judged nothing and printed only its fence rows).

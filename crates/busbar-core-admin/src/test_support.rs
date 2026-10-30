@@ -55,11 +55,11 @@ pub fn plane_component_schemas() -> Vec<(&'static str, String, serde_json::Value
             continue;
         };
         let (mut gen, mut req_gen) = (generator(true), generator(false));
-        let mut paths = match decl.openapi.map(|openapi| openapi()) {
+        let mut paths = match decl.openapi.map(|openapi| openapi(decl)) {
             Some(serde_json::Value::Object(paths)) => paths,
             _ => serde_json::Map::new(),
         };
-        schemas(&mut gen, &mut req_gen, &mut paths);
+        schemas(decl, &mut gen, &mut req_gen, &mut paths);
         for (name, schema) in gen.definitions().iter().chain(req_gen.definitions()) {
             out.push((decl.key, name.clone(), schema.clone()));
         }

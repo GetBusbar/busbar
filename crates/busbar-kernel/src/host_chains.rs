@@ -34,7 +34,7 @@
 //!   store keeps under the host's own record kind ([`CHAIN_LIFE_SCHEMA`], never a plane's, so a scan
 //!   of the plane's kind never meets it): every drop raises it before striking the chain's rows, and
 //!   a resume reads it, so a chain dropped and begun again, on this node or any other, never meets
-//!   its old claims. (A drop's strikes REMOVE its rows, slot 40's rule, so nothing in the plane's
+//!   its old claims. (A drop's strikes REMOVE its rows, slot 26's rule, so nothing in the plane's
 //!   kind is left to count.)
 
 use std::collections::BTreeMap;
