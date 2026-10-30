@@ -204,7 +204,8 @@ pub fn check_agreed(offer: &[u8], agreed: &[u8]) -> Result<(), Fault> {
 
 /// Every framer answer: what it wrote fits its sink (no short path: a full sink is
 /// [`YIELD_MORE`]); the flags are known; a deadline is stated exactly when flagged; FAILED wrote
-/// nothing; every piece lies inside the frame bytes written and carries known codes.
+/// nothing; every piece lies inside the frame bytes written and carries known codes; a piece's
+/// `code`, `retry_after_secs` and `declared_len` are zero unless their flag says they are present.
 ///
 /// # Errors
 ///
@@ -314,6 +315,29 @@ pub fn check_framer(
             u64::from(FAULT_HEALTHY),
             "framer.piece.fault",
         )?;
+        // A field its flag says is present is set only with that flag: the host reads it as
+        // absent without one, so a value there is a statement that would be lost.
+        for (set, flag, what) in [
+            (
+                p.code != 0,
+                PIECE_HAS_CODE,
+                "framer.piece.code_without_flag",
+            ),
+            (
+                p.retry_after_secs != 0,
+                PIECE_HAS_RETRY_AFTER,
+                "framer.piece.retry_after_without_flag",
+            ),
+            (
+                p.declared_len != 0,
+                PIECE_HAS_DECLARED_LEN,
+                "framer.piece.declared_len_without_flag",
+            ),
+        ] {
+            if set && p.flags & flag == 0 {
+                return Err(fault(Rule::Contradiction, what));
+            }
+        }
         // The fault reading is a reading OF the piece's code: a piece with no code reads none.
         if p.fault != 0 && p.flags & PIECE_HAS_CODE == 0 {
             return Err(fault(
