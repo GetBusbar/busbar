@@ -185,6 +185,8 @@ on:
   # W23 windows-compile runs on request only until ModernCI's runners have LLVM (clang-cl): it marked moves
   # red even when declared blocks:false (2026-10-30).
   manual: [windows-compile]
+  # After each landing on dev: reports, never gates (no blocks; never back under move).
+  landed: [windows-compile]
   move:
     - fmt
     - clippy
@@ -228,9 +230,9 @@ checks:
       PATH="$_xwin/bin:$PATH"; export PATH
       # The runner has no clang-cl (ring's build needs it) and no root: bring a pinned LLVM release
       # (clang-cl, lld-link, llvm-lib), sha256-verified, cached beside cargo-xwin.
-      _llvm_v=18.1.8
-      _llvm_sha=54ec30358afcc9fb8aa74307db3046f5187f9fb89fb37064cdde906e062ebf36
-      _llvm_d=clang+llvm-$_llvm_v-x86_64-linux-gnu-ubuntu-18.04
+      _llvm_v=20.1.8
+      _llvm_sha=1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
+      _llvm_d=LLVM-$_llvm_v-Linux-X64
       _llvm=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/llvm-$_llvm_v
       if [ ! -x "$_llvm/$_llvm_d/bin/clang-cl" ]; then
         rm -rf "$_llvm.part"; mkdir -p "$_llvm.part" || exit 1
@@ -241,7 +243,10 @@ checks:
         rm -f "$_llvm.part/llvm.tar.xz"
         rm -rf "$_llvm"; mv "$_llvm.part" "$_llvm" || exit 1
       fi
-      PATH="$_llvm/$_llvm_d/bin:$PATH"; export PATH
+      LLVM=$_llvm/$_llvm_d
+      # The self-contained release links nothing the runner lacks: refuse a toolchain that cannot start.
+      if ldd "$LLVM/bin/clang-cl" | grep 'not found'; then exit 1; fi
+      PATH="$LLVM/bin:$PATH"; export PATH
       CC_x86_64_pc_windows_msvc=clang-cl; AR_x86_64_pc_windows_msvc=llvm-lib
       export CC_x86_64_pc_windows_msvc AR_x86_64_pc_windows_msvc
       rustup target add x86_64-pc-windows-msvc || exit 1
