@@ -48,3 +48,47 @@ fn a_trust_policy_skip_seals_one_plugin_trust_record() {
     assert_eq!(sealed[0].outcome, "rejected");
     assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
 }
+
+/// A PLUGIN LOADED AS UNVERIFIED IS AUDITED (lead ruling, security report 2026-10-29, item 1):
+/// `plugins.trust.allow_unsigned` may load a first-party plugin signed by the RETIRED 1.5 release
+/// key, but only as UNVERIFIED code, with the BUSBAR-6003 warning (1.5.5's line, unchanged) AND one
+/// `plugin.trust` record on the chain, outcome `degraded`: the plugin loaded, and nothing vouches
+/// for its bytes. The evaluator's reason (it names the retired key and carries manifest bytes) stays
+/// in the warning; the chain holds the host's category, `unverified`. RED before the fix: the
+/// warning was the only trace.
+#[test]
+fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
+    use busbar_contract::plugin_rows::Trust;
+    ensure_global_audit_stream_registered();
+    let mut row =
+        crate::test_support::rows::row("item1-retired-probe", "item1-retired-probe", "store");
+    row.file = "item1-retired-probe.tar.gz".to_string();
+    row.trust = Trust::Allowed {
+        reason: "first-party manifest signed by the RETIRED busbar release key b18395|x (retired)"
+            .to_string(),
+    };
+    let rows = Rows::new().with_dropped(row).into_rows();
+
+    log_build(
+        BuildNote::Scanned {
+            rows: rows.as_ref(),
+            copies: &[],
+        },
+        "/plugins",
+    );
+
+    let resource = plugin_refusal_resource("file", "item1-retired-probe.tar.gz", "unverified");
+    let sealed = AUDIT_LOG.list_filtered(
+        0,
+        usize::MAX,
+        Some(PluginRefusal::Unverified.action()),
+        Some(&resource),
+    );
+    assert_eq!(
+        sealed.len(),
+        1,
+        "one record per unverified load: {sealed:?}"
+    );
+    assert_eq!(sealed[0].outcome, "degraded");
+    assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
+}

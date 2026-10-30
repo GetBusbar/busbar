@@ -171,9 +171,9 @@ impl RawPlaneSection {
 /// pre-seam typed field's `Default`.
 fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
     match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.default_section)
+        .and_then(|d| d.default_section.map(|f| (d, f)))
     {
-        Some(f) => f(),
+        Some((d, f)) => f(d),
         None => Box::new(RawPlaneSection::default()),
     }
 }
@@ -205,7 +205,7 @@ where
                 &config_sections(),
             )
             .map_err(serde::de::Error::custom)?;
-            parse(&value).map_err(serde::de::Error::custom)
+            parse(d, &value).map_err(serde::de::Error::custom)
         }
         None => {
             let raw = if value.is_null() { None } else { Some(value) };
@@ -229,9 +229,9 @@ where
         return Ok(None);
     }
     match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.parse_endpoint)
+        .and_then(|d| d.parse_endpoint.map(|parse| (d, parse)))
     {
-        Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
+        Some((d, parse)) => parse(d, &value).map(Some).map_err(serde::de::Error::custom),
         None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
     }
 }
@@ -371,6 +371,11 @@ pub fn validate_plane_section(
 ) -> Result<(), String> {
     for (name, entry) in crate::trust::section::registrations(value) {
         validate_plane_entry(section, name, entry, trust_keys, sections)?;
+        refuse_registration_forwarding_caller_credential(
+            &format!("`{section}.{name}`"),
+            entry,
+            caller_credential_refusal,
+        )?;
     }
     let models = value
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
@@ -412,6 +417,29 @@ pub fn refuse_forwarded_caller_credential(
     match default {
         Some(Ok(busbar_contract::config::UpstreamCreds::Passthrough)) => Err(refusal.to_string()),
         _ => Ok(()),
+    }
+}
+
+/// A REGISTRATION'S OWN `upstream_credentials: passthrough`, on a plane that refuses a forwarded
+/// caller credential, is refused as the section default is, at `at`. The key is reserved and
+/// stripped before the section crosses to a door plane, so the plane's own validator never sees
+/// it: without this judgement a registration that spells it would boot and lend the caller's
+/// credential upstream, while the same word as the section default is refused.
+///
+/// # Errors
+///
+/// The plane's `refusal`, worded at `at`.
+pub fn refuse_registration_forwarding_caller_credential(
+    at: &str,
+    entry: &serde_yaml::Value,
+    refusal: Option<&str>,
+) -> Result<(), String> {
+    match refuse_forwarded_caller_credential(entry, refusal) {
+        Ok(()) => Ok(()),
+        Err(refusal) => Err(format!(
+            "{at}: `upstream_credentials: passthrough` on this registration is refused, as it is \
+             as the section default: {refusal}"
+        )),
     }
 }
 
@@ -640,11 +668,7 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// True when the operator actually wrote CONTENT for this section (a non-empty registry). Read by
-    /// the config deletion-gate leg to refuse a present section that names a compiled-out plane — so it
-    /// is called ONLY in a build where at least one plane is off; with both planes compiled in every
-    /// section names a plane this build serves and no leg reads it.
-    #[cfg_attr(all(feature = "dispatch", feature = "relay"), allow(dead_code))]
+    /// True when the operator actually wrote CONTENT for this section (a non-empty registry).
     fn is_present(&self) -> bool;
 
     /// This section as `&dyn Any`, so a plane's own module can downcast it back to its concrete

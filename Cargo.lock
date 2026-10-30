@@ -483,6 +483,7 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-breaker",
 ]
 
 [[package]]
@@ -499,9 +500,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "ring",
  "serde",
- "sha2",
 ]
 
 [[package]]
@@ -550,6 +549,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tungstenite",
+ "zeroize",
 ]
 
 [[package]]
@@ -698,6 +698,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "hex",
  "ring",

@@ -113,7 +113,7 @@ pub struct Skipped {
     /// may parse them or put them on the audit chain: [`Skipped::code`] is the structured why.
     pub reason: String,
     /// Why it was skipped, as the trust evaluator's category: `unsigned`, `tampered`,
-    /// `unknown_publisher`, `anti_downgrade`, `untrusted_floored` or `egress_grant`.
+    /// `unknown_publisher`, `anti_downgrade`, `untrusted_floored`, `egress_grant` or `retired_key`.
     pub code: &'static str,
 }
 
@@ -155,6 +155,15 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     /// (`secret_refs`): the settings keys the loader lifts out and lends as secret blobs. Empty when
     /// the row resolves to nothing, states none, or states a Statement that does not read back.
     fn secret_slots(&self, name_or_alias: &str) -> Vec<String>;
+
+    /// The REFERENCE-CAPABLE, NOT-SECRET settings paths the row `name_or_alias` resolves to states
+    /// in its Statement's extensions (`reference_fields`, lead ruling item 7a): a reference there is
+    /// resolved in place to its string, a literal passes as written, and nothing is lent. Empty when
+    /// the row resolves to nothing, states none, or states a Statement that does not read back.
+    fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
+        let _ = name_or_alias;
+        Vec::new()
+    }
 
     /// The rows as the composition root's own type, for the root's per-kind axes over them.
     fn as_any(&self) -> &dyn Any;

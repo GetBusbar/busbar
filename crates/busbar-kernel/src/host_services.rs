@@ -516,6 +516,14 @@ pub const TICKET_NO_PRESS: &str = "this host mints no tickets";
 /// `ticket.take`'s refusal for a crossing that serves no unit, or a second take for one unit.
 pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
 
+/// THE RECORD KINDS THE KERNEL KEEPS ITS OWN RECORDS UNDER, which no instance may declare: a minted
+/// ticket's record ([`crate::governance::TICKET_RECORD_KIND`]). An instance's declared kind names
+/// the rows its retention rule governs, so an instance declaring one of these would purge the
+/// kernel's own rows under its own rule. [`KernelServices::admit`] refuses it
+/// ([`AdmitRefused::KindReserved`]). (The admin record write never reaches a kernel kind's rows,
+/// declared or not: see [`crate::store::plane_view::KERNEL_RECORD_KINDS`].)
+pub const RESERVED_RECORD_KINDS: &[&str] = &[crate::governance::TICKET_RECORD_KIND];
+
 /// Why an instance was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmitRefused {
@@ -546,6 +554,14 @@ pub enum AdmitRefused {
     /// The store could not be read for the demotions and the operator's trust decisions this
     /// instance's trust stands on.
     TrustUnread(String),
+    /// The instance declares a record kind the kernel keeps its own records under
+    /// ([`RESERVED_RECORD_KINDS`]): its retention rule would govern the kernel's own rows.
+    KindReserved {
+        /// The instance refused.
+        instance: String,
+        /// The reserved kind it declares.
+        kind: String,
+    },
 }
 
 impl std::fmt::Display for AdmitRefused {
@@ -573,6 +589,12 @@ impl std::fmt::Display for AdmitRefused {
             Self::TrustUnread(why) => write!(
                 f,
                 "{why}; the instance is not admitted over trust it cannot read"
+            ),
+            Self::KindReserved { instance, kind } => write!(
+                f,
+                "instance `{instance}` declares the record kind `{kind}`, which the kernel keeps \
+                 its own records under: no instance keeps records under a kernel kind, so the \
+                 instance is not admitted"
             ),
         }
     }
@@ -963,12 +985,34 @@ impl KernelServices {
     /// # Errors
     ///
     /// [`AdmitRefused::LabelUnfit`] for a label longer than 65535 bytes or holding a control
-    /// character; [`AdmitRefused::DomainHeld`] when another instance holds the signing domain it declares:
-    /// no instance signs as another. Nothing is registered then.
+    /// character; [`AdmitRefused::KindReserved`] (reported as `PLANE_RECORD_KIND_RESERVED`) for a
+    /// declared record kind of [`RESERVED_RECORD_KINDS`]; [`AdmitRefused::DomainHeld`] when another
+    /// instance holds the signing domain it declares: no instance signs as another. Nothing is
+    /// registered then.
     pub fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
         if instance.len() > usize::from(u16::MAX) || instance.chars().any(char::is_control) {
             return Err(AdmitRefused::LabelUnfit {
                 len: instance.len(),
+            });
+        }
+        // NO INSTANCE KEEPS RECORDS UNDER A KERNEL KIND, judged before anything is registered: its
+        // rows and its retention rule would land on the kernel's own.
+        if let Some(kind) = facts
+            .record_kinds
+            .iter()
+            .find(|k| RESERVED_RECORD_KINDS.contains(&k.as_str()))
+        {
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_RECORD_KIND_RESERVED,
+                instance = %instance,
+                kind = %kind.as_str(),
+                "a plane instance declares a record kind the kernel keeps its own records under: \
+                 the instance is refused rather than write beside, or purge under its own rule, \
+                 the kernel's records"
+            );
+            return Err(AdmitRefused::KindReserved {
+                instance: instance.to_string(),
+                kind: kind.as_str().to_string(),
             });
         }
         // EVERY DECLARED CHAIN IS ONE THIS HOST CAN KEEP, judged before anything is registered: a
@@ -1065,7 +1109,8 @@ impl KernelServices {
     /// # Errors
     ///
     /// [`TrustRefused::NoSuchKey`] for a key no admitted instance has,
-    /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at, and
+    /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at,
+    /// [`TrustRefused::Unverified`] for an approval at a sighting that failed its verification, and
     /// [`TrustRefused::Store`] (the store's words) when the decision could not be kept.
     pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
         let found = self
@@ -1104,6 +1149,7 @@ impl KernelServices {
             Undecided::NothingSighted => TrustRefused::NothingSighted,
             Undecided::Rootless => TrustRefused::Rootless,
             Undecided::Stale => TrustRefused::Stale,
+            Undecided::Unverified => TrustRefused::Unverified,
         };
         // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
         // then takes effect, so a decision the store refused is not in force in this process
@@ -1331,11 +1377,6 @@ impl KernelServices {
                 batcher.flush(&pending, &*rows, &chains);
             }
         }));
-    }
-
-    /// The kernel tick's re-verification mark, at the wall clock.
-    pub fn mark_due(&self) {
-        self.trust.mark_due((self.wall_ms)());
     }
 
     /// The kernel's flush tick, run by [`Self::flushes`] every [`crate::host_records::FLUSH_INTERVAL`]:
@@ -1593,6 +1634,9 @@ pub enum TrustRefused {
     Rootless,
     /// The fingerprint the caller approves is not the key's current sighting.
     Stale,
+    /// The key's current sighting failed its verification
+    /// ([`crate::trust::book::UNVERIFIED_SIGHTING`]): nothing verified to approve.
+    Unverified,
     /// The decision could not be kept; the store's words, for the node's log.
     Store(String),
 }
@@ -1612,13 +1656,9 @@ pub fn demotion_key(instance: &str, counterparty: &str) -> String {
 /// instance, the kind and the key, each separated by a zero byte.
 #[must_use]
 pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
-    let digest = busbar_kernel_ledger::digest::sha256_of(&[
-        instance.as_bytes(),
-        &[0],
-        kind.as_bytes(),
-        &[0],
-        key,
-    ]);
+    let digest = busbar_contract::abi::sdk::digest::sha256(
+        &[instance.as_bytes(), &[0], kind.as_bytes(), &[0], key].concat(),
+    );
     let minted = IdempotencyKey::mint(&crate::seal::acquire(), digest);
     hex::encode(minted.bytes())
 }
@@ -1981,6 +2021,8 @@ impl HostServices for KernelServices {
                 Err(TrustRefused::NothingSighted) => svc::UNDECIDED_UNPINNED,
                 Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
                 Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
+                // A sighting that failed its verification is nothing verified to approve at.
+                Err(TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
                 Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
             },
         )
@@ -2029,9 +2071,23 @@ impl HostServices for KernelServices {
     ) -> Stored {
         match self
             .trust
-            .sight_item(&caller.instance, counterparty, item, digest)
+            .sight_item_kept(&caller.instance, counterparty, item, digest)
         {
-            Ok(sight) => Stored::ready(sight_code(sight)),
+            Ok((sight, demotion)) => {
+                // The item's drift demotion is kept with the operator's decisions, so a restart
+                // never lets a reverted item serve without a person's approval.
+                if let (Some(fact), Some(d)) = (demotion, self.demotions.get()) {
+                    if let Err(why) = d.record.keep_decision(&fact, (self.wall_ms)() / 1000) {
+                        tracing::error!(
+                            counterparty,
+                            item,
+                            error = %why,
+                            "an item's drift demotion could not be kept; it holds in this process"
+                        );
+                    }
+                }
+                Stored::ready(sight_code(sight))
+            }
             Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
         }
@@ -2509,6 +2565,10 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "tests/trust_verify_tests.rs"]
 mod trust_verify_tests;
+
+#[cfg(test)]
+#[path = "tests/trust_rule_tests.rs"]
+mod trust_rule_tests;
 
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]

@@ -84,11 +84,11 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
         caller_credential_refusal: None,
         served_op_classes: &[],
     },
-    wire_format_names: || &["widgetrpc"],
-    provider_dialects: || &[],
+    wire_format_names: |_| &["widgetrpc"],
+    provider_dialects: |_| &[],
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| None,
+    build: |_, _| None,
     routes: None,
     admin_routes: None,
     openapi: None,
@@ -109,6 +109,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -263,7 +264,7 @@ fn every_plane_key_answers_from_its_declaration() {
         assert_eq!(resolved.subject_noun, decl.subject_noun);
         assert_eq!(
             busbar_kernel::plane_driver::dispatch::wire_format_names(decl.key),
-            (decl.wire_format_names)()
+            (decl.wire_format_names)(decl)
         );
     }
     // The by-key surfaces answer exactly what each linked plane declares — the operator-visible
@@ -594,7 +595,7 @@ fn built_slots(cfg: &RootCfg) -> BTreeMap<&'static str, Arc<dyn Any + Send + Syn
                 prior: None,
                 providers: None,
             };
-            (decl.build)(&ctx).map(|obj| (decl.key, obj))
+            (decl.build)(decl, &ctx).map(|obj| (decl.key, obj))
         })
         .collect()
 }
@@ -704,12 +705,12 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
             caller_credential_refusal: None,
             served_op_classes: &[],
         },
-        wire_format_names: || &["widgetrpc"],
-        provider_dialects: || &[],
+        wire_format_names: |_| &["widgetrpc"],
+        provider_dialects: |_| &[],
         // Claims a path — but binds no audience. The shape build_dispatch must refuse.
         claims: |_| vec![("/widget".to_string(), "widgetrpc")],
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -730,6 +731,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -774,11 +776,11 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
             caller_credential_refusal: None,
             served_op_classes: &[],
         },
-        wire_format_names: || &["widgetrpc"],
-        provider_dialects: || &[],
+        wire_format_names: |_| &["widgetrpc"],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -799,6 +801,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots, false)
         .expect("a plane that claims no path needs no admission");
@@ -840,11 +843,11 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
             caller_credential_refusal: None,
             served_op_classes: &[],
         },
-        wire_format_names: || &["refrpc"],
-        provider_dialects: || &[],
+        wire_format_names: |_| &["refrpc"],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -865,6 +868,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
     let ctx = busbar_kernel::plane_driver::registry::BootCtx::stub();
 
@@ -898,11 +902,11 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
             caller_credential_refusal: None,
             served_op_classes: &[],
         },
-        wire_format_names: || &["cleanrpc"],
-        provider_dialects: || &[],
+        wire_format_names: |_| &["cleanrpc"],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -923,6 +927,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
     busbar_kernel::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
         .expect("an Ok start and a None-start plane do not refuse boot");
@@ -954,11 +959,11 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
             caller_credential_refusal: None,
             served_op_classes: &[],
         },
-        wire_format_names: || &["refrpc"],
-        provider_dialects: || &[],
+        wire_format_names: |_| &["refrpc"],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -979,6 +984,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
     let ctx = busbar_kernel::plane_driver::registry::BootCtx::stub();
 
@@ -1133,7 +1139,7 @@ fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
                 decl.key
             )
         });
-        let doc = openapi();
+        let doc = openapi(decl);
         let count = doc.as_object().map(|o| o.len()).unwrap_or(0);
         assert!(
             count > 0,
