@@ -469,7 +469,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     continue;
                 }
             }
-            let idle = self.tasks.is_empty() && self.pending.is_empty() && self.session.is_none();
+            let idle = self.tasks.is_empty()
+                && self.pending.is_empty()
+                && self.session.is_none()
+                && !self.framing.as_ref().is_some_and(Framing::parked);
             if self.failed || (idle && (self.ended || self.read_done || self.stopping)) {
                 return self.close(cx);
             }
@@ -754,6 +757,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             return Step::Done;
         };
         let stream = *stream;
+        // A parked crossing owns this stream until it resumes. In particular, accepting a head
+        // is not permission to emit its body, retire it, or detach its framing while it is pending.
+        if self.framing.as_ref().is_some_and(|framing| {
+            framing.holds(stream) || matches!(op, Op::Switch { .. }) && framing.parked()
+        }) {
+            return Step::Wait;
+        }
         let waits = match op {
             Op::Head { .. } | Op::Data { .. } => {
                 self.out.len() >= WRITE_ROOM || self.full.contains(&stream)
