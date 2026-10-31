@@ -124,6 +124,25 @@ pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
     }
 }
 
+/// THE `one_instance` LIMITS CHECK WORDED BY THE SINK (deprecated: the host words the refusal
+/// around [`one_instance_reason`]): one finding per instance after the first, naming the first and
+/// saying `why` a second cannot run. Kept so a sink built against it still compiles; the host keeps
+/// such whole lines verbatim, so what an operator reads is unchanged.
+#[must_use]
+pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String> {
+    let Some((first, rest)) = names.split_first() else {
+        return Vec::new();
+    };
+    rest.iter()
+        .map(|name| {
+            format!(
+                "export.{name}: a second `module: {alias}` instance (already defined as \
+                 '{first}'). {why}"
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "tests/export_tests.rs"]
 mod tests;
