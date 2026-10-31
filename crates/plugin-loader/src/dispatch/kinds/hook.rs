@@ -29,6 +29,14 @@ fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
 pub const NO_TAIL: &str =
     "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
 
+/// The refusal of a hook tail stating `routes` (H7).
+pub const ROUTES_REFUSED: &str = "the hook tail states routes: the host serves no hook route (it \
+     never calls `serve`); a hook states none";
+
+/// The refusal of a hook tail stating `requested_signals` (H7).
+pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
+     lent are the operator's `hooks:` configuration, never its tail; a hook states none";
+
 /// WHAT A HOOK STATES ABOUT ITSELF, read once at bind: its name, its tail's class and grants and
 /// the hook words its `MARK_WORD_HOOK` marks claim. Read back through
 /// [`crate::dispatch::Plugin::context`].
@@ -65,6 +73,14 @@ pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
             "the hook tail states user access {}",
             t.user_access
         ));
+    }
+    // A SURFACE NOTHING READS IS REFUSED (H7): the host never calls `serve` and never reads the
+    // tail's signal list, so a hook stating either would load a promise nothing keeps.
+    if t.routes_len != 0 {
+        return Err(ROUTES_REFUSED.to_string());
+    }
+    if t.requested_signals_len != 0 {
+        return Err(SIGNALS_REFUSED.to_string());
     }
     let mut facts = HookFacts {
         name,
