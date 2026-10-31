@@ -664,9 +664,11 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
             // operator's rows on these same three paths.
             let door: crate::root::units_admin::AdminDoorFn =
                 Arc::new(|_: &crate::root::units_admin::AdminRequest| {
-                    busbar_kernel::auth::AdminDoor::Identified(
-                        busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
-                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                    busbar_kernel::auth::AdminVerdict::from(
+                        busbar_kernel::auth::AdminDoor::Identified(
+                            busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
+                            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                        ),
                     )
                 });
             crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)

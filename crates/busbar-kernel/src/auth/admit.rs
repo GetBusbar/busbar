@@ -27,7 +27,7 @@ pub async fn admit_session(
 ) -> Result<(super::AuthPrincipal, crate::governance::PlaneRequestCtx), super::IdentityRefusal> {
     tokio::spawn(async move {
         let expected_aud = (!audience.is_empty()).then_some(audience);
-        let verdict = super::AuthMiddleware::run_chain_on_request_path(
+        let (verdict, _, claim) = super::AuthMiddleware::judge_chain_on_request_path_naming(
             &app.auth,
             token,
             // The session carries the caller's credential and no request head.
@@ -36,7 +36,15 @@ pub async fn admit_session(
             expected_aud,
         )
         .await;
-        super::resolve_data_plane_identity(&app, verdict)
+        let admitted = super::resolve_data_plane_identity(
+            &app,
+            verdict.unwrap_or(super::ChainVerdict::Denied),
+        )?;
+        // The replay claim is the admission's LAST step: a session refused above claims nothing.
+        match claim {
+            Some(claim) if !claim.win().await => Err(super::IdentityRefusal::Denied),
+            _ => Ok(admitted),
+        }
     })
     .await
     .unwrap_or(Err(super::IdentityRefusal::Denied))

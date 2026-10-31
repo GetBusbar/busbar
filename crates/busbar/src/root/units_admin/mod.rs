@@ -1811,6 +1811,9 @@ pub(crate) struct AdminWalk {
     /// NOT the identity that was resolved: the identity is what a record attributes to, and the
     /// credential is a secret that must not travel past the step that verified it.
     principal: Option<PrincipalId>,
+    /// The replay claim the door's identity asks for, UNWON until every step that may still refuse
+    /// the request has passed ([`claim`]).
+    claim: Option<busbar_kernel::auth::PendingClaim>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1824,19 +1827,24 @@ impl AdminWalk {
             granted: None,
             listed: None,
             principal: None,
+            claim: None,
             answer: None,
         }
     }
 }
 
 /// THE ADMIN DOOR: one request's verdict on the deployment's admin chain. Production binds
-/// [`live_admin_door`], which reads the LIVE snapshot per call; a test states its own posture.
-pub type AdminDoorFn = Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminDoor + Send + Sync>;
+/// [`live_admin_door`], which reads the LIVE snapshot per call; a test states its own posture. The
+/// verdict carries the identity's replay claim UNWON ([`claim`] wins it last).
+pub type AdminDoorFn =
+    Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminVerdict + Send + Sync>;
 
 /// A test's explicit OPEN door: the `admin_auth: []` posture, stated rather than defaulted.
 #[cfg(test)]
 pub(crate) fn open_door() -> AdminDoorFn {
-    Arc::new(|_: &AdminRequest| busbar_kernel::auth::AdminDoor::Open)
+    Arc::new(|_: &AdminRequest| {
+        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Open)
+    })
 }
 
 /// A test's door over an identity chain, judged on the presented credential by the rule the
@@ -1847,18 +1855,21 @@ pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDo
     use busbar_kernel::auth::AdminDoor;
     use busbar_kernel_identity::chain::ChainVerdict;
     Arc::new(
-        move |request: &AdminRequest| match chain.run_chain(request.credential.as_deref()) {
-            ChainVerdict::Open => AdminDoor::Open,
-            ChainVerdict::Denied => AdminDoor::Denied,
-            ChainVerdict::Identified { principal, .. } => {
-                let grants = if principal.id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
-                    busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
-                } else {
-                    busbar_contract::authz::Grants::default()
-                };
-                let principal = busbar_contract::auth::Principal::from_id(principal.id);
-                AdminDoor::Identified(principal, grants)
+        move |request: &AdminRequest| -> busbar_kernel::auth::AdminVerdict {
+            match chain.run_chain(request.credential.as_deref()) {
+                ChainVerdict::Open => AdminDoor::Open,
+                ChainVerdict::Denied => AdminDoor::Denied,
+                ChainVerdict::Identified { principal, .. } => {
+                    let grants = if principal.id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
+                    } else {
+                        busbar_contract::authz::Grants::default()
+                    };
+                    let principal = busbar_contract::auth::Principal::from_id(principal.id);
+                    AdminDoor::Identified(principal, grants)
+                }
             }
+            .into()
         },
     )
 }
@@ -2034,6 +2045,8 @@ pub(crate) fn decide(
         .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
         .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
         .and_then(|()| admit(walk).map_err(at(StepName::Admit)))
+        // The replay claim, won LAST: a lost claim is the door's own refusal, at Authenticate.
+        .and_then(|()| claim(walk).map_err(at(StepName::Authenticate)))
         .and_then(|()| {
             route(&units.admin, units.store.clone(), &units.admin_token, walk)
                 .map_err(|reason| Outcome::Failed(StepName::Route, reason))
@@ -2077,7 +2090,8 @@ pub(crate) fn authenticate(
             .zip(request.credential.as_deref())
             .is_some_and(|(set, credential)| set.is_revoked(credential))
     };
-    let (principal, grants, listed) = match (binding.door)(request) {
+    let verdict = (binding.door)(request);
+    let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
             busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
@@ -2109,7 +2123,19 @@ pub(crate) fn authenticate(
     if listed.is_some() {
         walk.listed = listed;
     }
+    walk.claim = verdict.claim;
     Ok(PrincipalId::new(principal))
+}
+
+/// Claim. The replay claim the door's identity asked for, won as the LAST step of admission — after
+/// revocation, verify, approve and admit, before the verb runs — so a request any of them refuses
+/// claims nothing (its sender's redelivery once the cause is fixed is admitted), and a claim already
+/// taken refuses the request as the door refuses an unauthenticated one.
+pub(crate) fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+    match walk.claim.take() {
+        Some(pending) if !pending.win_now() => Err(ReasonCode::Unauthenticated),
+        _ => Ok(()),
+    }
 }
 
 /// Verify. Where the unit may go: the kernel verb the table resolved, which is not a priced place —

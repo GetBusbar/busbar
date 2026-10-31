@@ -213,20 +213,99 @@ async fn replay_claimed(
         .unwrap_or(false)
 }
 
+/// A REPLAY CLAIM NOT YET WON: the claim a verified identity asked `provider` for, at the instant
+/// `now` its request was judged. Won ([`replay_claimed`]) only as the LAST step of admission — after
+/// every decision that could still refuse the request (role binding, key synth, admin scope), before
+/// the request proceeds to anything with a side effect (budget and rate admission, the handler) —
+/// so a refused request never burns its key and the store holds a claim only for an admitted one.
+/// A request refused by a budget or rate gate downstream of the auth gate has already won its claim:
+/// it was admitted by auth, and its sender's retry is a replay, as the spec's "a sender's retry
+/// inside the window is a replay" says.
+#[derive(Debug, Clone)]
+struct ReplayClaim {
+    provider: String,
+    replay: Box<Replay>,
+    now: u64,
+}
+
+impl ReplayClaim {
+    /// The claim `replay` asks `provider` for at `now`; `None` when it asks for none.
+    fn of(provider: &str, replay: Option<Box<Replay>>, now: u64) -> Option<Self> {
+        replay.map(|replay| ReplayClaim {
+            provider: provider.to_string(),
+            replay,
+            now,
+        })
+    }
+
+    /// Win the claim in `gov`'s record store: `true` only for the one call that redeems it first
+    /// (the store's redeem is the atomic step, so two racing identical requests admit at most one).
+    async fn win(&self, gov: Option<&crate::governance::GovState>) -> bool {
+        replay_claimed(gov, &self.provider, &self.replay, self.now).await
+    }
+}
+
+/// A REPLAY CLAIM AN ADMITTING CALLER WINS ITSELF, once its own last deny decision is made
+/// ([`ReplayClaim`]): the claim and the governance store it is won in. FAIL-CLOSED as
+/// [`replay_claimed`]: with no store to claim in it is lost.
+pub struct PendingClaim {
+    claim: ReplayClaim,
+    gov: Option<std::sync::Arc<crate::governance::GovState>>,
+}
+
+impl std::fmt::Debug for PendingClaim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingClaim")
+            .field("provider", &self.claim.provider)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PendingClaim {
+    fn of(
+        claim: Option<ReplayClaim>,
+        gov: Option<std::sync::Arc<crate::governance::GovState>>,
+    ) -> Option<Self> {
+        claim.map(|claim| PendingClaim { claim, gov })
+    }
+
+    /// Win the claim: `true` when this call redeemed it.
+    pub async fn win(&self) -> bool {
+        self.claim.win(self.gov.as_deref()).await
+    }
+
+    /// [`Self::win`] on the caller's own thread, for a synchronous caller (the root's admin units
+    /// answer on the blocking pool, never on a runtime worker).
+    #[must_use]
+    pub fn win_now(&self) -> bool {
+        futures::executor::block_on(self.win())
+    }
+}
+
+/// Whether `pending` lets its request through: no claim asked, or the claim won.
+async fn claim_won(pending: Option<&PendingClaim>) -> bool {
+    match pending {
+        None => true,
+        Some(pending) => pending.win().await,
+    }
+}
+
 /// THE SIGNED INGRESS'S REPLAY CLAIM (THE DESIGN §6 "Inbound verify", l.845-846: "a verified
 /// identity may carry a replay_key and replay_ttl_secs, and the verify caller claims the record
 /// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
 /// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
-/// identity asks for none, or when this call won the claim.
+/// identity asks for none, or when this call won the claim. The gate wins it as the last step of
+/// admission ([`ReplayClaim`]); this is that claim, won on the spot.
+#[cfg(test)]
 async fn signed_replay_claimed(
     gov: Option<&crate::governance::GovState>,
     reader: &str,
     id: &busbar_contract::auth_calls::VerifiedIdentity,
     now: u64,
 ) -> bool {
-    match id.replay.as_deref() {
+    match ReplayClaim::of(reader, id.replay.clone(), now) {
         None => true,
-        Some(replay) => replay_claimed(gov, reader, replay, now).await,
+        Some(claim) => claim.win(gov).await,
     }
 }
 
@@ -1014,16 +1093,27 @@ impl AuthMiddleware {
         // asked by calling synchronously. A sync caller has no 503 to answer: an overloaded
         // position is a denial here, as 1.5.5 denied a saturated verifier. The lines a position
         // names are the transport's, and a sync caller hands no request on.
-        futures::executor::block_on(self.walk(
-            &ChainHead::default(),
-            candidate,
-            gov,
-            now,
-            expected_aud,
-            Reach::Inline,
-            &mut Vec::new(),
-        ))
-        .unwrap_or(ChainVerdict::Denied)
+        futures::executor::block_on(async {
+            let mut claim = None;
+            let verdict = self
+                .walk(
+                    &ChainHead::default(),
+                    candidate,
+                    gov,
+                    now,
+                    expected_aud,
+                    Reach::Inline,
+                    &mut Vec::new(),
+                    &mut claim,
+                )
+                .await
+                .unwrap_or(ChainVerdict::Denied);
+            // The chain's verdict is all this caller decides: the claim is its last step.
+            match claim {
+                Some(claim) if !claim.win(gov).await => ChainVerdict::Denied,
+                _ => verdict,
+            }
+        })
     }
 
     /// THE CHAIN WALK, one `verify` per position per request (THE DESIGN 11.6): config order, the
@@ -1032,8 +1122,8 @@ impl AuthMiddleware {
     /// the walk as [`VerifierOverloaded`]; each caller decides what that answers. `head` is what
     /// each position is lent beside the candidate; `reach` how each is called. Every position that
     /// answered adds the lines it named to `strips`, whatever its verdict (THE DESIGN §6.4). An
-    /// identity that asks for a replay claim is admitted only once the walk wins it
-    /// ([`replay_claimed`]); a claim it loses is `Denied`.
+    /// identity that asks for a replay claim hands it back in `claim`, UNWON: the caller wins it as
+    /// the last step of its own admission ([`ReplayClaim`]), and a claim it loses is `Denied`.
     #[allow(clippy::too_many_arguments)]
     async fn walk(
         &self,
@@ -1044,6 +1134,7 @@ impl AuthMiddleware {
         expected_aud: Option<&str>,
         reach: Reach,
         strips: &mut Vec<Strip>,
+        claim: &mut Option<ReplayClaim>,
     ) -> Result<ChainVerdict, VerifierOverloaded> {
         // The OPEN front door: no chain position AND no built-in `keys` engine arm → admit
         // anonymously. `keys_in_chain` (an engine arm, not a position) keeps the door CLOSED even
@@ -1057,12 +1148,9 @@ impl AuthMiddleware {
             strips.extend(judged.strips);
             match judged.verdict {
                 AuthVerdict::Identify(principal) => {
-                    // The replay claim travels with the verdict and is won here, before admitting.
-                    if let Some(replay) = judged.replay.as_deref() {
-                        if !replay_claimed(gov, &entry.provider, replay, now).await {
-                            return Ok(ChainVerdict::Denied);
-                        }
-                    }
+                    // The replay claim travels with the verdict, unwon: the caller wins it once
+                    // nothing it still decides can refuse the request.
+                    *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
                     // No per-module role filter: the NESTED role_bindings table IS the allowlist -
                     // a role this module asserts grants nothing unless
                     // `role_bindings.<this module>.<role>` binds it. A PLUGIN module never resolves
@@ -1135,25 +1223,39 @@ impl AuthMiddleware {
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> Result<ChainVerdict, VerifierOverloaded> {
-        Self::judge_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
-            .await
-            .0
+        let (verdict, _, pending) =
+            Self::judge_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
+                .await;
+        // The chain's verdict is all this caller decides: the claim is its last step.
+        match verdict {
+            Ok(ChainVerdict::Identified { .. }) if !claim_won(pending.as_ref()).await => {
+                Ok(ChainVerdict::Denied)
+            }
+            verdict => verdict,
+        }
     }
 
     /// [`Self::judge_chain_on_request_path`], with the lines every position that answered named for
-    /// the transport to strip, whatever its verdict (THE DESIGN §6.4): the one call
-    /// `auth_middleware` makes, because it hands the request on.
+    /// the transport to strip, whatever its verdict (THE DESIGN §6.4), and the identity's replay
+    /// claim UNWON ([`PendingClaim`]): for a caller that still decides after the chain
+    /// (`auth_middleware`, a session's admission, the token exchange), which wins the claim as the
+    /// last step of its own admission, so a request it refuses claims nothing.
     pub async fn judge_chain_on_request_path_naming(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
         head: ChainHead,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
-    ) -> (Result<ChainVerdict, VerifierOverloaded>, Vec<Strip>) {
+    ) -> (
+        Result<ChainVerdict, VerifierOverloaded>,
+        Vec<Strip>,
+        Option<PendingClaim>,
+    ) {
         // Captured once, before the first position: the clock the chain reasons about is the
         // instant the request reached this decision, not whenever a position got scheduled.
         let now = busbar_kernel::store::now();
         let mut strips = Vec::new();
+        let mut claim = None;
         let verdict = auth
             .walk(
                 &head,
@@ -1163,9 +1265,10 @@ impl AuthMiddleware {
                 expected_aud.as_deref(),
                 Reach::RequestPath,
                 &mut strips,
+                &mut claim,
             )
             .await;
-        (verdict, strips)
+        (verdict, strips, PendingClaim::of(claim, gov))
     }
 
     /// Constant-time string comparison — the single timing-safe primitive, now provided by the
@@ -1727,15 +1830,64 @@ async fn judge_admin_door(
 ) -> AdminDoor {
     let (verdict, cap, replay) =
         judge_admin_chain(app, method, target, headers, probe, strips).await;
-    if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
-        (claim, &verdict, &replay)
-    {
-        let now = busbar_kernel::store::now();
-        if !replay_claimed(app.governance.as_deref(), provider, replay, now).await {
-            return AdminDoor::Denied;
+    let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
+    // The claim is the door's LAST step: won only for a request the door admits, scope included.
+    if claim && admin_door_admits(&door, method, target) && !claim_won(pending.as_ref()).await {
+        return AdminDoor::Denied;
+    }
+    door
+}
+
+/// THE ADMIN DOOR'S VERDICT with its identity's replay claim UNWON ([`PendingClaim`]), for an admin
+/// surface that decides more after the door (the root's admin units: revocation, then approve) and
+/// wins the claim as the last step of its own admission.
+#[derive(Debug)]
+pub struct AdminVerdict {
+    /// The door's verdict.
+    pub door: AdminDoor,
+    /// The replay claim the identified principal asks for, unwon; `None` when it asks for none.
+    pub claim: Option<PendingClaim>,
+}
+
+impl From<AdminDoor> for AdminVerdict {
+    fn from(door: AdminDoor) -> Self {
+        AdminVerdict { door, claim: None }
+    }
+}
+
+/// The door a chain verdict opens under `cap`, and the replay claim its identity asks for, unwon.
+fn admin_door_claim_of(
+    app: &App,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+    replay: Option<(String, Box<Replay>)>,
+) -> (AdminDoor, Option<PendingClaim>) {
+    let identified = matches!(verdict, ChainVerdict::Identified { .. });
+    let now = busbar_kernel::store::now();
+    let claim = replay
+        .filter(|_| identified)
+        .and_then(|(provider, replay)| ReplayClaim::of(&provider, Some(replay), now));
+    (
+        admin_door_of(app, verdict, cap),
+        PendingClaim::of(claim, app.governance.clone()),
+    )
+}
+
+/// Whether `door` AUTHORIZES `method` on `target` (its query ignored): the scope the operation
+/// requires within the door's grants, and, for a principal holding verbs by name, the verb on its
+/// allow-list (#77(9) l.2279). The one authorization decision the admin middleware refuses 403 on.
+pub fn admin_door_admits(door: &AdminDoor, method: &str, target: &str) -> bool {
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
+    let required = crate::admin::scope::admin_required_scope(method, path);
+    match door {
+        AdminDoor::Open => true,
+        AdminDoor::Denied => false,
+        AdminDoor::Identified(_, grants) => grants.allows(required),
+        AdminDoor::Listed(_, grants, list) => {
+            grants.allows(required)
+                && list.admits(crate::admin::seam::admin_verb_at(method, path), required)
         }
     }
-    admin_door_of(app, verdict, cap)
 }
 
 /// The admin chain's verdict of one request, its scope cap, and the replay claim its identity asks
@@ -1790,8 +1942,17 @@ fn admin_door_of(
 /// operator credential through its door's on-the-spot `verify_now`, an in-process stand-in inline. A
 /// chain that cannot be judged on the spot (the verifier overloaded, pending or down) is `Denied`:
 /// the probe fails closed. See [`AdminDoor`]; the middleware awaits the same verdict instead.
+/// An identity's replay claim is won as the door's last step, only for a request the door admits
+/// ([`admin_door_admits`]); a claim it loses is `Denied`.
 pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminDoor {
     probe_admin_door(app, method, target, headers, true)
+}
+
+/// [`admin_door`] with the identity's replay claim UNWON ([`AdminVerdict`]): for the root's admin
+/// units, which decide revocation and scope after the door and win the claim last.
+pub fn admin_verdict(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminVerdict {
+    let (door, claim) = probe_admin_verdict(app, method, target, headers);
+    AdminVerdict { door, claim }
 }
 
 /// [`admin_door`], claiming an identity's replay claim or not (`claim`: see [`judge_admin_door`]).
@@ -1802,6 +1963,27 @@ fn probe_admin_door(
     headers: &HeaderMap,
     claim: bool,
 ) -> AdminDoor {
+    let (door, pending) = probe_admin_verdict(app, method, target, headers);
+    // THE PROBE'S ONE WAIT: the replay claim is a store call, awaited on this caller's own thread,
+    // as the synchronous caller asked by calling synchronously (the root's admin units answer on
+    // the blocking pool, never on a runtime worker or a dispatcher worker). Won last, and only for
+    // a request the door admits.
+    if claim
+        && admin_door_admits(&door, method, target)
+        && pending.as_ref().is_some_and(|p| !p.win_now())
+    {
+        return AdminDoor::Denied;
+    }
+    door
+}
+
+/// The probe's door and its identity's replay claim, unwon.
+fn probe_admin_verdict(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+) -> (AdminDoor, Option<PendingClaim>) {
     // The lines a module names are the transport's; a probe hands no request on.
     let mut strips = Vec::new();
     let judged = std::pin::pin!(judge_admin_chain(
@@ -1816,26 +1998,9 @@ fn probe_admin_door(
     let (verdict, cap, replay) = match std::future::Future::poll(judged, &mut cx) {
         std::task::Poll::Ready(judged) => judged,
         // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
-        std::task::Poll::Pending => return AdminDoor::Denied,
+        std::task::Poll::Pending => return (AdminDoor::Denied, None),
     };
-    if let (true, ChainVerdict::Identified { .. }, Some((provider, replay))) =
-        (claim, &verdict, &replay)
-    {
-        // THE PROBE'S ONE WAIT: the replay claim is a store call, awaited on this caller's own
-        // thread, as the synchronous caller asked by calling synchronously (the root's admin
-        // units answer on the blocking pool, never on a runtime worker or a dispatcher worker).
-        let now = busbar_kernel::store::now();
-        let claimed = futures::executor::block_on(replay_claimed(
-            app.governance.as_deref(),
-            provider,
-            replay,
-            now,
-        ));
-        if !claimed {
-            return AdminDoor::Denied;
-        }
-    }
-    admin_door_of(app, verdict, cap)
+    admin_door_claim_of(app, verdict, cap, replay)
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
@@ -2263,18 +2428,21 @@ pub(crate) async fn auth_middleware(
         // The admin door AWAITS a pending verify. An overloaded verifier or one that answered no
         // verdict is denied, 1.5.5's 401: the admin-door 503 is not a signed accepted difference.
         let door = judged.await;
+        // The one authorization decision, as the door decided it before winning the replay claim.
+        let authorized = admin_door_admits(&door, req.method().as_str(), &path);
         strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
         // AUTHORIZATION rides the door's verdict: the principal's admin scope (module-intrinsic for
         // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
         // nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling. An identified
         // principal with NO grant is 403, never 401 — authenticated but not authorized.
-        let (principal, scope, listed) = match door {
-            AdminDoor::Identified(principal, grants) => (Some(principal), grants, None),
-            AdminDoor::Listed(principal, grants, list) => (Some(principal), grants, Some(list)),
+        let principal = match door {
+            AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
+                Some(principal)
+            }
             // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
             // symmetric with the data plane's empty chain. The default config never lands here.
-            AdminDoor::Open => (None, admin_scope_for(&app, None, None), None),
+            AdminDoor::Open => None,
             // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
             // — tooling branches on the SAME `code` seam as every other admin error, never a
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
@@ -2283,14 +2451,9 @@ pub(crate) async fn auth_middleware(
         let required = crate::admin::gate::required_scope(req.method(), &path);
         // A principal holding verbs BY NAME is admitted only to a verb its allow-list reaches
         // (#77(9) l.2279), refused in the same envelope as a rung it does not hold. A path the
-        // closed verb table does not declare is no verb, so only a rung held whole reaches it.
-        let verb_listed = listed.as_ref().is_none_or(|list| {
-            list.admits(
-                crate::admin::seam::admin_verb_at(req.method().as_str(), &path),
-                required,
-            )
-        });
-        if !scope.allows(required) || !verb_listed {
+        // closed verb table does not declare is no verb, so only a rung held whole reaches it
+        // ([`admin_door_admits`]).
+        if !authorized {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
             // write-through is a blocking store round-trip under a process-global lock, and this path
@@ -2432,6 +2595,8 @@ pub(crate) async fn auth_middleware(
     let reader = (admission.is_none() && app.auth.keys_in_chain && ingress_signed)
         .then(|| app.auth.readers.iter().find(|r| r.carried(req.headers())))
         .flatten();
+    // The verified identity's replay claim, UNWON until the gate's last deny decision is made.
+    let mut pending: Option<PendingClaim> = None;
     let signed = match reader {
         None => None,
         Some(reader) => {
@@ -2471,15 +2636,13 @@ pub(crate) async fn auth_middleware(
                                 .then(|| (*key).clone())
                         })
                     });
-                    // THE REPLAY CLAIM, won before admitting exactly as every other verify
-                    // caller wins it: a key the identity asks to be admitted once is claimed under
-                    // this verifier; a claim already taken is the same opaque refusal.
-                    if key.is_some()
-                        && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
-                            .await
-                    {
-                        return Err(unauthorized_response(&app, &path, door.as_ref()));
-                    }
+                    // THE REPLAY CLAIM, won as the last step of admission exactly as every other
+                    // verify caller wins it: a key the identity asks to be admitted once is
+                    // claimed under this verifier; a claim already taken is the same refusal.
+                    pending = PendingClaim::of(
+                        ReplayClaim::of(&reader.name, id.replay, now),
+                        app.governance.clone(),
+                    );
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
                             module: crate::config::KEYS_MODULE.to_string(),
@@ -2570,7 +2733,7 @@ pub(crate) async fn auth_middleware(
                 }
             }
         }
-        let (judged, named) = AuthMiddleware::judge_chain_on_request_path_naming(
+        let (judged, named, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
             &app.auth,
             client_token.clone(),
             ChainHead::of(&req),
@@ -2583,6 +2746,7 @@ pub(crate) async fn auth_middleware(
                 // The union (THE DESIGN §6.3): a signed-request verifier that PASSed named its
                 // lines too.
                 strips.extend(named);
+                pending = claim;
                 verdict
             }
             // A position's `max_inflight` is full: 503 with `Retry-After`, never a bad
@@ -2596,7 +2760,16 @@ pub(crate) async fn auth_middleware(
     // stdio serve mode's boot-time session bind, so "who does this credential make you" cannot be
     // answered differently on the two transports; only the WORDING of a refusal differs here
     // (an RFC 6750 challenge or a native envelope, where the stdio binding words it on stderr).
-    match resolve_data_plane_identity(&app, verdict) {
+    //
+    // The replay claim is the gate's LAST step: won only once the verdict resolved to an admitted
+    // identity, before the request reaches budget, rate admission or the plane. A refused request
+    // claims nothing; a claim lost is the refusal a denied chain answers.
+    let resolved = match resolve_data_plane_identity(&app, verdict) {
+        Ok(admitted) if claim_won(pending.as_ref()).await => Ok(admitted),
+        Ok(_) => Err(IdentityRefusal::Denied),
+        Err(refused) => Err(refused),
+    };
+    match resolved {
         Ok((principal, gov)) => {
             // ALWAYS inserted — including `AuthPrincipal(None)` + empty `GovCtx` on the open front
             // door — so downstream `Extension` extraction never 500s `MissingExtension`.
