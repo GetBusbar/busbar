@@ -1560,6 +1560,7 @@ pub fn accrue_pending(
     key: MeterKey,
     add: MeterCounts,
     cap: usize,
+    warn: &CoalesceWarn,
 ) {
     if let Some(cell) = pending.get_mut(&key) {
         cell.merge(add);
@@ -1586,14 +1587,43 @@ pub fn accrue_pending(
     );
     pending.entry(sentinel).or_default().merge(add);
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
-    // Per-event detail at debug; the metric above is the aggregate, human-cadence signal an operator
-    // alerts on. Kept off `warn!` so a sustained outage does not spam one line per coalesced cell.
-    crate::diagnostics::diag_debug!(
-        crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
-        overflow_bucket = key.1,
-        "metering accumulator at cap ({cap}); coalesced a new cell into the per-bucket overflow \
-         sentinel — totals preserved, per-key attribution collapsed until the store recovers"
-    );
+    // A WARN, but at most one per window (not one per coalesced cell): it names how many cells were
+    // coalesced since the last line, and `busbar_metering_pending_coalesced_total` above carries
+    // the running aggregate.
+    if let Some(coalesced) = warn.note(std::time::Instant::now()) {
+        crate::diagnostics::diag_warn!(
+            crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
+            overflow_bucket = key.1,
+            coalesced,
+            "metering accumulator at cap ({cap}); coalesced {coalesced} cell(s) into the per-bucket \
+             overflow sentinel — totals preserved, per-key attribution collapsed until the store \
+             recovers"
+        );
+    }
+}
+
+/// The once-per-window throttle on the overflow-coalescing warning: counts coalesced cells and
+/// releases the count at most once per [`COALESCE_WARN_WINDOW`].
+#[derive(Default)]
+pub struct CoalesceWarn(std::sync::Mutex<(Option<std::time::Instant>, u64)>);
+
+/// How long the overflow-coalescing warning stays quiet after it fires.
+pub const COALESCE_WARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl CoalesceWarn {
+    /// Record one coalesced cell at `now`. Returns the number of cells coalesced since the last
+    /// emitted line when a new window has opened (the first coalesce always opens one), else `None`.
+    fn note(&self, now: std::time::Instant) -> Option<u64> {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.1 += 1;
+        match g.0 {
+            Some(last) if now.saturating_duration_since(last) < COALESCE_WARN_WINDOW => None,
+            _ => {
+                g.0 = Some(now);
+                Some(std::mem::take(&mut g.1))
+            }
+        }
+    }
 }
 
 /// THE WRITE-BEHIND METERING ACCUMULATOR, sharded [`GOV_SHARDS`] ways exactly like the `budget` map
@@ -1613,6 +1643,7 @@ pub fn accrue_pending(
 /// never split.
 pub struct PendingMetering {
     shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>]>,
+    coalesce_warn: CoalesceWarn,
 }
 
 impl Default for PendingMetering {
@@ -1627,6 +1658,7 @@ impl PendingMetering {
         shards.resize_with(GOV_SHARDS, || std::sync::Mutex::new(HashMap::new()));
         Self {
             shards: shards.into_boxed_slice(),
+            coalesce_warn: CoalesceWarn::default(),
         }
     }
 
@@ -1645,7 +1677,13 @@ impl PendingMetering {
             .shard_for(&key.0)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        accrue_pending(&mut map, key, add, MAX_PENDING_METERING_PER_SHARD);
+        accrue_pending(
+            &mut map,
+            key,
+            add,
+            MAX_PENDING_METERING_PER_SHARD,
+            &self.coalesce_warn,
+        );
     }
 
     /// DRAIN every shard, returning all pending cells. Each shard is emptied under its own lock; a
@@ -1760,8 +1798,8 @@ pub fn spawn_budget_flusher(
                     let guard = flush_gate.clone().lock_owned().await;
                     let gov = gov.clone();
                     let _ = tokio::task::spawn_blocking(move || {
-                        gov.flush_budgets();
-                        gov.flush_metering();
+                        gov.flush_budgets_final();
+                        gov.flush_metering_final();
                         drop(guard);
                     })
                     .await;

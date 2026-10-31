@@ -1343,3 +1343,42 @@ fn an_ops_exchange_takes_its_reply_limit() {
         100
     );
 }
+
+/// A RAW EXCHANGE PARKED BY ITS CALLER CLOSES ITS STREAM WHEN DROPPED (status row 159): an export
+/// door drives the free [`exchange`] itself and keeps the [`Exchange`] across PENDING entries; given
+/// up while it pends (its op cancelled or superseded, its instance closed) it CLOSEs the stream it
+/// established, as one [`Op::exchange`] parked does — the host reclaims a connection only on its
+/// CLOSE. RED: a free exchange that never kept what closes its stream leaves the stream held.
+#[test]
+fn a_raw_exchange_dropped_while_it_pends_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *SCRIPT.lock().unwrap() = Some(Script {
+        reply: http_reply(),
+        ..Script::default()
+    });
+    let h = host();
+    let mut state = Exchange::request(post()).expect("a request");
+    for _ in 0..40 {
+        let mut c = h.connector(TICKET);
+        let answer = exchange(&mut c, &mut state, 0, None);
+        assert!(answer.is_pending(), "it pends until the stream is held");
+        if state.stream().is_some() {
+            break;
+        }
+    }
+    assert!(
+        state.stream().is_some(),
+        "the exchange established its stream"
+    );
+    // The op is given up: the host keeps no stored result of it, and the exchange is dropped.
+    SCRIPT.lock().unwrap().as_mut().unwrap().stored.clear();
+    drop(state);
+    let s = SCRIPT.lock().unwrap().take().unwrap();
+    assert_eq!(s.ops.last(), Some(&service::CLOSE), "{:?}", s.ops);
+    assert_eq!(
+        s.held, 0,
+        "the host still holds the dropped exchange's stream"
+    );
+}

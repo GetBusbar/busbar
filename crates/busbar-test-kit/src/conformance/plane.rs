@@ -14,7 +14,10 @@
 //! Inputs (`conformance.json`; every byte the plane is handed or must answer is the plugin's):
 //!
 //! ```json
-//! { "settings": <the settings it opens over (generation 1)>,
+//! { "settings": <the settings it opens over (generation 1); a plane that declares `pools` or
+//!               consumes a section beside its own is handed them `{<declaring section>: <settings>}`
+//!               at `open` and `refresh`, as the composition root hands them, unless they are
+//!               keyed by section already>,
 //!   "plane": {
 //!     "bad_settings": [<settings `validate` must refuse, naming why; dealt to it as
 //!                       `{<declaring section>: <settings>}`, the stage-3g shape>, ...],
@@ -168,7 +171,7 @@ use super::{
     answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
     ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
 };
-use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
+use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane, ServedFacts};
 use crate::dispatch::{now_ns, Called, DispatchConfig, Dispatcher, Frame, Lent, Plugin};
 
 #[path = "plane_host.rs"]
@@ -1409,6 +1412,35 @@ fn far_end<'a>(
     }
 }
 
+/// THE SETTINGS `open` AND `refresh` ARE HANDED, in the form the composition root hands them
+/// (`busbar::root::serve::settings_of`): a plane that declares the kernel-owned `pools` map, or
+/// reads any section beside its own (`SECTION_CONSUMED`), is handed ONE object keyed by section,
+/// `{<declaring section>: <settings>}`; any other plane its section bare, as written. The inputs
+/// carry no consumed section's value, so the keyed object is that of a deployment writing none of
+/// them, unless the inputs' settings are keyed already (an object carrying the declaring section's
+/// key and no key but it and the consumed sections'): those are handed as written. Settings that
+/// are not a JSON value, or are `null`, are handed as written.
+fn handed(facts: &ServedFacts, settings: &[u8]) -> Vec<u8> {
+    let keyed =
+        facts.section == busbar_contract::section::RESERVED_POOLS_KEY || !facts.consumed.is_empty();
+    if !keyed {
+        return settings.to_vec();
+    }
+    let value = match serde_json::from_slice::<Value>(settings) {
+        Ok(Value::Null) | Err(_) => return settings.to_vec(),
+        Ok(value) => value,
+    };
+    let written_keyed = value.as_object().is_some_and(|o| {
+        o.contains_key(facts.section)
+            && o.keys()
+                .all(|k| k == facts.section || facts.consumed.contains(&k.as_str()))
+    });
+    if written_keyed {
+        return settings.to_vec();
+    }
+    serde_json::to_vec(&serde_json::json!({ facts.section: value })).expect("a keyed blob")
+}
+
 /// `open` of generation 1 over `settings`, under `public_url` when one is named.
 fn open(p: &Plugin<Plane>, settings: &[u8], public_url: Option<&[u8]>) -> String {
     let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -1468,7 +1500,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         )
     });
     // `validate` is handed the blob stage 3g deals a plane: `{<declaring section>: <settings>}`
-    // (`config_validate::deal`, `Seat::Verbs`); `open` and `refresh` take the section as written.
+    // (`config_validate::deal`, `Seat::Verbs`); `open` and `refresh` take it as the composition
+    // root hands it ([`handed`]): keyed by section for a plane that reads sections beside its own.
     let section = p.served().section;
     let dealt = |b: &[u8]| -> Vec<u8> {
         let value: Value = serde_json::from_slice(b).expect("conformance.json settings are JSON");
@@ -1482,10 +1515,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("validate", 1, || called(&validate(&p, &dealt(&settings))));
     // No instance yet: the host refuses without a crossing.
     r.line("arrive unopened", 0, || arrive(&p, &k.claimed, &k.request));
-    r.line("open", 1, || open(&p, &settings, url));
+    let opened = handed(&p.served(), &settings);
+    r.line("open", 1, || open(&p, &opened, url));
     ready_step(&mut r, s, &p, &d);
     // One open per instance: the host refuses without a crossing.
-    r.line("open again", 0, || open(&p, &settings, url));
+    r.line("open again", 0, || open(&p, &opened, url));
     // The instance's DRIVER ticket, as the kernel mints it once the instance is open: `drive` and
     // `tick` are submitted on it.
     let driver = d.driver(&p, 0);
@@ -1673,7 +1707,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let (c, snap) = p.refresh(&mut f);
         format!("{} {}", called(&c), snapshot(snap.as_ref()))
     };
-    r.line("refresh", 1, || refresh(&k.refresh));
+    r.line("refresh", 1, || refresh(&handed(&p.served(), &k.refresh)));
     r.line("retire", 1, || generation(&p, life::RETIRE, 1));
     r.line("close", 1, || called(&close(&p)));
     // Closed: the host answers FAULT without a crossing.
@@ -2242,3 +2276,7 @@ mod tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_host_tests.rs"]
 mod host_tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_plane_settings_tests.rs"]
+mod settings_tests;

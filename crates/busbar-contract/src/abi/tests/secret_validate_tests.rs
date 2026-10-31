@@ -296,3 +296,94 @@ fn needed_at_the_secret_cap_passes() {
     out.needed = crate::abi::secret::MAX_SECRET_BYTES as u64;
     assert_eq!(check(&out, &[0; 16]), Ok(()));
 }
+
+/// THE GENERATED RED TABLE: one RED per (field, rule) `check_resolve`'s declaration states, each
+/// answering exactly its rule and field; the cross-field rules are the hand cases above.
+#[test]
+fn every_declared_field_rule_is_red() {
+    assert_eq!(RESOLVE_RULES.len(), 4);
+    for case in RESOLVE_RULES {
+        let mut out = base_out();
+        (case.red)(&mut out);
+        assert_eq!(
+            check(&out, &[0; 16]),
+            red(case.rule, case.field),
+            "{case:?}"
+        );
+    }
+}
+
+/// THE KIND'S ANSWER CHECK: the frames are read at their structs (a short `in`, then a short
+/// `out`, is FOREIGN), `resolve` is judged against the buffer its `in` lent, and a slot with no
+/// answer check passes.
+#[test]
+fn check_answer_reads_the_frames_then_judges_resolve() {
+    use crate::abi::mechanism::call::InHead;
+    use crate::abi::secret::{check_answer, slot, ResolveIn};
+    let buf = [0u8; 16];
+    // SAFETY: an all-zero `ResolveIn` is a valid value (plain data: integers, NULL pointers).
+    let mut input: ResolveIn = unsafe { std::mem::zeroed() };
+    input.secret_buf = buf.as_ptr().cast_mut();
+    input.secret_cap = BUF_CAP as usize;
+    let mut out = base_out();
+    out.secret = Blob {
+        ptr: buf.as_ptr(),
+        len: 1,
+        fmt: 0,
+        flags: BLOB_SECRET,
+    };
+    let judge = |input: &ResolveIn, out: &ResolveOut, in_size: usize, out_size: usize| {
+        // SAFETY: both frames are live locals of at least the sizes stated.
+        unsafe {
+            check_answer(
+                slot::RESOLVE,
+                Outcome::Ready,
+                (&raw const *input).cast::<InHead>(),
+                in_size,
+                &raw const out.head,
+                out_size,
+                &(),
+            )
+        }
+    };
+    let (is, os) = (
+        std::mem::size_of::<ResolveIn>(),
+        std::mem::size_of::<ResolveOut>(),
+    );
+    assert_eq!(judge(&input, &out, is, os), Ok(()));
+    assert_eq!(
+        judge(&input, &out, is - 1, os - 1),
+        red(Rule::Foreign, "in")
+    );
+    assert_eq!(judge(&input, &out, is, os - 1), red(Rule::Foreign, "out"));
+    out.error_kind = ERROR_KIND_INTERNAL + 1;
+    assert_eq!(
+        judge(&input, &out, is, os),
+        red(Rule::UnknownCode, "resolve.error_kind")
+    );
+    // READY material outside the lent buffer is foreign: the buffer comes from the `in`.
+    out.error_kind = ERROR_KIND_UNSET;
+    out.secret = Blob {
+        ptr: buf[1..].as_ptr(),
+        len: 2,
+        fmt: 0,
+        flags: BLOB_SECRET,
+    };
+    assert_eq!(
+        judge(&input, &out, is, os),
+        red(Rule::Foreign, "resolve.secret_outside_buffer")
+    );
+    // SAFETY: as above.
+    let other = unsafe {
+        check_answer(
+            slot::CHECK,
+            Outcome::Ready,
+            (&raw const input).cast::<InHead>(),
+            0,
+            &raw const out.head,
+            0,
+            &(),
+        )
+    };
+    assert_eq!(other, Ok(()));
+}

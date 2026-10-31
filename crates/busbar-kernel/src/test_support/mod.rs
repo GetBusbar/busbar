@@ -870,6 +870,8 @@ impl TestApp {
     }
 
     pub fn new() -> Self {
+        // A test binary has no root: the record it stands in is published before any read.
+        root::ensure();
         Self {
             plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -2041,6 +2043,8 @@ pub mod export_axis;
 pub mod outbound_auth;
 /// The rate holder and dater a test binary hands in, in place of the root's install record's.
 pub mod rate_holders;
+/// A test binary's install record, published in place of the composition root's.
+pub mod root;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
@@ -2157,7 +2161,7 @@ pub use busbar_kernel_identity::operator::{
 /// answers them, ahead of the stand-in. A test of the composition root's package that drives the
 /// kernel in process over the loader installs its loader-backed rows here. The first install stands.
 pub fn install_test_root(rows: crate::preflight::RootInstall) {
-    let _ = crate::preflight::TEST_ROOT.set(rows);
+    root::install_root(rows);
 }
 
 /// Install `open` as this test binary's auth axis opener, read ahead of the stand-in: the same
@@ -2173,16 +2177,23 @@ pub fn install_test_auth_axis(open: crate::preflight::AuthAxisOpener) {
 /// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
 /// and lists none. The first hand-in stands.
 pub fn install_root_hook_names(names: &'static [&'static str]) {
-    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+    root::install_hook_names(names);
 }
 
 /// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
 /// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
 /// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
 pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    if ROOT_AUTH_AXIS.set(open).is_ok() {
-        let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(root_auth_axis_with_test_modules);
-    }
+    let _ = ROOT_AUTH_AXIS.set(open);
+    root::publish();
+}
+
+/// The opener the install record reports once a root test binary handed its own in
+/// ([`install_root_auth_axis`]): that opener's axis with the test auth modules answered ahead.
+pub(crate) fn root_auth_axis() -> Option<crate::preflight::AuthAxisOpener> {
+    ROOT_AUTH_AXIS
+        .get()
+        .map(|_| root_auth_axis_with_test_modules as crate::preflight::AuthAxisOpener)
 }
 
 /// The root test binary's own auth-axis opener ([`install_root_auth_axis`]).

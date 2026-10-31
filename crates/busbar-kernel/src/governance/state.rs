@@ -878,12 +878,24 @@ impl GovState {
     /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
     /// between them by construction and cannot double-send. Returns the number of deltas written.
     pub fn flush_metering(&self) -> usize {
+        self.flush_metering_inner(false)
+    }
+
+    /// The SHUTDOWN flush: [`Self::flush_metering`], except that a failure is reported as the
+    /// terminal loss it is (one error naming the unrecorded cells), not as a retry that will never
+    /// run because the process is about to exit.
+    pub fn flush_metering_final(&self) -> usize {
+        self.flush_metering_inner(true)
+    }
+
+    fn flush_metering_inner(&self, shutdown: bool) -> usize {
         let taken = self.pending_metering.drain();
         let mut flushed = 0usize;
         // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
         // per-key `warn!` spams. Emit exactly ONE throttled warn per tick carrying the failed count;
         // the per-key detail (key + error) stays at `debug!`.
         let mut failed = 0usize;
+        let mut unrecorded: Vec<String> = Vec::new();
         let mut last_error: Option<String> = None;
         for ((key_id, bucket, model, provider, priced_from_ms), counts) in taken {
             if counts.is_zero() {
@@ -911,7 +923,11 @@ impl GovState {
                 Ok(()) => flushed += 1,
                 Err(e) => {
                     failed += 1;
-                    tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
+                    if shutdown {
+                        unrecorded.push(format!("{key_id}/{model}/{provider}@{bucket}"));
+                    } else {
+                        tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
+                    }
                     last_error = Some(e.to_string());
                     // Re-queue the failed delta through the SAME sharded, bounded accrual as the hot
                     // path (it lands back in the key's own shard). Under a sustained outage with
@@ -924,7 +940,17 @@ impl GovState {
                 }
             }
         }
-        if failed > 0 {
+        if failed > 0 && shutdown {
+            diag_error!(
+                METERING_FLUSH_PARTIAL_FAILURE,
+                failed,
+                flushed,
+                error = last_error.as_deref().unwrap_or(""),
+                "shutdown metering flush: the store is unreachable and the process is exiting; \
+                 {failed} metering cell(s) are NOT recorded: {}",
+                unrecorded.join(", ")
+            );
+        } else if failed > 0 {
             diag_warn!(
                 METERING_FLUSH_PARTIAL_FAILURE,
                 failed,
@@ -1433,8 +1459,10 @@ impl GovState {
     /// Returns the number of cells dropped. A group's cells are `group:<name>@<window>[#<scope>]`,
     /// one per (window, pool scope), so this is a sweep across every shard rather than a single-key
     /// remove. It is only reachable for a group that is GONE, so there is no cap left for the drop
-    /// to reset; the write-behind flush is additive and already committed whatever spend was
-    /// ledgered, so no durable data is lost either.
+    /// to reset. A cell that is still DIRTY (spend ledgered since the last flush, or a delta a
+    /// failed write re-marked) is KEPT, because the flush has not committed it yet and dropping it
+    /// would shorten the group's usage row; the next flush writes it and the amortized sweep reaps
+    /// it once clean.
     ///
     /// The match is [`crate::cost::is_bucket_of_group`] — anchored at BOTH ends — not
     /// `starts_with("group:<name>@")`. A group name MAY contain `@` (nothing charset-checks it, and
@@ -1451,7 +1479,9 @@ impl GovState {
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
-            shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
+            // A DIRTY cell still owes the store a delta, so it stays until a flush has taken it
+            // (the sweep's retain does the same); only a clean cell is dropped here.
+            shard.retain(|id, c| c.dirty || !crate::cost::is_bucket_of_group(id, group));
             dropped += before - shard.len();
         }
         // The per-group in-flight `concurrent` gauge is materialised on the first admission of a
@@ -2390,6 +2420,17 @@ impl GovState {
     /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
     /// deltas flushed.
     pub fn flush_budgets(&self) -> usize {
+        self.flush_budgets_inner(false)
+    }
+
+    /// The SHUTDOWN flush: [`Self::flush_budgets`], except that a failure is reported as the
+    /// terminal loss it is (one error naming the unrecorded buckets), not as a retry that will
+    /// never run because the process is about to exit.
+    pub fn flush_budgets_final(&self) -> usize {
+        self.flush_budgets_inner(true)
+    }
+
+    fn flush_budgets_inner(&self, shutdown: bool) -> usize {
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
         struct Acked {
@@ -2448,6 +2489,7 @@ impl GovState {
         // per-bucket `warn!` spams. Emit exactly ONE throttled warn per tick with the failed count;
         // per-bucket detail (bucket + error) stays at `debug!`.
         let mut failed = 0usize;
+        let mut unrecorded: Vec<String> = Vec::new();
         let mut last_error: Option<String> = None;
         for snap in dirty {
             let outcome = if snap.delta.is_zero() {
@@ -2493,7 +2535,11 @@ impl GovState {
                 }
                 Err(e) => {
                     failed += 1;
-                    tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
+                    if shutdown {
+                        unrecorded.push(format!("{}@{}", snap.bucket_id, snap.window));
+                    } else {
+                        tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
+                    }
                     last_error = Some(e.to_string());
                     if snap.acked.is_none() {
                         // A rolled window's delta: parked back under its window for the next tick.
@@ -2510,7 +2556,17 @@ impl GovState {
                 }
             }
         }
-        if failed > 0 {
+        if failed > 0 && shutdown {
+            diag_error!(
+                BUDGET_FLUSH_PARTIAL_FAILURE,
+                failed,
+                flushed,
+                error = last_error.as_deref().unwrap_or(""),
+                "shutdown budget flush: the store is unreachable and the process is exiting; \
+                 {failed} bucket window(s) are NOT recorded: {}",
+                unrecorded.join(", ")
+            );
+        } else if failed > 0 {
             diag_warn!(
                 BUDGET_FLUSH_PARTIAL_FAILURE,
                 failed,

@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by `check_resolve` against the host buffer
-//! it was lent, and its short answer is the one re-call's; `check` answers an
+//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by the contract's `secret::check_answer`
+//! (`check_resolve` against the host buffer it was lent), and its short answer is the one
+//! re-call's; `check` answers an
 //! `OutHead` alone and states no rule beyond the mechanism's (its refusal text is judged where the
 //! host renders it, `check_validate_refusal`).
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::secret::{self, slot, validate, CheckIn, ResolveIn, ResolveOut};
+use busbar_contract::abi::secret::{self, slot, CheckIn, ResolveIn, ResolveOut};
 
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
@@ -41,18 +42,10 @@ impl Kind for Secret {
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
-        match a.slot {
-            slot::RESOLVE => {
-                // Judged against the host buffer the call was lent (the credential chip, row 6: host-owned secret bytes).
-                let input = a.input::<ResolveIn>()?;
-                validate::check_resolve(
-                    a.out::<ResolveOut>()?,
-                    input.secret_buf as usize,
-                    input.secret_cap as u64,
-                )
-            }
-            _ => Ok(()),
-        }
+        let (input, in_size, out, out_size) = a.frames();
+        // SAFETY: `Answer::new`'s contract: the op's live host-owned frames, unwritten while the
+        // answer lives; `resolve`'s buffer is the host's own, of its stated capacity.
+        unsafe { secret::check_answer(a.slot, a.outcome, input, in_size, out, out_size, &()) }
     }
 
     /// A `resolve` whose value does not fit the host's buffer: FAILED with `needed` (M-SB).

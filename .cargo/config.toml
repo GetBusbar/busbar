@@ -7,3 +7,17 @@
 # The retired 1.5 key (b18395a3…), whose seed lived in a GitHub org secret, is NOT committed here,
 # and plugin-loader refuses what it signed even in a build that embeds it (RETIRED_RELEASE_KEYS).
 # No key is committed until the 1.6.0 key ceremony (#1713) names the new roots.
+
+# W17, THE LINKING DESIGN: every shipped binary and every plugin cdylib needs nothing at run time
+# beyond the OS's own C runtime. On Windows that means the MSVC CRT is linked STATICALLY, so neither
+# busbar.exe nor a plugin DLL needs the Visual C++ Redistributable. One CRT per module is safe here
+# because the plugin memory ABI never frees across the boundary: each side frees only what it
+# allocated (busbar-contract abi/host/hook.rs HostBuf, abi/host/service.rs caller-sized buffers).
+# A build that sets RUSTFLAGS itself bypasses this table (cargo's precedence), so the release
+# scripts carry the same flag (scripts/release-build.sh, scripts/pgo-build.sh: CRT_FLAG), and the
+# `runtime_deps` row of .github/artifact-contract.json asserts it on the shipped bytes.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
