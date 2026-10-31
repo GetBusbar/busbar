@@ -1179,10 +1179,7 @@ pub(super) mod session_door {
         // mint asks `ticket.mint` of them on the mint unit (with none, the loader answers "no host
         // services are bound" and the mint is a 502).
         let services = composed_services();
-        let dispatcher = Arc::new(Dispatcher::with_services(
-            DispatchConfig::default(),
-            Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
-        ));
+        let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
         let plane = session_door(
             instance,
             &dispatcher,
