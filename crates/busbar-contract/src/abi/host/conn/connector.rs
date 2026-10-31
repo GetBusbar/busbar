@@ -30,6 +30,13 @@
 //!   then checks it back in ([`service::CHECKIN`]). Pool policy (min/max, ping-on-reuse,
 //!   reset-on-return, a local socket for a local endpoint, connect attributes) is HOST config; the
 //!   reset itself is the plugin kind's own op. A write-behind op keeps its connection across reload.
+//! * **A cancelled op's stream is closed, never pooled.** An op the host cancels (its kind's
+//!   disposition `CANCEL_ABANDONED`, `abi::auth`, or any other) may leave its stream mid-exchange
+//!   (half a request written, half a reply unread), so the host never checks it back in nor hands
+//!   it to another op: it is CLOSED. The SDK's parked exchange closes the stream it established
+//!   when the cancel drops it (`abi::sdk::exchange`, on no ticket), and a stream a cancelled op
+//!   still holds is closed with the instance. This host serves no pool at all ([`service::CHECKOUT`]
+//!   and [`service::CHECKIN`] are NULL), so nothing it closes is ever reused.
 //! * **Cancel may need a second stream** to the same endpoint ([`service::SIDE_STREAM`]).
 //! * **Host services:** the process identity (OS user, pid, program name; [`service::IDENTITY`]).
 //!   Random bytes (nonces, key-exchange seeds) come from the ONE random service, the host
