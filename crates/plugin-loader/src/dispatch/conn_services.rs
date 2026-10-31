@@ -44,8 +44,8 @@
 //!
 //! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run (a `READ_REPLY`'s with its piece and its bytes, a raw `READ`'s with its bytes, written
-//! again into what the replay lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
+//! second run (a `READ_REPLY`'s with its piece and its bytes, a raw `READ`'s with its bytes, a
+//! `FACTS`'s with the facts it was answered, written again into what the replay lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
 //! ticket's when its next tick starts with nothing held on it (a held exchange keeps its
 //! answers), and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
@@ -272,9 +272,13 @@ fn slot<R: Into<Kept>>(
         if service == service::IDENTITY {
             return run().answer;
         }
-        // A replayed `READ_REPLY` or raw `READ` writes what it read again into the memory the
-        // replay lends.
-        let replay = matches!(service, service::READ_REPLY | service::READ).then_some(input);
+        // A replayed `READ_REPLY`, raw `READ` or `FACTS` writes what it wrote again into the
+        // memory the replay lends.
+        let replay = matches!(
+            service,
+            service::READ_REPLY | service::READ | service::FACTS
+        )
+        .then_some(input);
         held(wake, head.handle, || st.kept(head.handle, replay, run))
     }))
     .unwrap_or_else(|_| Answered::fault());
@@ -697,19 +701,19 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         out,
         service::FACTS,
         size_of::<FactsIn>(),
-        |id, table, st, _| {
+        |id, table, st, head| {
             // SAFETY: the head covered a `FactsIn`.
             let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
             if i.facts.is_null() {
-                return Answered::fault();
+                return Kept::from(Answered::fault());
             }
             let conn = match resolve(st, id, table, i.stream) {
                 Ok(c) => c,
-                Err(e) => return refusal(e),
+                Err(e) => return refusal(e).into(),
             };
             let f = match table.facts(id, conn) {
                 Ok(f) => f,
-                Err(e) => return refusal(e),
+                Err(e) => return refusal(e).into(),
             };
             let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
             let mut all = lock(&st.facts);
@@ -726,7 +730,21 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             };
             // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
             unsafe { i.facts.write_unaligned(written) };
-            Answered::ready(0, 0)
+            // A ticketed call keeps the facts it wrote, stored with its answer.
+            let read = (!head.handle.ticket.is_none()).then(|| {
+                Wrote::Facts(KeptFacts {
+                    stream: key,
+                    secure: written.secure,
+                    client_identity: written.client_identity,
+                    agreed_protocol: f.alpn.as_deref().map(Into::into),
+                    peer_cert_hash: hash.map(Into::into),
+                    peer_key_pin: f.peer_key_pin.as_deref().map(Into::into),
+                })
+            });
+            Kept {
+                answer: Answered::ready(0, 0),
+                read,
+            }
         },
     )
 }
@@ -762,9 +780,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// One ticketed service's answer, stored once under its handle. A read (`READ_REPLY` or raw `READ`)
-/// keeps beside it what it wrote into the caller's memory ([`Wrote`]), so its replay writes the
-/// same again ([`replay_read`], [`replay_raw`]), as a replayed `IDENTITY` does. A short answer's
+/// One ticketed service's answer, stored once under its handle. A read (`READ_REPLY`, raw `READ`,
+/// `FACTS`) keeps beside it what it wrote into the caller's memory ([`Wrote`]), so its replay
+/// writes the same again ([`replay_read`], [`replay_raw`], [`ConnState::replay_facts`]), as a
+/// replayed `IDENTITY` does. A short answer's
 /// re-call runs the op again on the same ticket, and the buffers it lends hold whatever its last
 /// run left there: its kept reads, written again, are the far end's reply as the first run read
 /// it. They are forgotten with the ticket's other answers ([`forget`]).
@@ -779,6 +798,20 @@ enum Wrote {
     Reply(ReplyPiece, Box<[u8]>),
     /// The bytes a raw `READ` wrote.
     Raw(Box<[u8]>),
+    /// The facts a `FACTS` wrote.
+    Facts(KeptFacts),
+}
+
+/// The `StreamFacts` a `FACTS` call wrote, its strings owned: the replay writes the facts the
+/// first run was answered, never the stream's now (it may have been upgraded, or closed, later in
+/// that run), so the replay never asks the table again.
+struct KeptFacts {
+    stream: u64,
+    secure: u32,
+    client_identity: u32,
+    agreed_protocol: Option<Box<str>>,
+    peer_cert_hash: Option<Box<str>>,
+    peer_key_pin: Option<Box<str>>,
 }
 
 impl From<Answered> for Kept {
@@ -795,8 +828,8 @@ impl ConnState {
 
     /// `run` once per completion handle: a handle that already answered (anything but PENDING)
     /// answers the same again, and `run` is not made a second time; a kept read is written again
-    /// into what `replay` (a `READ_REPLY`'s or raw `READ`'s `in`) lends. A call on no ticket is
-    /// never kept: it may not pend, and every call is its own.
+    /// into what `replay` (a `READ_REPLY`'s, raw `READ`'s or `FACTS`'s `in`) lends. A call on no
+    /// ticket is never kept: it may not pend, and every call is its own.
     fn kept(
         &self,
         h: CompletionHandle,
@@ -816,6 +849,7 @@ impl ConnState {
                     k.answer
                 }
                 (Some(input), Some(Wrote::Raw(bytes))) => replay_raw(input, k.answer, bytes),
+                (Some(input), Some(Wrote::Facts(f))) => self.replay_facts(input, k.answer, f),
                 _ => k.answer,
             };
         }
@@ -828,6 +862,41 @@ impl ConnState {
                 .insert(h.seq, k);
         }
         a
+    }
+
+    /// A replayed `FACTS`: the facts it wrote, written again into the `facts` the replay's `in`
+    /// lends, and its kept `answer`. Their strings are the stream's held ones while it is open
+    /// (valid until it closes, as `FactsIn::facts` states); once it has closed, the kept answer's
+    /// own, valid until the ticket's answers are forgotten.
+    fn replay_facts(&self, input: *const c_void, answer: Answered, kept: &KeptFacts) -> Answered {
+        // SAFETY: `slot` checked the head covers a `FactsIn`.
+        let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
+        if i.facts.is_null() {
+            return Answered::fault();
+        }
+        let mut all = lock(&self.facts);
+        let open = all.contains_key(&kept.stream);
+        let mut text = |t: &Option<Box<str>>| match t {
+            Some(t) if open => held_text(&mut all, kept.stream, Some(t)),
+            Some(t) => AbiStr {
+                ptr: t.as_ptr(),
+                len: t.len(),
+            },
+            None => held_text(&mut all, kept.stream, None),
+        };
+        let written = StreamFacts {
+            size: size_of::<StreamFacts>() as u32,
+            secure: kept.secure,
+            endpoint: text(&None),
+            agreed_protocol: text(&kept.agreed_protocol),
+            peer_cert_hash: text(&kept.peer_cert_hash),
+            peer_key_pin: text(&kept.peer_key_pin),
+            client_identity: kept.client_identity,
+            _reserved: 0,
+        };
+        // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
+        unsafe { i.facts.write_unaligned(written) };
+        answer
     }
 
     /// Forget every answer kept, and close on `table` every dial left in flight, on `ticket`; how
