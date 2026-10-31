@@ -143,7 +143,7 @@ pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`.
+/// The hook kind's ABI version: `2` (the version before this layout was `1`).
 pub const ABI_VERSION: u32 = 2;
 
 /// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
@@ -276,10 +276,10 @@ pub struct Ops {
     /// ([`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call)), off-worker. In
     /// [`ConfigureIn`], out [`ConfigureOut`].
     pub configure: Option<Op>,
-    /// The 1.5.5 status blob, unchanged. OFF-PATH, not `may_pend`, off-worker. In [`InHead`], out
+    /// The hook's status blob (JSON). OFF-PATH, not `may_pend`, off-worker. In [`InHead`], out
     /// [`StatusOut`] (memory class iv: the blob lives under `head.lease` until `release`).
     pub status: Option<Op>,
-    /// The 1.5.5 describe blob, unchanged. OFF-PATH, not `may_pend`, off-worker. In [`InHead`],
+    /// The hook's self-description blob (JSON). OFF-PATH, not `may_pend`, off-worker. In [`InHead`],
     /// out [`DescribeOut`] (memory class iv: the blob lives under `head.lease` until `release`).
     pub describe: Option<Op>,
     /// The plugin's own HTTP surface (`/hooks/<name>/*`, [`Tail::routes`]). OFF-PATH, `may_pend`,
@@ -291,28 +291,27 @@ pub struct Ops {
 
 // ── Signals (OLD `Signal`/`SignalBag`, `busbar-contract/src/signal.rs`) ─────────────────────────
 
-/// One requested/reported signal, in push (insertion) order — the fixed-layout form of the OLD
-/// `SignalBag`, whose `Serialize` impl walks `iter()` in that same order.
+/// One requested/reported signal, in push (insertion) order: a signal bag in fixed layout.
 pub mod signal {
-    /// OLD `Signal::RequestedModel`.
+    /// The model the request asked for.
     pub const REQUESTED_MODEL: u32 = 0;
-    /// OLD `Signal::RequestTotalChars`.
+    /// The request's total text size, in characters.
     pub const REQUEST_TOTAL_CHARS: u32 = 1;
-    /// OLD `Signal::RequestMessageCount`.
+    /// How many messages the request carries.
     pub const REQUEST_MESSAGE_COUNT: u32 = 2;
-    /// OLD `Signal::RequestToolCount`.
+    /// How many tools the request declares.
     pub const REQUEST_TOOL_COUNT: u32 = 3;
-    /// OLD `Signal::RequestSystemChars`.
+    /// The request's system text size, in characters.
     pub const REQUEST_SYSTEM_CHARS: u32 = 4;
-    /// OLD `Signal::CandidateBreakerState`.
+    /// The candidate's circuit-breaker state.
     pub const CANDIDATE_BREAKER_STATE: u32 = 5;
-    /// OLD `Signal::CandidateErrorRate`.
+    /// The candidate's error rate.
     pub const CANDIDATE_ERROR_RATE: u32 = 6;
-    /// OLD `Signal::CandidateLatencyP95Ms`.
+    /// The candidate's p95 latency, milliseconds.
     pub const CANDIDATE_LATENCY_P95_MS: u32 = 7;
-    /// OLD `Signal::RoutingPolicy`.
+    /// The pool's routing policy.
     pub const ROUTING_POLICY: u32 = 8;
-    /// OLD `Signal::ResponseTokensOut`.
+    /// The response's output tokens.
     pub const RESPONSE_TOKENS_OUT: u32 = 9;
 }
 
@@ -327,9 +326,9 @@ pub const SIGNAL_TAG_STR: u32 = 3;
 /// [`SignalEntry::tag`]: the payload is [`SignalValue::boolean`] (`0`/`1`).
 pub const SIGNAL_TAG_BOOL: u32 = 4;
 
-/// One signal's value, tagged by [`SignalEntry::tag`] (ARCHITECT review ruling 3: 1.5.5's
-/// `SignalBag` JSON is not all-numeric — `RoutingPolicy` is a string, `RequestedModel` a string —
-/// so the ABI carries a real tag rather than coercing every signal to `f64`). 16 bytes, the same
+/// One signal's value, tagged by [`SignalEntry::tag`] (not every signal is a number: the routing
+/// policy and the requested model are strings, so the ABI carries a real tag rather than coercing
+/// every signal to `f64`). 16 bytes, the same
 /// width as an [`AbiStr`], so every variant fits without indirection.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -377,23 +376,22 @@ pub const REQUEST_HAS_TOOLS: u32 = 1 << 1;
 /// [`RequestView::flags`]: the request is streamed.
 pub const REQUEST_STREAM: u32 = 1 << 2;
 
-/// The request view (OLD `RoutingRequest`/`HookReqProjection`): what `decide`/`transform` see
+/// The request view: what `decide`/`transform` see
 /// about the request itself, minus the prompt and identity (their own views, granted separately).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RequestView {
-    /// The OLD `request_id`.
+    /// The `request_id`.
     pub request_id: u64,
-    /// The OLD `pool`.
+    /// The `pool`.
     pub pool: AbiStr,
-    /// The OLD `ingress_protocol` (ARCHITECT review ruling 8: renamed `ingress_dialect` — the SDK
-    /// maps it to the frozen 1.5.5 wire key; the wire key's own spelling is unchanged).
+    /// The dialect the request arrived in.
     pub ingress_dialect: AbiStr,
-    /// The OLD `message_count`.
+    /// The `message_count`.
     pub message_count: u64,
-    /// The OLD `total_chars`.
+    /// The `total_chars`.
     pub total_chars: u64,
-    /// The OLD `max_tokens`, meaningful only when [`REQUEST_HAS_MAX_TOKENS`] is set.
+    /// The `max_tokens`, meaningful only when [`REQUEST_HAS_MAX_TOKENS`] is set.
     pub max_tokens: u32,
     /// [`REQUEST_HAS_MAX_TOKENS`] | [`REQUEST_HAS_TOOLS`] | [`REQUEST_STREAM`].
     pub flags: u32,
@@ -418,31 +416,31 @@ pub const CANDIDATE_HAS_TIER: u32 = 1 << 1;
 /// [`CandidateStatic::present`]: `cost_per_mtok` is present.
 pub const CANDIDATE_HAS_COST_PER_MTOK: u32 = 1 << 2;
 
-/// The STATIC half of one candidate (OLD `Candidate`'s pool-config fields): built once at
+/// The STATIC half of one candidate (its pool-config fields): built once at
 /// generation and unchanged across requests (memory class ii, valid to the next `refresh`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CandidateStatic {
-    /// The OLD `idx`: this candidate's position, stable across a generation.
+    /// The `idx`: this candidate's position, stable across a generation.
     pub idx: u32,
     /// Alignment padding.
     pub _reserved: u32,
-    /// The OLD `model`.
+    /// The `model`.
     pub model: AbiStr,
-    /// The OLD `provider`.
+    /// The `provider`.
     pub provider: AbiStr,
-    /// The OLD `weight`.
+    /// The `weight`.
     pub weight: u32,
     /// Alignment padding (widened `context_max` below needs 8-byte alignment).
     pub _reserved3: u32,
-    /// The OLD `context_max`, meaningful only when [`CANDIDATE_HAS_CONTEXT_MAX`] is set.
+    /// The `context_max`, meaningful only when [`CANDIDATE_HAS_CONTEXT_MAX`] is set.
     /// ARCHITECT review ruling 8: widened `u32` -> `u64` (a context window is a token count).
     pub context_max: u64,
-    /// The OLD `tier`, meaningful only when [`CANDIDATE_HAS_TIER`] is set.
+    /// The `tier`, meaningful only when [`CANDIDATE_HAS_TIER`] is set.
     pub tier: AbiStr,
-    /// The OLD `cost_per_mtok`, meaningful only when [`CANDIDATE_HAS_COST_PER_MTOK`] is set.
+    /// The `cost_per_mtok`, meaningful only when [`CANDIDATE_HAS_COST_PER_MTOK`] is set.
     pub cost_per_mtok: f64,
-    /// The OLD `tags`.
+    /// The `tags`.
     pub tags: *const AbiStr,
     /// How many.
     pub tags_len: usize,
@@ -459,19 +457,19 @@ pub const CANDIDATE_HAS_BUDGET_REMAINING: u32 = 1 << 1;
 /// [`CandidateDynamic::present`]: `rate_headroom` is present.
 pub const CANDIDATE_HAS_RATE_HEADROOM: u32 = 1 << 2;
 
-/// The DYNAMIC half of one candidate (OLD `Candidate`'s live fields): filled per request, parallel
+/// The DYNAMIC half of one candidate (its live fields): filled per request, parallel
 /// to a [`CandidateStatic`] array of the same length and order.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CandidateDynamic {
-    /// The OLD `latency_ms`, meaningful only when [`CANDIDATE_HAS_LATENCY_MS`] is set.
+    /// The `latency_ms`, meaningful only when [`CANDIDATE_HAS_LATENCY_MS`] is set.
     pub latency_ms: f64,
-    /// The OLD `available_concurrency`.
+    /// The `available_concurrency`.
     pub available_concurrency: u64,
-    /// The OLD `budget_remaining`, meaningful only when [`CANDIDATE_HAS_BUDGET_REMAINING`] is set
+    /// The `budget_remaining`, meaningful only when [`CANDIDATE_HAS_BUDGET_REMAINING`] is set
     /// — DYNAMIC, a per-request store read (the hook view's "cost" field the brief asks be listed).
     pub budget_remaining: i64,
-    /// The OLD `rate_headroom`, meaningful only when [`CANDIDATE_HAS_RATE_HEADROOM`] is set —
+    /// The `rate_headroom`, meaningful only when [`CANDIDATE_HAS_RATE_HEADROOM`] is set —
     /// DYNAMIC, a per-request governance read (the hook view's "budget" field the brief asks be
     /// listed).
     pub rate_headroom: f64,
@@ -486,27 +484,26 @@ pub struct CandidateDynamic {
     pub _reserved: u32,
 }
 
-/// The prompt view and body blob (OLD `PromptProjection`): present, and IDENTICAL, whenever
+/// The prompt view and body blob: present, and IDENTICAL, whenever
 /// `prompt` is granted `ro` or `rw` ([`PROMPT_RO`]/[`PROMPT_RW`]); absent (`system` NULL, `body`
 /// absent, `message_count == 0`) otherwise.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PromptView {
-    /// The OLD `PromptProjection::system`; NULL = none.
+    /// The system text; NULL = none.
     pub system: AbiStr,
-    /// The OLD `PromptProjection::messages`'s length.
+    /// How many messages the prompt holds.
     pub message_count: u64,
     /// The body blob, ARCHITECT review ruling 6: the RAW origin-dialect request bytes, as
     /// [`super::mechanism::call::BLOB_OCTETS`] — zero-copy, never a kernel-built JSON document
     /// (the shared mechanism's own rule: JSON crosses only as an already-opaque payload the
     /// KERNEL never constructs). The SDK/plugin parses its own dialect (llm/mcp/a2a) to recover
-    /// the flattened `(role, text)` view 1.5.5's `PromptProjection` computed kernel-side.
+    /// the flattened `(role, text)` view.
     /// [`BLOB_ABSENT`](super::mechanism::call::BLOB_ABSENT) until the request-serving code hands
-    /// the host the raw bytes; [`messages`](Self::messages) carries the 1.5.5 view regardless.
+    /// the host the raw bytes; [`messages`](Self::messages) carries the flattened view regardless.
     pub body: Blob,
-    /// The OLD `PromptProjection::messages`, flattened exactly as 1.5.5 projected them: one
-    /// [`MessageView`] per message, in request order (ARCHITECT ruling 2026-09-29, WIRE-HOOK Q1: a
-    /// hook sees exactly the 1.5.5 view — the design's accepted-differences ruling — without parsing a dialect). A
+    /// The prompt's messages, flattened: one [`MessageView`] per message, in request order, so a
+    /// hook reads them without parsing a dialect. A
     /// pre-tag v1 layout edit: the layout golden is regenerated, no version bump.
     pub messages: *const MessageView,
     /// How many; equals [`message_count`](Self::message_count)
@@ -514,52 +511,51 @@ pub struct PromptView {
     pub messages_len: usize,
 }
 
-/// One message of the prompt view (OLD `HookMessage`): its role and its flattened text, as 1.5.5's
-/// wire carried them under `request.messages[]`.
+/// One message of the prompt view: its role and its flattened text.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MessageView {
-    /// The OLD `role`.
+    /// The `role`.
     pub role: AbiStr,
-    /// The OLD `text`: the message's text content, flattened.
+    /// The message's text content, flattened.
     pub text: AbiStr,
 }
 
-/// The user view (OLD `CallerIdentity`): present iff `user` access is granted
+/// The user view (the caller's identity): present iff `user` access is granted
 /// ([`USER_RO`]); every field NULL when not granted.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UserView {
-    /// The OLD `key_id`; NULL = none.
+    /// The `key_id`; NULL = none.
     pub key_id: AbiStr,
-    /// The OLD `key_name`; NULL = none.
+    /// The `key_name`; NULL = none.
     pub key_name: AbiStr,
-    /// The OLD `user`; NULL = none.
+    /// The `user`; NULL = none.
     pub user: AbiStr,
 }
 
 /// [`BudgetBucketState::present`]: `remaining_micros` is present.
 pub const BUDGET_HAS_REMAINING_MICROS: u32 = 1 << 0;
 
-/// One bucket of the OLD `HookContext::budget`'s budget-chain (the caller key's own bucket, or an
+/// One bucket of the request's budget chain (the caller key's own bucket, or an
 /// ancestor budget group's), innermost first, derived at the current rate card.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BudgetBucketState {
-    /// The OLD `bucket_id`.
+    /// The `bucket_id`.
     pub bucket_id: AbiStr,
-    /// The OLD `budget_group`; NULL = the key's own bucket (not a group).
+    /// The `budget_group`; NULL = the key's own bucket (not a group).
     pub budget_group: AbiStr,
-    /// The OLD `pool`; NULL = a group-wide bucket (not pool-qualified).
+    /// The `pool`; NULL = a group-wide bucket (not pool-qualified).
     pub pool: AbiStr,
-    /// The OLD `spend_micros_at_current_rate`.
+    /// The `spend_micros_at_current_rate`.
     pub spend_micros_at_current_rate: i64,
-    /// The OLD `remaining_micros`, meaningful only when [`BUDGET_HAS_REMAINING_MICROS`] is set
+    /// The `remaining_micros`, meaningful only when [`BUDGET_HAS_REMAINING_MICROS`] is set
     /// (unset = an uncapped bucket).
     pub remaining_micros: i64,
-    /// The OLD `window_start`.
+    /// The `window_start`.
     pub window_start: u64,
-    /// The OLD `budget_period` (`minute` | `hour` | `day` | `month` | `total`).
+    /// The `budget_period` (`minute` | `hour` | `day` | `month` | `total`).
     pub budget_period: AbiStr,
     /// [`BUDGET_HAS_REMAINING_MICROS`].
     pub present: u32,
@@ -571,7 +567,7 @@ pub struct BudgetBucketState {
 pub const VIEW_HAS_PROMPT: u32 = 1 << 0;
 /// [`DecideIn`]'s `present`: the user view is populated.
 pub const VIEW_HAS_USER: u32 = 1 << 1;
-/// [`DecideIn`]'s `present`: `budget_remaining` (the OLD `HookContext::budget_remaining`) is
+/// [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is
 /// populated.
 pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
 
@@ -595,10 +591,10 @@ pub struct DecideIn {
     pub prompt: PromptView,
     /// The user view; meaningful only when [`VIEW_HAS_USER`] is set.
     pub user: UserView,
-    /// The OLD `HookContext::budget_remaining`; meaningful only when
+    /// The pool's remaining request budget; meaningful only when
     /// [`VIEW_HAS_BUDGET_REMAINING`] is set.
     pub budget_remaining: i64,
-    /// The OLD `HookContext::budget`.
+    /// The request's budget chain, innermost first.
     pub budget: *const BudgetBucketState,
     /// How many.
     pub budget_len: usize,
@@ -628,14 +624,13 @@ pub struct DecideIn {
     pub rewrite_cap: usize,
 }
 
-/// [`DecideOut::verbs`]: prefer an order (`order_buf`/`order_written` hold it) — OLD
-/// `RoutingDecision::Prefer`.
+/// [`DecideOut::verbs`]: prefer an order (`order_buf`/`order_written` hold it).
 pub const VERB_PREFER: u32 = 1 << 0;
-/// [`DecideOut::verbs`]: no opinion — OLD `RoutingDecision::Abstain`.
+/// [`DecideOut::verbs`]: no opinion.
 pub const VERB_ABSTAIN: u32 = 1 << 1;
-/// [`DecideOut::verbs`]: refuse the request — OLD `RoutingDecision::Reject`.
+/// [`DecideOut::verbs`]: refuse the request.
 pub const VERB_REJECT: u32 = 1 << 2;
-/// [`DecideOut::verbs`]: narrow to `restrict_tags` — OLD `RoutingDecision::Restrict`.
+/// [`DecideOut::verbs`]: narrow to `restrict_tags`.
 pub const VERB_RESTRICT: u32 = 1 << 3;
 /// [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the
 /// mechanism's 403 default applies regardless of `reject_status`'s bytes (ARCHITECT review
@@ -653,13 +648,13 @@ pub struct DecideOut {
     /// [`VERB_PREFER`] | [`VERB_ABSTAIN`] | [`VERB_REJECT`] | [`VERB_RESTRICT`] |
     /// [`VERB_HAS_REJECT_STATUS`].
     pub verbs: u32,
-    /// The OLD `Reject::status`, meaningful only when [`VERB_HAS_REJECT_STATUS`] is set; the
+    /// The reject status, meaningful only when [`VERB_HAS_REJECT_STATUS`] is set; the
     /// kernel clamps it to 400-499, else 403.
     pub reject_status: u16,
     /// Alignment padding.
     pub _reserved: u16,
     /// How many bytes the plugin wrote into [`DecideIn::reject_message_buf`] (the kernel runs the
-    /// full 1.5.5 sanitiser and 300-char cap on them).
+    /// reject-message sanitiser and 300-char cap on them).
     pub reject_message_written: usize,
     /// `0` unless `reject_message_written == 0` because the buffer was too small: the byte length
     /// the plugin needed. The host re-invokes ONCE with a buffer at least this large.
@@ -670,13 +665,13 @@ pub struct DecideOut {
     /// `0` unless `restrict_tags_written == 0` because the buffer was too small.
     pub restrict_tags_needed: usize,
     /// How many `u32` candidate indices the plugin wrote into [`DecideIn::order_buf`] (an
-    /// out-of-range index is dropped by the kernel, per `lower_1_5_5_reply`'s stated behaviour).
+    /// out-of-range index is dropped by the kernel).
     pub order_written: usize,
     /// `0` unless `order_written == 0` because `order_buf` was too small: the slot count needed.
     pub order_needed: usize,
 }
 
-/// [`TransformOut::verbs`]: apply the rewrite bytes — OLD `TransformOutcome::Rewrite`.
+/// [`TransformOut::verbs`]: apply the rewrite bytes.
 pub const VERB_REWRITE: u32 = 1 << 0;
 // VERB_ABSTAIN and VERB_REJECT (above) are reused for transform's OLD `Abstain`/`Reject`;
 // VERB_HAS_REJECT_STATUS is shared with decide's. OLD `Failed` maps to the mechanism's own
@@ -693,7 +688,7 @@ pub struct TransformOut {
     pub head: OutHead,
     /// [`VERB_REWRITE`] | [`VERB_ABSTAIN`] | [`VERB_REJECT`] | [`VERB_HAS_REJECT_STATUS`].
     pub verbs: u32,
-    /// The OLD `Reject::status`, meaningful only when [`VERB_HAS_REJECT_STATUS`] is set; the
+    /// The reject status, meaningful only when [`VERB_HAS_REJECT_STATUS`] is set; the
     /// kernel clamps it to 400-499, else 403.
     pub reject_status: u16,
     /// Alignment padding.
@@ -710,8 +705,8 @@ pub struct TransformOut {
     pub rewrite_needed: usize,
 }
 
-/// [`StageView::stage_present`]: the OLD `HookStageProjection` block is present at all (a
-/// REQUEST-stage tap sets none of the bits below — 1.5.5's `stage: None`).
+/// [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets
+/// none of the bits below: it has no stage).
 pub const STAGE_HAS_PROJECTION: u32 = 1 << 0;
 /// [`StageView::stage_present`]: `model` is present.
 pub const STAGE_HAS_MODEL: u32 = 1 << 1;
@@ -726,53 +721,53 @@ pub const STAGE_HAS_OUTCOME: u32 = 1 << 5;
 /// [`StageView::stage_present`]: `status` is present.
 pub const STAGE_HAS_STATUS: u32 = 1 << 6;
 
-/// [`StageView::at`]: the OLD `HookStageProjection::at == "candidate"`.
+/// [`StageView::at`]: the candidate stage.
 pub const STAGE_AT_CANDIDATE: u32 = 0;
-/// [`StageView::at`]: the OLD `HookStageProjection::at == "routing"`.
+/// [`StageView::at`]: the routing stage.
 pub const STAGE_AT_ROUTING: u32 = 1;
-/// [`StageView::at`]: the OLD `HookStageProjection::at == "response"`.
+/// [`StageView::at`]: the response stage.
 pub const STAGE_AT_RESPONSE: u32 = 2;
 
-/// The stage view a tap receives (OLD "stage projection"): [`RequestView`] with NO prompt and NO
-/// signals (B.4's explicit exclusion), plus the OLD `HookStageProjection` fields (`at`, `model`,
+/// The stage view a tap receives: [`RequestView`] with NO prompt and NO
+/// signals (B.4's explicit exclusion), plus the stage fields (`at`, `model`,
 /// `attempt_number`, `remaining_candidates`, `previous_failure`, `outcome`, `status`),
 /// presence-bitmasked (ARCHITECT review ruling 4) since they ride only stage taps
 /// (candidate/routing/response), never a request-stage tap.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StageView {
-    /// The OLD `request_id`.
+    /// The `request_id`.
     pub request_id: u64,
-    /// The OLD `pool`.
+    /// The `pool`.
     pub pool: AbiStr,
-    /// The OLD `ingress_protocol` (ARCHITECT review ruling 8: renamed `ingress_dialect`).
+    /// The dialect the request arrived in.
     pub ingress_dialect: AbiStr,
-    /// The OLD `message_count`.
+    /// The `message_count`.
     pub message_count: u64,
-    /// The OLD `total_chars`.
+    /// The `total_chars`.
     pub total_chars: u64,
-    /// The OLD `HookStageProjection::remaining_candidates`, meaningful only when
+    /// The candidates remaining, meaningful only when
     /// [`STAGE_HAS_REMAINING_CANDIDATES`] is set.
     pub remaining_candidates: u64,
-    /// The OLD `HookStageProjection::model`, meaningful only when [`STAGE_HAS_MODEL`] is set.
+    /// The dispatched model, meaningful only when [`STAGE_HAS_MODEL`] is set.
     pub model: AbiStr,
-    /// The OLD `HookStageProjection::previous_failure`, meaningful only when
+    /// Why the previous attempt failed, meaningful only when
     /// [`STAGE_HAS_PREVIOUS_FAILURE`] is set.
     pub previous_failure: AbiStr,
-    /// The OLD `HookStageProjection::outcome` (`ok` | `failed` | `rejected_by_gate`), meaningful
+    /// The attempt's outcome (`ok` | `failed` | `rejected_by_gate`), meaningful
     /// only when [`STAGE_HAS_OUTCOME`] is set.
     pub outcome: AbiStr,
-    /// The OLD `max_tokens`, meaningful only when [`REQUEST_HAS_MAX_TOKENS`] is set.
+    /// The `max_tokens`, meaningful only when [`REQUEST_HAS_MAX_TOKENS`] is set.
     pub max_tokens: u32,
     /// [`REQUEST_HAS_MAX_TOKENS`] | [`REQUEST_HAS_TOOLS`] | [`REQUEST_STREAM`].
     pub flags: u32,
     /// [`STAGE_AT_CANDIDATE`] | [`STAGE_AT_ROUTING`] | [`STAGE_AT_RESPONSE`], meaningful only
     /// when [`STAGE_HAS_PROJECTION`] is set.
     pub at: u32,
-    /// The OLD `HookStageProjection::attempt_number`, meaningful only when
+    /// The attempt number, meaningful only when
     /// [`STAGE_HAS_ATTEMPT_NUMBER`] is set.
     pub attempt_number: u32,
-    /// The OLD `HookStageProjection::status`, meaningful only when [`STAGE_HAS_STATUS`] is set.
+    /// The response status, meaningful only when [`STAGE_HAS_STATUS`] is set.
     pub status: u16,
     /// Alignment padding.
     pub _reserved: [u8; 2],
@@ -787,9 +782,8 @@ pub struct StageView {
 /// `notify`'s `in`: a value COPY into the host-owned tap pool (global cap 1024, a drop metric past
 /// it, `groups:` filtered before this call is ever made) — it never holds the request open.
 ///
-/// ARCHITECT ruling 2026-09-29 (WIRE-HOOK Q5, the design's accepted-differences ruling: a hook sees exactly the 1.5.5
-/// view): a 1.5.5 tap was handed the request's declared signals, and a `prompt: ro` tap the
-/// prompt, so both ride here beside the stage view — a pre-tag v1 layout edit, the layout golden
+/// A tap is handed the request's declared signals, and a `prompt: ro` tap the prompt, so both
+/// ride here beside the stage view — a pre-tag v1 layout edit, the layout golden
 /// regenerated, no bump.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -811,7 +805,7 @@ pub struct NotifyIn {
 }
 
 /// `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item):
-/// echoes the OLD `ConfigureBody`'s instance name, so the fresh management instance knows which
+/// echoes the instance name, so the fresh management instance knows which
 /// instance it is configuring.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -822,7 +816,7 @@ pub struct ConfigureIn {
     pub version: u64,
     /// The settings blob.
     pub settings: Blob,
-    /// The instance name (OLD `ConfigureBody::hook`).
+    /// The instance name.
     pub name: AbiStr,
 }
 
@@ -837,25 +831,25 @@ pub struct ConfigureOut {
     pub acked_version: u64,
 }
 
-/// `status`'s `out`: the 1.5.5 status blob, unchanged. OFF-PATH: `status` is a plugin-owned
+/// `status`'s `out`: the hook's status blob (JSON). OFF-PATH: `status` is a plugin-owned
 /// result, memory class (iv) — live under `head.lease` until `release(lease)`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StatusOut {
     /// The head.
     pub head: OutHead,
-    /// The 1.5.5 status JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under `head.lease`.
+    /// The status JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under `head.lease`.
     pub status: Blob,
 }
 
-/// `describe`'s `out`: the 1.5.5 describe blob, unchanged. OFF-PATH: `describe` is a plugin-owned
+/// `describe`'s `out`: the hook's self-description blob (JSON). OFF-PATH: `describe` is a plugin-owned
 /// result, memory class (iv) — live under `head.lease` until `release(lease)`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DescribeOut {
     /// The head.
     pub head: OutHead,
-    /// The 1.5.5 describe JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under
+    /// The self-description JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under
     /// `head.lease`.
     pub describe: Blob,
 }
@@ -904,12 +898,11 @@ pub struct ServeOut {
 
 // ── Statement tail ───────────────────────────────────────────────────────────────────────────
 
-/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`.
+/// [`Route::auth`]: no auth required before `serve`.
 pub const ROUTE_AUTH_NONE: u32 = 0;
-/// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
+/// [`Route::auth`]: a data-plane key required before `serve`.
 pub const ROUTE_AUTH_KEY: u32 = 1;
-/// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
-/// `RouteAuth::Admin`.
+/// [`Route::auth`]: admin auth required, reachable only on the admin listener.
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
 /// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES
@@ -929,27 +922,26 @@ pub struct Route {
     pub _reserved: u32,
 }
 
-/// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD
-/// `HookKind::Gate`.
+/// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain).
 pub const CLASS_GATE: u32 = 0;
-/// [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only) — OLD `HookKind::Tap`.
+/// [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only).
 pub const CLASS_TAP: u32 = 1;
 
-/// [`Tail::prompt_access`]: no prompt view/body — OLD `PromptAccess::No` (the default).
+/// [`Tail::prompt_access`]: no prompt view/body (the default).
 pub const PROMPT_NO: u32 = 0;
-/// [`Tail::prompt_access`]: read-only prompt view/body — OLD `PromptAccess::Ro`.
+/// [`Tail::prompt_access`]: read-only prompt view/body.
 pub const PROMPT_RO: u32 = 1;
 /// [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite
-/// grant — OLD `PromptAccess::Rw`.
+/// grant.
 pub const PROMPT_RW: u32 = 2;
 
-/// [`Tail::user_access`]: no user view — OLD `UserAccess::No` (the default).
+/// [`Tail::user_access`]: no user view (the default).
 pub const USER_NO: u32 = 0;
-/// [`Tail::user_access`]: read-only user view — OLD `UserAccess::Ro`.
+/// [`Tail::user_access`]: read-only user view.
 pub const USER_RO: u32 = 1;
 
-/// The hook kind's Statement tail (B.4's "Tail"): the OLD `HookKind`, `PromptAccess`,
-/// `UserAccess`, `infallible` fact, the signals this instance wants, the routes it serves and the
+/// The hook kind's Statement tail (B.4's "Tail"): the hook's class, its prompt and user grants,
+/// its `infallible` fact, the signals this instance wants, the routes it serves and the
 /// hook words it declares.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

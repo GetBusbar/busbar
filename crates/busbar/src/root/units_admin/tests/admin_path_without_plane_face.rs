@@ -502,11 +502,11 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
 struct AnApplyingStore;
 
 #[cfg(feature = "root-admin")]
-impl busbar_contract::verb_store::Store for AnApplyingStore {
+impl busbar_kernel_seams::verb_store::Store for AnApplyingStore {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 
@@ -514,7 +514,7 @@ impl busbar_contract::verb_store::Store for AnApplyingStore {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 }

@@ -1368,25 +1368,25 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     #[derive(Debug, Default)]
     struct RecordingStore(Mutex<Vec<String>>);
 
-    impl busbar_contract::verb_store::Store for RecordingStore {
+    impl busbar_kernel_seams::verb_store::Store for RecordingStore {
         fn chain_break(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
 
         fn store_restore(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
             backup_ref: &str,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
     }
 
@@ -1422,7 +1422,10 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
 
         let outcome = route(
             &binding,
-            Some(Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>),
+            Some(Arc::clone(&store)
+                as Arc<
+                    dyn busbar_kernel_seams::verb_store::Store + Send + Sync,
+                >),
             &admin,
             &mut walk,
         );
@@ -2206,7 +2209,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
-            None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
+            None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -2238,7 +2241,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
-        None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
+        None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
