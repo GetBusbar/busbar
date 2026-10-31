@@ -747,7 +747,7 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
     assert_eq!(two_stream.outcome, RawOutcome::of(Outcome::Ready));
     assert_eq!((opens(&one_table), opens(&two_table)), (1, 1));
 
-    forget(one.instance(), first);
+    drop(forget(one.instance(), first));
     let replayed = establish_on(&two, 0, "127.0.0.1:9", first);
     assert_eq!(
         (replayed.outcome, replayed.value),
@@ -926,6 +926,8 @@ struct Scripted {
     parked: Mutex<Vec<(InstanceId, u64)>>,
     /// Armed, a close parks here until released: a transport door wedged in its close.
     close_gate: Gate,
+    /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
+    landing: bool,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -1014,6 +1016,14 @@ impl DeclaredConns for Scripted {
 
     fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
         self.failing.as_ref().map(|(_, c)| c.clone())
+    }
+
+    fn landed(&self, caller: InstanceId, conn: ConnId, _: u64) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        if self.landing {
+            return Err(ConnError::Pending);
+        }
+        Ok(())
     }
 
     fn auth_of(
@@ -1535,7 +1545,7 @@ fn a_replayed_handle_never_runs_its_service_twice() {
         "the replay answers the stored result, not a second head"
     );
     assert_eq!(replayed.len, h.len);
-    super::forget(q.instance(), T);
+    drop(super::forget(q.instance(), T));
     let fresh = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
     assert_eq!(
         fresh.outcome,
@@ -2369,7 +2379,7 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
         table.script.lock().unwrap().is_empty(),
         "every piece was read from the far end once"
     );
-    super::forget(p.instance(), T);
+    drop(super::forget(p.instance(), T));
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
@@ -2434,7 +2444,7 @@ fn a_replayed_raw_read_writes_its_bytes_again() {
         "the kept answer is still redeemable"
     );
     assert_eq!(&again, b"*2\r\n$3");
-    super::forget(p.instance(), T);
+    drop(super::forget(p.instance(), T));
     let gone = raw_read(&p, 1, stream, &mut buf);
     assert!(!ready(&gone), "a forgotten ticket's read is not replayed");
 }
@@ -2875,6 +2885,57 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     );
     let t = minted.expect("a ticket");
     d.recycle(t);
+}
+
+/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"): a raw
+/// `ESTABLISH` that answered PENDING leaves its dial in flight on the ticket; the recycle that ends
+/// the ticket closes that dial, and the close reaches a transport door. The door double parks in
+/// its close: while it is parked, a ticket is still minted on that worker, because the worker's
+/// state lock is not held across the close.
+#[test]
+fn red_a_dial_left_in_flight_is_closed_with_no_worker_lock_held() {
+    let table = Arc::new(Scripted {
+        landing: true,
+        ..Scripted::default()
+    });
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, d.adopter());
+    assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
+    let driver = d.driver(&p, 0).expect("a driver ticket");
+    let pending = establish_on(&p, 0, "127.0.0.1:9", driver);
+    assert_eq!(
+        pending.outcome,
+        RawOutcome::of(Outcome::Pending),
+        "the dial is still connecting"
+    );
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "one dial in flight");
+    table.close_gate.armed.store(true, AtomicOrdering::SeqCst);
+    d.recycle(driver);
+    let parked = table
+        .close_gate
+        .entered_within(std::time::Duration::from_secs(10));
+    let minted = std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = &d;
+        s.spawn(move || {
+            let _ = tx.send(d.mint(0));
+        });
+        let minted = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Released whatever happened, so the scope's join never waits on the parked close.
+        table
+            .close_gate
+            .released
+            .store(true, AtomicOrdering::SeqCst);
+        minted
+    });
+    assert!(parked, "the dial left in flight was never closed");
+    let minted = minted.expect(
+        "a mint on the worker blocked while a transport close ran: the dial left in flight was \
+         closed under the worker's state lock",
+    );
+    let t = minted.expect("a ticket");
+    d.recycle(t);
+    drop(p);
 }
 
 /// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so

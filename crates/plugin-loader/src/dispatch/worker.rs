@@ -589,9 +589,15 @@ std::thread_local! {
     /// worker's state lock is held, and either may hold an instance's last reference, whose drop
     /// closes its connections (a transport's code) and unloads its library. Each keeps its instance
     /// here instead, and the loop lets the list go once the lock is released.
-    static LET_GO: std::cell::RefCell<Option<Vec<Arc<Instance>>>> =
+    /// The dials a recycled or restarted ticket left in flight ([`super::conn_services::Closes`])
+    /// are kept here the same way: their close may cross into a transport door.
+    static LET_GO: std::cell::RefCell<Option<Vec<Late>>> =
         const { std::cell::RefCell::new(None) };
 }
+
+/// What a worker loop lets go once its lock is released ([`LET_GO`]): an instance, or the dials
+/// a ticket left in flight. Only ever dropped.
+type Late = Box<dyn std::any::Any>;
 
 /// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
 /// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
@@ -599,14 +605,29 @@ fn hold_past_lock(instance: &Arc<Instance>) {
     // `try_with`: a drop made while the thread itself is ending keeps nothing.
     let _ = LET_GO.try_with(|l| {
         if let Some(held) = l.borrow_mut().as_mut() {
-            held.push(Arc::clone(instance));
+            held.push(Box::new(Arc::clone(instance)));
         }
     });
 }
 
-/// The instances held past the worker's lock so far, to be dropped by the caller once it has let
-/// the lock go.
-fn let_go() -> Vec<Arc<Instance>> {
+/// Forget what instance `id` kept on the connector under `ticket` while the worker's lock is held:
+/// how many answers it kept. The dials it left in flight are closed once the loop lets the lock go
+/// ([`let_go`]); off a worker loop's thread they close at once.
+fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
+    let (kept, closes) = super::conn_services::forget(id, ticket);
+    let mut closes = Some(closes);
+    let _ = LET_GO.try_with(|l| {
+        if let Some(held) = l.borrow_mut().as_mut() {
+            held.extend(closes.take().map(|c| Box::new(c) as Late));
+        }
+    });
+    drop(closes);
+    kept
+}
+
+/// What was held past the worker's lock so far, to be dropped by the caller once it has let the
+/// lock go.
+fn let_go() -> Vec<Late> {
     LET_GO.with(|l| {
         l.borrow_mut()
             .as_mut()
@@ -1139,7 +1160,7 @@ impl Worker {
         let ticket = self.ticket(idx, e.generation);
         env.services.held.untrack(ticket);
         for id in e.conns.drain(..) {
-            super::conn_services::forget(id, ticket);
+            forget_conns(id, ticket);
         }
         let next = next_count(e.count);
         if let Some(count) = next {
@@ -1327,7 +1348,7 @@ impl Worker {
                         // Nothing is held: the tick starts the driver ticket's next cycle, and the
                         // last cycle's kept answers (and their epoch) go.
                         let kept = env.services.forget(ticket)
-                            + super::conn_services::forget(meta.instance.instance, ticket);
+                            + forget_conns(meta.instance.instance, ticket);
                         env.services.held.forget(ticket);
                         env.stats
                             .driver_kept_high
@@ -1348,7 +1369,7 @@ impl Worker {
                     // The forget ends the last op's epoch too: a service of its still running
                     // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
-                    super::conn_services::forget(meta.instance.instance, ticket);
+                    forget_conns(meta.instance.instance, ticket);
                 }
                 let inst = meta.instance.clone();
                 let expired = meta.class != DeadlineClass::WriteBehind
