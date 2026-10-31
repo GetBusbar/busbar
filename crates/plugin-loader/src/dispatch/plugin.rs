@@ -784,9 +784,7 @@ impl Instance {
     /// table refused (a CA that is no trust anchor): an `open` fails with it rather than serve
     /// connections that can never verify. Every refusal is audited either way.
     fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
-        let Some((instance, table)) = self.wake.conn.get() else {
-            return None;
-        };
+        let (instance, table) = self.wake.conn.get()?;
         let mut trust_refused = None;
         let bytes: &[u8] = if settings.ptr.is_null() {
             &[]
@@ -996,6 +994,10 @@ impl Instance {
         std::mem::take(&mut *self.open_reason.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    fn instance_free(&self, s: u32) -> bool {
+        self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK
+    }
+
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
     /// the table does not have, an instance-less call before `open` answered READY (a half-open
     /// box admits only its `close`, once its `open` is over: the lifecycle exclusion), a second
@@ -1013,6 +1015,11 @@ impl Instance {
         }
         if s >= self.slot_count() {
             return Some(Outcome::Refused);
+        }
+        if self.instance_free(s) {
+            let fits = in_size >= size_of::<busbar_contract::abi::secret::CheckIn>()
+                && out_size >= size_of::<OutHead>();
+            return (!fits).then_some(Outcome::Refused);
         }
         let open = self.is_open();
         let half_open = self.half_open();
@@ -1140,8 +1147,7 @@ impl Instance {
         // The secret kind's `check` judges a reference at config time with NO instance, as
         // `validate` judges settings: it crosses whether or not the plugin was opened, and the
         // plugin is handed NULL for its instance (`abi::secret::Ops::check`).
-        let instance_free =
-            self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK;
+        let instance_free = self.instance_free(s);
         let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free;
         // A half-open box is crossed only by the `cancel` of its pended `open` and its `close`.
         let crossable =
