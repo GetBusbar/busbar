@@ -1039,6 +1039,8 @@ pub(super) mod session_door {
         /// (`upstream_model`, Part 2 #51), written in the deployment's `models:` as production
         /// writes it; `None` = the catalog name is the wire name.
         upstream_model: Option<&'static str>,
+        /// The deployment configures no media listener (`media.listen`): no claim door is bound.
+        no_media: bool,
     }
 
     /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
@@ -1320,8 +1322,12 @@ pub(super) mod session_door {
         // binds there, on an ephemeral loopback port.
         sections.insert(
             section_key,
-            serde_yaml::from_str("{session: {model: m-cap}, media: {listen: '127.0.0.1:0'}}")
-                .expect("a section"),
+            serde_yaml::from_str(if opts.no_media {
+                "{session: {model: m-cap}}"
+            } else {
+                "{session: {model: m-cap}, media: {listen: '127.0.0.1:0'}}"
+            })
+            .expect("a section"),
         );
         // The deployment's `models:` beside it, as the root hands the kernel-owned sections a door
         // plane may read (`door_steps::kernel_sections`).
@@ -2516,6 +2522,101 @@ pub(super) mod session_door {
             Some(6),
             "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
         );
+    }
+
+    /// A keyed `application/sdp` POST of `offer` to the SDP door: its status, content type and body.
+    async fn post_offer(s: &SessionDoor, offer: &[u8]) -> (StatusCode, String, Vec<u8>) {
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/realtime/calls")
+            .header("content-type", "application/sdp")
+            .header("authorization", format!("Bearer {}", s.plain))
+            .body(axum::body::Body::from(offer.to_vec()))
+            .expect("a request");
+        let response = tokio::time::timeout(ANSWER_BOUND, s.router.clone().oneshot(req))
+            .await
+            .expect("the SDP door answers within the bound")
+            .expect("the router answers");
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        (status, content_type, body_of(response).await.to_vec())
+    }
+
+    /// The `door.session_open` rows the audit chain holds for the key, rejected.
+    fn session_open_refusals(s: &SessionDoor) -> usize {
+        busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(0, 1000, Some("door.session_open"), None)
+            .into_iter()
+            .filter(|e| e.principal == s.key.id && e.outcome == "rejected")
+            .count()
+    }
+
+    /// AN OFFER THE DOOR CANNOT OPEN MEDIA FOR IS REFUSED, EXPLAINED AND AUDITED (lead ruling, R10 row
+    /// 132; nothing silent): a deployment with no media listener for the SDP door's carrier refuses
+    /// the offer naming the setting that is missing, and an offer with no media lines is refused
+    /// naming that, each in the door's own error shape (JSON, never an empty body) and each with
+    /// a rejected audit row under the caller's key. Nothing is dialled. RED: both answered an
+    /// empty 404 / 400 and wrote no row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_offer_the_door_cannot_open_media_for_is_refused_explained_and_audited() {
+        let _one = PUBLISHING.lock().await;
+        let explained = |body: &[u8]| -> String {
+            let v: serde_json::Value =
+                serde_json::from_slice(body).unwrap_or_else(|_| panic!("a JSON refusal: {body:?}"));
+            v["error"]["message"]
+                .as_str()
+                .unwrap_or_else(|| panic!("an error message: {v}"))
+                .to_owned()
+        };
+        // No media listener configured.
+        let mut s = session_with(
+            "serve-door-session-no-media",
+            Opts {
+                no_media: true,
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let before = session_open_refusals(&s);
+        let (_browser, offer) = Peer::browser();
+        let (status, content_type, body) = post_offer(&s, &offer).await;
+        assert_eq!(status.as_u16(), 404, "{}", String::from_utf8_lossy(&body));
+        assert!(content_type.contains("json"), "{content_type}");
+        let message = explained(&body);
+        assert!(
+            message.contains(".media.listen"),
+            "names the missing setting: {message}"
+        );
+        assert_eq!(session_open_refusals(&s), before + 1, "audited");
+        assert!(s.heard.try_recv().is_err(), "nothing dialled");
+
+        // A media listener, and an offer with no media lines.
+        let mut s = session_with("serve-door-session-no-lines", Opts::default())
+            .await
+            .expect("the build links the session door");
+        let before = session_open_refusals(&s);
+        let (status, content_type, body) = post_offer(
+            &s,
+            b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=no-lines\r\nt=0 0\r\n",
+        )
+        .await;
+        assert_eq!(status.as_u16(), 400, "{}", String::from_utf8_lossy(&body));
+        assert!(content_type.contains("json"), "{content_type}");
+        let message = explained(&body);
+        assert!(
+            message.to_ascii_lowercase().contains("m-line")
+                || message.to_ascii_lowercase().contains("media"),
+            "names why the offer opens no media: {message}"
+        );
+        assert_eq!(session_open_refusals(&s), before + 1, "audited");
+        assert!(s.heard.try_recv().is_err(), "nothing dialled");
     }
 
     /// The call the far end's SDP answer places, where its `Location` says it lives.

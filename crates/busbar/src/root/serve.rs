@@ -632,6 +632,23 @@ pub struct DoorApply {
 }
 
 impl DoorApply {
+    /// The setting that binds the claim door for `carrier`: `<section>.<target>.listen` of the
+    /// plane's inbound need over that carrier (what [`need_binds`] reads); `None` when no inbound
+    /// need of the plane rides it.
+    #[must_use]
+    pub fn listen_setting(&self, carrier: &str) -> Option<String> {
+        use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        let f = &self.served_facts;
+        f.need_auths
+            .iter()
+            .zip(&f.need_targets)
+            .zip(&f.need_transports)
+            .find(|(((direction, _), target), transport)| {
+                *direction == DIRECTION_INBOUND && !target.is_empty() && **transport == carrier
+            })
+            .map(|((_, target), _)| format!("{}.{target}.listen", f.section))
+    }
+
     /// The current generation's pools and egress.
     #[must_use]
     pub fn current(&self) -> Arc<DoorLive> {
@@ -3641,18 +3658,31 @@ impl DataRoutes {
         let book = (self.served.session_book.clone())
             .unwrap_or_else(|| Arc::clone(crate::root::connector::the()));
         let Some(claim_door) = self.served.claim_doors.get(&carrier) else {
-            return stated(
-                (refusal_status(ReasonCode::NoDestination), Vec::new()),
-                Body::empty(),
+            // NO MEDIA LISTENER: the deployment binds no claim door for the carrier, so no session
+            // can open. Refused, naming the setting that binds one (never an empty answer).
+            let setting = self.served.planes[door.plane]
+                .live
+                .listen_setting(&carrier)
+                .unwrap_or_else(|| format!("the `{carrier}` listener's `listen`"));
+            let text = format!(
+                "this deployment serves no media for the offer: no listener is configured for its \
+                 `{carrier}` carrier (set `{setting}`)"
             );
+            return self.refused_open(&door, &arrival, &carrier, ReasonCode::NoDestination, &text);
         };
         let opened = match serve_datagram::Opened::open(&claim_door, framer, &arrival.body) {
             Ok(o) => o,
-            Err(_) => {
-                return stated(
-                    (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
-                    Body::empty(),
-                )
+            Err(why) => {
+                // THE OFFER OPENS NO MEDIA: the framer refused the far end's description (it does
+                // not parse, or names no media line), in its own words.
+                let text = format!("the offer cannot open a media session: {why}");
+                return self.refused_open(
+                    &door,
+                    &arrival,
+                    &carrier,
+                    ReasonCode::DecodeFailed,
+                    &text,
+                );
             }
         };
         let serve_datagram::Opened {
@@ -3728,6 +3758,44 @@ impl DataRoutes {
                 )
             }
         }
+    }
+
+    /// A DATAGRAM SESSION'S OPEN REFUSED BEFORE ANY UNIT (nothing silent): `text` rendered in the
+    /// plane's own refusal shape for the claim's dialect, under `reason`'s status, and audited
+    /// `door.session_open` rejected on `<instance>:<carrier>` under the caller's principal.
+    fn refused_open(
+        &self,
+        door: &SessionDoor,
+        arrival: &Arrival,
+        carrier: &str,
+        reason: ReasonCode,
+        text: &str,
+    ) -> Response {
+        let served = &self.served.planes[door.plane];
+        let status = refusal_status(reason);
+        let dialect = served
+            .snapshot
+            .claims
+            .get(arrival.claim as usize)
+            .map_or(0, |c| u32::from(c.refusal_dialect));
+        let rendered = served
+            .driver
+            .refuse_kernel(reason, status, text, dialect, &arrival.target)
+            .unwrap_or_else(|| Rendered {
+                status,
+                fields: Vec::new(),
+                body: text.as_bytes().to_vec(),
+            });
+        busbar_kernel::audit::auditlog::emit_admin_hostless_now(
+            "door.session_open",
+            &format!("{}:{carrier}", served.instance),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            door.principal.as_str(),
+        );
+        stated(
+            (rendered.status, rendered.fields),
+            Body::from(rendered.body),
+        )
     }
 
     /// A CLAIMED ARRIVAL, AS ITS UNIT TAKES IT: the caller's head (the fields never kept struck) as
