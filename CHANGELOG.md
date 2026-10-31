@@ -117,6 +117,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 - **A store refuses a different record at an already-used task-event sequence as a fork**, where the
   published store plugin overwrote it (spec lines 1200-1202, Q79-fork-refusal, "signed as an accepted
   difference").
+- **`allow_unsigned` no longer admits a plugin signed by a retired release key.**
+  1.6.0 Changed: a first-party plugin signed by a retired busbar release key is refused (`retired_key`) even under `plugins.trust.allow_unsigned`, with a message naming the key and saying allow_unsigned does not admit it; an unsigned plugin under `allow_unsigned` still loads as unverified.
+  A retired key is a revocation, not a missing signature; naming the key under
+  `plugins.trust.publishers` remains the one explicit opt-in (owner-signed 2026-10-30).
 - **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
   fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
