@@ -48,7 +48,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ValidateIn,
+    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
@@ -302,6 +302,9 @@ pub(crate) struct Crossed {
     pub(crate) disposition: Option<u32>,
     /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
     pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// A lease the plugin named on an answer that hands none to the caller (any outcome but READY
+    /// or PENDING, a FAULT the host judged included): released by the host as the crossing ends.
+    pub(crate) unread: u64,
 }
 
 impl Crossed {
@@ -314,6 +317,15 @@ impl Crossed {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
+            unread: 0,
+        }
+    }
+
+    /// This answer, with `lease` (what the plugin named in its head) left for the host to release.
+    fn unread(self, lease: u64) -> Self {
+        Self {
+            unread: lease,
+            ..self
         }
     }
 }
@@ -1074,7 +1086,49 @@ impl Instance {
         if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
             self.close_half_open();
         }
-        crossed
+        if crossed.unread != 0 && s != slot::RELEASE {
+            self.release_unread(crossed.unread);
+        }
+        Crossed {
+            unread: 0,
+            ..crossed
+        }
+    }
+
+    /// RELEASE A LEASE NO CALLER WAS HANDED (export ABI defect 6): the plugin named `lease` on an
+    /// answer that was not READY, so no caller reads under it and none releases it; the host does,
+    /// ticket-less, once the crossing that named it is over. An instance no longer open (or
+    /// faulted) is not crossed again: what it held goes with it.
+    fn release_unread(&self, lease: u64) {
+        if !self.is_open() || self.faulted.load(Ordering::Acquire) {
+            return;
+        }
+        let mut input = ReleaseIn {
+            head: InHead {
+                size: size_of::<ReleaseIn>() as u32,
+                ..super::in_head()
+            },
+            lease,
+        };
+        let mut out = super::out_head();
+        // SAFETY: the host's own `release` frame (`ReleaseIn` leads with its head, the `out` is
+        // the head), live and unaliased for the call.
+        let released = unsafe {
+            self.cross(
+                slot::RELEASE,
+                (&raw mut input).cast::<InHead>(),
+                &raw mut out,
+                size_of::<OutHead>() as u32,
+            )
+        };
+        if released.outcome != Outcome::Ready {
+            tracing::warn!(
+                plugin = %self.name,
+                kind = ?self.kind,
+                outcome = ?released.outcome,
+                "the release of a lease named on an answer that was not READY did not answer READY"
+            );
+        }
     }
 
     /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
@@ -1290,7 +1344,7 @@ impl Instance {
         let head = unsafe { *out };
         let outcome = judge(raw, &head, ticket, out_size);
         if outcome == Outcome::Fault {
-            return Crossed::host(Outcome::Fault);
+            return Crossed::host(Outcome::Fault).unread(head.lease);
         }
         // SAFETY: the op's own host `in`/`out`; the host wrote `in.size` itself.
         let answer = unsafe {
@@ -1315,7 +1369,7 @@ impl Instance {
                     field = f.field,
                     "a plugin answer broke its kind's rule; the op answers FAULT"
                 );
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
         }
         let short = outcome == Outcome::Failed && (self.short)(&answer);
@@ -1326,7 +1380,7 @@ impl Instance {
             let mut buf = self.take_open_reason();
             if len > buf.len() {
                 // A reason longer than the buffer lent is a malformed answer.
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
             buf.truncate(len);
             Some(buf).filter(|b| !b.is_empty())
@@ -1354,7 +1408,7 @@ impl Instance {
                     field = f.field,
                     "a validate refusal broke the refusal rule; the op answers FAULT"
                 );
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
         }
         // An open that FAILED or was REFUSED (fresh, or on its RESUME) gets no instance: the
@@ -1368,7 +1422,7 @@ impl Instance {
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
             let inst = unsafe { (*out.cast::<OpenOut>()).instance };
             if inst.is_null() {
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
             open_ended.ptr = None;
             self.ptr.store(inst, Ordering::Release);
@@ -1377,10 +1431,14 @@ impl Instance {
                 self.opened.store(true, Ordering::Release);
             }
         }
+        // THE LEASE ON ANY OUTCOME (export ABI defect 6): only a READY (or PENDING) answer hands
+        // its lease to the caller; a lease another outcome names is the host's to release.
+        let handed = matches!(outcome, Outcome::Ready | Outcome::Pending);
         Crossed {
             outcome,
             error,
-            lease: head.lease,
+            lease: if handed { head.lease } else { 0 },
+            unread: if handed { 0 } else { head.lease },
             wake_at_ns: if outcome == Outcome::Pending {
                 head.wake_at_ns
             } else {
