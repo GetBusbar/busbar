@@ -79,7 +79,7 @@ pub mod egress_ports;
 pub mod exports;
 pub mod hooks;
 pub mod inbound;
-#[cfg(all(test, linked_every_plane))]
+#[cfg(all(test, linked_every_plane_door))]
 #[path = "tests/inbound.rs"]
 mod inbound_tests;
 pub mod kernel;
