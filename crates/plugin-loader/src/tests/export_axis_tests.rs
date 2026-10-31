@@ -311,3 +311,26 @@ fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
         "none stated: the default, within the declared concurrency"
     );
 }
+
+/// RED (export ABI defect 3): a `check` asked of a row that will not load here answers why, as a
+/// finding. Before, the load failure answered no findings at all, so the configuration validated
+/// clean while the sink's own checks never ran.
+#[test]
+fn a_check_on_a_row_that_will_not_load_answers_why() {
+    let row = "export-unloadable";
+    let registry = both_ways::dropped(row, manifest(row), b"not a library");
+    let rows = ExportRows::new(&registry, dispatcher());
+    let findings = rows
+        .check(
+            row,
+            CHECK_PHASE_INSTANCES,
+            &[("audit".into(), serde_json::json!({}))],
+        )
+        .expect("an export row");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(
+        findings[0].starts_with(&format!("export `module: {row}`: "))
+            && findings[0].contains(NO_DOOR),
+        "{findings:?}"
+    );
+}

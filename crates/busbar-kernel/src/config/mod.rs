@@ -1852,8 +1852,9 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             def.durable,
             errors,
         );
-        // A `one_instance` module configured again: its own `check` (limits phase) words the
-        // refusal, once, over every instance of it; the extra instance is not resolved.
+        // A `one_instance` module configured again: the host words the refusal around the reason
+        // its own `check` (limits phase) gives, once, over every instance of it; the extra
+        // instance is not resolved.
         if crate::export::plugin::one_instance(module) {
             if seen_once.contains(&module) {
                 if !refused.contains(&module) {

@@ -17,8 +17,10 @@ use crate::abi::mechanism::call::{Blob, OutHead, BLOB_JSON};
 use crate::abi::mechanism::door::{Statement, REWRITE_ALIAS};
 use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use crate::abi::sdk::door::{abi_str, alias, statement};
-use crate::abi::sdk::life::{settings_as, settings_value, Refreshed};
-use crate::abi::sdk::test_support::reply::{self, Instance as Opened};
+use crate::abi::sdk::life::{
+    settings_as, settings_value, HeldSlot, Opened, NOT_REFRESHED, NO_INSTANCE,
+};
+use crate::abi::sdk::test_support::reply::{self, Instance as TestInstance};
 use crate::abi::sdk::test_support::test_in::TestIn;
 use crate::abi::sdk::test_support::{zeroed, DoorView};
 use crate::abi::sdk::Safe;
@@ -54,10 +56,6 @@ impl Life for Probe {
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Self::validate(settings).map(|()| Probe)
     }
-
-    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        Ok(Refreshed::default())
-    }
 }
 
 /// What [`Deliver`] notes in its reply's envelope.
@@ -88,32 +86,30 @@ impl SafeSlot for Deliver {
 /// The probe's one-instance refusal.
 const WHY: &str = "The probe holds one file, so a second instance could only be ignored.";
 
-/// `check`: at the limits phase, every instance after the first refused.
+/// `check`: at the limits phase, with more than one instance, why a second cannot run.
 struct Check;
 
-impl SafeSlot for Check {
+impl HeldSlot for Check {
     type In = CheckIn;
     type Out = CheckOut;
-    type State = Held<Probe>;
+    type Life = Probe;
     fn call(
-        instance: Instance<'_, Held<Probe>>,
+        held: &Held<Probe>,
+        _: &Instance<'_, Held<Probe>>,
         input: Lent<'_, CheckIn>,
         mut out: Out<'_, CheckOut>,
     ) -> Outcome {
-        let Some(h) = instance.get() else {
-            return Outcome::Refused;
-        };
-        let lines = second_instances(&instance_names(input), "probe-sink", WHY);
+        let lines = one_instance_reason(&instance_names(input), WHY);
         if !lines.is_empty() {
             let json = serde_json::to_vec(&lines).unwrap_or_default();
-            out.lease(|o| &o.findings, h.leases(), json, BLOB_JSON);
+            out.lease(|o| &o.findings, held.leases(), json, BLOB_JSON);
         }
         Outcome::Ready
     }
 }
 
 mod plugin {
-    use super::{Check, Deliver, NoScrape, NoServe, Probe, Quiet, Safe};
+    use super::{Check, Deliver, NoScrape, NoServe, Opened, Probe, Quiet, Safe};
 
     crate::plugin_door! {
         ops: super::Ops,
@@ -121,7 +117,7 @@ mod plugin {
         lifecycle: life(Probe),
         kind_ops: {
             deliver: Safe<Deliver>, scrape: Safe<NoScrape<Probe>>, status: Safe<Quiet<Probe>>,
-            check: Safe<Check>, serve: Safe<NoServe<Probe>>,
+            check: Safe<Opened<Check>>, serve: Safe<NoServe<Probe>>,
         },
     }
 }
@@ -130,7 +126,7 @@ fn view() -> DoorView {
     DoorView::of(plugin::MACRO_DOOR)
 }
 
-fn opened(view: &DoorView) -> Opened<'static> {
+fn opened(view: &DoorView) -> TestInstance<'static> {
     let open = view.op::<Ops>(|t| &t.head.open).expect("open");
     let mut c = reply::call_in(
         open,
@@ -144,7 +140,7 @@ fn opened(view: &DoorView) -> Opened<'static> {
     c.take_instance().expect("an instance")
 }
 
-fn close(view: &DoorView, instance: Opened<'static>) {
+fn close(view: &DoorView, instance: TestInstance<'static>) {
     let close = view.op::<Ops>(|t| &t.head.close).expect("close");
     let mut h: OutHead = zeroed();
     h.size = size_of::<OutHead>() as u32;
@@ -198,10 +194,10 @@ fn a_push_sink_refuses_scrape_and_serve_in_the_kinds_words() {
     close(&view, instance);
 }
 
-/// The `one_instance` check through the door: every instance after the first is one finding naming
-/// the first; one instance (or none) is none.
+/// The `one_instance` check through the door: with more than one instance, the sink's one finding
+/// is why a second cannot run (the host words the refusal); one instance (or none) is none.
 #[test]
-fn every_instance_after_the_first_is_refused_naming_the_first() {
+fn a_second_instance_is_answered_with_the_sinks_reason() {
     let view = view();
     let instance = opened(&view);
     let check = view.op::<Ops>(|t| &t.check).expect("check");
@@ -231,14 +227,8 @@ fn every_instance_after_the_first_is_refused_naming_the_first() {
         serde_json::from_slice(&named(&["a", "b", "c"])).expect("findings are a JSON list");
     assert_eq!(
         lines,
-        [
-            format!(
-                "export.b: a second `module: probe-sink` instance (already defined as 'a'). {WHY}"
-            ),
-            format!(
-                "export.c: a second `module: probe-sink` instance (already defined as 'a'). {WHY}"
-            ),
-        ]
+        [WHY],
+        "the sink says why; the host words the refusal"
     );
     close(&view, instance);
 }
@@ -329,4 +319,36 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
     );
     assert!(c.out.envelope.diags.is_null(), "the out keeps no pointer");
     close(&view, instance);
+}
+
+/// RED (export ABI defect 17): an op over the open instance answers a call with NO instance in the
+/// SDK's own words, before the plugin's body runs. Before, each sink hand-wrote that branch.
+#[test]
+fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
+    let view = view();
+    let check = view.op::<Ops>(|t| &t.check).expect("check");
+    let mut input: CheckIn = zeroed();
+    input.head.op = crate::abi::export::slot::CHECK;
+    input.phase = CHECK_PHASE_LIMITS;
+    // Deliberately malformed ABI entry: call_in protects ordinary fixtures from missing instances.
+    // Enter the raw slot so this checks the SDK's refusal rather than that fixture guard.
+    let c = reply::call(
+        check.parts().0,
+        core::ptr::null_mut(),
+        &input,
+        zeroed::<CheckOut>(),
+    );
+    assert_eq!(c.outcome, Outcome::Refused);
+    assert_eq!(c.error.as_deref(), Some(NO_INSTANCE));
+}
+
+/// RED (export ABI defect 5): a sink states no `refresh` — the host never refreshes an export
+/// instance (restart to apply) — and the SDK's default answers it REFUSED, saying so.
+#[test]
+fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
+    let Err(refused) = Probe.refresh(b"{}", &[], 2) else {
+        panic!("the default refresh is refused");
+    };
+    assert_eq!(refused.outcome(), Outcome::Refused);
+    assert_eq!(refused.text(), Some(NOT_REFRESHED));
 }

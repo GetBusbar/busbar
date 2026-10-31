@@ -15,7 +15,7 @@
 //!   which emits the ONE exported symbol [`DOOR_SYMBOL`](crate::abi::mechanism::DOOR_SYMBOL),
 //!   forwarding to the same `door`. Compiled in or dropped in, the kernel reaches the same table.
 //!
-//! EVERY SLOT IS A TRAMPOLINE. A table entry is `trampoline::<S, INDEX>` over a [`Slot`] the
+//! EVERY SLOT IS A TRAMPOLINE. A table entry is `trampoline::<S, INDEX>` over a [`RawSlot`] the
 //! plugin implements. The trampoline is the SDK's half of the call convention, the same for every
 //! slot of every kind:
 //!
@@ -175,13 +175,13 @@ slot_structs!(Lifecycle {
 /// implements it on its `Ops` once per kind op (`LIFECYCLE_SLOTS + k`), next to the table in
 /// `abi/<kind>/`, and on its [`KindOps::Lifecycle`] once per lifecycle slot;
 /// [`plugin_door!`](crate::plugin_door) then refuses to compile any slot, lifecycle or kind op,
-/// whose [`Slot`] reads or writes other structs.
+/// whose [`RawSlot`] reads or writes other structs.
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::{InHead, Op, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::mechanism::KindCode;
-/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 /// # use std::ffi::c_void;
 /// #[repr(C)]
 /// #[derive(Clone, Copy)]
@@ -194,8 +194,8 @@ slot_structs!(Lifecycle {
 /// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
@@ -217,7 +217,7 @@ slot_structs!(Lifecycle {
 /// use busbar_contract::abi::mechanism::call::{InHead, Op, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::mechanism::KindCode;
-/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 /// # use std::ffi::c_void;
 /// #[repr(C)]
 /// #[derive(Clone, Copy)]
@@ -229,8 +229,8 @@ slot_structs!(Lifecycle {
 /// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
@@ -287,9 +287,57 @@ unsafe impl KindOps for crate::abi::transport::Ops {
     type Lifecycle = Lifecycle;
 }
 
-/// One slot body. A plugin implements it on a type of its own, one per slot, and names that type
-/// in [`plugin_door!`](crate::plugin_door).
-pub trait Slot {
+/// One raw slot body. A plugin implements it on a type of its own, one per slot, and names that
+/// type in [`plugin_door!`](crate::plugin_door) (or writes a
+/// [`SafeSlot`](crate::abi::sdk::safe::SafeSlot), with no `unsafe`).
+///
+/// A body reads `instance` and the pointers in `input` on the trampoline's word (the call
+/// contract), so safe code that names the slot type cannot call the body with pointers it made up:
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::GenIn;
+/// use busbar_contract::abi::sdk::door::RawSlot;
+/// use std::ffi::c_void;
+/// pub struct Peek;
+/// impl RawSlot for Peek {
+///     type In = GenIn;
+///     type Out = OutHead;
+///     unsafe fn call(instance: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+///         // The call contract: `instance` is the pointer this plugin's `open` answered.
+///         let _ = unsafe { instance.cast::<u64>().read() };
+///         Outcome::Ready
+///     }
+/// }
+/// fn main() {
+///     // SAFETY: `GenIn` and `OutHead` are plain integers and pointers.
+///     let (i, mut o): (GenIn, OutHead) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+///     // Safe code, a made-up instance: refused.
+///     let _ = Peek::call(8 as *mut c_void, &i, &mut o);
+/// }
+/// ```
+///
+/// Nor can safe code state an [`Entry`] the trampoline would trust:
+///
+/// ```compile_fail,E0200
+/// use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+/// use busbar_contract::abi::sdk::door::Entry;
+/// use std::ffi::c_void;
+/// pub struct Forged;
+/// impl Entry for Forged {
+///     type In = OpenIn;
+///     type Out = OpenOut;
+///     // A claim that `open` installed the SDK's typed state, which it did not.
+///     const SAFE: bool = true;
+///     unsafe fn enter(_: *mut c_void, _: u32, _: &OpenIn, out: &mut OpenOut) -> Outcome {
+///         out.instance = 8 as *mut c_void;
+///         Outcome::Ready
+///     }
+/// }
+/// fn main() {}
+/// ```
+pub trait RawSlot {
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -297,13 +345,22 @@ pub trait Slot {
     /// The body. `input` is a private copy of the host's `in` (tail zero-filled), `out` a private
     /// copy of the host's `out`; the trampoline writes `out` back and mirrors the returned outcome
     /// into `out.head.outcome`, so the body need not set it.
-    fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
+    ///
+    /// # Safety
+    /// [`Entry::enter`]'s contract: called only by the trampoline, `instance` NULL or the pointer
+    /// this plugin's `open` answered READY and `close` has not, and every pointer in `input` valid
+    /// for the call as the kind's ABI states it. A body may read them on that word alone.
+    unsafe fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
 }
 
-/// What a table entry runs: a raw [`Slot`], or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot)
+/// What a table entry runs: a [`RawSlot`], or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot)
 /// behind [`Safe`](crate::abi::sdk::safe::Safe). The trampoline is generic over this, so
 /// [`plugin_door!`](crate::plugin_door) takes either in any slot position.
-pub trait Entry {
+///
+/// # Safety
+/// [`SAFE`](Self::SAFE) is `true` only when `enter` reads the instance as the SDK's typed state
+/// and, in `open`, answers only an instance the SDK minted: the SDK's slots trust it.
+pub unsafe trait Entry {
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -327,10 +384,39 @@ pub trait Entry {
     ) -> Outcome;
 }
 
-impl<S: Slot> Entry for S {
+// SAFETY: a raw slot states `SAFE = false`, and its body runs under the contract `enter` is
+// called under, which is `RawSlot::call`'s.
+unsafe impl<S: RawSlot> Entry for S {
     type In = S::In;
     type Out = S::Out;
     unsafe fn enter(instance: *mut c_void, _: u32, input: &S::In, out: &mut S::Out) -> Outcome {
+        // SAFETY: the caller keeps `enter`'s contract, which is `call`'s.
+        unsafe { S::call(instance, input, out) }
+    }
+}
+
+/// THE OLD RAW SLOT, whose body is a SAFE fn over the host's raw pointers: safe code that names
+/// the type can call it with pointers it made up, so a body that reads them is unsound. Kept only
+/// so a plugin built against it still compiles until it moves: write [`RawSlot`] (the same
+/// body, `unsafe fn call`) or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot).
+#[deprecated(
+    note = "unsound: safe code can call the body with made-up pointers; implement `RawSlot` \
+            (`unsafe fn call`, same body) or `SafeSlot`"
+)]
+pub trait Slot {
+    /// The slot's `in`.
+    type In: AbiIn;
+    /// The slot's `out`.
+    type Out: AbiOut;
+    /// The body, as [`RawSlot::call`]'s.
+    fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
+}
+
+#[allow(deprecated)]
+impl<S: Slot> RawSlot for S {
+    type In = S::In;
+    type Out = S::Out;
+    unsafe fn call(instance: *mut c_void, input: &S::In, out: &mut S::Out) -> Outcome {
         S::call(instance, input, out)
     }
 }
@@ -777,11 +863,10 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
 /// fields private behind `const` constructors from `'static` slices and strs).
 ///
-/// THE SAFE SURFACE OF THE TEST SUPPORT, PROVED IN PAIRS. Each `compile_fail` below has a twin
-/// that differs from it in the one forbidden spelling and MUST compile, so the failure is the
-/// guard's and nothing else's (stable rustdoc checks no error code). They sit here, on an item
-/// every build compiles; the twins naming `test_support` compile only with the dev-only
-/// `test-seal` feature on, so they also prove the doctest build has it.
+/// THE SAFE SURFACE OF THE MACRO DOOR, PROVED IN PAIRS. Each `compile_fail` below has a twin that
+/// differs from it in the one forbidden spelling and MUST compile, so the failure is the guard's
+/// and nothing else's (stable rustdoc checks no error code). The test support's own pairs
+/// (`DoorView`, the fake host) are on `busbar_test_kit::test_support`.
 ///
 /// A literal is refused (its field is private); the macro's own value is not:
 ///
@@ -898,108 +983,6 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 ///     let _ = unsafe { MacroDoor::__from_door_macro(plugin::door) };
 /// }
 /// ```
-///
-/// `DoorView` reads no forged door function; the macro's door it reads:
-///
-/// ```compile_fail
-/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
-/// # struct P;
-/// # impl Life for P {
-/// #     const CANCEL: u32 = 0;
-/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-/// #         Ok(P)
-/// #     }
-/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-/// #         Ok(Refreshed::default())
-/// #     }
-/// # }
-/// # mod plugin {
-/// #     busbar_contract::plugin_door! {
-/// #         ops: busbar_contract::abi::secret::Ops,
-/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
-/// #         lifecycle: life(super::P),
-/// #     }
-/// # }
-/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-/// #     core::ptr::null()
-/// # }
-/// # use busbar_contract::abi::sdk::door::MacroDoor;
-/// fn main() {
-///     let _ = busbar_contract::abi::sdk::test_support::DoorView::of(forged);
-/// }
-/// ```
-///
-/// ```
-/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
-/// # struct P;
-/// # impl Life for P {
-/// #     const CANCEL: u32 = 0;
-/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-/// #         Ok(P)
-/// #     }
-/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-/// #         Ok(Refreshed::default())
-/// #     }
-/// # }
-/// # mod plugin {
-/// #     busbar_contract::plugin_door! {
-/// #         ops: busbar_contract::abi::secret::Ops,
-/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
-/// #         lifecycle: life(super::P),
-/// #     }
-/// # }
-/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-/// #     core::ptr::null()
-/// # }
-/// # use busbar_contract::abi::sdk::door::MacroDoor;
-/// fn main() {
-///     let _ = busbar_contract::abi::sdk::test_support::DoorView::of(plugin::MACRO_DOOR);
-/// }
-/// ```
-///
-/// A fake host hands safe code no table; it lends its tables to an `open` alone:
-///
-/// ```compile_fail
-/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
-/// fn main() {
-///     let host = FakeHost::new();
-///     let _ = host.services();
-/// }
-/// ```
-///
-/// ```
-/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
-/// fn main() {
-///     let host = FakeHost::new();
-///     let _ = host.lend_to(zeroed::<OpenIn>());
-/// }
-/// ```
-///
-/// What a fake host lent cannot outlive it; dropped first, it can:
-///
-/// ```compile_fail
-/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
-/// fn main() {
-///     let host = FakeHost::new();
-///     let lent = host.lend_to(zeroed::<OpenIn>());
-///     drop(host);
-///     drop(lent);
-/// }
-/// ```
-///
-/// ```
-/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
-/// fn main() {
-///     let host = FakeHost::new();
-///     let lent = host.lend_to(zeroed::<OpenIn>());
-///     drop(lent);
-///     drop(host);
-/// }
-/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct MacroDoor {
     door: DoorFn,
@@ -1053,14 +1036,17 @@ impl MacroDoor {
 ///
 /// * `ops` — the kind's table type ([`KindOps`]); the door's `kind`/`kind_abi`, the table's
 ///   `size`/`slots` and the Statement's `size`/`kind`/`kind_abi` all follow from it.
-/// * `lifecycle` — one [`Slot`] per lifecycle slot, each reading and writing the `in`/`out` the
+/// * `lifecycle` — one [`RawSlot`] per lifecycle slot, each reading and writing the `in`/`out` the
 ///   kind states for that slot ([`KindOps::Lifecycle`]; a mismatch does not compile). A NULL slot
 ///   refuses the load, so all nine are named.
-/// * `kind_ops` — one [`Slot`] per kind op, by the table's field name; its index is read off the
+/// * `kind_ops` — one [`RawSlot`] per kind op, by the table's field name; its index is read off the
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
 ///   that index ([`KindSlot`]; a mismatch does not compile). A kind op left unnamed is NULL
-///   (absent), so a door written before an optional kind op was appended to its table still
-///   builds; the loader admits a NULL only where the kind states the op optional.
+///   (absent); the loader admits a NULL only where the kind states the op optional. APPENDING AN
+///   OP TO A KIND'S TABLE IS A KIND ABI BUMP: the host loads exactly its own `ABI_VERSION`, slot
+///   count and table size, so a door built before the append is refused at load and must be
+///   rebuilt. Rebuilt unchanged, its source still compiles: the new op is left NULL, which loads
+///   only when the kind states that op optional.
 /// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
 ///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
@@ -1072,10 +1058,10 @@ impl MacroDoor {
 ///   [`PlaneLife`](crate::abi::sdk::plane_life::PlaneLife) `P` (`abi::sdk::plane_life`), every one
 ///   a [`Safe`](crate::abi::sdk::safe::Safe) slot over `P`. It takes `ready:`, `migrate:` and
 ///   `kind_ops:` as the forms above do.
-/// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a raw [`Slot`] or a
+/// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a [`RawSlot`] or a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) one reading `ReadyIn` and writing `OutHead`.
 /// * `migrate: S` (optional, after `ready`) — the door's `migrate` (`abi::mechanism::lifecycle`,
-///   MIGRATE), a raw [`Slot`] reading `ValidateIn` and writing `OutHead`: in practice
+///   MIGRATE), a [`RawSlot`] reading `ValidateIn` and writing `OutHead`: in practice
 ///   [`Migrator<M>`](crate::abi::sdk::migrate::Migrator) over the plugin's own
 ///   [`Migrate`](crate::abi::sdk::migrate::Migrate). It runs with no instance, so it cannot be a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot. Without it the door states none, and
@@ -1199,7 +1185,7 @@ macro_rules! plugin_door {
             $(
                 const _: () = ::core::assert!(
                     !<$migrate as __sdk::Entry>::SAFE,
-                    "migrate runs with no instance: name it as a raw Slot (Migrator<_>), never Safe<_>"
+                    "migrate runs with no instance: name it as a RawSlot (Migrator<_>), never Safe<_>"
                 );
             )?
             /// THIS PLUGIN IMAGE'S CALL CAPTURE: one slot per thread, the image's own (compiled in
@@ -1224,8 +1210,8 @@ macro_rules! plugin_door {
             }
             const __STATEMENT: &$crate::abi::mechanism::door::Statement =
                 &__sdk::stamp::<__Ops>($statement);
-            // A kind op the door names no slot for is NULL (absent), so a door written before an
-            // optional kind op was appended to its table still builds and states it.
+            // A kind op the door names no slot for is NULL (absent): a door's source written
+            // before an op was appended still builds (the append itself is a kind ABI bump).
             #[allow(clippy::needless_update)]
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(
@@ -1259,7 +1245,7 @@ macro_rules! plugin_door {
         }
 
         /// This plugin's door as the door macro built it: the one value the contract's test
-        /// support (`abi::sdk::test_support::DoorView`) reads a door through.
+        /// support (`busbar_test_kit::test_support::DoorView`) reads a door through.
         #[allow(dead_code)]
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
             // SAFETY: `door` is the function this macro expanded just above: it answers the

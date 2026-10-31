@@ -290,9 +290,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: a known name
 /// is READY with its material, flagged secret and written into the host's buffer under no lease; a
 /// buffer too small is the short-buffer answer naming the value's length; an unknown one is
-/// NOT_FOUND, a malformed one (`malformed` and every `bad_references` entry) INVALID, none leased;
-/// no lease is held to release; every refused `validate` names why; an instance opens once; a
-/// closed instance serves nothing. A `refresh` over the bad settings is recorded, not judged: a
+/// NOT_FOUND, a malformed one (`malformed` and every `bad_references` entry) INVALID, and so is a
+/// name whose value is EMPTY (`empty`, when given: no material is a secret), none leased; no lease
+/// is held to release; every refused `validate` names why; an instance opens once; a resolve
+/// before `open` is the host's REFUSED (or FAULT) carrying nothing; a closed instance serves
+/// nothing. A `refresh` over the bad settings is recorded, not judged: a
 /// plugin whose settings carry nothing it reads may accept them; but when it REFUSES them, it kept
 /// the instance as it was, so the resolve after it is the known material. `validate`, `open`,
 /// `refresh` and `close` answering READY are the shared steps' ([`super::opened`],
@@ -375,6 +377,16 @@ fn contract(fold: &Fold) {
             s.label
         );
     }
+    // Before `open` the HOST answers (`Instance::refuse`: REFUSED; FAULT for a faulted or closed
+    // instance), never the plugin, and nothing is written.
+    let unopened = at("resolve unopened");
+    assert!(
+        (unopened.starts_with("Refused ") || unopened.starts_with("Fault "))
+            && unopened.contains(" material=none ")
+            && unopened.ends_with(" in_host_buffer=false"),
+        "a resolve before open is the host's refusal, carrying nothing: resolve unopened: \
+         {unopened}"
+    );
     assert!(
         at("open again").starts_with("Refused "),
         "one open per instance: {}",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SCRIPTED FAR END for an op's exchange ([`crate::abi::sdk::exchange::Op::exchange`]): the
+//! A SCRIPTED FAR END for an op's exchange ([`busbar_contract::abi::sdk::exchange::Op::exchange`]): the
 //! connector services a framed request crosses (`ESTABLISH`, `WRITE_REQUEST`, `READ_REPLY`,
 //! `CLOSE`) answered the way a connector host answers them. Every service PENDS on its first issue
 //! and completes on the host's side; the op's RESUME re-issues the same handle and reads the stored
@@ -9,8 +9,8 @@
 //! any op that asks the far end through PENDING to its answer, and reads what was sent.
 //!
 //! ```ignore
-//! use busbar_contract::abi::sdk::test_support::far::Far;
-//! use busbar_contract::abi::sdk::test_support::fake::FakeHost;
+//! use busbar_test_kit::test_support::far::Far;
+//! use busbar_test_kit::test_support::fake::FakeHost;
 //!
 //! let far = Far::answering(200, b"{\"order\": [1, 0]}");
 //! let host = FakeHost::new().far();
@@ -31,14 +31,14 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::abi::host::conn::connector::{
+use busbar_contract::abi::host::conn::connector::{
     service, ReplyIn, ReplyPiece, RequestIn, RequestPiece, REPLY_BODY, REPLY_END, REPLY_HEAD,
     REQUEST_BODY, REQUEST_END, REQUEST_HEAD,
 };
-use crate::abi::host::service::{ServiceHead, ServiceOut};
-use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use crate::abi::mechanism::ticket::HostCtx;
-use crate::abi::transport::{fields, FrameSpan};
+use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::ticket::HostCtx;
+use busbar_contract::abi::transport::{fields, FrameSpan};
 
 /// One request the far end was sent, as its framer was handed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -24,6 +24,7 @@
 pub mod door;
 // The `op_id` dedupe: the state machine and the body a store records.
 pub mod dedupe;
+pub mod fork;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
