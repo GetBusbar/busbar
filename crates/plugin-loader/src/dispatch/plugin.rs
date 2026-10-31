@@ -772,9 +772,11 @@ impl Instance {
     /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
     /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
     /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
-    /// trust on top of the public roots. A path that resolves to nothing is declared without its
-    /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
-    /// the trust. A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
+    /// trust on top of the public roots. A `target_from` that resolves to nothing is declared without
+    /// its value, which the table refuses; a `trust_from` that does (`settings.` or `owned.`) is
+    /// optional, declared without it, and the table takes it as the public roots alone; a refresh re-declares, so a changed value moves the pin or
+    /// the trust; a `trust_from` naming a settings path that resolves to nothing is refused by the
+    /// table but not audited (an optional anchor the operator did not write). A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
     /// [`busbar_contract::section::owned_path`]) resolves against `owned` alone (a plane's other
     /// owned sections, the JSON object its `open` carries in `PlaneOpenIn::owned` and its `refresh`
     /// under `abi::plane::EXT_OWNED`), never against `settings`; absent there, the need is declared
@@ -837,6 +839,17 @@ impl Instance {
             let unresolved = target.is_none()
                 && !need.target_from.is_empty()
                 && busbar_contract::section::member_target(&need.target_from).is_none();
+            // AN OPTIONAL TRUST THE OPERATOR DID NOT WRITE: a `trust_from` naming a settings path
+            // (secret-vault's `ca_cert_pem`) that resolves to nothing. The table still refuses the
+            // need (fail-closed: no connection on it, and a refresh that dropped the anchor drops
+            // the earlier pin and trust), but a correct config that simply names no CA is no
+            // refusal the host audits on every open and refresh. A target that did not resolve is
+            // still audited as that; a trust value that IS present but does not parse is refused
+            // and audited as before.
+            let trust_unwritten = trust.is_none()
+                && !need.trust_from.is_empty()
+                && busbar_contract::section::owned_path(&need.trust_from).is_none()
+                && busbar_contract::section::member_target(&need.trust_from).is_none();
             let answer = table
                 .declare(*instance, id, need, target.as_deref(), trust.as_deref())
                 .map_err(|e| {
@@ -846,7 +859,9 @@ impl Instance {
                         crate::observe::conn_reason(e)
                     }
                 });
-            self.need_refused(id, answer);
+            if unresolved || !trust_unwritten {
+                self.need_refused(id, answer);
+            }
         }
     }
 

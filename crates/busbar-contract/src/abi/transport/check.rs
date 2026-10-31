@@ -12,6 +12,11 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
+use super::route::{RouteMatch, FIELD_PRESENT, METHOD_ANY, PATH_CONTAINS, PATH_EXACT};
+use super::{
+    slot, AcceptIn, AdoptIn, ArrivalIn, BeginIn, EncodeIn, FramerSink, FramingIn, IngestIn,
+    ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+};
 use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
@@ -25,15 +30,17 @@ use super::{
 };
 use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
-    DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
-    HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
-    PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
+    DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES,
+    HANDSHAKE_ANSWERS, HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES,
+    PATH_REQUEST_BIND, PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
-    bits, bounded, code, fault, first, index, listed, range, result, results, text, texts, within,
+    bits, bounded, code, fault, first, listed, range, reported, result, results, texts, within,
     Dim, MAX_BYTES,
 };
+use crate::abi::mechanism::decl::{abi_answers, abi_op};
+use crate::abi::mechanism::lifecycle::{slot as life, CancelOut};
 
 /// The most frame pieces one framer answer may produce.
 pub const MAX_PIECES: u64 = 4096;
@@ -202,186 +209,133 @@ pub fn check_agreed(offer: &[u8], agreed: &[u8]) -> Result<(), Fault> {
     Err(fault(Rule::Contradiction, "facts.agreed_protocol"))
 }
 
-/// Every framer answer: what it wrote fits its sink (no short path: a full sink is
-/// [`YIELD_MORE`]); the flags are known; a deadline is stated exactly when flagged; FAILED wrote
-/// nothing; every piece lies inside the frame bytes written and carries known codes.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
-pub fn check_framer(
-    outcome: Outcome,
-    out: &FramerOut,
-    pieces: &[FramePiece],
-    wire_cap: u64,
-    frame_cap: u64,
-    pieces_cap: u64,
-) -> Result<(), Fault> {
+abi_op! {
+    /// Every framer answer: what it wrote fits its sink (no short path: a full sink is
+    /// [`YIELD_MORE`]); the flags are known; a deadline is stated exactly when flagged; FAILED wrote
+    /// nothing; every piece lies inside the frame bytes written and carries known codes.
+    ///
+    /// # Errors
+    ///
+    /// The rule the answer breaks.
+    pub fn check_framer(
+        outcome: Outcome,
+        out: &FramerOut,
+        pieces: &[FramePiece],
+        wire_cap: u64,
+        frame_cap: u64,
+        pieces_cap: u64,
+    ) as "framer", FRAMER_RULES for out: FramerOut {
+        within(yielded.wire_len, wire_cap) as "framer.wire_len";
+        within(yielded.frame_len, frame_cap) as "framer.frame_len";
+        within(yielded.pieces_len, pieces_cap.min(MAX_PIECES)) as "framer.pieces_len";
+        bits(yielded.flags, YIELD_ENDED | YIELD_MORE | YIELD_HAS_DEADLINE | YIELD_STREAM_FULL) as "framer.flags";
+        deny((out.yielded.flags & YIELD_HAS_DEADLINE != 0) != (out.yielded.next_deadline_ns != 0), Contradiction, "framer.next_deadline_ns");
+        deny(outcome == Outcome::Failed && (out.yielded.wire_len | out.yielded.frame_len | u64::from(out.yielded.pieces_len)) != 0, Contradiction, "framer.failed_wrote");
+        then framer_pieces(out, pieces);
+    }
+}
+
+/// Every piece a framer reported, read only up to its stated count ([`check_piece`]).
+fn framer_pieces(out: &FramerOut, pieces: &[FramePiece]) -> Result<(), Fault> {
     let y = &out.yielded;
-    let n = u64::from(y.pieces_len);
-    within(y.wire_len, wire_cap, "framer.wire_len")?;
-    within(y.frame_len, frame_cap, "framer.frame_len")?;
-    within(n, pieces_cap.min(MAX_PIECES), "framer.pieces_len")?;
-    bits(
-        u64::from(y.flags),
-        u64::from(YIELD_ENDED | YIELD_MORE | YIELD_HAS_DEADLINE | YIELD_STREAM_FULL),
-        "framer.flags",
-    )?;
-    if (y.flags & YIELD_HAS_DEADLINE != 0) != (y.next_deadline_ns != 0) {
-        return Err(fault(Rule::Contradiction, "framer.next_deadline_ns"));
-    }
-    if outcome == Outcome::Failed && (y.wire_len | y.frame_len | n) != 0 {
-        return Err(fault(Rule::Contradiction, "framer.failed_wrote"));
-    }
-    for p in first(pieces, n, "framer.pieces")? {
-        range(p.offset, p.len, y.frame_len, "framer.piece.bytes")?;
-        bits(
-            u64::from(p.flags),
-            u64::from(
-                PIECE_END_OF_FRAME
-                    | PIECE_HAS_CODE
-                    | PIECE_HAS_RETRY_AFTER
-                    | PIECE_STREAM_FAILED
-                    | PIECE_FIELDS
-                    | PIECE_CONTINUED
-                    | PIECE_TEXT
-                    | PIECE_END
-                    | PIECE_HAS_DECLARED_LEN
-                    | PIECE_WRITABLE,
-            ),
-            "framer.piece.flags",
-        )?;
+    first(pieces, u64::from(y.pieces_len), "framer.pieces")?
+        .iter()
+        .try_for_each(|p| check_piece(p, y.frame_len))
+}
+
+abi_op! {
+    /// One frame piece: inside the frame bytes written, with known flags in a coherent set and
+    /// known codes.
+    fn check_piece(p: &FramePiece, frame_len: u64) as "framer.piece", PIECE_RULES for p: FramePiece {
+        then range(p.offset, p.len, frame_len, "framer.piece.bytes");
+        bits(flags, PIECE_END_OF_FRAME | PIECE_HAS_CODE | PIECE_HAS_RETRY_AFTER | PIECE_STREAM_FAILED | PIECE_FIELDS | PIECE_CONTINUED | PIECE_TEXT | PIECE_END | PIECE_HAS_DECLARED_LEN | PIECE_WRITABLE);
         // A writable piece is a signal about the stream, never part of a frame: empty, alone.
-        if p.flags & PIECE_WRITABLE != 0 && (p.len != 0 || p.flags != PIECE_WRITABLE) {
-            return Err(fault(
-                Rule::Contradiction,
-                "framer.piece.writable_not_alone",
-            ));
-        }
+        deny(p.flags & PIECE_WRITABLE != 0 && (p.len != 0 || p.flags != PIECE_WRITABLE), Contradiction, "framer.piece.writable_not_alone");
         // Text is a fact about a message, an empty one too: a field block, a failed stream's
         // reason and a stream's end are none.
-        if p.flags & PIECE_TEXT != 0
-            && p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_END) != 0
-        {
-            return Err(fault(Rule::Contradiction, "framer.piece.text_not_message"));
-        }
+        deny(p.flags & PIECE_TEXT != 0 && p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_END) != 0, Contradiction, "framer.piece.text_not_message");
         // A stream's end is its own empty piece: bytes on it would be a message the end swallows,
         // and a failed stream or a field block is never the whole end.
-        if p.flags & PIECE_END != 0 {
-            if p.len != 0 {
-                return Err(fault(Rule::Contradiction, "framer.piece.end_with_bytes"));
-            }
-            if p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_CONTINUED) != 0 {
-                return Err(fault(Rule::Contradiction, "framer.piece.end_not_payload"));
-            }
+        when(p.flags & PIECE_END != 0) {
+            deny(p.len != 0, Contradiction, "framer.piece.end_with_bytes");
+            deny(p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_CONTINUED) != 0, Contradiction, "framer.piece.end_not_payload");
         }
-        if p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0 {
-            return Err(fault(
-                Rule::Contradiction,
-                "framer.piece.continued_not_fields",
-            ));
-        }
+        deny(p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0, Contradiction, "framer.piece.continued_not_fields");
         // A declared body length is a head's statement: a field block carries it, nothing else.
-        if p.flags & PIECE_HAS_DECLARED_LEN != 0 && p.flags & PIECE_FIELDS == 0 {
-            return Err(fault(
-                Rule::Contradiction,
-                "framer.piece.declared_len_not_fields",
-            ));
-        }
+        deny(p.flags & PIECE_HAS_DECLARED_LEN != 0 && p.flags & PIECE_FIELDS == 0, Contradiction, "framer.piece.declared_len_not_fields");
         // A field block is never a failure's reason.
-        if p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0 {
-            return Err(fault(Rule::Contradiction, "framer.piece.fields_failed"));
-        }
+        deny(p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0, Contradiction, "framer.piece.fields_failed");
         // An empty piece is a whole frame (an empty message, or the stream's end; a writable
         // piece aside), so it completes its frame; a failed stream's piece is its last, so it
         // does too.
-        let whole = p.len == 0 && p.flags != PIECE_WRITABLE;
-        if (whole || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
-            return Err(fault(
-                Rule::Contradiction,
-                "framer.piece.end_without_end_of_frame",
-            ));
-        }
-        code(
-            u64::from(p.status_class),
-            0,
-            u64::from(STATUS_OTHER),
-            "framer.piece.status_class",
-        )?;
-        code(
-            u64::from(p.fault),
-            0,
-            u64::from(FAULT_HEALTHY),
-            "framer.piece.fault",
-        )?;
+        deny(((p.len == 0 && p.flags != PIECE_WRITABLE) || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0, Contradiction, "framer.piece.end_without_end_of_frame");
+        code(status_class, 0u8, STATUS_OTHER);
+        code(fault, 0u8, FAULT_HEALTHY);
         // The fault reading is a reading OF the piece's code: a piece with no code reads none.
-        if p.fault != 0 && p.flags & PIECE_HAS_CODE == 0 {
-            return Err(fault(
-                Rule::Contradiction,
-                "framer.piece.fault_without_code",
-            ));
-        }
+        deny(p.fault != 0 && p.flags & PIECE_HAS_CODE == 0, Contradiction, "framer.piece.fault_without_code");
     }
-    Ok(())
 }
 
-/// A datagram framer's answer ([`super::datagram`]), after [`check_framer`] passed: at most
-/// `routes_cap` (and [`MAX_ROUTES`]) routes, each one nonempty datagram inside the wire bytes
-/// written, to a nonzero path, on [`LANE_CLEAR`] or [`LANE_SECURED`] (a rendezvous is never sent);
-/// a FAILED answer routes nothing and asks for nothing; at most one path request, its paths named
-/// exactly as its kind needs; rendezvous terms either absent whole or carrying all four
-/// credentials and a [`FINGERPRINT_BYTES`] fingerprint inside the frame bytes written.
-///
-/// A stream framer's zeroed yield passes.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
-pub fn check_datagram(
-    outcome: Outcome,
-    out: &FramerOut,
-    routes: &[DatagramRoute],
-    routes_cap: u64,
-) -> Result<(), Fault> {
-    let d = &out.datagram;
-    let y = &out.yielded;
-    let n = u64::from(d.routes_len);
-    within(n, routes_cap.min(MAX_ROUTES), "datagram.routes_len")?;
-    if outcome == Outcome::Failed && (n != 0 || d.request != PATH_REQUEST_NONE) {
-        return Err(fault(Rule::Contradiction, "datagram.failed_routed"));
+abi_op! {
+    /// A datagram framer's answer ([`super::datagram`]), after [`check_framer`] passed: at most
+    /// `routes_cap` (and [`MAX_ROUTES`]) routes, each one nonempty datagram inside the wire bytes
+    /// written, to a nonzero path, on [`LANE_CLEAR`] or [`LANE_SECURED`] (a rendezvous is never sent);
+    /// a FAILED answer routes nothing and asks for nothing; at most one path request, its paths named
+    /// exactly as its kind needs; rendezvous terms either absent whole or carrying all four
+    /// credentials and a [`FINGERPRINT_BYTES`] fingerprint inside the frame bytes written.
+    ///
+    /// A stream framer's zeroed yield passes.
+    ///
+    /// # Errors
+    ///
+    /// The rule the answer breaks.
+    pub fn check_datagram(
+        outcome: Outcome,
+        out: &FramerOut,
+        routes: &[DatagramRoute],
+        routes_cap: u64,
+    ) as "datagram", DATAGRAM_RULES for out: FramerOut {
+        within(datagram.routes_len, routes_cap.min(MAX_ROUTES)) as "datagram.routes_len";
+        deny(outcome == Outcome::Failed && (out.datagram.routes_len != 0 || out.datagram.request != PATH_REQUEST_NONE), Contradiction, "datagram.failed_routed");
+        then datagram_routes(out, routes);
+        code(datagram.request, PATH_REQUEST_NONE, PATH_REQUEST_REBIND) as "datagram.request";
+        deny(!request_paths_named(&out.datagram), Contradiction, "datagram.request.paths");
+        then check_terms(&out.datagram.terms, out.yielded.frame_len);
     }
-    for r in first(routes, n, "datagram.routes")? {
-        if r.len == 0 {
-            return Err(fault(Rule::Missing, "datagram.route.len"));
-        }
-        range(r.offset, r.len, y.wire_len, "datagram.route.bytes")?;
-        if r.path == 0 {
-            return Err(fault(Rule::Missing, "datagram.route.path"));
-        }
-        code(
-            u64::from(r.lane),
-            u64::from(LANE_CLEAR),
-            u64::from(LANE_SECURED),
-            "datagram.route.lane",
-        )?;
+}
+
+/// Every route a datagram framer reported, read only up to its stated count
+/// ([`check_datagram_route`]).
+fn datagram_routes(out: &FramerOut, routes: &[DatagramRoute]) -> Result<(), Fault> {
+    first(
+        routes,
+        u64::from(out.datagram.routes_len),
+        "datagram.routes",
+    )?
+    .iter()
+    .try_for_each(|r| check_datagram_route(r, out.yielded.wire_len))
+}
+
+abi_op! {
+    /// One datagram route: a nonempty datagram inside the wire bytes written, to a nonzero path,
+    /// on a known lane.
+    fn check_datagram_route(r: &DatagramRoute, wire_len: u64) as "datagram.route", DATAGRAM_ROUTE_RULES for r: DatagramRoute {
+        deny(r.len == 0, Missing, "datagram.route.len");
+        then range(r.offset, r.len, wire_len, "datagram.route.bytes");
+        deny(r.path == 0, Missing, "datagram.route.path");
+        code(lane, LANE_CLEAR, LANE_SECURED);
     }
-    code(
-        u64::from(d.request),
-        u64::from(PATH_REQUEST_NONE),
-        u64::from(PATH_REQUEST_REBIND),
-        "datagram.request",
-    )?;
-    let named = match d.request {
+}
+
+/// Whether a path request names exactly the paths its kind needs.
+const fn request_paths_named(d: &DatagramYield) -> bool {
+    match d.request {
         PATH_REQUEST_BIND => d.request_from == 0 && d.request_to != 0,
         PATH_REQUEST_REBIND => {
             d.request_from != 0 && d.request_to != 0 && d.request_from != d.request_to
         }
         _ => d.request_from == 0 && d.request_to == 0,
-    };
-    if !named {
-        return Err(fault(Rule::Contradiction, "datagram.request.paths"));
     }
-    check_terms(&d.terms, y.frame_len)
 }
 
 /// Rendezvous terms: absent whole, or every credential nonempty and the fingerprint exactly
@@ -436,29 +390,20 @@ pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The keying-material item a host presents: its own size, a nonzero profile, and
-/// `1..=`[`MAX_KEYING_BYTES`] bytes behind a non-NULL pointer.
-///
-/// # Errors
-///
-/// The rule the item breaks.
-pub fn check_keying(k: &KeyingMaterial) -> Result<(), Fault> {
-    if k.size as usize != core::mem::size_of::<KeyingMaterial>() {
-        return Err(fault(Rule::Foreign, "keying.size"));
+abi_op! {
+    /// The keying-material item a host presents: its own size, a nonzero profile, and
+    /// `1..=`[`MAX_KEYING_BYTES`] bytes behind a non-NULL pointer.
+    ///
+    /// # Errors
+    ///
+    /// The rule the item breaks.
+    pub fn check_keying(k: &KeyingMaterial) as "keying", KEYING_RULES for k: KeyingMaterial {
+        deny(k.size as usize != core::mem::size_of::<KeyingMaterial>(), Foreign, "keying.size");
+        deny(k.profile == 0, Missing, "keying.profile");
+        deny(k.len == 0, Missing, "keying.len");
+        deny(k.len as u64 > MAX_KEYING_BYTES, OverMax, "keying.len");
+        deny(k.bytes.is_null(), NullWithCount, "keying.bytes");
     }
-    if k.profile == 0 {
-        return Err(fault(Rule::Missing, "keying.profile"));
-    }
-    if k.len == 0 {
-        return Err(fault(Rule::Missing, "keying.len"));
-    }
-    if k.len as u64 > MAX_KEYING_BYTES {
-        return Err(fault(Rule::OverMax, "keying.len"));
-    }
-    if k.bytes.is_null() {
-        return Err(fault(Rule::NullWithCount, "keying.bytes"));
-    }
-    Ok(())
 }
 
 /// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
@@ -555,57 +500,42 @@ pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The Statement tail, at load: the role is exactly one of carrier or framer, and a carrier composes
-/// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
-/// framing and fact bits are known; one to [`MAX_CLAIMS`]
-/// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`] (and
-/// each row's [`check_claim_facts`]), [`check_composes_over`], [`check_upgrades_to`],
-/// [`check_status_rows`], [`check_fault_rows`], [`check_fault_cover`], [`check_settings`].
-///
-/// # Errors
-///
-/// The rule the tail breaks.
-pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
-    if (t.role == ROLE_CARRIER) == (t.role == ROLE_FRAMER) {
-        return Err(fault(Rule::NotExactlyOne, "tail.role"));
+abi_op! {
+    /// The Statement tail, at load: the role is exactly one of carrier or framer, and a carrier composes
+    /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
+    /// framing and fact bits are known; one to [`MAX_CLAIMS`]
+    /// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`] (and
+    /// each row's [`check_claim_facts`]), [`check_composes_over`], [`check_upgrades_to`],
+    /// [`check_status_rows`], [`check_fault_rows`], [`check_fault_cover`], [`check_settings`].
+    ///
+    /// # Errors
+    ///
+    /// The rule the tail breaks.
+    pub fn check_tail(t: &TransportTail) as "tail", TAIL_RULES for t: TransportTail {
+        deny((t.role == ROLE_CARRIER) == (t.role == ROLE_FRAMER), NotExactlyOne, "tail.role");
+        deny(t.role == ROLE_CARRIER && t.composes_over_len != 0, Contradiction, "tail.composes_over");
+        code(framing, FRAMING_STREAM, FRAMING_DATAGRAM);
+        bits(facts, FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS);
+        deny(t.claim_rows_len == 0, Missing, "tail.claim_rows");
+        deny(t.claim_rows_len as u64 > MAX_CLAIMS, OverMax, "tail.claim_rows");
+        then listed(t.composes_over, t.composes_over_len, "tail.composes_over");
+        then listed(t.claim_rows, t.claim_rows_len, "tail.claim_rows");
+        then listed(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to");
+        then listed(t.status_rows, t.status_rows_len, "tail.status_rows");
+        then listed(t.settings, t.settings_len, "tail.settings");
+        then listed(t.fault_rows, t.fault_rows_len, "tail.fault_rows");
+        // Every tail list is bounded and aligned before a reader builds a slice over it.
+        then bounded(t.composes_over, t.composes_over_len, "tail.composes_over");
+        then bounded(t.claim_rows, t.claim_rows_len, "tail.claim_rows");
+        then bounded(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to");
+        then bounded(t.status_rows, t.status_rows_len, "tail.status_rows");
+        then bounded(t.settings, t.settings_len, "tail.settings");
+        then bounded(t.fault_rows, t.fault_rows_len, "tail.fault_rows");
+        text(handoff_from);
+        text(handoff_to);
+        text(handoff_binding_fact);
+        text(handshake_frame_kind);
     }
-    if t.role == ROLE_CARRIER && t.composes_over_len != 0 {
-        return Err(fault(Rule::Contradiction, "tail.composes_over"));
-    }
-    code(
-        u64::from(t.framing),
-        u64::from(FRAMING_STREAM),
-        u64::from(FRAMING_DATAGRAM),
-        "tail.framing",
-    )?;
-    bits(
-        u64::from(t.facts),
-        u64::from(FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS),
-        "tail.facts",
-    )?;
-    if t.claim_rows_len == 0 {
-        return Err(fault(Rule::Missing, "tail.claim_rows"));
-    }
-    if t.claim_rows_len as u64 > MAX_CLAIMS {
-        return Err(fault(Rule::OverMax, "tail.claim_rows"));
-    }
-    listed(t.composes_over, t.composes_over_len, "tail.composes_over")?;
-    listed(t.claim_rows, t.claim_rows_len, "tail.claim_rows")?;
-    listed(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
-    listed(t.status_rows, t.status_rows_len, "tail.status_rows")?;
-    listed(t.settings, t.settings_len, "tail.settings")?;
-    listed(t.fault_rows, t.fault_rows_len, "tail.fault_rows")?;
-    // Every tail list is bounded and aligned before a reader builds a slice over it.
-    bounded(t.composes_over, t.composes_over_len, "tail.composes_over")?;
-    bounded(t.claim_rows, t.claim_rows_len, "tail.claim_rows")?;
-    bounded(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
-    bounded(t.status_rows, t.status_rows_len, "tail.status_rows")?;
-    bounded(t.settings, t.settings_len, "tail.settings")?;
-    bounded(t.fault_rows, t.fault_rows_len, "tail.fault_rows")?;
-    text(t.handoff_from, "tail.handoff_from")?;
-    text(t.handoff_to, "tail.handoff_to")?;
-    text(t.handoff_binding_fact, "tail.handoff_binding_fact")?;
-    text(t.handshake_frame_kind, "tail.handshake_frame_kind")
 }
 
 /// Every claim row: no string or list counted with a NULL pointer, its fact-key list bounded and
@@ -616,29 +546,23 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
 ///
 /// The rule a claim breaks.
 pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
-    for c in claims {
-        text(c.selector_forms, "claim.selector_forms")?;
-        text(c.egress_selector_forms, "claim.egress_selector_forms")?;
-        text(c.status_namespace, "claim.status_namespace")?;
-        listed(c.facts, c.facts_len, "claim.facts")?;
+    claims.iter().try_for_each(check_claim)
+}
+
+abi_op! {
+    /// One claim row, as [`check_claims`] states.
+    fn check_claim(c: &Claim) as "claim", CLAIM_RULES for c: Claim {
+        text(selector_forms);
+        text(egress_selector_forms);
+        text(status_namespace);
+        then listed(c.facts, c.facts_len, "claim.facts");
         // Bounded and aligned before the host builds the slice [`check_claim_facts`] reads.
-        bounded(c.facts, c.facts_len, "claim.facts")?;
-        code(u64::from(c.session), 0, 1, "claim.session")?;
-        code(u64::from(c.session_bound), 0, 1, "claim.session_bound")?;
-        code(
-            u64::from(c.unit0_trigger),
-            0,
-            u64::from(UNIT0_HANDSHAKE),
-            "claim.unit0_trigger",
-        )?;
-        code(
-            u64::from(c.status_at),
-            0,
-            u64::from(STATUS_AT_TERMINAL),
-            "claim.status_at",
-        )?;
+        then bounded(c.facts, c.facts_len, "claim.facts");
+        code(session, 0u8, 1u8);
+        code(session_bound, 0u8, 1u8);
+        code(unit0_trigger, 0u8, UNIT0_HANDSHAKE);
+        code(status_at, 0u8, STATUS_AT_TERMINAL);
     }
-    Ok(())
 }
 
 /// THE ONE SOURCE OF CLAIM NAMES, at admit: a transport's tail has exactly one row per scheme its
@@ -687,19 +611,17 @@ pub fn check_claim_facts(keys: &[AbiStr]) -> Result<(), Fault> {
 ///
 /// The rule a row breaks.
 pub fn check_status_rows(rows: &[StatusRow], claims_len: u64) -> Result<(), Fault> {
-    for r in rows {
-        index(r.claim, claims_len, "status_row.claim")?;
-        if r.lo > r.hi {
-            return Err(fault(Rule::Contradiction, "status_row.lo_hi"));
-        }
-        code(
-            u64::from(r.class),
-            u64::from(STATUS_SUCCESS),
-            u64::from(STATUS_OTHER),
-            "status_row.class",
-        )?;
+    rows.iter()
+        .try_for_each(|r| check_status_row(r, claims_len))
+}
+
+abi_op! {
+    /// One status row, as [`check_status_rows`] states.
+    fn check_status_row(r: &StatusRow, claims_len: u64) as "status_row", STATUS_ROW_RULES for r: StatusRow {
+        index(claim, claims_len);
+        deny(r.lo > r.hi, Contradiction, "status_row.lo_hi");
+        code(class, STATUS_SUCCESS, STATUS_OTHER);
     }
-    Ok(())
 }
 
 /// A stream's FINAL STATUS on its close ([`FinishIn`], ARCHITECT 4l): `final_status` is a number the
@@ -763,19 +685,16 @@ pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
 ///
 /// The rule a row breaks.
 pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault> {
-    for r in rows {
-        index(r.claim, claims_len, "fault_row.claim")?;
-        if r.lo > r.hi {
-            return Err(fault(Rule::Contradiction, "fault_row.lo_hi"));
-        }
-        code(
-            u64::from(r.fault),
-            u64::from(FAULT_CALLER),
-            u64::from(FAULT_HEALTHY),
-            "fault_row.fault",
-        )?;
+    rows.iter().try_for_each(|r| check_fault_row(r, claims_len))
+}
+
+abi_op! {
+    /// One fault row, as [`check_fault_rows`] states.
+    fn check_fault_row(r: &FaultRow, claims_len: u64) as "fault_row", FAULT_ROW_RULES for r: FaultRow {
+        index(claim, claims_len);
+        deny(r.lo > r.hi, Contradiction, "fault_row.lo_hi");
+        code(fault, FAULT_CALLER, FAULT_HEALTHY);
     }
-    Ok(())
 }
 
 /// A claim that classes its answers classes them for the breaker too: every claim named by a status
@@ -801,20 +720,17 @@ pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<()
 ///
 /// The rule a setting breaks.
 pub fn check_settings(settings: &[SettingDecl]) -> Result<(), Fault> {
-    for s in settings {
-        if s.path.len == 0 {
-            return Err(fault(Rule::Missing, "setting.path"));
-        }
-        text(s.path, "setting.path")?;
-        text(s.default, "setting.default")?;
-        code(
-            u64::from(s.kind),
-            u64::from(SETTING_FLAG),
-            u64::from(SETTING_TEXT),
-            "setting.kind",
-        )?;
+    settings.iter().try_for_each(check_setting)
+}
+
+abi_op! {
+    /// One setting, as [`check_settings`] states.
+    fn check_setting(s: &SettingDecl) as "setting", SETTING_RULES for s: SettingDecl {
+        deny(s.path.len == 0, Missing, "setting.path");
+        text(path);
+        text(default);
+        code(kind, SETTING_FLAG, SETTING_TEXT);
     }
-    Ok(())
 }
 
 /// The auth points a transport offers, read from its Statement's `extensions`
@@ -841,30 +757,21 @@ pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
 /// The most field predicates one route may carry.
 pub const MAX_ROUTE_FIELDS: u64 = 32;
 
-/// A route's shape, before its strings are read: a method set inside the vocabulary and not empty, a
-/// known path form, and its path and predicate list well-formed pointers.
-///
-/// # Errors
-///
-/// The rule the route breaks.
-pub fn check_route(r: &super::route::RouteMatch) -> Result<(), Fault> {
-    use super::route::{METHOD_ANY, PATH_CONTAINS, PATH_EXACT};
-    if r.methods == 0 {
-        return Err(fault(Rule::Missing, "route.methods"));
+abi_op! {
+    /// A route's shape, before its strings are read: a method set inside the vocabulary and not empty, a
+    /// known path form, and its path and predicate list well-formed pointers.
+    ///
+    /// # Errors
+    ///
+    /// The rule the route breaks.
+    pub fn check_route(r: &RouteMatch) as "route", ROUTE_RULES for r: RouteMatch {
+        deny(r.methods == 0, Missing, "route.methods");
+        bits(methods, METHOD_ANY);
+        code(path_form, PATH_EXACT, PATH_CONTAINS);
+        text(path);
+        then listed(r.fields, r.fields_len, "route.fields");
+        deny(r.fields_len as u64 > MAX_ROUTE_FIELDS, OverMax, "route.fields");
     }
-    bits(u64::from(r.methods), u64::from(METHOD_ANY), "route.methods")?;
-    code(
-        u64::from(r.path_form),
-        u64::from(PATH_EXACT),
-        u64::from(PATH_CONTAINS),
-        "route.path_form",
-    )?;
-    text(r.path, "route.path")?;
-    listed(r.fields, r.fields_len, "route.fields")?;
-    if r.fields_len as u64 > MAX_ROUTE_FIELDS {
-        return Err(fault(Rule::OverMax, "route.fields"));
-    }
-    Ok(())
 }
 
 /// A framer's stated agreed protocol ([`super::FramerYield::agreed`]) against the offer it was
@@ -987,10 +894,7 @@ pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
 ///
 /// The rule the route breaks.
 pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
-    use super::route::{
-        pattern_segments, FIELD_PRESENT, METHOD_ANY, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN,
-        PATH_PREFIX,
-    };
+    use super::route::{pattern_segments, PATH_PATTERN, PATH_PREFIX};
     if r.methods == 0 {
         return Err(fault(Rule::Missing, "route.methods"));
     }
@@ -1023,6 +927,129 @@ pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
         }
     }
     Ok(())
+}
+
+/// A framer answer: its pieces over the host's `sink.pieces`, every cap from the op's `sink`; a
+/// field block's bytes are the only frame bytes read ([`check_framer_fields`]).
+///
+/// # Safety
+/// `sink` is the op's own `in`: each of its buffers is the host's, of its stated capacity.
+unsafe fn framer(outcome: Outcome, o: &FramerOut, sink: FramerSink) -> Result<(), Fault> {
+    let pieces_cap = sink.pieces_cap as u64;
+    // SAFETY: `sink.pieces` is the host's own buffer of `pieces_cap` `FramePiece`s, named by this
+    // op's `in`.
+    let pieces = unsafe {
+        reported(
+            sink.pieces.cast_const(),
+            u64::from(o.yielded.pieces_len),
+            pieces_cap,
+            "framer.pieces_len",
+        )
+    }?;
+    check_framer(
+        outcome,
+        o,
+        pieces,
+        sink.wire_cap as u64,
+        sink.frame_cap as u64,
+        pieces_cap,
+    )?;
+    // Only a field block's bytes are read here; payload never is.
+    if pieces.iter().any(|p| p.flags & PIECE_FIELDS != 0) {
+        // SAFETY: `sink.frame` is the host's own buffer of `frame_cap` bytes; `check_framer` held
+        // `frame_len` within it.
+        let frame = unsafe {
+            reported(
+                sink.frame.cast_const(),
+                o.yielded.frame_len,
+                sink.frame_cap as u64,
+                "framer.frame_len",
+            )
+        }?;
+        check_framer_fields(pieces, frame)?;
+    }
+    let heads_cap = sink.heads_cap as u64;
+    // SAFETY: `sink.heads` is the host's own buffer of `heads_cap` `HeadSlots`s (NULL with a
+    // capacity of `0` on a host that takes none).
+    let heads = unsafe {
+        reported(
+            sink.heads.cast_const(),
+            u64::from(o.yielded.heads_len),
+            heads_cap,
+            "framer.heads_len",
+        )
+    }?;
+    check_head_slots(o, heads, heads_cap)
+}
+
+// THE TRANSPORT KIND'S ANSWERS (`check_answer`), each op's frames in the order the loader reads
+// them. `dial`, `flush`, `shut` and the other lifecycle answers state no rule beyond the
+// mechanism's, and pass here.
+abi_answers! {
+    cx: ();
+    slot::LISTEN => listen(out ListenOut, in ListenIn) |_, i, o, _| {
+        check_listen(o, i.addr_cap as u64)
+    }
+    slot::ACCEPT => accept(out AcceptOut, in AcceptIn) |_, i, o, _| {
+        check_accept(o, i.peer_cap as u64)
+    }
+    slot::READ => read(out IoOut, in ReadIn) |_, i, o, _| {
+        check_io(o, i.cap as u64)
+    }
+    slot::WRITE => write(out IoOut, in WriteIn) |_, i, o, _| {
+        check_io(o, i.len as u64)
+    }
+    slot::ARRIVAL => arrival(out ArrivalOut, in ArrivalIn) |outcome, i, o, _| {
+        check_arrival(outcome, o, i.peer_cap as u64)
+    }
+    slot::LOCATE => locate(in LocateIn, out LocateOut) |outcome, i, o, _| {
+        let offer: &[u8] = if outcome == Outcome::Ready {
+            // SAFETY: `alpn_buf` is the host's own buffer of `alpn_cap` bytes, named by this
+            // op's `in`.
+            unsafe {
+                reported(i.alpn_buf.cast_const(), o.alpn_written, i.alpn_cap as u64, "locate.alpn")
+            }?
+        } else {
+            &[]
+        };
+        check_locate(
+            outcome,
+            o,
+            i.authority_cap as u64,
+            i.name_cap as u64,
+            i.alpn_cap as u64,
+            offer,
+            i.defaults_cap as u64,
+        )
+    }
+    // SAFETY (each framer op below): `check_answer`'s contract; the sink is the op's own `in`.
+    slot::BEGIN => begin(in BeginIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::INGEST => ingest(in IngestIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::EMIT => emit(in EmitIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::ENCODE => encode(in EncodeIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::REFUSE => refuse(in RefuseIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::FINISH => finish(in FinishIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::DETACH | slot::TIMER => framing(in FramingIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    slot::ADOPT => adopt(in AdoptIn, out FramerOut) |outcome, i, o, _| {
+        unsafe { framer(outcome, o, i.sink) }
+    }
+    life::CANCEL => cancel(out CancelOut) |outcome, _, o, _| {
+        check_cancel(outcome, o.disposition)
+    }
 }
 
 #[cfg(test)]

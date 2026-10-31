@@ -47,6 +47,7 @@
 //! `resolve`, is the renewal path).
 
 use super::mechanism::call::{Blob, InHead, Op, OutHead};
+use super::mechanism::decl::{abi_answers, abi_struct};
 
 pub mod validate;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
@@ -61,14 +62,14 @@ pub const ABI_VERSION: u32 = 2;
 /// `tests/layout_fingerprint.rs` holds it to its fold.
 pub const LAYOUT_FINGERPRINT: u64 = 0x7195caed69bcfcbd;
 
-/// The secret kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/secret/` gains is listed here (gate
+/// The secret kind's shapes, in fold order: every `#[repr(C)]` struct crossing its table, each
+/// with every field (`abi_struct!`'s `LAYOUT`). A struct `abi/secret/` gains is listed here (gate
 /// `abi-location`).
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(Ops => head, resolve, check),
-    crate::layout_shape!(ResolveIn => head, settings, secret_buf, secret_cap),
-    crate::layout_shape!(ResolveOut => head, secret, error_kind, _reserved, needed),
-    crate::layout_shape!(CheckIn => head, settings, err_buf, err_cap),
+    Ops::LAYOUT,
+    ResolveIn::LAYOUT,
+    ResolveOut::LAYOUT,
+    CheckIn::LAYOUT,
 ];
 
 /// [`InHead::op`] values the secret kind adds after the shared lifecycle, in table order.
@@ -94,43 +95,45 @@ pub mod slot {
 /// How many slots the secret kind's whole table holds (the lifecycle, `resolve` and `check`).
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + 2;
 
-/// The secret kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index
-/// [`LIFECYCLE_SLOTS`]` + k` ([`slot`]).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Ops {
-    /// The lifecycle.
-    pub head: OpsHead,
-    /// Resolve a settings blob to a secret lease. OFF-PATH, `may_pend`,
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call) (assumption, see the
-    /// module doc). In [`ResolveIn`], out [`ResolveOut`].
-    pub resolve: Option<Op>,
-    /// Judge ONE reference's settings object at config time (`--validate`, boot, an apply), before
-    /// anything resolves: PURE (no I/O, no resolve), called with NO instance (the `instance`
-    /// argument is NULL), never pends, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
-    /// In [`CheckIn`], out [`OutHead`]. READY: the reference is well-formed. FAILED: why, in
-    /// `CheckIn::err_buf`, under the lifecycle `validate` refusal rule
-    /// ([`check_validate_refusal`](super::mechanism::lifecycle::check_validate_refusal)); the host
-    /// renders each line as `<config path of the reference>: <line>`. REFUSED: the plugin does not
-    /// serve `check` (the SDK's answer for a door that wires none): every reference passes.
-    pub check: Option<Op>,
-}
+abi_struct! {
+    /// The secret kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index
+    /// [`LIFECYCLE_SLOTS`]` + k` ([`slot`]).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct Ops {
+        /// The lifecycle.
+        pub head: OpsHead,
+        /// Resolve a settings blob to a secret lease. OFF-PATH, `may_pend`,
+        /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call) (assumption, see the
+        /// module doc). In [`ResolveIn`], out [`ResolveOut`].
+        pub resolve: Option<Op>,
+        /// Judge ONE reference's settings object at config time (`--validate`, boot, an apply), before
+        /// anything resolves: PURE (no I/O, no resolve), called with NO instance (the `instance`
+        /// argument is NULL), never pends, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
+        /// In [`CheckIn`], out [`OutHead`]. READY: the reference is well-formed. FAILED: why, in
+        /// `CheckIn::err_buf`, under the lifecycle `validate` refusal rule
+        /// ([`check_validate_refusal`](super::mechanism::lifecycle::check_validate_refusal)); the host
+        /// renders each line as `<config path of the reference>: <line>`. REFUSED: the plugin does not
+        /// serve `check` (the SDK's answer for a door that wires none): every reference passes.
+        pub check: Option<Op>,
+    }
 
-/// `resolve`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ResolveIn {
-    /// The head.
-    pub head: InHead,
-    /// The settings naming what to resolve (a `{env: X}`/`{file: Y}` reference, or the plugin's
-    /// own settings shape, already rewritten by the kernel per the Statement rewrite rule).
-    pub settings: Blob,
-    /// THE HOST'S SECRET BUFFER, zeroed, lent for the call (the credential chip, row 6: host-owned secret bytes): a READY
-    /// `resolve` writes the material here and nowhere the host must later release. The host wipes
-    /// it when its consumer is done. NULL (with `secret_cap` `0`) = no buffer: every value is short.
-    pub secret_buf: *mut u8,
-    /// How many bytes `secret_buf` holds.
-    pub secret_cap: usize,
+    /// `resolve`'s `in`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct ResolveIn {
+        /// The head.
+        pub head: InHead,
+        /// The settings naming what to resolve (a `{env: X}`/`{file: Y}` reference, or the plugin's
+        /// own settings shape, already rewritten by the kernel per the Statement rewrite rule).
+        pub settings: Blob,
+        /// THE HOST'S SECRET BUFFER, zeroed, lent for the call (the credential chip, row 6: host-owned secret bytes): a READY
+        /// `resolve` writes the material here and nowhere the host must later release. The host wipes
+        /// it when its consumer is done. NULL (with `secret_cap` `0`) = no buffer: every value is short.
+        pub secret_buf: *mut u8,
+        /// How many bytes `secret_buf` holds.
+        pub secret_cap: usize,
+    }
 }
 
 // The five variants below are the OLD `SecretErrorKind` (`busbar-contract/src/secret.rs`),
@@ -151,49 +154,53 @@ pub const ERROR_KIND_INVALID: u32 = 4;
 /// `SecretErrorKind::Internal`.
 pub const ERROR_KIND_INTERNAL: u32 = 5;
 
-/// `resolve`'s `out`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ResolveOut {
-    /// The head.
-    pub head: OutHead,
-    /// The resolved material, as a [`super::mechanism::call::BLOB_SECRET`] blob naming the bytes
-    /// written at the start of [`ResolveIn::secret_buf`] (its `ptr` is that buffer, its `len` at
-    /// most [`ResolveIn::secret_cap`]); absent unless `head.outcome` is
-    /// [`Ready`](super::mechanism::call::Outcome::Ready). Never under a lease: `head.lease` is `0`.
-    pub secret: Blob,
-    /// One of the `ERROR_KIND_*` constants for a [`Failed`](super::mechanism::call::Outcome::Failed)
-    /// answer; [`ERROR_KIND_UNSET`] otherwise. Distinct from `head.error`'s free text, which never
-    /// carries secret material.
-    pub error_kind: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// THE SHORT-BUFFER ANSWER (M-SB, on [`OutHead`]): on a FAILED answer whose value does not fit
-    /// [`ResolveIn::secret_cap`], the value's full length (`error_kind` stays
-    /// [`ERROR_KIND_UNSET`]); `0` otherwise. The host re-calls once with a buffer that size.
-    pub needed: u64,
+abi_struct! {
+    /// `resolve`'s `out`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct ResolveOut {
+        /// The head.
+        pub head: OutHead,
+        /// The resolved material, as a [`super::mechanism::call::BLOB_SECRET`] blob naming the bytes
+        /// written at the start of [`ResolveIn::secret_buf`] (its `ptr` is that buffer, its `len` at
+        /// most [`ResolveIn::secret_cap`]); absent unless `head.outcome` is
+        /// [`Ready`](super::mechanism::call::Outcome::Ready). Never under a lease: `head.lease` is `0`.
+        pub secret: Blob,
+        /// One of the `ERROR_KIND_*` constants for a [`Failed`](super::mechanism::call::Outcome::Failed)
+        /// answer; [`ERROR_KIND_UNSET`] otherwise. Distinct from `head.error`'s free text, which never
+        /// carries secret material.
+        pub error_kind: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+        /// THE SHORT-BUFFER ANSWER (M-SB, on [`OutHead`]): on a FAILED answer whose value does not fit
+        /// [`ResolveIn::secret_cap`], the value's full length (`error_kind` stays
+        /// [`ERROR_KIND_UNSET`]); `0` otherwise. The host re-calls once with a buffer that size.
+        pub needed: u64,
+    }
 }
 
 /// The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM
 /// chain) is the short-buffer answer and the host re-calls once with its size.
 pub const FIRST_SECRET_CAP: usize = 4096;
 
-/// `check`'s `in`: one reference's settings object and the host's reason buffer, as
-/// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CheckIn {
-    /// The head.
-    pub head: InHead,
-    /// The reference's `settings` object as config wrote it (JSON; a `{env: X}`/`{file: Y}` sugar
-    /// already rewritten per the Statement rewrite rule). Never secret material.
-    pub settings: Blob,
-    /// THE REASON BUFFER, the host's, lent for the call: a `check` that answers FAILED writes why
-    /// into it (UTF-8, at most [`CheckIn::err_cap`] bytes, cut on a char boundary) and names those
-    /// bytes in `head.error`. NULL (with `err_cap` `0`) = no buffer is lent.
-    pub err_buf: *mut u8,
-    /// How many bytes `err_buf` holds.
-    pub err_cap: usize,
+abi_struct! {
+    /// `check`'s `in`: one reference's settings object and the host's reason buffer, as
+    /// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct CheckIn {
+        /// The head.
+        pub head: InHead,
+        /// The reference's `settings` object as config wrote it (JSON; a `{env: X}`/`{file: Y}` sugar
+        /// already rewritten per the Statement rewrite rule). Never secret material.
+        pub settings: Blob,
+        /// THE REASON BUFFER, the host's, lent for the call: a `check` that answers FAILED writes why
+        /// into it (UTF-8, at most [`CheckIn::err_cap`] bytes, cut on a char boundary) and names those
+        /// bytes in `head.error`. NULL (with `err_cap` `0`) = no buffer is lent.
+        pub err_buf: *mut u8,
+        /// How many bytes `err_buf` holds.
+        pub err_cap: usize,
+    }
 }
 
 /// The secret kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
@@ -252,6 +259,16 @@ super::sdk::door::slot_structs!(
         slot::CHECK => CheckIn, OutHead;
     }
 );
+
+// THE SECRET KIND'S ANSWERS (`check_answer`): `resolve` is judged against the host buffer it was
+// lent (the credential chip, row 6: host-owned secret bytes); `check` answers an `OutHead` alone
+// and states no rule beyond the mechanism's.
+abi_answers! {
+    cx: ();
+    slot::RESOLVE => resolve(in ResolveIn, out ResolveOut) |_, i, o, _| {
+        validate::check_resolve(o, i.secret_buf as usize, i.secret_cap as u64)
+    }
+}
 
 #[cfg(test)]
 #[path = "../tests/secret_holder_tests.rs"]
