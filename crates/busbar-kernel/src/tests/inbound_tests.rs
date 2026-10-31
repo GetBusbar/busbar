@@ -382,6 +382,108 @@ fn identity(subject: &str, credential: &str) -> Verified {
     })
 }
 
+#[test]
+fn an_active_unit_keeps_its_policy_after_three_reloads_without_reopening_the_old_list() {
+    let a = Script::new(
+        AuthPoints::HEAD,
+        identity("original", "credential"),
+        Vec::new(),
+    );
+    let k = kit(&[("a", a)]);
+    let auth = k.id(MESSAGES);
+    let line = k.line(MESSAGES);
+    let first = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
+        .expect("the original policy admits the request");
+    let old_app = Arc::downgrade(&k.app);
+    let guests = k.inbound.table(OWNER, GEN).unwrap().listener.guests.clone();
+    let replacement = crate::test_support::TestApp::new().build();
+    for generation in GEN + 1..=GEN + 3 {
+        for owner in [OWNER, OWNER + 1] {
+            k.inbound
+                .install(
+                    owner,
+                    generation,
+                    Listener {
+                        guests: guests.clone(),
+                        auths: HashMap::new(),
+                        body_limit: 16,
+                        app: Arc::clone(&replacement),
+                        door_refusals: Vec::new(),
+                        ids: line_ids(3),
+                        signed_ingress: kin_unsigned(),
+                    },
+                )
+                .expect("the replacement is published");
+        }
+    }
+    let Kit { inbound, app, .. } = k;
+    drop(app);
+    let pinned = old_app.upgrade().is_some();
+    let call = |unit| Call {
+        owner: OWNER,
+        generation: GEN,
+        auth,
+        unit,
+        point: POINT_HEAD,
+        conn: 1,
+        stream: 1,
+        framing: 1,
+        head: post(MESSAGES, &[], None),
+        body: None,
+        deadline: None,
+    };
+    let complete =
+        || Box::new(|_: Result<Answer, &'static str>| panic!("settled verification")) as Done;
+    let continuation = inbound.auth_call(call(first.unit), complete());
+    let hand_in = inbound.hand_in(HandIn {
+        owner: OWNER,
+        generation: GEN,
+        auth,
+        unit: first.unit,
+        line,
+        conn: 1,
+        stream: 1,
+        framing: Some(1),
+        head: post(MESSAGES, &[], None),
+    });
+    let stale_open = inbound.auth_call(call(UnitRef::NONE), complete());
+    let mut foreign = call(first.unit);
+    foreign.stream = 2;
+    let foreign = inbound.auth_call(foreign, complete());
+    let forged = inbound.auth_call(
+        call(UnitRef {
+            mac: first.unit.mac ^ 1,
+            ..first.unit
+        }),
+        complete(),
+    );
+    inbound.exit(first.unit.id);
+    let released = old_app.upgrade().is_none();
+
+    assert!(pinned, "the active request retains its original App");
+    assert_eq!(continuation.unwrap().unwrap().unit, first.unit);
+    assert_eq!(hand_in, Ok((FLOW_CONTINUE, first.unit)));
+    assert!(
+        matches!(stale_open, Some(Err(NO_LIST))),
+        "no new request may reopen an expired list"
+    );
+    assert!(
+        matches!(foreign, Some(Err(_))),
+        "the pin grants no other stream authority"
+    );
+    assert!(
+        matches!(forged, Some(Err(_))),
+        "a pinned table does not authenticate a forged unit"
+    );
+    assert!(released, "unit exit releases the last old-policy reference");
+}
+
 fn names() -> Vec<Strip> {
     vec![Strip::field("authorization"), Strip::query("key")]
 }
