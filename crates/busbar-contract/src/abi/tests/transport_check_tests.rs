@@ -224,12 +224,8 @@ fn a_framer_sink_overrun_is_fault() {
 
 #[test]
 fn a_framer_unknown_flag_or_unstated_deadline_is_fault() {
+    // An unknown flag: the generated table (`every_declared_transport_field_rule_is_red`).
     let mut o: FramerOut = z();
-    o.yielded.flags = 16;
-    assert_eq!(
-        check_framer(Ready, &o, &[], 8, 8, 8),
-        f(Rule::UnknownCode, "framer.flags")
-    );
     o.yielded.flags = YIELD_HAS_DEADLINE;
     assert_eq!(
         check_framer(Ready, &o, &[], 8, 8, 8),
@@ -571,20 +567,7 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
         check_framer(Ready, &o, &[piece(u64::MAX, 2)], 8, 8, 8),
         f(Rule::SpanOutOfBounds, "framer.piece.bytes")
     );
-    let mut bad = piece(0, 1);
-    // The first bit no piece flag holds (`1 << 8` is PIECE_WRITABLE, `1 << 9`
-    // PIECE_HAS_DECLARED_LEN).
-    bad.flags = 1 << 10;
-    assert_eq!(
-        check_framer(Ready, &o, &[bad], 8, 8, 8),
-        f(Rule::UnknownCode, "framer.piece.flags")
-    );
-    let mut bad = piece(0, 1);
-    bad.status_class = STATUS_OTHER + 1;
-    assert_eq!(
-        check_framer(Ready, &o, &[bad], 8, 8, 8),
-        f(Rule::UnknownCode, "framer.piece.status_class")
-    );
+    // Unknown flags and codes: the generated table.
 }
 
 #[test]
@@ -672,9 +655,7 @@ fn every_tail_list_counted_with_a_null_pointer_is_fault() {
     let mut t = tail();
     t.settings_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.settings"));
-    let mut t = tail();
-    t.handoff_to.len = 1;
-    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.handoff_to"));
+    // The tail's strings: the generated table.
 }
 
 #[test]
@@ -742,30 +723,7 @@ fn every_claim_element_is_checked() {
     let mut c = claim();
     c.facts_len = 1;
     assert_eq!(check_claims(&[c]), f(Rule::NullWithCount, "claim.facts"));
-    let mut c = claim();
-    c.selector_forms.len = 1;
-    assert_eq!(
-        check_claims(&[c]),
-        f(Rule::NullWithCount, "claim.selector_forms")
-    );
-    let mut c = claim();
-    c.session = 2;
-    assert_eq!(check_claims(&[c]), f(Rule::UnknownCode, "claim.session"));
-    let mut c = claim();
-    c.session_bound = 2;
-    assert_eq!(
-        check_claims(&[c]),
-        f(Rule::UnknownCode, "claim.session_bound")
-    );
-    let mut c = claim();
-    c.unit0_trigger = 7;
-    assert_eq!(
-        check_claims(&[c]),
-        f(Rule::UnknownCode, "claim.unit0_trigger")
-    );
-    let mut c = claim();
-    c.status_at = STATUS_AT_TERMINAL + 1;
-    assert_eq!(check_claims(&[c]), f(Rule::UnknownCode, "claim.status_at"));
+    // The strings and codes: the generated table.
 }
 
 fn row(claim: u32, lo: u32, hi: u32, class: u32) -> StatusRow {
@@ -780,20 +738,13 @@ fn row(claim: u32, lo: u32, hi: u32, class: u32) -> StatusRow {
 #[test]
 fn every_status_row_is_checked() {
     assert_eq!(check_status_rows(&[row(0, 200, 299, 1)], 1), Ok(()));
-    assert_eq!(
-        check_status_rows(&[row(1, 200, 299, 1)], 1),
-        f(Rule::IndexOutOfRange, "status_row.claim")
-    );
+    // A claim past the list and a class above the range: the generated table.
     assert_eq!(
         check_status_rows(&[row(0, 300, 299, 1)], 1),
         f(Rule::Contradiction, "status_row.lo_hi")
     );
     assert_eq!(
         check_status_rows(&[row(0, 200, 299, 0)], 1),
-        f(Rule::UnknownCode, "status_row.class")
-    );
-    assert_eq!(
-        check_status_rows(&[row(0, 200, 299, 5)], 1),
         f(Rule::UnknownCode, "status_row.class")
     );
 }
@@ -809,11 +760,7 @@ fn every_setting_is_checked() {
     assert_eq!(check_settings(&[s]), f(Rule::UnknownCode, "setting.kind"));
     s.kind = SETTING_FLAG;
     assert_eq!(check_settings(&[s]), Ok(()));
-    s.default.len = 1;
-    assert_eq!(
-        check_settings(&[s]),
-        f(Rule::NullWithCount, "setting.default")
-    );
+    // The strings: the generated table.
 }
 
 #[test]
@@ -869,14 +816,7 @@ fn a_route_shape_is_checked() {
         check_route(&route(0, PATH_EXACT, "/x")),
         f(Rule::Missing, "route.methods")
     );
-    assert_eq!(
-        check_route(&route(METHOD_ANY + 1, PATH_EXACT, "/x")),
-        f(Rule::UnknownCode, "route.methods")
-    );
-    assert_eq!(
-        check_route(&route(METHOD_GET, PATH_CONTAINS + 1, "/x")),
-        f(Rule::UnknownCode, "route.path_form")
-    );
+    // An unknown method bit or path form, and a predicate's unknown op: the generated table.
     let mut r = route(METHOD_GET, PATH_EXACT, "/x");
     r.fields_len = 1;
     assert_eq!(check_route(&r), f(Rule::NullWithCount, "route.fields"));
@@ -1092,10 +1032,7 @@ fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
 fn every_fault_row_is_checked() {
     let hard = u32::from(FAULT_HARD);
     assert_eq!(check_fault_rows(&[fault_row(0, 1, 9, hard)], 1), Ok(()));
-    assert_eq!(
-        check_fault_rows(&[fault_row(1, 1, 9, hard)], 1),
-        f(Rule::IndexOutOfRange, "fault_row.claim")
-    );
+    // A claim past the list and a reading above the range: the generated table.
     assert_eq!(
         check_fault_rows(&[fault_row(0, 9, 1, hard)], 1),
         f(Rule::Contradiction, "fault_row.lo_hi")
@@ -1107,10 +1044,6 @@ fn every_fault_row_is_checked() {
     );
     let healthy = u32::from(FAULT_HEALTHY);
     assert_eq!(check_fault_rows(&[fault_row(0, 1, 9, healthy)], 1), Ok(()));
-    assert_eq!(
-        check_fault_rows(&[fault_row(0, 1, 9, healthy + 1)], 1),
-        f(Rule::UnknownCode, "fault_row.fault")
-    );
 }
 
 /// THE RED ARM AT LOAD: a claim that states status rows states fault rows too. A framer with status
@@ -1157,11 +1090,7 @@ fn a_pieces_fault_reading_is_known_and_reads_its_code() {
     assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
     p.fault = FAULT_HEALTHY;
     assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
-    p.fault = FAULT_HEALTHY + 1;
-    assert_eq!(
-        check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8),
-        f(Rule::UnknownCode, "framer.piece.fault")
-    );
+    // A reading above the range: the generated table.
     // A reading with no code to read is a contradiction.
     p.fault = FAULT_CALLER;
     p.flags = PIECE_END_OF_FRAME;
@@ -1194,6 +1123,161 @@ fn the_offered_points_record_reads_or_refuses() {
         check_offered_points(&record(&POINT_FRAME.to_le_bytes())),
         Err(fault(Rule::UnknownCode, "offered_points.unknown_flags"))
     );
+}
+
+/// THE GENERATED RED TABLES: one RED per (field, rule) each transport declaration states
+/// unconditionally, each answering exactly its rule and field; the cross-field rules (`deny`,
+/// `when`, the plain functions) are the hand cases above.
+#[test]
+fn every_declared_transport_field_rule_is_red() {
+    use crate::abi::mechanism::decl::RedCase;
+    fn reds<T: Clone>(
+        base: &T,
+        table: &[RedCase<T>],
+        check: impl Fn(&T) -> Result<(), Fault>,
+    ) -> usize {
+        assert_eq!(check(base), Ok(()));
+        for case in table {
+            let mut t = base.clone();
+            (case.red)(&mut t);
+            assert_eq!(check(&t), f(case.rule, case.field), "{case:?}");
+        }
+        table.len()
+    }
+    let s = |v: &'static str| AbiStr {
+        ptr: v.as_ptr(),
+        len: v.len(),
+    };
+    let o: FramerOut = z();
+    let mut cases = reds(&o, FRAMER_RULES, |o| check_framer(Ready, o, &[], 8, 8, 8));
+    cases += reds(&o, DATAGRAM_RULES, |o| check_datagram(Ready, o, &[], 8));
+    cases += reds(&piece(0, 1), PIECE_RULES, |p| check_piece(p, 4));
+    let r = DatagramRoute {
+        offset: 0,
+        len: 1,
+        path: 1,
+        lane: LANE_CLEAR,
+    };
+    cases += reds(&r, DATAGRAM_ROUTE_RULES, |r| check_datagram_route(r, 4));
+    cases += reds(&tail(), TAIL_RULES, check_tail);
+    cases += reds(&claim(), CLAIM_RULES, check_claim);
+    cases += reds(&row(0, 200, 299, 1), STATUS_ROW_RULES, |r| {
+        check_status_row(r, 1)
+    });
+    let caller = u32::from(FAULT_CALLER);
+    cases += reds(&fault_row(0, 1, 9, caller), FAULT_ROW_RULES, |r| {
+        check_fault_row(r, 1)
+    });
+    let mut setting: SettingDecl = z();
+    setting.path = s("p");
+    setting.kind = SETTING_FLAG;
+    cases += reds(&setting, SETTING_RULES, check_setting);
+    cases += reds(
+        &route(route::METHOD_GET, route::PATH_EXACT, "/x"),
+        ROUTE_RULES,
+        check_route,
+    );
+    assert!(KEYING_RULES.is_empty());
+    // framer 1, datagram 1, piece 3, route 1, tail 6, claim 7, status row 2, fault row 2,
+    // setting 3, route 3.
+    assert_eq!(cases, 29);
+}
+
+/// `check_answer` for a transport slot over an `in` and an `out` of the stated sizes.
+fn answer<I, O>(
+    slot: u32,
+    outcome: Outcome,
+    input: &I,
+    in_size: usize,
+    out: &O,
+    out_size: usize,
+) -> Result<(), Fault> {
+    // SAFETY: both frames are live locals of at least the sizes stated, each leading with its
+    // head; every buffer they lend is NULL with a capacity of `0`, or a live local.
+    unsafe {
+        check_answer(
+            slot,
+            outcome,
+            (&raw const *input).cast(),
+            in_size,
+            (&raw const *out).cast(),
+            out_size,
+            &(),
+        )
+    }
+}
+
+/// THE KIND'S ANSWER CHECK: `listen` reads its `out` first, `locate` and every framer op their
+/// `in` first (a frame smaller than its struct is FOREIGN, the first read naming it); caps come
+/// from the `in`; a framer's pieces are read only up to the host's capacity; a slot with no
+/// answer rule passes.
+#[test]
+fn check_answer_reads_the_frames_in_the_loaders_order_then_judges_the_op() {
+    use std::mem::size_of;
+    let mut listen_in: ListenIn = z();
+    listen_in.addr_cap = 4;
+    let mut listen_out: ListenOut = z();
+    let (li, lo) = (size_of::<ListenIn>(), size_of::<ListenOut>());
+    assert_eq!(
+        answer(slot::LISTEN, Ready, &listen_in, li, &listen_out, lo),
+        Ok(())
+    );
+    assert_eq!(
+        answer(slot::LISTEN, Ready, &listen_in, li - 1, &listen_out, lo - 1),
+        f(Rule::Foreign, "out")
+    );
+    listen_out.addr_written = 5;
+    assert_eq!(
+        answer(slot::LISTEN, Ready, &listen_in, li, &listen_out, lo),
+        f(Rule::OverCap, "listen.addr_written")
+    );
+
+    let locate_in: LocateIn = z();
+    let locate_out: LocateOut = z();
+    let (ci, co) = (size_of::<LocateIn>(), size_of::<LocateOut>());
+    assert_eq!(
+        answer(slot::LOCATE, Ready, &locate_in, ci, &locate_out, co),
+        Ok(())
+    );
+    assert_eq!(
+        answer(slot::LOCATE, Ready, &locate_in, ci - 1, &locate_out, co - 1),
+        f(Rule::Foreign, "in")
+    );
+
+    let begin_in: BeginIn = z();
+    let mut framer_out: FramerOut = z();
+    let (bi, fo) = (size_of::<BeginIn>(), size_of::<FramerOut>());
+    assert_eq!(
+        answer(slot::BEGIN, Ready, &begin_in, bi, &framer_out, fo),
+        Ok(())
+    );
+    assert_eq!(
+        answer(slot::BEGIN, Ready, &begin_in, bi - 1, &framer_out, fo - 1),
+        f(Rule::Foreign, "in")
+    );
+    // Pieces the host gave no room for are refused before any slice exists.
+    framer_out.yielded.pieces_len = 1;
+    assert_eq!(
+        answer(slot::BEGIN, Ready, &begin_in, bi, &framer_out, fo),
+        f(Rule::OverCap, "framer.pieces_len")
+    );
+
+    let mut cancel: crate::abi::mechanism::lifecycle::CancelOut = z();
+    cancel.disposition = 7;
+    let hs = size_of::<crate::abi::mechanism::call::InHead>();
+    let cs = size_of::<crate::abi::mechanism::lifecycle::CancelOut>();
+    assert_eq!(
+        answer(
+            crate::abi::mechanism::lifecycle::slot::CANCEL,
+            Pending,
+            &begin_in,
+            hs,
+            &cancel,
+            cs
+        ),
+        f(Rule::Contradiction, "cancel.disposition")
+    );
+    assert_eq!(answer(slot::DIAL, Ready, &begin_in, 0, &cancel, 0), Ok(()));
 }
 
 fn line(id: u32, points: u32, body_limit: u64) -> LineEntry {

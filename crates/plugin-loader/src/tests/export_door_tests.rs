@@ -251,6 +251,68 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
     assert_eq!(*io.0.lock().unwrap(), vec![owner]);
 }
 
+/// The scrape sink's door with `span_records: true` added to its Statement's extensions.
+extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    static DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    let mut door = DOOR.load(Ordering::Acquire);
+    if door.is_null() {
+        let real: &'static Door = SCRAPE_DOOR();
+        // SAFETY: the real door's Statement is `'static` plugin data.
+        let st = unsafe { *real.statement() };
+        // SAFETY: as above; its extensions blob holds its stated length.
+        let mut ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) }.to_vec();
+        ext.extend(encode(&[("span_records", b"true")]));
+        let ext: &'static [u8] = Box::leak(ext.into_boxed_slice());
+        let stated: &'static Statement = Box::leak(Box::new(Statement {
+            extensions: statement_blob(ext),
+            ..st
+        }));
+        let mut d = real.parts();
+        d.statement = stated;
+        // SAFETY: a copy of the real door with its Statement replaced by a `'static` one.
+        let made: *mut Door = Box::leak(Box::new(unsafe { Door::__from_parts(d) }));
+        door = match DOOR.compare_exchange(
+            std::ptr::null_mut(),
+            made,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => made,
+            Err(first) => first,
+        };
+    }
+    // SAFETY: a leaked, never-freed `Door`, so `'static`.
+    unsafe { &*door }
+}
+
+/// A DOOR STATES IT TAKES FULL SPAN RECORDS through its Statement's extensions (`span_records`,
+/// status row 173): the instance it opens answers `takes_span_records`, so the kernel adds each
+/// `traces` line's `span` member (everything the previous release's exporter sent: attributes,
+/// events, status). A door that states nothing takes none. RED: an instance that never answers it
+/// leaves every export door's span record unsent.
+#[test]
+fn a_door_that_states_span_records_takes_them() {
+    let open = |door: busbar_contract::abi::mechanism::door::DoorFn| {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let row = LinkedRow::of(door).expect("the door states itself");
+        let bind = Bind {
+            instance: Arc::from("export.metrics"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        };
+        let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
+        ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
+            .expect("the sink opens")
+    };
+    assert!(open(span_records_door).takes_span_records());
+    assert!(!open(SCRAPE_DOOR).takes_span_records());
+}
+
 /// THE LEAK WITNESS: an export door whose `status` answers FAILED and whose `check` answers REFUSED,
 /// each still naming a lease over bytes it holds, and whose `serve` answers READY with how many
 /// leases it still holds as its status code.

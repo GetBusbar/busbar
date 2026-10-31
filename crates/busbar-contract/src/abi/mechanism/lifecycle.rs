@@ -151,7 +151,8 @@ pub struct OpenIn {
     /// The settings blob.
     pub settings: Blob,
     /// The resolved secrets, each a [`super::call::BLOB_SECRET`] blob: one per
-    /// [`super::door::Statement::secret_refs`] key, in that order.
+    /// [`super::door::Statement::secret_refs`] key, in that order, for the kinds whose host lends
+    /// them. A store is lent none: its declared references are resolved in place in `settings`.
     pub secrets: *const Blob,
     /// How many.
     pub secrets_len: usize,
