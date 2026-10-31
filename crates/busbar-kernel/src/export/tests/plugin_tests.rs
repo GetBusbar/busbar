@@ -317,6 +317,11 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         "batch": 10,
     }));
     let handed = sink_settings(&DeclaringAxis, "declaring-sink", &written).expect("resolves");
+    let diagnostic = format!("{handed:?}");
+    assert!(
+        !diagnostic.contains("Bearer t0k"),
+        "the settings owner must not expose a resolved credential through Debug"
+    );
     assert_eq!(
         handed,
         serde_json::json!({
