@@ -21,7 +21,8 @@
 //! never refreshed: a changed configuration reaches it through a fresh instance (a reload that
 //! replaces it, or a restart), opened over the new settings. Its `refresh` slot must still be
 //! present (every slot is), and the SDK's default answers it; nothing a plugin of those kinds
-//! does in `refresh` reaches an operator.
+//! does in `refresh` reaches an operator. The store SDK's default REFUSES it, naming the restart
+//! that applies a changed store section, so no store claims settings applied that were not.
 //!
 //! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
 //! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's

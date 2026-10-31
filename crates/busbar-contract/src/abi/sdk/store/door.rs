@@ -254,8 +254,8 @@ impl<B: StoreSlots> Served<B> {
 }
 
 /// THE STORE'S LIFECYCLE is the SDK's one ([`Life`]): `validate` is the store's own parse, a
-/// `refresh` applies nothing (a store holds its settings for its lifetime; a reload opens a new
-/// instance), it asks for no tick and drives nothing, and a cancelled op's disposition is not
+/// `refresh` is refused naming the restart (a store holds its settings for its lifetime; a reload
+/// opens a new instance), it asks for no tick and drives nothing, and a cancelled op's disposition is not
 /// known here (the kernel re-issues it under the same `op_id` and dedupe settles it).
 impl<B: StoreSlots> Life for Served<B> {
     const CANCEL: u32 = CANCEL_UNKNOWN;
@@ -273,10 +273,19 @@ impl<B: StoreSlots> Life for Served<B> {
         ))
     }
 
+    /// REFUSED, naming the restart: the host never refreshes a store (`abi::mechanism::lifecycle`,
+    /// "which kinds the host refreshes"), so a READY here would claim settings were applied that
+    /// were not. A changed store section is applied by a restart (or a reload that opens a fresh
+    /// instance over it).
     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        Ok(Refreshed::default())
+        Err(Refusal::refused(REFRESH_REFUSAL))
     }
 }
+
+/// What a store's `refresh` answers: a store applies changed settings only when it is opened anew.
+pub const REFRESH_REFUSAL: &str =
+    "a store applies changed settings only when it is opened anew: restart busbar (or reload the \
+     store) to apply them";
 
 /// What a store slot reads its instance through: the backend, the store's error-text ring and the
 /// SDK's one lease table, all held by the instance's [`Held`].
