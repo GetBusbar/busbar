@@ -3051,6 +3051,9 @@ struct KernelSide {
 
 const SIDE_SECRET: [u64; 2] = [0x5eed, 0xc0de];
 
+#[path = "auth_generation_tests.rs"]
+mod auth_generation_tests;
+
 fn side_answer(unit: UnitRef) -> AuthCallAnswer {
     AuthCallAnswer {
         flow: svc::FLOW_CONTINUE,
