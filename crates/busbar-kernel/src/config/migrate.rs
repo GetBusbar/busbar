@@ -1262,18 +1262,27 @@ fn migrate_auth(
                  signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop working"
                     .into(),
             );
-            // The `keys` verifier REQUIRES a signing key (1.5.1: no auto-generation), so a config
-            // that migrated tokens -> keys will not `--validate` until the operator provides one.
-            if !auth.contains_key(Value::from("signing_key")) {
-                todos.push(
-                    "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
-                     auto-generates one); run `busbar --generate-signing-key` and set \
-                     auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
-                     shared across a fleet)"
-                        .into(),
-                );
-            }
         }
+    }
+
+    // The `keys` verifier REQUIRES a signing key (1.5.1: no auto-generation), so a config whose
+    // migrated chain uses `keys` - rewritten from `tokens` above OR already written that way - will
+    // not `--validate` until the operator provides one. Never invent a key; say so.
+    let chain_uses_keys = matches!(
+        auth.get(Value::from("chain")),
+        Some(Value::Sequence(c)) if c.iter().any(|e| {
+            e.as_str() == Some("keys")
+                || e.as_mapping().is_some_and(|m| m.contains_key(Value::from("keys")))
+        })
+    );
+    if chain_uses_keys && !auth.contains_key(Value::from("signing_key")) {
+        todos.push(
+            "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
+             auto-generates one); run `busbar --generate-signing-key` and set \
+             auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
+             shared across a fleet)"
+                .into(),
+        );
     }
 
     // `auth.modules` (per-module trust-boundary caps) is REMOVED in 1.5.0. `max_admin_scope` has a
