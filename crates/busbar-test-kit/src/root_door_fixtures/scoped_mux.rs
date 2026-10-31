@@ -54,9 +54,15 @@ const STATEMENT: Statement = Statement {
 /// Per-instance fixture state; no callback blocks a plugin crossing.
 pub struct Mux {
     auth: Mutex<AuthRef>,
-    pending: Mutex<HashMap<Ticket, u64>>,
+    pending: Mutex<HashMap<Ticket, Pending>>,
     owed: Mutex<HashMap<Ticket, Queue>>,
     finished: Mutex<Vec<u64>>,
+}
+
+#[derive(Clone, Copy)]
+struct Pending {
+    stream: u64,
+    probe: bool,
 }
 
 impl Life for Mux {
@@ -68,6 +74,26 @@ impl Life for Mux {
             owed: Mutex::default(),
             finished: Mutex::default(),
         })
+    }
+
+    fn close(&self, host: Option<&busbar_contract::abi::sdk::conn::Host>) {
+        if let Some(services) = host.and_then(|h| h.services()) {
+            let request = HeadViewArgs {
+                method: "GET",
+                target: "/close",
+                scheme: SCHEME_PLAIN,
+                ..HeadViewArgs::default()
+            };
+            let _ = services.unit_refuse(
+                CompletionHandle::ZERO,
+                UnitRef::NONE,
+                busbar_contract::abi::host::service::REFUSE_NO_ROUTE,
+                busbar_contract::abi::host::service::LINE_NONE,
+                TOKEN,
+                0,
+                &request,
+            );
+        }
     }
 }
 
@@ -95,6 +121,16 @@ impl Owed<Vec<u8>> for Queue {
 type State = Held<Mux>;
 
 fn authenticate(held: &State, ticket: Ticket, stream: u64) -> Poll<Result<(), ()>> {
+    authenticate_at(held, ticket, stream, 0, false)
+}
+
+fn authenticate_at(
+    held: &State,
+    ticket: Ticket,
+    stream: u64,
+    seq: u32,
+    resumed: bool,
+) -> Poll<Result<(), ()>> {
     let Some(services) = held.host().and_then(|h| h.services()) else {
         return Poll::Ready(Err(()));
     };
@@ -104,13 +140,14 @@ fn authenticate(held: &State, ticket: Ticket, stream: u64) -> Poll<Result<(), ()
         method: "POST",
         target: &target,
         authority: "fixture",
+        query: resumed.then_some("resumed=1"),
         scheme: SCHEME_PLAIN,
         ..HeadViewArgs::default()
     };
     match services.auth_call::<Own>(
         CompletionHandle {
             ticket,
-            seq: 0,
+            seq,
             _reserved: 0,
         },
         auth,
@@ -175,16 +212,17 @@ impl SafeSlot for Ingest {
         let state = held.life();
         let ticket = i.head.ticket;
         if !state.owed.lock().unwrap().contains_key(&ticket) {
-            let stream = {
+            let Pending { stream, probe } = {
                 let mut pending = state.pending.lock().unwrap();
-                match pending
-                    .get(&ticket)
-                    .copied()
-                    .or_else(|| i.bytes().first().map(|v| u64::from(*v)))
-                {
-                    Some(stream) => {
-                        pending.insert(ticket, stream);
-                        stream
+                match pending.get(&ticket).copied().or_else(|| {
+                    i.bytes().first().map(|v| Pending {
+                        stream: u64::from(*v),
+                        probe: i.bytes().get(1) == Some(&1),
+                    })
+                }) {
+                    Some(request) => {
+                        pending.insert(ticket, request);
+                        request
                     }
                     None => return Outcome::Refused,
                 }
@@ -204,6 +242,23 @@ impl SafeSlot for Ingest {
                     Poll::Pending => return Outcome::Pending,
                     Poll::Ready(Err(())) => return Outcome::Refused,
                     Poll::Ready(Ok(())) => {}
+                }
+                if probe {
+                    let resumed =
+                        i.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0;
+                    if !resumed {
+                        if let Some(host) = held.host() {
+                            host.wake(ticket);
+                        }
+                        return Outcome::Pending;
+                    }
+                    match authenticate_at(held, ticket, stream + 10, 1, resumed) {
+                        Poll::Pending => return Outcome::Pending,
+                        Poll::Ready(Err(())) => return Outcome::Refused,
+                        Poll::Ready(Ok(())) => {}
+                    }
+                    state.pending.lock().unwrap().remove(&ticket);
+                    return Outcome::Ready;
                 }
                 [ticket.slot.to_le_bytes(), ticket.generation.to_le_bytes()].concat()
             };

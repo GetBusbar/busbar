@@ -443,11 +443,19 @@ pub struct Admitted {
     pub resolved: Option<Arc<crate::governance::VirtualKey>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RequestBinding {
+    conn: u64,
+    stream: u64,
+    framing: Option<u64>,
+}
+
 /// One unit, as the kernel holds it.
 struct UnitState {
     owner: u64,
     generation: u64,
     line: u32,
+    binding: RequestBinding,
     secret: [u64; 2],
     head: Option<Head>,
     answers: Vec<Option<Judged>>,
@@ -471,11 +479,13 @@ impl UnitState {
         line: u32,
         secret: [u64; 2],
         providers: &[String],
+        binding: RequestBinding,
     ) -> Self {
         Self {
             owner,
             generation,
             line,
+            binding,
             secret,
             head: None,
             answers: vec![None; providers.len()],
@@ -974,7 +984,7 @@ impl Inbound {
         generation: u64,
         line: u32,
         providers: &[String],
-        framing: Option<u64>,
+        binding: RequestBinding,
     ) -> Result<UnitRef, &'static str> {
         let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
         let unit = (self.seals.mint)();
@@ -989,8 +999,8 @@ impl Inbound {
             unit,
         })
         .ok_or(UNIT_UNMINTED)?;
-        let mut state = UnitState::open(owner, generation, line, secret, providers);
-        if let Some(peer) = framing.and_then(|f| {
+        let mut state = UnitState::open(owner, generation, line, secret, providers, binding);
+        if let Some(peer) = binding.framing.and_then(|f| {
             self.peers()
                 .get(&(owner, generation, f))
                 .filter(|p| p.providers == providers)
@@ -1003,12 +1013,20 @@ impl Inbound {
     }
 
     /// Whether `r` is a unit this kernel minted for `owner`, at `generation`, for `line`.
-    fn verified(&self, owner: u64, generation: Option<u64>, line: Option<u32>, r: UnitRef) -> bool {
+    fn verified(
+        &self,
+        owner: u64,
+        generation: Option<u64>,
+        line: Option<u32>,
+        binding: RequestBinding,
+        r: UnitRef,
+    ) -> bool {
         let units = self.units();
         let Some(u) = units.get(&r.id) else {
             return false;
         };
         if u.owner != owner
+            || u.binding != binding
             || generation.is_some_and(|g| g != u.generation)
             || line.is_some_and(|l| l != u.line)
         {
@@ -1092,6 +1110,11 @@ impl Inbound {
             return Err(OVER_GATE);
         }
         self.same_conn(call.owner, call.framing, call.conn)?;
+        let binding = RequestBinding {
+            conn: call.conn,
+            stream: call.stream,
+            framing: Some(call.framing),
+        };
         let (target, unit) = if peer {
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
@@ -1106,19 +1129,26 @@ impl Inbound {
                 return Err(PEER_TABLE_FULL);
             }
             peers.entry(key).or_insert_with(|| {
-                UnitState::open(call.owner, call.generation, line_ix, [0; 2], &providers)
+                UnitState::open(
+                    call.owner,
+                    call.generation,
+                    line_ix,
+                    [0; 2],
+                    &providers,
+                    binding,
+                )
             });
             (Target::Peer(key), UnitRef::NONE)
         } else {
             let unit = if call.unit.is_none() {
-                self.mint(
-                    call.owner,
-                    call.generation,
-                    line_ix,
-                    &providers,
-                    Some(call.framing),
-                )?
-            } else if self.verified(call.owner, Some(call.generation), Some(line_ix), call.unit) {
+                self.mint(call.owner, call.generation, line_ix, &providers, binding)?
+            } else if self.verified(
+                call.owner,
+                Some(call.generation),
+                Some(line_ix),
+                binding,
+                call.unit,
+            ) {
                 call.unit
             } else {
                 return Err(UNIT_FOREIGN);
@@ -1333,13 +1363,18 @@ impl Inbound {
             self.same_conn(h.owner, f, h.conn)?;
         }
         let lines = table.listener.guests.lines();
+        let binding = RequestBinding {
+            conn: h.conn,
+            stream: h.stream,
+            framing: h.framing,
+        };
         let unit = if h.unit.is_none() {
             let names: &[String] = match lines.get(h.line as usize).map(|l| &l.auth) {
                 Some(LineAuth::Chain(names, _)) => names,
                 _ => &[],
             };
-            self.mint(h.owner, h.generation, h.line, &ordered(names), h.framing)?
-        } else if self.verified(h.owner, None, None, h.unit) {
+            self.mint(h.owner, h.generation, h.line, &ordered(names), binding)?
+        } else if self.verified(h.owner, None, None, binding, h.unit) {
             h.unit
         } else {
             return Err(UNIT_FOREIGN);
@@ -1420,7 +1455,17 @@ impl Inbound {
         };
         let unit = (!r.unit.is_none()).then_some(r.unit);
         if let Some(u) = unit {
-            if !self.verified(r.owner, None, line.map(|_| r.line), u) {
+            if !self.verified(
+                r.owner,
+                None,
+                line.map(|_| r.line),
+                RequestBinding {
+                    conn: r.conn,
+                    stream: r.stream,
+                    framing: r.framing,
+                },
+                u,
+            ) {
                 return Err(UNIT_FOREIGN);
             }
         }

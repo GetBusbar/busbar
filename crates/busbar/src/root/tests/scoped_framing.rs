@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll};
 
 use busbar_contract::abi::auth::POINT_HEAD;
@@ -32,13 +32,16 @@ struct Seen {
     listener: Option<u64>,
     physical: Option<u64>,
     ticket: Ticket,
+    resumed: bool,
 }
 
 #[derive(Default)]
 struct Host {
     seen: Mutex<Vec<Seen>>,
     pending: Mutex<HashMap<u64, AuthDone>>,
+    pending_changed: Condvar,
     ended: Mutex<Vec<u64>>,
+    close_seen: Mutex<Vec<(Option<u64>, Option<u64>)>>,
 }
 
 fn answer(stream: u64) -> AuthCallAnswer {
@@ -53,6 +56,17 @@ fn answer(stream: u64) -> AuthCallAnswer {
 }
 
 impl Host {
+    fn wait_pending(&self, stream: u64) -> bool {
+        let (held, _) = self
+            .pending_changed
+            .wait_timeout_while(
+                self.pending.lock().unwrap(),
+                std::time::Duration::from_secs(5),
+                |p| !p.contains_key(&stream),
+            )
+            .unwrap();
+        held.contains_key(&stream)
+    }
     fn release(&self, stream: u64) -> bool {
         let done = self.pending.lock().unwrap().remove(&stream);
         if let Some(done) = done {
@@ -89,9 +103,11 @@ impl AuthHandleHost for Host {
             listener: scope.as_ref().map(|s| s.listener()),
             physical: scope.as_ref().map(|s| s.connection()),
             ticket,
+            resumed: ask.request.query.as_deref() == Some("resumed=1"),
         });
         if matches!(stream, 1 | 3) {
             self.pending.lock().unwrap().insert(stream, done);
+            self.pending_changed.notify_all();
             AuthRan::Pending
         } else {
             AuthRan::Now(Ok(answer(stream)))
@@ -100,8 +116,17 @@ impl AuthHandleHost for Host {
     fn hand_in(&self, _: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
         Err("not served by this fixture")
     }
-    fn refuse(&self, _: RefuseAsk) -> Result<RefusalBytes, &'static str> {
-        Err("not served by this fixture")
+    fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
+        let context = framing_context::current();
+        self.close_seen
+            .lock()
+            .unwrap()
+            .push((context.as_ref().map(|c| c.leg()), ask.framing));
+        Ok(RefusalBytes {
+            status: 404,
+            fields: Vec::new(),
+            body: Vec::new(),
+        })
     }
     fn framing_ended(&self, framing: u64) {
         self.ended.lock().unwrap().push(framing);
@@ -268,4 +293,106 @@ fn a_ready_token_mismatch_still_finishes_the_returned_plugin_resource() {
         (scoped_mux::TOKEN + 1).to_le_bytes()
     );
     assert_eq!(host.ended.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
+    use crate::root::loader::dispatch::Frame;
+    use busbar_contract::abi::host::service::SCHEME_PLAIN;
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+    use busbar_contract::abi::sdk::door::{abi_str, blank_in, blank_out};
+    use busbar_contract::abi::transport::{
+        self as t,
+        route::{LineEntry, RouteMatch},
+    };
+
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let host = Arc::new(Host::default());
+    let served: Arc<dyn AuthHandleHost> = host.clone();
+    assert!(dispatcher.install_auth_handle(served.clone()));
+    let plugin =
+        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let mut opened_frame = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());
+    assert_eq!(
+        plugin.call(life::OPEN, &mut opened_frame).outcome,
+        Outcome::Ready
+    );
+    let owner = plugin.instance().0;
+    let context = framing_context::FramingContext::new(owner, 71, 0, Some(Arc::downgrade(&served)))
+        .expect("host scope");
+    let scope: Arc<dyn busbar_contract::framing_scope::FramingScope> = context.clone();
+    let mut route = RouteMatch::EMPTY;
+    route.methods = METHOD_POST;
+    route.path_form = PATH_CONTAINS;
+    route.path = abi_str("/");
+    let line = LineEntry {
+        line: 0,
+        points: POINT_HEAD,
+        auth: auth_handle::mint_auth_ref(owner, auth_handle::generation(), 3).unwrap(),
+        body_limit: 0,
+        route,
+    };
+    let mut input: t::BeginIn = blank_in();
+    input.side = SIDE_ACCEPT;
+    input.scheme = SCHEME_PLAIN;
+    input.lines = &line;
+    input.lines_len = 1;
+    let mut opening = Frame::new(input, blank_out::<t::FramerOut>());
+    let side = dispatcher.inline_ticket().expect("opening ticket");
+    let opened = framing_context::with_context(Some(scope.clone()), || {
+        plugin.call_inline(side.ticket(), false, t::slot::BEGIN, &mut opening)
+    });
+    assert_eq!(opened.outcome, Outcome::Ready);
+    context.confirm(opening.out.framing).unwrap();
+    drop(side);
+
+    let cleanup = ReleaseAll(host.clone());
+    let bytes = Arc::new(vec![1_u8, 1]);
+    let mut input: t::IngestIn = blank_in();
+    input.framing = scoped_mux::TOKEN;
+    input.bytes = bytes.as_ptr();
+    input.len = bytes.len();
+    let frame = Frame::new(input, blank_out::<t::FramerOut>());
+    let ticket = dispatcher.mint(0).expect("worker ticket");
+    let reply = framing_context::with_context(Some(scope.clone()), || {
+        dispatcher.submit_lent(
+            &plugin,
+            ticket,
+            t::slot::INGEST,
+            frame,
+            DeadlineClass::Connection,
+            0,
+            bytes.clone(),
+        )
+    });
+    let caller_scope_restored = framing_context::current().is_none();
+    let pending = host.wait_pending(1);
+    let released = host.release(1);
+    let done = reply.wait(std::time::Duration::from_secs(5));
+    drop(cleanup);
+    drop(reply);
+    dispatcher.recycle(ticket);
+    let mut closing = Frame::new(blank_in::<InHead>(), blank_out::<OutHead>());
+    let closed =
+        framing_context::with_context(Some(scope), || plugin.call(life::CLOSE, &mut closing));
+    context.end();
+
+    assert!(caller_scope_restored && pending && released);
+    assert_eq!(done.map(|d| d.outcome), Some(Outcome::Ready));
+    assert_eq!(closed.outcome, Outcome::Ready);
+    let seen = host.seen.lock().unwrap();
+    assert_eq!(seen.iter().map(|s| s.stream).collect::<Vec<_>>(), [1, 11]);
+    assert!(
+        !seen[0].resumed && seen[1].resumed,
+        "the second service ran on an actual ABI resume"
+    );
+    assert!(seen.iter().all(|s| s.owner == owner
+        && s.leg == context.leg()
+        && s.listener == Some(71)
+        && s.physical == Some(context.connection())));
+    assert_eq!(
+        *host.close_seen.lock().unwrap(),
+        vec![(Some(context.leg()), Some(context.leg()))]
+    );
 }
