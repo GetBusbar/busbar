@@ -1369,6 +1369,7 @@ async fn run(
             tls_secret_resolver.clone(),
             &shutdown_tx,
             worker_shutdown_rx,
+            data_framer(&listen),
         );
         tracing::debug!(
             listen = %admin_listen,
@@ -1384,6 +1385,7 @@ async fn run(
             recv_shutdown(shutdown_tx.subscribe()),
             None,
             true,
+            None,
         )
         .await;
         // The shutdown broadcast has fired (the admin serve returned), so every per-core data
@@ -1412,6 +1414,7 @@ async fn run(
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
+                data_framer(&listen),
             ),
             serve_listener(
                 admin_listener,
@@ -1422,6 +1425,7 @@ async fn run(
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
+                None,
             ),
         );
     }
@@ -1450,6 +1454,31 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
+}
+
+/// THE DATA LISTENER'S FRAMER, found by facts on the process's one connector
+/// (`root::listener::framed::data_framer`): the framer serving the listener's scheme whose tail
+/// states it accepts. `None` = the build serves none: the data listener `listen` is served by the
+/// kernel's own HTTP loop (the core-only build's path), and the boot says so in one warning naming
+/// the listener.
+fn data_framer(listen: &str) -> Option<root::listener::framed::DataFramer> {
+    let framer = root::listener::framed::data_framer(Arc::new(|scheme: &str| {
+        root::connector::the().framer_for(scheme)
+    }));
+    match &framer {
+        Some(f) => tracing::debug!(
+            framer = %f.door().facts().name,
+            "data door served through its framer's accept side"
+        ),
+        None => {
+            tracing::warn!(
+                listen = %listen,
+                "data listener served by the kernel's own HTTP loop: no transport the build \
+                 serves accepts `http`"
+            );
+        }
+    }
+    framer
 }
 
 /// One shutdown-broadcast subscription resolved into a plain future. Any receive outcome — a send,
@@ -1485,6 +1514,9 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    // The data listener's framer, whose accept side serves each connection (`None` = the build
+    // serves no framer that accepts the listener's scheme).
+    framer: Option<root::listener::framed::DataFramer>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1532,6 +1564,7 @@ fn serve_thread_per_core(
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
+        let framer = framer.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -1591,6 +1624,7 @@ fn serve_thread_per_core(
                         // worker: only worker 0 logs it at INFO; every other worker's identical fact
                         // logs at DEBUG (the per-worker detail an operator can still opt into).
                         i == 0,
+                        framer,
                     )
                     .await;
                     // Connections are drained; give this worker's detached work its bounded
@@ -1632,6 +1666,9 @@ async fn serve_listener(
     // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
     // the rest log the identical fact at DEBUG.
     log_at_info: bool,
+    // The data listener's framer, whose accept side serves each connection; `None` for the admin
+    // listener, and for a build that serves no framer accepting the data listener's scheme.
+    framer: Option<root::listener::framed::DataFramer>,
 ) {
     match tls_cfg {
         None => {
@@ -1640,8 +1677,10 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) =
-                root::listener::serve_admitted(listener, router, None, shutdown, balancer).await
+            if let Err(e) = root::listener::serve_admitted_framed(
+                listener, router, None, shutdown, balancer, framer,
+            )
+            .await
             {
                 die(format!("server error on '{label}': {e}"));
             }
@@ -1667,9 +1706,15 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) =
-                root::listener::serve_admitted(listener, router, Some(security), shutdown, balancer)
-                    .await
+            if let Err(e) = root::listener::serve_admitted_framed(
+                listener,
+                router,
+                Some(security),
+                shutdown,
+                balancer,
+                framer,
+            )
+            .await
             {
                 die(format!("server error on '{label}': {e}"));
             }

@@ -1288,9 +1288,6 @@ impl Connection {
             let y = framing
                 .emit_opening(stream, bytes, end, text, body_len)
                 .map_err(failed)?;
-            if y.full {
-                self.full.insert(stream);
-            }
             return self.absorb(y);
         }
         if self.door.is_some() {
@@ -2200,8 +2197,15 @@ impl Connection {
         }
         // A stream the framer says is writable again, or whose last piece arrived, is held no
         // more.
-        for stream in &y.writable {
-            self.full.remove(stream);
+        for flow in &y.flow {
+            match flow {
+                crate::framer::StreamFlow::Full(stream) => {
+                    self.full.insert(*stream);
+                }
+                crate::framer::StreamFlow::Writable(stream) => {
+                    self.full.remove(stream);
+                }
+            }
         }
         for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
             self.full.remove(&g.stream);
