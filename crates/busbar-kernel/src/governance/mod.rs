@@ -916,6 +916,7 @@ pub mod group_provision;
 // `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
 // busbar-core reaches them through this crate.
 mod state;
+pub(crate) use state::key_row_expired;
 pub use state::{
     metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
     ADJUST_UP_BUCKET,

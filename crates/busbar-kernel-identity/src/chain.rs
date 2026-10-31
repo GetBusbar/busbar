@@ -57,8 +57,8 @@ pub struct ResolvedKey {
 /// generation**. Each step short-circuits the ones after it — an unsigned or expired token is never
 /// looked up against the denylist, and a revoked subject is never resolved to its binding — so a
 /// caller can rely on the FIRST reason a token failed being the true one, not a later one that
-/// happened to also be true. `expires_at` itself stays unenforced here: only the token's own
-/// `exp` claim gates step two.
+/// happened to also be true. The key row's own `expires_at` is enforced with the generation step:
+/// a row whose `expires_at` is at or before `now` refuses whatever token names it.
 pub trait KeyVerifier: Send + Sync {
     /// Verify a signed key. `None` for unknown, expired, rotated, revoked or disabled.
     fn verify_token(

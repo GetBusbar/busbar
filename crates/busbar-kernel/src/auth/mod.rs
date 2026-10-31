@@ -2467,8 +2467,11 @@ pub(crate) async fn auth_middleware(
                     let key = app.governance.as_deref().and_then(|gov| {
                         reader.kinds.iter().find_map(|kind| {
                             let (key, cred) = gov.lookup_credential(kind, &id.subject)?;
-                            (key.enabled && cred.meta.is_live(now) && !gov.is_revoked(&key.id))
-                                .then(|| (*key).clone())
+                            (key.enabled
+                                && !crate::governance::key_row_expired(&key, now)
+                                && cred.meta.is_live(now)
+                                && !gov.is_revoked(&key.id))
+                            .then(|| (*key).clone())
                         })
                     });
                     // THE REPLAY CLAIM, won before admitting exactly as every other verify

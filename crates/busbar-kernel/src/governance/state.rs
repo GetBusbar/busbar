@@ -255,6 +255,16 @@ impl GovState {
         }
         // Resolve policy by `sub` (the key id). The binding lives in the `by_sub` index.
         match self.lookup_by_sub(&claims.sub) {
+            // THE KEY ROW'S OWN EXPIRY (owner-signed 2026-10-30, SEC-VKEY): a stored `expires_at`
+            // at or before `now` refuses whatever token names the key, exactly as a token's own
+            // `exp` does. The row keeps the value, so the admin views still show it.
+            Some(key) if key_row_expired(&key, now) => {
+                tracing::debug!(
+                    sub = %claims.sub,
+                    "signed-token rejected: the key row's expires_at has passed"
+                );
+                None
+            }
             // GENERATION gate: the token must name the binding's CURRENT rotation generation.
             // `POST /keys/{id}/rotate` stamps a fresh one into the durable binding row, so every
             // token issued before that rotation stops verifying here — on this node and on every
@@ -2819,3 +2829,9 @@ fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<Mod
 // The scrape's memo over the money view: a bucket reprices only when what it was priced from changed.
 #[path = "money_view.rs"]
 pub(super) mod money_view;
+
+/// Whether `key`'s stored `expires_at` has passed as of `now` (owner-signed 2026-10-30, SEC-VKEY):
+/// `expires_at == now` is already expired, as a token's `exp == now` is.
+pub(crate) fn key_row_expired(key: &VirtualKey, now: u64) -> bool {
+    key.expires_at.is_some_and(|exp| exp <= now)
+}
