@@ -710,7 +710,10 @@ impl ChainHead {
             path: self.path.clone(),
             query: self.query.clone(),
             timestamp: now,
-            ..Default::default()
+            conn: 0,
+            unit: 0,
+            peer: None,
+            body: None,
         }
     }
 }
@@ -1619,6 +1622,20 @@ fn unauthorized_response(
     crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
+/// The candidate lent to inbound verifiers before the final request gate checks sender proof.
+pub(crate) fn inbound_candidate(
+    app: &crate::state::App,
+    headers: &HeaderMap,
+) -> Option<busbar_contract::redacted::Secret<String>> {
+    // This selects bytes for the real credential verifier, not a proven sender. The final
+    // request gate still verifies DPoP (including replay) and rejects a bound bearer.
+    app.oauth_as
+        .as_ref()
+        .and_then(|_| dpop::dpop_credential(headers))
+        .or_else(|| app.auth.extract_client_token(headers))
+        .map(busbar_contract::redacted::Secret::new)
+}
+
 /// THE CREDENTIAL A STYLE'S CARRIERS YIELD on `headers`: the first carrier line, in `carriers`'
 /// order, that presents one. The `authorization` field is read in the Bearer scheme (RFC 6750; the
 /// protocol's vocabulary, owner Q1), another scheme presenting nothing there; every other line is
@@ -1916,7 +1933,11 @@ fn admin_head(
         path: path.to_string(),
         query,
         timestamp: now,
-        ..Default::default()
+        conn: 0,
+        unit: 0,
+        credential: None,
+        peer: None,
+        body: None,
     }
 }
 
@@ -2532,7 +2553,13 @@ pub(crate) async fn auth_middleware(
     // token as a ref. Handed on with the request so the host strips all of them before any plane
     // sees it (`caller_credential`).
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller = client_token.as_deref().map(CallerCredential::verified);
+    consumed.caller =
+        match &inbound {
+            Some(admission) => admission.inner.credential.as_ref().map(|credential| {
+                CallerCredential::verified(credential.expose(&crate::seal::lend()))
+            }),
+            None => client_token.as_deref().map(CallerCredential::verified),
+        };
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE
@@ -3115,7 +3142,10 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
         path: parts.uri.path().to_string(),
         query: parts.uri.query().map(str::to_string),
         timestamp: busbar_kernel::store::now(),
-        ..VerifyRequest::default()
+        conn: 0,
+        unit: 0,
+        credential: None,
+        peer: None,
     }
 }
 

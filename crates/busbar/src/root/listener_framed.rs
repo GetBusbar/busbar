@@ -680,6 +680,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
         match self.inflows.get_mut(&piece.stream) {
             None if piece.fields && !piece.failed => self.head(&piece),
+            None if piece.failed => {
+                self.heads.remove(&piece.stream);
+                if let Some(scope) = self.framing.as_ref().and_then(Framing::scope) {
+                    scope.stream_ended(piece.stream);
+                }
+            }
             // A piece of a stream no task holds (answered, or never served): dropped.
             None => {}
             Some(inflow) => {
@@ -763,6 +769,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         &request_head,
                     ) {
                         Ok(admission) => {
+                            scope.admit_stream(stream);
                             req.extensions_mut().insert(admission);
                         }
                         Err(_) => {

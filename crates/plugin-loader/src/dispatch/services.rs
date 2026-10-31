@@ -1782,6 +1782,22 @@ fn service_framing(
     }
 }
 
+fn claim_stream_operation(
+    ticket: Ticket,
+    stream: u64,
+    generation: u64,
+    required: bool,
+) -> Result<(), &'static str> {
+    if let Some(context) = super::framing_context::current() {
+        // Contextless and legacy test hosts have no policy protocol. A concrete host's
+        // request_generation already required its registered stream loan before this point.
+        if required || context.policy_generation(stream, false).is_some() {
+            context.claim_stream_operation(ticket, stream, generation)?;
+        }
+    }
+    Ok(())
+}
+
 extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::AuthCallIn>(
         ctx,
@@ -1836,6 +1852,16 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 Ok(None) => return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED),
                 Err(e) => return Answered::bare(Outcome::Refused, e),
             };
+            if i.point != busbar_contract::abi::auth::POINT_PEER {
+                if let Err(error) = claim_stream_operation(
+                    head.handle.ticket,
+                    i.stream,
+                    generation,
+                    host.requires_scope(),
+                ) {
+                    return Answered::bare(Outcome::Refused, error);
+                }
+            }
             let ask = AuthCallAsk {
                 owner,
                 generation,
@@ -1950,6 +1976,14 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
                 request,
                 framing,
             };
+            if let Err(error) = claim_stream_operation(
+                head.handle.ticket,
+                i.stream,
+                generation,
+                host.requires_scope(),
+            ) {
+                return Answered::bare(Outcome::Refused, error);
+            }
             match host.hand_in_with_deadline(ask, op_remaining()) {
                 Ok((flow, unit)) => {
                     // SAFETY: the caller's answer slot, checked non-NULL by `check_unit_hand_in_in`.
@@ -2024,6 +2058,11 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             Ok(f) => f,
             Err(e) => return Answered::bare(Outcome::Refused, e),
         };
+        if let Err(error) =
+            claim_stream_operation(h.handle.ticket, i.stream, generation, host.requires_scope())
+        {
+            return Answered::bare(Outcome::Refused, error);
+        }
         let bytes = match host.refuse(RefuseAsk {
             owner,
             generation,

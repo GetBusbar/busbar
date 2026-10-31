@@ -26,6 +26,17 @@ pub struct Loans {
 mod tests;
 
 impl Loans {
+    /// The stream waiting for this operation's policy reply.
+    #[must_use]
+    pub fn pending_stream(&self, ticket: Ticket) -> Option<u64> {
+        self.opening.get(&ticket).map(|(stream, _)| *stream)
+    }
+
+    /// Forget a cancelled opening. The host separately retires its unadmitted stream grant.
+    pub fn cancel(&mut self, ticket: Ticket) -> Option<u64> {
+        self.opening.remove(&ticket).map(|(stream, _)| stream)
+    }
+
     /// Decode the initial full policy once. `None` means the host did not advertise this
     /// protocol; the caller may keep its legacy guest-list behavior in that case alone.
     ///
@@ -71,10 +82,17 @@ impl Loans {
         {
             return Err("the operation is already opening another stream");
         }
-        match (
-            extensions::get(extensions, EXT_GUEST_POLICY),
-            extensions::get(extensions, EXT_GUEST_CURRENT),
-        ) {
+        // A consumed reply remains in the input when another auth step pends. A fresh stream
+        // asks for its own selection; it must never consume the preceding stream's reply.
+        let reply = if self.opening.contains_key(&ticket) {
+            (
+                extensions::get(extensions, EXT_GUEST_POLICY),
+                extensions::get(extensions, EXT_GUEST_CURRENT),
+            )
+        } else {
+            (None, None)
+        };
+        match reply {
             (Some(_), Some(_)) => {
                 Err("the policy reply names both a full loan and an acknowledgement")
             }

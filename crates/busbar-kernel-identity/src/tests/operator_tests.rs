@@ -96,7 +96,17 @@ fn request() -> VerifyRequest {
             ("line-a".into(), Secret::new(b"one".to_vec())),
             ("line-b".into(), Secret::new(b"two".to_vec())),
         ],
-        ..VerifyRequest::default()
+        point: busbar_contract::abi::auth::AuthPoint::Head,
+        conn: 0,
+        unit: 0,
+        credential: None,
+        peer: None,
+        body: None,
+        method: String::new(),
+        authority: String::new(),
+        path: String::new(),
+        query: None,
+        timestamp: 0,
     }
 }
 

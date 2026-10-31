@@ -195,7 +195,13 @@ fn request(credential: Option<&str>, alt: Option<&str>) -> VerifyRequest {
         method: "GET".into(),
         authority: "node.example".into(),
         path: "/admin/v1/keys".into(),
-        ..VerifyRequest::default()
+        point: AuthPoint::Head,
+        conn: 0,
+        unit: 0,
+        credential: None,
+        peer: None,
+        body: None,
+        timestamp: 0,
     }
 }
 
@@ -244,7 +250,14 @@ fn lent(credential: &str) -> VerifyRequest {
         method: "GET".into(),
         authority: "node.example".into(),
         path: "/v1/chat/completions".into(),
-        ..VerifyRequest::default()
+        point: AuthPoint::Head,
+        conn: 0,
+        unit: 0,
+        lines: Vec::new(),
+        peer: None,
+        body: None,
+        query: None,
+        timestamp: 0,
     }
 }
 
@@ -392,12 +405,13 @@ fn every_answer_carries_its_decision_and_strips() {
 #[test]
 fn the_body_reaches_the_plugin_at_head_body_only() {
     let a = opened("judge-a");
-    let at = |point: AuthPoint, body: Option<&[u8]>| VerifyRequest {
-        point,
-        conn: 3,
-        unit: 4,
-        body: body.map(<[u8]>::to_vec),
-        ..request(Some("body"), None)
+    let at = |point: AuthPoint, body: Option<&[u8]>| {
+        let mut request = request(Some("body"), None);
+        request.point = point;
+        request.conn = 3;
+        request.unit = 4;
+        request.body = body.map(<[u8]>::to_vec);
+        request
     };
     let signed = a.verify_now(&at(AuthPoint::HeadBody, Some(b"signed")));
     assert!(
@@ -1149,7 +1163,14 @@ mod ticketed {
             method: "GET".into(),
             authority: "node.example".into(),
             path: "/v1/models".into(),
-            ..VerifyRequest::default()
+            point: AuthPoint::Head,
+            conn: 0,
+            unit: 0,
+            lines: Vec::new(),
+            peer: None,
+            body: None,
+            query: None,
+            timestamp: 0,
         }
     }
 

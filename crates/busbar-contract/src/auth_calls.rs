@@ -52,6 +52,22 @@ pub struct VerifyRequest {
     pub timestamp: u64,
 }
 
+impl Drop for VerifyRequest {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.peer.zeroize();
+        self.body.zeroize();
+        self.method.zeroize();
+        self.authority.zeroize();
+        self.path.zeroize();
+        self.query.zeroize();
+        for (name, _) in &mut self.lines {
+            name.zeroize();
+        }
+        // Credential and field values are Secret buffers and wipe in their own drops.
+    }
+}
+
 impl Default for VerifyRequest {
     /// A request at [`AuthPoint::Head`] with nothing in it.
     fn default() -> Self {

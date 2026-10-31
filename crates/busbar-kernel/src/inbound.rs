@@ -500,6 +500,7 @@ pub struct RequestAdmission {
 pub(crate) struct AdmittedRequest {
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
+    pub(crate) credential: Option<Secret<String>>,
     pub(crate) original: Head,
     pub(crate) strips: Vec<Strip>,
     replay: Option<Arc<ReplayAdmission>>,
@@ -577,6 +578,82 @@ fn same_request(left: &Head, right: &Head) -> bool {
         && left.authority == right.authority
         && left.query == right.query
         && fields(left) == fields(right)
+}
+
+// A later auth point may see stripping deferred, completed, or partway through. The retained
+// bytes must still come from the first head: a strip declaration permits deletion, not replacement.
+fn continuation_head(original: &Head, current: &Head, strips: &[Strip]) -> bool {
+    if same_request(original, current) {
+        return true;
+    }
+    if original.method != current.method
+        || original.target != current.target
+        || original.authority != current.authority
+    {
+        return false;
+    }
+    fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
+        let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
+        for (name, value) in &head.fields {
+            fields
+                .entry(name.to_ascii_lowercase())
+                .or_default()
+                .push(value);
+        }
+        fields
+    }
+    let mut current_fields = fields(current);
+    for (name, values) in fields(original) {
+        let retained = current_fields.remove(&name).unwrap_or_default();
+        if strips
+            .iter()
+            .any(|strip| strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(&name))
+        {
+            let mut retained = retained.into_iter();
+            let mut next = retained.next();
+            for value in values {
+                if next == Some(value) {
+                    next = retained.next();
+                }
+            }
+            if next.is_some() {
+                return false;
+            }
+        } else if values != retained {
+            return false;
+        }
+    }
+    if !current_fields.is_empty() {
+        return false;
+    }
+    let mut retained = current
+        .query
+        .as_deref()
+        .into_iter()
+        .flat_map(|query| query.split('&'));
+    let mut next = retained.next();
+    for pair in original
+        .query
+        .as_deref()
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+    {
+        if next == Some(pair) {
+            next = retained.next();
+            continue;
+        }
+        let key = pair.split_once('=').map_or(pair, |(key, _)| key);
+        let decoded = url::form_urlencoded::parse(key.as_bytes())
+            .next()
+            .map(|(key, _)| key);
+        if !strips.iter().any(|strip| {
+            strip.place == StripPlace::Query
+                && (strip.name == key || decoded.as_deref() == Some(strip.name.as_ref()))
+        }) {
+            return false;
+        }
+    }
+    next.is_none()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -821,19 +898,22 @@ fn still_present(strips: &[Strip], head: &Head) -> bool {
 }
 
 /// The `verify` request one position is lent at `point`: the head as received, the body at the
-/// body point; no candidate credential (no kernel step names an inbound credential line, l.944).
+/// body point, with the default candidate selected by the host's configured carrier policy.
 fn verify_request(
     head: &Head,
     point: AuthPoint,
     conn: u64,
     unit: u64,
     body: Option<&[u8]>,
+    candidate: Option<&Secret<String>>,
 ) -> VerifyRequest {
     VerifyRequest {
         point,
         conn,
         unit,
-        credential: None,
+        credential: candidate.map(|candidate| {
+            Secret::new(candidate.expose(&crate::seal::lend()).as_bytes().to_vec())
+        }),
         lines: head
             .fields
             .iter()
@@ -1040,7 +1120,7 @@ fn keys_judged(
 ) {
     let carriers = app.auth.carriers();
     let headers = header_map(head);
-    let candidate = crate::auth::carried_credential(carriers, &headers);
+    let candidate = crate::auth::inbound_candidate(app, &headers);
     let strips = carriers
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
@@ -1049,7 +1129,14 @@ fn keys_judged(
         .planes
         .admission_for(&head.target)
         .map(|admission| admission.audience.as_str());
-    match crate::auth::keys_arm_verdict(gov, candidate.as_deref(), now, expected_aud) {
+    match crate::auth::keys_arm_verdict(
+        gov,
+        candidate
+            .as_ref()
+            .map(|candidate| candidate.expose(&crate::seal::lend()).as_str()),
+        now,
+        expected_aud,
+    ) {
         crate::auth::ChainVerdict::Identified {
             principal,
             resolved,
@@ -1636,6 +1723,7 @@ impl Inbound {
             inner: Arc::new(AdmittedRequest {
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
+                credential: unit.credential.clone(),
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
                 strips: unit.strips.clone(),
                 replay: unit.replay.clone(),
@@ -1753,9 +1841,8 @@ impl Inbound {
             .framing_listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if !held.contains_key(&(owner, framing)) && self.table(owner, generation).is_none() {
-            return Err(NO_LIST);
-        }
+        let registered =
+            held.contains_key(&(owner, framing)) || self.table(owner, generation).is_some();
         let mut conns = self
             .framing_conns
             .lock()
@@ -1765,6 +1852,9 @@ impl Inbound {
                 Err(CONN_MISMATCH)
             }
             std::collections::hash_map::Entry::Occupied(_) => Ok(()),
+            // request_table already verified an existing unit's original policy.
+            // Retiring its lookup row must not invalidate its established connection.
+            std::collections::hash_map::Entry::Vacant(_) if !registered => Err(NO_LIST),
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(conn);
                 Ok(())
@@ -1936,6 +2026,7 @@ impl Inbound {
     ) -> Result<impl Future<Output = Result<Answer, &'static str>> + Send + 'static, &'static str>
     {
         let body = call.body.take().map(zeroize::Zeroizing::new);
+        let first_request = call.unit.is_none();
         let binding = RequestBinding {
             conn: call.conn,
             stream: call.stream,
@@ -2028,7 +2119,19 @@ impl Inbound {
             } else {
                 return Err(UNIT_FOREIGN);
             };
-            if let Some(u) = self.units().get_mut(&unit.id) {
+            {
+                let mut units = self.units();
+                let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
+                if u.owner != call.owner
+                    || u.generation != call.generation
+                    || u.line != line_ix
+                    || u.binding != binding
+                    || u.head
+                        .as_ref()
+                        .is_some_and(|original| !continuation_head(original, &call.head, &u.strips))
+                {
+                    return Err(UNIT_FOREIGN);
+                }
                 u.deadline = call.deadline;
                 if u.head.is_none() {
                     u.head = Some(call.head.clone());
@@ -2060,6 +2163,99 @@ impl Inbound {
         let deadline = call.deadline;
         let (head, conn) = (call.head, call.conn);
         Ok(async move {
+            let original = (!peer)
+                .then(|| me.with_state(target, |u| u.head.clone()).flatten())
+                .flatten();
+            let candidate = original.as_ref().and_then(|head| {
+                crate::auth::inbound_candidate(&table.listener.app, &header_map(head))
+            });
+            // Match the final gate's ticket priority using the registered route declaration.
+            // This establishes identity only; final admission still redeems once and rechecks it.
+            if first_request && !peer && table.listener.app.auth.keys_in_chain {
+                let connection_denied = me
+                    .with_state(target, |u| {
+                        u.answers.iter().any(|answer| {
+                            matches!(answer, Some(Judged::Denied | Judged::Overloaded))
+                        })
+                    })
+                    .ok_or(UNIT_FOREIGN)?;
+                let method = axum::http::Method::from_bytes(head.method.as_bytes()).ok();
+                let prefix = method
+                    .as_ref()
+                    .and_then(|method| table.doors.door_ticket(&head.target, method));
+                let token = candidate
+                    .as_ref()
+                    .map(|c| c.expose(&crate::seal::lend()).as_str());
+                let keys = positions
+                    .iter()
+                    .find(|p| matches!(p.kind, PositionKind::Keys));
+                let signed_reader = (table
+                    .listener
+                    .app
+                    .planes
+                    .admission_for(&head.target)
+                    .is_none()
+                    && (table.listener.signed_ingress)(&table.listener.app, &head.target))
+                .then(|| table.listener.app.auth.signed_reader(&header_map(&head)))
+                .flatten();
+                if let (Some(prefix), Some(token), Some(keys), None) =
+                    (prefix, token, keys, signed_reader)
+                {
+                    if token.starts_with(prefix) && !connection_denied {
+                        let key = (!deadline.is_some_and(|d| std::time::Instant::now() >= d))
+                            .then(|| {
+                                table.listener.app.governance.as_ref().and_then(|gov| {
+                                    gov.peek_ticket(prefix, token, crate::store::now())
+                                })
+                            })
+                            .flatten();
+                        let flow = if key.is_some() {
+                            FLOW_CONTINUE
+                        } else {
+                            FLOW_STOP
+                        };
+                        let (retired, strips) = me
+                            .with_state(target, |u| {
+                                // Retire inherited peer results outside the unit lock. A ticket's
+                                // identity takes priority over every plugin position at this head.
+                                let retired = (
+                                    u.admitted.take(),
+                                    u.credential.take(),
+                                    u.resolved.take(),
+                                    std::mem::take(&mut u.identities),
+                                    std::mem::take(&mut u.replays),
+                                    u.replay.take(),
+                                );
+                                u.answers.fill(Some(Judged::Pass));
+                                u.answers[keys.index] = Some(if key.is_some() {
+                                    Judged::Identity
+                                } else {
+                                    Judged::Denied
+                                });
+                                u.admitted = key.map(|key| Admitted {
+                                    provider: crate::config::KEYS_MODULE.to_string(),
+                                    identity: VerifiedIdentity {
+                                        subject: key.id.clone(),
+                                        key_id: Some(key.id.clone()),
+                                        key_name: Some(key.name.clone()),
+                                        ..VerifiedIdentity::default()
+                                    },
+                                    resolved: Some(key),
+                                });
+                                for carrier in table.listener.app.auth.carriers() {
+                                    let strip = Strip::field(carrier.as_str().to_string());
+                                    if !u.strips.contains(&strip) {
+                                        u.strips.push(strip);
+                                    }
+                                }
+                                (retired, u.strips.clone())
+                            })
+                            .ok_or(UNIT_FOREIGN)?;
+                        drop(retired);
+                        return Ok(Answer { flow, unit, strips });
+                    }
+                }
+            }
             for p in positions {
                 let undecided = me
                     .with_state(target, |u| {
@@ -2105,6 +2301,7 @@ impl Inbound {
                                     conn,
                                     unit_id,
                                     Some(body.as_ref().map_or(&[], |b| b.as_slice())),
+                                    None,
                                 );
                                 let mut verifying = calls.verify(req);
                                 let Some(answer) = until_deadline(deadline, &mut verifying).await
@@ -2130,7 +2327,7 @@ impl Inbound {
                             target,
                             p.index,
                             &p.provider,
-                            Judging::Keys(&head, signed),
+                            Judging::Keys(original.as_ref().unwrap_or(&head), signed),
                             &table,
                         );
                         continue;
@@ -2155,6 +2352,7 @@ impl Inbound {
                     conn,
                     unit_id,
                     body.as_ref().map(|b| b.as_slice()),
+                    candidate.as_ref(),
                 );
                 let mut verifying = calls.verify(req);
                 let answer = until_deadline(deadline, &mut verifying).await;

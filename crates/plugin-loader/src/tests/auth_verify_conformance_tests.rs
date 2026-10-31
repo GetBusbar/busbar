@@ -97,7 +97,13 @@ fn request(bearer: Option<&str>, other: Option<&str>) -> VerifyRequest {
         method: "GET".into(),
         authority: "node.example".into(),
         path: "/admin/v1/keys".into(),
-        ..VerifyRequest::default()
+        conn: 0,
+        unit: 0,
+        credential: None,
+        peer: None,
+        body: None,
+        query: None,
+        timestamp: 0,
     }
 }
 

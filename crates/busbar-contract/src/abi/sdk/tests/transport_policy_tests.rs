@@ -85,3 +85,24 @@ fn an_acknowledgement_uses_the_policy_cached_when_that_stream_requested_it() {
         .unwrap();
     assert_eq!((older.generation, newer.generation), (3, 4));
 }
+
+#[test]
+fn cancelling_an_opening_forgets_only_that_operations_policy_loan() {
+    let leases = Leases::default();
+    let mut loans = Loans::from_initial(&policy(3)).unwrap().unwrap();
+    assert!(open(&mut loans, ticket(1), 11, &[], &leases)
+        .unwrap()
+        .is_none());
+    assert!(open(&mut loans, ticket(2), 12, &[], &leases)
+        .unwrap()
+        .is_none());
+    assert_eq!(loans.pending_stream(ticket(1)), Some(11));
+    assert_eq!(loans.cancel(ticket(1)), Some(11));
+    assert_eq!(loans.pending_stream(ticket(1)), None);
+    assert_eq!(loans.pending_stream(ticket(2)), Some(12));
+    assert_eq!(loans.cancel(ticket(1)), None);
+    let kept = open(&mut loans, ticket(2), 12, &policy(4), &leases)
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.generation, 4);
+}

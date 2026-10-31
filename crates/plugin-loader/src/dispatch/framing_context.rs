@@ -30,6 +30,14 @@ enum State {
     Ended,
 }
 
+#[derive(Default)]
+struct StreamOperations {
+    owners: HashMap<u64, Ticket>,
+    admitted: HashSet<u64>,
+    progress: HashSet<Ticket>,
+    cancelled: HashSet<Ticket>,
+}
+
 /// One host framing leg. Jobs may retain it after logical end without retaining authority.
 pub struct FramingContext {
     owner: u64,
@@ -45,6 +53,7 @@ pub struct FramingContext {
     streams: Mutex<HashMap<u64, StreamPolicy>>,
     ended_streams: Mutex<HashSet<u64>>,
     replies: Mutex<HashMap<Ticket, Arc<[u8]>>>,
+    operations: Mutex<StreamOperations>,
 }
 
 impl std::fmt::Debug for FramingContext {
@@ -98,6 +107,7 @@ impl FramingContext {
             streams: Mutex::default(),
             ended_streams: Mutex::default(),
             replies: Mutex::default(),
+            operations: Mutex::default(),
         }))
     }
 
@@ -149,6 +159,7 @@ impl FramingContext {
             streams: Mutex::default(),
             ended_streams: Mutex::default(),
             replies: Mutex::default(),
+            operations: Mutex::default(),
         }))
     }
 
@@ -387,6 +398,22 @@ impl FramingScope for FramingContext {
             {
                 return Err(CONTEXT_REFUSED);
             }
+            let mut operations = self
+                .operations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if operations.cancelled.contains(&ticket) {
+                return Err(CONTEXT_REFUSED);
+            }
+            if !operations.admitted.contains(&open.stream) {
+                match operations.owners.entry(open.stream) {
+                    std::collections::hash_map::Entry::Vacant(at) => {
+                        at.insert(ticket);
+                    }
+                    std::collections::hash_map::Entry::Occupied(at) if *at.get() == ticket => {}
+                    _ => return Err(CONTEXT_REFUSED),
+                }
+            }
         }
         let cached = self
             .streams
@@ -416,7 +443,17 @@ impl FramingScope for FramingContext {
             return Err(CONTEXT_REFUSED);
         }
         let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-        let loan = streams.entry(open.stream).or_insert(loan);
+        let loan = match streams.entry(open.stream) {
+            std::collections::hash_map::Entry::Vacant(at) => {
+                self.operations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .progress
+                    .insert(ticket);
+                at.insert(loan)
+            }
+            std::collections::hash_map::Entry::Occupied(at) => at.into_mut(),
+        };
         let reply = if open.known_generation == loan.policy.generation {
             Arc::clone(&loan.current)
         } else {
@@ -463,9 +500,141 @@ impl FramingScope for FramingContext {
             .remove(&ticket);
         drop(reply);
     }
+    fn operation_started(&self, ticket: Ticket) {
+        self.operations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cancelled
+            .remove(&ticket);
+    }
+    fn take_control_progress(&self, ticket: Ticket) -> bool {
+        self.operations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .progress
+            .remove(&ticket)
+    }
+    fn claim_stream_operation(
+        &self,
+        ticket: Ticket,
+        stream: u64,
+        generation: u64,
+    ) -> Result<(), &'static str> {
+        if self.listener == 0 {
+            return Ok(());
+        }
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !matches!(*state, State::Ready(_) | State::Closing(_))
+            || self
+                .ended_streams
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&stream)
+        {
+            return Err(CONTEXT_REFUSED);
+        }
+        if let Some(inherited) = self.inherited {
+            return if inherited.session.stream == stream && inherited.generation == generation {
+                Ok(())
+            } else {
+                Err(CONTEXT_REFUSED)
+            };
+        }
+        if !self
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&stream)
+            .is_some_and(|loan| loan.policy.generation == generation)
+        {
+            return Err(CONTEXT_REFUSED);
+        }
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if operations.cancelled.contains(&ticket) {
+            return Err(CONTEXT_REFUSED);
+        }
+        if operations.admitted.contains(&stream) {
+            return Ok(());
+        }
+        match operations.owners.entry(stream) {
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(ticket);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(at) if *at.get() == ticket => Ok(()),
+            _ => Err(CONTEXT_REFUSED),
+        }
+    }
+    fn admit_stream(&self, stream: u64) {
+        let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if self
+            .ended_streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&stream)
+        {
+            return;
+        }
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        operations.admitted.insert(stream);
+        operations.owners.remove(&stream);
+    }
+    fn operation_finished(&self, ticket: Ticket, failed: bool) {
+        let retired = {
+            let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut operations = self
+                .operations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            operations.progress.remove(&ticket);
+            if failed {
+                operations.cancelled.insert(ticket);
+            }
+            let streams: Vec<_> = operations
+                .owners
+                .extract_if(|_, owner| *owner == ticket)
+                .map(|(stream, _)| stream)
+                .collect();
+            if failed {
+                let mut ended = self
+                    .ended_streams
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let mut loans = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+                streams
+                    .into_iter()
+                    .map(|stream| {
+                        ended.insert(stream);
+                        (stream, loans.remove(&stream))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
+        self.operation_done(ticket);
+        if let Some(host) = self.host.as_ref().and_then(Weak::upgrade) {
+            for (stream, _) in &retired {
+                host.stream_ended(self.owner, self.leg, *stream);
+            }
+        }
+        drop(retired);
+    }
     fn stream_ended(&self, stream: u64) {
         let loan = {
             let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut operations = self
+                .operations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            operations.owners.remove(&stream);
+            operations.admitted.remove(&stream);
             self.ended_streams
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)

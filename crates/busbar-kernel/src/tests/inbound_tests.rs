@@ -88,8 +88,17 @@ async fn through_final_gate(
     receipt: RequestAdmission,
     head: &Head,
 ) -> (u16, Option<Vec<u8>>) {
+    let (status, ticket, _) = through_final_gate_identity(k, receipt, head).await;
+    (status, ticket)
+}
+
+async fn through_final_gate_identity(
+    k: &Kit,
+    receipt: RequestAdmission,
+    head: &Head,
+) -> (u16, Option<Vec<u8>>, Option<String>) {
     use tower::ServiceExt as _;
-    let observed = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new((None, None)));
     let held = Arc::clone(&observed);
     let handle = Arc::new(crate::state::AppHandle::new(Arc::clone(&k.app)));
     let table = k
@@ -118,7 +127,12 @@ async fn through_final_gate(
                         .extensions()
                         .get::<crate::auth::ConsumedCredentials>()
                         .unwrap();
-                    *held.lock().unwrap() = consumed.ticket.clone();
+                    let key = req
+                        .extensions()
+                        .get::<crate::governance::GovCtx>()
+                        .and_then(|gov| gov.key.as_ref())
+                        .map(|key| key.id.clone());
+                    *held.lock().unwrap() = (consumed.ticket.clone(), key);
                     assert!(!req.headers().contains_key("authorization"));
                     axum::http::StatusCode::OK
                 }
@@ -141,8 +155,8 @@ async fn through_final_gate(
     *request.headers_mut() = header_map(head);
     request.extensions_mut().insert(receipt);
     let response = router.oneshot(request).await.unwrap();
-    let record = observed.lock().unwrap().clone();
-    (response.status().as_u16(), record)
+    let (record, key) = observed.lock().unwrap().clone();
+    (response.status().as_u16(), record, key)
 }
 
 #[tokio::test]
@@ -2131,6 +2145,242 @@ fn signed_head() -> Head {
 fn signed_call(k: &Kit, head: Head) -> Answer {
     k.call(MESSAGES, UnitRef::NONE, POINT_HEAD_BODY, head)
         .expect("answered")
+}
+
+fn declared_signed_ticket_kit(
+    gov: &Arc<crate::governance::GovState>,
+    reader: Arc<Script>,
+    earlier: Arc<Script>,
+) -> Kit {
+    // Use the actual door declaration; the legacy dialect callback deliberately says false.
+    let k = reader_kit(gov, reader, false);
+    let mut listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    listener.auths.insert("earlier".into(), earlier);
+    let chain = LineAuth::Chain(
+        vec!["earlier".into(), crate::config::KEYS_MODULE.into()],
+        AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+    );
+    listener.guests = GuestList::seal(vec![
+        line(MESSAGES, METHOD_POST, chain.clone()),
+        line(OTHER, METHOD_POST, chain),
+        line(HEALTHZ, METHOD_GET, LineAuth::None),
+    ])
+    .unwrap();
+    listener.door_refusals = vec![crate::plane_routes::PlaneRefusalSpec {
+        route: crate::plane_routes::DoorRouteId {
+            path: MESSAGES.into(),
+            method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
+        },
+        refuse: Arc::new(|_, _| {
+            axum::http::Response::builder()
+                .status(401)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }),
+        ticket_prefix: Some("tk_".into()),
+        signed_ingress: Arc::from([format!("{MESSAGES}*")]),
+    }];
+    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    k
+}
+
+#[tokio::test]
+async fn a_declared_signed_identity_preempts_ticket_and_plugins_through_the_final_gate() {
+    crate::snapshot::init();
+    for valid_ticket in [true, false] {
+        let gov = signing_gov();
+        let now = crate::store::now();
+        let (signed_id, public_id) = minted_with_credential(&gov);
+        let (ticket_id, _) = minted(&gov, now + 3600, now);
+        let (ticket, _) = gov
+            .mint_ticket(&ticket_id, "tk_", 600, None, b"record", now)
+            .unwrap();
+        let reader = Script::new(
+            AuthPoints::HEAD_BODY,
+            Verified::Identity(VerifiedIdentity {
+                subject: public_id,
+                ..VerifiedIdentity::default()
+            }),
+            vec![Strip::field(SIGNED_LINE), Strip::field("authorization")],
+        );
+        let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+        let k = declared_signed_ticket_kit(&gov, Arc::clone(&reader), Arc::clone(&earlier));
+        let presented = if valid_ticket {
+            ticket.as_str()
+        } else {
+            "tk_malformed"
+        };
+        let head = post(
+            MESSAGES,
+            &[
+                (SIGNED_LINE, "signature"),
+                ("authorization", &format!("Bearer {presented}")),
+            ],
+            None,
+        );
+        let first = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head.clone())
+            .unwrap();
+        assert_eq!(first.flow, FLOW_CONTINUE);
+        assert_eq!(reader.calls(), 0, "the body has not arrived");
+        assert_eq!(earlier.calls(), 0, "the signed pre-step owns priority");
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, first.unit, head.clone()).0,
+            FLOW_STOP
+        );
+        let answer = k
+            .call(MESSAGES, first.unit, POINT_HEAD_BODY, head.clone())
+            .unwrap();
+        assert_eq!(answer.flow, FLOW_CONTINUE);
+        assert_eq!(reader.calls(), 1);
+        assert_eq!(earlier.calls(), 0);
+        let sanitized = head.stripped(&answer.strips).unwrap();
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
+                .0,
+            FLOW_CONTINUE
+        );
+        let receipt = k.inbound.claim_request(OWNER, 1, 1, &sanitized).unwrap();
+        assert_eq!(
+            through_final_gate_identity(&k, receipt, &sanitized).await,
+            (200, None, Some(signed_id))
+        );
+        assert_eq!(
+            reader.calls(),
+            1,
+            "the root reuses the actual signed result"
+        );
+        assert!(
+            gov.admit_ticket("tk_", &ticket, now).is_some(),
+            "signed identity leaves the accompanying ticket unspent"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
+    crate::snapshot::init();
+    for verdict in [
+        Verified::Pass,
+        Verified::Reject,
+        Verified::Failed,
+        Verified::Overloaded,
+    ] {
+        let pass = matches!(verdict, Verified::Pass);
+        let gov = signing_gov();
+        let now = crate::store::now();
+        let (id, _) = minted(&gov, now + 3600, now);
+        let (ticket, _) = gov
+            .mint_ticket(&id, "tk_", 600, None, b"record", now)
+            .unwrap();
+        let reader = Script::new(
+            AuthPoints::HEAD_BODY,
+            verdict,
+            vec![Strip::field(SIGNED_LINE)],
+        );
+        let earlier = Script::new(
+            AuthPoints::HEAD_BODY,
+            identity("wrong-plugin", "wrong"),
+            Vec::new(),
+        );
+        let k = declared_signed_ticket_kit(&gov, Arc::clone(&reader), Arc::clone(&earlier));
+        let head = post(
+            MESSAGES,
+            &[
+                (SIGNED_LINE, "signature"),
+                ("authorization", &format!("Bearer {ticket}")),
+            ],
+            None,
+        );
+        let answer = signed_call(&k, head.clone());
+        assert_eq!(reader.calls(), 1);
+        assert_eq!(earlier.calls(), 0);
+        assert_eq!(answer.flow, if pass { FLOW_CONTINUE } else { FLOW_STOP });
+        if pass {
+            let sanitized = head.stripped(&answer.strips).unwrap();
+            assert_eq!(
+                k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
+                    .0,
+                FLOW_CONTINUE
+            );
+            let receipt = k.inbound.claim_request(OWNER, 1, 1, &sanitized).unwrap();
+            assert_eq!(
+                through_final_gate_identity(&k, receipt, &sanitized).await,
+                (200, Some(b"record".to_vec()), Some(id))
+            );
+            assert!(gov.admit_ticket("tk_", &ticket, now).is_none());
+        } else {
+            assert!(gov.admit_ticket("tk_", &ticket, now).is_some());
+        }
+    }
+}
+
+#[tokio::test]
+async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_stays_unspent() {
+    crate::snapshot::init();
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, public_id) = minted_with_credential(&gov);
+    let (ticket, _) = gov
+        .mint_ticket(&id, "tk_", 600, None, b"record", now)
+        .unwrap();
+    let reader = Script::new(
+        AuthPoints::HEAD_BODY,
+        Verified::Identity(VerifiedIdentity {
+            subject: public_id,
+            replay: Some(busbar_contract::auth_calls::Replay {
+                key: "signed-ticket-message".into(),
+                ttl_secs: 60,
+            }),
+            ..VerifiedIdentity::default()
+        }),
+        vec![Strip::field(SIGNED_LINE), Strip::field("authorization")],
+    );
+    let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+    let k = declared_signed_ticket_kit(&gov, Arc::clone(&reader), earlier);
+    let head = post(
+        MESSAGES,
+        &[
+            (SIGNED_LINE, "signature"),
+            ("authorization", &format!("Bearer {ticket}")),
+        ],
+        None,
+    );
+    let waiting = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head.clone())
+        .unwrap();
+    k.inbound.exit(waiting.unit.id);
+    assert_eq!(
+        k.call(MESSAGES, waiting.unit, POINT_HEAD_BODY, head.clone()),
+        Err(UNIT_FOREIGN)
+    );
+    assert_eq!(
+        reader.calls(),
+        0,
+        "cancelled waiting head invokes no reader"
+    );
+    for status in [200, 401] {
+        let answer = signed_call(&k, head.clone());
+        assert_eq!(answer.flow, FLOW_CONTINUE, "preflight never claims replay");
+        let sanitized = head.stripped(&answer.strips).unwrap();
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
+                .0,
+            FLOW_CONTINUE
+        );
+        let receipt = k.inbound.claim_request(OWNER, 1, 1, &sanitized).unwrap();
+        let (actual, record, _) = through_final_gate_identity(&k, receipt, &sanitized).await;
+        assert_eq!(actual, status);
+        assert_eq!(record, None);
+    }
+    assert_eq!(
+        reader.calls(),
+        2,
+        "one signed verify per body, none repeated by middleware"
+    );
+    assert!(gov.admit_ticket("tk_", &ticket, now).is_some());
 }
 
 /// RED (signed ingress, admitted): a verifier's identity is the governance key holding that

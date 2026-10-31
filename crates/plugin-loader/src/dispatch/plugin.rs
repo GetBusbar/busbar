@@ -415,6 +415,19 @@ struct PolicyReply {
     _bytes: Arc<[u8]>,
 }
 
+struct FramingFailure {
+    scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    ticket: Ticket,
+}
+
+impl Drop for FramingFailure {
+    fn drop(&mut self) {
+        if let Some(scope) = &self.scope {
+            scope.operation_finished(self.ticket, true);
+        }
+    }
+}
+
 impl Drop for PolicyReply {
     fn drop(&mut self) {
         // SAFETY: the host frame outlives its crossing, including every early return.
@@ -1092,6 +1105,24 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
+        use busbar_contract::abi::transport::slot as transport_slot;
+        let framing_op = self.kind == KindCode::Transport
+            && (s == slot::CANCEL || (transport_slot::BEGIN..=transport_slot::TIMER).contains(&s));
+        let mut failure = FramingFailure {
+            scope: framing_op.then(super::framing_context::current).flatten(),
+            // SAFETY: every host frame leads with InHead. CANCEL names the operation it ends
+            // in its own checked frame, independently of the cancellation crossing's ticket.
+            ticket: unsafe {
+                if s == slot::CANCEL
+                    && (*input).size as usize
+                        >= size_of::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()
+                {
+                    (*input.cast::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()).ticket
+                } else {
+                    (*input).ticket
+                }
+            },
+        };
         if !self.enter_gate(s) {
             // `close` with a crossing in progress is refused; anything after `close` is FAULT.
             let o = if s == slot::CLOSE {
@@ -1103,6 +1134,9 @@ impl Instance {
         }
         // SAFETY: the caller's contract.
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
+        if s != slot::CANCEL && matches!(crossed.outcome, Outcome::Ready | Outcome::Pending) {
+            failure.scope = None;
+        }
         // A `close` that answered FAULT may already have freed the instance (a teardown that
         // failed after its memory went): the host treats it as closed, never crossing into the
         // pointer again. That can leak a live instance; it never uses a freed one. A READY `close`

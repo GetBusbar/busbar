@@ -252,6 +252,96 @@ fn a_framer_that_does_not_accept_is_not_the_data_listeners() {
     assert!(found(Arc::new(H1Accept::new(false))).is_none());
 }
 
+#[tokio::test]
+async fn a_data_listener_without_an_accepting_framer_refuses_before_serving_http() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+    let routed = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&routed);
+    let router = Router::new().route(
+        "/probe",
+        axum::routing::get(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            async { "must not bypass the transport" }
+        }),
+    );
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let served = tokio::spawn(super::super::serve_admitted_framed(
+        super::super::SocketAdmits::new(socket),
+        router,
+        None,
+        async {
+            let _ = stopped.await;
+        },
+        None,
+        None,
+    ));
+    let mut response = Vec::new();
+    if let Ok(mut client) = tokio::net::TcpStream::connect(address).await {
+        let _ = client
+            .write_all(b"GET /probe HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n")
+            .await;
+        // Closing a refused listener may reset a socket that was queued before it ran.
+        let _ = tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
+            .await
+            .expect("the server refuses or answers the connection");
+    }
+    let _ = stop.send(());
+    let result = tokio::time::timeout(Duration::from_secs(10), served)
+        .await
+        .unwrap()
+        .unwrap();
+    let error =
+        result.expect_err("a missing data framer must refuse, not select the core HTTP loop");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("accepting transport framer"));
+    assert_eq!(routed.load(Ordering::SeqCst), 0);
+    assert!(response.is_empty());
+}
+
+#[tokio::test]
+async fn the_admin_listener_still_serves_through_its_explicit_root_path() {
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+    let router = Router::new().route(
+        "/admin-probe",
+        axum::routing::get(|| async { "admin alive" }),
+    );
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let served = tokio::spawn(async move {
+        crate::serve_listener(
+            super::super::SocketAdmits::new(socket),
+            router,
+            None,
+            Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+            "admin-fixture",
+            async {
+                let _ = stopped.await;
+            },
+            None,
+            false,
+            None,
+        )
+        .await;
+    });
+    let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+    client
+        .write_all(b"GET /admin-probe HTTP/1.1\r\nhost: t\r\n\r\n")
+        .await
+        .unwrap();
+    let response = answer(&mut client).await;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response:?}");
+    assert!(response.ends_with("admin alive"), "{response:?}");
+    drop(client);
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(10), served)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 /// RED (the framed data listener bounds a silent connection, as the hyper loop's HTTP/1 header
 /// read bound did): a plain connection that sends nothing is closed once
 /// the first-byte bound (30 s, the hyper loop's header read bound) passes with no byte, even though its framer states no deadline.

@@ -42,7 +42,7 @@ pub(crate) enum SenderConstraint {
 }
 
 /// The `<token>` of `Authorization: DPoP <token>`.
-fn dpop_credential(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn dpop_credential(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     let token = token.trim();

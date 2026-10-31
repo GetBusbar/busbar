@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::route::{FieldPredicate, RouteMatch};
 use busbar_contract::abi::transport::LineEntry;
@@ -946,6 +947,7 @@ struct Parked {
     op: Ticketed<'static>,
     yielded: Yielded,
     recall: bool,
+    recalls: Recalls,
     ticket: Box<dyn crate::carrier::Side>,
 }
 
@@ -1306,7 +1308,15 @@ impl Recalls {
     /// Count one more answer that owed more: a FAULT once [`MORE_STALLS`] in a row wrote nothing,
     /// or the op's answers wrote past [`MORE_BYTES`].
     pub(crate) fn owed(&mut self, o: &FramerOut) -> Result<(), Refused> {
-        self.stalls = if wrote(o) { 0 } else { self.stalls + 1 };
+        self.owed_with_progress(o, false)
+    }
+
+    fn owed_with_progress(&mut self, o: &FramerOut, control_progress: bool) -> Result<(), Refused> {
+        self.stalls = if wrote(o) || control_progress {
+            0
+        } else {
+            self.stalls + 1
+        };
         self.bytes = self
             .bytes
             .saturating_add(o.yielded.wire_len)
@@ -1583,7 +1593,8 @@ impl Framing {
         let (mut completed, mut failed) = (false, None);
         for p in waiting.by_ref() {
             p.ticket.register(cx.waker());
-            match self.run(p.op, p.yielded, p.recall, true, Some(p.ticket)) {
+            match self.run_with_recalls(p.op, p.yielded, p.recall, true, Some(p.ticket), p.recalls)
+            {
                 Ok(Some(y)) => {
                     merge(&mut out, y);
                     completed = true;
@@ -1770,8 +1781,31 @@ impl Framing {
         resume: bool,
         ticket: Option<Box<dyn crate::carrier::Side>>,
     ) -> Result<Option<Yielded>, Refused> {
+        self.run_with_recalls(op, yielded, recall, resume, ticket, Recalls::default())
+    }
+
+    fn run_with_recalls(
+        &mut self,
+        op: Ticketed<'_>,
+        yielded: Yielded,
+        recall: bool,
+        resume: bool,
+        ticket: Option<Box<dyn crate::carrier::Side>>,
+        recalls: Recalls,
+    ) -> Result<Option<Yielded>, Refused> {
         let mut ticket = ticket;
-        let r = self.run_on(op, yielded, recall, resume, &mut ticket);
+        let operation = ticket.as_ref().map_or(Ticket::NONE, |side| side.ticket());
+        if !recall && !resume {
+            if let Some(context) = &self.context {
+                context.operation_started(operation);
+            }
+        }
+        let r = self.run_on(op, yielded, recall, resume, &mut ticket, recalls);
+        if !matches!(&r, Ok(None)) {
+            if let Some(context) = &self.context {
+                context.operation_finished(operation, r.is_err());
+            }
+        }
         self.give_back(ticket);
         r
     }
@@ -1784,17 +1818,26 @@ impl Framing {
         mut recall: bool,
         mut resume: bool,
         ticket: &mut Option<Box<dyn crate::carrier::Side>>,
+        mut recalls: Recalls,
     ) -> Result<Option<Yielded>, Refused> {
-        let mut recalls = Recalls::default();
         loop {
             let (c, o) = self.cross_ticketed(&op, recall, resume, ticket.as_deref());
+            let control_progress = self.context.as_ref().is_some_and(|context| {
+                context.take_control_progress(
+                    ticket.as_ref().map_or(Ticket::NONE, |side| side.ticket()),
+                )
+            });
             resume = false;
             if c.outcome == Outcome::Pending {
+                if control_progress {
+                    recalls.stalls = 0;
+                }
                 if let Some(t) = ticket.take() {
                     self.parked.push(Parked {
                         op: op.owned(),
                         yielded,
                         recall,
+                        recalls,
                         ticket: t,
                     });
                     return Ok(None);
@@ -1831,6 +1874,7 @@ impl Framing {
                     true,
                     false,
                     ticket,
+                    recalls,
                 );
             }
             if begin {
@@ -1839,7 +1883,7 @@ impl Framing {
                 return Ok(Some(yielded));
             }
             if recall {
-                recalls.owed(&o)?;
+                recalls.owed_with_progress(&o, control_progress)?;
             }
             recall = true;
         }
@@ -1969,6 +2013,17 @@ impl Framing {
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
     fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
+        if let Some(context) = &self.context {
+            context.operation_started(Ticket::NONE);
+        }
+        let result = self.more_on(again, y);
+        if let Some(context) = &self.context {
+            context.operation_finished(Ticket::NONE, result.is_err());
+        }
+        result
+    }
+
+    fn more_on(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
         let mut recalls = Recalls::default();
         loop {
             let sink = self.bufs.sink();
@@ -2001,11 +2056,15 @@ impl Framing {
                     )
                 }
             };
+            let control_progress = self
+                .context
+                .as_ref()
+                .is_some_and(|context| context.take_control_progress(Ticket::NONE));
             ready(c)?;
             if self.bufs.take(&o, y)? {
                 return Ok(());
             }
-            recalls.owed(&o)?;
+            recalls.owed_with_progress(&o, control_progress)?;
         }
     }
 
@@ -2336,6 +2395,9 @@ impl Framing {
                 side,
                 crate::carrier::Carry::Cancel(&mut i, &mut o),
             );
+            if let Some(context) = &self.context {
+                context.operation_finished(side.ticket(), true);
+            }
         }
     }
 }
