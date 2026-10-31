@@ -1805,12 +1805,24 @@ pub fn both_ways(s: &Subject) {
 /// THE CANARY: no credential the subject's inputs name crosses back through either door, in any
 /// step's answer or any log record the instance raised ([`canary`]).
 ///
+/// A subject whose inputs name no credential has nothing to plant, and passes; but a SECRET
+/// subject must name the values its settings carry: its canary is the one proof that a secret
+/// source never answers with the secrets it holds, so an empty plant list is refused, never a
+/// silent pass.
+///
 /// # Panics
-/// A spelling of a named credential was emitted (the panic names where, never the value).
+/// A spelling of a named credential was emitted (the panic names where, never the value); a
+/// secret subject names no `credentials`.
 pub fn canary(s: &Subject) {
     s.apply_env();
     let planted = canary::credentials(&s.inputs);
     if planted.is_empty() {
+        assert!(
+            s.kind() != KindCode::Secret,
+            "conformance.json names no `credentials`: a kind: secret plugin's canary plants the \
+             values its settings carry (`\"credentials\": [\"<value>\", ...]`) and searches every \
+             answer and log record for them; with none it would pass without looking"
+        );
         return;
     }
     for leg in [Leg::Linked, Leg::Dropped] {

@@ -126,9 +126,9 @@ impl HttpsConns {
 
     /// The same table, also answering the boot's scheme match for `schemes`: transports the
     /// deployment it stands in for loads beside the framed one, which this table frames no far end
-    /// for. A need over one passes the load (as it does where that transport is loaded) and is
-    /// refused at declare, so every open on it is refused as an unreachable peer is: the scheme is
-    /// served, its far end is not here.
+    /// for. A need over one passes the load and is declared (as it is where that transport is
+    /// loaded), and every open on it is refused as an unreachable peer is: the scheme is served,
+    /// its far end is not here.
     #[must_use]
     pub fn unreached<I: IntoIterator<Item = String>>(mut self, schemes: I) -> Self {
         self.unreached
@@ -477,7 +477,8 @@ impl DeclaredConns for HttpsConns {
         target: Option<&str>,
         trust: Option<&str>,
     ) -> Result<(), ConnError> {
-        if self.unreached.contains(&spec.transport) {
+        let unreached = self.unreached.contains(&spec.transport);
+        if unreached {
             self.unreached_needs
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -496,15 +497,19 @@ impl DeclaredConns for HttpsConns {
                     && !per_member(&spec.trust_from)
                     && !optional_trust
                     && trust.is_none());
-        let answer =
-            if spec.transport.is_empty() || spec.transport != self.facts.transport || unresolved {
-                Err(ConnError::Refused)
-            } else {
-                Ok(Declared {
-                    target: target.map(str::to_owned),
-                    trust: trust.map(str::to_owned),
-                })
-            };
+        // A need over an unreached scheme is declared as the connector declares a need over a
+        // transport the deployment loads (its scheme is served); every open on it is refused
+        // ([`Conns::open`] here), as an unreachable peer is. A refused config-free need would
+        // refuse the load (the loader's bind, kind-secret K17), which no deployment does.
+        let served = spec.transport == self.facts.transport || unreached;
+        let answer = if spec.transport.is_empty() || !served || unresolved {
+            Err(ConnError::Refused)
+        } else {
+            Ok(Declared {
+                target: target.map(str::to_owned),
+                trust: trust.map(str::to_owned),
+            })
+        };
         let result = answer.as_ref().map(|_| ()).map_err(|e| *e);
         if result.is_ok() {
             self.slab.declare(owner, need);

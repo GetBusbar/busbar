@@ -267,7 +267,7 @@ plugins:
     service: vault
     release_gate: optional
     gate: suite
-    description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret C ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
+    description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret kind's memory ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
     macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip roundtrip_against_live_vault"
     declares: "secret-vault/declares.json"
     former_names: [busbar-hashicorp-vault]
@@ -696,7 +696,7 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    description: "First-party signed kind:secret plugin library, written in C from busbar_plugin.h alone: the c secret, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    description: "First-party signed kind:secret plugin library, written in C from busbar_plugin.h alone: a self-contained secret source (named values in its own settings), packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "secret-c/declares.json"
     # Decision #84's witness (OWNER RULING 2026-10-02: "just another plugin"): a plugin built from
     # the generated C header alone, created by `busbar-release plugin new secret c --lang c` and

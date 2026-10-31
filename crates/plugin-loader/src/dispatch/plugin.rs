@@ -1714,9 +1714,21 @@ impl<K: Kind> Plugin<K> {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-                        // The answer is the connection table's to keep (`need.admit` reads it);
-                        // its scheme was matched above.
-                        let _ = table.declare(instance, id, need, None, None);
+                        // A CONFIG-FREE NEED THE TABLE REFUSES REFUSES THE LOAD (fail closed,
+                        // naming the plugin and the need): nothing the instance's settings say
+                        // can change the answer later, so binding it would serve a plugin whose
+                        // need can never open. What it declared so far is forgotten with it.
+                        if let Err(e) = table.declare(instance, id, need, None, None) {
+                            table.forget(instance);
+                            return Err(LoadError::NeedRefused {
+                                plugin: str_bytes(st.name)
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                need: id.0,
+                                transport: need.transport.clone(),
+                                reason: crate::observe::conn_reason(e),
+                            });
+                        }
                     }
                     declared_needs = needs.into_boxed_slice();
                     let _ = wake.conn.set((instance, Arc::clone(table)));

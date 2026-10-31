@@ -550,6 +550,19 @@ pub enum LoadError {
         /// The need's unserved scheme.
         scheme: String,
     },
+    /// A need that names no config path (no `target_from`, no `trust_from`), declared on the
+    /// host's connection table at bind, was refused by it (kind-secret K17: fail closed at the
+    /// load, naming the plugin and the need, never bound with a need it can never open).
+    NeedRefused {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// The need's index in the Statement.
+        need: u32,
+        /// The need's transport.
+        transport: String,
+        /// Why the table refused it ([`crate::observe::conn_reason`]).
+        reason: &'static str,
+    },
     /// A door whose Statement declares a need was bound to SERVE with no connection table
     /// ([`ConnTable::NoNeeds`](super::ConnTable::NoNeeds)): it could never dial or listen, so it is
     /// refused at bind (Q-P4-3), never at its first open.
@@ -663,6 +676,16 @@ impl fmt::Display for LoadError {
                 f,
                 "plugin `{plugin}` declares an {} need over `{scheme}`, and no loaded transport serves `{scheme}`",
                 if *inbound { "inbound" } else { "outbound" }
+            ),
+            Self::NeedRefused {
+                plugin,
+                need,
+                transport,
+                reason,
+            } => write!(
+                f,
+                "plugin `{plugin}` declares need {need} over `{transport}`, and the host's \
+                 connection table refused it ({reason}); the plugin is not loaded"
             ),
             Self::NoConnectionTable { plugin, needs } => write!(
                 f,
