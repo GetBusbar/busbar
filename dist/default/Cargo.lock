@@ -527,11 +527,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=3e1726f336a3f94bc120117100e72f033b992748#3e1726f336a3f94bc120117100e72f033b992748"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=8b9a063f7bde6604ce05ffdf2c9827224d85f6fa#8b9a063f7bde6604ce05ffdf2c9827224d85f6fa"
 dependencies = [
- "base64 0.22.1",
  "busbar-contract",
- "percent-encoding",
  "prost",
  "serde",
  "serde_json",
@@ -542,7 +540,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=3e1726f336a3f94bc120117100e72f033b992748#3e1726f336a3f94bc120117100e72f033b992748"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=8b9a063f7bde6604ce05ffdf2c9827224d85f6fa#8b9a063f7bde6604ce05ffdf2c9827224d85f6fa"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -569,14 +567,15 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-webhook"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=b5240b33d1da15007fac3f74a1ead87f06289fe4#b5240b33d1da15007fac3f74a1ead87f06289fe4"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=14f41e7266a0f476346893ad7907b17651307adc#14f41e7266a0f476346893ad7907b17651307adc"
 dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
  "tracing",
  "url",
+ "zeroize",
 ]
 
 [[package]]
