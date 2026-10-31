@@ -68,8 +68,8 @@ fn existing_units_keep_their_generation_at_all_three_services_but_new_requests_c
     let refuse = UnitRefuseIn {
         head: head(op::UNIT_REFUSE, Ticket::NONE, 0, size_of::<UnitRefuseIn>()),
         unit,
-        cause: REFUSE_NO_ROUTE,
-        line: LINE_NONE,
+        cause: svc::REFUSE_STOPPED,
+        line: 2,
         conn: 1,
         stream: 1,
         answer: &mut refusal,

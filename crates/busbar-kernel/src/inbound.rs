@@ -38,7 +38,7 @@
 //! This module names no loader: the composition root glues it to the plugin loader's auth handle,
 //! injecting the MAC, the unit mint, the spawner and the refusal sink.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -534,7 +534,19 @@ impl UnitState {
 
     /// The verdict in list order: `None` while an earlier position is still undecided.
     fn fixed(&self) -> Option<Fixed> {
+        self.fixed_at(false)
+    }
+
+    /// A positive answer from a provider with a later request point is provisional at Peer.
+    /// Keep collecting later Peer providers: an earlier provider can still pass at Head.
+    fn fixed_at(&self, peer: bool) -> Option<Fixed> {
         for (i, a) in self.answers.iter().enumerate() {
+            if peer
+                && self.table.request_auths.contains(&self.providers[i])
+                && matches!(a, Some(Judged::Identity | Judged::Pass))
+            {
+                return None;
+            }
             match a {
                 None => return None,
                 Some(Judged::Pass) => {}
@@ -554,6 +566,8 @@ struct Table {
     doors: crate::core_routes::CoreRouteTable,
     /// Handle id -> line.
     lines_by_id: HashMap<u64, u32>,
+    /// Auth providers whose peer verdict cannot decide a later request point.
+    request_auths: HashSet<String>,
 }
 
 impl Table {
@@ -640,6 +654,21 @@ fn verify_request(
         path: head.target.clone(),
         query: head.query.clone(),
         timestamp: crate::store::now(),
+    }
+}
+
+/// Await a verifier under the operation's deadline on the serving runtime.
+async fn until_deadline<F: Future>(
+    deadline: Option<std::time::Instant>,
+    future: F,
+) -> Option<F::Output> {
+    match (deadline, tokio::runtime::Handle::try_current()) {
+        (Some(deadline), Ok(_)) => {
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
+                .await
+                .ok()
+        }
+        _ => Some(future.await),
     }
 }
 
@@ -868,6 +897,16 @@ impl Inbound {
         }
         let doors = crate::core_routes::CoreRouteTable::default()
             .with_door_refusals(listener.door_refusals.clone());
+        let request_auths = listener
+            .auths
+            .iter()
+            .filter(|(_, auth)| {
+                let points = auth.inbound_points();
+                points.has(AuthPoint::Head) || points.has(AuthPoint::HeadBody)
+            })
+            .map(|(name, _)| name.clone())
+            .chain(std::iter::once(crate::config::KEYS_MODULE.to_owned()))
+            .collect();
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
         let mut retired = Vec::new();
         let replaced = tables.insert(
@@ -876,6 +915,7 @@ impl Inbound {
                 listener,
                 doors,
                 lines_by_id,
+                request_auths,
             }),
         );
         retired.extend(replaced);
@@ -1031,14 +1071,24 @@ impl Inbound {
         })
         .ok_or(UNIT_UNMINTED)?;
         let mut state = UnitState::open(owner, generation, line, secret, providers, binding, table);
-        if let Some(peer) = binding.framing.and_then(|f| {
-            self.peers()
-                .get(&(owner, generation, f))
+        if let Some(framing) = binding.framing {
+            let peers = self.peers();
+            if let Some(peer) = peers
+                .get(&(owner, generation, framing))
                 .filter(|p| p.providers == providers)
-                .map(|p| (p.answers.clone(), p.admitted.clone(), p.credential.clone()))
-        }) {
-            (state.answers, state.admitted, state.credential) = peer;
+            {
+                for (index, answer) in peer.answers.iter().copied().enumerate() {
+                    if state.table.request_auths.contains(&providers[index])
+                        && matches!(answer, Some(Judged::Identity | Judged::Pass))
+                    {
+                        continue;
+                    }
+                    state.answers[index] = answer;
+                    state.identities[index] = peer.identities.get(index).cloned().flatten();
+                }
+            }
         }
+        state.settle();
         self.units().insert(unit, state);
         Ok(UnitRef { id: unit, mac })
     }
@@ -1233,7 +1283,8 @@ impl Inbound {
             for p in positions {
                 let undecided = me
                     .with_state(target, |u| {
-                        (u.fixed().is_none()).then(|| u.answers.get(p.index).copied().flatten())
+                        (u.fixed_at(peer).is_none())
+                            .then(|| u.answers.get(p.index).copied().flatten())
                     })
                     .ok_or(UNIT_FOREIGN)?;
                 match undecided {
@@ -1275,7 +1326,11 @@ impl Inbound {
                                     Some(body.as_deref().unwrap_or_default()),
                                 );
                                 let mut verifying = calls.verify(req);
-                                let answer = (&mut verifying).await;
+                                let Some(answer) = until_deadline(deadline, &mut verifying).await
+                                else {
+                                    me.record(target, p.index, Judging::Nothing, &table);
+                                    break;
+                                };
                                 Some(SignedAnswer {
                                     faulted: verifying.faulted(),
                                     answer,
@@ -1302,14 +1357,7 @@ impl Inbound {
                 };
                 let req = verify_request(&head, point, conn, unit_id, body.as_deref());
                 let mut verifying = calls.verify(req);
-                let answer = match (deadline, tokio::runtime::Handle::try_current()) {
-                    (Some(d), Ok(_)) => {
-                        tokio::time::timeout_at(tokio::time::Instant::from_std(d), &mut verifying)
-                            .await
-                            .ok()
-                    }
-                    _ => Some((&mut verifying).await),
-                };
+                let answer = until_deadline(deadline, &mut verifying).await;
                 let judging = match answer {
                     Some(a) if verifying.faulted() => Judging::Answer(VerifyAnswer {
                         verified: Verified::Failed,
@@ -1341,7 +1389,7 @@ impl Inbound {
             }
             let (flow, strips) = me
                 .with_state(target, |u| {
-                    let flow = match u.fixed() {
+                    let flow = match u.fixed_at(peer) {
                         Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
                         Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
                     };
@@ -1392,7 +1440,11 @@ impl Inbound {
             if resolved.is_some() {
                 u.resolved = resolved;
             }
-            u.settle();
+            // Peer positions retain their identities and credentials until each unit copies
+            // the relevant verdicts; a provisional mixed provider must not erase later ones.
+            if matches!(target, Target::Unit(_)) {
+                u.settle();
+            }
         });
     }
 
