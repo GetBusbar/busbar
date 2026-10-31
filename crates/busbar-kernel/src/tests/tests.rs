@@ -2587,7 +2587,7 @@ struct RestorePublished(Option<crate::config::LimitsResolved>);
 
 impl Drop for RestorePublished {
     fn drop(&mut self) {
-        crate::config::limits::set_installed(self.0.take());
+        crate::config::limits::swap_installed(self.0.take());
     }
 }
 

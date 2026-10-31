@@ -5118,6 +5118,38 @@
           "candidate": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 101\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\",\"type\":\"realtime\"}}"
         }
       ]
+    },
+    {
+      "id": "W5-1925 --print-metadata-blocklist also prints the two IPv6 metadata entries the guard already refuses",
+      "kind": "improvement",
+      "changelog": "1.6.0: `--print-metadata-blocklist` now also lists `fd00:ec2::23` (EC2 task metadata) and `fe80::/10` (IPv6 link-local), which the guard already refused; the eleven 1.5.5 lines are unchanged and in the same order.",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-1925.md)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-30",
+        "ruling": "OWNER SIGNED 2026-10-30, SIGN-1925.md (busbar #1925, W5): `--print-metadata-blocklist` prints every enforced metadata entry. Before: the eleven 1.5.5 lines. After: the same eleven in the same order, then `fd00:ec2::23` and `fe80::/10`. Status and stderr unchanged in all three cells; the boot INFO line `metadata protection: 11 hosts blocked` unchanged (its count is an open owner question, not signed here)."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^(cli\\|--print-metadata-blocklist|boot\\.warning\\|BOOT-W40\\|boot|boot\\.warning\\|BOOT-W41\\|boot)$",
+      "expected_cells": 3,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "cli|--print-metadata-blocklist",
+        "body_contains": "instance-data.ec2.internal\nfd00:ec2::23\nfe80::/10\n"
+      },
+      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-1925.md). security.md names `busbar --print-metadata-blocklist` the ground truth for the metadata hosts the binary refuses; the guard also refuses `fd00:ec2::23` (EC2 task metadata) and `fe80::/10` (IPv6 link-local), which 1.5.5 never printed. #1925 appends exactly those two lines after 1.5.5's eleven (head 2c1e09f86c). A precise `values` spec: /body/text is forgiven only from the exact 1.5.5 eleven-line body to the exact thirteen-line body, on these three cells only (cli|--print-metadata-blocklist, and the config-does-not-parse / config-fails-to-interpolate twins BOOT-W40 and BOOT-W41). Status, stderr and every other byte stay judged.",
+      "values": [
+        {
+          "pointer": "/body/text",
+          "golden": "169.254.0.0/16\n100.100.100.200\n168.63.129.16\n192.0.0.192\nfd00:ec2::254\nmetadata.google.internal\nmetadata.internal\nmetadata.tencentyun.com\nmetadata.platformequinix.com\ninstance-data\ninstance-data.ec2.internal\n",
+          "candidate": "169.254.0.0/16\n100.100.100.200\n168.63.129.16\n192.0.0.192\nfd00:ec2::254\nmetadata.google.internal\nmetadata.internal\nmetadata.tencentyun.com\nmetadata.platformequinix.com\ninstance-data\ninstance-data.ec2.internal\nfd00:ec2::23\nfe80::/10\n"
+        }
+      ]
     }
   ]
 }

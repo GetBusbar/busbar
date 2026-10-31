@@ -562,6 +562,8 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
+# The kernel's test fixtures on its pub API (the root's tests and this crate's).
+busbar-kernel-testkit = { path = "../../crates/busbar-kernel-testkit" }
 # The tests' own ed25519 keys (credential and keyset cells). No production path verifies an
 # operator signature (#77(9)), so it is a test dependency only.
 ed25519-dalek = { workspace = true }

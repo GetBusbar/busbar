@@ -2220,6 +2220,11 @@ pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver 
 mod fixtures;
 pub use fixtures::*;
 
+/// The kernel testkit's production-path App build, mounted for the kernel's own fixtures.
+#[path = "../../../busbar-kernel-testkit/src/app.rs"]
+mod app;
+pub use app::{build_once, build_once_under, from_cfg};
+
 #[cfg(test)]
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
