@@ -182,9 +182,9 @@ pub struct Exchange {
     /// The stream was found in the clear: every re-entry answers the refusal (a replayed `FACTS`
     /// writes nothing, so only this remembers it).
     insecure: bool,
-    /// What closes `stream` should the exchange be dropped before it closed it: set when
-    /// [`Op::exchange`] parks it, so a parked exchange its op gives up does not leave its host
-    /// connection open.
+    /// What closes `stream` should the exchange be dropped before it closed it: set whenever the
+    /// exchange answers PENDING ([`exchange`], [`send_and_ack`], [`Op::exchange`]), so a pending
+    /// exchange its op gives up does not leave its host connection open.
     closer: Option<Closer>,
 }
 
@@ -579,7 +579,8 @@ fn send_and_read(
 ) -> Answer<()> {
     // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
     // sends once and moves on never leaves a held stream (and its connection) behind per failure.
-    match exchange_once(c, state, need, target) {
+    // A PENDING one keeps what closes it, so the caller that gives it up closes it by dropping it.
+    let answer = match exchange_once(c, state, need, target) {
         Poll::Ready(Err(e)) => match state.stream {
             Some(stream) => match c.close(stream) {
                 Poll::Pending => Poll::Pending,
@@ -595,7 +596,11 @@ fn send_and_read(
             Poll::Ready(Ok(()))
         }
         Poll::Pending => Poll::Pending,
+    };
+    if answer.is_pending() {
+        state.closer = Some(c.closer());
     }
+    answer
 }
 
 /// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
@@ -903,7 +908,6 @@ impl<'a> Op<'a> {
         if answer.is_pending() {
             // Parked, the exchange may be given up (a cancel, a fresh op on the ticket): what it
             // keeps closes its stream then.
-            state.closer = Some(c.closer());
             self.on.park(state);
         }
         answer

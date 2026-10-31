@@ -2557,15 +2557,17 @@ pub(crate) mod tool_door {
             ));
             // The transport doors bind on this dispatcher and reach its host services (the clock
             // the program carrier supervises a member's program by), as main.rs hands the process's
-            // one dispatcher to `root::doors` before any door binds.
-            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
+            // one dispatcher to `root::doors` before any door binds. The rig is a composition of its
+            // own, so they are opened on it directly (`root::connector::entries_on`), never through the process's
+            // transport dispatcher, which another cell in this process may have taken first.
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
             let connector = busbar_core_connector::process::build_with_secrets(
                 || {
-                    crate::root::connector::entries(
+                    crate::root::connector::entries_on(
+                        &dispatcher,
                         crate::LINKED_TRANSPORT_DOORS,
                         &busbar_contract::transport::TransportSettings::default(),
                     )
@@ -7119,6 +7121,23 @@ pub(crate) mod program_member {
             "1",
             "the child's own request was answered once: {second}"
         );
+    }
+
+    /// RED: a rig is a composition of its own, so its program registration is served over the
+    /// transports it opened on its own dispatcher, whatever another composition in the same process
+    /// did first. Here the process's transport dispatcher was taken before the rig was built (as a
+    /// sibling cell that opens the linked doors on it does, `registration_pin`): the rig's program
+    /// carrier must still spawn its child on the rig's dispatcher, not on the one the process held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_registration_is_served_on_its_own_rig_whatever_the_process_opened_first() {
+        let _one = PUBLISHING.lock().await;
+        let _first = crate::root::doors::dispatcher();
+        let rig = rig_tools("door-program-member-own", 0, section(), &|app| app);
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let text = text(&body);
+        assert!(text.starts_with("from the server "), "{text}");
+        assert_eq!(fact(&text, "calls"), "1", "{text}");
     }
 }
 
