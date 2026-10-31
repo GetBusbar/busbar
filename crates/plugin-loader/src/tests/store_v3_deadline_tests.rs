@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
-use busbar_contract::abi::sdk::door::Slot;
+use busbar_contract::abi::sdk::door::RawSlot;
 use busbar_contract::abi::store::{AddUsageBatchIn, HostBytesOut, OpId, RecordGetIn};
 use busbar_contract::records::UsageDelta;
 use busbar_contract::store_calls::StoreCalls;
@@ -28,7 +28,7 @@ use crate::store_v3::LoadedStore;
 
 /// `add_usage_batch`: PENDING, and no wake ever comes.
 struct HangsWriteBehind;
-impl Slot for HangsWriteBehind {
+impl RawSlot for HangsWriteBehind {
     type In = AddUsageBatchIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &AddUsageBatchIn, _: &mut OutHead) -> Outcome {
@@ -38,7 +38,7 @@ impl Slot for HangsWriteBehind {
 
 /// `record_get`: PENDING, and no wake ever comes.
 struct HangsCall;
-impl Slot for HangsCall {
+impl RawSlot for HangsCall {
     type In = RecordGetIn;
     type Out = HostBytesOut;
     unsafe fn call(_: *mut c_void, _: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {

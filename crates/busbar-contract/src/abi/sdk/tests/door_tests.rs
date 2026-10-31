@@ -20,7 +20,7 @@ use crate::abi::mechanism::lifecycle::{
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
-use super::{KindOps, KindSlot, Slot};
+use super::{KindOps, KindSlot, RawSlot};
 
 /// The lifecycle-only table: the shared head and no kind op.
 #[repr(C)]
@@ -43,7 +43,7 @@ const PANIC_GEN: u64 = 0xDEAD_0001;
 const PEND_AT: u64 = 42;
 
 struct Validate;
-impl Slot for Validate {
+impl RawSlot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
@@ -55,7 +55,7 @@ impl Slot for Validate {
 }
 
 struct Open;
-impl Slot for Open {
+impl RawSlot for Open {
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, input: &OpenIn, out: &mut OpenOut) -> Outcome {
@@ -66,7 +66,7 @@ impl Slot for Open {
 }
 
 struct Refresh;
-impl Slot for Refresh {
+impl RawSlot for Refresh {
     type In = RefreshIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &RefreshIn, _: &mut OutHead) -> Outcome {
@@ -75,7 +75,7 @@ impl Slot for Refresh {
 }
 
 struct Retire;
-impl Slot for Retire {
+impl RawSlot for Retire {
     type In = GenIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
@@ -84,7 +84,7 @@ impl Slot for Retire {
 }
 
 struct Tick;
-impl Slot for Tick {
+impl RawSlot for Tick {
     type In = TickIn;
     type Out = TickOut;
     unsafe fn call(_: *mut c_void, input: &TickIn, out: &mut TickOut) -> Outcome {
@@ -98,7 +98,7 @@ impl Slot for Tick {
 }
 
 struct Drive;
-impl Slot for Drive {
+impl RawSlot for Drive {
     type In = DriveIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &DriveIn, _: &mut OutHead) -> Outcome {
@@ -107,7 +107,7 @@ impl Slot for Drive {
 }
 
 struct Cancel;
-impl Slot for Cancel {
+impl RawSlot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
     unsafe fn call(_: *mut c_void, input: &CancelIn, out: &mut CancelOut) -> Outcome {
@@ -117,7 +117,7 @@ impl Slot for Cancel {
 }
 
 struct Release;
-impl Slot for Release {
+impl RawSlot for Release {
     type In = ReleaseIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &ReleaseIn, _: &mut OutHead) -> Outcome {
@@ -126,7 +126,7 @@ impl Slot for Release {
 }
 
 struct Close;
-impl Slot for Close {
+impl RawSlot for Close {
     type In = InHead;
     type Out = OutHead;
     unsafe fn call(instance: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -626,7 +626,7 @@ unsafe impl KindSlot<{ LIFECYCLE_SLOTS + 1 }> for TwoKindOps {
 }
 
 struct First;
-impl Slot for First {
+impl RawSlot for First {
     type In = InHead;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -635,7 +635,7 @@ impl Slot for First {
 }
 
 struct Second;
-impl Slot for Second {
+impl RawSlot for Second {
     type In = GenIn;
     type Out = TickOut;
     unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
@@ -762,7 +762,7 @@ mod auth_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -849,7 +849,7 @@ mod secret_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -922,7 +922,7 @@ mod secret_check_plugin {
     use crate::abi::secret::{CheckIn, ResolveIn, ResolveOut};
 
     pub struct Resolve;
-    impl Slot for Resolve {
+    impl RawSlot for Resolve {
         type In = ResolveIn;
         type Out = ResolveOut;
         unsafe fn call(_: *mut c_void, _: &ResolveIn, _: &mut ResolveOut) -> Outcome {
@@ -930,7 +930,7 @@ mod secret_check_plugin {
         }
     }
     pub struct Check;
-    impl Slot for Check {
+    impl RawSlot for Check {
         type In = CheckIn;
         type Out = OutHead;
         unsafe fn call(_: *mut c_void, input: &CheckIn, _: &mut OutHead) -> Outcome {
@@ -983,7 +983,7 @@ mod export_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1061,7 +1061,7 @@ mod hook_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1155,7 +1155,7 @@ mod store_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1341,7 +1341,7 @@ mod plane_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1402,7 +1402,7 @@ mod plane_plugin {
     /// `open`: the plane's own `out`, carrying the snapshot; it notes how many providers' facts
     /// its `in` carried.
     pub struct Open;
-    impl Slot for Open {
+    impl RawSlot for Open {
         type In = PlaneOpenIn;
         type Out = PlaneOpenOut;
         unsafe fn call(_: *mut c_void, input: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
@@ -1414,7 +1414,7 @@ mod plane_plugin {
 
     /// `cancel`: the plane's own `in`/`out` (the lifecycle's embedded first).
     pub struct Cancel;
-    impl Slot for Cancel {
+    impl RawSlot for Cancel {
         type In = crate::abi::plane::PlaneCancelIn;
         type Out = crate::abi::plane::PlaneCancelOut;
         unsafe fn call(
@@ -1429,7 +1429,7 @@ mod plane_plugin {
 
     /// `drive`: names the session `41` ready in the host's buffer.
     pub struct Drive;
-    impl Slot for Drive {
+    impl RawSlot for Drive {
         type In = PlaneDriveIn;
         type Out = PlaneDriveOut;
         unsafe fn call(_: *mut c_void, input: &PlaneDriveIn, out: &mut PlaneDriveOut) -> Outcome {
@@ -1592,7 +1592,7 @@ mod transport_plugin {
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
-            impl Slot for $name {
+            impl RawSlot for $name {
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {

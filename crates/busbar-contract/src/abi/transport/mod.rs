@@ -1799,11 +1799,11 @@ super::sdk::door::slot_structs!(
     /// use busbar_contract::abi::transport::{ReadIn, RefuseIn, ShutIn, WriteIn};
     /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
+    /// use busbar_contract::abi::sdk::door::RawSlot;
     /// # use std::ffi::c_void;
     /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
     /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
+    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
     /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
     /// # } }
     /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);

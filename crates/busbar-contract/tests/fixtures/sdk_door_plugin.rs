@@ -15,7 +15,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
     TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 
 /// The table: the lifecycle and one kind op, `echo` (`GenIn` -> `TickOut`).
 #[repr(C)]
@@ -41,7 +41,7 @@ unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneKindOp {
 const PANIC_GEN: u64 = 13;
 
 struct Open;
-impl Slot for Open {
+impl RawSlot for Open {
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, input: &OpenIn, _: &mut OpenOut) -> Outcome {
@@ -51,7 +51,7 @@ impl Slot for Open {
 }
 
 struct Echo;
-impl Slot for Echo {
+impl RawSlot for Echo {
     type In = GenIn;
     type Out = TickOut;
     unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
@@ -64,7 +64,7 @@ impl Slot for Echo {
 macro_rules! ready {
     ($name:ident, $in:ty, $out:ty) => {
         struct $name;
-        impl Slot for $name {
+        impl RawSlot for $name {
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -75,7 +75,7 @@ macro_rules! ready {
 }
 
 struct Validate;
-impl Slot for Validate {
+impl RawSlot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
@@ -87,7 +87,7 @@ impl Slot for Validate {
 }
 
 struct Cancel;
-impl Slot for Cancel {
+impl RawSlot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
     unsafe fn call(_: *mut c_void, _: &CancelIn, out: &mut CancelOut) -> Outcome {

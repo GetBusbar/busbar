@@ -38,7 +38,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
-use busbar_contract::abi::sdk::door::{abi_str, statement, Slot};
+use busbar_contract::abi::sdk::door::{abi_str, statement, RawSlot};
 use busbar_contract::abi::sdk::transport::form_codes;
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
@@ -190,7 +190,7 @@ fn err(out: &mut OutHead, text: &'static str) {
 
 /// `validate`: this framer reads no setting.
 pub struct Validate;
-impl Slot for Validate {
+impl RawSlot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &ValidateIn, _: &mut OutHead) -> Outcome {
@@ -200,7 +200,7 @@ impl Slot for Validate {
 
 /// `open`.
 pub struct Open;
-impl Slot for Open {
+impl RawSlot for Open {
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, _: &OpenIn, o: &mut OpenOut) -> Outcome {
@@ -215,7 +215,7 @@ impl Slot for Open {
 
 /// `close`.
 pub struct Close;
-impl Slot for Close {
+impl RawSlot for Close {
     type In = InHead;
     type Out = OutHead;
     unsafe fn call(p: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -229,7 +229,7 @@ impl Slot for Close {
 
 /// `cancel`: no framer op pends, so nothing is ever in flight to cancel.
 pub struct Cancel;
-impl Slot for Cancel {
+impl RawSlot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
     unsafe fn call(_: *mut c_void, _: &CancelIn, o: &mut CancelOut) -> Outcome {
@@ -242,7 +242,7 @@ macro_rules! answer {
     ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
         #[doc = concat!("`", stringify!($name), "`.")]
         pub struct $name;
-        impl Slot for $name {
+        impl RawSlot for $name {
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -272,7 +272,7 @@ answer!(Arrival, ArrivalIn, ArrivalOut, Outcome::Refused);
 
 /// `locate`: `host:port` or `frame://host:port` is the authority; no name, no connection security.
 pub struct Locate;
-impl Slot for Locate {
+impl RawSlot for Locate {
     type In = LocateIn;
     type Out = LocateOut;
     unsafe fn call(_: *mut c_void, i: &LocateIn, o: &mut LocateOut) -> Outcome {
@@ -300,7 +300,7 @@ impl Slot for Locate {
 
 /// `begin`: either side; nothing is owed to the far side first.
 pub struct Begin;
-impl Slot for Begin {
+impl RawSlot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
@@ -320,7 +320,7 @@ impl Slot for Begin {
 
 /// `adopt`: the bytes another framer left unconsumed are this connection's first frame.
 pub struct Adopt;
-impl Slot for Adopt {
+impl RawSlot for Adopt {
     type In = AdoptIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &AdoptIn, o: &mut FramerOut) -> Outcome {
@@ -356,7 +356,7 @@ fn with(
 
 /// `ingest`: the bytes are one frame on stream `0`; the far side's end ends the connection.
 pub struct Ingest;
-impl Slot for Ingest {
+impl RawSlot for Ingest {
     type In = IngestIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &IngestIn, o: &mut FramerOut) -> Outcome {
@@ -376,7 +376,7 @@ impl Slot for Ingest {
 
 /// `emit`: the bytes are the wire bytes.
 pub struct Emit;
-impl Slot for Emit {
+impl RawSlot for Emit {
     type In = EmitIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &EmitIn, o: &mut FramerOut) -> Outcome {
@@ -399,7 +399,7 @@ impl Slot for Emit {
 
 /// `refuse`: the refusal's bytes are the wire bytes.
 pub struct Refuse;
-impl Slot for Refuse {
+impl RawSlot for Refuse {
     type In = RefuseIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &RefuseIn, o: &mut FramerOut) -> Outcome {
@@ -424,7 +424,7 @@ impl Slot for Refuse {
 
 /// `timer`: this framer asks for no deadline; a call answers what is still owed.
 pub struct Timer;
-impl Slot for Timer {
+impl RawSlot for Timer {
     type In = FramingIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
@@ -434,7 +434,7 @@ impl Slot for Timer {
 
 /// `finish`: the framing is forgotten; no frame follows.
 pub struct Finish;
-impl Slot for Finish {
+impl RawSlot for Finish {
     type In = FinishIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &FinishIn, o: &mut FramerOut) -> Outcome {
@@ -482,7 +482,7 @@ impl Slot for Finish {
 /// `detach`: every byte ingested and not yet answered, into `frame`, and the framing is forgotten.
 /// A sink too small for them answers `YIELD_MORE` and keeps the framing until the rest is taken.
 pub struct Detach;
-impl Slot for Detach {
+impl RawSlot for Detach {
     type In = FramingIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
@@ -506,7 +506,7 @@ impl Slot for Detach {
 
 /// `encode`: a byte stream has no head, so the envelope is its body; fields are refused.
 pub struct Encode;
-impl Slot for Encode {
+impl RawSlot for Encode {
     type In = EncodeIn;
     type Out = FramerOut;
     unsafe fn call(_: *mut c_void, i: &EncodeIn, o: &mut FramerOut) -> Outcome {

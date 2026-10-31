@@ -15,7 +15,7 @@
 //!   which emits the ONE exported symbol [`DOOR_SYMBOL`](crate::abi::mechanism::DOOR_SYMBOL),
 //!   forwarding to the same `door`. Compiled in or dropped in, the kernel reaches the same table.
 //!
-//! EVERY SLOT IS A TRAMPOLINE. A table entry is `trampoline::<S, INDEX>` over a [`Slot`] the
+//! EVERY SLOT IS A TRAMPOLINE. A table entry is `trampoline::<S, INDEX>` over a [`RawSlot`] the
 //! plugin implements. The trampoline is the SDK's half of the call convention, the same for every
 //! slot of every kind:
 //!
@@ -175,13 +175,13 @@ slot_structs!(Lifecycle {
 /// implements it on its `Ops` once per kind op (`LIFECYCLE_SLOTS + k`), next to the table in
 /// `abi/<kind>/`, and on its [`KindOps::Lifecycle`] once per lifecycle slot;
 /// [`plugin_door!`](crate::plugin_door) then refuses to compile any slot, lifecycle or kind op,
-/// whose [`Slot`] reads or writes other structs.
+/// whose [`RawSlot`] reads or writes other structs.
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::{InHead, Op, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::mechanism::KindCode;
-/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 /// # use std::ffi::c_void;
 /// #[repr(C)]
 /// #[derive(Clone, Copy)]
@@ -194,7 +194,7 @@ slot_structs!(Lifecycle {
 /// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
 /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
@@ -217,7 +217,7 @@ slot_structs!(Lifecycle {
 /// use busbar_contract::abi::mechanism::call::{InHead, Op, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::mechanism::KindCode;
-/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 /// # use std::ffi::c_void;
 /// #[repr(C)]
 /// #[derive(Clone, Copy)]
@@ -229,7 +229,7 @@ slot_structs!(Lifecycle {
 /// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
 /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
@@ -287,8 +287,9 @@ unsafe impl KindOps for crate::abi::transport::Ops {
     type Lifecycle = Lifecycle;
 }
 
-/// One slot body. A plugin implements it on a type of its own, one per slot, and names that type
-/// in [`plugin_door!`](crate::plugin_door).
+/// One raw slot body. A plugin implements it on a type of its own, one per slot, and names that
+/// type in [`plugin_door!`](crate::plugin_door) (or writes a
+/// [`SafeSlot`](crate::abi::sdk::safe::SafeSlot), with no `unsafe`).
 ///
 /// A body reads `instance` and the pointers in `input` on the trampoline's word (the call
 /// contract), so safe code that names the slot type cannot call the body with pointers it made up:
@@ -296,10 +297,10 @@ unsafe impl KindOps for crate::abi::transport::Ops {
 /// ```compile_fail,E0133
 /// use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::GenIn;
-/// use busbar_contract::abi::sdk::door::Slot;
+/// use busbar_contract::abi::sdk::door::RawSlot;
 /// use std::ffi::c_void;
 /// pub struct Peek;
-/// impl Slot for Peek {
+/// impl RawSlot for Peek {
 ///     type In = GenIn;
 ///     type Out = OutHead;
 ///     unsafe fn call(instance: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
@@ -336,7 +337,7 @@ unsafe impl KindOps for crate::abi::transport::Ops {
 /// }
 /// fn main() {}
 /// ```
-pub trait Slot {
+pub trait RawSlot {
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -352,7 +353,7 @@ pub trait Slot {
     unsafe fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
 }
 
-/// What a table entry runs: a raw [`Slot`], or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot)
+/// What a table entry runs: a [`RawSlot`], or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot)
 /// behind [`Safe`](crate::abi::sdk::safe::Safe). The trampoline is generic over this, so
 /// [`plugin_door!`](crate::plugin_door) takes either in any slot position.
 ///
@@ -384,13 +385,39 @@ pub unsafe trait Entry {
 }
 
 // SAFETY: a raw slot states `SAFE = false`, and its body runs under the contract `enter` is
-// called under, which is `Slot::call`'s.
-unsafe impl<S: Slot> Entry for S {
+// called under, which is `RawSlot::call`'s.
+unsafe impl<S: RawSlot> Entry for S {
     type In = S::In;
     type Out = S::Out;
     unsafe fn enter(instance: *mut c_void, _: u32, input: &S::In, out: &mut S::Out) -> Outcome {
         // SAFETY: the caller keeps `enter`'s contract, which is `call`'s.
         unsafe { S::call(instance, input, out) }
+    }
+}
+
+/// THE OLD RAW SLOT, whose body is a SAFE fn over the host's raw pointers: safe code that names
+/// the type can call it with pointers it made up, so a body that reads them is unsound. Kept only
+/// so a plugin built against it still compiles until it moves: write [`RawSlot`] (the same
+/// body, `unsafe fn call`) or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot).
+#[deprecated(
+    note = "unsound: safe code can call the body with made-up pointers; implement `RawSlot` \
+            (`unsafe fn call`, same body) or `SafeSlot`"
+)]
+pub trait Slot {
+    /// The slot's `in`.
+    type In: AbiIn;
+    /// The slot's `out`.
+    type Out: AbiOut;
+    /// The body, as [`RawSlot::call`]'s.
+    fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
+}
+
+#[allow(deprecated)]
+impl<S: Slot> RawSlot for S {
+    type In = S::In;
+    type Out = S::Out;
+    unsafe fn call(instance: *mut c_void, input: &S::In, out: &mut S::Out) -> Outcome {
+        S::call(instance, input, out)
     }
 }
 
@@ -1112,10 +1139,10 @@ impl MacroDoor {
 ///
 /// * `ops` — the kind's table type ([`KindOps`]); the door's `kind`/`kind_abi`, the table's
 ///   `size`/`slots` and the Statement's `size`/`kind`/`kind_abi` all follow from it.
-/// * `lifecycle` — one [`Slot`] per lifecycle slot, each reading and writing the `in`/`out` the
+/// * `lifecycle` — one [`RawSlot`] per lifecycle slot, each reading and writing the `in`/`out` the
 ///   kind states for that slot ([`KindOps::Lifecycle`]; a mismatch does not compile). A NULL slot
 ///   refuses the load, so all nine are named.
-/// * `kind_ops` — one [`Slot`] per kind op, by the table's field name; its index is read off the
+/// * `kind_ops` — one [`RawSlot`] per kind op, by the table's field name; its index is read off the
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
 ///   that index ([`KindSlot`]; a mismatch does not compile). A kind op left unnamed is NULL
 ///   (absent), so a door written before an optional kind op was appended to its table still
@@ -1131,10 +1158,10 @@ impl MacroDoor {
 ///   [`PlaneLife`](crate::abi::sdk::plane_life::PlaneLife) `P` (`abi::sdk::plane_life`), every one
 ///   a [`Safe`](crate::abi::sdk::safe::Safe) slot over `P`. It takes `ready:`, `migrate:` and
 ///   `kind_ops:` as the forms above do.
-/// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a raw [`Slot`] or a
+/// * `ready: S` (optional, after `lifecycle`) — the door's `ready` as a [`RawSlot`] or a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) one reading `ReadyIn` and writing `OutHead`.
 /// * `migrate: S` (optional, after `ready`) — the door's `migrate` (`abi::mechanism::lifecycle`,
-///   MIGRATE), a raw [`Slot`] reading `ValidateIn` and writing `OutHead`: in practice
+///   MIGRATE), a [`RawSlot`] reading `ValidateIn` and writing `OutHead`: in practice
 ///   [`Migrator<M>`](crate::abi::sdk::migrate::Migrator) over the plugin's own
 ///   [`Migrate`](crate::abi::sdk::migrate::Migrate). It runs with no instance, so it cannot be a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot. Without it the door states none, and
@@ -1258,7 +1285,7 @@ macro_rules! plugin_door {
             $(
                 const _: () = ::core::assert!(
                     !<$migrate as __sdk::Entry>::SAFE,
-                    "migrate runs with no instance: name it as a raw Slot (Migrator<_>), never Safe<_>"
+                    "migrate runs with no instance: name it as a RawSlot (Migrator<_>), never Safe<_>"
                 );
             )?
             /// THIS PLUGIN IMAGE'S CALL CAPTURE: one slot per thread, the image's own (compiled in

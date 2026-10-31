@@ -32,7 +32,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
     TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::sdk::door::{KindOps, Slot};
+use busbar_contract::abi::sdk::door::{KindOps, RawSlot};
 
 /// The target the witness's own records carry.
 pub const TARGET: &str = "log_witness";
@@ -130,7 +130,7 @@ fn call_b(mode: &'static [u8]) {
 macro_rules! ready {
     ($name:ident, $in:ty, $out:ty) => {
         struct $name;
-        impl Slot for $name {
+        impl RawSlot for $name {
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -142,7 +142,7 @@ macro_rules! ready {
 
 /// `open`: a non-NULL instance; the witness keeps no state in it.
 struct Open;
-impl Slot for Open {
+impl RawSlot for Open {
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
@@ -164,7 +164,7 @@ pub mod a {
     use super::*;
 
     struct Tick;
-    impl Slot for Tick {
+    impl RawSlot for Tick {
         type In = TickIn;
         type Out = TickOut;
         unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
@@ -201,7 +201,7 @@ pub mod b {
     use super::*;
 
     struct Tick;
-    impl Slot for Tick {
+    impl RawSlot for Tick {
         type In = TickIn;
         type Out = TickOut;
         unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
