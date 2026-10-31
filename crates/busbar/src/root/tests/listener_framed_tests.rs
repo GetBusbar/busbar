@@ -425,3 +425,83 @@ async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
         1
     );
 }
+
+#[tokio::test]
+async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
+    use busbar_kernel::plane_routes::{FramedSession, SessionOut, SessionPipe};
+
+    let door =
+        Arc::new(busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux::with_session());
+    let entry: Arc<dyn FramerDoor> = door.clone();
+    let framer = data_framer(Arc::new(move |scheme: &str| {
+        matches!(scheme, DATA_SCHEME | "ws").then(|| Arc::clone(&entry))
+    }))
+    .expect("the accepting and session claims are found");
+    let router = Router::new().route(
+        "/first",
+        axum::routing::get(
+            |axum::Extension(session): axum::Extension<FramedSession>| async move {
+                let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
+                let (outgoing, to_caller) = tokio::sync::mpsc::channel(2);
+                outgoing
+                    .try_send(SessionOut {
+                        bytes: b"first".to_vec(),
+                        text: true,
+                    })
+                    .unwrap();
+                outgoing
+                    .try_send(SessionOut {
+                        bytes: b"second".to_vec(),
+                        text: false,
+                    })
+                    .unwrap();
+                drop(outgoing);
+                session.put(SessionPipe {
+                    from_caller,
+                    to_caller,
+                });
+                axum::http::StatusCode::SWITCHING_PROTOCOLS
+            },
+        ),
+    );
+    let (mut client, server) = tokio::io::duplex(4096);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let served = tokio::spawn(super::serve(
+        server,
+        framer,
+        router,
+        false,
+        Duration::from_secs(30),
+        stopped,
+    ));
+    client.write_all(b"1").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), door.wait_for_head())
+        .await
+        .expect("the first session message parks");
+    let ended_before_release = served.is_finished();
+    let before_release = door.emitted();
+    door.release();
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), served)
+        .await
+        .expect("the session drains after its parked message resumes")
+        .expect("the serving task joins");
+    assert!(
+        !ended_before_release,
+        "a pending session message must keep the connection alive"
+    );
+    assert!(
+        before_release.is_empty(),
+        "no session message completes before its gate"
+    );
+    let emitted = door.emitted();
+    assert_eq!(
+        emitted
+            .iter()
+            .map(|value| value.bytes.as_slice())
+            .collect::<Vec<_>>(),
+        [b"first".as_slice(), b"second".as_slice()],
+        "both messages complete once and in order despite the already-closed sender"
+    );
+    assert!(emitted.iter().all(|value| value.stream == 1 && value.end));
+}

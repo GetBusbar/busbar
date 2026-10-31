@@ -1015,6 +1015,7 @@ pub mod pending_mux_accept {
     /// One connection, with a gate on stream one's head and independently emitted stream three.
     pub struct Mux {
         facts: DoorFacts,
+        session: bool,
         gate: Arc<Gate>,
         entered: tokio::sync::Notify,
         second_done: tokio::sync::Notify,
@@ -1026,6 +1027,7 @@ pub mod pending_mux_accept {
     impl Default for Mux {
         fn default() -> Self {
             Self {
+                session: false,
                 facts: DoorFacts {
                     name: "test-pending-mux".into(),
                     claims: vec!["http"],
@@ -1047,6 +1049,13 @@ pub mod pending_mux_accept {
     }
 
     impl Mux {
+        pub fn with_session() -> Self {
+            let mut fixture = Self::default();
+            fixture.session = true;
+            fixture.facts.claims.push("ws");
+            fixture
+        }
+
         pub async fn wait_for_head(&self) {
             self.entered.notified().await;
         }
@@ -1177,7 +1186,12 @@ pub mod pending_mux_accept {
                             bytes: copied(input.bytes, input.len),
                             end: input.end_of_frame != 0,
                         };
-                        if input.stream == 1 && input.status != 0 {
+                        if input.stream == 1
+                            && ((self.session
+                                && input.framing == 2
+                                && !self.gate.released.load(Ordering::SeqCst))
+                                || (!self.session && input.status != 0))
+                        {
                             *self.held.lock().unwrap() = Some(value);
                             self.entered.notify_one();
                             return Crossed {
@@ -1193,6 +1207,8 @@ pub mod pending_mux_accept {
                         self.second_done.notify_one();
                     }
                 }
+                Call::Detach(_, _) if self.session => {}
+                Call::Adopt(_, out) if self.session => out.framing = 2,
                 Call::Locate(_, _)
                 | Call::Timer(_, _)
                 | Call::Refuse(_, _)
