@@ -242,3 +242,65 @@ fn a_linked_declares_section_that_does_not_read_is_refused() {
     };
     assert!(refused.contains(NAME), "{refused}");
 }
+
+#[test]
+fn an_expired_queued_disk_resolve_releases_its_instance_before_the_queue_runs() {
+    use crate::dispatch::kinds::secret::Secret as SecretKind;
+    use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
+    use busbar_contract::secret::SecretCalls;
+
+    type Job = Box<dyn FnOnce() + Send>;
+    static QUEUED: std::sync::Mutex<Option<Job>> = std::sync::Mutex::new(None);
+    fn queue(job: Job) -> Result<(), String> {
+        *QUEUED.lock().unwrap() = Some(job);
+        Ok(())
+    }
+
+    environment();
+    let d = dispatcher();
+    let plugin = load_linked::<SecretKind>(
+        &LinkedRow::of(door).unwrap(),
+        Bind {
+            instance: Arc::from("expired-disk-resolve"),
+            max_inflight_cap: 16,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let source = super::LoadedSecret::open(plugin, d, b"{}", &[])
+        .unwrap()
+        .reading_disk(Some(queue));
+    let weak = Arc::downgrade(&source.opened);
+    let started = std::time::Instant::now();
+    let caller =
+        std::thread::spawn(move || source.resolve_at_config(&hit(), &ConfigScope::config_time()));
+    // Use the shipped wait, not a new test-only API or a shortened production deadline.
+    let result = caller.join().unwrap();
+    let elapsed = started.elapsed();
+    let retained = weak.strong_count() != 0;
+    let queued = QUEUED
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the resolver was queued");
+    queued();
+    assert!(
+        result.is_err(),
+        "a resolve still queued at its deadline is refused"
+    );
+    assert!(
+        elapsed < super::WAIT + std::time::Duration::from_secs(5),
+        "queue delay never extends the original deadline"
+    );
+    assert!(
+        !retained,
+        "the timed-out queue entry no longer owns the plugin instance"
+    );
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "draining the expired callback cannot resurrect its owner"
+    );
+}
