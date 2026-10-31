@@ -96,6 +96,9 @@ use crate::export_axis::ExportRows;
 use crate::export_door::ExportInstance;
 use crate::sign::{Declares, Manifest};
 
+#[path = "export_refresh_tests.rs"]
+mod refresh_tests;
+
 // ── the subjects ─────────────────────────────────────────────────────────────────────────────────
 
 /// The request-log FILE sink's door, LINKED (its logic crate's `door`): the both-ways table's
@@ -332,6 +335,8 @@ const STALL_TARGET: &str = "stall.example";
 
 /// What the table answered one declaration, and the target it is pinned to.
 type Verdict = (Result<(), ConnError>, String);
+type OnForget = Arc<dyn Fn(InstanceId) + Send + Sync>;
+type OnDeclare = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// THE HOST'S CONNECTION TABLE, as this binary stands it: every need declared on it is recorded
 /// (its egress class, its scheme, the target its `target_from` resolved to), a need whose target is
@@ -354,6 +359,10 @@ struct Far {
     stalled: Mutex<HashMap<ConnId, (InstanceId, u64)>>,
     released: std::sync::atomic::AtomicBool,
     waker: OnceLock<busbar_contract::conn::ConnWake>,
+    forgotten: Mutex<Vec<InstanceId>>,
+    on_forget: Mutex<Option<OnForget>>,
+    on_declare: Mutex<Option<OnDeclare>>,
+    owners: Mutex<Vec<(InstanceId, String)>>,
 }
 
 impl Far {
@@ -394,6 +403,20 @@ impl Far {
 }
 
 impl DeclaredConns for Far {
+    fn forget(&self, owner: InstanceId) {
+        self.forgotten.lock().unwrap().push(owner);
+        for conn in self.slab.forget(owner) {
+            let _ = Conns::close(self, owner, conn);
+        }
+        self.verdicts
+            .lock()
+            .unwrap()
+            .retain(|(o, _), _| *o != owner);
+        let callback = self.on_forget.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback(owner);
+        }
+    }
     fn declare(
         &self,
         owner: InstanceId,
@@ -415,6 +438,11 @@ impl DeclaredConns for Far {
         // resolved to nothing is refused, as the host's connector refuses it.
         let unresolved = !spec.target_from.is_empty() && target.is_none();
         let target = target.unwrap_or_default().to_string();
+        self.owners.lock().unwrap().push((owner, target.clone()));
+        let callback = self.on_declare.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback(&target);
+        }
         let verdict = if unresolved || target.contains(REFUSED_TARGET) {
             Err(ConnError::Refused)
         } else {
@@ -545,6 +573,8 @@ impl Conns for Far {
         Err(ConnError::Closed)
     }
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+        self.stalled.lock().unwrap().remove(&conn);
+        self.read.lock().unwrap().remove(&conn);
         self.slab.remove(caller, conn).map(|_| ())
     }
 }
