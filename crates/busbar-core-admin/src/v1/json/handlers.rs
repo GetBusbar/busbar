@@ -987,21 +987,7 @@ pub(crate) async fn register_group(
         let p = installed.clone();
         Ok(txn.commit(
             installed.clone(),
-            move || {
-                busbar_kernel::config::overlay::persist_groups(
-                    p.overlay_path.as_deref(),
-                    &p.groups_registry,
-                    None,
-                    Some(&txn_name),
-                    &p.base_group_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "group could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
+            move || persist_group(&p, &txn_name),
             (installed, existed),
         ))
     })
@@ -1058,21 +1044,7 @@ pub(crate) async fn put_group(
         let p = installed.clone();
         Ok(txn.commit(
             installed.clone(),
-            move || {
-                busbar_kernel::config::overlay::persist_groups(
-                    p.overlay_path.as_deref(),
-                    &p.groups_registry,
-                    None,
-                    Some(&txn_name),
-                    &p.base_group_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "group could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
+            move || persist_group(&p, &txn_name),
             installed,
         ))
     })
@@ -1140,21 +1112,7 @@ pub(crate) async fn patch_group(
         let p = installed.clone();
         Ok(txn.commit(
             installed.clone(),
-            move || {
-                busbar_kernel::config::overlay::persist_groups(
-                    p.overlay_path.as_deref(),
-                    &p.groups_registry,
-                    None,
-                    Some(&txn_name),
-                    &p.base_group_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "group could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
+            move || persist_group(&p, &txn_name),
             installed,
         ))
     })
@@ -1603,6 +1561,22 @@ fn merge_group_patch(
         base.child_default = Some(cd);
     }
     base
+}
+
+fn persist_group(installed: &busbar_kernel::state::App, name: &str) -> Result<(), String> {
+    busbar_kernel::config::overlay::persist_groups(
+        installed.overlay_path.as_deref(),
+        &installed.groups_registry,
+        None,
+        Some(name),
+        &installed.base_group_names,
+    )
+    .map_err(|e| {
+        format!(
+            "group could not be persisted to the overlay: {e}; nothing was changed (the \
+             running engine is unaffected)"
+        )
+    })
 }
 
 /// Record a config-version entry for a GROUP mutation. The `VersionLog` snapshot payload is the
