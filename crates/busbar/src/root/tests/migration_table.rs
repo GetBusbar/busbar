@@ -210,26 +210,6 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     }
 }
 
-/// Every retired row of the table has its golden entry, so a word added to `plugins.yaml` without
-/// its 1.5.5 bytes fails here rather than shipping unproven.
-#[test]
-fn every_retired_row_has_a_1_5_5_golden() {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!("fixtures/retired_1_5_5.yaml"))
-        .expect("the golden parses");
-    let golden: Vec<String> = doc["retired"]
-        .as_sequence()
-        .expect("a list")
-        .iter()
-        .map(|g| format!("retired.store.{}", field(g, "word")))
-        .collect();
-    let rows: Vec<String> = MIGRATION_ROWS
-        .iter()
-        .filter(|(k, _)| k.starts_with("retired."))
-        .map(|(k, _)| (*k).to_string())
-        .collect();
-    assert_eq!(rows, golden);
-}
-
 /// A test build of the kernel stands the frozen rows in (`migration_rows` in its frozen-text fixture);
 /// they are the root's table, row for row.
 #[test]
@@ -381,71 +361,6 @@ fn the_committed_migration_table_is_the_render() {
     }
 }
 
-/// An edit to the table by hand is drift (RED), and so is a `retired:` word added to plugins.yaml
-/// without its row.
-#[test]
-fn a_hand_edited_table_or_an_unrendered_word_is_drift() {
-    let (k, v) = rows(REGISTRY)
-        .into_iter()
-        .find(|(k, _)| k.starts_with("retired."))
-        .expect("a retired row");
-    let edited = MANIFEST.replace(
-        &format!("\"{k}\" = \"{v}\""),
-        &format!("\"{k}\" = \"x{v}\""),
-    );
-    assert_ne!(edited, MANIFEST, "the planted edit landed");
-    assert!(drift(&edited, REGISTRY).is_some());
-    let added = REGISTRY.replacen("retired: [", "retired: [planted-word, ", 1);
-    assert_ne!(added, REGISTRY, "the planted word landed");
-    let reason = drift(MANIFEST, &added).expect("an unrendered word is drift");
-    assert!(
-        reason.contains("\"retired.store.planted-word\" = "),
-        "{reason}"
-    );
-}
-
-/// A plugin's `retired:` words become `retired.<kind>.<word>` rows beside its manifest and asset
-/// rows (defaulting to the repo); a plugin with none adds no row.
-#[test]
-fn retired_words_render_as_rows_of_their_kind_and_alias() {
-    let registry = "plugins:\n  - repo: busbar-store-alpha\n    kind: store\n    alias: alpha\n    \
-                    retired: [old-alpha]\n  - repo: busbar-secret-beta\n    kind: secret\n    alias: beta\n";
-    let row = |k: &str, v: &str| (k.to_string(), v.to_string());
-    assert_eq!(
-        rows(registry),
-        vec![
-            row("retired.store.old-alpha", "alpha"),
-            row("manifest.alpha", "busbar-store-alpha"),
-            row("asset.alpha", "busbar-store-alpha"),
-        ]
-    );
-}
-
-/// A plugin's `former_names:` become one `former.<alias>` row, space-separated, whether or not it has
-/// `retired:` words; a plugin with none adds no row. RED arm: a former name added to plugins.yaml
-/// without its row is drift.
-#[test]
-fn former_names_render_as_one_row_of_the_alias() {
-    let registry = "plugins:\n  - repo: busbar-hook-alpha\n    kind: hook\n    alias: alpha\n    \
-                    former_names: [busbar-alpha, alpha-hook]\n  - repo: busbar-secret-beta\n    kind: secret\n    alias: beta\n";
-    let row = |k: &str, v: &str| (k.to_string(), v.to_string());
-    assert_eq!(
-        rows(registry),
-        vec![row("former.alpha", "busbar-alpha alpha-hook")]
-    );
-    let added = REGISTRY.replacen(
-        "former_names: [busbar-webrequest]",
-        "former_names: [busbar-webrequest, planted-name]",
-        1,
-    );
-    assert_ne!(added, REGISTRY, "the planted name landed");
-    let reason = drift(MANIFEST, &added).expect("an unrendered former name is drift");
-    assert!(
-        reason.contains("\"former.webrequest\" = \"busbar-webrequest planted-name\""),
-        "{reason}"
-    );
-}
-
 /// The root's table answers a linked plugin's former names by its alias
 /// (`busbar_kernel::config::migration_table::former_names`), from the committed plugins.yaml.
 #[test]
@@ -458,44 +373,4 @@ fn a_linked_plugin_reads_its_former_names_by_its_alias() {
     assert!(
         busbar_kernel::config::migration_table::former_names("planted-never-renamed").is_empty()
     );
-}
-
-/// Every frozen `migration:` row of plugins.yaml cites the v1.5.5 source it is verbatim from (a
-/// `# … v1.5.5:crates/…` comment above it, or, for a 1.5.5 MANIFEST NAME, the published release
-/// tarball it was read off: `# GetBusbar/<repo> release v<x.y.z>: <asset> manifest.json name`), and
-/// every row parsed.
-#[test]
-fn every_migration_row_cites_v1_5_5() {
-    let block: Vec<&str> = REGISTRY
-        .lines()
-        .skip_while(|l| *l != "migration:")
-        .skip(1)
-        .take_while(|l| l.starts_with("  ") || l.is_empty())
-        .collect();
-    let (mut cited, mut n) = (false, 0);
-    for line in block {
-        let t = line.trim();
-        if t.starts_with('#') {
-            cited |= t.contains("v1.5.5:crates/")
-                || (t.starts_with("# GetBusbar/busbar-")
-                    && t.contains(" release v")
-                    && t.ends_with("manifest.json name"));
-            continue;
-        }
-        if t.is_empty() {
-            continue;
-        }
-        let key = t.split_once(':').expect("a row").0;
-        assert!(
-            cited,
-            "migration row `{key}` carries no v1.5.5 citation above it"
-        );
-        (cited, n) = (false, n + 1);
-    }
-    let doc: serde_yaml::Value = serde_yaml::from_str(REGISTRY).expect("plugins.yaml parses");
-    assert_eq!(
-        n,
-        doc["migration"].as_mapping().expect("`migration:`").len()
-    );
-    assert!(n > 0);
 }

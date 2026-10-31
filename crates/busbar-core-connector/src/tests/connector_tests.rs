@@ -1228,6 +1228,83 @@ fn a_request_bound_is_spent_once_the_answer_begins() {
     });
 }
 
+/// The last instant past `now` the platform's clock can hold, to the second.
+fn last_instant(now: std::time::Instant) -> std::time::Instant {
+    let (mut lo, mut hi) = (0_u64, u64::MAX);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if now
+            .checked_add(std::time::Duration::from_secs(mid))
+            .is_some()
+        {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    now + std::time::Duration::from_secs(lo)
+}
+
+/// RED: a request's `timeout_ms` is the plugin's own number, any `u64` (a secret-vault
+/// `timeout_secs` it saturates to `u64::MAX`). A bound past the last instant the clock can hold is
+/// no bound of its own (the op's deadline ends the op), never an overflowing `Instant` add, which
+/// panics where `Instant` is narrow. RED before: the bound was an unchecked add (`due_at` did not
+/// exist, so this did not compile; on such a platform `bounded(u64::MAX)` panicked).
+#[test]
+fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
+    let now = std::time::Instant::now();
+    assert_eq!(due_at(now, 0), None, "0 = no bound of its own");
+    assert_eq!(
+        due_at(now, 300),
+        Some(now + std::time::Duration::from_millis(300))
+    );
+    let last = last_instant(now);
+    assert_eq!(due_at(last, u64::MAX), None, "past the clock: no bound");
+    assert_eq!(due_at(last, 1_000), None);
+    // Through the held connection: no bound of its own, and no panic.
+    let held = Held::over(None, None, None).bounded(u64::MAX);
+    let due = held.due.lock().expect("due");
+    assert!(
+        due.as_ref().is_none_or(|d| d.at > now),
+        "a bound, if the clock holds it, is in the future"
+    );
+}
+
+/// A request whose `timeout_ms` is `u64::MAX` opens and reads its answer whole: the bound does not
+/// cut it, and nothing overflows on the way.
+#[test]
+fn a_request_with_the_largest_timeout_reads_its_answer() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let ms = std::time::Duration::from_millis;
+        stalled_far_end(l, Some((ms(20), b"head", ms(20), b"tail")));
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
+            timeout_ms: u64::MAX,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        while got.len() < 8 {
+            let mut buf = [0_u8; 64];
+            let piece = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+            )
+            .await
+            .expect("the answer arrives")
+            .expect("the answer reads");
+            got.extend_from_slice(&buf[..piece.len]);
+        }
+        assert_eq!(got, b"headtail");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
 // ── EGRESS: the scheme each egress class allows ──
 
 use busbar_contract::abi::host::conn::connector::{
