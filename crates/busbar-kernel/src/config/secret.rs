@@ -285,6 +285,32 @@ pub(crate) fn resolve_settings(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
+    resolve_settings_with_literals(
+        settings, declared, reference, plugin, resolver, scope, false,
+    )
+}
+
+/// Export settings retain literal compatibility while classifying declared references separately.
+pub(crate) fn resolve_export_settings(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    declared: &[String],
+    reference: &[String],
+    plugin: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<ResolvedSettings, String> {
+    resolve_settings_with_literals(settings, declared, reference, plugin, resolver, scope, true)
+}
+
+fn resolve_settings_with_literals(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    declared: &[String],
+    reference: &[String],
+    plugin: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
+    allow_declared_literals: bool,
+) -> Result<ResolvedSettings, String> {
     use busbar_contract::secret_fields;
     if let Some(path) = secret_fields::contradiction(declared, reference) {
         return Err(secret_fields::contradiction_refusal(&path, plugin));
@@ -297,11 +323,13 @@ pub(crate) fn resolve_settings(
             plugin,
         ));
     }
-    if let Some(at) = secret_fields::declared_literal(tree, declared) {
-        return Err(secret_fields::declared_literal_refusal(
-            &format!("settings.{at}"),
-            plugin,
-        ));
+    if !allow_declared_literals {
+        if let Some(at) = secret_fields::declared_literal(tree, declared) {
+            return Err(secret_fields::declared_literal_refusal(
+                &format!("settings.{at}"),
+                plugin,
+            ));
+        }
     }
     for path in declared {
         for at in secret_fields::declared_references(tree, path) {
@@ -399,6 +427,11 @@ pub struct ResolvedSettings(serde_json::Value);
 const ALWAYS_AN_OBJECT: &str = "resolved settings are built from a settings map";
 
 impl ResolvedSettings {
+    /// Own a settings map whose temporary strings are wiped when the holder drops.
+    pub(crate) fn from_map(settings: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self(serde_json::Value::Object(settings))
+    }
+
     /// The bag as the one JSON object the plugin is handed (borrowed: the holder keeps it).
     pub fn as_value(&self) -> &serde_json::Value {
         &self.0
