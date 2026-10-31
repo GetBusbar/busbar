@@ -284,9 +284,9 @@ async fn callback(
         state: cookie.state.clone(),
         nonce: Some(cookie.nonce.clone()),
         login: CompleteLogin {
-            code: Some(code.into()),
+            code: Some(code),
             redirect_uri: Some(redirect_uri),
-            code_verifier: Some(cookie.code_verifier.clone().into()),
+            code_verifier: Some(cookie.code_verifier.clone()),
             ..Default::default()
         },
     };

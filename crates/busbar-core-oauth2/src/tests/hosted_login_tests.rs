@@ -898,10 +898,7 @@ async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answe
     );
     let seen = door.seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "the plugin is asked, as 1.5.5 asked it");
-    assert_eq!(
-        seen[0].login.code.as_deref().map(String::as_str),
-        Some("code123")
-    );
+    assert_eq!(seen[0].login.code.as_deref(), Some("code123"));
     assert!(
         seen[0].login.submitted.is_empty(),
         "no credentials ride a callback"
@@ -1623,18 +1620,12 @@ async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
     assert_eq!(seen.len(), 1, "one complete_login: {seen:?}");
     assert_eq!(seen[0].state, "st");
     assert_eq!(seen[0].nonce.as_deref(), Some("the-core-nonce"));
-    assert_eq!(
-        seen[0].login.code.as_deref().map(String::as_str),
-        Some("the-code")
-    );
+    assert_eq!(seen[0].login.code.as_deref(), Some("the-code"));
     assert_eq!(
         seen[0].login.redirect_uri.as_deref(),
         Some("https://busbar.example.com/auth/token")
     );
-    assert_eq!(
-        seen[0].login.code_verifier.as_deref().map(String::as_str),
-        Some("the-verifier")
-    );
+    assert_eq!(seen[0].login.code_verifier.as_deref(), Some("the-verifier"));
     assert!(
         seen[0].login.token_response.is_none(),
         "the core runs no token exchange for a door plugin"
