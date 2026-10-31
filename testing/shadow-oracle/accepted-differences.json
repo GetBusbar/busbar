@@ -5156,11 +5156,11 @@
       "kind": "improvement",
       "changelog": null,
       "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served (family-baselines.tsv); no 1.5.5 client or operator sees it. The CHANGELOG's streaming-plane entry is the customer text.",
-      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 3)",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (B yes)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-30",
-        "ruling": "OWNER SIGNED 2026-10-30, SIGN-ga-session.md row 3: streams|sdp|calls, /steps/0/body/text, before the 1.6.0-pre golden's relayed provider SDP answer, after \"\" (measured on #1957 at dac4586105, R10). R10: busbar terminates the browser's media; the offer is answered 201 with busbar's own call id in Location and the provider's answer is not relayed to the caller."
+        "when": "2026-10-31",
+        "ruling": "OWNER SIGNED 2026-10-31, direct reply B yes to HANDOFF section 7 question B: the recorded streams|sdp|calls offer is refused with an explained, audited error when no media listener is configured. This supersedes the former 201/empty-body premise. See SIGN-ga-session.md owner-signed A/B addendum."
       },
       "expires": {
         "baseline": "1.6.0-pre",
@@ -5172,16 +5172,107 @@
         "body"
       ],
       "premise": {
-        "cell": "streams|sdp|calls",
-        "pointer": "/steps/0/status",
-        "equals": 201
+        "all": [
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/steps/0/status",
+            "equals": 404
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/steps/0/body/json",
+            "equals": {
+              "error": {
+                "code": null,
+                "message": "this deployment serves no media for the offer: no listener is configured for its `webrtc` carrier (set `streams.media.listen`)",
+                "param": null,
+                "type": "not_found_error"
+              }
+            }
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/steps/0/body/text",
+            "exists": false
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/upstream",
+            "equals": []
+          }
+        ]
       },
-      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-ga-session.md row 3), judged against the dated baseline golden/1.6.0-pre (NOT 1.5.5 evidence; no 1.5.5 cell moves). Under R10 (#1957, plane-streaming 3071e3d8ff) busbar terminates the browser's media: the caller's SDP offer is answered 201 and the provider's SDP answer is no longer relayed to the caller. A precise `values` spec: the caller's step body text is forgiven only from the golden's exact relayed answer to the exact empty body, on this one cell; every other leaf of the cell (step status, headers, header order, the upstream record) stays judged. PREMISE: the offer is still answered 201. Row 1 (the pre-R10 GA mint body) and row 2 (the R10 mint expiry, a wall-clock value no exact before/after can name) are not this entry.",
+      "rationale": "Owner directly signed B on 2026-10-31. This dated-baseline offer has no configured media listener; busbar refuses it before dialing upstream, with the exact explanation naming streams.media.listen. Exact current-head07140b23 evidence is retained in the SDP-only report SHA256258ede52745f733e8842548f7cc0698b8a3b53567ab5db9e27ab4e1f281801a8. Only the seven listed before/after values are accepted, including JSON/text absence and removal of the exact old upstream request. Empty or differently explained refusals, another status, an upstream request, header order and every unlisted leaf remain judged. The separate product regression asserts the operator audit; actual-head test proof remains required and this entry does not substitute for it.",
       "values": [
+        {
+          "pointer": "/body/json/steps/0/body/json",
+          "golden_absent": true,
+          "candidate": {
+            "error": {
+              "code": null,
+              "message": "this deployment serves no media for the offer: no listener is configured for its `webrtc` carrier (set `streams.media.listen`)",
+              "param": null,
+              "type": "not_found_error"
+            }
+          }
+        },
         {
           "pointer": "/body/json/steps/0/body/text",
           "golden": "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=oracle-answer\r\nt=0 0\r\n",
-          "candidate": ""
+          "candidate_absent": true
+        },
+        {
+          "pointer": "/body/json/steps/0/headers/content-length",
+          "golden": "55",
+          "candidate": "200"
+        },
+        {
+          "pointer": "/body/json/steps/0/headers/content-type",
+          "golden": "application/sdp",
+          "candidate": "application/json"
+        },
+        {
+          "pointer": "/body/json/steps/0/status",
+          "golden": 201,
+          "candidate": 404
+        },
+        {
+          "pointer": "/body/json/steps/0/status_line",
+          "golden": "HTTP/1.1 201 Created",
+          "candidate": "HTTP/1.1 404 Not Found"
+        },
+        {
+          "pointer": "/body/json/upstream",
+          "golden": [
+            {
+              "answered": 201,
+              "body": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n",
+              "headers": [
+                [
+                  "authorization",
+                  "Bearer oracle-cred-streams-0006"
+                ],
+                [
+                  "content-type",
+                  "application/sdp"
+                ],
+                [
+                  "host",
+                  "127.0.0.1:<PORT>"
+                ],
+                [
+                  "content-length",
+                  "54"
+                ]
+              ],
+              "method": "POST",
+              "path": "/v1/realtime/calls",
+              "proto": "h1",
+              "raw": "POST /v1/realtime/calls HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0006\r\ncontent-type: application/sdp\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 54\r\n\r\nv=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n",
+              "role": "fixed"
+            }
+          ],
+          "candidate": []
         }
       ]
     },
@@ -5266,6 +5357,49 @@
           ]
         ]
       }
+    },
+    {
+      "id": "R10-MINT-LENGTH exact response length of the busbar-minted ticket",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline streams row; no published 1.5.5 streams cell changes.",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (A. yes)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "OWNER SIGNED 2026-10-31, direct reply A. yes: provider key to busbar-minted ticket. This entry names only its exact measured response Content-Length consequence, 55 to 359, on the same mint cell."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/body/json/expires_at_unix",
+            "exists": true
+          }
+        ]
+      },
+      "rationale": "Derived wire-length consequence of the owner-signed A ticket replacement, measured by the existing oracle at07140b23: the exact mint response Content-Length changes from55 to359. Separate from the ticket transform because the pinned judge does not combine transforms and values in one entry. No generic numeric/header transform; any other length and every other leaf stay judged.",
+      "values": [
+        {
+          "pointer": "/body/json/steps/0/headers/content-length",
+          "golden": "55",
+          "candidate": "359"
+        }
+      ]
     }
   ]
 }
