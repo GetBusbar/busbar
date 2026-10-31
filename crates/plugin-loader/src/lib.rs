@@ -85,6 +85,9 @@ pub mod conformance;
 #[path = "../../busbar-test-kit/src/https_conns.rs"]
 pub mod https_conns;
 #[cfg(test)]
+#[path = "../../busbar-test-kit/src/services_double.rs"]
+pub mod services_double;
+#[cfg(test)]
 #[path = "../../busbar-test-kit/src/stand_in.rs"]
 pub mod stand_in;
 #[cfg(test)]
@@ -339,6 +342,11 @@ mod dispatch_kind_plane_tests;
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_store_tests.rs"]
 mod dispatch_kind_store_tests;
+
+/// The stub store's plane records: an upsert is keyed on its own id, parent or not.
+#[cfg(test)]
+#[path = "tests/stub_store_plane_tests.rs"]
+mod stub_store_plane_tests;
 
 /// The hook kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]

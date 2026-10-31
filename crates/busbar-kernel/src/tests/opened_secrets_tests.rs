@@ -121,5 +121,14 @@ fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
     let refused = opened
         .resolve("disk-source", "on-a-request", None, open)
         .expect_err("a request path is refused");
-    assert!(refused.contains("never on a request path"), "{refused}");
+    assert!(
+        refused.text.contains("never on a request path"),
+        "{}",
+        refused.text
+    );
+    // The source's own code reaches the kernel's caller (S4).
+    assert_eq!(
+        refused.error_kind,
+        busbar_contract::abi::secret::ERROR_KIND_DENIED
+    );
 }

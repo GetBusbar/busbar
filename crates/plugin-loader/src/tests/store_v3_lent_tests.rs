@@ -17,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::sdk::door::Slot;
+use busbar_contract::abi::sdk::door::RawSlot;
 use busbar_contract::abi::store::{GetPlaneRecordIn, HostBytesOut, OpId, RecordGetIn};
 use busbar_contract::records::RecordStore;
 use busbar_contract::store_calls::StoreCalls;
@@ -72,10 +72,10 @@ static PLANE_GATE: Gate = Gate::new();
 
 /// `record_get`: holds its crossing until [`GET_GATE`] lets it go, then reads its key.
 struct WedgedGet;
-impl Slot for WedgedGet {
+impl RawSlot for WedgedGet {
     type In = RecordGetIn;
     type Out = HostBytesOut;
-    fn call(_: *mut c_void, i: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, i: &RecordGetIn, _: &mut HostBytesOut) -> Outcome {
         GET_GATE.hold_then_read(i.key.ptr, i.key.len);
         Outcome::Ready
     }
@@ -83,10 +83,10 @@ impl Slot for WedgedGet {
 
 /// `get_plane_record`: holds its crossing until [`PLANE_GATE`] lets it go, then reads its id.
 struct WedgedPlaneGet;
-impl Slot for WedgedPlaneGet {
+impl RawSlot for WedgedPlaneGet {
     type In = GetPlaneRecordIn;
     type Out = HostBytesOut;
-    fn call(_: *mut c_void, i: &GetPlaneRecordIn, _: &mut HostBytesOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, i: &GetPlaneRecordIn, _: &mut HostBytesOut) -> Outcome {
         PLANE_GATE.hold_then_read(i.id.ptr, i.id.len);
         Outcome::Ready
     }
@@ -113,7 +113,7 @@ mod wedged {
         },
                 lifecycle: {
                     validate: S<l::Validate<d::Served<M>>>,
-                    open: S<d::Open<M>>,
+                    open: S<l::Open<d::Served<M>>>,
                     refresh: S<l::Refresh<d::Served<M>>>,
                     retire: S<l::Retire<d::Served<M>>>,
                     tick: S<l::Tick<d::Served<M>>>,

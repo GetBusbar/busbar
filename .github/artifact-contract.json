@@ -33,7 +33,7 @@
     "without executing: an empty or truncated contract file would otherwise verify every artifact",
     "against nothing and report green."
   ],
-  "min_rows": 14,
+  "min_rows": 17,
   "rows": [
     {
       "id": "archive_shape",
@@ -58,9 +58,10 @@
         "downloads it, and it is invisible to every check that only executes the binary on the",
         "runner that built it. Parsed straight out of the ELF/Mach-O/PE headers so the check is one",
         "implementation on all three operating systems rather than `file` here and `ldd` there.",
-        "The linkage half folds in docker.yml's hard failure on a dynamically-linked binary where a",
-        "static one was intended (FROM scratch has no loader): linkage is now a declared property of",
-        "the target and a row that applies to every artifact, not an `ldd | grep` in one workflow."
+        "The linkage half is a declared property of the target and a row that applies to every",
+        "artifact, not an `ldd | grep` in one workflow. Every shipped busbar binary is `dynamic` by",
+        "design (W17): a binary that cannot dlopen cannot load a dropped-in plugin, and a static musl",
+        "binary cannot dlopen. WHICH libraries it may depend on is `runtime_deps`, below."
       ],
       "applies_when": {
         "kind": "binary"
@@ -191,6 +192,72 @@
       ]
     },
     {
+      "id": "runtime_deps",
+      "title": "the binary needs nothing at run time beyond the OS's own C runtime",
+      "exec": false,
+      "why": [
+        "W17, THE LINKING DESIGN, ASSERTED ON THE BYTES. Every shipped binary can dlopen a dropped-in",
+        "plugin (KICKOFF: every plugin works compiled-in OR dropped-in), so none is a static musl",
+        "binary: musl's static libc answers every dlopen with `Dynamic loading not supported`. Every",
+        "OTHER dependency (TLS, crypto, jemalloc, the Rust std) is linked in, so the only runtime",
+        "requirement is the operating system's own C runtime and loader:",
+        "  ELF    DT_NEEDED is a subset of `elf_allowed`, and the newest GLIBC_x.y symbol version the",
+        "         binary needs is at most the target's declared `glibc_max` -- the baseline it runs",
+        "         on. A build on a newer glibc silently raises the floor (ubuntu-24.04 links",
+        "         GLIBC_2.39), which is invisible until a user on an older distro runs it.",
+        "  Mach-O every LC_*_DYLIB is in `macho_allowed`: libSystem, the one library Apple supports",
+        "         linking dynamically and the most static a macOS binary can be.",
+        "  PE     no import names a C runtime DLL (`pe_denied_prefixes`): the MSVC build is",
+        "         +crt-static, so no Visual C++ Redistributable or UCRT install is needed. The",
+        "         plugin memory ABI never frees across the module boundary (each side frees what it",
+        "         allocated), which is what makes one CRT per module safe.",
+        "Read from the binary's own headers, like `binary_format`, so it runs on any verifier host."
+      ],
+      "elf_allowed": [
+        "libc.so.6",
+        "libm.so.6",
+        "libdl.so.2",
+        "libpthread.so.0",
+        "librt.so.1",
+        "libgcc_s.so.1",
+        "ld-linux-x86-64.so.2",
+        "ld-linux-aarch64.so.1"
+      ],
+      "macho_allowed": [
+        "/usr/lib/libSystem.B.dylib"
+      ],
+      "pe_denied_prefixes": [
+        "vcruntime",
+        "msvcp",
+        "msvcr",
+        "ucrtbase",
+        "api-ms-win-crt-",
+        "concrt",
+        "vccorlib"
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "dropin_loads",
+      "title": "the shipped binary dlopens a dropped-in plugin and boots on it",
+      "exec": true,
+      "why": [
+        "Functional, not a header read. The verifier is handed a stub plugin built for this target",
+        "by scripts/release/dropin-probe.sh (the in-tree stub store, its dropped-in door, packed",
+        "unsigned), drops it into an absolute plugins.dir, names it as `store.module`, and requires",
+        "the shipped binary to boot and answer `/healthz`. A configured store that cannot load is a",
+        "boot refusal, so `ok` means the library was opened, its door bound and its store opened.",
+        "Nothing else in this contract ever dlopens: `first_party_plugin` stops at the manifest ABI",
+        "check, which runs BEFORE dlopen, and --list-plugins never loads. Without this row a binary",
+        "that cannot load any plugin (a static musl build) passes every other row."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
       "id": "image_boots_documented_quickstart",
       "applies_when": {
         "kind": "image"
@@ -209,7 +276,7 @@
       "applies_when": {
         "kind": "image"
       },
-      "why": "the same embedded-key property the binaries owe. The image carries its own musl build, so a key present in the tarballs proves nothing about it."
+      "why": "the same embedded-key property the binaries owe, read from the bytes inside the image rather than inferred from the tarball it should be packaging."
     },
     {
       "id": "image_version_anchored",
@@ -224,11 +291,25 @@
         "kind": "image"
       },
       "why": [
-        "the binary INSIDE the image must be byte-identical to the musl artifact the single",
+        "the binary INSIDE the image must be byte-identical to the linux-gnu release artifact the single",
         "build path produced for it. This is what makes the image a PACKAGE rather than a",
         "second build: without it the image could be assembled from a differently-built",
         "binary and every other row would still pass \u2014 which is how one artifact came to",
-        "embed the plugin release key while its sibling did not."
+        "embed the plugin release key while its sibling did not. Since W17 the image packages the",
+        "SAME published linux-gnu binary a user downloads, on a glibc base, so the image and the",
+        "tarball are one artifact."
+      ]
+    },
+    {
+      "id": "image_dropin_loads",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": [
+        "`dropin_loads`, inside the image. Until W17 the image was FROM scratch around a static musl",
+        "binary, which cannot dlopen, so no dropped-in plugin could ever load in the container, and",
+        "nothing noticed because no row ever loaded one there. The verifier mounts the same stub",
+        "plugin and a config naming it, runs the image, and requires it to reach `listening`."
       ]
     }
   ]

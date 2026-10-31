@@ -178,7 +178,7 @@ fn governed_full(
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+        services.served(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
@@ -726,7 +726,7 @@ async fn node_boot_hooks_arm() {
     for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&boot.limits);
     }
-    let app = busbar_kernel::test_support::build_once(boot, None).expect("the boot app builds");
+    let app = busbar_kernel_testkit::app::build_once(boot, None).expect("the boot app builds");
     assert!(
         crate::root::kernel::ROOT_CARD.pin().is_some(),
         "the boot build's rates never reached the card holder: its repricer is not installed"
@@ -744,7 +744,7 @@ async fn node_boot_hooks_arm() {
     let mut applied = cfg();
     applied.per_request_fee = 3;
     let _applied =
-        busbar_kernel::test_support::build_once(applied, Some(&app)).expect("the apply builds");
+        busbar_kernel_testkit::app::build_once(applied, Some(&app)).expect("the apply builds");
     let pinned = crate::root::kernel::ROOT_CARD
         .pin()
         .expect("the card holder has entries")
@@ -814,7 +814,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+        services.served(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);

@@ -96,62 +96,45 @@ pub trait HostServices: Send + Sync {
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
     /// `trust.sight` with `TRUST_UNREACHABLE`: the plane could not reach `counterparty`. READY with
-    /// the LAST `TRUST_*` verdict, nothing changed. Never pends. Unserved by default.
-    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-        let _ = (caller, counterparty);
-        Stored::refused(UNSERVED)
-    }
+    /// the LAST `TRUST_*` verdict, nothing changed. Never pends.
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored;
 
     /// `trust.sight_item`: record the digest `item` of `counterparty` is offered at now (the
-    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends. Unserved by
-    /// default.
+    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends.
     fn trust_sight_item(
         &self,
         caller: &Caller,
         counterparty: &str,
         item: &str,
         digest: &str,
-    ) -> Stored {
-        let _ = (caller, counterparty, item, digest);
-        Stored::refused(UNSERVED)
-    }
+    ) -> Stored;
 
     /// `trust.decide`: the operator's decision (`approve`, at `expected` when stated) about the
     /// calling instance's trust key `counterparty` (`item`: one item there), through the plane's
     /// own administrative verb. READY with the `TRUST_DECIDED_*` verdict after it, or an
-    /// `UNDECIDED_*`. Never pends. Unserved by default.
+    /// `UNDECIDED_*`. Never pends.
     fn trust_decide(
         &self,
         caller: &Caller,
         key: TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
-    ) -> Stored {
-        let _ = (caller, key, expected, approve);
-        Stored::refused(UNSERVED)
-    }
+    ) -> Stored;
 
     /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
-    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends. Unserved by
-    /// default.
-    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
-        let _ = (caller, counterparty);
-        Stored::refused(UNSERVED)
-    }
+    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends.
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored;
 
     /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
     /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
-    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.
+    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends.
     fn trust_serves(
         &self,
         caller: &Caller,
         counterparty: &str,
         item: Option<&str>,
         digest: Option<&str>,
-    ) -> Stored {
-        let _ = (caller, counterparty, item, digest);
-        Stored::refused(UNSERVED)
-    }
+    ) -> Stored;
 
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
     /// span each (key = the counterparty), drained. Never pends.
@@ -177,10 +160,7 @@ pub trait HostServices: Send + Sync {
     /// any unit: READY with nothing written back. A session that is not open, or not `caller`'s,
     /// is REFUSED. Unbilled; the host audits it as a session event under the session's verified
     /// principal. Never pends. A host that holds no carrier session refuses every one.
-    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
-        let _ = (caller, session, bytes);
-        Stored::refused(UNSERVED)
-    }
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored;
 
     /// `ticket.mint`: mint a ticket for the principal of `unit` (the unit the calling crossing
     /// serves; `None` = it serves none, REFUSED), living `ttl_secs` clamped to the mint ceiling,
@@ -193,19 +173,13 @@ pub trait HostServices: Send + Sync {
         unit: Option<u64>,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Stored {
-        let _ = (caller, unit, ttl_secs, record);
-        Stored::refused(UNSERVED)
-    }
+    ) -> Stored;
 
     /// `ticket.take`: the record of the ticket that admitted `unit`, once: READY `TICKET_TAKEN`
     /// with the record as the bytes, or `TICKET_NONE` with nothing when a key admitted it. `None`
     /// (a crossing that serves no unit) and a second take for one unit are REFUSED. Never pends. A
     /// host that mints no tickets refuses every one.
-    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
-        let _ = (caller, unit);
-        Stored::refused(UNSERVED)
-    }
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored;
 
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
@@ -446,6 +420,11 @@ impl DiskReport {
 pub trait CredentialRead: Send + Sync {
     /// The secret and its liveness.
     fn read(&self, kind: &str, id: &str) -> (crate::redacted::Secret<String>, bool);
+
+    /// Whether a read can be answered yet (a source set late cannot, until it is).
+    fn installed(&self) -> bool {
+        true
+    }
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.
@@ -527,13 +506,6 @@ pub fn merge_list(
         .collect()
 }
 
-// THE SHARED TEST DOUBLE IS NOT IN A RELEASE BUILD: [`HostServices`] with a refusing default per
-// service, kept in step with the trait here. Compiled for this crate's own tests and, through the
-// dev-only `services-double` feature, for a plugin's dev-dependency edge;
-// `tests/test_seal_is_dev_only.rs` refuses any non-dev edge that enables it.
-#[cfg(any(test, feature = "services-double"))]
-#[path = "services_double.rs"]
-pub mod double;
 /// The decimal digits of a chained record's sequence in its listed key ([`chain_key`]).
 pub const CHAIN_SEQ_DIGITS: usize = 20;
 

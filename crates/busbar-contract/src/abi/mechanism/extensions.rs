@@ -139,6 +139,27 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
+/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its
+/// value is the JSON `true` when the door takes each `traces` line's full span record as its
+/// reserved `span` member (everything the previous release's exporter sent for a span: attributes,
+/// events, status), whatever `fields:` selected; `false`, or no entry, takes none. It rides the
+/// extensions blob, not a `repr(C)` field, so the Statement's layout and its ABI version are
+/// unchanged; it is rendered and signed with the rest of the blob.
+pub const EXT_SPAN_RECORDS: &str = "span_records";
+
+/// Whether a Statement's extensions state the door takes full span records
+/// ([`EXT_SPAN_RECORDS`]); `false` when they state nothing.
+///
+/// # Errors
+///
+/// The value is not a JSON boolean.
+pub fn span_records(extensions: &[u8]) -> Result<bool, String> {
+    get(extensions, EXT_SPAN_RECORDS).map_or(Ok(false), |value| {
+        serde_json::from_slice(value)
+            .map_err(|_| format!("extensions.{EXT_SPAN_RECORDS} is not a JSON boolean"))
+    })
+}
+
 /// The length of the bytes [`encode`] writes for `entries`: what [`concat`] is sized by.
 #[must_use]
 pub const fn entries_len(entries: &[(&str, &[u8])]) -> usize {

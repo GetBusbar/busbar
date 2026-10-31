@@ -352,7 +352,11 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
         )
         .await
     });
-    assert_eq!(judged, Err(VerifierOverloaded), "handed back apart");
+    assert_eq!(
+        judged,
+        Err(VerifierUnavailable::Overloaded),
+        "handed back apart"
+    );
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
 
     // The budget itself: every slot held, the wait elapses, the request is denied unverified.

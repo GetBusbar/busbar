@@ -28,6 +28,7 @@
 //! kernel publishes one it is `0`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{AuthRef, UnitRef};
 
@@ -83,6 +84,45 @@ pub fn publish_generation(generation: u64) {
 #[must_use]
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
+}
+
+/// THE TWO SPACES AN AUTH REF'S ID IS DRAWN FROM: an inbound guest-list LINE's, top bit clear,
+/// and an outbound BINDING's, top bit set. One allocator for both ([`next_ref_id`]), so a line's id
+/// is never a binding's: whoever looks an id up holds the table of its space ([`space_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefSpace {
+    /// An inbound line: ids `1..=2^63-1`.
+    Line,
+    /// An outbound binding: ids with the top bit set.
+    Binding,
+}
+
+/// The top bit: set on every binding id, clear on every line id.
+const BINDING_BIT: u64 = 1 << 63;
+
+/// The next id of `space`, never `0` and never one of the other space. Each space counts on its
+/// own; a holder that keeps an id stable across generations allocates it once (the ref's mac
+/// carries the generation).
+#[must_use]
+pub fn next_ref_id(space: RefSpace) -> u64 {
+    static LINES: AtomicU64 = AtomicU64::new(0);
+    static BINDINGS: AtomicU64 = AtomicU64::new(0);
+    let (counter, tag) = match space {
+        RefSpace::Line => (&LINES, 0),
+        RefSpace::Binding => (&BINDINGS, BINDING_BIT),
+    };
+    let n = counter.fetch_add(1, Ordering::Relaxed) % (BINDING_BIT - 1) + 1;
+    tag | n
+}
+
+/// The space id `id` was drawn from; `None` for `0` (no handle).
+#[must_use]
+pub const fn space_of(id: u64) -> Option<RefSpace> {
+    match id {
+        0 => None,
+        i if i & BINDING_BIT != 0 => Some(RefSpace::Binding),
+        _ => Some(RefSpace::Line),
+    }
 }
 
 /// The tag of an auth ref.
@@ -194,4 +234,337 @@ pub fn verify_unit_ref(
         return Err(RefRefused::NotMinted);
     }
     Ok(r.id)
+}
+
+// ── the kernel's side of the handle, as the loader calls it ─────────────────────────────────
+
+/// One request's head as a transport lent it ([`HeadView`](busbar_contract::abi::host::service::HeadView)),
+/// copied out of the caller's memory before anything else runs: neutral fields only.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct HeadCopy {
+    /// The method.
+    pub method: String,
+    /// The target's path, as received.
+    pub target: String,
+    /// The authority.
+    pub authority: String,
+    /// The query without `?`; `None` = absent.
+    pub query: Option<String>,
+    /// The field lines, in order, as received: (name, value). A value may be a credential.
+    pub fields: Vec<(String, Vec<u8>)>,
+}
+
+impl std::fmt::Debug for HeadCopy {
+    // Never a field value: a field line may carry the credential.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadCopy")
+            .field("method", &self.method)
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `auth.call`, as the loader hands it to the kernel once the refs, the unit and the `in` passed
+/// their checks.
+#[derive(Debug)]
+pub struct AuthCallAsk {
+    /// The calling instance's identity: the owner its refs verified for.
+    pub owner: u64,
+    /// The generation its ref verified at.
+    pub generation: u64,
+    /// The verified ref's id: the line or binding the kernel minted it for.
+    pub auth: u64,
+    /// The presented unit, verified by the loader when not [`UnitRef::NONE`].
+    pub unit: UnitRef,
+    /// The point bit.
+    pub point: u32,
+    /// The connection.
+    pub conn: u64,
+    /// The stream on it.
+    pub stream: u64,
+    /// The request; empty at the peer point.
+    pub request: HeadCopy,
+    /// The whole body, at the body point only.
+    pub body: Option<Vec<u8>>,
+    /// THE FRAMING the call was made on: the ticket of the framer op it was made inside
+    /// ([`framing_of`]), the host's own identity of the connection side, never the transport's
+    /// word. Its end is [`AuthHandleHost::framing_ended`].
+    pub framing: u64,
+    /// What remains of the deadline of the framer op the call was made in (its ticket was minted
+    /// for that op with its deadline class): `None` = none (a write-behind op, or no deadline).
+    pub deadline: Option<std::time::Duration>,
+}
+
+/// What `auth.call` answers a transport: continue or stop, the request's unit, and the NAMES the
+/// auths named for stripping, each with its `FIELD_SENSITIVE` / `FIELD_QUERY` flag. Never a value
+/// and never the verdict (THE DESIGN §6 "Auth points and guest lists", step 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthCallAnswer {
+    /// `FLOW_CONTINUE` | `FLOW_STOP`.
+    pub flow: u32,
+    /// The request's unit.
+    pub unit: UnitRef,
+    /// The names to strip and their flags.
+    pub strips: Vec<(String, u32)>,
+}
+
+/// Where a pended `auth.call`'s answer goes: called once, from any thread. `Err` is REFUSED with
+/// that text.
+pub type AuthDone = Box<dyn FnOnce(Result<AuthCallAnswer, &'static str>) + Send>;
+
+/// How the kernel ran an `auth.call`.
+#[derive(Debug)]
+pub enum AuthRan {
+    /// Finished: the answer, or REFUSED with the text.
+    Now(Result<AuthCallAnswer, &'static str>),
+    /// The kernel kept the [`AuthDone`] and answers through it; the call pends on its ticket.
+    Pending,
+}
+
+/// `unit.hand_in`, as the loader hands it to the kernel.
+#[derive(Debug)]
+pub struct HandInAsk {
+    /// The calling instance's identity.
+    pub owner: u64,
+    /// The generation its ref verified at.
+    pub generation: u64,
+    /// The verified ref's id.
+    pub auth: u64,
+    /// The presented unit (verified when not [`UnitRef::NONE`]).
+    pub unit: UnitRef,
+    /// The line the transport matched.
+    pub line: u32,
+    /// The connection.
+    pub conn: u64,
+    /// The stream on it.
+    pub stream: u64,
+    /// The request, after the transport stripped what the auth named.
+    pub request: HeadCopy,
+    /// The framing the hand-in was made on ([`framing_of`] its ticket); `None` for a ticketless
+    /// hand-in.
+    pub framing: Option<u64>,
+}
+
+/// `unit.refuse`, as the loader hands it to the kernel.
+#[derive(Debug)]
+pub struct RefuseAsk {
+    /// The calling instance's identity.
+    pub owner: u64,
+    /// The published generation.
+    pub generation: u64,
+    /// The presented unit (verified when not [`UnitRef::NONE`]).
+    pub unit: UnitRef,
+    /// `REFUSE_*`.
+    pub cause: u32,
+    /// The matched line; `LINE_NONE` for no route.
+    pub line: u32,
+    /// The connection.
+    pub conn: u64,
+    /// The stream on it.
+    pub stream: u64,
+    /// The host framing making the refusal, absent for a ticketless call.
+    pub framing: Option<u64>,
+    /// The request being refused (`UnitRefuseIn::request`): its path shapes a refusal with no unit
+    /// as 1.5.5's router shaped it.
+    pub request: HeadCopy,
+}
+
+/// The refusal the kernel owns: status, head fields and body, framed verbatim by the transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalBytes {
+    /// The status.
+    pub status: u16,
+    /// The head fields, in order.
+    pub fields: Vec<(String, Vec<u8>)>,
+    /// The body.
+    pub body: Vec<u8>,
+}
+
+/// The secret a live unit's ref was minted under, and what else its MAC covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitSecret {
+    /// The request's own kernel secret.
+    pub secret: [u64; 2],
+    /// The generation it was minted at.
+    pub generation: u64,
+    /// The line it was minted for.
+    pub line: u32,
+}
+
+/// An immutable policy loan selected by the serving host, never by a transport.
+#[derive(Debug, Clone)]
+pub struct StreamPolicy {
+    /// The actual listener, generation and route rows.
+    pub policy: Arc<busbar_contract::abi::transport::guest_policy::Policy>,
+    /// The full policy extension, encoded once per generation.
+    pub full: Arc<[u8]>,
+    /// The small unchanged-policy acknowledgement extension.
+    pub current: Arc<[u8]>,
+}
+
+/// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE (THE DESIGN §6, "Auth points and guest lists", step 4;
+/// Part 2 #65, #74), as the loader calls it. The composition root installs one on the dispatcher
+/// ([`Dispatcher::install_auth_handle`](super::Dispatcher::install_auth_handle)) over the kernel's
+/// inbound module; the loader names no kernel crate. Every call reaches it only after the loader
+/// verified the call's refs, its unit (against [`AuthHandleHost::unit_secret`]) and its `in`.
+pub trait AuthHandleHost: Send + Sync {
+    /// The secret, generation and line `owner`'s live unit `unit` was minted under; `None` for a
+    /// unit the kernel holds no record of for that owner (the loader then refuses it).
+    fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret>;
+
+    /// `auth.call`: answer at once, or keep `done` and answer [`AuthRan::Pending`] (the call pends).
+    fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan;
+
+    /// `unit.hand_in`: `(flow, unit)`, or REFUSED with the text. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// The kernel serves no list for the caller, or holds no record of its unit.
+    fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str>;
+
+    /// Hand in with the remaining deadline of the actual host operation, outside the C frame.
+    ///
+    /// # Errors
+    /// The same failures as [`Self::hand_in`].
+    fn hand_in_with_deadline(
+        &self,
+        ask: HandInAsk,
+        _deadline: Option<std::time::Duration>,
+    ) -> Result<(u32, UnitRef), &'static str> {
+        self.hand_in(ask)
+    }
+
+    /// `unit.refuse`: the refusal's bytes, or REFUSED with the text. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// The kernel serves no list for the caller, or the cause names no line it holds.
+    fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str>;
+
+    /// Register a host-owned listener/framing binding before Begin or Adopt crosses the door.
+    /// This is host metadata and is never a transport-supplied service argument.
+    ///
+    /// # Errors
+    /// The serving host refuses the listener or an attempted framing rebind.
+    fn framing_started(
+        &self,
+        _owner: u64,
+        _listener: u64,
+        _framing: u64,
+    ) -> Result<Option<StreamPolicy>, &'static str> {
+        Ok(None)
+    }
+
+    /// The concrete serving host requires a trusted framing and per-stream policy grant.
+    fn requires_scope(&self) -> bool {
+        false
+    }
+
+    /// Select and pin the listener policy for one new stream before matching or auth.
+    ///
+    /// # Errors
+    /// The framing/listener is unknown or the stream already belongs to another policy.
+    fn stream_open(
+        &self,
+        _owner: u64,
+        _listener: u64,
+        _framing: u64,
+        _stream: u64,
+    ) -> Result<StreamPolicy, &'static str> {
+        Err("the host serves no stream policy")
+    }
+
+    /// Release a stream's grant and request state after its host lifetime ends.
+    fn stream_ended(&self, _owner: u64, _framing: u64, _stream: u64) {}
+
+    /// Begin completed; its initial policy pin can retire independently of stream grants.
+    fn framing_ready(&self, _owner: u64, _framing: u64) {}
+
+    /// Seal a detached source against new admissions without retiring its units.
+    ///
+    /// # Errors
+    /// The source is not a live registered framing.
+    fn framing_detached(&self, _owner: u64, _framing: u64) -> Result<(), &'static str> {
+        Err("the host cannot detach an admitted session")
+    }
+
+    /// Move a unique host-claimed admission into staged destination custody.
+    /// No unit reference supplied by a plugin authorizes this operation.
+    ///
+    /// # Errors
+    /// Missing, ambiguous or ended source admission, or an already used destination.
+    fn framing_adopting(
+        &self,
+        _source: busbar_contract::framing_scope::AdoptionSource,
+        _owner: u64,
+        _framing: u64,
+    ) -> Result<busbar_contract::framing_scope::SessionTransfer, &'static str> {
+        Err("the host cannot transfer an admitted session")
+    }
+
+    /// Commit staged custody to the adopting framer's READY token.
+    ///
+    /// # Errors
+    /// The staged source or destination ended before confirmation.
+    fn framing_adopted(&self, _owner: u64, _framing: u64, _conn: u64) -> Result<(), &'static str> {
+        Err("the host has no staged session")
+    }
+
+    /// THE FRAMING ENDED: the loader retired the ticket `framing` names (the connection side it
+    /// drove was dropped). Everything the kernel holds for that framing goes.
+    fn framing_ended(&self, framing: u64);
+}
+
+/// The host's identity of the framing a ticket drives: its slot and its generation, which no
+/// later minting of the slot repeats.
+#[must_use]
+pub const fn framing_of(t: busbar_contract::abi::mechanism::ticket::Ticket) -> u64 {
+    ((t.slot as u64) << 32) | t.generation as u64
+}
+
+/// THE LINES WHOSE AUTH IS `none`, lent by the host to an accepting transport: `(owner, id)` of
+/// each ref [`lend_none_line`] minted. `unit.hand_in` on such a line needs no verdict (the
+/// contract, [`busbar_contract::abi::host::service::UnitHandInIn`] item (b)), so the host mints the
+/// request's unit there and answers continue.
+static NONE_LINES: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Units minted for requests on a `none` line, numbered from 1.
+static NONE_UNITS: AtomicU64 = AtomicU64::new(0);
+
+/// LEND A `none` LINE to `owner` (the instance identity of the accepting transport): its ref `id`
+/// minted at the published generation, and the line recorded as one whose auth is `none`. `None`
+/// for `id == 0` or when the host's key cannot be drawn.
+#[must_use]
+pub fn lend_none_line(owner: u64, id: u64) -> Option<AuthRef> {
+    let r = mint_auth_ref(owner, generation(), id)?;
+    let mut lines = NONE_LINES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !lines.contains(&(owner, id)) {
+        lines.push((owner, id));
+    }
+    Some(r)
+}
+
+/// Whether line ref `id` was lent to `owner` as a `none` line ([`lend_none_line`]).
+#[must_use]
+pub fn is_none_line(owner: u64, id: u64) -> bool {
+    NONE_LINES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&(owner, id))
+}
+
+/// THE UNIT OF A REQUEST HANDED IN ON A `none` LINE: a fresh unit id, tagged for `owner` and
+/// `line` at the published generation under a secret of its own. `None` when the key cannot be
+/// drawn.
+#[must_use]
+pub fn mint_none_unit(owner: u64, line: u32) -> Option<UnitRef> {
+    let unit = NONE_UNITS.fetch_add(1, Ordering::Relaxed) + 1;
+    let key = key().ok()?;
+    let secret = [
+        siphash24(key, &[DOMAIN_UNIT_REF, owner, unit, 1]),
+        siphash24(key, &[DOMAIN_UNIT_REF, owner, unit, 2]),
+    ];
+    mint_unit_ref(secret, generation(), owner, line, unit)
 }

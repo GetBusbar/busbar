@@ -61,7 +61,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
-use super::services::{HostServices, Served, ServiceStore};
+use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
 use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
@@ -222,9 +222,9 @@ pub(crate) struct Env {
     pub(crate) stats: Arc<Stats>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
-    /// What the host services are served from; `None` = the host bound none, and every service
-    /// answers REFUSED.
-    pub(crate) provider: Option<Arc<dyn HostServices>>,
+    /// What the host services are served from, installed late ([`ServicesSlot`]); serving none,
+    /// every service answers REFUSED.
+    pub(crate) provider: Arc<ServicesSlot>,
     /// THE PROCESS'S RUNTIME, the reactor a plugin's connection is registered on: a crossing on a
     /// worker runs inside it, so a dial the connector makes on the worker (a plugin's `exchange`)
     /// lands on a reactor that is always driven (THE DESIGN, the connections section). INSTALLED,
@@ -237,6 +237,10 @@ pub(crate) struct Env {
     /// THE HOST'S I/O (`io.*`) the instances of this dispatcher are served from; unset = none, and
     /// every `io` slot answers REFUSED.
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
+    /// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE the instances of this dispatcher are served from
+    /// ([`Dispatcher::install_auth_handle`]); unset = none, and every auth-handle slot answers
+    /// REFUSED past its checks (fail closed).
+    pub(crate) auth: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
     /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
     pub(crate) inline: Arc<super::inline::InlineTickets>,
     /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
@@ -525,6 +529,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
 /// unit, the drain count, the lifecycle exclusion — and settles an unanswered reply as FAULT.
 pub(crate) struct Meta {
     pub(crate) instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     slot: u32,
     class: DeadlineClass,
     deadline_ns: u64,
@@ -589,9 +594,15 @@ std::thread_local! {
     /// worker's state lock is held, and either may hold an instance's last reference, whose drop
     /// closes its connections (a transport's code) and unloads its library. Each keeps its instance
     /// here instead, and the loop lets the list go once the lock is released.
-    static LET_GO: std::cell::RefCell<Option<Vec<Arc<Instance>>>> =
+    /// The dials a recycled or restarted ticket left in flight ([`super::conn_services::Closes`])
+    /// are kept here the same way: their close may cross into a transport door.
+    static LET_GO: std::cell::RefCell<Option<Vec<Late>>> =
         const { std::cell::RefCell::new(None) };
 }
+
+/// What a worker loop lets go once its lock is released ([`LET_GO`]): an instance, or the dials
+/// a ticket left in flight. Only ever dropped.
+type Late = Box<dyn std::any::Any>;
 
 /// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
 /// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
@@ -599,14 +610,29 @@ fn hold_past_lock(instance: &Arc<Instance>) {
     // `try_with`: a drop made while the thread itself is ending keeps nothing.
     let _ = LET_GO.try_with(|l| {
         if let Some(held) = l.borrow_mut().as_mut() {
-            held.push(Arc::clone(instance));
+            held.push(Box::new(Arc::clone(instance)));
         }
     });
 }
 
-/// The instances held past the worker's lock so far, to be dropped by the caller once it has let
-/// the lock go.
-fn let_go() -> Vec<Arc<Instance>> {
+/// Forget what instance `id` kept on the connector under `ticket` while the worker's lock is held:
+/// how many answers it kept. The dials it left in flight are closed once the loop lets the lock go
+/// ([`let_go`]); off a worker loop's thread they close at once.
+fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
+    let (kept, closes) = super::conn_services::forget(id, ticket);
+    let mut closes = Some(closes);
+    let _ = LET_GO.try_with(|l| {
+        if let Some(held) = l.borrow_mut().as_mut() {
+            held.extend(closes.take().map(|c| Box::new(c) as Late));
+        }
+    });
+    drop(closes);
+    kept
+}
+
+/// What was held past the worker's lock so far, to be dropped by the caller once it has let the
+/// lock go.
+fn let_go() -> Vec<Late> {
     LET_GO.with(|l| {
         l.borrow_mut()
             .as_mut()
@@ -887,10 +913,10 @@ impl WakeRoute for Pool {
         }
     }
 
-    fn services(&self) -> Option<Served> {
+    fn services(&self) -> Option<Served<'_>> {
         Some(Served {
-            store: Arc::clone(&self.env.services),
-            provider: Arc::clone(self.env.provider.as_ref()?),
+            store: &self.env.services,
+            provider: self.env.provider.get()?.as_ref(),
         })
     }
 
@@ -900,6 +926,14 @@ impl WakeRoute for Pool {
 
     fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
         self.env.io.get().cloned()
+    }
+
+    fn service_store(&self) -> Option<Arc<ServiceStore>> {
+        Some(Arc::clone(&self.env.services))
+    }
+
+    fn auth_handle(&self) -> Option<Arc<dyn super::auth_handle::AuthHandleHost>> {
+        self.env.auth.get().cloned()
     }
 
     fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
@@ -1139,7 +1173,7 @@ impl Worker {
         let ticket = self.ticket(idx, e.generation);
         env.services.held.untrack(ticket);
         for id in e.conns.drain(..) {
-            super::conn_services::forget(id, ticket);
+            forget_conns(id, ticket);
         }
         let next = next_count(e.count);
         if let Some(count) = next {
@@ -1282,6 +1316,7 @@ impl Worker {
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
         budget: Duration,
+        framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
         st.crossing = Some(instance.clone());
         let budget = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
@@ -1289,8 +1324,11 @@ impl Worker {
         self.crossing_since
             .store(now_ns().max(1), Ordering::Release);
         drop(st);
-        // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
-        let crossed = unsafe { instance.cross(s, heads.0, heads.1, heads.2) };
+        let crossed = {
+            let _framing = super::framing_context::enter(framing);
+            // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
+            unsafe { instance.cross(s, heads.0, heads.1, heads.2) }
+        };
         self.crossing_since.store(0, Ordering::Release);
         let mut st = self.lock();
         st.crossing = None;
@@ -1327,7 +1365,7 @@ impl Worker {
                         // Nothing is held: the tick starts the driver ticket's next cycle, and the
                         // last cycle's kept answers (and their epoch) go.
                         let kept = env.services.forget(ticket)
-                            + super::conn_services::forget(meta.instance.instance, ticket);
+                            + forget_conns(meta.instance.instance, ticket);
                         env.services.held.forget(ticket);
                         env.stats
                             .driver_kept_high
@@ -1348,7 +1386,7 @@ impl Worker {
                     // The forget ends the last op's epoch too: a service of its still running
                     // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
-                    super::conn_services::forget(meta.instance.instance, ticket);
+                    forget_conns(meta.instance.instance, ticket);
                 }
                 let inst = meta.instance.clone();
                 let expired = meta.class != DeadlineClass::WriteBehind
@@ -1429,6 +1467,7 @@ impl Worker {
                 };
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
+                let framing = cur.meta.framing.clone();
                 let class = cur.meta.class;
                 let op_slot = cur.meta.slot;
                 let timeout = inst.timeout;
@@ -1452,7 +1491,8 @@ impl Worker {
                 frame.name_unit(unit.unwrap_or(0));
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
-                let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
+                let (mut st, c) =
+                    self.cross(st, &inst, slot::CANCEL, heads, budget, framing.clone())?;
                 // A cancelled `open` that pended will never answer: the plugin still holds its
                 // half-open box, and no caller will close an instance that never opened. The host
                 // closes it here, once, inside the open's own lifecycle exclusion (given back by
@@ -1464,7 +1504,8 @@ impl Worker {
                     let (mut input, mut out) = (in_head(), out_head());
                     let heads = (&raw mut input, &raw mut out, size_of::<OutHead>() as u32);
                     let budget = env.budgets.of(slot::CLOSE, class);
-                    let (back, closed) = self.cross(st, &inst, slot::CLOSE, heads, budget)?;
+                    let (back, closed) =
+                        self.cross(st, &inst, slot::CLOSE, heads, budget, framing)?;
                     st = back;
                     if closed.outcome != Outcome::Ready {
                         tracing::warn!(
@@ -1493,6 +1534,7 @@ impl Worker {
                 Some(st)
             }
             Action::Drive => {
+                let framing = e.current.as_ref().and_then(|c| c.meta.framing.clone());
                 let Some(d) = e.driver.as_mut() else {
                     return Some(st);
                 };
@@ -1510,7 +1552,7 @@ impl Worker {
                 d.pending = false;
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
                 env.services.held.enter(ticket, false);
-                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget)?;
+                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget, framing)?;
                 env.services.held.leave(ticket);
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
@@ -1582,9 +1624,10 @@ impl Worker {
         env: &Env,
     ) -> Option<MutexGuard<'a, WorkerState>> {
         let cur = st.entries[idx as usize].current.as_mut()?;
+        let framing = cur.meta.framing.clone();
         let mut job = cur.job.take()?;
         let heads = job.heads();
-        let (mut st, c) = self.cross(st, inst, s, heads, budget)?;
+        let (mut st, c) = self.cross(st, inst, s, heads, budget, framing)?;
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.as_mut() else {
             return Some(st);
@@ -1667,10 +1710,12 @@ impl Orphan {
                     cur.meta.in_size as usize,
                 )
             });
-            let outcome = cur
-                .meta
-                .instance
-                .cancel_abandoned(self.ticket, cur.meta.class, unit);
+            let outcome = cur.meta.instance.cancel_abandoned(
+                self.ticket,
+                cur.meta.class,
+                unit,
+                cur.meta.framing.clone(),
+            );
             if outcome != Outcome::Ready {
                 tracing::warn!(
                     plugin = %cur.meta.instance.name(),
@@ -1942,27 +1987,36 @@ impl Dispatcher {
     ///
     /// # Panics
     ///
-    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
+    /// As [`Dispatcher::new`].
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
+        Self::with_slot(config, ServicesSlot::of(provider))
     }
 
-    /// [`Dispatcher::try_new`], serving `provider`.
+    /// Workers and a watchdog, per `config`, serving whatever the host installs into `slot`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_slot`] answers the refusal instead.
+    pub fn with_slot(config: DispatchConfig, slot: Arc<ServicesSlot>) -> Self {
+        Self::try_with_slot(config, slot).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Dispatcher::try_new`], serving `slot`.
     ///
     /// # Errors
     ///
     /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
-    pub fn try_with_services(
+    pub fn try_with_slot(
         config: DispatchConfig,
-        provider: Arc<dyn HostServices>,
+        slot: Arc<ServicesSlot>,
     ) -> Result<Self, super::LoadError> {
         let key = super::handle::ticket_key()?;
-        Ok(Self::build(config, Some(provider), key))
+        Ok(Self::build(config, Some(slot), key))
     }
 
     fn build(
         config: DispatchConfig,
-        provider: Option<Arc<dyn HostServices>>,
+        provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         let built = Self::build_unlent(config, provider, ticket_key);
@@ -1982,7 +2036,7 @@ impl Dispatcher {
 
     fn build_unlent(
         config: DispatchConfig,
-        provider: Option<Arc<dyn HostServices>>,
+        provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
@@ -1994,9 +2048,10 @@ impl Dispatcher {
             stats: Arc::default(),
             inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
             services,
-            provider,
+            provider: provider.unwrap_or_default(),
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
+            auth: std::sync::OnceLock::new(),
             observing: Arc::default(),
             ticket_key,
             latch: std::sync::OnceLock::new(),
@@ -2057,10 +2112,10 @@ impl Dispatcher {
         &self.pool.env.services
     }
 
-    /// The host services this dispatcher serves; `None` when it was built with none, and then
-    /// every service answers REFUSED.
+    /// The host services this dispatcher serves now; `None` when it serves none, and then every
+    /// service answers REFUSED.
     pub fn host_services(&self) -> Option<&Arc<dyn HostServices>> {
-        self.pool.env.provider.as_ref()
+        self.pool.env.provider.get()
     }
 
     fn worker(&self, worker: u32) -> Option<Arc<Worker>> {
@@ -2076,6 +2131,48 @@ impl Dispatcher {
     /// stands. `false` when one was installed already.
     pub fn install_io(&self, io: Arc<dyn busbar_contract::io_host::IoHost>) -> bool {
         self.pool.env.io.set(io).is_ok()
+    }
+
+    /// Serve every instance of this dispatcher the KERNEL'S SIDE OF THE HOST AUTH HANDLE
+    /// (`auth.call`, `unit.hand_in`, `unit.refuse`; THE DESIGN §6, "Auth points and guest lists",
+    /// step 4) from `host`; the first install stands. `false` when one was installed already. With
+    /// none installed each of the three answers REFUSED past its checks.
+    pub fn install_auth_handle(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) -> bool {
+        self.pool.env.auth.set(host).is_ok()
+    }
+
+    /// Create a host framing leg for a loaded transport owner and listener registration.
+    ///
+    /// # Errors
+    /// A missing owner or an exhausted host identity space.
+    pub fn framing_context(
+        &self,
+        owner: u64,
+        listener: u64,
+        connection: u64,
+    ) -> Result<Arc<super::framing_context::FramingContext>, &'static str> {
+        super::framing_context::FramingContext::new(
+            owner,
+            listener,
+            connection,
+            self.pool.env.auth.get().map(Arc::downgrade),
+        )
+    }
+
+    /// Create a destination leg from the trusted custody of a detached source.
+    ///
+    /// # Errors
+    /// The source cannot be inherited by this loaded owner.
+    pub fn adopting_context(
+        &self,
+        owner: u64,
+        source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
+    ) -> Result<Arc<super::framing_context::FramingContext>, &'static str> {
+        super::framing_context::FramingContext::adopt(
+            owner,
+            source,
+            self.pool.env.auth.get().map(Arc::downgrade),
+        )
     }
 
     /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
@@ -2419,6 +2516,7 @@ impl Dispatcher {
         let slot = Arc::new(ReplySlot::new());
         let meta = Meta {
             instance: inst.clone(),
+            framing: super::framing_context::current(),
             slot: s,
             class,
             deadline_ns,

@@ -129,6 +129,49 @@ impl GovState {
         credential: &str,
         now: u64,
     ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
+        let (key, id, exp) = self.checked_ticket(prefix, credential, now)?;
+        let store = self.store();
+        if !store
+            .redeem_plane_token(TICKET_SPENT_KIND, &id, exp, now)
+            .unwrap_or(false)
+        {
+            tracing::debug!("ticket rejected: already spent, or the store cannot say");
+            return None;
+        }
+        let record = store
+            .get_plane_record(TICKET_RECORD_KIND, &id)
+            .ok()
+            .flatten()?;
+        let _deleted = store.delete_plane_record(TICKET_RECORD_KIND, &id);
+        Some((key, record))
+    }
+
+    /// Check a ticket for inbound preflight without redeeming it or exposing its record. The
+    /// final request gate must still call `admit_ticket`: another request may spend it meanwhile.
+    pub(crate) fn peek_ticket(
+        &self,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
+        let (key, id, _) = self.checked_ticket(prefix, credential, now)?;
+        let record = self
+            .store()
+            .get_plane_record(TICKET_RECORD_KIND, &id)
+            .ok()
+            .flatten()?;
+        drop(zeroize::Zeroizing::new(record));
+        Some(key)
+    }
+
+    // The single signature, expiry and standing check shared by preflight and redemption.
+    // Both callers use the same ticket-verifier policy.
+    fn checked_ticket(
+        &self,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<(Arc<VirtualKey>, String, u64)> {
         if prefix.is_empty() {
             return None;
         }
@@ -146,20 +189,7 @@ impl GovState {
         };
         let id = claims.ticket.clone()?;
         let key = self.standing_key(&claims, now)?;
-        let store = self.store();
-        if !store
-            .redeem_plane_token(TICKET_SPENT_KIND, &id, claims.exp, now)
-            .unwrap_or(false)
-        {
-            tracing::debug!("ticket rejected: already spent, or the store cannot say");
-            return None;
-        }
-        let record = store
-            .get_plane_record(TICKET_RECORD_KIND, &id)
-            .ok()
-            .flatten()?;
-        let _deleted = store.delete_plane_record(TICKET_RECORD_KIND, &id);
-        Some((key, record))
+        Some((key, id, claims.exp))
     }
 }
 

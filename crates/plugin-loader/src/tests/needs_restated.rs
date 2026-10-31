@@ -166,3 +166,84 @@ impl busbar_contract::conn::DeclaredConns for Inert {
         true
     }
 }
+
+/// A connection table that DECLARES every need and REFUSES each one's admission (what the host's
+/// table answers of a target its egress rules refuse, the loopback target a request-log webhook may
+/// not reach) and opens none.
+#[derive(Debug, Default)]
+pub(crate) struct Refusing;
+
+impl busbar_contract::conn::Conns for Refusing {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        Inert.open(caller, need, desc)
+    }
+    fn write(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        bytes: &[u8],
+        more: bool,
+        end: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Inert.write(caller, conn, bytes, more, end)
+    }
+    fn read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: u64,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        Inert.read(caller, conn, ticket, buf)
+    }
+    fn wait(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        set: &[busbar_contract::conn::ConnId],
+        ticket: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Inert.wait(caller, set, ticket)
+    }
+    fn facts(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        Inert.facts(caller, conn)
+    }
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Inert.close(caller, conn)
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for Refusing {
+    fn declare(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Ok(())
+    }
+    fn declared(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        Some(Err(busbar_contract::conn::ConnError::Refused))
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+}

@@ -161,6 +161,16 @@ impl<T: Zeroize> Secret<T> {
     pub fn expose<S: crate::plugin::KernelSeal + ?Sized>(&self, _seal: &S) -> &T {
         &self.0
     }
+
+    /// The value MOVED out (the same allocation, never a copy), sealed as [`Secret::expose`] is:
+    /// for a caller that hands it on into another holder that wipes it (a plugin's resolved
+    /// settings bag). The emptied holder wipes nothing more when it drops.
+    pub fn into_exposed<S: crate::plugin::KernelSeal + ?Sized>(mut self, _seal: &S) -> T
+    where
+        T: Default,
+    {
+        core::mem::take(&mut self.0)
+    }
 }
 
 /// THE HOST'S ZEROIZING BYTE HOLDER (the credential chip, row 6: host-owned secret bytes): a secret plugin

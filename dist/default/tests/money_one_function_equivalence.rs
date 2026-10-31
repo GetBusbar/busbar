@@ -884,21 +884,24 @@ fn accrued_on_the_book(
     (spend, lines)
 }
 
-/// The open classes the linked fallback plane declares (its billable classes past the reserved
-/// four), read off its own declaration so this file spells none of them.
-#[cfg(linked_axis_body_ingress)]
+/// The open classes the linked plane doors declare, read through the loader's memory-ABI reader.
+#[cfg(linked_axis_plane_door)]
 mod declared {
-    include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+    include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
 
     pub(super) fn open_classes() -> Vec<&'static str> {
-        LINKED_PLANES
+        LINKED_PLANE_DOORS
             .iter()
-            .find(|decl| decl.fallback)
-            .expect("the build links the fallback plane the open classes are declared on")
-            .billable_classes
-            .iter()
-            .map(|billable| billable.class)
+            .flat_map(|door| {
+                busbar_plugin_loader::dispatch::kinds::plane::stated_facts(*door)
+                    .expect("the linked plane door declares valid billable classes")
+                    .1
+                    .served
+                    .billable_classes
+            })
             .filter(|class| !busbar_contract::records::RESERVED_UNITS.contains(class))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 }
@@ -906,8 +909,8 @@ mod declared {
 /// EVERY DECLARED OPEN CLASS LEDGERS ONE LINE, PRICED BY THE CARD (LEDGER-100; #42's three arms).
 ///
 /// Legacy: the retiring engine crate's `src/engine/tests/ledger_100_tests.rs::every_open_class_ledgers_one_line_priced_by_the_card`
-/// (coverage map row 496, REHOME). 1.5.5 behaviour pinned, for EVERY open meter class the fallback
-/// plane declares: 3 units on a card pricing the class at 10,000 micro-units (one cent) each derive
+/// (coverage map row 496, REHOME). 1.5.5 behaviour pinned, for EVERY open meter class the linked
+/// plane doors declare: 3 units on a card pricing the class at 10,000 micro-units (one cent) each derive
 /// a spend of 3 cents and leave exactly one ledger line `{class: 3}`; a present card silent about
 /// the class REFUSES the read (never a silent 0); no card (billing off) reads 0 and the one line is
 /// still recorded. The old home (`d2_…` above) priced one open class alone.
@@ -915,13 +918,13 @@ mod declared {
 /// RED: an open class that is dropped, warned, folded into a residual or into another class (no
 /// line, or a second line), priced at anything but the card's rate, priced 0 by a silent card, or
 /// not recorded when billing is off.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(linked_axis_plane_door)]
 #[test]
 fn every_open_class_ledgers_one_line_priced_by_the_card() {
     let classes = declared::open_classes();
     assert!(
         !classes.is_empty(),
-        "the fallback plane declares open classes: nothing to price"
+        "the linked plane doors declare open classes: nothing to price"
     );
     for class in classes {
         let one_line = BTreeMap::from([(class.to_string(), 3)]);

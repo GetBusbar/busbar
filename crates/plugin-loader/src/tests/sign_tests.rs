@@ -1546,13 +1546,48 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
             .kind,
         RejectKind::UntrustedFloored
     );
-    // allow_unsigned admits it as what it now is, UNVERIFIED code, naming the retired key.
-    match evaluate_against(artifact, &signed, &policy(None, &[], true, false), &retired) {
+    // allow_unsigned does NOT admit it (owner-signed 2026-10-30, SEC-ALLOWUNS): a retired key is a
+    // revocation, not a missing signature. The refusal names the key and says allow_unsigned does
+    // not admit it, with every opt-in flag on.
+    for permissive in [
+        policy(None, &[], true, false),
+        policy(None, &[], true, true),
+    ] {
+        let r = evaluate_against(artifact, &signed, &permissive, &retired)
+            .expect_err("allow_unsigned never admits a retired-key signature");
+        assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
+        assert_eq!(r.kind.code(), "retired_key");
+        assert!(r.reason.contains(&hex), "names the key: {}", r.reason);
+        assert!(
+            r.reason
+                .contains("plugins.trust.allow_unsigned does not admit a retired key"),
+            "says allow_unsigned does not admit it: {}",
+            r.reason
+        );
+    }
+    // The real retired 1.5 key under allow_unsigned: refused the same way.
+    let r = evaluate(
+        b"\x7fELF any library",
+        &retired_key_manifest(),
+        &policy(None, &[], true, false),
+    )
+    .expect_err("allow_unsigned never admits the retired 1.5 key");
+    assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
+    assert!(r.reason.contains(RELEASE_PUBKEY_1_5), "{}", r.reason);
+    // A plugin with NO signature at all is still what allow_unsigned is for: it loads unverified.
+    let unsigned = manifest("busbar-store-unsigned", "unsigned", FIRST_PARTY_PUBLISHER);
+    assert!(unsigned.signature.is_empty(), "the helper signs nothing");
+    match evaluate_against(
+        artifact,
+        &unsigned,
+        &policy(None, &[], true, false),
+        &retired,
+    ) {
         Ok(Verdict::Allowed {
-            reason,
             allow: AllowReason::Unsigned,
-        }) => assert!(reason.contains(&hex), "names the key: {reason}"),
-        other => panic!("allow_unsigned admits it as unverified, got {other:?}"),
+            ..
+        }) => {}
+        other => panic!("an unsigned plugin under allow_unsigned loads unverified, got {other:?}"),
     }
 
     // THE REAL KEY, through the operator's config entry: it parses, and it lifts the retired

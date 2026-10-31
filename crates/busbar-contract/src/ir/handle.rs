@@ -140,8 +140,7 @@ pub mod handle_impl {
         /// `ingress_protocol`. Default no-op; chat overrides.
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}
 
-        /// Capture the ORIGINAL ingress request body — the buffered-response twin of
-        /// [`crate::protocol::StreamTranslator::set_request_echo`], called once (when the caller has a
+        /// Capture the ORIGINAL ingress request body — called once (when the caller has a
         /// parsed ingress body in hand) between `read_response`/`read_response_value` and
         /// `write_ingress_response`. Default no-op; chat overrides so a dialect whose response spec
         /// requires certain members to MIRROR the request can answer with the

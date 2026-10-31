@@ -37,6 +37,12 @@ pub fn the() -> &'static Arc<Connector> {
     ONE.get_or_init(|| Arc::new(Connector::new()))
 }
 
+/// The connector already installed by boot, without reserving its slot during configuration.
+/// Secret sources with no network needs can resolve before that installation.
+pub fn installed() -> Option<&'static Arc<Connector>> {
+    ONE.get()
+}
+
 /// THE IDENTITY THE COMPOSITION ROOT'S OWN NEEDS ARE DECLARED UNDER on the one connector: the
 /// authorization server's (`busbar-core-oauth2`, a compiled-in cleanliness crate, not a plugin
 /// instance). The loader numbers every plugin instance by its handle's id, minted from 1 up
@@ -95,6 +101,37 @@ pub fn entries(
                 .map_err(|e| format!("transport `{key}`: {e}"))?;
             let door: Arc<dyn FramerDoor> =
                 Arc::new(crate::root::doors::Dispatched::open(plugin, settings)?);
+            Ok(Entry {
+                door,
+                alpn: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// [`entries`], each door bound and opened on `on` rather than the process's transport dispatcher:
+/// a root cell's composition of its own (its rig) opens its transports on its own dispatcher.
+///
+/// # Errors
+///
+/// The first door that would not load or open.
+#[cfg(test)]
+pub(crate) fn entries_on(
+    on: &Arc<crate::root::loader::dispatch::Dispatcher>,
+    doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
+) -> Result<Vec<Entry>, String> {
+    doors
+        .iter()
+        .map(|(key, door)| {
+            let plugin = LinkedRow::of(*door)
+                .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind_on(on)))
+                .map_err(|e| format!("transport `{key}`: {e}"))?;
+            let door: Arc<dyn FramerDoor> = Arc::new(crate::root::doors::Dispatched::open_on(
+                plugin,
+                settings,
+                Arc::clone(on),
+            )?);
             Ok(Entry {
                 door,
                 alpn: Vec::new(),

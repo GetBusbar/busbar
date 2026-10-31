@@ -251,7 +251,7 @@ fn text(e: &Option<Vec<u8>>) -> String {
 }
 
 /// A ticket-less `count`: `(invocations, cancels, drives)`, as the plugin's gauges reported them.
-fn count(p: &Plugin<TestKind>, sink: &Recorder) -> (u32, u32, u32) {
+fn count<K: Kind>(p: &Plugin<K>, sink: &Recorder) -> (u32, u32, u32) {
     assert_eq!(
         p.call(TICK, &mut frame(plug::COUNT)).outcome,
         Outcome::Ready
@@ -4013,19 +4013,79 @@ fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
 /// the op with no `cancel`, and the plugin was never told.
 #[test]
 fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_its_memory_goes() {
+    use crate::dispatch::framing_context;
+
+    type ScopeIdentity = (u64, u64, u64, u64);
+    static CANCEL_SCOPES: Mutex<Vec<Option<ScopeIdentity>>> = Mutex::new(Vec::new());
+
+    struct ScopeKind;
+    impl Kind for ScopeKind {
+        const CODE: KindCode = TestKind::CODE;
+        type Ops = OpsHead;
+        const TIMEOUT: Outcome = TestKind::TIMEOUT;
+
+        fn context(st: &Statement) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+            TestKind::context(st)
+        }
+
+        fn check(a: &crate::dispatch::Answer) -> Result<(), Fault> {
+            if a.slot == slot::CANCEL {
+                let identity = framing_context::current().map(|scope| {
+                    (
+                        scope.owner(),
+                        scope.leg(),
+                        scope.listener(),
+                        scope.connection(),
+                    )
+                });
+                CANCEL_SCOPES.lock().unwrap().push(identity);
+            }
+            TestKind::check(a)
+        }
+
+        fn short(a: &crate::dispatch::Answer) -> bool {
+            TestKind::short(a)
+        }
+    }
+
     let d = Dispatcher::new(config());
-    let (healthy, sink) = opened(&d);
+    let sink = quiet();
+    let healthy =
+        load_linked::<ScopeKind>(&row(), bind(sink.clone())).expect("the linked door loads");
+    let opening = d.mint(0).unwrap();
+    assert_eq!(
+        d.submit(
+            &healthy,
+            opening,
+            slot::OPEN,
+            open_frame(),
+            DeadlineClass::Call,
+            0
+        )
+        .wait(WAIT)
+        .expect("open answers")
+        .outcome,
+        Outcome::Ready
+    );
+    d.recycle(opening);
+    let context = d
+        .framing_context(healthy.instance().0, 71, 0)
+        .expect("host scope");
+    let scope: Arc<dyn busbar_contract::framing_scope::FramingScope> = context.clone();
     let (owner, dropped) = lent(plug::PEND_HOLD);
     let t = d.mint(0).unwrap();
-    let held = d.submit_lent(
-        &healthy,
-        t,
-        TICK,
-        lent_frame(&owner),
-        DeadlineClass::Call,
-        0,
-        owner.clone(),
-    );
+    let held = framing_context::with_context(Some(scope), || {
+        d.submit_lent(
+            &healthy,
+            t,
+            TICK,
+            lent_frame(&owner),
+            DeadlineClass::Call,
+            0,
+            owner.clone(),
+        )
+    });
+    let caller_scope_restored = framing_context::current().is_none();
     drop(owner);
     until("the healthy op pends", || d.is_pending(t));
     let (wedger, _) = opened(&d);
@@ -4055,6 +4115,20 @@ fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_i
         Outcome::Ready
     );
     drop(hung);
+    assert!(
+        caller_scope_restored,
+        "submission restores the caller's Scope"
+    );
+    assert_eq!(
+        *CANCEL_SCOPES.lock().unwrap(),
+        vec![Some((
+            healthy.instance().0,
+            context.leg(),
+            71,
+            context.connection(),
+        ))],
+        "orphan CANCEL retains its operation's Scope across the outer FFI hop"
+    );
 }
 
 /// RED (audit loader-src PL1#6; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.12, "the host never

@@ -18,6 +18,49 @@
 
 mod common;
 
+#[cfg(all(unix, linked_section_pools))]
+#[test]
+fn the_production_pgo_trainer_configuration_validates() {
+    let dir = fixture_dir("pgo-trainer");
+    let generator =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/pgo-config.sh");
+    let generated = std::process::Command::new("bash")
+        .args([
+            "-eu",
+            "-c",
+            ". \"$1\"; write_run_configs 18080 18000",
+            "pgo-config",
+        ])
+        .arg(generator)
+        .env("WORK", &dir)
+        .output()
+        .expect("generate the production trainer configuration");
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let validated = std::process::Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("PGO_MOCK_KEY", "pgo-test-upstream")
+        .env("PGO_ADMIN_TOKEN", "pgo-test-admin")
+        .env(
+            "PGO_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .output()
+        .expect("validate the trainer with the assembled product");
+    assert!(
+        validated.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&validated.stdout),
+        String::from_utf8_lossy(&validated.stderr)
+    );
+    std::fs::remove_dir_all(dir).expect("remove the trainer fixture");
+}
+
 use common::plugins;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -172,6 +215,45 @@ fn validate_ok_on_valid_config_without_plugins() {
         !stdout.contains("note:") && !stdout.contains("env var(s)"),
         "no config value here uses ${{VAR}} interpolation, so there must be no unset-env-var \
          note: got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--print-metadata-blocklist` IS THE GROUND TRUTH (security.md): it prints every entry the guard
+/// enforces as metadata, the EC2 task-metadata endpoint `fd00:ec2::23` and IPv6 link-local
+/// `fe80::/10` among them, then the operator's `security.blocked_metadata_hosts`.
+/// RED: the two enforced entries are missing from the printed list.
+#[cfg(linked_section_pools)]
+#[test]
+fn print_metadata_blocklist_prints_builtin_plus_blocked() {
+    let dir = fixture_dir("print-blocklist");
+    write_configs(
+        &dir,
+        "security:\n  blocked_metadata_hosts: [\"internal-metadata.example\"]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--print-metadata-blocklist"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    let printed: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        printed,
+        vec![
+            "169.254.0.0/16",
+            "100.100.100.200",
+            "168.63.129.16",
+            "192.0.0.192",
+            "fd00:ec2::254",
+            "metadata.google.internal",
+            "metadata.internal",
+            "metadata.tencentyun.com",
+            "metadata.platformequinix.com",
+            "instance-data",
+            "instance-data.ec2.internal",
+            "fd00:ec2::23",
+            "fe80::/10",
+            "internal-metadata.example",
+        ],
+        "1.5.5's eleven lines in their order, the two enforced entries it never listed, then the \
+         operator's additions; stderr={stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

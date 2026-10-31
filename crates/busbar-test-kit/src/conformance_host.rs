@@ -431,6 +431,78 @@ fn go_inline<I: InFrame, O: OutFrame>(
 }
 
 impl FramerDoor for Opened {
+    fn instance(&self) -> Option<u64> {
+        Some(self.plugin.instance().0)
+    }
+
+    fn framing_context(
+        &self,
+        listener: u64,
+        connection: u64,
+    ) -> Result<
+        Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        busbar_core_connector::framer::Refused,
+    > {
+        transport_dispatcher()
+            .framing_context(self.plugin.instance().0, listener, connection)
+            .map(|c| Some(c as Arc<dyn busbar_contract::framing_scope::FramingScope>))
+            .map_err(|e| busbar_core_connector::framer::Refused {
+                outcome: Outcome::Refused,
+                error: e.into(),
+            })
+    }
+
+    fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        transport_dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn busbar_core_connector::carrier::Side>)
+    }
+
+    fn cross_on(
+        &self,
+        side: &dyn busbar_core_connector::carrier::Side,
+        resume: bool,
+        call: Call<'_>,
+    ) -> Crossed {
+        let (p, t) = (&self.plugin, side.ticket());
+        match call {
+            Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
+            Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
+            Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
+            Call::Adopt(i, o) => go_inline(p, t, resume, slot::ADOPT, i, o),
+            other => self.cross(other),
+        }
+    }
+
+    fn cross_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: Option<&dyn busbar_core_connector::carrier::Side>,
+        resume: bool,
+        call: Call<'_>,
+    ) -> Crossed {
+        busbar_plugin_loader::dispatch::framing_context::with_context(context.cloned(), || {
+            match side {
+                Some(side) => self.cross_on(side, resume, call),
+                None => self.cross(call),
+            }
+        })
+    }
+
+    fn cancel_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: &dyn busbar_core_connector::carrier::Side,
+        call: busbar_core_connector::carrier::Carry<'_>,
+    ) -> Crossed {
+        busbar_plugin_loader::dispatch::framing_context::with_context(context.cloned(), || {
+            self.carry(side, false, call)
+        })
+    }
+
     fn facts(&self) -> &DoorFacts {
         &self.facts
     }

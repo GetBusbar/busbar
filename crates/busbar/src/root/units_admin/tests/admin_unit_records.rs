@@ -78,7 +78,9 @@ fn an_admitted_admin_unit_seals_one_record() {
 fn a_refused_admin_unit_seals_a_refused_record() {
     let walked = request("POST", "/api/v1/admin/keys");
     let unit = UnitKey::new(walked.unit);
-    let refusing: AdminDoorFn = Arc::new(|_: &AdminRequest| busbar_kernel::auth::AdminDoor::Denied);
+    let refusing: AdminDoorFn = Arc::new(|_: &AdminRequest| {
+        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Denied)
+    });
     let (answer, records) = walk(refusing, walked);
     assert_eq!(answer.status, 401, "the door refuses the caller");
     assert_eq!(

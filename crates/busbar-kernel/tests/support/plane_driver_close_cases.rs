@@ -16,7 +16,8 @@
 use super::hook_cases::Nobody;
 use super::*;
 
-use busbar_contract::caps::{Canary, Outcome as UnitOutcome, ReasonCode, StepName};
+use busbar_contract::caps::{Outcome as UnitOutcome, ReasonCode, StepName};
+use busbar_kernel::canary::Canary;
 use busbar_kernel::plane_driver::{FarEnd, PlaneUnits};
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
@@ -123,6 +124,7 @@ impl busbar_kernel::plane_driver::HookBinder for Rewrites {
             )],
             key: None,
             scan: None,
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
         })
     }
 }

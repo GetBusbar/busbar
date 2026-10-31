@@ -1,16 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! M5 — A PLANE THAT OWNS A TOP-LEVEL SECTION BOOTS WITH IT. For every plane the composition root
-//! links from its own crate (build.rs: the `[package.metadata.busbar.linked]` rows carrying the
-//! `plane` axis) that DECLARES sections it owns the grammar of: its section hooks are wired, the
-//! dup-claim guard admits the real roster and refuses a planted rival, registering the plane puts the
-//! section into the config grammar, and no plane may claim a core-owned section.
-//!
-//! The planes are addressed by what they declare, read off the linked rows; the source names none.
-//! How many linked planes own a section is pinned ([`OWNING_PLANES`]) and compared when every plane
-//! is compiled in; each owning plane's sections are read off its own declaration.
-#![cfg(linked_axis_plane)]
+//! Linked plane doors expose their owned sections to configuration parsing. The real roster must
+//! register those sections and refuse duplicate ownership or claims on core-owned sections.
+#![cfg(linked_axis_plane_door)]
 
 mod common;
 
@@ -22,29 +15,42 @@ use busbar_kernel::test_support::planes::register_test_plane;
 // `CORE_OWNED_CONCRETE_SECTIONS` is the kernel's REAL list — the one the boot guard judges against —
 // imported rather than mirrored (item 267: a mirror is a second list that can drift from the first).
 
-include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
 
-/// THE SECTION-OWNING LINKED PLANES, PINNED: how many linked planes own the grammar of a top-level
-/// section through their `PlaneDecl`. None today: every section-owning plane is a door plane, whose
-/// sections its door's Statement declares (DECL-FOLD), not a linked PlaneDecl. A section changing
-/// owner is a config-grammar change, so this is a number a diff must change.
-#[cfg(linked_every_plane)]
-const OWNING_PLANES: usize = 0;
+fn linked_planes() -> &'static [&'static PlaneDecl] {
+    static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
+    PLANES.get_or_init(|| {
+        LINKED_PLANE_DOORS
+            .iter()
+            .map(|door| {
+                let candidate = busbar_plugin_loader::boot::Candidate::linked(*door)
+                    .expect("the linked plane states a valid declaration");
+                let registration =
+                    busbar_plugin_loader::dispatch::kinds::plane::stated_registration(
+                        &candidate,
+                        std::sync::Arc::new(|| {
+                            Err("declaration inspection does not bind a plane".into())
+                        }),
+                    )
+                    .expect("the linked plane states its registration without binding");
+                busbar_kernel::plane_driver::door::fold(registration)
+                    .expect("the door declaration folds into a registry row")
+            })
+            .collect()
+    })
+}
 
 /// The linked planes that declare sections they own the grammar of.
 fn owning_planes() -> Vec<&'static PlaneDecl> {
-    let owning: Vec<&'static PlaneDecl> = LINKED_PLANES
+    let owning: Vec<&'static PlaneDecl> = linked_planes()
         .iter()
+        .copied()
         .filter(|d| !d.owned_config_sections.is_empty())
         .collect();
-    // Non-vacuity, against the pin: with every plane compiled in, some linked plane owns a section
-    // exactly when [`OWNING_PLANES`] pins one.
-    #[cfg(linked_every_plane)]
-    assert_eq!(
-        owning.is_empty(),
-        OWNING_PLANES == 0,
-        "non-vacuity: with every plane compiled in, the linked planes own a section exactly when \
-         the pin counts one"
+    #[cfg(linked_every_plane_door)]
+    assert!(
+        !owning.is_empty(),
+        "the full distribution owns configuration sections"
     );
     owning
 }
@@ -69,11 +75,9 @@ fn every_owning_plane_wires_the_section_hooks() {
     }
 }
 
-/// With every plane compiled in, the owning planes are EXACTLY as many as [`OWNING_PLANES`] pins, and
-/// no two of them own the same section.
-#[cfg(linked_every_plane)]
+/// No two linked planes own the same configuration section.
 #[test]
-fn the_owned_sections_are_the_pinned_ones() {
+fn the_owned_sections_have_distinct_owners() {
     let live: std::collections::BTreeSet<Vec<&str>> = owning_planes()
         .iter()
         .map(|d| {
@@ -88,10 +92,9 @@ fn the_owned_sections_are_the_pinned_ones() {
         .collect();
     let distinct: std::collections::BTreeSet<&str> = owned.iter().copied().collect();
     assert_eq!(
-        (live.len(), distinct.len()),
-        (OWNING_PLANES, owned.len()),
-        "the linked planes owning a section are the pinned count, each section owned once; a \
-         section changing owner is a config-grammar change, not a refactor: {live:?}"
+        distinct.len(),
+        owned.len(),
+        "each configuration section has one owning plane: {live:?}"
     );
 }
 
@@ -100,7 +103,7 @@ fn the_owned_sections_are_the_pinned_ones() {
 #[test]
 fn dup_claim_guard_admits_the_real_roster() {
     let roster: Vec<&busbar_contract::plane::PlaneDeclaration> =
-        LINKED_PLANES.iter().map(|d| &d.declaration).collect();
+        linked_planes().iter().map(|d| &d.declaration).collect();
     check_owned_config_claims(&roster, CORE_OWNED_CONCRETE_SECTIONS).expect(
         "each owned section is claimed once and none is core-owned — the real roster is admitted",
     );

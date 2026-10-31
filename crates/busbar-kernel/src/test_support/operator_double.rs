@@ -27,10 +27,11 @@ use busbar_contract::abi::auth::FACT_OPERATOR;
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_operator, with_tail, Answer, Strip, Verdict, VerifiedIdentity,
-    VerifyPlugin, VerifyView,
+    carrier, strip_field, verify_tail, with_operator, with_tail, Answer, Strip, Verdict,
+    VerifiedIdentity, VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest, Verifying};
 use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 
@@ -42,6 +43,9 @@ const WORDS: busbar_kernel_identity::operator::OperatorWords =
 const AUTHORIZATION: &str = "authorization";
 /// The operator's own header carrier (1.5.5's admin header).
 const OPERATOR_HEADER: &str = "x-admin-token";
+
+/// The lines every verify names for the transport to strip.
+const STRIPS: &[Strip] = &[strip_field(AUTHORIZATION), strip_field(OPERATOR_HEADER)];
 
 /// A line's value as the admin door reads it (`HeaderValue::to_str`: visible ASCII and tab), or
 /// `None` for one that does not read as text, which the door treats as absent.
@@ -85,7 +89,7 @@ fn judge(digest: &str, bearer: Option<&str>, header: Option<&str>) -> Verdict {
     }
     let addressed = |c: Option<&str>| c.is_some_and(|c| !jws_shaped(c));
     if addressed(bearer) || addressed(header) {
-        Verdict::Reject
+        Verdict::reject("the presented operator token does not match the configured digest")
     } else {
         Verdict::Pass
     }
@@ -98,12 +102,17 @@ pub struct OperatorDouble {
 }
 
 impl VerifyPlugin for OperatorDouble {
-    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open_refusing(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
         const NOT_A_DIGEST: &str = "the operator double's settings are the token's SHA-256 digest";
-        let text: String = serde_json::from_slice(settings).map_err(|_| NOT_A_DIGEST)?;
+        let text: String =
+            serde_json::from_slice(settings).map_err(|_| Refusal::failed(NOT_A_DIGEST))?;
         let digest = text.trim();
         if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(NOT_A_DIGEST);
+            return Err(Refusal::failed(NOT_A_DIGEST));
         }
         Ok(Self {
             digest: digest.to_ascii_lowercase(),
@@ -130,7 +139,7 @@ impl OperatorDouble {
             header,
         );
         Answer {
-            strips: vec![Strip::field(AUTHORIZATION), Strip::field(OPERATOR_HEADER)],
+            fixed_strips: STRIPS,
             ..verdict.into()
         }
     }
@@ -182,7 +191,7 @@ pub(crate) fn is_door(candidate: busbar_contract::abi::mechanism::door::DoorFn) 
 
 /// THE DOUBLE IN PROCESS: one instance opened over `settings` (the operator token's digest, as a
 /// JSON string), answering on the auth port with no crossing. `open` is the double's own
-/// [`VerifyPlugin::open`], its refusal in the loader's words for a door that refused its open
+/// [`VerifyPlugin::open_refusing`], its refusal in the loader's words for a door that refused its open
 /// (`auth plugin '<module>': <the plugin's text>`, `crates/plugin-loader/src/auth_axis.rs`).
 ///
 /// # Errors
@@ -192,7 +201,7 @@ pub(crate) fn open_in_process(
     settings: &serde_json::Value,
 ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
     let text = settings.to_string();
-    <OperatorDouble as VerifyPlugin>::open(text.as_bytes(), &[])
+    <OperatorDouble as VerifyPlugin>::open_refusing(text.as_bytes(), &[])
         .map(|double| std::sync::Arc::new(OperatorCalls(double)) as std::sync::Arc<dyn AuthCalls>)
         .map_err(|e| format!("auth plugin '{module}': {e}"))
 }
@@ -209,7 +218,10 @@ impl OperatorCalls {
     fn answer(&self, request: &VerifyRequest) -> VerifyAnswer {
         let seal = crate::seal::lend();
         let Answer {
-            verdict, strips, ..
+            verdict,
+            mut strips,
+            fixed_strips,
+            ..
         } = self.0.answer(|name| {
             request
                 .lines
@@ -217,13 +229,18 @@ impl OperatorCalls {
                 .find(|(n, _)| n.eq_ignore_ascii_case(name))
                 .map(|(_, v)| v.expose(&seal).as_slice())
         });
-        let verified = match verdict {
-            Verdict::Identity(id) => Verified::Identity(id),
-            Verdict::Reject => Verified::Reject,
-            Verdict::Pass => Verified::Pass,
+        let (verified, reason) = match verdict {
+            Verdict::Identity(id) => (Verified::Identity(id), None),
+            Verdict::Reject => (Verified::Reject, None),
+            Verdict::RejectBecause(why) => (Verified::Reject, Some(why.text().to_string())),
+            Verdict::Pass => (Verified::Pass, None),
         };
         VerifyAnswer {
-            strips,
+            strips: {
+                strips.extend_from_slice(fixed_strips);
+                strips
+            },
+            reason,
             ..VerifyAnswer::from(verified)
         }
     }

@@ -52,6 +52,22 @@ pub struct VerifyRequest {
     pub timestamp: u64,
 }
 
+impl Drop for VerifyRequest {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.peer.zeroize();
+        self.body.zeroize();
+        self.method.zeroize();
+        self.authority.zeroize();
+        self.path.zeroize();
+        self.query.zeroize();
+        for (name, _) in &mut self.lines {
+            name.zeroize();
+        }
+        // Credential and field values are Secret buffers and wipe in their own drops.
+    }
+}
+
 impl Default for VerifyRequest {
     /// A request at [`AuthPoint::Head`] with nothing in it.
     fn default() -> Self {
@@ -201,6 +217,9 @@ pub struct VerifyAnswer {
     pub decision: Decision,
     /// The credential lines and query keys the auth named, whatever its verdict.
     pub strips: Vec<Strip>,
+    /// WHY a [`Verified::Reject`] rejected, in the plugin's words (`abi::auth::IdentifyOut`, THE
+    /// REASON): the operator's log only, never the client's answer. `None` = none given.
+    pub reason: Option<String>,
 }
 
 impl From<Verified> for VerifyAnswer {
@@ -215,6 +234,7 @@ impl From<Verified> for VerifyAnswer {
             verified,
             decision,
             strips: Vec::new(),
+            reason: None,
         }
     }
 }
@@ -468,25 +488,6 @@ pub trait AuthAxis: Send + Sync {
     ) -> Result<Option<OutboundServing>, String> {
         let _ = (style, settings);
         Ok(None)
-    }
-
-    /// [`AuthAxis::serving`] for a binding whose token endpoint the operator spelled with a
-    /// `user:pass@`: the host stripped it from `settings` before any plugin could read it, and
-    /// `endpoint_basic` is the `authorization: Basic` value it spelled, which the host presents on
-    /// the plugin's mint as 1.5.5 sent it. A plugin never receives it. Default: the value is not
-    /// presented. TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the door path's endpoint userinfo is read by the root at
-    /// configuration time and never crosses this axis.
-    ///
-    /// # Errors
-    /// The serving plugin would not open for its outbound styles.
-    fn serving_presenting(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        endpoint_basic: Option<&[u8]>,
-    ) -> Result<Option<OutboundServing>, String> {
-        let _ = endpoint_basic;
-        self.serving(style, settings)
     }
 
     /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh

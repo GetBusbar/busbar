@@ -189,6 +189,7 @@ fn a_string_counted_with_a_null_pointer_is_fault() {
 
 use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
+use crate::abi::mechanism::decl::RedCase;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
     MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR,
@@ -251,19 +252,10 @@ fn a_word_mark_has_a_known_class_and_a_word() {
         word(MARK_WORD_CARRIER, "x-api-key"),
     ];
     assert_eq!(check_marks(0, &ok), Ok(()));
-    assert_eq!(
-        check_marks(0, &[word(8, "w")]),
-        Err(fault(Rule::UnknownCode, "mark_word.class"))
-    );
+    // Above the range and an empty word: the generated table (`every_declared_statement_field_rule_is_red`).
     assert_eq!(
         check_marks(0, &[word(0, "w")]),
         Err(fault(Rule::UnknownCode, "mark_word.class"))
-    );
-    let mut empty = word(MARK_WORD_HOOK, "w");
-    empty.word = NONE;
-    assert_eq!(
-        check_marks(0, &[empty]),
-        Err(fault(Rule::Missing, "mark_word.word"))
     );
 }
 
@@ -275,10 +267,7 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
         rewrite(REWRITE_KEY, "key_ref", abi_str("key.ref")),
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
-    assert_eq!(
-        check_rewrites(&[rewrite(7, "x", abi_str("y"))]),
-        Err(fault(Rule::UnknownCode, "rewrite.class"))
-    );
+    // Above the range: the generated table.
     assert_eq!(
         check_rewrites(&[rewrite(0, "x", NONE)]),
         Err(fault(Rule::UnknownCode, "rewrite.class"))
@@ -339,13 +328,37 @@ fn a_statement_has_at_most_one_declaring_section() {
         ]),
         Err(fault(Rule::NotExactlyOne, "section.flags"))
     );
-    assert_eq!(
-        check_statement_sections(&[section("a", 8)]),
-        Err(fault(Rule::UnknownCode, "section.flags"))
+    // An unknown flag and an empty name: the generated table.
+}
+
+/// THE GENERATED RED TABLES: one RED per (field, rule) each Statement element's declaration states,
+/// each answering exactly its rule and field; the cross-field rules are the hand cases here.
+#[test]
+fn every_declared_statement_field_rule_is_red() {
+    fn reds<T: Copy>(base: T, table: &[RedCase<T>], check: impl Fn(&T) -> Result<(), Fault>) {
+        assert_eq!(check(&base), Ok(()));
+        for case in table {
+            let mut t = base;
+            (case.red)(&mut t);
+            assert_eq!(check(&t), Err(fault(case.rule, case.field)), "{case:?}");
+        }
+    }
+    reds(word(MARK_WORD_HOOK, "w"), MARK_WORD_RULES, check_mark_word);
+    reds(
+        rewrite(REWRITE_KEY, "x", abi_str("y")),
+        REWRITE_RULES,
+        check_rewrite,
     );
+    reds(section("a", SECTION_CONSUMED), SECTION_RULES, check_section);
+    reds(NEEDS[0], NEED_RULES, check_need);
     assert_eq!(
-        check_statement_sections(&[section("", SECTION_CONSUMED)]),
-        Err(fault(Rule::Missing, "section.name"))
+        (
+            MARK_WORD_RULES.len(),
+            REWRITE_RULES.len(),
+            SECTION_RULES.len(),
+            NEED_RULES.len()
+        ),
+        (3, 3, 3, 8)
     );
 }
 

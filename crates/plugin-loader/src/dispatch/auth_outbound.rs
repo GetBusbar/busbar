@@ -17,7 +17,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 
 use busbar_contract::abi::auth::{
     slot, AuthPoint, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
@@ -30,9 +30,10 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::redacted::Secret;
 
+use super::call::{Answering, Pending, Ticketed};
 use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
 use super::lifecycle::{open_frame, validate_call};
-use super::{in_head, out_head, Dispatcher, Frame, Plugin};
+use super::{in_head, out_head, Dispatcher, Done, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
 /// submitted on. The instance is shared, never copied: a [`Plugin`] is `!Clone`, so the tick
@@ -413,110 +414,108 @@ impl OutboundAuth for OutboundInstance {
     }
 
     fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding> {
-        let this = self.clone();
-        let run = async move {
-            // No seal lent to the dispatcher: a caller credential is not revealed, and the fields
-            // fail.
-            if request.caller_credential.is_some() && this.dispatcher.seal().is_none() {
-                return Fields::Failed;
-            }
-            let Some(ticket) = this.dispatcher.mint(this.worker) else {
-                return Fields::Failed;
-            };
-            let guard = Ticketed {
-                dispatcher: Arc::clone(&this.dispatcher),
-                ticket,
-                answered: false,
-            };
-            let mut sizes = (FIELDS_BUF_BYTES, FIELDS_MAX as usize);
-            let mut first = true;
-            loop {
-                let mut lend = Lend::new(copy(&request), sizes.0, sizes.1);
-                let input = lend.input(handle, this.dispatcher.seal());
-                let lent: Arc<Lend> = Arc::from(lend);
-                let reply = this.dispatcher.submit_lent(
-                    &*this.plugin,
-                    ticket,
-                    slot::FIELDS,
-                    Frame::new(input, fields_out()),
-                    DeadlineClass::Call,
-                    deadline_ns,
-                    Arc::clone(&lent) as super::Lent,
-                );
-                let done = reply.await;
-                let out = done.frame.as_ref().map(|f| f.out);
-                match (done.short && first, out) {
-                    // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
-                    // dispatcher answers a second short answer FAULT.
-                    (true, Some(out)) => {
-                        first = false;
-                        sizes = grown(&out);
-                    }
-                    (_, Some(out)) => {
-                        let mut guard = guard;
-                        guard.answered = true;
-                        break settled(done.outcome, &lent, &out);
-                    }
-                    (_, None) => break Fields::Failed,
-                }
-            }
-        };
-        Box::new(Waiting {
-            run: Box::pin(run),
-            done: None,
-        })
-    }
-}
-
-/// A submitted `fields`' ticket: recycled when the answer is read, and handed to the client-drop
-/// path first when the caller stops waiting before it (the lent memory stays with the op).
-struct Ticketed {
-    dispatcher: Arc<Dispatcher>,
-    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
-    answered: bool,
-}
-
-impl Drop for Ticketed {
-    fn drop(&mut self) {
-        if !self.answered {
-            self.dispatcher.drop_client(self.ticket);
+        // No seal lent to the dispatcher: a caller credential is not revealed, and the fields fail.
+        if request.caller_credential.is_some() && self.dispatcher.seal().is_none() {
+            return Box::new(Failed);
         }
-        self.dispatcher.recycle(self.ticket);
+        let Some(call) = Ticketed::mint(&self.dispatcher, self.worker) else {
+            return Box::new(Failed);
+        };
+        Box::new(Pending::new(
+            call,
+            Asked {
+                this: self.clone(),
+                handle,
+                request,
+                deadline_ns,
+                lend: None,
+                first: true,
+            },
+        ))
     }
 }
 
-/// One `fields` in flight.
-struct Waiting {
-    run: Pin<Box<dyn Future<Output = Fields> + Send>>,
-    done: Option<Fields>,
-}
+/// A `fields` that failed before anything crossed.
+struct Failed;
 
-impl Future for Waiting {
+impl Future for Failed {
     type Output = Fields;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Fields> {
-        if let Some(d) = &self.done {
-            return Poll::Ready(d.clone());
-        }
-        match self.run.as_mut().poll(cx) {
-            Poll::Ready(d) => {
-                self.done = Some(d.clone());
-                Poll::Ready(d)
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Fields> {
+        Poll::Ready(Fields::Failed)
+    }
+}
+
+impl Fielding for Failed {
+    fn settled(&mut self) -> Option<Fields> {
+        Some(Fields::Failed)
+    }
+}
+
+/// One `fields`, submitted on its ticket when first polled: the one re-call a short answer earns,
+/// then the fields its lent memory holds.
+struct Asked {
+    this: OutboundInstance,
+    handle: u64,
+    request: FieldsRequest,
+    deadline_ns: u64,
+    /// The memory the last op was lent (the buffers its answer was written into).
+    lend: Option<Arc<Lend>>,
+    first: bool,
+}
+
+impl Asked {
+    /// Submit `fields` on `call` over buffers of `bytes` and `fields`.
+    fn submit(
+        &mut self,
+        call: &mut Ticketed<FieldsIn, FieldsOut>,
+        (bytes, fields): (usize, usize),
+    ) {
+        let mut lend = Lend::new(copy(&self.request), bytes, fields);
+        let input = lend.input(self.handle, self.this.dispatcher.seal());
+        let lent: Arc<Lend> = Arc::from(lend);
+        call.submit(
+            &*self.this.plugin,
+            slot::FIELDS,
+            Frame::new(input, fields_out()),
+            DeadlineClass::Call,
+            self.deadline_ns,
+            Arc::clone(&lent) as super::Lent,
+        );
+        self.lend = Some(lent);
+    }
+}
+
+impl Answering<FieldsIn, FieldsOut> for Asked {
+    type Out = Fields;
+
+    fn start(&mut self, call: &mut Ticketed<FieldsIn, FieldsOut>) {
+        self.submit(call, (FIELDS_BUF_BYTES, FIELDS_MAX as usize));
+    }
+
+    fn answer(
+        &mut self,
+        done: Done<FieldsIn, FieldsOut>,
+        call: &mut Ticketed<FieldsIn, FieldsOut>,
+    ) -> Option<Fields> {
+        let out = done.frame.as_ref().map(|f| f.out);
+        match (done.short && self.first, out, &self.lend) {
+            // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
+            // dispatcher answers a second short answer FAULT.
+            (true, Some(out), _) => {
+                self.first = false;
+                self.submit(call, grown(&out));
+                None
             }
-            Poll::Pending => Poll::Pending,
+            (_, Some(out), Some(lend)) => Some(settled(done.outcome, lend, &out)),
+            _ => Some(Fields::Failed),
         }
     }
 }
 
-impl Fielding for Waiting {
+impl Fielding for Pending<FieldsIn, FieldsOut, Asked> {
     fn settled(&mut self) -> Option<Fields> {
-        if self.done.is_none() {
-            let mut cx = Context::from_waker(Waker::noop());
-            if let Poll::Ready(d) = self.run.as_mut().poll(&mut cx) {
-                self.done = Some(d);
-            }
-        }
-        self.done.clone()
+        self.now()
     }
 }
 

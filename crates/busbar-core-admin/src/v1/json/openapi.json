@@ -509,7 +509,7 @@
         "additionalProperties": {
           "$ref": "#/components/schemas/AuditRecipeValue"
         },
-        "description": "One sealed record: the digest recipe's fields, in the recipe's order (text as strings, numbers as\nnumbers, each repeated group as an array under its own name), then the record's digest and\nsignature.",
+        "description": "One sealed record: the digest recipe's fields, in the recipe's order (every value a string: a\ntext as its text, a number as its decimal text; each repeated group as an array under its own\nname), then the record's digest and signature.",
         "properties": {
           "hash": {
             "type": "string"
@@ -675,17 +675,8 @@
         "description": "One element of a repeated group: a single value, or an object of the group's members."
       },
       "AuditRecipeScalar": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          }
-        ],
-        "description": "One recipe scalar: text is a string, a number is an unsigned 64-bit integer."
+        "description": "One recipe scalar, always a JSON string: a text field is its text, and a number field (an\nunsigned 64-bit integer) is its canonical decimal text, because a JSON number above 2^53 is not\nexact through a reader that maps numbers to doubles. Which framing a field takes is the\npublished recipe page's kind column, not the JSON type.",
+        "type": "string"
       },
       "AuditRecipeValue": {
         "anyOf": [

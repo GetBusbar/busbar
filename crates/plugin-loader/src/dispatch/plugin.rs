@@ -48,7 +48,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ValidateIn,
+    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
@@ -302,6 +302,9 @@ pub(crate) struct Crossed {
     pub(crate) disposition: Option<u32>,
     /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
     pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// A lease the plugin named on an answer that hands none to the caller (any outcome but READY
+    /// or PENDING, a FAULT the host judged included): released by the host as the crossing ends.
+    pub(crate) unread: u64,
 }
 
 impl Crossed {
@@ -314,6 +317,15 @@ impl Crossed {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
+            unread: 0,
+        }
+    }
+
+    /// This answer, with `lease` (what the plugin named in its head) left for the host to release.
+    fn unread(self, lease: u64) -> Self {
+        Self {
+            unread: lease,
+            ..self
         }
     }
 }
@@ -392,6 +404,35 @@ impl Drop for Unbound {
     fn drop(&mut self) {
         if let Some(wake) = self.0 {
             wake.revoked.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// A host policy reply lent for one crossing. The Scope also retains its bytes if it pends.
+struct PolicyReply {
+    input: *mut InHead,
+    original: Blob,
+    _bytes: Arc<[u8]>,
+}
+
+struct FramingFailure {
+    scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    ticket: Ticket,
+}
+
+impl Drop for FramingFailure {
+    fn drop(&mut self) {
+        if let Some(scope) = &self.scope {
+            scope.operation_finished(self.ticket, true);
+        }
+    }
+}
+
+impl Drop for PolicyReply {
+    fn drop(&mut self) {
+        // SAFETY: the host frame outlives its crossing, including every early return.
+        unsafe {
+            (*self.input).extensions = self.original;
         }
     }
 }
@@ -772,17 +813,22 @@ impl Instance {
     /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
     /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
     /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
-    /// trust on top of the public roots. A path that resolves to nothing is declared without its
-    /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
-    /// the trust. A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
+    /// trust on top of the public roots. A `target_from` that resolves to nothing is declared without
+    /// its value, which the table refuses; a `trust_from` that does (`settings.` or `owned.`) is
+    /// optional, declared without it, and the table takes it as the public roots alone; a refresh re-declares, so a changed value moves the pin or
+    /// the trust; a `trust_from` naming a settings path that resolves to nothing is refused by the
+    /// table but not audited (an optional anchor the operator did not write). A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
     /// [`busbar_contract::section::owned_path`]) resolves against `owned` alone (a plane's other
     /// owned sections, the JSON object its `open` carries in `PlaneOpenIn::owned` and its `refresh`
     /// under `abi::plane::EXT_OWNED`), never against `settings`; absent there, the need is declared
     /// without it, which the table takes as "the public roots alone".
-    fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) {
-        let Some((instance, table)) = self.wake.conn.get() else {
-            return;
-        };
+    ///
+    /// Answers the operator's text for the first need whose trust anchor the settings name and the
+    /// table refused (a CA that is no trust anchor): an `open` fails with it rather than serve
+    /// connections that can never verify. Every refusal is audited either way.
+    fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
+        let (instance, table) = self.wake.conn.get()?;
+        let mut trust_refused = None;
         let bytes: &[u8] = if settings.ptr.is_null() {
             &[]
         } else {
@@ -837,6 +883,17 @@ impl Instance {
             let unresolved = target.is_none()
                 && !need.target_from.is_empty()
                 && busbar_contract::section::member_target(&need.target_from).is_none();
+            // AN OPTIONAL TRUST THE OPERATOR DID NOT WRITE: a `trust_from` naming a settings path
+            // (secret-vault's `ca_cert_pem`) that resolves to nothing. The table still refuses the
+            // need (fail-closed: no connection on it, and a refresh that dropped the anchor drops
+            // the earlier pin and trust), but a correct config that simply names no CA is no
+            // refusal the host audits on every open and refresh. A target that did not resolve is
+            // still audited as that; a trust value that IS present but does not parse is refused
+            // and audited as before.
+            let trust_unwritten = trust.is_none()
+                && !need.trust_from.is_empty()
+                && busbar_contract::section::owned_path(&need.trust_from).is_none()
+                && busbar_contract::section::member_target(&need.trust_from).is_none();
             let answer = table
                 .declare(*instance, id, need, target.as_deref(), trust.as_deref())
                 .map_err(|e| {
@@ -846,8 +903,19 @@ impl Instance {
                         crate::observe::conn_reason(e)
                     }
                 });
-            self.need_refused(id, answer);
+            if let (Err(reason), Some(_), None) = (answer, &trust, &trust_refused) {
+                // The value is the operator's CA; the text names where it is, never what it is.
+                trust_refused = Some(format!(
+                    "{}: the host refused the CA certificate it names for need {i} ({reason}); \
+                     it must be PEM that parses into a trust anchor",
+                    need.trust_from
+                ));
+            }
+            if unresolved || !trust_unwritten {
+                self.need_refused(id, answer);
+            }
         }
+        trust_refused
     }
 
     /// AUDITED ON THE PLUGIN'S BEHALF: the table's refusal of `need`, declared at `open` or
@@ -982,6 +1050,10 @@ impl Instance {
         std::mem::take(&mut *self.open_reason.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    fn instance_free(&self, s: u32) -> bool {
+        self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK
+    }
+
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
     /// the table does not have, an instance-less call before `open` answered READY (a half-open
     /// box admits only its `close`, once its `open` is over: the lifecycle exclusion), a second
@@ -999,6 +1071,11 @@ impl Instance {
         }
         if s >= self.slot_count() {
             return Some(Outcome::Refused);
+        }
+        if self.instance_free(s) {
+            let fits = in_size >= size_of::<busbar_contract::abi::secret::CheckIn>()
+                && out_size >= size_of::<OutHead>();
+            return (!fits).then_some(Outcome::Refused);
         }
         let open = self.is_open();
         let half_open = self.half_open();
@@ -1028,6 +1105,24 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
+        use busbar_contract::abi::transport::slot as transport_slot;
+        let framing_op = self.kind == KindCode::Transport
+            && (s == slot::CANCEL || (transport_slot::BEGIN..=transport_slot::TIMER).contains(&s));
+        let mut failure = FramingFailure {
+            scope: framing_op.then(super::framing_context::current).flatten(),
+            // SAFETY: every host frame leads with InHead. CANCEL names the operation it ends
+            // in its own checked frame, independently of the cancellation crossing's ticket.
+            ticket: unsafe {
+                if s == slot::CANCEL
+                    && (*input).size as usize
+                        >= size_of::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()
+                {
+                    (*input.cast::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()).ticket
+                } else {
+                    (*input).ticket
+                }
+            },
+        };
         if !self.enter_gate(s) {
             // `close` with a crossing in progress is refused; anything after `close` is FAULT.
             let o = if s == slot::CLOSE {
@@ -1039,6 +1134,9 @@ impl Instance {
         }
         // SAFETY: the caller's contract.
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
+        if s != slot::CANCEL && matches!(crossed.outcome, Outcome::Ready | Outcome::Pending) {
+            failure.scope = None;
+        }
         // A `close` that answered FAULT may already have freed the instance (a teardown that
         // failed after its memory went): the host treats it as closed, never crossing into the
         // pointer again. That can leak a live instance; it never uses a freed one. A READY `close`
@@ -1059,7 +1157,49 @@ impl Instance {
         if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
             self.close_half_open();
         }
-        crossed
+        if crossed.unread != 0 && s != slot::RELEASE {
+            self.release_unread(crossed.unread);
+        }
+        Crossed {
+            unread: 0,
+            ..crossed
+        }
+    }
+
+    /// RELEASE A LEASE NO CALLER WAS HANDED (export ABI defect 6): the plugin named `lease` on an
+    /// answer that was not READY, so no caller reads under it and none releases it; the host does,
+    /// ticket-less, once the crossing that named it is over. An instance no longer open (or
+    /// faulted) is not crossed again: what it held goes with it.
+    fn release_unread(&self, lease: u64) {
+        if !self.is_open() || self.faulted.load(Ordering::Acquire) {
+            return;
+        }
+        let mut input = ReleaseIn {
+            head: InHead {
+                size: size_of::<ReleaseIn>() as u32,
+                ..super::in_head()
+            },
+            lease,
+        };
+        let mut out = super::out_head();
+        // SAFETY: the host's own `release` frame (`ReleaseIn` leads with its head, the `out` is
+        // the head), live and unaliased for the call.
+        let released = unsafe {
+            self.cross(
+                slot::RELEASE,
+                (&raw mut input).cast::<InHead>(),
+                &raw mut out,
+                size_of::<OutHead>() as u32,
+            )
+        };
+        if released.outcome != Outcome::Ready {
+            tracing::warn!(
+                plugin = %self.name,
+                kind = ?self.kind,
+                outcome = ?released.outcome,
+                "the release of a lease named on an answer that was not READY did not answer READY"
+            );
+        }
     }
 
     /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
@@ -1072,14 +1212,16 @@ impl Instance {
         ticket: Ticket,
         class: DeadlineClass,
         unit: Option<u64>,
+        framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Outcome {
         let mut frame = (self.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
         let crossed = self.watched(slot::CANCEL, || {
-            // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
-            crate::ffi_thread::on_plugin_thread(|| unsafe {
-                self.cross(slot::CANCEL, input, out, out_size)
+            crate::ffi_thread::on_plugin_thread(|| {
+                let _framing = super::framing_context::enter(framing);
+                // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+                unsafe { self.cross(slot::CANCEL, input, out, out_size) }
             })
         });
         crossed.map_or(Outcome::Fault, |c| c.outcome)
@@ -1123,7 +1265,11 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
-        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN);
+        // The secret kind's `check` judges a reference at config time with NO instance, as
+        // `validate` judges settings: it crosses whether or not the plugin was opened, and the
+        // plugin is handed NULL for its instance (`abi::secret::Ops::check`).
+        let instance_free = self.instance_free(s);
+        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free;
         // A half-open box is crossed only by the `cancel` of its pended `open` and its `close`.
         let crossable =
             self.is_open() || (matches!(s, slot::CANCEL | slot::CLOSE) && self.half_open());
@@ -1137,9 +1283,52 @@ impl Instance {
             head.host = self.ctx();
             (
                 head.ticket,
-                self.ptr.load(Ordering::Acquire),
+                if instance_free {
+                    std::ptr::null_mut()
+                } else {
+                    self.ptr.load(Ordering::Acquire)
+                },
                 head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
             )
+        };
+        let scope = (self.kind == KindCode::Transport)
+            .then(super::framing_context::current)
+            .flatten();
+        let _policy_reply = match scope
+            .as_ref()
+            .and_then(|scope| scope.operation_reply(ticket))
+        {
+            Some(reply) => {
+                // SAFETY: the host owns this input head and its original extension bytes.
+                let original = unsafe { (*input).extensions };
+                // SAFETY: the original host blob lives with this operation's frame.
+                let prior = unsafe { blob_bytes(original) };
+                let bytes = if prior.is_empty() || reply.ends_with(prior) {
+                    reply
+                } else {
+                    let mut joined = reply.to_vec();
+                    joined.extend_from_slice(prior);
+                    Arc::from(joined)
+                };
+                if let Some(scope) = &scope {
+                    scope.hold_operation_reply(ticket, Arc::clone(&bytes));
+                }
+                // SAFETY: the guard restores the head; Scope retains bytes across PENDING.
+                unsafe {
+                    (*input).extensions = Blob {
+                        ptr: bytes.as_ptr(),
+                        len: bytes.len(),
+                        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                        flags: 0,
+                    };
+                }
+                Some(PolicyReply {
+                    input,
+                    original,
+                    _bytes: bytes,
+                })
+            }
+            None => None,
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
@@ -1152,6 +1341,8 @@ impl Instance {
                 v.err_cap = buf.len();
             }
         }
+        // A trust anchor the open's settings name that the connection table refused.
+        let mut trust_refused = None;
         if s == slot::OPEN {
             // Every `open`, of every kind, is lent the host's reason buffer: a failed open has no
             // instance to hold its reason. The same buffer is re-lent on a resume.
@@ -1172,7 +1363,7 @@ impl Instance {
             let owned = (self.kind == KindCode::Plane
                 && unsafe { (*input).size } as usize >= size_of::<PlaneOpenIn>())
             .then(|| unsafe { blob_bytes((*input.cast::<PlaneOpenIn>()).owned) });
-            self.declare_targeted(settings, owned);
+            trust_refused = self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
         if s == slot::READY {
@@ -1191,7 +1382,8 @@ impl Instance {
             // SAFETY: the host's own extensions blob, live for the crossing it is handed to.
             let owned = unsafe { blob_bytes(extensions) };
             let owned = busbar_contract::abi::mechanism::extensions::get(owned, EXT_OWNED);
-            self.declare_targeted(settings, owned);
+            // A refresh's refusals are audited; the instance it refreshes stays open.
+            let _ = self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
@@ -1200,6 +1392,15 @@ impl Instance {
         unsafe {
             std::ptr::write_bytes(out.cast::<u8>(), 0, out_size as usize);
             (*out).size = out_size;
+        }
+        // A FRESH `open` whose settings name a CA the table refused fails here, with the reason,
+        // before the plugin is entered: no instance is published to serve connections that can
+        // never verify, and the operator learns it at open, not at the first dial.
+        if let Some(reason) = trust_refused.filter(|_| !resumed) {
+            return Crossed {
+                error: Some(reason.into_bytes()),
+                ..Crossed::host(Outcome::Failed)
+            };
         }
         let op = match (s, self.ready) {
             (slot::READY, Some(ready)) => ready,
@@ -1216,6 +1417,9 @@ impl Instance {
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
         let _ticket = super::services::crossing(ticket);
+        // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
+        // SAFETY: the host's own `in`, led by its head, live for the crossing.
+        let _deadline = super::services::op_deadline(unsafe { &*input });
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -1235,9 +1439,11 @@ impl Instance {
             // the runtime that thread is inside.
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
+            let framing = super::framing_context::current();
             let (input, output): (*const c_void, *mut c_void) =
                 (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
+                let _framing = super::framing_context::enter(framing);
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
@@ -1275,7 +1481,7 @@ impl Instance {
         let head = unsafe { *out };
         let outcome = judge(raw, &head, ticket, out_size);
         if outcome == Outcome::Fault {
-            return Crossed::host(Outcome::Fault);
+            return Crossed::host(Outcome::Fault).unread(head.lease);
         }
         // SAFETY: the op's own host `in`/`out`; the host wrote `in.size` itself.
         let answer = unsafe {
@@ -1300,7 +1506,51 @@ impl Instance {
                     field = f.field,
                     "a plugin answer broke its kind's rule; the op answers FAULT"
                 );
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
+            }
+        }
+        if self.kind == KindCode::Transport {
+            use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
+            use busbar_contract::abi::transport::{guest_policy, FramerOut, YIELD_MORE};
+            if outcome != Outcome::Pending {
+                if let Some(scope) = &scope {
+                    scope.operation_done(ticket);
+                }
+            }
+            // SAFETY: plugin extension ranges are bounded before the slice is formed and read
+            // before its answer lease or ticket can be released/reused.
+            let Some(bytes) = (unsafe { validate::lent(head.extensions.ptr, head.extensions.len) })
+            else {
+                return Crossed::host(Outcome::Fault).unread(head.lease);
+            };
+            if let Some(value) = extensions::get(bytes, guest_policy::EXT_GUEST_OPEN) {
+                if head.extensions.fmt != BLOB_OCTETS
+                    || outcome != Outcome::Ready
+                    || (out_size as usize) < size_of::<FramerOut>()
+                {
+                    return Crossed::host(Outcome::Fault).unread(head.lease);
+                }
+                // SAFETY: this transport answer was checked by its kind and holds FramerOut.
+                let framed = unsafe { &*out.cast::<FramerOut>() };
+                if framed.yielded.flags & YIELD_MORE == 0
+                    || framed.yielded.wire_len != 0
+                    || framed.yielded.frame_len != 0
+                    || framed.yielded.pieces_len != 0
+                {
+                    return Crossed::host(Outcome::Fault).unread(head.lease);
+                }
+                let opened = guest_policy::Open::decode(value).and_then(|open| {
+                    scope
+                        .as_ref()
+                        .ok_or(super::framing_context::CONTEXT_REFUSED)?
+                        .open_stream(ticket, open)
+                });
+                if let Err(error) = opened {
+                    return Crossed {
+                        error: Some(error.as_bytes().to_vec()),
+                        ..Crossed::host(Outcome::Refused).unread(head.lease)
+                    };
+                }
             }
         }
         let short = outcome == Outcome::Failed && (self.short)(&answer);
@@ -1311,7 +1561,7 @@ impl Instance {
             let mut buf = self.take_open_reason();
             if len > buf.len() {
                 // A reason longer than the buffer lent is a malformed answer.
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
             buf.truncate(len);
             Some(buf).filter(|b| !b.is_empty())
@@ -1339,7 +1589,7 @@ impl Instance {
                     field = f.field,
                     "a validate refusal broke the refusal rule; the op answers FAULT"
                 );
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
         }
         // An open that FAILED or was REFUSED (fresh, or on its RESUME) gets no instance: the
@@ -1353,7 +1603,7 @@ impl Instance {
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
             let inst = unsafe { (*out.cast::<OpenOut>()).instance };
             if inst.is_null() {
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
             open_ended.ptr = None;
             self.ptr.store(inst, Ordering::Release);
@@ -1362,10 +1612,14 @@ impl Instance {
                 self.opened.store(true, Ordering::Release);
             }
         }
+        // THE LEASE ON ANY OUTCOME (export ABI defect 6): only a READY (or PENDING) answer hands
+        // its lease to the caller; a lease another outcome names is the host's to release.
+        let handed = matches!(outcome, Outcome::Ready | Outcome::Pending);
         Crossed {
             outcome,
             error,
-            lease: head.lease,
+            lease: if handed { head.lease } else { 0 },
+            unread: if handed { 0 } else { head.lease },
             wake_at_ns: if outcome == Outcome::Pending {
                 head.wake_at_ns
             } else {
@@ -1714,9 +1968,21 @@ impl<K: Kind> Plugin<K> {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-                        // The answer is the connection table's to keep (`need.admit` reads it);
-                        // its scheme was matched above.
-                        let _ = table.declare(instance, id, need, None, None);
+                        // A CONFIG-FREE NEED THE TABLE REFUSES REFUSES THE LOAD (fail closed,
+                        // naming the plugin and the need): nothing the instance's settings say
+                        // can change the answer later, so binding it would serve a plugin whose
+                        // need can never open. What it declared so far is forgotten with it.
+                        if let Err(e) = table.declare(instance, id, need, None, None) {
+                            table.forget(instance);
+                            return Err(LoadError::NeedRefused {
+                                plugin: str_bytes(st.name)
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                need: id.0,
+                                transport: need.transport.clone(),
+                                reason: crate::observe::conn_reason(e),
+                            });
+                        }
                     }
                     declared_needs = needs.into_boxed_slice();
                     let _ = wake.conn.set((instance, Arc::clone(table)));
@@ -1856,6 +2122,18 @@ impl<K: Kind> Plugin<K> {
         self.inner.name()
     }
 
+    /// Write `text` at `severity` (`0` info, `1` warn, `2` error) into this instance's own log
+    /// (its envelope sink, as a log record): what the HOST read from an answer on the instance's
+    /// behalf, such as an auth reject's reason (`abi::auth::IdentifyOut`). Never secret material.
+    pub(crate) fn note(&self, severity: u8, text: &str) {
+        self.inner.sink.diag(Diagnostic {
+            id: DIAG_LOG,
+            name: &[],
+            severity,
+            text: text.as_bytes(),
+        });
+    }
+
     /// The settings keys its Statement names as secret references, in the Statement's order.
     #[must_use]
     pub fn secret_refs(&self) -> &[String] {
@@ -1962,7 +2240,9 @@ impl<K: Kind> Plugin<K> {
             .and_then(std::sync::Weak::upgrade)
             .and_then(|route| route.inline());
         if let Some(tickets) = &inline {
-            tickets.starting(ticket, self.inner.instance, s, resume);
+            if !tickets.starting(ticket, self.inner.instance, s, resume) {
+                return Called::from(Crossed::host(Outcome::Refused));
+            }
         }
         let called = self.call_on(s, frame, ticket, resume);
         if let Some(tickets) = &inline {

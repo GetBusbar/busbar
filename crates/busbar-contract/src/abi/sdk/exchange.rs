@@ -182,9 +182,9 @@ pub struct Exchange {
     /// The stream was found in the clear: every re-entry answers the refusal (a replayed `FACTS`
     /// writes nothing, so only this remembers it).
     insecure: bool,
-    /// What closes `stream` should the exchange be dropped before it closed it: set when
-    /// [`Op::exchange`] parks it, so a parked exchange its op gives up does not leave its host
-    /// connection open.
+    /// What closes `stream` should the exchange be dropped before it closed it: set whenever the
+    /// exchange answers PENDING ([`exchange`], [`send_and_ack`], [`Op::exchange`]), so a pending
+    /// exchange its op gives up does not leave its host connection open.
     closer: Option<Closer>,
 }
 
@@ -579,7 +579,8 @@ fn send_and_read(
 ) -> Answer<()> {
     // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
     // sends once and moves on never leaves a held stream (and its connection) behind per failure.
-    match exchange_once(c, state, need, target) {
+    // A PENDING one keeps what closes it, so the caller that gives it up closes it by dropping it.
+    let answer = match exchange_once(c, state, need, target) {
         Poll::Ready(Err(e)) => match state.stream {
             Some(stream) => match c.close(stream) {
                 Poll::Pending => Poll::Pending,
@@ -595,7 +596,11 @@ fn send_and_read(
             Poll::Ready(Ok(()))
         }
         Poll::Pending => Poll::Pending,
+    };
+    if answer.is_pending() {
+        state.closer = Some(c.closer());
     }
+    answer
 }
 
 /// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
@@ -798,6 +803,32 @@ impl<T: Send + Sync + 'static> Parks for Instance<'_, T> {
     }
 }
 
+/// Why an [`Op::exchange`] answered without a reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpFailure {
+    /// The op's request builder could not build the request, in its own words: nothing was sent.
+    Unbuilt(String),
+    /// The exchange failed (or the request it framed was refused), as the connector said.
+    Conn(ConnFailure),
+}
+
+impl std::fmt::Display for OpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unbuilt(why) => f.write_str(why),
+            Self::Conn(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for OpFailure {}
+
+impl From<ConnFailure> for OpFailure {
+    fn from(e: ConnFailure) -> Self {
+        Self::Conn(e)
+    }
+}
+
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
 /// Pending(wake); the replay rule of `abi::sdk::conn`), for a kind SDK whose author answers
 /// [`Poll`]: [`Op::exchange`] resumes the exchange the op's last PENDING entry parked, or starts
@@ -842,14 +873,14 @@ impl<'a> Op<'a> {
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
-    /// the op's first entry (its refusal answers at once, nothing sent). PENDING until it
-    /// completes.
+    /// the op's first entry; when it cannot be built, its text answers at once
+    /// ([`OpFailure::Unbuilt`]), nothing sent. PENDING until it completes.
     pub fn exchange(
         &self,
         need: u32,
         target: Option<&str>,
-        request: impl FnOnce() -> Result<Request, ConnFailure>,
-    ) -> Answer<ExchangeResponse> {
+        request: impl FnOnce() -> Result<Request, String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         self.exchange_sealed(need, target, || request().map(|r| (r, Vec::new())))
     }
 
@@ -858,16 +889,47 @@ impl<'a> Op<'a> {
         &self,
         need: u32,
         target: Option<&str>,
-        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
-    ) -> Answer<ExchangeResponse> {
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
+        self.exchange_sealed_bounded(need, target, REPLY_MAX, request)
+    }
+
+    /// [`Op::exchange`] whose reply body may reach at most `reply_limit` bytes
+    /// ([`Exchange::reply_limit`]; above [`REPLY_MAX`] it is [`REPLY_MAX`]): a reply past it is
+    /// refused ([`REPLY_OVER_BOUND`]) as it is read, never buffered whole first. The limit is set
+    /// on the exchange the op's first entry builds; a resumed exchange keeps the one it was built
+    /// with.
+    pub fn exchange_bounded(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        request: impl FnOnce() -> Result<Request, String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
+        self.exchange_sealed_bounded(need, target, reply_limit, || {
+            request().map(|r| (r, Vec::new()))
+        })
+    }
+
+    /// [`Op::exchange_bounded`] for a request with sealed fields ([`Exchange::request_sealed`]).
+    pub fn exchange_sealed_bounded(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         let Some(host) = self.host else {
-            return Poll::Ready(Err(ConnFailure::Unarmed));
+            return Poll::Ready(Err(ConnFailure::Unarmed.into()));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
-            None => match request().and_then(|(r, sealed)| Exchange::request_sealed(r, sealed)) {
-                Ok(s) => s,
-                Err(e) => return Poll::Ready(Err(e)),
+            None => match request() {
+                Err(why) => return Poll::Ready(Err(OpFailure::Unbuilt(why))),
+                Ok((r, sealed)) => match Exchange::request_sealed(r, sealed) {
+                    Ok(s) => s.reply_limit(reply_limit),
+                    Err(e) => return Poll::Ready(Err(e.into())),
+                },
             },
         };
         let mut c = host.connector(self.on.ticket());
@@ -875,10 +937,9 @@ impl<'a> Op<'a> {
         if answer.is_pending() {
             // Parked, the exchange may be given up (a cancel, a fresh op on the ticket): what it
             // keeps closes its stream then.
-            state.closer = Some(c.closer());
             self.on.park(state);
         }
-        answer
+        answer.map(|r| r.map_err(OpFailure::Conn))
     }
 }
 

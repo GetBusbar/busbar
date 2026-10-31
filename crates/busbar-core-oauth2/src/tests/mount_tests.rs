@@ -121,7 +121,7 @@ fn served_paths(app: &busbar_kernel::state::App) -> std::collections::BTreeSet<S
     // the curated `pub` test-support seam built for exactly this — an extracted plane's own ingress
     // tests reading the mounted surface through the SAME `router::base_data_router` production
     // calls, without core widening its sealed router types.
-    busbar_kernel::base_data_route_table_view(app)
+    busbar_kernel_testkit::routes::base_data_route_table_view(app)
         .into_iter()
         .map(|(path, _auth)| path)
         .collect()

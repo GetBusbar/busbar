@@ -263,3 +263,35 @@ fn a_span_record_carries_what_the_previous_exporter_sent() {
         "an ERROR event marks it"
     );
 }
+
+static FIRST: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> = std::sync::Mutex::new(Vec::new());
+
+fn capture_first(facts: &[(ExportField, Value)], _: Option<&Value>) {
+    FIRST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(facts.to_vec());
+}
+
+/// A span's export id is unique ACROSS processes, not only within one: the OTLP backend joins on
+/// trace and span ids, so a restarted (or second) busbar that minted ids from 1 again would merge
+/// its traces into the previous run's (the previous release sent random ids). The ids start at a
+/// value drawn from OS entropy once per process, so a test process that has opened only a handful
+/// of spans does not hold a small id (the chance a random start lands below 2^32 is 2^-32).
+/// RED: a counter that starts at a fixed 1 mints ids 1, 2, 3, … in every process.
+#[test]
+fn span_ids_do_not_restart_from_a_fixed_value_in_each_process() {
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_first, no_records));
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::debug_span!("first").in_scope(|| {});
+    });
+    let seen = std::mem::take(&mut *FIRST.lock().unwrap_or_else(|e| e.into_inner()));
+    let id = field(&seen[0], ExportField::SpanId)
+        .and_then(Value::as_str)
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
+        .expect("a span id in hex");
+    assert!(
+        id > u64::from(u32::MAX),
+        "span id {id} is a small fixed-start counter value: every process mints the same ids"
+    );
+}

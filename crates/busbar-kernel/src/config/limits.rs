@@ -604,67 +604,23 @@ pub fn install(resolved: &LimitsResolved) {
     mirror_derived_caps(Some(resolved));
 }
 
-/// TEST-ONLY. Write the slot DIRECTLY, including back to the uninstalled `None` — the raw poke
-/// [`install`] cannot express and [`InstallGuard`] must not be used for.
-///
-/// The consumer is the guard's OWN test file: its restore-on-drop fixture has to put the slot back
-/// exactly as it found it (uninstalled included) on the failure path, and it deliberately does not
-/// use `InstallGuard` for that, because a broken `InstallGuard::drop` would then silently repair the
-/// very state the assertions inspect. Mirrors the derived caps exactly as every other mutation does,
-/// so a raw poke cannot leave the `proxy` globals disagreeing with the accessors.
-#[cfg(test)]
-pub fn set_installed(slot: Option<LimitsResolved>) {
+/// Put `slot` in the live slot (the uninstalled `None` included) and hand back what was there,
+/// mirroring the derived caps as every other mutation does. Production writes the slot only through
+/// [`publish`]; this is the test fixtures' one write (the kernel testkit's `InstallGuard`, and the
+/// guard's own restore-on-drop tests), which must be able to put the slot back exactly as it found it.
+#[doc(hidden)]
+pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
+    let mut installed = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
     mirror_derived_caps(slot.as_ref());
-    *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = slot;
+    std::mem::replace(&mut *installed, slot)
 }
 
-/// TEST-ONLY. INSTALL A POSTURE PROCESS-WIDE FOR A TEST'S DURATION, AND ROLL IT BACK ON DROP
-/// unless [`InstallGuard::commit`] is called.
-///
-/// Production no longer installs through this: a configuration build reads its candidate's limits
-/// through a thread-local [`BuildScope`] and the live slot is written only by [`publish`] when the
-/// generation goes live, so a refused build never has its limits in force anywhere. (This guard was
-/// the build's install, and it put the candidate's limits — the very values validation exists to
-/// refuse — in front of live traffic for the length of the build.) Tests that need a non-default
-/// posture in force process-wide (a small body cap, a short handshake bound) still use it, because
-/// they want exactly the process-wide effect, undone on drop.
+/// The kernel testkit's guard, mounted for the kernel's own test fixtures.
 #[cfg(any(test, feature = "test-support"))]
-#[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
-pub struct InstallGuard {
-    /// What was installed before — `None` when nothing was (boot, or a test process).
-    prior: Option<LimitsResolved>,
-    committed: bool,
-}
-
+#[path = "../../../busbar-kernel-testkit/src/limits.rs"]
+mod install_guard;
 #[cfg(any(test, feature = "test-support"))]
-impl InstallGuard {
-    /// Snapshot the currently-installed limits and install `resolved` in their place.
-    pub fn install(resolved: &LimitsResolved) -> Self {
-        let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
-        let prior = slot.clone();
-        *slot = Some(resolved.clone());
-        mirror_derived_caps(Some(resolved));
-        Self {
-            prior,
-            committed: false,
-        }
-    }
-
-    /// The build succeeded: KEEP the installed limits.
-    pub fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Drop for InstallGuard {
-    fn drop(&mut self) {
-        if !self.committed {
-            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
-            mirror_derived_caps(self.prior.as_ref());
-        }
-    }
-}
+pub use install_guard::InstallGuard;
 
 /// Mirror the egress translate-body cap AND the hook content ceiling
 /// into the `proxy` process globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read

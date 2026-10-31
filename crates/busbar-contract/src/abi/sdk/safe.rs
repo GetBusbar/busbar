@@ -572,7 +572,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 }
 
-/// A slot body with no `unsafe`: [`Slot`](crate::abi::sdk::door::Slot)'s safe form, named in
+/// A slot body with no `unsafe`: [`RawSlot`](crate::abi::sdk::door::RawSlot)'s safe form, named in
 /// [`plugin_door!`](crate::plugin_door) as [`Safe<Self>`].
 pub trait SafeSlot {
     /// The slot's `in`.
@@ -653,13 +653,13 @@ pub trait SafeSlot {
 /// ```compile_fail,E0080
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
+/// use busbar_contract::abi::sdk::door::RawSlot;
 /// use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 /// # use std::ffi::c_void;
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: Out<'_, $o>) -> Outcome { Outcome::Ready } }
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, OutHead); ready!(Rt, GenIn, OutHead);
 /// # ready!(Dr, DriveIn, OutHead); ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead);
@@ -688,7 +688,9 @@ pub trait SafeSlot {
 #[derive(Debug)]
 pub struct Safe<S>(PhantomData<S>);
 
-impl<S: SafeSlot> Entry for Safe<S> {
+// SAFETY: `SAFE` is true and earned: `enter` reads the instance only as the SDK's `Tagged` box,
+// and an `open` behind `Safe` answers only the box it minted.
+unsafe impl<S: SafeSlot> Entry for Safe<S> {
     type In = S::In;
     type Out = S::Out;
     const SAFE: bool = true;
@@ -717,10 +719,12 @@ impl<S: SafeSlot> Entry for Safe<S> {
         let reporting: Reporting = Cell::new(None);
         // What its answer leased or published from, checked when it returns.
         let holders: Holders = RefCell::new(Vec::new());
+        // A failed OPEN frees its partial instance before returning, including on resume.
+        // Its owned reason must therefore live in the host's buffer rather than that instance.
         let written = match parked {
-            Some(h) => Out::kept(&mut *out, &h.kept, &reporting, &holders),
+            Some(h) if index != slot::OPEN => Out::kept(&mut *out, &h.kept, &reporting, &holders),
             // SAFETY: `input` is the trampoline's copy of the host's `in` for slot `index`.
-            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }, &holders),
+            _ => Out::lent(&mut *out, unsafe { lent_reason(index, input) }, &holders),
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.

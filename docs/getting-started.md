@@ -102,7 +102,7 @@ chmod +x busbar
 ./busbar --version
 ```
 
-**Or use Docker**: a tiny `FROM scratch` image (the static binary plus the provider catalog, amd64 + arm64, see the image-size badge on the [repo](https://github.com/GetBusbar/busbar) for the current compressed size), cosign-signed with build provenance:
+**Or use Docker**: a minimal distroless image (the same binary as the Linux download, on a glibc base with no shell, plus the provider catalog, amd64 + arm64, see the image-size badge on the [repo](https://github.com/GetBusbar/busbar) for the current compressed size), cosign-signed with build provenance:
 
 ```bash
 docker run -d -p 8080:8080 \

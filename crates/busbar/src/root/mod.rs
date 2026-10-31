@@ -65,6 +65,8 @@ pub mod adapters;
 pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
+pub mod card_history;
+pub mod card_store;
 pub mod cli;
 pub mod config_migrate;
 pub mod connector;
@@ -76,6 +78,10 @@ pub mod durability;
 pub mod egress_ports;
 pub mod exports;
 pub mod hooks;
+pub mod inbound;
+#[cfg(all(test, linked_every_plane_door))]
+#[path = "tests/inbound.rs"]
+mod inbound_tests;
 pub mod kernel;
 pub mod keyset;
 pub mod linked;
@@ -117,6 +123,14 @@ pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const
 #[cfg(test)]
 #[path = "tests/doors_refresh.rs"]
 mod doors_refresh;
+
+#[cfg(test)]
+#[path = "tests/scoped_framing.rs"]
+mod scoped_framing_tests;
+
+#[cfg(test)]
+#[path = "tests/inbound_reload.rs"]
+mod inbound_reload_tests;
 
 // The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
 // integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan

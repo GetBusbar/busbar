@@ -67,6 +67,29 @@ impl Life for Echo {
         Ok(Echo(secrets.first().map_or(settings, |s| *s).to_vec()))
     }
 
+    fn opening(
+        &self,
+        _: Option<&Host>,
+        _: Ticket,
+        parked: Option<Box<dyn std::any::Any + Send + Sync>>,
+    ) -> Opening {
+        if self.0 != b"pending-owned-failure" && self.0 != b"pending-owned-refusal" {
+            return Opening::Ready;
+        }
+        if parked.is_none() {
+            return Opening::Pending {
+                wake_at_ns: 1,
+                parked: Box::new(()),
+            };
+        }
+        let text = String::from_utf8(self.0.clone()).unwrap();
+        Opening::Failed(if self.0 == b"pending-owned-refusal" {
+            Refusal::refused(text)
+        } else {
+            Refusal::failed(text)
+        })
+    }
+
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         match settings {
             b"count" => Ok(Refreshed {
@@ -685,6 +708,81 @@ fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
     assert_eq!(leases.release(lease), Outcome::Refused);
 }
 
+#[test]
+fn releasing_a_chain_drops_its_storage_after_unlocking_and_removing_the_whole_chain() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+    use std::sync::{Arc, Weak};
+    struct Observed {
+        leases: Weak<Leases>,
+        released: Arc<AtomicU64>,
+        unrelated: Arc<AtomicU64>,
+        dropped: Arc<AtomicUsize>,
+        unlocked_and_complete: Arc<AtomicUsize>,
+    }
+    impl Drop for Observed {
+        fn drop(&mut self) {
+            if let Some(leases) = self.leases.upgrade() {
+                if let Ok(held) = leases.held.try_lock() {
+                    let released = self.released.load(Ordering::SeqCst);
+                    let unrelated = self.unrelated.load(Ordering::SeqCst);
+                    if held.keys().all(|(id, _)| *id != released)
+                        && held.keys().any(|(id, _)| *id == unrelated)
+                    {
+                        self.unlocked_and_complete.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct Other(Arc<AtomicBool>);
+    impl Drop for Other {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let leases = Arc::new(Leases::default());
+    let released = Arc::new(AtomicU64::new(0));
+    let unrelated = Arc::new(AtomicU64::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let unlocked_and_complete = Arc::new(AtomicUsize::new(0));
+    let other_dropped = Arc::new(AtomicBool::new(false));
+    let mut other_head = out_head::<OutHead>();
+    let other_id = leases.keep(&mut other_head, Other(other_dropped.clone()));
+    unrelated.store(other_id, Ordering::SeqCst);
+    let mut head = out_head::<OutHead>();
+    for _ in 0..2 {
+        let id = leases.keep(
+            &mut head,
+            Observed {
+                leases: Arc::downgrade(&leases),
+                released: released.clone(),
+                unrelated: unrelated.clone(),
+                dropped: dropped.clone(),
+                unlocked_and_complete: unlocked_and_complete.clone(),
+            },
+        );
+        released.store(id, Ordering::SeqCst);
+    }
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(leases.release(head.lease), Outcome::Ready);
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        2,
+        "synchronous exactly-once destruction"
+    );
+    assert_eq!(
+        unlocked_and_complete.load(Ordering::SeqCst),
+        2,
+        "destructors may reenter the lease table and see their entire chain removed"
+    );
+    assert!(!other_dropped.load(Ordering::SeqCst));
+    assert_eq!(leases.release(head.lease), Outcome::Refused);
+    assert_eq!(leases.release(u64::MAX), Outcome::Refused);
+    assert_eq!(leases.release(other_id), Outcome::Ready);
+    assert!(other_dropped.load(Ordering::SeqCst));
+}
+
 /// A kind that states no `validate` of its own: the SDK's object check, in the SDK's words.
 struct Defaulted;
 impl Life for Defaulted {
@@ -864,4 +962,52 @@ fn an_open_and_a_refresh_carry_what_the_instance_raises() {
     assert_eq!(o, Outcome::Ready);
     assert!(raised(&out.head).is_empty());
     assert_eq!(close(out.instance), Outcome::Ready);
+}
+
+#[test]
+fn a_resumed_open_failure_keeps_its_owned_reason_in_the_hosts_buffer() {
+    for (settings, outcome) in [
+        (&b"pending-owned-failure"[..], Outcome::Failed),
+        (&b"pending-owned-refusal"[..], Outcome::Refused),
+    ] {
+        let mut buffer = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = Ticket {
+            slot: 71,
+            generation: 1,
+        };
+        input.settings = blob(settings);
+        input.err_buf = buffer.as_mut_ptr();
+        input.err_cap = buffer.len();
+        let mut out: OpenOut = zeroed();
+        out.head = out_head::<OpenOut>();
+        assert_eq!(
+            call(table().head.open, ptr::null_mut(), &input, &mut out),
+            Outcome::Pending
+        );
+        let partial = out.instance;
+        assert!(
+            !partial.is_null(),
+            "the pending open retains its partial instance"
+        );
+        input.head.flags = FLAG_RESUME;
+        out = zeroed();
+        out.head = out_head::<OpenOut>();
+        assert_eq!(call(table().head.open, partial, &input, &mut out), outcome);
+        assert!(
+            out.instance.is_null(),
+            "the failed partial instance was freed"
+        );
+        // Check buffer ownership before reading any plugin-supplied pointer. An error in a
+        // freed instance's kept ring must fail this assertion without dereferencing that ring.
+        assert_eq!(
+            out.err_len,
+            settings.len(),
+            "the resumed failure writes the host's buffer"
+        );
+        assert_eq!(out.head.error.ptr, buffer.as_ptr());
+        assert_eq!(&buffer[..out.err_len], settings);
+        assert_eq!(text(out.head.error).as_bytes(), settings);
+    }
 }

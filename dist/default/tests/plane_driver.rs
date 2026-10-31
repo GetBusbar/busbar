@@ -1538,7 +1538,7 @@ where
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
         ConcurrencyGauge::new(),
-        busbar_contract::caps::Canary::new(),
+        busbar_kernel::canary::Canary::new(),
         LeaseCell::new(),
         AccrualMeter::new(),
     );

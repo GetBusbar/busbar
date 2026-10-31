@@ -101,10 +101,6 @@ fn the_base_url_the_request_is_built_from_keeps_its_userinfo() {
     let resolved = ResolvedProvider::merge(&provider_def(), &provider_deploy());
     assert_eq!(resolved.base_url, base_url());
     assert_eq!(resolved.token_url.as_deref(), Some(token_url().as_str()));
-    assert!(
-        crate::bound_credential::UrlUserinfo::of(&resolved.base_url).is_some(),
-        "the userinfo is still there to present upstream"
-    );
 }
 
 /// A base URL with no userinfo prints exactly as written.

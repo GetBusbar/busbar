@@ -36,7 +36,9 @@ use std::path::{Path, PathBuf};
 ///
 /// NO LEGACY LOADING (THE DESIGN §11.8): no ranges, no floors. A published 1.5.5 JSON-contract
 /// plugin states its kind's 1.5.5 version and is refused at boot naming the rebuild against the
-/// 1.6.0 SDK; a plugin built for a newer version than the host is refused too.
+/// 1.6.0 SDK; a plugin built for a newer version than the host is refused too. An op appended to a
+/// kind's table bumps that kind's version (the door's slot count and table size must equal the
+/// host's as well), so a door built before the append is refused, never loaded as a shorter table.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
         kind::STORE => &[busbar_contract::abi::store::ABI_VERSION],

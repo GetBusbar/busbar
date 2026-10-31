@@ -736,9 +736,11 @@ impl HookCalls for HookInstance {
                 }
                 Ok(done) => {
                     release(&done.plugin, done.lease);
-                    Err(done.error.unwrap_or_else(|| {
-                        format!("hook '{hook}' did not acknowledge settings version {version}")
-                    }))
+                    // The hook's refusal is its bare words: the host names the hook (H13).
+                    Err(done.error.map_or_else(
+                        || format!("hook '{hook}' did not acknowledge settings version {version}"),
+                        |why| format!("hook '{hook}': {why}"),
+                    ))
                 }
                 Err(Answered::TimedOut) => Err(format!(
                     "hook '{hook}' did not acknowledge settings version {version} within its budget"

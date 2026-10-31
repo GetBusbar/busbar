@@ -96,7 +96,17 @@ fn request() -> VerifyRequest {
             ("line-a".into(), Secret::new(b"one".to_vec())),
             ("line-b".into(), Secret::new(b"two".to_vec())),
         ],
-        ..VerifyRequest::default()
+        point: busbar_contract::abi::auth::AuthPoint::Head,
+        conn: 0,
+        unit: 0,
+        credential: None,
+        peer: None,
+        body: None,
+        method: String::new(),
+        authority: String::new(),
+        path: String::new(),
+        query: None,
+        timestamp: 0,
     }
 }
 
@@ -140,6 +150,33 @@ fn every_answer_is_read_as_the_admin_chain_reads_it() {
             );
         }
     }
+}
+
+/// SIGN-auth-kind 2026-10-30 (lead-signed under owner delegation, extending the owner-signed
+/// 2026-10-30 rule "an IdP outage answers 503, never 401"): a verifier that answered NO VERDICT is
+/// still refused (a `Reject`, fail-closed) and is marked `no_verdict`, so the door answers it 503
+/// rather than the bad credential's 401. An overloaded verifier and a bad credential are not
+/// marked. RED before the decision: nothing told the verdict-less refusal apart.
+#[test]
+fn a_verdict_less_answer_is_refused_and_marked() {
+    for (verified, no_verdict) in [
+        (Verified::Failed, true),
+        (Verified::Reject, false),
+        (Verified::Overloaded, false),
+        (Verified::Pass, false),
+    ] {
+        let credential = OperatorCredential::Module(Double::new(verified.clone(), true));
+        let judged = ready(credential.judge(request())).expect("a row answers");
+        assert_eq!(judged.no_verdict, no_verdict, "{verified:?}");
+        if no_verdict {
+            assert_eq!(judged.verdict, AuthVerdict::Reject, "refused, fail-closed");
+        }
+        assert_eq!(
+            Judgement::answered(verified.clone().into()).no_verdict,
+            no_verdict
+        );
+    }
+    assert!(!Judgement::of(AuthVerdict::Reject).no_verdict);
 }
 
 #[test]

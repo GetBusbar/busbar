@@ -86,8 +86,24 @@ pub(crate) const SPAN_MEMBER: &str = "span";
 /// sink takes them, its full span record.
 struct Opened(Instant, u64, Fields, u64, Option<SpanRecord>);
 
-/// The next export id: one per span opened, never reused, never zero.
-static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The next export id: one per span opened, never reused within the process, never zero, and
+/// starting at a value drawn from OS entropy once per process, so a restarted busbar or a second
+/// replica does not mint the same trace and span ids as another (the previous release sent random
+/// ids; a backend joins on them).
+static NEXT_ID: std::sync::LazyLock<std::sync::atomic::AtomicU64> =
+    std::sync::LazyLock::new(|| {
+        std::sync::atomic::AtomicU64::new(crate::state::seed_request_id_counter())
+    });
+
+/// A fresh export id: the counter's next value, skipping zero where the counter wraps through it.
+fn next_id() -> u64 {
+    loop {
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+    }
+}
 
 /// The `traces` fields a span records, by the field's own name — and only those: a span field that
 /// shares a name with another stream's field (`key_id`, say) is not a traces fact.
@@ -417,7 +433,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         let mut fields = Fields(Vec::new());
         attrs.record(&mut fields);
         let epoch = UNIX_EPOCH.elapsed().unwrap_or_default().as_micros() as u64;
-        let own = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let own = next_id();
         let full = (self.1)().then(|| SpanRecord::open(attrs.metadata(), attrs));
         span.extensions_mut()
             .insert(Opened(Instant::now(), epoch, fields, own, full));

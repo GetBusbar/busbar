@@ -46,7 +46,7 @@ impl GovState {
             .cloned()
     }
 
-    /// Whether this subject's self-serve mint must be refused, checked under `self_mint_lock`
+    /// Whether this subject's self-serve mint must be refused, checked under the subject's `self_mint_claims` claim
     /// before either door writes anything. The subject's rows are every non-tombstoned row in the
     /// self group `user:<sub>` OR recording `idp_subject == sub`, so an admin group rebind does not
     /// hide a row from the check.
@@ -260,11 +260,9 @@ impl GovState {
             )
             .into());
         };
-        // Serialize the check→write against a concurrent issue/refresh for the same sub.
-        let _mint = self
-            .self_mint_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Serialize the check→write against a concurrent issue/refresh for the same sub; other
+        // subjects' mints run beside it (see `self_mint_claims`).
+        let _mint = self.self_mint_claims.claim(user_sub.to_string());
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
             return Err(SelfMintError::Refused(refusal));
         }
@@ -355,11 +353,8 @@ impl GovState {
             )
             .into());
         };
-        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_lock`).
-        let _mint = self
-            .self_mint_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_claims`).
+        let _mint = self.self_mint_claims.claim(user_sub.to_string());
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
             return Err(SelfMintError::Refused(refusal));
         }

@@ -109,3 +109,42 @@ fn base64_reverse_table_matches_the_alphabet_it_is_built_from() {
         "the base64 reverse table must be the exact inverse of B64_ALPHABET"
     );
 }
+
+#[test]
+fn base64_encode_into_appends_rfc4648_vectors() {
+    for (raw, enc) in [
+        (&b""[..], ""),
+        (b"f", "Zg=="),
+        (b"fo", "Zm8="),
+        (b"foo", "Zm9v"),
+        (b"foob", "Zm9vYg=="),
+        (b"fooba", "Zm9vYmE="),
+        (b"foobar", "Zm9vYmFy"),
+    ] {
+        let mut out = b"prefix:".to_vec();
+        base64_encode_into(raw, &mut out);
+        assert_eq!(
+            out,
+            [&b"prefix:"[..], enc.as_bytes()].concat(),
+            "encode {raw:?}"
+        );
+        assert_eq!(base64_encode(raw), enc, "base64_encode {raw:?}");
+    }
+}
+
+#[test]
+fn base64_encode_into_reuses_capacity_without_reallocating() {
+    let mut out = Vec::with_capacity(64);
+    let ptr = out.as_ptr();
+    for _ in 0..4 {
+        out.clear();
+        base64_encode_into(b"foobar", &mut out);
+        assert_eq!(out, b"Zm9vYmFy");
+        assert_eq!(
+            out.as_ptr(),
+            ptr,
+            "buffer must not reallocate when capacity suffices"
+        );
+        assert_eq!(out.capacity(), 64);
+    }
+}

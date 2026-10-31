@@ -55,7 +55,7 @@ impl Provider {
 
 /// Every service but `trust.sight`, which the contract's shared double refuses as unserved
 /// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
-impl busbar_contract::services::double::ServicesDouble for Provider {
+impl crate::services_double::ServicesDouble for Provider {
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
@@ -408,8 +408,10 @@ const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 /// The route half: records every wake.
 struct Route {
     store: Arc<ServiceStore>,
-    provider: Arc<Provider>,
+    provider: Arc<crate::services_double::Double<Provider>>,
     wakes: Mutex<Vec<Ticket>>,
+    /// The kernel's side of the auth handle, when a test installs one.
+    auth: std::sync::OnceLock<Arc<dyn crate::dispatch::auth_handle::AuthHandleHost>>,
 }
 
 impl WakeRoute for Route {
@@ -417,11 +419,15 @@ impl WakeRoute for Route {
         self.wakes.lock().unwrap().push(t);
     }
 
-    fn services(&self) -> Option<Served> {
+    fn services(&self) -> Option<Served<'_>> {
         Some(Served {
-            store: Arc::clone(&self.store),
-            provider: self.provider.clone(),
+            store: &self.store,
+            provider: &*self.provider,
         })
+    }
+
+    fn auth_handle(&self) -> Option<Arc<dyn crate::dispatch::auth_handle::AuthHandleHost>> {
+        self.auth.get().cloned()
     }
 }
 
@@ -435,6 +441,7 @@ fn double() -> Double {
         store: Arc::default(),
         provider: Arc::default(),
         wakes: Mutex::default(),
+        auth: std::sync::OnceLock::new(),
     });
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = route.clone();
@@ -1176,6 +1183,7 @@ fn nowhere() -> Waking {
         store: Arc::default(),
         provider: Arc::default(),
         wakes: Mutex::default(),
+        auth: std::sync::OnceLock::new(),
     });
     Waking {
         route: Arc::downgrade(&r),
@@ -2997,4 +3005,658 @@ fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
         error(&o)
     );
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 2);
+}
+
+/// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
+/// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
+#[test]
+fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
+    use crate::dispatch::auth_handle::{next_ref_id, space_of, RefSpace};
+    let lines: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Line)).collect();
+    let bindings: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Binding)).collect();
+    assert!(lines.iter().all(|&i| i != 0 && i & (1 << 63) == 0));
+    assert!(bindings.iter().all(|&i| i & (1 << 63) != 0));
+    assert!(lines.iter().all(|i| !bindings.contains(i)));
+    assert!(lines.iter().all(|&i| space_of(i) == Some(RefSpace::Line)));
+    assert!(bindings
+        .iter()
+        .all(|&i| space_of(i) == Some(RefSpace::Binding)));
+    assert_eq!(space_of(0), None);
+}
+
+// ── the host auth handle, served: the three services delegate to the installed kernel side ──
+
+use crate::dispatch::auth_handle::{
+    AuthCallAnswer, AuthCallAsk, AuthDone, AuthHandleHost, AuthRan, HandInAsk, RefusalBytes,
+    RefuseAsk, UnitSecret,
+};
+
+/// The kernel side of the handle, as a double: it records what the loader handed it, answers
+/// `auth.call` at once or (with `pend` set) keeps its [`AuthDone`], and verifies units against
+/// the one secret it minted under.
+#[derive(Default)]
+struct KernelSide {
+    pend: std::sync::atomic::AtomicBool,
+    calls: Mutex<Vec<AuthCallAsk>>,
+    held: Mutex<Vec<AuthDone>>,
+    hands: Mutex<Vec<HandInAsk>>,
+    refusals: Mutex<Vec<RefuseAsk>>,
+    /// `(owner, unit)` -> its secret.
+    units: Mutex<Vec<(u64, u64, UnitSecret)>>,
+    /// At the peer point, answer the flow alone (else the names and a unit, as at the head).
+    peer_clean: std::sync::atomic::AtomicBool,
+    /// Every framing the loader told it ended.
+    ended: Mutex<Vec<u64>>,
+}
+
+const SIDE_SECRET: [u64; 2] = [0x5eed, 0xc0de];
+
+#[path = "auth_generation_tests.rs"]
+mod auth_generation_tests;
+
+fn side_answer(unit: UnitRef) -> AuthCallAnswer {
+    AuthCallAnswer {
+        flow: svc::FLOW_CONTINUE,
+        unit,
+        strips: vec![
+            (
+                "authorization".to_string(),
+                busbar_contract::abi::auth::FIELD_SENSITIVE,
+            ),
+            ("key".to_string(), busbar_contract::abi::auth::FIELD_QUERY),
+        ],
+    }
+}
+
+impl AuthHandleHost for KernelSide {
+    fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret> {
+        self.units
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(o, u, _)| *o == owner && *u == unit)
+            .map(|(_, _, s)| *s)
+    }
+
+    fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan {
+        let minted = mint_unit_ref(SIDE_SECRET, ask.generation, ask.owner, 0, 77).expect("minted");
+        self.units.lock().unwrap().push((
+            ask.owner,
+            77,
+            UnitSecret {
+                secret: SIDE_SECRET,
+                generation: ask.generation,
+                line: 0,
+            },
+        ));
+        let unit = if ask.unit.is_none() { minted } else { ask.unit };
+        if ask.point == busbar_contract::abi::auth::POINT_PEER
+            && self.peer_clean.load(Ordering::SeqCst)
+        {
+            self.calls.lock().unwrap().push(ask);
+            return AuthRan::Now(Ok(AuthCallAnswer {
+                flow: svc::FLOW_CONTINUE,
+                unit: UnitRef::NONE,
+                strips: Vec::new(),
+            }));
+        }
+        self.calls.lock().unwrap().push(ask);
+        if self.pend.load(Ordering::SeqCst) {
+            self.held.lock().unwrap().push(done);
+            return AuthRan::Pending;
+        }
+        AuthRan::Now(Ok(side_answer(unit)))
+    }
+
+    fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
+        let unit = if ask.unit.is_none() {
+            UnitRef { id: 78, mac: 1 }
+        } else {
+            ask.unit
+        };
+        self.hands.lock().unwrap().push(ask);
+        Ok((svc::FLOW_STOP, unit))
+    }
+
+    fn framing_ended(&self, framing: u64) {
+        self.ended.lock().unwrap().push(framing);
+    }
+
+    fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
+        self.refusals.lock().unwrap().push(ask);
+        Ok(RefusalBytes {
+            status: 404,
+            fields: vec![("content-type".to_string(), b"application/json".to_vec())],
+            body: b"{\"error\":{}}".to_vec(),
+        })
+    }
+}
+
+/// A double with the kernel side installed on its route.
+fn served_double() -> (Double, Arc<KernelSide>) {
+    let d = double();
+    let side = Arc::new(KernelSide::default());
+    let host: Arc<dyn AuthHandleHost> = side.clone();
+    assert!(d.route.auth.set(host).is_ok());
+    (d, side)
+}
+
+fn auth_call_into(
+    auth: AuthRef,
+    answer: &mut AuthAnswer,
+    buf: &mut [u8],
+    spans: &mut [FieldSpan],
+) -> AuthCallIn {
+    AuthCallIn {
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+        spans: spans.as_mut_ptr(),
+        spans_cap: spans.len(),
+        ..auth_call_in(auth, answer)
+    }
+}
+
+const NO_FIELD_SPAN: FieldSpan = FieldSpan {
+    name: Span { offset: 0, len: 0 },
+    value: Span { offset: 0, len: 0 },
+    flags: 0,
+    _reserved: 0,
+};
+
+/// RED (THE DESIGN §6 step 4; #74): with the kernel side installed, `auth.call` reaches it once,
+/// with the owner, the ref's id, the point and the request copied, and the transport receives ONLY
+/// the flow, the unit, and the NAMES to strip with their flags: no value, no verdict.
+#[test]
+fn red_auth_call_delegates_to_the_installed_kernel_side_and_answers_names_only() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(svc::check_auth_call(&i, ret, &o), Ok(Filled::Written));
+    let calls = side.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        (calls[0].owner, calls[0].auth, calls[0].point),
+        (owner(&d), 3, POINT_HEAD)
+    );
+    assert_eq!(calls[0].request.target, "/v1");
+    assert_eq!(calls[0].request.method, "GET");
+    assert_eq!(slot.flow, svc::FLOW_CONTINUE);
+    assert_eq!(slot.unit.id, 77);
+    assert_eq!(o.items, 2);
+    assert_eq!(o.len, ("authorization".len() + "key".len()) as u64);
+    let name = |s: &FieldSpan| {
+        std::str::from_utf8(&buf[s.name.offset as usize..(s.name.offset + s.name.len) as usize])
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(name(&spans[0]), "authorization");
+    assert_eq!(spans[0].flags, busbar_contract::abi::auth::FIELD_SENSITIVE);
+    assert_eq!(name(&spans[1]), "key");
+    assert_eq!(spans[1].flags, busbar_contract::abi::auth::FIELD_QUERY);
+    for s in &spans[..2] {
+        assert_eq!(s.value.offset, check::SPAN_ABSENT, "a value crossed");
+        assert_eq!(s.value.len, 0);
+    }
+}
+
+/// RED (the short-buffer rule for `auth.call`): a buffer too small answers FAILED with the full
+/// sizes and writes nothing; the one re-call on the same handle reads the stored answer, and the
+/// kernel side ran once.
+#[test]
+fn red_a_short_auth_call_buffer_earns_one_recall_and_the_kernel_runs_once() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut small, mut few) = ([0u8; 4], [NO_FIELD_SPAN; 1]);
+    let i = auth_call_into(r, &mut slot, &mut small, &mut few);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed, "{}", error(&o));
+    assert_eq!(o.needed_bytes, ("authorization".len() + "key".len()) as u64);
+    assert_eq!(o.needed_items, 2);
+    assert_eq!(
+        slot.size, 0,
+        "the answer slot was written on a short answer"
+    );
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(o.items, 2);
+    assert_eq!(
+        side.calls.lock().unwrap().len(),
+        1,
+        "the kernel side ran twice"
+    );
+}
+
+/// RED (THE DESIGN §6 step 7: a pending answer parks only its own stream): a kernel side that
+/// keeps the call answers PENDING; its answer stores and wakes the ticket; the re-issued handle
+/// reads it.
+#[test]
+fn red_a_pending_auth_call_parks_on_its_ticket_and_reads_the_stored_answer() {
+    let (d, side) = served_double();
+    side.pend.store(true, Ordering::SeqCst);
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+    let (ret, _) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Pending);
+    let done = side
+        .held
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("the kernel side kept the call");
+    done(Ok(side_answer(UnitRef { id: 77, mac: 5 })));
+    assert_eq!(d.route.wakes.lock().unwrap().as_slice(), &[TICKET]);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(slot.unit, UnitRef { id: 77, mac: 5 });
+    assert_eq!(side.calls.lock().unwrap().len(), 1);
+}
+
+/// RED (#74): with the kernel side installed a presented unit is VERIFIED against the secret it
+/// was minted under: the unit as minted passes; a flipped mac, another owner's presentation and a
+/// unit the kernel holds no record of are refused before the kernel side is called.
+#[test]
+fn red_a_presented_unit_is_verified_against_the_kernel_sides_secret() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    side.units.lock().unwrap().push((
+        owner(&d),
+        9,
+        UnitSecret {
+            secret: SIDE_SECRET,
+            generation: generation(),
+            line: 2,
+        },
+    ));
+    let unit = mint_unit_ref(SIDE_SECRET, generation(), owner(&d), 2, 9).expect("minted");
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let mut slot = answer_slot();
+    let mut i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+    i.unit = unit;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(side.calls.lock().unwrap().len(), 1);
+    for bad in [
+        UnitRef {
+            mac: unit.mac ^ 1,
+            ..unit
+        },
+        UnitRef { id: 10, ..unit },
+        mint_unit_ref(SIDE_SECRET, generation(), owner(&d), 3, 9).expect("minted"),
+        mint_unit_ref([1, 1], generation(), owner(&d), 2, 9).expect("minted"),
+    ] {
+        let mut i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+        i.head.handle.seq = 1 + bad.mac as u32 % 1000;
+        i.unit = bad;
+        let (ret, o) = call_auth(d.ctx, &i);
+        assert_eq!(ret.outcome(), Outcome::Refused, "{bad:?}");
+        assert_eq!(error(&o), REF_NOT_MINTED, "{bad:?}");
+    }
+    assert_eq!(
+        side.calls.lock().unwrap().len(),
+        1,
+        "a bad unit reached the kernel"
+    );
+}
+
+/// RED: `unit.hand_in` and `unit.refuse` delegate to the installed kernel side; the hand-in's flow
+/// and unit land in the answer slot, and the refusal's status, fields and body are lent to the
+/// transport, valid past the call.
+#[test]
+fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let hand = UnitHandInIn {
+        head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+        auth: r,
+        unit: UnitRef::NONE,
+        line: 2,
+        _reserved: 0,
+        conn: 4,
+        stream: 5,
+        request: get_view(),
+        answer: &mut slot,
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&hand).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(svc::check_unit_hand_in(&hand, ret, &o), Ok(Filled::Written));
+    assert_eq!(slot.flow, svc::FLOW_STOP);
+    assert_eq!(slot.unit.id, 78);
+    {
+        let hands = side.hands.lock().unwrap();
+        assert_eq!((hands[0].line, hands[0].auth, hands[0].conn), (2, 3, 4));
+    }
+
+    let mut refusal = RefusalAnswer {
+        size: 0,
+        status: 0,
+        _reserved: 0,
+        fields: std::ptr::null(),
+        fields_len: 0,
+        body: no_blob(),
+    };
+    let refuse = UnitRefuseIn {
+        head: head(op::UNIT_REFUSE, Ticket::NONE, 0, size_of::<UnitRefuseIn>()),
+        unit: UnitRef::NONE,
+        cause: REFUSE_NO_ROUTE,
+        line: LINE_NONE,
+        conn: 4,
+        stream: 5,
+        answer: &mut refusal,
+        request: get_view(),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(
+        svc::check_unit_refuse(&refuse, ret, &o),
+        Ok(Filled::Written)
+    );
+    assert_eq!(refusal.status, 404);
+    assert_eq!(refusal.fields_len, 1);
+    // SAFETY: the kernel-owned answer, valid until the next call on this connection.
+    let (field, body) = unsafe {
+        (
+            *refusal.fields,
+            std::slice::from_raw_parts(refusal.body.ptr, refusal.body.len),
+        )
+    };
+    // SAFETY: as above.
+    let name = unsafe { std::slice::from_raw_parts(field.name.ptr, field.name.len) };
+    assert_eq!(name, b"content-type");
+    assert_eq!(body, b"{\"error\":{}}");
+    assert_eq!(side.refusals.lock().unwrap()[0].cause, REFUSE_NO_ROUTE);
+    // The request the refusal is for reaches the kernel, its path shaping the bytes (ruling 1).
+    assert_eq!(side.refusals.lock().unwrap()[0].request.target, "/v1");
+    assert_eq!(side.refusals.lock().unwrap()[0].request.method, "GET");
+}
+
+// ── the peer point, the op's deadline, and the refusal's lifetime ────────────────────────────
+
+fn peer_call_in(
+    auth: AuthRef,
+    answer: &mut AuthAnswer,
+    buf: &mut [u8],
+    spans: &mut [FieldSpan],
+) -> AuthCallIn {
+    let mut i = auth_call_into(auth, answer, buf, spans);
+    i.point = busbar_contract::abi::auth::POINT_PEER;
+    i.request = HeadView {
+        method: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        target: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        authority: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        query: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        fields: std::ptr::null(),
+        fields_len: 0,
+        ..get_view()
+    };
+    i.request.scheme = 0;
+    i
+}
+
+/// RED (the Peer rule, the answer's side): a peer-point answer is continue or stop alone. A
+/// kernel answer naming lines or a unit there is REFUSED with nothing written; the flow alone is
+/// READY with no byte and no span.
+#[test]
+fn red_a_peer_answer_is_the_flow_alone() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = peer_call_in(r, &mut slot, &mut buf, &mut spans);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused, "{}", error(&o));
+    assert_eq!(error(&o), PEER_ANSWER_NAMES);
+    assert_eq!(slot.size, 0, "the answer slot was written");
+    assert!(
+        buf.iter().all(|b| *b == 0),
+        "a name was written at the peer point"
+    );
+    side.peer_clean.store(true, Ordering::SeqCst);
+    let mut slot = answer_slot();
+    let mut i = peer_call_in(r, &mut slot, &mut buf, &mut spans);
+    i.head.handle.seq = 1;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!((o.len, o.items), (0, 0));
+    assert_eq!((slot.flow, slot.unit), (svc::FLOW_CONTINUE, UnitRef::NONE));
+    assert_eq!(svc::check_auth_call(&i, ret, &o), Ok(Filled::Written));
+}
+
+/// RED (deadline classes): an `auth.call` made inside a framer op's crossing hands the kernel what
+/// remains of that op's deadline; a write-behind op's, or none outside an op, hands none.
+#[test]
+fn red_an_auth_call_carries_its_ops_deadline() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let call = |seq: u32| {
+        let mut slot = answer_slot();
+        let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+        let mut i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+        i.head.handle.seq = seq;
+        let (ret, o) = call_auth(d.ctx, &i);
+        assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    };
+    let mut head = crate::dispatch::in_head();
+    head.deadline_ns = crate::dispatch::now_ns() + 5_000_000_000;
+    {
+        let _op = op_deadline(&head);
+        call(0);
+    }
+    head.deadline_class = busbar_contract::abi::mechanism::call::DeadlineClass::WriteBehind as u8;
+    {
+        let _op = op_deadline(&head);
+        call(1);
+    }
+    call(2);
+    let calls = side.calls.lock().unwrap();
+    let first = calls[0].deadline.expect("the op's deadline");
+    assert!(
+        first <= std::time::Duration::from_secs(5) && !first.is_zero(),
+        "{first:?}"
+    );
+    assert_eq!(
+        calls[1].deadline, None,
+        "a write-behind op's deadline was handed on"
+    );
+    assert_eq!(calls[2].deadline, None, "a deadline outside any op");
+}
+
+/// RED (per-call copy-out): the kernel's refusal is lent for the call alone and nothing is kept
+/// per connection: N refusals, over N connections and over one, leave at most the last lent.
+#[test]
+fn red_n_refusals_keep_nothing_per_connection() {
+    let (d, _side) = served_double();
+    for conn in (1..=8).chain(std::iter::repeat_n(3, 8)) {
+        let mut refusal = RefusalAnswer {
+            size: 0,
+            status: 0,
+            _reserved: 0,
+            fields: std::ptr::null(),
+            fields_len: 0,
+            body: no_blob(),
+        };
+        let refuse = UnitRefuseIn {
+            conn,
+            answer: &mut refusal,
+            ..refuse_in()
+        };
+        let mut o = blank();
+        let ret =
+            HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+        assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+        assert_eq!(refusal.status, 404);
+        assert!(refusals_held() <= 1, "{} refusals held", refusals_held());
+    }
+}
+
+/// A no-route `unit.refuse` `in` with no answer slot yet.
+fn refuse_in() -> UnitRefuseIn {
+    UnitRefuseIn {
+        head: head(op::UNIT_REFUSE, Ticket::NONE, 0, size_of::<UnitRefuseIn>()),
+        unit: UnitRef::NONE,
+        cause: REFUSE_NO_ROUTE,
+        line: LINE_NONE,
+        conn: 1,
+        stream: 1,
+        answer: std::ptr::null_mut(),
+        request: get_view(),
+    }
+}
+
+// ── the framing: the host's identity of a connection side ─────────────────────────────────────
+
+/// An auth call uses its host-owned framing identity independently of its operation ticket.
+#[test]
+fn an_auth_call_names_the_host_framing_instead_of_its_operation_ticket() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+    let framing = crate::dispatch::framing_context::FramingContext::new(
+        owner(&d),
+        71,
+        0,
+        d.route.auth.get().map(Arc::downgrade),
+    )
+    .expect("host framing");
+    let scope: Arc<dyn busbar_contract::framing_scope::FramingScope> = framing.clone();
+    let (ret, o) =
+        crate::dispatch::framing_context::with_context(Some(scope), || call_auth(d.ctx, &i));
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(side.calls.lock().unwrap()[0].framing, framing.leg());
+}
+
+/// Operation tickets may be retired while sibling operations retain their connection's scope.
+#[test]
+fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let side = Arc::new(KernelSide::default());
+    let host: Arc<dyn AuthHandleHost> = side.clone();
+    assert!(dispatcher.install_auth_handle(host));
+    let framing = dispatcher.framing_context(1, 71, 0).expect("host framing");
+    framing.check(1, 19, false).unwrap();
+    framing.confirm(19).unwrap();
+    let retained = framing.clone();
+    let live = dispatcher.inline_ticket().expect("a ticket");
+    for _ in 0..8 {
+        let t = dispatcher.inline_ticket().expect("a ticket");
+        drop(t);
+    }
+    assert!(side.ended.lock().unwrap().is_empty());
+    assert!(framing.check(1, 19, false).is_ok());
+    drop(live);
+    assert!(side.ended.lock().unwrap().is_empty());
+    framing.closing();
+    assert!(framing.check(1, 19, false).is_err());
+    assert!(framing.check(1, 19, true).is_ok());
+    framing.end();
+    framing.end();
+    assert_eq!(*side.ended.lock().unwrap(), vec![framing.leg()]);
+    assert!(
+        retained.check(1, 19, true).is_err(),
+        "retaining memory cannot retain ended authority"
+    );
+}
+
+/// RED (R3, the data listener served through its framer's accept side): `unit.hand_in` on a line
+/// the host lent as `none` mints the request's unit and answers continue (no verdict is needed
+/// and nothing is named to strip); a minted ref the host never lent as `none` is still not served,
+/// and a `none` line lent to another owner does not verify for this one.
+#[test]
+fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
+    let d = double();
+    let lent = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65)
+        .expect("the host lends the line");
+    let hand_in = |auth: AuthRef| {
+        let mut slot = answer_slot();
+        let i = UnitHandInIn {
+            head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+            auth,
+            unit: UnitRef::NONE,
+            line: 1,
+            _reserved: 0,
+            conn: 1,
+            stream: 1,
+            request: get_view(),
+            answer: &mut slot,
+        };
+        let mut o = blank();
+        let f = HOST_SLOTS.unit_hand_in.unwrap();
+        let ret = f(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o, slot)
+    };
+    let (outcome, o, slot) = hand_in(lent);
+    assert_eq!(outcome, Outcome::Ready, "{}", error(&o));
+    assert_eq!(slot.flow, svc::FLOW_CONTINUE);
+    assert_eq!(slot.size as usize, size_of::<AuthAnswer>());
+    assert!(!slot.unit.is_none(), "the request's unit is minted here");
+    let (_, _, again) = hand_in(lent);
+    assert_ne!(again.unit, slot.unit, "each request its own unit");
+
+    let other = mint_auth_ref(owner(&d), generation(), 0x006f_7468_6572).expect("minted");
+    let (outcome, o, _) = hand_in(other);
+    assert_eq!(outcome, Outcome::Refused);
+    assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED);
+
+    let foreign = crate::dispatch::auth_handle::lend_none_line(owner(&d) + 1, 0x6e6f_6e65)
+        .expect("lent to another owner");
+    let (outcome, o, _) = hand_in(foreign);
+    assert_eq!(outcome, Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+}
+
+#[test]
+fn a_lent_none_line_admits_before_delegating_to_an_installed_auth_host() {
+    let (d, side) = served_double();
+    let auth = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65_0001)
+        .expect("the host lends the line");
+    let mut slot = answer_slot();
+    let i = UnitHandInIn {
+        head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+        auth,
+        unit: UnitRef::NONE,
+        line: 1,
+        _reserved: 0,
+        conn: 1,
+        stream: 1,
+        request: get_view(),
+        answer: &mut slot,
+    };
+    let mut out = blank();
+    let result = HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut out);
+    assert_eq!(result.outcome(), Outcome::Ready, "{}", error(&out));
+    assert_eq!(
+        slot.flow,
+        svc::FLOW_CONTINUE,
+        "the data listener's none line still admits"
+    );
+    assert!(!slot.unit.is_none());
+    assert!(
+        side.hands.lock().unwrap().is_empty(),
+        "the installed auth host must not stop an open line"
+    );
 }

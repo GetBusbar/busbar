@@ -45,7 +45,7 @@ impl ExportAxis for RootExports {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         rows()?.check(module, phase, instances)
     }

@@ -128,7 +128,13 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("traces-both-doors");
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
-    let tarball = common::plugins::pack_stated("export", DROPPED, &lib, "acme");
+    let mut manifest = common::plugins::manifest("export", DROPPED, "acme");
+    common::plugins::state(&mut manifest, &lib);
+    assert!(
+        manifest.statement.is_some(),
+        "the dropped OTLP library must export its memory-ABI door"
+    );
+    let tarball = common::plugins::seal(manifest, &lib);
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
     // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.

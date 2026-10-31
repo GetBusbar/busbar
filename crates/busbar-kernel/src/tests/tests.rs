@@ -1746,6 +1746,78 @@ fn secret_ref_builtin_modules_pass_with_empty_registry() {
     );
 }
 
+/// A secret axis whose `vault` plugin's `check` refuses a reference with no `path`: what
+/// `--validate` meets for a reference the plugin would refuse at resolve.
+struct CheckingAxis;
+
+impl busbar_contract::secret::SecretAxis for CheckingAxis {
+    fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
+        Default::default()
+    }
+    fn answers(&self, module: &str) -> bool {
+        module == "vault"
+    }
+    fn linked(&self, _: &str) -> bool {
+        false
+    }
+    fn shared(
+        &self,
+        module: &str,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::secret::SecretCalls>, String> {
+        Err(format!("{module} is not linked"))
+    }
+    fn open(
+        &self,
+        module: &str,
+        _: &serde_json::Value,
+        _: &dyn Fn(
+            &crate::config::SecretRef,
+        ) -> Result<busbar_contract::secret::SecretBytes, String>,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::secret::SecretCalls>, String> {
+        Err(format!("{module} is never opened to be checked"))
+    }
+    fn check(&self, _: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        match settings.get("path") {
+            Some(_) => Ok(()),
+            None => Err(vec![
+                "settings.path: missing".to_string(),
+                "settings: names no secret".to_string(),
+            ]),
+        }
+    }
+}
+
+/// RED (S2): a reference its plugin's `check` refuses fails the pre-flight `--validate` runs, each
+/// of the plugin's reasons after the reference's config path; one it accepts passes. Before, the
+/// `check` slot was never called, so `--validate` passed a reference that failed at resolve.
+#[test]
+fn a_reference_its_plugins_check_refuses_fails_the_preflight() {
+    use crate::config_validate::secret_refs::registry_refusal_with;
+    crate::test_support::register_neutral_test_plane();
+    let (dir, reg) = secret_registry("secretref-checked");
+    let mut settings = serde_json::Map::new();
+    let refused = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vault".to_string(),
+        settings: settings.clone(),
+    });
+    assert_eq!(
+        registry_refusal_with(reg.as_ref(), &refused, Some(&CheckingAxis)),
+        Err("providers.acme.api_key: settings.path: missing\n\
+             providers.acme.api_key: settings: names no secret"
+            .to_string())
+    );
+    settings.insert("path".to_string(), serde_json::json!("kv/acme"));
+    let accepted = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vault".to_string(),
+        settings,
+    });
+    assert_eq!(
+        registry_refusal_with(reg.as_ref(), &accepted, Some(&CheckingAxis)),
+        Ok(())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A secret ref naming a plugin of the WRONG kind (a store plugin,
 /// not `kind: secret`) fails the pre-flight — the same wrong-kind guard the `secrets:` block gets.
 #[test]
@@ -1820,6 +1892,41 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     assert!(
         std::sync::Arc::ptr_eq(&prior.session_store, &next.session_store),
         "an apply must carry the process-lifetime session substrate across the rebuild"
+    );
+}
+
+/// THE NODE AMENDMENT JOURNAL IS ONE OBJECT FOR THE LIFE OF THE NODE (item 404): the boot
+/// generation carries the journal its governance owns, and an apply carries the SAME one — the
+/// prior generation's, which is still governance's. A journal rebuilt on an apply would be one with
+/// no durable sink and none of the node's corrections: every count correction would read as never
+/// made, and every one made after the apply would go unjournalled. Pointer identity, no clock.
+#[test]
+fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_AMENDMENT_JOURNAL",
+        ))
+    };
+    let prior = build_once(cfg(), None).expect("boot");
+    let gov = prior
+        .governance
+        .clone()
+        .expect("the boot builds governance");
+    assert!(
+        std::sync::Arc::ptr_eq(&prior.amendments, gov.amendments()),
+        "the boot generation carries the journal its governance owns"
+    );
+    let next = build_once(cfg(), Some(&prior)).expect("apply");
+    assert!(
+        std::sync::Arc::ptr_eq(&next.amendments, &prior.amendments),
+        "an apply carries the prior generation's journal, never a new one"
+    );
+    let next_gov = next.governance.clone().expect("the apply keeps governance");
+    assert!(
+        std::sync::Arc::ptr_eq(&next.amendments, next_gov.amendments()),
+        "and it is still the journal governance owns"
     );
 }
 
@@ -2587,7 +2694,7 @@ struct RestorePublished(Option<crate::config::LimitsResolved>);
 
 impl Drop for RestorePublished {
     fn drop(&mut self) {
-        crate::config::limits::set_installed(self.0.take());
+        crate::config::limits::swap_installed(self.0.take());
     }
 }
 

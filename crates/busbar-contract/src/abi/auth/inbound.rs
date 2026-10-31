@@ -184,6 +184,13 @@ pub struct VerifyIn {
 ///
 /// The identity buffer is ALWAYS secret material to the host (claims may carry an identity token):
 /// never logged, zeroised after use. No plugin flag says so.
+///
+/// THE REASON (no layout of its own: it rides `head.error`): on READY with
+/// [`super::VERDICT_REJECT`] (`verify`) or a `complete_login` verdict that is not
+/// [`super::LOGIN_IDENTITY`], `head.error` may name WHY: the check that failed, or the identity
+/// provider's answer to an outage (its status). Operator text, never secret material. The host
+/// writes it to the instance's own plugin log and the host log, and NEVER to the client, whose
+/// answer is the same refusal whatever the reason. Absent = no reason given.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct IdentifyOut {

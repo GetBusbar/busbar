@@ -43,8 +43,8 @@ pub(crate) trait WakeRoute: Send + Sync {
     /// plugin.
     fn wake(&self, t: Ticket, supplier: Option<&'static InstanceWake>);
 
-    /// The host services this route's instances are served from; `None` = none.
-    fn services(&self) -> Option<super::services::Served> {
+    /// The host services this route's instances are served from, borrowed; `None` = none.
+    fn services(&self) -> Option<super::services::Served<'_>> {
         None
     }
 
@@ -56,6 +56,18 @@ pub(crate) trait WakeRoute: Send + Sync {
 
     /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
+        None
+    }
+
+    /// The store a service's results are kept under, whether or not this route serves the host
+    /// services (the auth handle's slots run on it without them).
+    fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        self.services().map(|s| std::sync::Arc::clone(s.store))
+    }
+
+    /// The kernel's side of the host auth handle this route's instances are served from; `None` =
+    /// none, and every auth-handle service answers REFUSED past its checks.
+    fn auth_handle(&self) -> Option<std::sync::Arc<dyn super::auth_handle::AuthHandleHost>> {
         None
     }
 

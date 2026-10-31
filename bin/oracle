@@ -770,9 +770,16 @@ fi
 # GH_TOKEN, else GITHUB_TOKEN; a LOCAL run only, release_token) reaches curl on stdin as a config line:
 # never on an argv, never on disk. A CI run never fetches: NO JUDGE without ModernCI's judge path.
 ORACLE_RELEASE_API="https://api.github.com/repos/GetBusbar/busbar-release"
-ORACLE_RELEASE_KEY_PEM='-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU=
+# THE TRUSTED RELEASE KEYS a judge's .sig may verify with (busbar-release-cli update.rs RELEASE_KEYS,
+# same keys, same order): busbar-release-2026-10-28, the owner's key that signs every judge from
+# 2026-10-28 (its private half is ModernCI's BUSBAR_RELEASE_SIGNING_KEY). The earlier key
+# busbar-release-2026-10-09 is NOT trusted (owner ruling 2026-10-28: its private half lived in GitHub;
+# trusted only until the judge and the CLI were republished under the new key).
+ORACLE_RELEASE_KEY_PEMS=(
+'-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs=
 -----END PUBLIC KEY-----'
+)
 _pin_in() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}'; }
 sha256_of() {  # sha256_of <file> — the hex digest, or nothing
   if command -v sha256sum >/dev/null 2>&1; then sha256sum -- "$1" | cut -c1-64
@@ -910,20 +917,26 @@ fetch_asset() {  # fetch_asset <source> <name> <out> — <source>: a directory (
   [ -n "$id" ] || return 1
   release_api "$ORACLE_RELEASE_API/releases/assets/$id" application/octet-stream "$out" "the asset $name"
 }
-verify_judge_sig() {  # verify_judge_sig <pubkey pem> <asset name> <sha256> <sig file (base64)>
-  local pem="$1" name="$2" hex="$3" sig="$4" d rc=0
+verify_judge_sig() {  # verify_judge_sig <asset name> <sha256> <sig file (base64)> <pubkey pem>... — any key verifies
+  local name="$1" hex="$2" sig="$3" d pem n=0 rc=1
+  shift 3
   command -v openssl >/dev/null 2>&1 || { echo "oracle: refusing the judge: $name has a .sig and there is no openssl to verify it" >&2; return 1; }
   d="$(mktemp -d)"
-  printf '%s\n' "$pem" >"$d/key.pem"
   printf '%s\n%s\n' "$name" "$hex" >"$d/msg"
-  if ! tr -d '\n\r ' <"$sig" | base64 -d >"$d/sig" 2>/dev/null; then rc=1
-  elif ! openssl pkeyutl -verify -pubin -inkey "$d/key.pem" -rawin -in "$d/msg" -sigfile "$d/sig" >/dev/null 2>&1; then rc=1; fi
+  if tr -d '\n\r ' <"$sig" | base64 -d >"$d/sig" 2>/dev/null; then
+    for pem in "$@"; do
+      n=$((n + 1))
+      printf '%s\n' "$pem" >"$d/key$n.pem"
+      if openssl pkeyutl -verify -pubin -inkey "$d/key$n.pem" -rawin -in "$d/msg" -sigfile "$d/sig" >/dev/null 2>&1; then rc=0; break; fi
+    done
+  fi
   rm -rf "$d"
-  [ "$rc" = 0 ] || echo "oracle: refusing the judge: $name's .sig is not busbar-release's release key's signature of it" >&2
+  [ "$rc" = 0 ] || echo "oracle: refusing the judge: $name's .sig is not a signature of it by any of busbar-release's $# trusted release key(s)" >&2
   return "$rc"
 }
 fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>] — prints the verified judge
-  local text="$1" cache="$2" src="$3" pem="${4:-$ORACLE_RELEASE_KEY_PEM}" arch ref want name bin tmp got side
+  local text="$1" cache="$2" src="$3" arch ref want name bin tmp got side keys
+  if [ -n "${4:-}" ]; then keys=("$4"); else keys=("${ORACLE_RELEASE_KEY_PEMS[@]}"); fi
   arch="$(judge_arch)"
   ref="$(printf '%s\n' "$text" | _pin_in release_ref)"
   want="$(printf '%s\n' "$text" | _pin_in "sha256_linux_$arch")"
@@ -948,7 +961,7 @@ fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>
     [ "$side" = "$want" ] || { echo "oracle: refusing the judge: its published .sha256 ($side) is not the pin's $want" >&2; rm -rf "$tmp"; return 1; }
   fi
   if fetch_asset "$src" "$name.sig" "$tmp/$name.sig" 2>/dev/null; then
-    verify_judge_sig "$pem" "$name" "$got" "$tmp/$name.sig" || { rm -rf "$tmp"; return 1; }
+    verify_judge_sig "$name" "$got" "$tmp/$name.sig" "${keys[@]}" || { rm -rf "$tmp"; return 1; }
   fi
   mkdir -p "$(dirname "$bin")"
   mv "$tmp/$name" "$bin.part" && chmod +x "$bin.part" && mv -f "$bin.part" "$bin"
@@ -1038,6 +1051,48 @@ sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
   # Where the pin comes from under ModernCI is base-selftest's.
   [ "$fail" = 0 ] && { echo "oracle fetch-selftest: the judge is the pinned digest's, or there is none"; exit 0; }
   echo "oracle fetch-selftest: FAILED"; exit 1
+fi
+# release-key-selftest: the judge's .sig is checked against busbar-release's TRUSTED release keys
+# (busbar-release-cli update.rs RELEASE_KEYS, same keys, same order): the owner's 2026-10-28 key,
+# which signs, and no other: the earlier key is refused (owner ruling 2026-10-28). A .sig by a listed
+# key verifies; one by any other key is refused.
+if [ "${1:-}" = "release-key-selftest" ]; then
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT; fail=0
+  ok() { echo "  [ok]     $1"; }; bad() { echo "  [FAILED] $1"; fail=1; }
+  new='MCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs='
+  old='MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU='
+  case "${ORACLE_RELEASE_KEY_PEMS[0]:-}" in *"$new"*) ok "the owner's 2026-10-28 key is trusted, and first (it signs)" ;; *) bad "the owner's 2026-10-28 key is not the first trusted key" ;; esac
+  [ "${#ORACLE_RELEASE_KEY_PEMS[@]}" = 1 ] && ok "the owner's 2026-10-28 key is the only trusted key" || bad "a key other than the owner's 2026-10-28 key is trusted"
+  case "${ORACLE_RELEASE_KEY_PEMS[*]:-}" in *"$old"*) bad "the earlier key busbar-release-2026-10-09 is still trusted" ;; *) ok "the earlier key busbar-release-2026-10-09 is not trusted" ;; esac
+  if command -v openssl >/dev/null 2>&1 \
+     && openssl genpkey -algorithm ed25519 -out "$st/a.pem" 2>/dev/null && openssl pkey -in "$st/a.pem" -pubout -out "$st/a.pub" 2>/dev/null \
+     && openssl genpkey -algorithm ed25519 -out "$st/u.pem" 2>/dev/null && openssl pkey -in "$st/u.pem" -pubout -out "$st/u.pub" 2>/dev/null; then
+    name="busbar-oracle-linux-aarch64-$(printf 'a%.0s' $(seq 1 40))"; hex="$(printf 'b%.0s' $(seq 1 64))"
+    printf '%s\n%s\n' "$name" "$hex" >"$st/msg"
+    for k in a u; do
+      openssl pkeyutl -sign -inkey "$st/$k.pem" -rawin -in "$st/msg" -out "$st/$k.bin" 2>/dev/null
+      base64 <"$st/$k.bin" | tr -d '\n' >"$st/$k.sig"
+    done
+    if verify_judge_sig "$name" "$hex" "$st/a.sig" "$(cat "$st/u.pub")" "$(cat "$st/a.pub")" 2>/dev/null; then
+      ok "a .sig by the second listed key verifies"
+    else bad "a .sig by a listed key was refused"; fi
+    if verify_judge_sig "$name" "$hex" "$st/u.sig" "$(cat "$st/a.pub")" 2>/dev/null; then
+      bad "a .sig by a key not on the list verified"
+    else ok "a .sig by a key not on the list is refused"; fi
+    if verify_judge_sig "$name" "$hex" "$st/u.sig" "${ORACLE_RELEASE_KEY_PEMS[@]}" 2>/dev/null; then
+      bad "busbar-release's trusted keys accepted a .sig by an unknown key"
+    else ok "busbar-release's trusted keys refuse a .sig by an unknown key"; fi
+    # a .sig by a key that LEFT the list (the earlier key's case, proven with a key held here)
+    if verify_judge_sig "$name" "$hex" "$st/a.sig" "$(cat "$st/u.pub")" "$(cat "$st/a.pub")" 2>/dev/null \
+       && ! verify_judge_sig "$name" "$hex" "$st/a.sig" "$(cat "$st/u.pub")" 2>/dev/null; then
+      ok "a .sig by a key removed from the list is refused"
+    else bad "a .sig by a removed key still verified"; fi
+    if verify_judge_sig "$name" "$hex" "$st/a.sig" 2>/dev/null; then
+      bad "a .sig verified against no key at all"
+    else ok "no trusted key verifies nothing"; fi
+  else bad "no openssl with Ed25519 here: the .sig check cannot be proven"; fi
+  [ "$fail" = 0 ] && { echo "oracle release-key-selftest: the judge verifies with busbar-release's trusted keys and no other"; exit 0; }
+  echo "oracle release-key-selftest: FAILED"; exit 1
 fi
 # `judge-pin`: the pin text the judge would be fetched by, or the refusal.
 if [ "${1:-}" = "judge-pin" ]; then rc=0; judge_pin_text "$here" || rc=$?; exit "$rc"; fi

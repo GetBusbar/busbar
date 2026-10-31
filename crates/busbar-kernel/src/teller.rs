@@ -62,13 +62,14 @@
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::canary::Canary;
 use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, AuditFacts,
-    Authenticate, Authenticated, CallId, Canary, CellError, Consumption, Decode, Dial,
-    DurabilityLost, DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState,
-    KernelSeal, Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SeatVerdict, SessionId, Step, StepName, UnitEnd,
-    UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
+    Authenticate, Authenticated, CallId, CellError, Consumption, Decode, Dial, DurabilityLost,
+    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
+    Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource,
+    ReasonCode, Refusal, Route, SeatVerdict, SessionId, Step, StepName, UnitEnd, UnitKey, Usage,
+    UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;

@@ -249,9 +249,8 @@ impl TokenSigner {
     /// a token verifies ONLY where the verifier expects exactly this audience; the plain data-plane
     /// verify rejects it (see [`TokenClaims::aud`]).
     ///
-    /// `cfg(test)` until an authorization-server mint path (OAuth Unit D) lands and becomes its
-    /// production caller - per the house rule against shipping dead code behind a live-looking
-    /// surface. The boundary tests below exercise it against the real verifier today. Gated on
+    /// Test-only: no release surface mints an audience-bound token (`docs/mcp.md`), so it is not
+    /// compiled into a release build. The boundary tests exercise it against the real verifier. Gated on
     /// `test-support` too so the crates whose test binaries link this one (core, and any plane
     /// tests dual-compiled into core) can name it — the same cross-crate test-only seam the
     /// metrics initializer uses.

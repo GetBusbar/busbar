@@ -48,6 +48,7 @@ fn message(bytes: &[u8]) -> crate::framer::Got {
         bytes: bytes.to_vec(),
         end_of_frame: true,
         status_code: None,
+        handoff: false,
         status_class: 0,
         fault: 0,
         retry_after_secs: None,

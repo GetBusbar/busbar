@@ -296,11 +296,16 @@ impl MemoryStore {
     ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
         self.plane_records.read().unwrap_or_else(|e| e.into_inner())
     }
-    /// A plane record's identity in the one map: its `parent` when it is an APPENDED child (a chain
-    /// position is `(parent, seq)`), else its own `id` at `seq` 0.
-    fn plane_key(record: PlaneRecordRef<'_>) -> (String, String, u64) {
+    /// An APPENDED record's position in the one map: its chain (its `parent`, else its own `id`)
+    /// at its `seq`.
+    fn chain_key(record: PlaneRecordRef<'_>) -> (String, String, u64) {
         let identity = record.parent.unwrap_or(record.id).to_string();
         (record.kind.to_string(), identity, record.seq)
+    }
+    /// An UPSERTED record's key in the one map: its own `id`, parent or not (the contract upserts
+    /// by `(kind, id)`), so `get_plane_record`/`delete_plane_record` reach it by that id.
+    fn upsert_key(record: PlaneRecordRef<'_>) -> (String, String, u64) {
+        (record.kind.to_string(), record.id.to_string(), record.seq)
     }
     /// The two credential-table preconditions, factored out of `put_credential` so the ATOMIC
     /// `put_key_with_credential` can run the identical rules under its own single critical section
@@ -732,7 +737,7 @@ impl Store for MemoryStore {
 
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
         self.plane_records()
-            .insert(Self::plane_key(record), record.to_record());
+            .insert(Self::upsert_key(record), record.to_record());
         Ok(())
     }
 
@@ -753,7 +758,7 @@ impl Store for MemoryStore {
         // `task_event`/`call`/`audit` rows — exactly the defect `append_audit`'s own check exists to
         // catch, restored on this newer seam.
         let mut records = self.plane_records();
-        let key = Self::plane_key(record);
+        let key = Self::chain_key(record);
         match records.get(&key) {
             Some(existing) if existing.view() == record => Ok(()),
             Some(_) => Err(StoreError(format!(

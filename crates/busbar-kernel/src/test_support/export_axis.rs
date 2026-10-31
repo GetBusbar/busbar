@@ -73,7 +73,7 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         let rows = rows()?;
         match by_double(rows, module) {
@@ -179,7 +179,7 @@ impl ScrapeDouble {
     /// instance after the first, naming the first, in the double's words. Any other phase finds
     /// nothing.
     #[must_use]
-    pub fn check(phase: u32, instances: &[(String, serde_json::Value)]) -> Vec<String> {
+    pub fn check(phase: u32, instances: &[(String, &serde_json::Value)]) -> Vec<String> {
         if phase != busbar_contract::abi::export::CHECK_PHASE_LIMITS {
             return Vec::new();
         }

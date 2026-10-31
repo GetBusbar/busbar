@@ -334,6 +334,7 @@ async fn apply(
     mutation: Mutation,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("{} write by {actor}", section.key());
     let action = format!("{}.{}", section.singular(), mutation.verb());
     let resource = format!("{}:{name}", section.singular());
     let reject = |e: &AdminError, cond: Cond, actor: &str| -> Response {
@@ -600,7 +601,7 @@ async fn apply(
                 },
                 move || {
                     // Past persist AND swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }

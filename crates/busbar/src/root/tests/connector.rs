@@ -209,7 +209,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         None,
         "the boot config carves it out"
     );
-    busbar_kernel::test_support::build_once_under(deployment(&[], ""), None, &rules)
+    busbar_kernel_testkit::app::build_once_under(deployment(&[], ""), None, &rules)
         .expect("the reload builds");
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),

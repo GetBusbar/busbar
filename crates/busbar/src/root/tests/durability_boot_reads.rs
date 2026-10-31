@@ -68,7 +68,8 @@ fn an_amendment_rebuild_the_store_will_not_read_refuses_the_boot() {
     }
     let mut restarted = over_store(&slots);
     slots.fail_reads(true);
-    let answered = format!("{:?}", restarted.restore_amendments());
+    let journal = busbar_kernel_audit::amend::NodeAmendments::new();
+    let answered = format!("{:?}", restarted.restore_amendments(&journal, &token));
     assert!(
         answered.starts_with("Err(") && answered.contains("could not be read back"),
         "a store that would not read the chain back at the amendment rebuild must refuse the \
@@ -204,7 +205,8 @@ fn an_amendment_rebuild_over_a_chain_that_does_not_verify_refuses_the_boot() {
     two_records(&slots);
     let mut restarted = over_store(&slots);
     slots.corrupt(JOURNAL_SCHEMA, &part_key(NODE, 1, 0));
-    let answered = format!("{:?}", restarted.restore_amendments());
+    let journal = busbar_kernel_audit::amend::NodeAmendments::new();
+    let answered = format!("{:?}", restarted.restore_amendments(&journal, &token()));
     assert!(
         answered.starts_with("Err(") && answered.contains("does not verify"),
         "a chain that does not verify at the amendment rebuild must refuse the boot, naming the \

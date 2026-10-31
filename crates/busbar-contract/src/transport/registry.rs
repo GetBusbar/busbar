@@ -72,8 +72,9 @@ pub mod facts {
 /// tree's own readers keep tables for, and a transport that reports in one of them has to spell it
 /// the way those readers spell it or its statuses silently stop matching.
 ///
-/// A transport in one of these names the constant, in `TransportMeta::STATUS_NAMESPACE`. A transport
-/// with a numbering of its own names it whatever it likes, and none of this applies.
+/// A transport in one of these names the constant as its claim row's status numbering
+/// ([`crate::abi::transport::Claim::status_namespace`]). A transport with a numbering of its own
+/// names it whatever it likes, and none of this applies.
 pub mod status_ns {
     /// The status-line numbering: three-digit codes, as the request-response transports (and the
     /// event streams composed over them) read them off a response.

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use crate::abi::mechanism::lifecycle::ValidateIn;
-use crate::abi::sdk::door::Slot;
+use crate::abi::sdk::door::RawSlot;
 
 /// A need a plugin's migration raises against a key core owns. Core applies exactly these, to its
 /// own keys only, and nothing else of the plugin's.
@@ -108,10 +108,10 @@ pub trait Migrate {
 #[derive(Debug)]
 pub struct Migrator<M>(PhantomData<M>);
 
-impl<M: Migrate> Slot for Migrator<M> {
+impl<M: Migrate> RawSlot for Migrator<M> {
     type In = ValidateIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, input: &ValidateIn, out: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &ValidateIn, out: &mut OutHead) -> Outcome {
         // SAFETY: the host lent `settings`, `head.extensions` and `err_buf` (`err_cap` bytes,
         // writable) for this call, as the MIGRATE op states (`abi::mechanism::lifecycle`).
         let (settings, from) = unsafe {

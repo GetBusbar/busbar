@@ -657,6 +657,7 @@ pub(crate) fn composed_body(
     }
     let boundary = fields
         .iter()
+        .filter(|(name, _)| !busbar_contract::conn::is_sealed_fields_field(name.as_bytes()))
         .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
         .and_then(|(_, value)| std::str::from_utf8(value).ok())
         .and_then(form_boundary)

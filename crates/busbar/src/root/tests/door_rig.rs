@@ -220,10 +220,7 @@ pub(crate) fn attach_late(late: &LateServices, gov: &Arc<GovState>) {
 
 /// The process's dispatcher over `late`, `workers` wide, as boot builds it.
 pub(crate) fn dispatcher(workers: usize, late: &Arc<LateServices>) -> Arc<Dispatcher> {
-    Arc::new(crate::root::dispatch::build(
-        workers,
-        Arc::clone(late) as Arc<dyn HostServices>,
-    ))
+    Arc::new(crate::root::dispatch::build(workers, late))
 }
 
 /// THE PROCESS'S CONNECTOR, as boot builds it: every linked transport door a framer entry, every

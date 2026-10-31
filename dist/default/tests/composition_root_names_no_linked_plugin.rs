@@ -52,9 +52,9 @@ three = "busbar-third"
 four = "busbar-fourth"
 
 [package.metadata.busbar.linked-axes]
-one = "plane protocols"
-two = "plane egress"
-three = "plane diagnostics egress"
+one = "plane-door protocols"
+two = "plane-door egress"
+three = "plane-door diagnostics egress"
 four = "plane-door"
 
 [package.metadata.busbar.linked-entry]
@@ -77,13 +77,11 @@ unit-b = "beta"
         !out.contains("busbar_second"),
         "a disabled row is emitted: {out}"
     );
-    assert!(out.contains("PlaneDecl; 2] = ["), "two plane rows: {out}");
-    assert!(out.contains("assemble(crate::root::third_half::PLANE_DECLARATION, crate::root::third_half::PLANE_HOOKS)"));
     assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
-        out.contains("    plane_doors: &[busbar_fourth::linked::door, ],\n"),
-        "the plane door axis references the entry's door: {out}"
+        out.contains("    plane_doors: &[busbar_first::linked::door, crate::root::third_half::door, busbar_fourth::linked::door, ],\n"),
+        "the enabled doors retain manifest order and the entry override: {out}"
     );
     assert!(
         !out.contains("hot_planes"),
@@ -106,8 +104,11 @@ unit-b = "beta"
 
     for broken in [
         manifest.replace("three = []\n", ""),
-        manifest.replace("three = \"plane diagnostics egress\"\n", ""),
-        manifest.replace("plane diagnostics egress", "plane diagnostics teleport"),
+        manifest.replace("three = \"plane-door diagnostics egress\"\n", ""),
+        manifest.replace(
+            "plane-door diagnostics egress",
+            "plane-door diagnostics teleport",
+        ),
         // RED: the deleted HOT plane lane's axis is an unknown axis, refused.
         manifest.replace("four = \"plane-door\"", "four = \"hot-plane\""),
     ] {

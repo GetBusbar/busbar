@@ -18,15 +18,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::transport::route::{FieldPredicate, RouteMatch};
+use busbar_contract::abi::transport::sensitive_fields::SensitiveFields;
+use busbar_contract::abi::transport::LineEntry;
 use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOSE_NORMAL};
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
-    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
+    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -94,8 +99,25 @@ pub struct DoorFacts {
 pub trait FramerDoor: Send + Sync {
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
+    /// The entry renders sealed values (`abi::transport::EXT_SEALED_VALUES`): the host hands it
+    /// filler, never a credential value, and splices the real bytes into its wire output. `false`
+    /// unless its Statement states the record.
+    fn seals_values(&self) -> bool {
+        false
+    }
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// Its tail states `FACT_ACCEPTS`: its framer begins on the accepting side, so a listener may
+    /// be framed by it. `false` for an entry that states none.
+    fn accepts(&self) -> bool {
+        false
+    }
+    /// The identity of the instance the host opened for it (the one its host service calls are
+    /// made under, and every auth ref lent to it is minted for); `None` = no instance the host
+    /// opened.
+    fn instance(&self) -> Option<u64> {
+        None
+    }
     /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
     /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
     fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
@@ -130,6 +152,60 @@ pub trait FramerDoor: Send + Sync {
     fn cross_on(&self, side: &dyn crate::carrier::Side, resume: bool, call: Call<'_>) -> Crossed {
         let _ = (side, resume);
         self.cross(call)
+    }
+
+    /// Create host-only framing ownership before Begin/Adopt. Contextless doubles return none.
+    ///
+    /// # Errors
+    /// The host cannot create the connection/framing identity.
+    fn framing_context(
+        &self,
+        listener: u64,
+        connection: u64,
+    ) -> Result<Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>, Refused> {
+        let _ = (listener, connection);
+        Ok(None)
+    }
+
+    /// Create a destination leg using the detached source's trusted admission custody.
+    ///
+    /// # Errors
+    /// This door cannot inherit a host-owned framing.
+    fn adopting_context(
+        &self,
+        source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
+    ) -> Result<Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>, Refused> {
+        let _ = source;
+        Err(Refused {
+            outcome: Outcome::Refused,
+            error: "the door cannot inherit a host session".into(),
+        })
+    }
+
+    /// One framing crossing with its host context, including ticketless operations and resumes.
+    fn cross_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: Option<&dyn crate::carrier::Side>,
+        resume: bool,
+        call: Call<'_>,
+    ) -> Crossed {
+        let _ = context;
+        match side {
+            Some(side) => self.cross_on(side, resume, call),
+            None => self.cross(call),
+        }
+    }
+
+    /// Cancellation carries the same framing ownership as the operation it cancels.
+    fn cancel_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: &dyn crate::carrier::Side,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        let _ = context;
+        self.carry(side, false, call)
     }
 }
 
@@ -168,6 +244,9 @@ pub struct Got {
     pub end_of_frame: bool,
     /// The status number, where the piece carries one.
     pub status_code: Option<u32>,
+    /// `status_code` is in the numbering of the handshake the connection opened with, the
+    /// status-line one (`PIECE_CODE_HANDOFF`), not the claim's own.
+    pub handoff: bool,
     /// The status class (`STATUS_*`).
     pub status_class: u8,
     /// The fault reading (`FAULT_*`), the breaker's leg.
@@ -218,6 +297,15 @@ pub struct Head {
     pub reason: Option<Vec<u8>>,
 }
 
+/// A stream's backpressure change, retained in crossing order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFlow {
+    /// The emit was taken; further emits wait for this stream to become writable.
+    Full(u64),
+    /// The stream may be emitted on again; this signal is never payload.
+    Writable(u64),
+}
+
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Yielded {
@@ -231,13 +319,12 @@ pub struct Yielded {
     pub ended: bool,
     /// The monotonic instant (host clock, ns) the framer asked to be called at.
     pub deadline_ns: Option<u64>,
-    /// On an `emit`: the bytes were taken and the stream's queue is at the framer's high-water
-    /// mark (`YIELD_STREAM_FULL`): the host emits nothing more on that stream until it is
-    /// writable again ([`Yielded::writable`]) or its last piece arrives.
-    pub full: bool,
-    /// The streams the framer says are writable again (`PIECE_WRITABLE` pieces), in order. Such a
-    /// piece is a signal to the host and never a frame: it is not among [`Yielded::pieces`].
-    pub writable: Vec<u64>,
+    /// Stream backpressure changes, including the original stream of resumed emits.
+    pub flow: Vec<StreamFlow>,
+    /// The INTERIM heads (`PIECE_INTERIM` field blocks, a `1xx` ahead of the final head), in
+    /// order. Never the answer's head: they are not among [`Yielded::pieces`], whose first field
+    /// block on a stream stays its final head.
+    pub interim: Vec<Got>,
     /// The protocol the framer last stated it agreed on an accepted connection
     /// (`FramerYield::agreed`): a 1-based position in its accepting offer; `0` = not stated.
     pub agreed: u32,
@@ -471,7 +558,7 @@ impl Buffers {
                 if p.len != 0 || p.flags != PIECE_WRITABLE {
                     return Err(bad("a writable piece with bytes or another flag"));
                 }
-                into.writable.push(p.stream);
+                into.flow.push(StreamFlow::Writable(p.stream));
                 continue;
             }
             let at = usize::try_from(p.offset).map_err(|_| bad("piece"))?;
@@ -495,11 +582,12 @@ impl Buffers {
                     outcome: Outcome::Fault,
                     error: format!("the framer's field block is refused: {why}"),
                 })?;
-            into.pieces.push(Got {
+            let got = Got {
                 stream: p.stream,
                 bytes: bytes.to_vec(),
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
                 status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
+                handoff: p.flags & PIECE_CODE_HANDOFF != 0,
                 status_class: p.status_class,
                 fault: p.fault,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
@@ -510,7 +598,13 @@ impl Buffers {
                 reason: None,
                 failed: p.flags & PIECE_STREAM_FAILED != 0,
                 end: p.flags & PIECE_END != 0,
-            });
+            };
+            if p.flags & PIECE_INTERIM != 0 {
+                // AN INTERIM HEAD (a `1xx`): kept apart, so the stream's head stays its final one.
+                into.interim.push(got);
+            } else {
+                into.pieces.push(got);
+            }
         }
         let heads = self
             .heads
@@ -556,7 +650,6 @@ impl Buffers {
             into.heads.push(head);
         }
         into.ended |= y.flags & YIELD_ENDED != 0;
-        into.full |= y.flags & YIELD_STREAM_FULL != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
         if y.agreed != 0 {
             into.agreed = y.agreed;
@@ -597,6 +690,7 @@ fn unix_ns() -> u64 {
 /// Where one connection's framing stands with its entry.
 pub struct Framing {
     door: Arc<dyn FramerDoor>,
+    context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     token: u64,
     bufs: Buffers,
     /// Its ticketed ops run on tickets ([`FramerDoor::framing_side`]); `false` = ticket-less.
@@ -607,6 +701,21 @@ pub struct Framing {
     /// holds the whole framing; a parked `emit` holds its stream; a parked `ingest` holds what the
     /// framer holds back for the stream whose auth it waits on, and nothing the host sends after.
     parked: Vec<Parked>,
+}
+
+/// A detached connection's bytes and host ownership, consumed by its adopting framing.
+#[derive(Debug)]
+pub struct Detached {
+    bytes: Vec<u8>,
+    context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+}
+
+impl Drop for Detached {
+    fn drop(&mut self) {
+        if let Some(context) = self.context.take() {
+            context.end();
+        }
+    }
 }
 
 /// The most ticketed ops one framing may have parked at once: each holds a ticket of the host's,
@@ -674,8 +783,81 @@ impl AuthBinding {
     }
 }
 
+pub use busbar_contract::abi::transport::guest_policy::GuestLine;
+
+/// A LISTENER'S GUEST LIST, in the kernel's match order, as the connector lends it to a framing
+/// accepted on the listener. Held by the framing for its life; its `begin` crossing is handed it
+/// as [`BeginIn::lines`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestLines {
+    policy: Arc<busbar_contract::abi::transport::guest_policy::Policy>,
+}
+
+impl Default for GuestLines {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl GuestLines {
+    /// A standalone list without a host registration.
+    #[must_use]
+    pub fn new(lines: Vec<GuestLine>) -> Self {
+        Self::registered(0, lines)
+    }
+
+    /// A list associated with its host listener registration.
+    #[must_use]
+    pub fn registered(listener: u64, lines: Vec<GuestLine>) -> Self {
+        Self::published(Arc::new(
+            busbar_contract::abi::transport::guest_policy::Policy {
+                listener,
+                generation: 0,
+                lines,
+            },
+        ))
+    }
+
+    /// The host-selected immutable policy for an opening or stream grant.
+    #[must_use]
+    pub fn published(policy: Arc<busbar_contract::abi::transport::guest_policy::Policy>) -> Self {
+        Self { policy }
+    }
+
+    /// The host listener registration associated with this list.
+    #[must_use]
+    pub fn listener(&self) -> u64 {
+        self.policy.listener
+    }
+
+    /// Its lines, in match order.
+    #[must_use]
+    pub fn lines(&self) -> &[GuestLine] {
+        &self.policy.lines
+    }
+
+    /// The auth points the lines' auths declare, together.
+    #[must_use]
+    pub fn points(&self) -> u32 {
+        self.lines()
+            .iter()
+            .fold(0, |points, line| points | line.points)
+    }
+}
+
+/// THE REFUSAL OF A GUEST LIST LENT TO A DIALLED FRAMING: a guest list is a listener's, lent only
+/// on an accepting side (`check::check_lines`).
+pub const LINES_ON_DIAL: &str = "a dialled framing is lent no guest list";
+
+#[derive(Default)]
+struct EmitHead {
+    body_len: Option<u64>,
+    status: u32,
+    extensions: Vec<u8>,
+}
+
 /// A TICKETED FRAMER OP, as the framing issues it (and re-issues it on a resume): `begin`,
-/// `ingest` or `emit`, its bytes borrowed while it crosses and owned once it parks.
+/// `adopt`, `ingest` or `emit`, its bytes borrowed while it crosses and owned once it parks.
 #[derive(Debug)]
 enum Ticketed<'a> {
     Begin {
@@ -684,6 +866,13 @@ enum Ticketed<'a> {
         established: Established,
         opening: Vec<(String, Vec<u8>)>,
         binding: AuthBinding,
+        /// The listener's guest list, on an accepting side.
+        guests: Option<Arc<GuestLines>>,
+    },
+    Adopt {
+        side: u32,
+        established: Established,
+        leftover: std::borrow::Cow<'a, [u8]>,
     },
     Ingest {
         bytes: std::borrow::Cow<'a, [u8]>,
@@ -696,6 +885,10 @@ enum Ticketed<'a> {
         text: bool,
         /// The opening body's length on a dialled request's head emit: `Some` = known.
         body_len: Option<u64>,
+        /// An accepted stream's answer status, on the emit that carries its head; `0` otherwise.
+        status: u32,
+        /// Name-only classification of this request head, retained across resumes and drains.
+        extensions: Vec<u8>,
     },
 }
 
@@ -708,12 +901,21 @@ impl Ticketed<'_> {
                 established,
                 opening,
                 binding,
+                guests,
             } => Ticketed::Begin {
                 side,
                 target,
                 established,
                 opening,
                 binding,
+                guests,
+            },
+            Self::Adopt {
+                side, established, ..
+            } => Ticketed::Adopt {
+                side,
+                established,
+                leftover: std::borrow::Cow::Owned(Vec::new()),
             },
             // A parked op's resume carries no new bytes: the framer took them whole when the op
             // first crossed, so none is kept.
@@ -726,6 +928,8 @@ impl Ticketed<'_> {
                 end_of_frame,
                 text,
                 body_len,
+                status,
+                extensions,
                 ..
             } => Ticketed::Emit {
                 stream,
@@ -733,16 +937,18 @@ impl Ticketed<'_> {
                 end_of_frame,
                 text,
                 body_len,
+                status,
+                extensions,
             },
         }
     }
 
-    /// The stream a parked op of this kind holds: an emit's own; `None` for `begin` (which holds
-    /// the whole framing) and `ingest` (whose stream only the framer knows).
+    /// The stream a parked op holds: an emit's own; `None` for `begin`/`adopt` (the whole
+    /// framing) and `ingest` (whose stream only the framer knows).
     const fn stream(&self) -> Option<u64> {
         match self {
             Self::Emit { stream, .. } => Some(*stream),
-            Self::Begin { .. } | Self::Ingest { .. } => None,
+            Self::Begin { .. } | Self::Adopt { .. } | Self::Ingest { .. } => None,
         }
     }
 }
@@ -753,6 +959,7 @@ struct Parked {
     op: Ticketed<'static>,
     yielded: Yielded,
     recall: bool,
+    recalls: Recalls,
     ticket: Box<dyn crate::carrier::Side>,
 }
 
@@ -783,6 +990,43 @@ fn abi(s: &[u8]) -> AbiStr {
     AbiStr {
         ptr: s.as_ptr(),
         len: s.len(),
+    }
+}
+
+/// A guest line's field predicates as the contract lends them, borrowing the line's strings.
+fn predicates_of(l: &GuestLine) -> Vec<FieldPredicate> {
+    l.fields
+        .iter()
+        .map(|(op, name, value)| FieldPredicate {
+            op: *op,
+            _reserved: 0,
+            name: abi(name.as_bytes()),
+            value: abi(value),
+        })
+        .collect()
+}
+
+/// A guest line as the contract lends it ([`LineEntry`]), its route's predicates `predicates`
+/// (the line's own, [`predicates_of`]), borrowing the line's strings.
+fn entry_of(l: &GuestLine, predicates: &[FieldPredicate]) -> LineEntry {
+    LineEntry {
+        line: l.line,
+        points: l.points,
+        auth: l.auth,
+        body_limit: l.body_limit,
+        route: RouteMatch {
+            methods: l.methods,
+            path_form: l.path_form,
+            path: abi(l.path.as_bytes()),
+            fields: if predicates.is_empty() {
+                std::ptr::null()
+            } else {
+                predicates.as_ptr()
+            },
+            fields_len: predicates.len(),
+            rung: l.rung,
+            _reserved: 0,
+        },
     }
 }
 
@@ -1076,7 +1320,15 @@ impl Recalls {
     /// Count one more answer that owed more: a FAULT once [`MORE_STALLS`] in a row wrote nothing,
     /// or the op's answers wrote past [`MORE_BYTES`].
     pub(crate) fn owed(&mut self, o: &FramerOut) -> Result<(), Refused> {
-        self.stalls = if wrote(o) { 0 } else { self.stalls + 1 };
+        self.owed_with_progress(o, false)
+    }
+
+    fn owed_with_progress(&mut self, o: &FramerOut, control_progress: bool) -> Result<(), Refused> {
+        self.stalls = if wrote(o) || control_progress {
+            0
+        } else {
+            self.stalls + 1
+        };
         self.bytes = self
             .bytes
             .saturating_add(o.yielded.wire_len)
@@ -1102,7 +1354,6 @@ impl Recalls {
 /// Which op a `YIELD_MORE` re-call repeats.
 #[derive(Clone, Copy)]
 enum Again {
-    Ingest,
     Timer,
     Refuse(Option<u64>, u32, bool),
 }
@@ -1158,7 +1409,16 @@ impl Framing {
         binding: &AuthBinding,
     ) -> Result<(Self, Yielded), Refused> {
         binding.ticket_less()?;
-        Self::begin_on(door, None, side, target, established, opening, *binding)
+        Self::begin_on(
+            door,
+            None,
+            side,
+            target,
+            established,
+            opening,
+            *binding,
+            None,
+        )
     }
 
     /// [`Framing::begin_bound`] with a binding that has no auth.
@@ -1202,9 +1462,68 @@ impl Framing {
         if ticket.is_none() {
             binding.ticket_less()?;
         }
-        Self::begin_on(door, ticket, side, target, established, opening, *binding)
+        Self::begin_on(
+            door,
+            ticket,
+            side,
+            target,
+            established,
+            opening,
+            *binding,
+            None,
+        )
     }
 
+    /// AN ACCEPTING FRAMING LENT ITS LISTENER'S GUEST LIST (THE DESIGN §6, "Auth points and guest
+    /// lists", item 4): [`Framing::begin_bound`] on `side` with `guests` handed to the framer as
+    /// [`BeginIn::lines`], held for the framing's life. Ticketed where the entry gives tickets; a
+    /// ticket-less one is refused when a line's auth has points ([`TICKET_LESS_AUTH`]).
+    ///
+    /// # Errors
+    ///
+    /// [`LINES_ON_DIAL`] (FAULT) for a list lent on [`SIDE_DIAL`]; [`TICKET_LESS_AUTH`]; the entry
+    /// refused to frame the connection.
+    pub fn begin_lent(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        target: &str,
+        established: &Established,
+        guests: Option<Arc<GuestLines>>,
+    ) -> Result<(Self, Yielded), Refused> {
+        if side == SIDE_DIAL && guests.is_some() {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: LINES_ON_DIAL.into(),
+            });
+        }
+        let binding = AuthBinding {
+            line_points: guests.as_deref().map_or(0, GuestLines::points),
+            ..AuthBinding::NONE
+        };
+        let ticket = door.framing_side();
+        if ticket.is_none() {
+            binding.ticket_less()?;
+        }
+        Self::begin_on(
+            door,
+            ticket,
+            side,
+            target,
+            established,
+            &[],
+            binding,
+            guests,
+        )
+    }
+
+    /// The framing's token, as its framer names it (`BeginOut::framing`, the `conn` of every host
+    /// service call the framer makes for it); `0` once it is closed.
+    #[must_use]
+    pub const fn token(&self) -> u64 {
+        self.token
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn begin_on(
         door: Arc<dyn FramerDoor>,
         ticket: Option<Box<dyn crate::carrier::Side>>,
@@ -1213,9 +1532,17 @@ impl Framing {
         established: &Established,
         opening: &[(String, Vec<u8>)],
         binding: AuthBinding,
+        guests: Option<Arc<GuestLines>>,
     ) -> Result<(Self, Yielded), Refused> {
+        let context = door.framing_context(guests.as_ref().map_or(0, |g| g.listener()), 0)?;
+        let guests = context
+            .as_ref()
+            .and_then(|scope| scope.opening_policy())
+            .map(|policy| Arc::new(GuestLines::published(policy)))
+            .or(guests);
         let mut f = Self {
             door,
+            context,
             token: 0,
             bufs: Buffers::for_side(side),
             ticketed: ticket.is_some(),
@@ -1228,6 +1555,7 @@ impl Framing {
             established: established.clone(),
             opening: opening.to_vec(),
             binding,
+            guests,
         };
         let y = f.run(op, Yielded::default(), false, false, ticket)?;
         Ok((f, y.unwrap_or_default()))
@@ -1239,21 +1567,21 @@ impl Framing {
         !self.parked.is_empty()
     }
 
-    /// Whether the framing's `begin` is parked: no other op crosses until it completes.
+    /// Whether the framing's `begin` or `adopt` is parked: no other op crosses until it completes.
     #[must_use]
     pub fn begin_parked(&self) -> bool {
         self.parked
             .iter()
-            .any(|p| matches!(p.op, Ticketed::Begin { .. }))
+            .any(|p| matches!(p.op, Ticketed::Begin { .. } | Ticketed::Adopt { .. }))
     }
 
-    /// Whether `stream` is held: the framing's `begin` is parked, or an `emit` on `stream` is.
+    /// Whether `stream` is held: the framing's `begin`/`adopt` is parked, or an `emit` on it is.
     /// A held stream's next emit waits, in order, for the parked op to complete.
     #[must_use]
     pub fn holds(&self, stream: u64) -> bool {
         self.parked.iter().any(|p| match p.op.stream() {
             Some(s) => s == stream,
-            None => matches!(p.op, Ticketed::Begin { .. }),
+            None => matches!(p.op, Ticketed::Begin { .. } | Ticketed::Adopt { .. }),
         })
     }
 
@@ -1277,7 +1605,8 @@ impl Framing {
         let (mut completed, mut failed) = (false, None);
         for p in waiting.by_ref() {
             p.ticket.register(cx.waker());
-            match self.run(p.op, p.yielded, p.recall, true, Some(p.ticket)) {
+            match self.run_with_recalls(p.op, p.yielded, p.recall, true, Some(p.ticket), p.recalls)
+            {
                 Ok(Some(y)) => {
                     merge(&mut out, y);
                     completed = true;
@@ -1341,10 +1670,7 @@ impl Framing {
         let sink = self.bufs.sink();
         let mut o: FramerOut = blank_out();
         let door = &self.door;
-        let cross = |call: Call<'_>| match ticket {
-            Some(side) => door.cross_on(side, resume, call),
-            None => door.cross(call),
-        };
+        let cross = |call: Call<'_>| door.cross_scoped(self.context.as_ref(), ticket, resume, call);
         let fresh = !recall && !resume;
         let c = match op {
             Ticketed::Begin {
@@ -1353,6 +1679,7 @@ impl Framing {
                 established,
                 opening,
                 binding,
+                guests,
             } => {
                 let facts = established.facts();
                 let fields: Vec<Field> = opening
@@ -1361,6 +1688,17 @@ impl Framing {
                         name: abi(n.as_bytes()),
                         value: abi(v),
                     })
+                    .collect();
+                // The guest list, lent as the contract's line table, borrowing the held list.
+                let lent: &[GuestLine] = match guests.as_deref() {
+                    Some(g) if *side != SIDE_DIAL => g.lines(),
+                    _ => &[],
+                };
+                let predicates: Vec<Vec<FieldPredicate>> = lent.iter().map(predicates_of).collect();
+                let entries: Vec<LineEntry> = lent
+                    .iter()
+                    .zip(&predicates)
+                    .map(|(l, p)| entry_of(l, p))
                     .collect();
                 let mut i: BeginIn = blank_in();
                 i.side = *side;
@@ -1371,12 +1709,32 @@ impl Framing {
                     i.fields = fields.as_ptr();
                     i.fields_len = fields.len();
                 }
+                if !entries.is_empty() {
+                    i.lines = entries.as_ptr();
+                    i.lines_len = entries.len();
+                }
                 if *side == SIDE_DIAL {
                     i.points = binding.points;
                     i.auth = binding.auth;
                 }
                 i.sink = sink;
                 cross(Call::Begin(&mut i, &mut o))
+            }
+            Ticketed::Adopt {
+                side,
+                established,
+                leftover,
+            } => {
+                let facts = established.facts();
+                let mut i: AdoptIn = blank_in();
+                i.side = *side;
+                i.facts = &facts;
+                if fresh {
+                    i.leftover = leftover.as_ptr();
+                    i.leftover_len = leftover.len();
+                }
+                i.sink = sink;
+                cross(Call::Adopt(&mut i, &mut o))
             }
             Ticketed::Ingest { bytes, end } => {
                 let mut i: IngestIn = blank_in();
@@ -1395,15 +1753,30 @@ impl Framing {
                 end_of_frame,
                 text,
                 body_len,
+                status,
+                extensions,
             } => {
                 let mut i: EmitIn = blank_in();
                 i.framing = self.token;
                 i.stream = *stream;
+                if !extensions.is_empty() {
+                    i.head.extensions = Blob {
+                        ptr: extensions.as_ptr(),
+                        len: extensions.len(),
+                        fmt: BLOB_OCTETS,
+                        flags: 0,
+                    };
+                }
                 if fresh {
                     i.bytes = bytes.as_ptr();
                     i.len = bytes.len();
                     i.end_of_frame = u32::from(*end_of_frame);
                     i.flags = if *text { EMIT_TEXT } else { 0 };
+                }
+                // An accepted answer's status rides the emit that carries its head, and that op's
+                // resume; a `YIELD_MORE` re-call of it states none.
+                if !recall {
+                    i.status = *status;
                 }
                 // The opening body's length rides every crossing of the head's emit, and only
                 // on a dialled framing.
@@ -1429,8 +1802,31 @@ impl Framing {
         resume: bool,
         ticket: Option<Box<dyn crate::carrier::Side>>,
     ) -> Result<Option<Yielded>, Refused> {
+        self.run_with_recalls(op, yielded, recall, resume, ticket, Recalls::default())
+    }
+
+    fn run_with_recalls(
+        &mut self,
+        op: Ticketed<'_>,
+        yielded: Yielded,
+        recall: bool,
+        resume: bool,
+        ticket: Option<Box<dyn crate::carrier::Side>>,
+        recalls: Recalls,
+    ) -> Result<Option<Yielded>, Refused> {
         let mut ticket = ticket;
-        let r = self.run_on(op, yielded, recall, resume, &mut ticket);
+        let operation = ticket.as_ref().map_or(Ticket::NONE, |side| side.ticket());
+        if !recall && !resume {
+            if let Some(context) = &self.context {
+                context.operation_started(operation);
+            }
+        }
+        let r = self.run_on(op, yielded, recall, resume, &mut ticket, recalls);
+        if !matches!(&r, Ok(None)) {
+            if let Some(context) = &self.context {
+                context.operation_finished(operation, r.is_err());
+            }
+        }
         self.give_back(ticket);
         r
     }
@@ -1443,17 +1839,26 @@ impl Framing {
         mut recall: bool,
         mut resume: bool,
         ticket: &mut Option<Box<dyn crate::carrier::Side>>,
+        mut recalls: Recalls,
     ) -> Result<Option<Yielded>, Refused> {
-        let mut recalls = Recalls::default();
         loop {
             let (c, o) = self.cross_ticketed(&op, recall, resume, ticket.as_deref());
+            let control_progress = self.context.as_ref().is_some_and(|context| {
+                context.take_control_progress(
+                    ticket.as_ref().map_or(Ticket::NONE, |side| side.ticket()),
+                )
+            });
             resume = false;
             if c.outcome == Outcome::Pending {
+                if control_progress {
+                    recalls.stalls = 0;
+                }
                 if let Some(t) = ticket.take() {
                     self.parked.push(Parked {
                         op: op.owned(),
                         yielded,
                         recall,
+                        recalls,
                         ticket: t,
                     });
                     return Ok(None);
@@ -1461,11 +1866,37 @@ impl Framing {
             }
             ready(c)?;
             let begin = matches!(op, Ticketed::Begin { .. });
-            if begin {
+            let adopt = matches!(op, Ticketed::Adopt { .. });
+            if begin || adopt {
                 self.token = o.framing;
+                if let Some(context) = &self.context {
+                    context.confirm(o.framing).map_err(|e| Refused {
+                        outcome: Outcome::Refused,
+                        error: e.into(),
+                    })?;
+                }
+            }
+            if o.yielded.flags & YIELD_STREAM_FULL != 0 {
+                if let Ticketed::Emit { stream, .. } = &op {
+                    yielded.flow.push(StreamFlow::Full(*stream));
+                }
             }
             if self.bufs.take(&o, &mut yielded)? {
                 return Ok(Some(yielded));
+            }
+            if adopt {
+                // After adoption, drain leftover input on the same ticket without lending it again.
+                return self.run_on(
+                    Ticketed::Ingest {
+                        bytes: std::borrow::Cow::Borrowed(&[]),
+                        end: false,
+                    },
+                    yielded,
+                    true,
+                    false,
+                    ticket,
+                    recalls,
+                );
             }
             if begin {
                 // What `begin` still owes comes out on `timer` re-calls, never another `begin`.
@@ -1473,7 +1904,7 @@ impl Framing {
                 return Ok(Some(yielded));
             }
             if recall {
-                recalls.owed(&o)?;
+                recalls.owed_with_progress(&o, control_progress)?;
             }
             recall = true;
         }
@@ -1518,29 +1949,75 @@ impl Framing {
         leftover: &[u8],
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
-        let mut bufs = Buffers::for_side(side);
-        let facts = established.facts();
-        let mut i: AdoptIn = blank_in();
-        i.side = side;
-        i.facts = &facts;
-        i.leftover = leftover.as_ptr();
-        i.leftover_len = leftover.len();
-        i.sink = bufs.sink();
-        let mut o: FramerOut = blank_out();
-        ready(door.cross(Call::Adopt(&mut i, &mut o)))?;
-        let mut f = Self {
+        Self::adopt_context(
             door,
-            token: o.framing,
-            bufs,
-            ticketed: false,
+            side,
+            std::borrow::Cow::Borrowed(leftover),
+            established,
+            None,
+        )
+    }
+
+    /// Adopt a connection detached by its previous host framing, retaining its listener and
+    /// physical connection incarnation while creating a new owner-bound leg.
+    ///
+    /// # Errors
+    /// The entry refuses the adoption or the host cannot create its new framing identity.
+    pub fn adopt_detached(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        mut detached: Detached,
+        established: &Established,
+    ) -> Result<(Self, Yielded), Refused> {
+        let context =
+            match detached.context.as_ref() {
+                Some(source) => Some(door.adopting_context(Arc::clone(source))?.ok_or_else(
+                    || Refused {
+                        outcome: Outcome::Refused,
+                        error: "adoption lost its host framing context".into(),
+                    },
+                )?),
+                None => None,
+            };
+        // The destination now owns the source through READY, cancellation or failure.
+        drop(detached.context.take());
+        Self::adopt_context(
+            door,
+            side,
+            std::borrow::Cow::Owned(std::mem::take(&mut detached.bytes)),
+            established,
+            context,
+        )
+    }
+
+    fn adopt_context(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        leftover: std::borrow::Cow<'_, [u8]>,
+        established: &Established,
+        context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    ) -> Result<(Self, Yielded), Refused> {
+        let ticket = door.framing_side();
+        let context = match context {
+            Some(context) => Some(context),
+            None => door.framing_context(0, 0)?,
+        };
+        let mut framing = Self {
+            door,
+            context,
+            token: 0,
+            bufs: Buffers::for_side(side),
+            ticketed: ticket.is_some(),
             idle: Vec::new(),
             parked: Vec::new(),
         };
-        let mut y = Yielded::default();
-        if !f.bufs.take(&o, &mut y)? {
-            f.more(Again::Ingest, &mut y)?;
-        }
-        Ok((f, y))
+        let op = Ticketed::Adopt {
+            side,
+            established: established.clone(),
+            leftover,
+        };
+        let yielded = framing.run(op, Yielded::default(), false, false, ticket)?;
+        Ok((framing, yielded.unwrap_or_default()))
     }
 
     /// The entry this framing is on.
@@ -1549,19 +2026,30 @@ impl Framing {
         &self.door
     }
 
+    /// The host ownership of this framing, independent of its operation tickets.
+    #[must_use]
+    pub fn scope(&self) -> Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>> {
+        self.context.as_ref()
+    }
+
     /// Re-call `again` with no new bytes until the framer owes nothing more.
     fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
+        if let Some(context) = &self.context {
+            context.operation_started(Ticket::NONE);
+        }
+        let result = self.more_on(again, y);
+        if let Some(context) = &self.context {
+            context.operation_finished(Ticket::NONE, result.is_err());
+        }
+        result
+    }
+
+    fn more_on(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
         let mut recalls = Recalls::default();
         loop {
             let sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
             let c = match again {
-                Again::Ingest => {
-                    let mut i: IngestIn = blank_in();
-                    i.framing = self.token;
-                    i.sink = sink;
-                    self.door.cross(Call::Ingest(&mut i, &mut o))
-                }
                 Again::Refuse(stream, status, head_sent) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;
@@ -1570,20 +2058,34 @@ impl Framing {
                     i.status = status;
                     i.head_sent = u32::from(head_sent);
                     i.sink = sink;
-                    self.door.cross(Call::Refuse(&mut i, &mut o))
+                    self.door.cross_scoped(
+                        self.context.as_ref(),
+                        None,
+                        false,
+                        Call::Refuse(&mut i, &mut o),
+                    )
                 }
                 Again::Timer => {
                     let mut i: FramingIn = blank_in();
                     i.framing = self.token;
                     i.sink = sink;
-                    self.door.cross(Call::Timer(&mut i, &mut o))
+                    self.door.cross_scoped(
+                        self.context.as_ref(),
+                        None,
+                        false,
+                        Call::Timer(&mut i, &mut o),
+                    )
                 }
             };
+            let control_progress = self
+                .context
+                .as_ref()
+                .is_some_and(|context| context.take_control_progress(Ticket::NONE));
             ready(c)?;
             if self.bufs.take(&o, y)? {
                 return Ok(());
             }
-            recalls.owed(&o)?;
+            recalls.owed_with_progress(&o, control_progress)?;
         }
     }
 
@@ -1641,13 +2143,94 @@ impl Framing {
         text: bool,
         body_len: Option<u64>,
     ) -> Result<Yielded, Refused> {
+        self.emit_op(
+            stream,
+            bytes,
+            end_of_frame,
+            text,
+            EmitHead {
+                body_len,
+                ..EmitHead::default()
+            },
+        )
+    }
+
+    /// Emit an opening with the host's credential-name classification, outside its wire bytes.
+    ///
+    /// # Errors
+    /// Invalid metadata, a held stream, or the framer's refusal.
+    pub fn emit_opening_sensitive(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        body_len: Option<u64>,
+        sensitive: &SensitiveFields,
+    ) -> Result<Yielded, Refused> {
+        let extensions = sensitive.extensions().map_err(|error| Refused {
+            outcome: Outcome::Refused,
+            error: error.into(),
+        })?;
+        self.emit_op(
+            stream,
+            bytes,
+            end_of_frame,
+            text,
+            EmitHead {
+                body_len,
+                extensions,
+                ..EmitHead::default()
+            },
+        )
+    }
+
+    /// `emit` of an ACCEPTED stream's ANSWER HEAD (`bytes`, a field block,
+    /// `busbar_contract::abi::transport::fields`) with the answer's `status` on the same emit
+    /// ([`EmitIn::status`], `BUSBAR-1.6.0.md` l.4913): the numbering is the claim's the stream
+    /// arrived on. `end_of_frame` = the answer ends with its head. Parked, it states the status
+    /// again on its resume.
+    ///
+    /// # Errors
+    ///
+    /// The framer refused them; `stream` is held.
+    pub fn emit_head(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        status: u32,
+    ) -> Result<Yielded, Refused> {
+        self.emit_op(
+            stream,
+            bytes,
+            end_of_frame,
+            false,
+            EmitHead {
+                status,
+                ..EmitHead::default()
+            },
+        )
+    }
+
+    /// The one `emit` op every emit is.
+    fn emit_op(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        head: EmitHead,
+    ) -> Result<Yielded, Refused> {
         self.idle(Some(stream))?;
         let op = Ticketed::Emit {
             stream,
             bytes: std::borrow::Cow::Borrowed(bytes),
             end_of_frame,
             text,
-            body_len,
+            body_len: head.body_len,
+            status: head.status,
+            extensions: head.extensions,
         };
         let ticket = self.take_ticket()?;
         Ok(self
@@ -1682,7 +2265,12 @@ impl Framing {
         i.len = bytes.len();
         i.sink = self.bufs.sink();
         let mut o: FramerOut = blank_out();
-        ready(self.door.cross(Call::Refuse(&mut i, &mut o)))?;
+        ready(self.door.cross_scoped(
+            self.context.as_ref(),
+            None,
+            false,
+            Call::Refuse(&mut i, &mut o),
+        ))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
             self.more(Again::Refuse(stream, status, head_sent), &mut y)?;
@@ -1707,7 +2295,7 @@ impl Framing {
     /// # Errors
     ///
     /// The framer refused to give the connection up.
-    pub fn detach(mut self) -> Result<Vec<u8>, Refused> {
+    pub fn detach(mut self) -> Result<Detached, Refused> {
         self.quiet()?;
         let mut left = Vec::new();
         let mut recalls = Recalls::default();
@@ -1716,7 +2304,12 @@ impl Framing {
             i.framing = self.token;
             i.sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
-            ready(self.door.cross(Call::Detach(&mut i, &mut o)))?;
+            ready(self.door.cross_scoped(
+                self.context.as_ref(),
+                None,
+                false,
+                Call::Detach(&mut i, &mut o),
+            ))?;
             let n = usize::try_from(o.yielded.frame_len).unwrap_or(usize::MAX);
             left.extend_from_slice(self.bufs.frame.get(..n).ok_or_else(|| Refused {
                 outcome: Outcome::Fault,
@@ -1724,7 +2317,17 @@ impl Framing {
             })?);
             if o.yielded.flags & YIELD_MORE == 0 {
                 self.token = 0;
-                return Ok(left);
+                if let Some(context) = &self.context {
+                    context.detach().map_err(|error| Refused {
+                        outcome: Outcome::Refused,
+                        error: error.into(),
+                    })?;
+                }
+                let context = self.context.take();
+                return Ok(Detached {
+                    bytes: left,
+                    context,
+                });
             }
             recalls.owed(&o)?;
         }
@@ -1784,14 +2387,25 @@ impl Framing {
                 error: "the stream's framing is already closed".into(),
             });
         }
+        if let Some(context) = &self.context {
+            context.closing();
+        }
         let mut y = Yielded::default();
         let mut recalls = Recalls::default();
         loop {
             i.sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
-            ready(self.door.cross(Call::Finish(&mut i, &mut o)))?;
+            ready(self.door.cross_scoped(
+                self.context.as_ref(),
+                None,
+                false,
+                Call::Finish(&mut i, &mut o),
+            ))?;
             if self.bufs.take(&o, &mut y)? {
                 self.token = 0;
+                if let Some(context) = &self.context {
+                    context.end();
+                }
                 return Ok(y);
             }
             recalls.owed(&o)?;
@@ -1800,8 +2414,14 @@ impl Framing {
 
     fn close(&mut self, reason: u32) -> Yielded {
         let mut y = Yielded::default();
+        if let Some(context) = &self.context {
+            context.closing();
+        }
         self.cancel_parked();
         if self.token == 0 {
+            if let Some(context) = &self.context {
+                context.end();
+            }
             return y;
         }
         let mut i: FinishIn = blank_in();
@@ -1809,10 +2429,23 @@ impl Framing {
         i.reason = reason;
         i.sink = self.bufs.sink();
         let mut o: FramerOut = blank_out();
-        if self.door.cross(Call::Finish(&mut i, &mut o)).outcome == Outcome::Ready {
+        if self
+            .door
+            .cross_scoped(
+                self.context.as_ref(),
+                None,
+                false,
+                Call::Finish(&mut i, &mut o),
+            )
+            .outcome
+            == Outcome::Ready
+        {
             let _ = self.bufs.take(&o, &mut y);
         }
         self.token = 0;
+        if let Some(context) = &self.context {
+            context.end();
+        }
         y
     }
 }
@@ -1826,9 +2459,14 @@ impl Framing {
             let mut i: busbar_contract::abi::mechanism::lifecycle::CancelIn = blank_in();
             i.ticket = side.ticket();
             let mut o: busbar_contract::abi::mechanism::lifecycle::CancelOut = blank_out();
-            let _ = self
-                .door
-                .carry(side, false, crate::carrier::Carry::Cancel(&mut i, &mut o));
+            let _ = self.door.cancel_scoped(
+                self.context.as_ref(),
+                side,
+                crate::carrier::Carry::Cancel(&mut i, &mut o),
+            );
+            if let Some(context) = &self.context {
+                context.operation_finished(side.ticket(), true);
+            }
         }
     }
 }
@@ -1839,6 +2477,8 @@ fn merge(into: &mut Yielded, y: Yielded) {
     into.heads.extend(y.heads);
     into.wire.extend(y.wire);
     into.pieces.extend(y.pieces);
+    into.interim.extend(y.interim);
+    into.flow.extend(y.flow);
     into.ended |= y.ended;
     into.deadline_ns = y.deadline_ns.or(into.deadline_ns);
     if y.agreed != 0 {

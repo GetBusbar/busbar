@@ -331,6 +331,15 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
 /// body length (or states none), read through the connection table from a far end that answers a
 /// one-field head.
 fn head_through_the_table(declared: Option<u64>) -> Piece {
+    head_through_the_table_with(crate::support::Knobs {
+        fields: true,
+        declared_len: declared,
+        ..crate::support::Knobs::default()
+    })
+}
+
+/// The table's head piece from a framer of `knobs`, read as [`head_through_the_table`] reads it.
+fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
     worker().block_on(async {
         let (l, far) = far_end().await;
         tokio::spawn(async move {
@@ -340,16 +349,7 @@ fn head_through_the_table(declared: Option<u64>) -> Piece {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             drop(s);
         });
-        let door = Arc::new(TestDoor::new(
-            "bytes",
-            &["bytes"],
-            &[],
-            crate::support::Knobs {
-                fields: true,
-                declared_len: declared,
-                ..crate::support::Knobs::default()
-            },
-        ));
+        let door = Arc::new(TestDoor::new("bytes", &["bytes"], &[], knobs));
         let view = Transports::new(vec![
             Entry {
                 door,
@@ -404,6 +404,31 @@ fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
         Some(1 << 40)
     );
     assert_eq!(head_through_the_table(None).declared_len, None);
+}
+
+/// A head whose code the framer states in the HANDSHAKE's numbering (`PIECE_CODE_HANDOFF`: an upgrade's
+/// handshake answered, e.g. refused `403`) reaches the table's head piece in that numbering, the
+/// status-line one, never as a code of the claim's own; a head without the bit names none (the
+/// claim's).
+#[test]
+fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() {
+    let head = |flags| {
+        head_through_the_table_with(crate::support::Knobs {
+            fields: true,
+            head_code: Some(403),
+            head_flags: flags,
+            ..crate::support::Knobs::default()
+        })
+    };
+    let handshake = head(busbar_contract::abi::transport::PIECE_CODE_HANDOFF);
+    assert_eq!(handshake.status_code, Some(403));
+    assert_eq!(
+        handshake.status_namespace.as_deref(),
+        Some(busbar_contract::transport::registry::status_ns::HTTP)
+    );
+    let own = head(0);
+    assert_eq!(own.status_code, Some(403));
+    assert_eq!(own.status_namespace, None);
 }
 
 /// RED: a metadata target is refused through the table even when a transport serves the need.
@@ -1225,6 +1250,83 @@ fn a_request_bound_is_spent_once_the_answer_begins() {
             got.extend_from_slice(&buf[..piece.len]);
         }
         assert_eq!(got, b"headtail");
+    });
+}
+
+/// The last instant past `now` the platform's clock can hold, to the second.
+fn last_instant(now: std::time::Instant) -> std::time::Instant {
+    let (mut lo, mut hi) = (0_u64, u64::MAX);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if now
+            .checked_add(std::time::Duration::from_secs(mid))
+            .is_some()
+        {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    now + std::time::Duration::from_secs(lo)
+}
+
+/// RED: a request's `timeout_ms` is the plugin's own number, any `u64` (a secret-vault
+/// `timeout_secs` it saturates to `u64::MAX`). A bound past the last instant the clock can hold is
+/// no bound of its own (the op's deadline ends the op), never an overflowing `Instant` add, which
+/// panics where `Instant` is narrow. RED before: the bound was an unchecked add (`due_at` did not
+/// exist, so this did not compile; on such a platform `bounded(u64::MAX)` panicked).
+#[test]
+fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
+    let now = std::time::Instant::now();
+    assert_eq!(due_at(now, 0), None, "0 = no bound of its own");
+    assert_eq!(
+        due_at(now, 300),
+        Some(now + std::time::Duration::from_millis(300))
+    );
+    let last = last_instant(now);
+    assert_eq!(due_at(last, u64::MAX), None, "past the clock: no bound");
+    assert_eq!(due_at(last, 1_000), None);
+    // Through the held connection: no bound of its own, and no panic.
+    let held = Held::over(None, None, None).bounded(u64::MAX);
+    let due = held.due.lock().expect("due");
+    assert!(
+        due.as_ref().is_none_or(|d| d.at > now),
+        "a bound, if the clock holds it, is in the future"
+    );
+}
+
+/// A request whose `timeout_ms` is `u64::MAX` opens and reads its answer whole: the bound does not
+/// cut it, and nothing overflows on the way.
+#[test]
+fn a_request_with_the_largest_timeout_reads_its_answer() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let ms = std::time::Duration::from_millis;
+        stalled_far_end(l, Some((ms(20), b"head", ms(20), b"tail")));
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: busbar_contract::conn::Bytes::from_static(b"first"),
+            timeout_ms: u64::MAX,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        while got.len() < 8 {
+            let mut buf = [0_u8; 64];
+            let piece = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+            )
+            .await
+            .expect("the answer arrives")
+            .expect("the answer reads");
+            got.extend_from_slice(&buf[..piece.len]);
+        }
+        assert_eq!(got, b"headtail");
+        c.close(OWNER, id).unwrap();
     });
 }
 

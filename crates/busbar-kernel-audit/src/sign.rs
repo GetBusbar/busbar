@@ -31,9 +31,8 @@
 //! nothing else, and [`KeyError`] carries no part of the input it rejected — not the text, not a
 //! character, not an offset. Both are deliberate and both are tested. A hex decoder from a general
 //! library names the offending character AND its index in its error, which for a 32-byte ed25519
-//! seed is a byte of the secret printed into whatever caught the error. The packaging CLI's own
-//! `$BUSBAR_SIGN_KEY` reader does exactly that today and is a separate known defect, tracked
-//! outside this crate. The decoder here is this module's own for that one reason.
+//! seed is a byte of the secret printed into whatever caught the error. The decoder here is this
+//! module's own for that one reason.
 
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use zeroize::Zeroize as _;
@@ -131,7 +130,10 @@ pub enum KeyError {
     MalformedSignature,
     /// The signature does not verify against the key.
     BadSignature,
-    /// The record carries no signature, or no key identifier, so there is nothing to check.
+    /// The record does not hash to its own fields: it was edited after it was sealed, whatever its
+    /// signature says. A different finding from [`KeyError::BadSignature`], which points at the key.
+    DigestMismatch,
+    /// The record carries no signature, so there is nothing to check.
     Unsigned,
 }
 
@@ -149,6 +151,9 @@ impl std::fmt::Display for KeyError {
                 "the signature is not 128 lowercase hexadecimal characters"
             }
             KeyError::BadSignature => "the signature does not verify against this key",
+            KeyError::DigestMismatch => {
+                "the record does not hash to its own fields: it was edited after it was sealed"
+            }
             KeyError::Unsigned => "the record carries no signature to check",
         };
         f.write_str(said)
@@ -167,13 +172,15 @@ fn from_hex_exact<const N: usize>(text: &str) -> Result<[u8; N], KeyError> {
     if bytes.len() != N * 2 {
         return Err(KeyError::WrongLength);
     }
-    let mut out = [0u8; N];
+    // Wiped on EVERY exit, the early ones included: a seed that stopped decoding at its tenth
+    // character is still nine bytes of the secret, and a `?` below drops this buffer.
+    let mut out = zeroize::Zeroizing::new([0u8; N]);
     for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
         let hi = nibble(pair[0])?;
         let lo = nibble(pair[1])?;
         out[i] = (hi << 4) | lo;
     }
-    Ok(out)
+    Ok(*out)
 }
 
 /// One lowercase hex digit's value, or [`KeyError::NotHex`] — which does not say which digit.

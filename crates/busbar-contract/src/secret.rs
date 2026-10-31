@@ -155,6 +155,28 @@ pub trait SecretResolve: Send + Sync {
     ) -> Result<crate::redacted::Secret<String>, String> {
         self.resolve_string(secret)
     }
+
+    /// [`Self::resolve`] (or, with `scope`, [`Self::resolve_at_config`]) whose refusal KEEPS the
+    /// source's `abi::secret::ERROR_KIND_*` code: a caller that answers a missing secret
+    /// differently from an unreachable source reads it here. A resolver that names no code answers
+    /// its text as `ERROR_KIND_INTERNAL`.
+    ///
+    /// # Errors
+    /// The refusal, its code and its text (the same text the other forms answer).
+    fn resolve_refusing(
+        &self,
+        secret: &SecretRef,
+        scope: Option<&crate::config_time::ConfigScope>,
+    ) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused> {
+        match scope {
+            Some(scope) => self.resolve_at_config(secret, scope),
+            None => self.resolve(secret),
+        }
+        .map_err(|text| SecretRefused {
+            error_kind: crate::abi::secret::ERROR_KIND_INTERNAL,
+            text,
+        })
+    }
 }
 
 /// How a secret plugin refused a `resolve`: the `abi::secret::ERROR_KIND_*` code its answer carried
@@ -212,6 +234,18 @@ pub trait SecretAxis: Send + Sync {
     /// Whether `module` names a secret plugin this build LINKS (a reference to it needs no
     /// `secrets:` block and no plugins directory).
     fn linked(&self, module: &str) -> bool;
+
+    /// JUDGE one reference to `module` at config time, before anything resolves: its plugin's
+    /// `check` (`abi::secret::Ops::check`) over the reference's `settings`, with no instance and no
+    /// I/O. `Ok` when the plugin accepts it, serves no `check`, or no plugin answers `module` (its
+    /// existence is the registry's to judge); else the plugin's reasons, one per line, which the
+    /// host renders after the reference's config path.
+    ///
+    /// # Errors
+    /// The plugin's reasons.
+    fn check(&self, _module: &str, _settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        Ok(())
+    }
 
     /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
     /// settings (a linked source takes no module-level configuration).

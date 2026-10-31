@@ -2977,12 +2977,12 @@ super::sdk::door::slot_structs!(Ops {
 /// use busbar_contract::abi::plane::*;
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
+/// use busbar_contract::abi::sdk::door::RawSlot;
 /// # use std::ffi::c_void;
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, PlaneOpenIn, PlaneOpenOut);
 /// # ready!(Rf, RefreshIn, PlaneRefreshOut);
@@ -3010,12 +3010,12 @@ super::sdk::door::slot_structs!(Ops {
 /// use busbar_contract::abi::plane::*;
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
+/// use busbar_contract::abi::sdk::door::RawSlot;
 /// # use std::ffi::c_void;
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, PlaneRefreshOut);
 /// ready!(Op_, OpenIn, OpenOut); // the lifecycle's `open`, no snapshot: refused

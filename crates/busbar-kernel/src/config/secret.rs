@@ -67,12 +67,25 @@ pub type Held = busbar_contract::redacted::Secret<Vec<u8>>;
 pub type HeldText = busbar_contract::redacted::Secret<String>;
 
 /// [`PluginResolveFn`] handed the config-time proof when the caller holds one (THE DESIGN §11.11
-/// R4): a dropped-in source that reads the disk resolves only with it.
+/// R4): a dropped-in source that reads the disk resolves only with it. Its refusal keeps the
+/// plugin's `error_kind`.
 pub(crate) type ScopedPluginResolveFn = Box<
-    dyn Fn(&str, &str, Option<&busbar_contract::config_time::ConfigScope>) -> Result<Held, String>
+    dyn Fn(
+            &str,
+            &str,
+            Option<&busbar_contract::config_time::ConfigScope>,
+        ) -> Result<Held, SecretRefused>
         + Send
         + Sync,
 >;
+
+/// A refusal of the kernel's resolver: the source's `abi::secret::ERROR_KIND_*` code and the text.
+pub use busbar_contract::secret::SecretRefused;
+
+/// A refusal with `error_kind` and `text`.
+fn refusal(error_kind: u32, text: String) -> SecretRefused {
+    SecretRefused { error_kind, text }
+}
 
 impl SecretResolver {
     /// A resolver over the linked secret plugins alone (no cold lane): what the build links (`env`
@@ -89,7 +102,10 @@ impl SecretResolver {
                 move |module: &str,
                       settings: &str,
                       _: Option<&busbar_contract::config_time::ConfigScope>| {
-                    plugin(module, settings)
+                    // A plain-text plugin resolver names no code: its refusal is INTERNAL.
+                    plugin(module, settings).map_err(|text| {
+                        refusal(busbar_contract::abi::secret::ERROR_KIND_INTERNAL, text)
+                    })
                 },
             )),
         }
@@ -106,7 +122,7 @@ impl SecretResolver {
     /// build) resolves through the root's secret axis, on its one shared instance; any other module
     /// delegates to the plugin resolver (fail-closed if none is wired or it fails).
     pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Held, String> {
-        self.resolve_with(secret, None)
+        self.resolve_with(secret, None).map_err(|r| r.text)
     }
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a secret source
@@ -116,7 +132,7 @@ impl SecretResolver {
         secret: &SecretRef,
         scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<Held, String> {
-        self.resolve_with(secret, Some(scope))
+        self.resolve_with(secret, Some(scope)).map_err(|r| r.text)
     }
 
     /// [`Self::resolve_string`] at CONFIG TIME, with its proof.
@@ -128,48 +144,68 @@ impl SecretResolver {
         Self::text_of(secret, self.resolve_at_config(secret, scope)?)
     }
 
-    /// The one resolution, with or without a config-time proof.
-    fn resolve_with(
+    /// The one resolution, with or without a config-time proof: the material, or the refusal with
+    /// the source's `error_kind` kept.
+    pub(crate) fn resolve_with(
         &self,
         secret: &SecretRef,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
-    ) -> Result<Held, String> {
+    ) -> Result<Held, SecretRefused> {
+        use busbar_contract::abi::secret::{ERROR_KIND_INTERNAL, ERROR_KIND_INVALID};
         let module = secret.module.as_str();
         // `none` declares the ABSENCE of a credential, so it is never looked up as a module: asking
         // for its bytes is a category error, refused rather than resolved to empty.
         if module == busbar_contract::secret_ref::SECRET_MODULE_NONE {
-            return Err(NONE_HAS_NO_VALUE.to_string());
+            return Err(refusal(ERROR_KIND_INVALID, NONE_HAS_NO_VALUE.to_string()));
         }
         let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
+        let empty = || {
+            refusal(
+                ERROR_KIND_INVALID,
+                format!(
+                    "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
+                     non-empty (fail-closed)",
+                    secret.describe()
+                ),
+            )
+        };
         if let Some(axis) = axis().filter(|a| a.linked(module)) {
-            let shared = axis.shared(module)?;
+            let shared = axis
+                .shared(module)
+                .map_err(|text| refusal(ERROR_KIND_INTERNAL, text))?;
             let material = match scope {
                 Some(scope) => shared.resolve_at_config(settings.as_bytes(), scope),
                 None => shared.resolve(settings.as_bytes()),
-            };
+            }?;
             // The plugin's holder itself, moved: the bytes are never copied out of it.
-            return material.map_err(|r| r.text);
+            if material.expose(&crate::seal::lend()).is_empty() {
+                return Err(empty());
+            }
+            return Ok(material);
         }
         let Some(f) = &self.plugin else {
-            return Err(format!(
-                "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
+            return Err(refusal(
+                ERROR_KIND_INVALID,
+                format!(
+                    "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
                  subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
                  cannot resolve is a hard error (fail-closed)",
-                secret.describe()
+                    secret.describe()
+                ),
             ));
         };
-        let bytes = f(module, &settings, scope).map_err(|e| {
-            format!(
-                "secret module '{module}' (a kind: secret plugin) failed to resolve {}: {e}",
-                secret.describe()
+        let bytes = f(module, &settings, scope).map_err(|r| {
+            refusal(
+                r.error_kind,
+                format!(
+                    "secret module '{module}' (a kind: secret plugin) failed to resolve {}: {}",
+                    secret.describe(),
+                    r.text
+                ),
             )
         })?;
         if bytes.expose(&crate::seal::lend()).is_empty() {
-            return Err(format!(
-                "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
-                 non-empty (fail-closed)",
-                secret.describe()
-            ));
+            return Err(empty());
         }
         Ok(bytes)
     }
@@ -285,6 +321,32 @@ pub(crate) fn resolve_settings(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
+    resolve_settings_with_literals(
+        settings, declared, reference, plugin, resolver, scope, false,
+    )
+}
+
+/// Export settings retain literal compatibility while classifying declared references separately.
+pub(crate) fn resolve_export_settings(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    declared: &[String],
+    reference: &[String],
+    plugin: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<ResolvedSettings, String> {
+    resolve_settings_with_literals(settings, declared, reference, plugin, resolver, scope, true)
+}
+
+fn resolve_settings_with_literals(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    declared: &[String],
+    reference: &[String],
+    plugin: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
+    allow_declared_literals: bool,
+) -> Result<ResolvedSettings, String> {
     use busbar_contract::secret_fields;
     if let Some(path) = secret_fields::contradiction(declared, reference) {
         return Err(secret_fields::contradiction_refusal(&path, plugin));
@@ -297,11 +359,13 @@ pub(crate) fn resolve_settings(
             plugin,
         ));
     }
-    if let Some(at) = secret_fields::declared_literal(tree, declared) {
-        return Err(secret_fields::declared_literal_refusal(
-            &format!("settings.{at}"),
-            plugin,
-        ));
+    if !allow_declared_literals {
+        if let Some(at) = secret_fields::declared_literal(tree, declared) {
+            return Err(secret_fields::declared_literal_refusal(
+                &format!("settings.{at}"),
+                plugin,
+            ));
+        }
     }
     for path in declared {
         for at in secret_fields::declared_references(tree, path) {
@@ -333,10 +397,10 @@ pub(crate) fn resolve_settings(
                         "plugin setting '{field}' is a secret reference that did not resolve: {e}"
                     )
                 })?;
-            // The plugin is handed it inline, in its settings, as a JSON string (1.5.5's shape);
-            // the bag carrying it is wiped when it drops (`ResolvedSettings`).
-            let resolved = resolved.expose(&crate::seal::lend()).clone();
-            *slot = serde_json::Value::String(resolved);
+            // The plugin is handed it inline, in its settings, as a JSON string (1.5.5's shape):
+            // MOVED out of the resolver's holder into the bag, never copied; the bag wipes it when
+            // it drops (`ResolvedSettings`).
+            *slot = serde_json::Value::String(resolved.into_exposed(&crate::seal::lend()));
         }
     }
     // The REFERENCE-CAPABLE positions (not secret): each reference resolved in place by the same
@@ -350,7 +414,8 @@ pub(crate) fn resolve_settings(
         );
         resolver
             .resolve_string_at_config(secret, scope)
-            .map(|value| value.expose(&crate::seal::lend()).clone())
+            // Moved into the bag, never copied (as a declared secret is above).
+            .map(|value| value.into_exposed(&crate::seal::lend()))
             .map_err(|e| {
                 format!("plugin setting '{field}' is a reference that did not resolve: {e}")
             })
@@ -399,6 +464,11 @@ pub struct ResolvedSettings(serde_json::Value);
 const ALWAYS_AN_OBJECT: &str = "resolved settings are built from a settings map";
 
 impl ResolvedSettings {
+    /// Own a settings map whose temporary strings are wiped when the holder drops.
+    pub(crate) fn from_map(settings: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self(serde_json::Value::Object(settings))
+    }
+
     /// The bag as the one JSON object the plugin is handed (borrowed: the holder keeps it).
     pub fn as_value(&self) -> &serde_json::Value {
         &self.0
@@ -484,6 +554,14 @@ impl busbar_contract::secret::SecretResolve for SecretResolver {
         scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<HeldText, String> {
         SecretResolver::resolve_string_at_config(self, secret, scope)
+    }
+
+    fn resolve_refusing(
+        &self,
+        secret: &SecretRef,
+        scope: Option<&busbar_contract::config_time::ConfigScope>,
+    ) -> Result<Held, SecretRefused> {
+        self.resolve_with(secret, scope)
     }
 }
 

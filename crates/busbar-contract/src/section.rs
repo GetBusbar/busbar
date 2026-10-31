@@ -215,7 +215,7 @@ pub fn member_program(target_from: &str) -> bool {
 /// a namespace of its own, with no fallback between it and `settings.`. An owned section is
 /// operator-OPTIONAL, so a trust anchor named here is optional by definition: absent, the need is
 /// secured with the public roots alone; present, it is the operator CA added on top of them, and one
-/// that does not parse into a trust anchor is refused, as a `settings.` anchor is.
+/// that does not parse into a trust anchor is refused. A `settings.` anchor is optional the same way.
 pub const OWNED_PATH_PREFIX: &str = "owned.";
 
 /// The path inside the owned sections an owned-section path names ([`OWNED_PATH_PREFIX`]):

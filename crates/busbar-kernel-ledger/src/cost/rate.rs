@@ -228,7 +228,7 @@ impl CellPrices {
 /// qualified `"<plane>\u{1f}<lane>"` ([`crate::cost::PLANE_LANE_SEP`]) is priced by THAT plane's card
 /// alone ([`Self::plane_lane`]). A plane with no card of its own is billing OFF for that plane (#42:
 /// reads 0), whatever any other plane's card says; each plane's presence is its own switch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateCard {
     present: bool,
     prices: BTreeMap<String, BTreeMap<String, CellPrices>>,

@@ -60,6 +60,7 @@ struct Held {
     instance: Option<InstanceId>,
     /// The op whose last call answered short: the one re-call it earns reads the results it kept.
     short: Option<u32>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
 }
 
 impl Slot {
@@ -159,24 +160,40 @@ impl InlineTickets {
     /// `resume`, and not the one re-call of an op whose last call answered short) starts with
     /// nothing kept: the last op's stored service results and kept connector answers under `t` go,
     /// ending their epoch, so a service of the last op still running completes into nothing.
-    pub(crate) fn starting(&self, t: Ticket, instance: InstanceId, s: u32, resume: bool) {
+    pub(crate) fn starting(&self, t: Ticket, instance: InstanceId, s: u32, resume: bool) -> bool {
         let Some(slot) = self.lookup(t) else {
-            return;
+            return false;
         };
         let fresh = {
             let mut held = slot.section();
             if held.generation == 0 || held.generation != t.generation {
-                return;
+                return false;
+            }
+            let framing = super::framing_context::current();
+            let fresh = !resume && held.short != Some(s);
+            if !fresh
+                && (held.instance != Some(instance)
+                    || held.framing.as_ref().map(|f| f.leg()) != framing.as_ref().map(|f| f.leg()))
+            {
+                return false;
+            }
+            if fresh {
+                held.framing = framing;
             }
             held.instance = Some(instance);
-            !resume && held.short.take() != Some(s)
+            if !resume {
+                held.short = None;
+            }
+            fresh
         };
         if fresh {
             if let Some(store) = self.services.upgrade() {
                 store.forget(t);
             }
-            super::conn_services::forget(instance, t);
+            // No lock is held here: the dials it left in flight close at once.
+            drop(super::conn_services::forget(instance, t));
         }
+        true
     }
 
     /// The op `s` on the inline ticket `t` returned; `short`: it answered short, and its one
@@ -207,6 +224,7 @@ impl InlineTickets {
                         waker: None,
                         instance: None,
                         short: None,
+                        framing: None,
                     }),
                 }));
                 i
@@ -290,6 +308,7 @@ impl InlineTickets {
             let old = held.generation;
             held.generation = g;
             held.short = None;
+            held.framing = None;
             (held.waker.take(), held.instance.take(), old)
         };
         drop(gone);
@@ -303,7 +322,8 @@ impl InlineTickets {
                 store.forget(dropped);
             }
             if let Some(instance) = instance {
-                super::conn_services::forget(instance, dropped);
+                // No lock is held here: the dials it left in flight close at once.
+                drop(super::conn_services::forget(instance, dropped));
             }
         }
         if next.is_some() {

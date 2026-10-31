@@ -279,6 +279,7 @@ fn file_of(row: &serde_json::Value) -> Option<String> {
 /// The key of the first store this build links: the store catalog's compiled-in head, read off the
 /// installed root rows (the root's table, or a test build's stand-in), never spelled here.
 fn linked_store_key() -> &'static str {
+    busbar_kernel::test_support::root::ensure();
     busbar_kernel::preflight::root_rows()
         .stores
         .first()
@@ -480,6 +481,7 @@ async fn install_strict_posture_rejects_unsigned() {
 /// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
 /// a copy of it dropped in must carry to be the same plugin at the same version.
 fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
+    busbar_kernel::test_support::root::ensure();
     let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
         .stores
         .first()

@@ -360,7 +360,7 @@ fi
 docker rm -f busbar-gate-ro >/dev/null 2>&1
 
 # ── docker:user and docker:no-shell — the secure-by-default claims (docker.md) ─────────────────
-# The image is FROM scratch with USER 65532. Assert it by digest, the same bytes the boot rows ran:
+# The image is distroless (gcr.io/distroless/cc, W17) with USER 65532. Assert it by digest, the same bytes the boot rows ran:
 # the configured user is uid 65532 (numeric, so the kubelet's runAsNonRoot can verify it), and no
 # shell can be executed in it. `docker create` + `--entrypoint` is enough: a missing executable is
 # an exec failure from the runtime, so no container process ever runs.
@@ -386,6 +386,6 @@ else
     record "docker:no-shell" PASS "no shell can be executed in the image (/bin/sh, /bin/bash, /usr/bin/sh, sh)" "${BOOT_REF}"
   else
     record "docker:no-shell" FAIL "the image ships a shell (${shell_found})" \
-      "docker.md promises a FROM-scratch image with no shell. A shell in the image is a post-exploitation tool for anything that reaches code execution in the container."
+      "docker.md promises a distroless image with no shell. A shell in the image is a post-exploitation tool for anything that reaches code execution in the container."
   fi
 fi

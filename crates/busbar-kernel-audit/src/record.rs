@@ -492,8 +492,9 @@ impl AuditChain {
     ///
     /// # Errors
     ///
-    /// The record carries no signature, the record does not hash to its own fields, or the
-    /// signature does not verify.
+    /// The record carries no signature ([`crate::sign::KeyError::Unsigned`]), the record does not
+    /// hash to its own fields ([`crate::sign::KeyError::DigestMismatch`]: an edit, not a key
+    /// problem), or the signature does not verify ([`crate::sign::KeyError::BadSignature`]).
     pub fn verify_signature(
         record: &AuditRecord,
         key: &crate::sign::AuditVerifyingKey,
@@ -503,7 +504,7 @@ impl AuditChain {
             .as_deref()
             .ok_or(crate::sign::KeyError::Unsigned)?;
         if AuditChain::digest_of(record) != record.hash {
-            return Err(crate::sign::KeyError::BadSignature);
+            return Err(crate::sign::KeyError::DigestMismatch);
         }
         key.verify_digest(&record.hash, signature)
     }

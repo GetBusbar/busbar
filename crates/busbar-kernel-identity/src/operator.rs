@@ -187,11 +187,20 @@ pub fn migrated_token(op: &str) -> String {
 
 /// What the operator credential answered one request: a verdict — identified, a bad credential
 /// (1.5.5's refusal bytes), or not its credential — and what rides with it. A verifier that is
-/// overloaded or answered no verdict is a bad credential, denied with 1.5.5's 401.
+/// overloaded or answered no verdict is refused (a `Reject`, fail-closed). One that answered NO
+/// VERDICT is marked [`Self::no_verdict`]: a server-side failure, not the caller's bad credential,
+/// which a caller that answers HTTP answers 503 with `Retry-After` (SIGN-auth-kind 2026-10-30,
+/// lead-signed under owner delegation, extending the owner-signed 2026-10-30 rule "an IdP outage
+/// answers 503, never 401").
 #[derive(Debug)]
 pub struct Judgement {
     /// The verdict.
     pub verdict: AuthVerdict,
+    /// The verifier answered NO VERDICT (FAILED, FAULT, a timeout: a module failure, e.g. an IdP
+    /// whose key set is unavailable). The verdict is then a `Reject` — the request is refused
+    /// whoever reads it — and a caller that answers HTTP answers it 503 with `Retry-After`, never
+    /// the bad credential's 401 (SIGN-auth-kind 2026-10-30).
+    pub no_verdict: bool,
     /// The replay claim the identity asks for (THE DESIGN §6, Inbound verify): the caller admits
     /// the identity only once it wins the claim. `None` = none (or no identity).
     pub replay: Option<Box<Replay>>,
@@ -206,16 +215,32 @@ impl Judgement {
     pub fn of(verdict: AuthVerdict) -> Self {
         Self {
             verdict,
+            no_verdict: false,
             replay: None,
             strips: Vec::new(),
         }
     }
 
+    /// A refusal for a verifier that answered NO VERDICT ([`Self::no_verdict`]), keeping the lines
+    /// it named.
+    #[must_use]
+    pub fn without_verdict(strips: Vec<Strip>) -> Self {
+        Self {
+            no_verdict: true,
+            strips,
+            ..Self::of(AuthVerdict::Reject)
+        }
+    }
+
     /// A `verify` answer as a chain reads it: the verdict, the identity's replay claim, and the
     /// lines the plugin named for the transport. A verifier that is overloaded or answered no
-    /// verdict is a `Reject`, as 1.5.5 denied one (its 401).
+    /// verdict is a `Reject` (fail-closed); one that answered no verdict (FAILED) is marked
+    /// [`Self::no_verdict`], answered 503 rather than 1.5.5's 401 (SIGN-auth-kind 2026-10-30).
     #[must_use]
     pub fn answered(answer: VerifyAnswer) -> Self {
+        if matches!(answer.verified, Verified::Failed) {
+            return Self::without_verdict(answer.strips);
+        }
         let (verdict, replay) = match answer.verified {
             Verified::Identity(id) => (
                 AuthVerdict::Identify(Principal {
@@ -232,6 +257,7 @@ impl Judgement {
         };
         Self {
             verdict,
+            no_verdict: false,
             replay,
             strips: answer.strips,
         }

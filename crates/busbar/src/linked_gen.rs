@@ -40,8 +40,7 @@
 pub(crate) const NODE_UNIT: &str = "node";
 
 /// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
-/// that registers on it exports. The plane axis is the one exception, built below (two items,
-/// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
+/// that registers on it exports. Plane doors register through [`PLANE_DOOR_AXIS`].
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
     ("body-ingress", "body_ingress", "BODY_INGRESS"),
@@ -402,23 +401,9 @@ pub(crate) fn linked_source(
     }
     out.push_str("]);\n");
 
-    let planes = on_axis("plane");
-    out.push_str(&format!(
-        "/// The plane axis: each entry's contract declaration joined kernel-side to its hooks.\n\
-         static LINKED_PLANES: [busbar_kernel::plane_driver::registry::PlaneDecl; {}] = [\n",
-        planes.len()
-    ));
-    for e in &planes {
-        out.push_str(&format!(
-            "    busbar_kernel::plane_driver::registry::PlaneDecl::assemble({e}::PLANE_DECLARATION, \
-             {e}::PLANE_HOOKS),\n"
-        ));
-    }
-    out.push_str("];\n");
     out.push_str(
         "/// Every linked plugin's entry items, one table per registration axis, in manifest order.\n\
-         static LINKED: crate::root::linked::Linked = crate::root::linked::Linked {\n    \
-         planes: &LINKED_PLANES,\n",
+         static LINKED: crate::root::linked::Linked = crate::root::linked::Linked {\n",
     );
     out.push_str("    plane_doors: &[");
     for door in doors_on(PLANE_DOOR_AXIS) {
@@ -445,20 +430,6 @@ pub(crate) fn linked_source(
             metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
         {
             out.push_str(&format!("({door}, {path}), "));
-        }
-    }
-    out.push_str("],\n");
-    // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
-    // order): a door plane's registry row folds in at its row's place, so the layering order is the
-    // manifest's whichever axis a plane registers on.
-    out.push_str("    plane_door_slots: &[");
-    let mut planes_before = 0usize;
-    for (_, axes) in &linked {
-        if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
-            out.push_str(&format!("{planes_before}, "));
-        }
-        if axes.iter().any(|a| a == "plane") {
-            planes_before += 1;
         }
     }
     out.push_str("],\n");

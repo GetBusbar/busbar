@@ -27,6 +27,9 @@ use crate::hook_door_conformance_tests::hook_door_plugin;
 use secret_fixture::door::door;
 use secret_fixture::NAME;
 
+#[path = "secret_shared_close_tests.rs"]
+mod shared_close;
+
 /// The material the hit's variable holds.
 const MATERIAL: &str = "s3cr3t-secret-calls";
 /// The variable the hit names (set) and the one the miss names (never set).
@@ -308,4 +311,115 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
             "a lent dispatcher reveals: {other}"
         );
     }
+}
+
+/// RED (S2): a reference its plugin's `check` refuses is refused on the axis, at config time and
+/// with no instance opened, in the plugin's own words; one it accepts passes. Before, the slot was
+/// never called, so `--validate` passed a reference that then failed at its first resolve.
+#[test]
+fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
+    use crate::secret_door_conformance_tests::secret_door_plugin::{
+        checking, CHECKING_NAME, NOT_ABSOLUTE,
+    };
+    let mut rows = SecretRows::new(dispatcher, || None);
+    rows.link(checking::door).expect("the checking door links");
+    assert_eq!(
+        rows.check(
+            CHECKING_NAME,
+            &serde_json::json!({ "path": "relative/key" })
+        ),
+        Err(vec![NOT_ABSOLUTE.to_string()])
+    );
+    assert_eq!(
+        rows.check(CHECKING_NAME, &serde_json::json!({ "path": "/run/key" })),
+        Ok(())
+    );
+    // A module no row answers is the registry's to refuse, not the axis's.
+    assert_eq!(rows.check("absent", &serde_json::json!({})), Ok(()));
+}
+
+/// A secret plugin whose value grows between the host's two reads: every `resolve` answers short,
+/// naming one byte more than the buffer it was lent (a file rotated between the reads, a
+/// Kubernetes `..data` swap).
+pub struct Grows;
+
+impl busbar_contract::abi::sdk::life::Life for Grows {
+    const CANCEL: u32 = 0;
+    fn open(
+        _: &[u8],
+        _: &[&[u8]],
+        _: u64,
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+        Ok(Grows)
+    }
+    fn refresh(
+        &self,
+        _: &[u8],
+        _: &[&[u8]],
+        _: u64,
+    ) -> Result<busbar_contract::abi::sdk::life::Refreshed, busbar_contract::abi::sdk::life::Refusal>
+    {
+        Ok(busbar_contract::abi::sdk::life::Refreshed::default())
+    }
+}
+
+/// Its `resolve`: short, always, by one byte more than it was lent.
+pub struct GrowingResolve;
+
+impl busbar_contract::abi::sdk::SafeSlot for GrowingResolve {
+    type In = busbar_contract::abi::secret::ResolveIn;
+    type Out = busbar_contract::abi::secret::ResolveOut;
+    type State = busbar_contract::abi::sdk::life::Held<Grows>;
+    fn call(
+        _: busbar_contract::abi::sdk::Instance<'_, Self::State>,
+        input: busbar_contract::abi::sdk::Lent<'_, Self::In>,
+        mut out: busbar_contract::abi::sdk::Out<'_, Self::Out>,
+    ) -> busbar_contract::abi::mechanism::call::Outcome {
+        let lent = input.secret_buf().cap();
+        out.set(
+            |o| &o.error_kind,
+            busbar_contract::abi::secret::ERROR_KIND_UNSET,
+        );
+        out.set(|o| &o.needed, lent as u64 + 1);
+        busbar_contract::abi::mechanism::call::Outcome::Failed
+    }
+}
+
+mod growing {
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::sdk::door::statement("stub-growing", "1.6.0", 1),
+        lifecycle: life(super::Grows),
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::GrowingResolve> },
+    }
+}
+
+/// RED: a value that grew between the host's first read and its one re-call (the second answer
+/// short again) is a NAMED, TRANSIENT refusal: UNAVAILABLE, naming the module and what happened,
+/// so the caller retries. RED before: the dispatcher's FAULT for the second short answer reached
+/// the caller as a generic "answered Fault to resolve", INTERNAL.
+#[test]
+fn a_value_that_grew_between_the_two_reads_is_a_named_transient_refusal() {
+    let mut rows = SecretRows::new(dispatcher, || None);
+    rows.link(growing::door).expect("the growing stub links");
+    let opened = rows
+        .open("stub-growing", &settings(), &unreached)
+        .expect("the growing stub opens");
+    let refused = opened
+        .resolve(br#"{"key":"rotating"}"#)
+        .expect_err("a value short twice is refused");
+    assert_eq!(
+        refused.error_kind,
+        busbar_contract::abi::secret::ERROR_KIND_UNAVAILABLE,
+        "{}",
+        refused.text
+    );
+    assert!(
+        refused.text.contains("'stub-growing'")
+            && refused
+                .text
+                .contains("changed size between the host's two reads"),
+        "{}",
+        refused.text
+    );
 }

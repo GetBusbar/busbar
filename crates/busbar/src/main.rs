@@ -273,9 +273,8 @@ fn register_protocols() {
 }
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane tables of [`LINKED`] (each
-/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
-/// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
+/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane doors,
+/// linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
@@ -298,7 +297,7 @@ fn register_planes() {
     // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
     busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles);
     root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes(&LINKED);
+    root::linked::register_planes();
     root::linked::register_exports(dropped);
     // The settings each plugin's schema declares public, before any configuration is read: every
     // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
@@ -367,7 +366,7 @@ fn main() {
         eprintln!("busbar: {e}");
         std::process::exit(1);
     }
-    let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
+    let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
     root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -993,7 +992,7 @@ async fn run(
     // START the export axis's opened sinks (every request-log sink is one): each states whether it
     // takes deliveries this run and its in-flight admission — the moment the built-in request-log
     // exporters were configured, so a sink that refuses its own target at start says so here.
-    export::plugin::start();
+    export::plugin::start().unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
@@ -1089,6 +1088,15 @@ async fn run(
             std::sync::Arc::clone(&app_handle),
         )));
     }
+    // THE INBOUND AUTH HANDLE'S TABLES (THE DESIGN §6, "Auth points and guest lists", steps 4 and
+    // 8): the data listener's list at the boot generation, and a new generation at each apply.
+    // A transport calls its line's auth through the host auth handle on the transport doors'
+    // dispatcher: the kernel's inbound side serves it.
+    let _ = root::inbound::install(root::doors::dispatcher());
+    let _ = root::inbound::publish(&app_handle.load());
+    app_handle.on_apply(Box::new(|app| {
+        let _ = root::inbound::publish(app);
+    }));
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
@@ -1302,6 +1310,9 @@ async fn run(
         std::process::exit(code);
     }
 
+    // Resolve the data transport before either listener binds or reports readiness.
+    let framer = data_framer(&listen);
+
     // SERVE (one topology; see `main()`). On unix the DATA plane runs on N pinned
     // `current_thread` runtimes — one SO_REUSEPORT listener per worker, kernel fanning connections
     // across them with no task migration — while the ADMIN plane and every singleton background
@@ -1369,6 +1380,7 @@ async fn run(
             tls_secret_resolver.clone(),
             &shutdown_tx,
             worker_shutdown_rx,
+            framer,
         );
         tracing::debug!(
             listen = %admin_listen,
@@ -1384,6 +1396,7 @@ async fn run(
             recv_shutdown(shutdown_tx.subscribe()),
             None,
             true,
+            None,
         )
         .await;
         // The shutdown broadcast has fired (the admin serve returned), so every per-core data
@@ -1412,6 +1425,7 @@ async fn run(
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
+                Some(framer),
             ),
             serve_listener(
                 admin_listener,
@@ -1422,6 +1436,7 @@ async fn run(
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
+                None,
             ),
         );
     }
@@ -1450,6 +1465,27 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
+}
+
+/// THE DATA LISTENER'S FRAMER, found by facts on the process's one connector
+/// (`root::listener::framed::data_framer`): the framer serving the listener's scheme whose tail
+/// states it accepts. A missing transport is a startup error naming the configured listener.
+fn data_framer(listen: &str) -> root::listener::framed::DataFramer {
+    let framer = root::listener::framed::data_framer(Arc::new(|scheme: &str| {
+        root::connector::the().framer_for(scheme)
+    }))
+    .unwrap_or_else(|| {
+        die(format!(
+            "cannot serve data listener '{listen}': no loaded transport plugin provides an \
+         accepting framer for '{}'; load a transport plugin that accepts this listener's scheme",
+            root::listener::framed::DATA_SCHEME,
+        ))
+    });
+    tracing::debug!(
+        framer = %framer.door().facts().name,
+        "data door served through its framer's accept side"
+    );
+    framer
 }
 
 /// One shutdown-broadcast subscription resolved into a plain future. Any receive outcome — a send,
@@ -1485,6 +1521,8 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    // The data listener's required framer, whose accept side serves each connection.
+    framer: root::listener::framed::DataFramer,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1532,6 +1570,7 @@ fn serve_thread_per_core(
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
+        let framer = framer.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -1591,6 +1630,7 @@ fn serve_thread_per_core(
                         // worker: only worker 0 logs it at INFO; every other worker's identical fact
                         // logs at DEBUG (the per-worker detail an operator can still opt into).
                         i == 0,
+                        Some(framer),
                     )
                     .await;
                     // Connections are drained; give this worker's detached work its bounded
@@ -1608,10 +1648,8 @@ fn serve_thread_per_core(
     handles
 }
 
-/// Serve one listener (data OR admin plane) to graceful shutdown. Picks plain-HTTP vs native TLS/mTLS
-/// from `tls_cfg` exactly as the single-listener path always has: `None` ⇒ plain HTTP over the shared
-/// slow-loris-hardened hyper loop; `Some` ⇒ terminate TLS (mTLS when `client_ca_file` is set), with
-/// cert/key/CA loaded and validated up front so a bad path/parse `die`s at startup, not per request.
+/// Serve one listener to graceful shutdown: the data transport's accepting framer, or the admin
+/// root's HTTP service. Connection security is prepared before either starts serving.
 /// `label` names the plane in log lines and error messages. Any serve error `die`s the process.
 #[allow(clippy::too_many_arguments)] // one more than the default threshold for `log_at_info`, the
                                      // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
@@ -1632,19 +1670,17 @@ async fn serve_listener(
     // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
     // the rest log the identical fact at DEBUG.
     log_at_info: bool,
+    // The data listener's required framer; `None` selects the admin listener's own service.
+    framer: Option<root::listener::framed::DataFramer>,
 ) {
-    match tls_cfg {
+    let security = match tls_cfg {
         None => {
             if log_at_info {
                 tracing::info!(listen = %label, "busbar listening");
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) =
-                root::listener::serve_admitted(listener, router, None, shutdown, balancer).await
-            {
-                die(format!("server error on '{label}': {e}"));
-            }
+            None
         }
         Some(tls) => {
             // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
@@ -1654,9 +1690,8 @@ async fn serve_listener(
             // is not yet serving anything. It also completes before `listener::serve_admitted`
             // below is reached, so no connection on this listener can be waiting on it.
             //
-            // The built-in axum/hyper listener below always declares itself TLS-capable
-            // (`transport_capable = true`); `prepare` still fails closed rather than silently
-            // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
+            // Connection security wraps the accepted bytes before the framer or admin service;
+            // `prepare` fails closed if the material cannot be resolved/parsed (DECISIONS #40).
             // Printed as `FailClosed` renders it — it already carries the label (see above).
             let security =
                 busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
@@ -1667,13 +1702,27 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) =
-                root::listener::serve_admitted(listener, router, Some(security), shutdown, balancer)
-                    .await
-            {
-                die(format!("server error on '{label}': {e}"));
-            }
+            Some(security)
         }
+    };
+    let result = match framer {
+        Some(framer) => {
+            root::listener::serve_admitted_framed(
+                listener,
+                router,
+                security,
+                shutdown,
+                balancer,
+                Some(framer),
+            )
+            .await
+        }
+        None => {
+            root::listener::serve_admitted(listener, router, security, shutdown, balancer).await
+        }
+    };
+    if let Err(e) = result {
+        die(format!("server error on '{label}': {e}"));
     }
 }
 

@@ -315,9 +315,9 @@ pub(crate) struct AuditChainRangeView {
     records: Vec<AuditChainRecordView>,
 }
 
-/// One sealed record: the digest recipe's fields, in the recipe's order (text as strings, numbers as
-/// numbers, each repeated group as an array under its own name), then the record's digest and
-/// signature.
+/// One sealed record: the digest recipe's fields, in the recipe's order (every value a string: a
+/// text as its text, a number as its decimal text; each repeated group as an array under its own
+/// name), then the record's digest and signature.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
@@ -339,15 +339,14 @@ pub(crate) enum AuditRecipeValue {
     Group(Vec<AuditRecipeElement>),
 }
 
-/// One recipe scalar: text is a string, a number is an unsigned 64-bit integer.
+/// One recipe scalar, always a JSON string: a text field is its text, and a number field (an
+/// unsigned 64-bit integer) is its canonical decimal text, because a JSON number above 2^53 is not
+/// exact through a reader that maps numbers to doubles. Which framing a field takes is the
+/// published recipe page's kind column, not the JSON type.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[serde(untagged)]
 #[allow(dead_code)]
-pub(crate) enum AuditRecipeScalar {
-    Text(String),
-    Number(u64),
-}
+pub(crate) struct AuditRecipeScalar(String);
 
 /// One element of a repeated group: a single value, or an object of the group's members.
 #[cfg(feature = "openapi-schema")]

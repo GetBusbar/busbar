@@ -468,48 +468,58 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
 /// the deleted test-hook plugin) with every assertion kept.
 #[tokio::test]
 async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis() {
-    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
+        workers: MAX_INFLIGHT,
+        ..DispatchConfig::default()
+    }));
+    let axis = HookRows::new(
+        &[hook_door_plugin::conforming::door],
+        None,
+        dispatcher.clone(),
+    )
+    .expect("the linked row");
     let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
         .open(
             NAME,
             "hooks.wedged",
-            &json!({"reject_over_messages": 3, "sleep_ms": 1_500}),
+            &json!({"reject_over_messages": 3, "hold_for_cap_test": true}),
             BUDGET,
         )
-        .expect("the wedged gate opens");
-
+        .expect("the controlled gate opens");
+    let blocked = hook_door_plugin::BlockedCalls::hold();
     let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
     for _ in 0..MAX_INFLIGHT {
         let wedged = Arc::clone(&wedged);
         inflight.push(tokio::spawn(async move {
-            let _ = wedged.decide(frame(2), Duration::from_millis(50)).await;
+            let _ = wedged.decide(frame(2), BUDGET).await;
         }));
     }
-    // Let every spawned call reach the plugin and take its slot.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
+    tokio::time::timeout(BUDGET, async {
+        while blocked.entered() != MAX_INFLIGHT {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("every slot has an executing crossing");
+    for h in &inflight {
+        h.abort();
+    }
+    for h in inflight {
+        assert!(h.await.expect_err("the caller is abandoned").is_cancelled());
+    }
     let start = std::time::Instant::now();
     let saturated = wedged.decide(frame(2), Duration::from_millis(150)).await;
+    let elapsed = start.elapsed();
+    blocked.release();
     assert!(
-        !matches!(
-            saturated,
-            Answered::Answer {
-                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
-                ..
-            }
-        ),
-        "with every slot held, a further call must fail rather than wait for one: {}",
+        matches!(saturated, Answered::TimedOut),
+        "with every slot held, a further caller must reach its deadline: {}",
         decided(2, &saturated)
     );
     assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the wait must be bounded by the caller's own deadline, not by the wedged plugin"
+        elapsed < Duration::from_secs(2),
+        "the wait must be bounded by the caller's own deadline, not by the held plugin"
     );
-
-    // The wedged calls returning frees the slots — the cap is backpressure, not a latch.
-    for h in inflight {
-        let _ = h.await;
-    }
     let resumed = wedged.decide(frame(2), BUDGET).await;
     assert!(
         matches!(
@@ -521,6 +531,11 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
         ),
         "a freed slot must let the next call through: {}",
         decided(2, &resumed)
+    );
+    assert_eq!(
+        dispatcher.stats().quarantined,
+        0,
+        "capacity is tested without a watchdog breach"
     );
 }
 
@@ -788,6 +803,54 @@ async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
         decided(2, &a)
     );
     assert!(!instance.quarantined());
+}
+
+/// RED (the refusal prefix, H13): a hook's `configure` refusal is its own bare words, and the
+/// HOST names the hook in front of them, as it does for `open` (`plugin '<name>' open failed:`), so
+/// a plugin never spells its own name into its refusals.
+#[tokio::test]
+async fn a_configure_refusal_is_named_by_the_host() {
+    use super::HookInstance;
+    use crate::dispatch::{ConnTable, NoSink};
+    use busbar_contract::hook_calls::HookCalls;
+    let axis = rows(
+        hook_door_plugin::configurable::door,
+        "hook_door",
+        Way::Linked,
+    );
+    let c = axis
+        .find(hook_door_plugin::CONFIGURABLE_NAME)
+        .expect("the linked row")
+        .clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.tuned",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let instance = HookInstance::open(
+        bind().expect("the hook binds"),
+        Arc::clone(&dispatcher),
+        br#"{"reject_over_messages": 3}"#,
+        bind,
+    )
+    .expect("the hook opens");
+    assert_eq!(
+        instance
+            .configure("tuned", r#"{"reject_over_messages": "x"}"#, 2, BUDGET)
+            .await,
+        Err(format!(
+            "hook '{}': settings: `reject_over_messages` must be a number",
+            hook_door_plugin::CONFIGURABLE_NAME
+        ))
+    );
 }
 
 /// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a

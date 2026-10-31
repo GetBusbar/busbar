@@ -49,6 +49,7 @@ pub mod auth_outbound;
 pub mod auth_ticks;
 pub(crate) mod call;
 pub mod conn_services;
+pub mod framing_context;
 pub mod handle;
 pub(crate) mod held;
 pub mod inline;
@@ -136,6 +137,15 @@ pub trait Kind: Send + Sync + 'static {
     /// the auth `target`). Every other slot NULL refuses the load.
     fn optional_slot(slot: u32) -> bool {
         let _ = slot;
+        false
+    }
+
+    /// Whether `slot` is a kind op the door's `statement` makes OPTIONAL: what it states makes the
+    /// op one the host never calls (the export kind's `scrape` with no `metrics` stream, its
+    /// `serve` with no route, its `deliver` with no stream but `metrics`). Left NULL, it is the
+    /// host's absent op, as [`Kind::optional_slot`]'s are.
+    fn optional_by_statement(slot: u32, statement: &Statement) -> bool {
+        let _ = (slot, statement);
         false
     }
 

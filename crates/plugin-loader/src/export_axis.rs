@@ -183,7 +183,8 @@ impl<'r> ExportRows<'r> {
         match self.load(row, &label(instance), None) {
             Ok(p) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
-                let problems = match export_door::validate(&p, settings.to_string().as_bytes()) {
+                let text = zeroize::Zeroizing::new(settings.to_string());
+                let problems = match export_door::validate(&p, text.as_bytes()) {
                     Ok(()) => Vec::new(),
                     Err(text) => refusal_lines(SECTION, instance, &text),
                 };
@@ -233,40 +234,54 @@ impl<'r> ExportRows<'r> {
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
     ///
-    /// `check` runs on an instance opened for it alone, over the settings of the first instance
-    /// that opens. An instance whose settings do not open is already refused by its own probe, and
-    /// the checks across the others still run.
+    /// `check` runs on an instance opened for it alone (bound with no connection table, so it
+    /// reaches nothing), over the settings of the first instance that opens. An instance whose
+    /// settings its sink refuses is already refused by its own probe, and the checks across the
+    /// others still run. A row that will not load here, or whose every instance validates and
+    /// still will not open, answers why as its one finding: the sink's checks did not run, and
+    /// the configuration is not reported clean (export ABI defect 3).
     #[must_use]
     pub fn check(
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         let row = self.row(module)?;
-        let listed: Vec<(String, Vec<u8>)> = instances
-            .iter()
-            .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
-            .collect();
+        let listed: zeroize::Zeroizing<Vec<(String, Vec<u8>)>> = zeroize::Zeroizing::new(
+            instances
+                .iter()
+                .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
+                .collect(),
+        );
         let none = [(module.to_string(), b"{}".to_vec())];
         let candidates = if listed.is_empty() {
             &none[..]
         } else {
             &listed[..]
         };
+        let unchecked = |why: String| Some(vec![format!("export `module: {module}`: {why}")]);
+        let mut unopened = None;
         for (named, settings) in candidates {
-            let Ok(p) = self.load(row, &label(named), None) else {
-                return Some(Vec::new());
+            let p = match self.load(row, &label(named), None) {
+                Ok(p) => p,
+                Err(why) => return unchecked(why),
             };
-            let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), settings) else {
+            if export_door::validate(&p, settings).is_err() {
+                // Its probe refuses these settings, naming the instance.
                 continue;
-            };
-            return Some(
-                export_door::check(opened.plugin(), phase, &listed)
-                    .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
-            );
+            }
+            match ExportInstance::open(p, self.dispatcher.clone(), settings) {
+                Ok(opened) => {
+                    return Some(
+                        export_door::check(opened.plugin(), phase, &listed)
+                            .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+                    )
+                }
+                Err(why) => unopened = Some(why),
+            }
         }
-        Some(Vec::new())
+        unopened.map_or_else(|| Some(Vec::new()), unchecked)
     }
 
     /// OPEN one instance of `module` with `settings` under the host's instance `label`.
@@ -289,7 +304,7 @@ impl<'r> ExportRows<'r> {
                 None => format!("no `kind: export` plugin answers to '{module}'"),
             }
         })?;
-        let text = settings.to_string();
+        let text = zeroize::Zeroizing::new(settings.to_string());
         let p = self.load(row, label, Some(settings))?;
         // Held by the instance: its grant goes with it.
         let grant = crate::observe::grant_series(
@@ -301,15 +316,12 @@ impl<'r> ExportRows<'r> {
         // The destinations its manifest declares: `open` binds each to the path the operator's
         // settings give it, and `disk.append` serves the instance those only.
         p.grant_destinations(&row.manifest.declares);
+        // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY) is not asked here: an export door
+        // that states `ready` is awaited when the host STARTS its sinks ([`ExportCalls::start`]),
+        // after the app is built and before it is served, where 1.5.5 configured its exporters.
+        // Only the open that delivers is started: the instance `check` opens has no connector.
         let opened =
             ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?.holding(grant);
-        // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
-        // export door that states `ready` is awaited once its instance is open over the host's
-        // tables, before it is served, as a store's and an auth door's are. Only this, the open that
-        // delivers, asks it: the instance `check` opens to judge a configuration has no connector.
-        opened
-            .plugin()
-            .ready(&self.dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Arc::new(opened))
     }
 

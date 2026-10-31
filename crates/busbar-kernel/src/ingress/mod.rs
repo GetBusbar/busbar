@@ -458,7 +458,7 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 /// Test-only now: every production admission threads its charge through [`finish_admitted`] (a
 /// store-error fail-open admit must not refund); this always-refunding form survives only for the
 /// tests that always charge, and refunds the `charge` they admitted with.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn finish(
     app: &Arc<App>,
@@ -704,7 +704,7 @@ pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> 
 /// corrupts ids whose first decode yields a literal `%XX`). Retained as a `#[cfg(test)]` helper
 /// documenting the decode semantics and guarding against accidental reintroduction of a
 /// double-decode.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());

@@ -713,7 +713,7 @@ is the PERF phase's (after DEV-GREEN), on the fixed reference machine.
 **The host connector — one design (ARCHITECT rulings 2026-09-27/28 and 2026-09-30).** One connector
 serves every kind that needs a connection, through ONE `Need` shape that every kind's Statement and
 tail may carry: direction, egress class (one of the four above), `target_from`, `trust_from` (an extra
-trusted root added on top of the public roots, as in 1.5.5) and auth; the loader fills each instance's
+trusted root added on top of the public roots, as in 1.5.5; optional: absent, whether an `owned.` or a `settings.` path, the need trusts the public roots alone, and a present value that is no trust anchor is refused) and auth; the loader fills each instance's
 connection table for the needs it declared. A need asks for a raw byte stream or a framed one
 (http); `exchange()` is the SDK's one-shot helper over a FRAMED http need — one request `{method,
 target, fields, body, timeout}`, not-ready until `{status, fields, body}` under the caller's cap — so

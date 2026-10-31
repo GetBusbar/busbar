@@ -17,7 +17,7 @@
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{AdminVerb, DurableWrite, Grant, StepName};
-use busbar_contract::verb_store::StoreError as VerbStoreError;
+use busbar_kernel_seams::verb_store::StoreError as VerbStoreError;
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, RecordClass};
 
 use super::store_chain::ACK_DEADLINE;
@@ -118,7 +118,7 @@ fn refused(verb: &'static str, why: &str) -> VerbStoreError {
     VerbStoreError::Failed
 }
 
-impl busbar_contract::verb_store::Store for NodeRecovery {
+impl busbar_kernel_seams::verb_store::Store for NodeRecovery {
     /// Seal an operator break on the node's journal, and answer once the store has kept it: the
     /// same acknowledgement every durable admin verb waits for (ARCHITECT 2026-10-07 H3 ruling (d)).
     fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {

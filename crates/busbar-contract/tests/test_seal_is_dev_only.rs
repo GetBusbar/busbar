@@ -25,11 +25,6 @@
 //! This is a source scan, and unlike the scan it replaces it is guarding an exception rather than
 //! standing in for a type-system rule that does not exist: the trait is genuinely sealed either
 //! way, and what is checked here is only whether the ONE escape hatch stayed dev-only.
-//!
-//! THE SAME RULE HOLDS THE `services-double` FEATURE (busbar #476 follow-up): the shared
-//! `HostServices` test double (`services::double`) a plugin's tests write against. It forges
-//! nothing, but it is a test double and Locked Decision #33 ships none, so it too may be named only
-//! on a dev edge.
 
 use std::path::{Path, PathBuf};
 
@@ -141,28 +136,6 @@ fn edges_of(feature: &str, found: &[PathBuf], root: &Path) -> (Vec<String>, usiz
         dev_edges += d;
     }
     (offenders, dev_edges)
-}
-
-/// The shared host-services double's feature is named only on dev edges, and at least one names
-/// it (the loader's own doubles are written against it).
-#[test]
-fn the_services_double_feature_is_named_only_on_dev_dependency_edges() {
-    let root = workspace_root();
-    let mut found = Vec::new();
-    manifests(&root, &mut found);
-    assert!(found.len() > 10, "the manifest walk is broken");
-    let (offenders, dev_edges) = edges_of("services-double", &found, &root);
-    assert!(
-        offenders.is_empty(),
-        "`services-double` is enabled outside [dev-dependencies]. That compiles the shared \
-         host-services TEST DOUBLE into a RELEASE build. Move these to [dev-dependencies] or drop \
-         them:\n  {}",
-        offenders.join("\n  ")
-    );
-    assert!(
-        dev_edges > 0,
-        "no crate enables `services-double` on a dev edge, so this test just proved nothing"
-    );
 }
 
 #[test]
