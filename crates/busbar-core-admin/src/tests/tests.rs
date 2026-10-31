@@ -664,7 +664,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         )
         .unwrap();
     // Two responses metered against one model (split preserved), one against another model.
-    let usage = busbar_kernel::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 700,
         output: 200,
         cache_read: Some(100),
@@ -2110,7 +2110,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
 /// block a runtime worker instead, which is itself the invariant this test exists to defend.
 ///
 /// The `recv_timeout` on `release` is a DEADLOCK BACKSTOP, not synchronisation. The mint holds the
-/// process-wide `EXISTENCE_GATE` across this park, so a test that panicked between `entered` and
+/// process-wide config transaction across this park, so a test that panicked between `entered` and
 /// `release` would otherwise wedge every other key-mutating test in the binary forever. The backstop
 /// turns that into a bounded, legible failure instead of a hung suite. Nothing in a passing run ever
 /// waits on it.
@@ -7092,21 +7092,15 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
 }
 
 #[test]
-fn test_existence_gate_is_std_sync_mutex_lockable_without_runtime() {
-    // The gate MUST be a
-    // `std::sync::Mutex<()>`, not a `tokio::sync::Mutex<()>`. The fix binds the gate's lifetime to
-    // the SYNCHRONOUS store mutation by locking it INSIDE the `spawn_blocking` closure (which has no
-    // async runtime in scope); a `tokio::sync::Mutex` cannot be locked there — its `.lock()` returns
-    // a future. This test locks the gate from a PLAIN (non-async) thread with no Tokio runtime
-    // present: that only compiles/runs for a `std::sync::Mutex`. Against the old `tokio::sync::Mutex`
-    // this call would not typecheck as a blocking lock (and `into_inner` on poison is std-only), so
-    // the gate-type regression is pinned. We assert the guarded unit value round-trips.
-    let guard = super::EXISTENCE_GATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    // The guarded data is the unit type; dereferencing proves we hold a std MutexGuard<()>.
-    let () = *guard;
-    drop(guard);
+fn test_existence_gate_is_claimable_without_runtime() {
+    // The gate is claimed INSIDE each operation's `spawn_blocking` closure (which has no async
+    // runtime in scope), binding its lifetime to the SYNCHRONOUS store mutation rather than to a
+    // cancellable handler future. So it must be claimable, and released, from a PLAIN thread with no
+    // Tokio runtime present: a second claim of the same id after the first drops does not wait.
+    let first = super::EXISTENCE_GATE.claim("vk_gate_probe".to_string());
+    drop(first);
+    let again = super::EXISTENCE_GATE.claim("vk_gate_probe".to_string());
+    drop(again);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -7220,6 +7214,76 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
         del_status, 204,
         "the DELETE runs after the gate frees and revokes the (now-present) key"
     );
+    handle.abort();
+}
+
+/// R8 (§11.13 M1): a PATCH parked in its store write holds only ITS key's existence
+/// serialization. A DELETE of a DIFFERENT key completes while the PATCH is parked, and the PATCH
+/// still lands once released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store() {
+    busbar_kernel::snapshot::init();
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let store = Arc::new(BarrierStore {
+        inner: MemoryStore::new(),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        entered: entered_tx,
+        release: std::sync::Mutex::new(release_rx),
+    });
+    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let mint = |name: &str| {
+        gov.create_key(
+            NewKeySpec {
+                name: name.to_string(),
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap()
+        .0
+    };
+    let (parked_key, other_key) = (mint("parked"), mint("other"));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let url = |id: &str| format!("http://{addr}/api/v1/admin/keys/{id}");
+
+    store.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let patch_url = url(&parked_key.id);
+    let patch_task = tokio::spawn(async move {
+        reqwest::Client::new()
+            .patch(&patch_url)
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"enabled": false}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    });
+    tokio::task::spawn_blocking(move || {
+        entered_rx.recv_timeout(std::time::Duration::from_secs(10))
+    })
+    .await
+    .unwrap()
+    .expect("the PATCH reached the instrumented put_key");
+
+    let delete = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reqwest::Client::new()
+            .delete(url(&other_key.id))
+            .header("x-admin-token", "admintok")
+            .send(),
+    )
+    .await;
+    release_tx.send(()).unwrap();
+    let patch_status = patch_task.await.unwrap();
+    let delete_status = delete
+        .expect("a DELETE of another key waited on a PATCH parked in the store")
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(delete_status, 204);
+    assert_eq!(patch_status, 200);
     handle.abort();
 }
 
@@ -9398,7 +9462,8 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 /// legitimate workflow — and `tls`, the block beside it with the identical failure mode, already
 /// accepts exactly that. The operator gets a loud warn naming the field and the restart
 /// consequence; rejecting instead would make a config they can legally write into `config.yaml`
-/// un-PUT-able.
+/// un-PUT-able. The reference sits at `token`, the field the memory store declares secret (a
+/// reference at an undeclared field is refused, G14).
 #[tokio::test]
 async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
     let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("storesecret").await;
@@ -9412,7 +9477,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": migrated_store_module(), "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": migrated_store_module(), "settings": { "token": { "env": var } } }
             })
             .to_string(),
         )
@@ -9432,7 +9497,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         doc.root
             .as_ref()
             .and_then(|r| r.store.as_ref())
-            .is_some_and(|s| s.settings.contains_key("licenseKey")),
+            .is_some_and(|s| s.settings.contains_key("token")),
         "the staged reference reaches the overlay"
     );
 

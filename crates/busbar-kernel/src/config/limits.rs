@@ -95,26 +95,6 @@ pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
 /// legitimate signed plugin tarball while bounding the worst case; the download is aborted with a
 /// clear "exceeded the cap" error the instant more bytes arrive, never buffered past it.
 pub const DEFAULT_PLUGIN_FETCH_MAX_BYTES: usize = 256 * 1024 * 1024;
-/// Default depth, in FRAMES, of the OUTBOUND queue on one full-duplex leg: how many frames a plane
-/// may have handed a socket that has not yet drained them.
-///
-/// The mirror of the inbound queue depth the duplex acceptor and dialer already bound, pointed the
-/// other way, and it is a cap for the same reason. An UNBOUNDED outbound queue charges this node's
-/// memory for the difference between the rate a plane produces frames at and the rate the far end
-/// accepts them: a relay leg whose upstream has stalled (a wedged provider, a peer that stopped
-/// reading, a socket held open by a middlebox) goes on accepting frames forever, and the amount of
-/// memory one session can cost is then decided by the producer alone with nothing on the other side
-/// of the equation. Bounded, the producer's own `send` waits for capacity instead, which is what
-/// pushes the stall back to whoever is causing it — the same discipline the inbound side applies to
-/// a flooding peer. 64 frames is deep enough that ordinary jitter between a plane's writes and a
-/// socket's drain never reaches it, and shallow enough that a wedged leg is bounded by a queue and
-/// not by the heap.
-///
-/// Lives HERE, with every other operational cap, rather than beside the transport that reads it: it
-/// is the same kind of number as the rest of this page, and a neutral transport reads it without
-/// naming the engine. No `limits:` key drives it — like [`DEFAULT_MAX_TOKENS`], the constant IS the
-/// posture.
-pub const DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES: usize = 64;
 /// Default TLS handshake wall-clock bound (seconds). Mirrors `tls.rs`.
 pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// Default inbound request-BODY read bound (seconds): the max time allowed BETWEEN inbound body
@@ -624,67 +604,23 @@ pub fn install(resolved: &LimitsResolved) {
     mirror_derived_caps(Some(resolved));
 }
 
-/// TEST-ONLY. Write the slot DIRECTLY, including back to the uninstalled `None` — the raw poke
-/// [`install`] cannot express and [`InstallGuard`] must not be used for.
-///
-/// The consumer is the guard's OWN test file: its restore-on-drop fixture has to put the slot back
-/// exactly as it found it (uninstalled included) on the failure path, and it deliberately does not
-/// use `InstallGuard` for that, because a broken `InstallGuard::drop` would then silently repair the
-/// very state the assertions inspect. Mirrors the derived caps exactly as every other mutation does,
-/// so a raw poke cannot leave the `proxy` globals disagreeing with the accessors.
-#[cfg(test)]
-pub fn set_installed(slot: Option<LimitsResolved>) {
+/// Put `slot` in the live slot (the uninstalled `None` included) and hand back what was there,
+/// mirroring the derived caps as every other mutation does. Production writes the slot only through
+/// [`publish`]; this is the test fixtures' one write (the kernel testkit's `InstallGuard`, and the
+/// guard's own restore-on-drop tests), which must be able to put the slot back exactly as it found it.
+#[doc(hidden)]
+pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
+    let mut installed = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
     mirror_derived_caps(slot.as_ref());
-    *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = slot;
+    std::mem::replace(&mut *installed, slot)
 }
 
-/// TEST-ONLY. INSTALL A POSTURE PROCESS-WIDE FOR A TEST'S DURATION, AND ROLL IT BACK ON DROP
-/// unless [`InstallGuard::commit`] is called.
-///
-/// Production no longer installs through this: a configuration build reads its candidate's limits
-/// through a thread-local [`BuildScope`] and the live slot is written only by [`publish`] when the
-/// generation goes live, so a refused build never has its limits in force anywhere. (This guard was
-/// the build's install, and it put the candidate's limits — the very values validation exists to
-/// refuse — in front of live traffic for the length of the build.) Tests that need a non-default
-/// posture in force process-wide (a small body cap, a short handshake bound) still use it, because
-/// they want exactly the process-wide effect, undone on drop.
+/// The kernel testkit's guard, mounted for the kernel's own test fixtures.
 #[cfg(any(test, feature = "test-support"))]
-#[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
-pub struct InstallGuard {
-    /// What was installed before — `None` when nothing was (boot, or a test process).
-    prior: Option<LimitsResolved>,
-    committed: bool,
-}
-
+#[path = "../../../busbar-kernel-testkit/src/limits.rs"]
+mod install_guard;
 #[cfg(any(test, feature = "test-support"))]
-impl InstallGuard {
-    /// Snapshot the currently-installed limits and install `resolved` in their place.
-    pub fn install(resolved: &LimitsResolved) -> Self {
-        let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
-        let prior = slot.clone();
-        *slot = Some(resolved.clone());
-        mirror_derived_caps(Some(resolved));
-        Self {
-            prior,
-            committed: false,
-        }
-    }
-
-    /// The build succeeded: KEEP the installed limits.
-    pub fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Drop for InstallGuard {
-    fn drop(&mut self) {
-        if !self.committed {
-            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
-            mirror_derived_caps(self.prior.as_ref());
-        }
-    }
-}
+pub use install_guard::InstallGuard;
 
 /// Mirror the egress translate-body cap AND the hook content ceiling
 /// into the `proxy` process globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read

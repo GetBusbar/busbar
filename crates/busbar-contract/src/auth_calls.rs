@@ -470,25 +470,6 @@ pub trait AuthAxis: Send + Sync {
         Ok(None)
     }
 
-    /// [`AuthAxis::serving`] for a binding whose token endpoint the operator spelled with a
-    /// `user:pass@`: the host stripped it from `settings` before any plugin could read it, and
-    /// `endpoint_basic` is the `authorization: Basic` value it spelled, which the host presents on
-    /// the plugin's mint as 1.5.5 sent it. A plugin never receives it. Default: the value is not
-    /// presented. TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the door path's endpoint userinfo is read by the root at
-    /// configuration time and never crosses this axis.
-    ///
-    /// # Errors
-    /// The serving plugin would not open for its outbound styles.
-    fn serving_presenting(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        endpoint_basic: Option<&[u8]>,
-    ) -> Result<Option<OutboundServing>, String> {
-        let _ = endpoint_basic;
-        self.serving(style, settings)
-    }
-
     /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh
     /// instance of the auth plugin serving `style`, one granted no need, and answer the refusals it
     /// names for the credential itself (its `credential:` lines, their text), in its own words.
@@ -708,7 +689,8 @@ pub trait PerRequestHandle: Send + Sync {
     /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
     /// resolution, an open or a wait (it is asked on the request path). `None` when the last
     /// refresh found the credential unavailable (it no longer resolves, or its new value would not
-    /// bind): the request is refused and nothing is presented.
+    /// bind), or when its lease ran out on busbar's clock with no refresh that renewed it: the
+    /// request is refused and nothing is presented.
     fn handle_now(&self) -> Option<u64>;
 }
 

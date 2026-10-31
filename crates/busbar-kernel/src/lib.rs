@@ -196,11 +196,9 @@ pub mod audit;
 /// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
 pub mod audit_ring;
 pub mod auth;
-pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
 pub mod boot;
-pub mod breaker;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;
@@ -212,9 +210,6 @@ pub mod diagnostics;
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
 pub mod durable;
-// The kernel's outbound vocabulary and the destinations seam; the kernel dials nothing. See the
-// module header.
-pub mod egress;
 pub mod endpoints;
 pub mod export;
 /// The pool vocabulary's historical path. The failover module is deleted (row 82 D2); the one
@@ -225,7 +220,6 @@ pub mod failover {
     pub use crate::config::pools::CandidatePoolCfg;
 }
 pub mod governance;
-pub mod handlers;
 pub mod hooks;
 pub mod host_chains;
 pub mod host_disk;
@@ -286,11 +280,6 @@ pub mod ratelimit;
 pub mod session;
 pub mod state;
 pub mod store;
-/// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
-/// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
-/// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
-/// admin HTTP API.
-pub(crate) mod taxonomy;
 
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
@@ -315,11 +304,19 @@ pub mod test_support;
 /// kernel's own test binary reads its protocol set.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
-pub mod tls;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.
 pub use busbar_contract::transport::transport;
 
+#[cfg(test)]
+#[path = "tests/billing_tests.rs"]
+mod billing_tests;
+#[cfg(test)]
+#[path = "tests/breaker_tests.rs"]
+mod breaker_tests;
+#[cfg(test)]
+#[path = "tests/handler_contract_tests.rs"]
+mod handler_contract_tests;
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
@@ -374,31 +371,6 @@ pub(crate) use router::build_router_with_limits;
 #[cfg(any(test, feature = "test-support"))]
 pub use router::build_router_with_limits;
 
-#[cfg(any(test, feature = "test-support"))]
-use busbar_contract::abi::mechanism::route::RouteAuth;
-
-/// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
-/// mounts for `app`, built through the very same `router::base_data_router` production calls (off the
-/// App's neutral slots). Exposed as a curated `pub` seam — over PUBLIC types (`String`,
-/// [`RouteAuth`]) — ONLY under the test-support surface, so an extracted
-/// plane's own ingress tests can assert the mounted surface (which paths appear, at which bar) WITHOUT
-/// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
-#[cfg(any(test, feature = "test-support"))]
-pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> {
-    router::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-        Vec::new(),
-        Vec::new(),
-    )
-    .1
-    .routes()
-    .iter()
-    .map(|r| (r.path.clone(), r.auth))
-    .collect()
-}
-
 /// THE KERNEL'S OWN DATA ROUTES for `app`, as lines (path, method, bar): the routes the data router
 /// mounts before any door plane's, read off the same `router::base_data_router` production calls.
 /// The composition root writes them on the data listener's guest list beside the door planes'
@@ -422,26 +394,6 @@ pub fn base_data_core_lines(
     .routes()
     .iter()
     .map(|r| (r.path.clone(), r.method, r.auth))
-    .collect()
-}
-
-/// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
-/// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
-/// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,
-/// [`RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
-#[cfg(any(test, feature = "test-support"))]
-pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, RouteAuth)> {
-    router::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-        Vec::new(),
-        Vec::new(),
-    )
-    .1
-    .routes()
-    .iter()
-    .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
     .collect()
 }
 

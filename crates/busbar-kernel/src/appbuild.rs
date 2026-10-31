@@ -23,10 +23,9 @@ use crate::state::App;
 use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
-    observability, operation, plugin_routes, profile, ratelimit, snapshot, state, store, telemetry,
-    tls, transport, trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
+    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, transport, trust,
 };
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
@@ -498,9 +497,10 @@ pub struct InstalledLimits {
     /// (and by the swap that puts the generation live); never published by a build that is refused.
     limits: config::LimitsResolved,
     rates: ResolvedRates,
-    /// The rates this build STAGED with the holder (made durable before the caller persists):
-    /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
-    staged: StagedRates,
+    /// The card this configuration resolved, raised at [`InstalledLimits::keep`]: when it differs
+    /// from the card in force, the holder appends a dated history entry for it (MONEY-DESIGN
+    /// section 3a; the configuration is the source of the card, as in 1.5.5).
+    configured_card: config::card::CardFields,
     /// The destinations this configuration states, raised to the destination judge at the commit
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
     /// rejected apply must not leave them in force.
@@ -508,20 +508,6 @@ pub struct InstalledLimits {
     /// The root's rules this build was judged by, which hear the commit
     /// ([`RootRules::destinations_applied`]).
     rules: std::sync::Arc<dyn RootRules>,
-}
-
-/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
-/// the config change never committed — the holder is told to withdraw them.
-struct StagedRates {
-    armed: bool,
-}
-
-impl Drop for StagedRates {
-    fn drop(&mut self) {
-        if self.armed {
-            crate::rate_apply::rates_withdrawn();
-        }
-    }
 }
 
 impl ResolvedRates {
@@ -539,7 +525,7 @@ impl ResolvedRates {
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
 struct ResolvedRates {
-    lanes: Vec<(String, crate::billing::RawTierRates)>,
+    lanes: Vec<(String, busbar_contract::billing::RawTierRates)>,
     units: Vec<(String, String, u64)>,
     flat_minor: i64,
     present: bool,
@@ -554,13 +540,13 @@ impl InstalledLimits {
         let InstalledLimits {
             limits,
             rates,
-            mut staged,
+            configured_card,
             destinations,
             rules,
         } = self;
         busbar_kernel::config::limits::publish(&limits);
         rules.destinations_applied(&destinations);
-        staged.armed = false;
+        crate::rate_apply::card_applied(&configured_card);
         crate::rate_apply::rates_applied(&rates.raw());
     }
 }
@@ -640,6 +626,8 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The card this configuration resolves, raised at the commit (`InstalledLimits::keep`).
+    let configured_card = config::card::CardFields::of_root(&cfg);
     // The planes this configuration writes that the process did not open at boot: restart-to-apply,
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
@@ -1106,6 +1094,7 @@ pub fn build_app_from_config(
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
             &plugin_registry.secret_slots(&store_cfg.module),
+            &plugin_registry.reference_slots(&store_cfg.module),
             &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1270,6 +1259,7 @@ pub fn build_app_from_config(
             false => config::secret::resolve_settings(
                 &g.settings,
                 &plugin_registry.secret_slots(&g.module),
+                &plugin_registry.reference_slots(&g.module),
                 &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1708,6 +1698,20 @@ pub fn build_app_from_config(
     // A refused build never publishes it.
     let limits_resolved = cfg.limits.clone();
 
+    // THE NODE'S AMENDMENT JOURNAL: the one the node's governance owns, carried across the apply
+    // (its durable sink is bound on it once at boot, so an instance rebuilt here would silently stop
+    // being made durable); a generation built with no governance keeps one of its own. The export
+    // sinks, opened once before the first generation, record every hand-off on it from that first
+    // generation on.
+    let amendments = match (prior, governance.as_ref()) {
+        (Some(p), _) => Arc::clone(&p.amendments),
+        (None, Some(g)) => Arc::clone(g.amendments()),
+        (None, None) => Arc::new(crate::audit::amend::NodeAmendments::new()),
+    };
+    if prior.is_none() {
+        crate::export::plugin::record_reads_on(&amendments);
+    }
+
     let app = App {
         // The limits this generation goes live with: `AppHandle::swap` publishes them before any
         // reader of the new generation runs, and carries them onto the plane breaker store.
@@ -1731,41 +1735,7 @@ pub fn build_app_from_config(
         fallback_runtime_key,
         config_tables,
         store,
-        // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
-        // way the HTTP client pool and governance state are — a config swap must not un-trip a
-        // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
-        // store-or-RAM rule).
-        // "What is not configured must not be loaded": a config with NO plane content — no mounted
-        // plane slot, no registration in a declared section, no plane pool — gets the
-        // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
-        // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
-        // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
-        // including one that removes the last plane section); an inert prior is upgraded HERE — at
-        // apply, boot-only work — the first time plane content appears, losing nothing (an inert
-        // handle never recorded anything). Note the `runtime_slot_key(<its decl key>)` companion slot
-        // is inserted on every build with that container plane compiled in, so the gate reads the
-        // DECL keys (config-conditional), never it.
-        plane_breakers: {
-            let planes_configured = crate::plane_driver::registry::plane_decls()
-                .iter()
-                .any(|d| plane_slots.contains_key(d.key))
-                || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
-                || cfg.plane_pools.values().any(|p| !p.is_empty());
-            match prior {
-                Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
-                    Arc::clone(&p.plane_breakers)
-                }
-                // Built under THIS generation's limits (THE DESIGN §1: every plane honours the
-                // operator's `limits.*`); a reused prior takes them at the swap
-                // (`App::publish_limits`), never during the build.
-                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new_with_limits(
-                    cfg.limits.hard_down_cooldown_secs,
-                    cfg.limits.max_honored_retry_after_secs,
-                )),
-                _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
-            }
-        },
-        // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
+        // The neutral per-session substrate: PROCESS-LIFETIME, reused across an
         // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
         // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
         // memory-safety bound the substrate is built around.
@@ -1896,6 +1866,7 @@ pub fn build_app_from_config(
             || Arc::new(crate::trust::demotion::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
         ),
+        amendments,
         auth_scope_caps: cfg
             .auth
             .as_ref()
@@ -1968,19 +1939,6 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
-    // THE CARD GOES ON THE JOURNAL BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT
-    // ruling 2026-10-02): the LAST fallible step of the build, so every caller's persist runs only
-    // after the holder made the rates durable. A journal that refuses them refuses the whole change:
-    // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
-    // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
-    // withdraws the staged card.
-    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
-        format!(
-            "the rate card could not be made durable, so the configuration change was refused \
-             and nothing was changed: {why}"
-        )
-    })?;
-    let staged = StagedRates { armed: true };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
@@ -1991,7 +1949,7 @@ pub fn build_app_from_config(
         InstalledLimits {
             limits: limits_resolved,
             rates: resolved_rates,
-            staged,
+            configured_card,
             destinations,
             rules: std::sync::Arc::clone(rules),
         },

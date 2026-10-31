@@ -363,6 +363,31 @@ impl RootHost {
     }
 }
 
+impl RootHost {
+    /// The directory of the configuration, and the providers catalog boot reads beside it:
+    /// `--providers` > `providers_file:` (beside the config) > the `providers.yaml` beside the
+    /// config. Read as boot reads it, without saying anything: boot already warns about the
+    /// deprecated variable, and `--migrate-config`'s output stays the one 1.5.5 printed.
+    fn catalog_path(&self) -> (PathBuf, PathBuf) {
+        let dir = self
+            .config
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let path = crate::root::cli::value_flag(std::env::args().skip(1), "--providers", None)
+            .or_else(|| {
+                std::env::var(busbar_kernel::ENV_PROVIDERS)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            })
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dir.join(self.providers_file.as_deref().unwrap_or("providers.yaml"))
+            });
+        (dir, path)
+    }
+}
+
 impl Drop for RootHost {
     fn drop(&mut self) {
         if let Some(dir) = self.fetched.get() {
@@ -423,25 +448,7 @@ impl MigrateHost for RootHost {
     }
 
     fn rewrite_catalog(&self) -> Result<Option<(String, Vec<String>)>, String> {
-        let dir = self
-            .config
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
-        // The catalog boot reads: `--providers` > `providers_file:` (beside the config) > the
-        // `providers.yaml` beside the config.
-        // Read as boot reads it, without saying anything: boot already warns about the deprecated
-        // variable, and `--migrate-config`'s output stays the one 1.5.5 printed.
-        let path = crate::root::cli::value_flag(std::env::args().skip(1), "--providers", None)
-            .or_else(|| {
-                std::env::var(busbar_kernel::ENV_PROVIDERS)
-                    .ok()
-                    .filter(|v| !v.is_empty())
-            })
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                dir.join(self.providers_file.as_deref().unwrap_or("providers.yaml"))
-            });
+        let (dir, path) = self.catalog_path();
         let Ok(raw) = std::fs::read_to_string(&path) else {
             return Ok(None);
         };
@@ -460,6 +467,33 @@ impl MigrateHost for RootHost {
             _ => out.display().to_string(),
         };
         Ok(Some((file, m.changes)))
+    }
+
+    fn providers_catalog(
+        &self,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+        let (_, path) = self.catalog_path();
+        // No catalog where boot looks: the plane reads the configuration's own entries, and boot
+        // names the missing file, as it always has.
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return Ok(None);
+        };
+        let shown = path.display();
+        match serde_yaml::from_str::<serde_json::Value>(&raw) {
+            Ok(serde_json::Value::Object(entries)) => Ok(Some(entries)),
+            Ok(serde_json::Value::Null) => Ok(None),
+            Ok(_) => Err(format!("{shown}: not a map of providers")),
+            Err(e) => Err(format!("{shown}: {e}")),
+        }
+    }
+
+    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        // The system resolver, as the destination guard's own resolves a name at a dial.
+        use std::net::ToSocketAddrs;
+        (host, 0)
+            .to_socket_addrs()
+            .map(|a| a.map(|s| s.ip()).collect())
+            .map_err(|e| e.to_string())
     }
 
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String> {

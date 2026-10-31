@@ -1051,9 +1051,9 @@ fn open_ready<K: crate::dispatch::Kind>(
 /// `OpenIn::secrets` entry, in the Statement's order. A key the block does not set is an empty
 /// entry (its place is kept); a reference that does not parse or resolve refuses, naming the key
 /// and never a byte of the secret. Then each WILDCARD path's (`*` = any key or index) matches, in
-/// document order: a reference is resolved, a string is lent as written, and each is appended to
-/// the secrets and replaced in the block by its `{"$secret": <index>}` marker
-/// (`busbar_contract::secret_fields::lend`).
+/// document order: each is read and resolved as an exact path's is (a literal there refuses as it
+/// does at an exact path, lead ruling item 7b), appended to the secrets and replaced in the block
+/// by its `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`).
 ///
 /// # Errors
 /// The key whose reference is malformed or does not resolve.
@@ -1068,12 +1068,7 @@ pub fn resolve_secrets(
         keys,
         false,
         |path, found| resolve_one(found, path, resolver, scope),
-        |at, found| match found {
-            serde_json::Value::String(s) => {
-                Ok(busbar_contract::redacted::Secret::new(s.into_bytes()))
-            }
-            reference => resolve_one(Some(reference), at, resolver, scope),
-        },
+        |at, found| resolve_one(Some(found), at, resolver, scope),
     )
 }
 

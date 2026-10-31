@@ -420,3 +420,100 @@ fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_
     );
     assert_eq!(close(inst), Outcome::Ready);
 }
+
+// ── export_plugin!'s plane arm ──────────────────────────────────────────────────────────────────
+
+/// A kind op answering `$outcome` over `$in`/`$out`.
+macro_rules! answers {
+    ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+        struct $name;
+        impl crate::abi::sdk::door::Slot for $name {
+            type In = $in;
+            type Out = $out;
+            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                $outcome
+            }
+        }
+    };
+}
+
+use crate::abi::plane::{
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    ServeIn, ServeOut,
+};
+
+answers!(Arrive, ArriveIn, ArriveOut, Outcome::Ready);
+answers!(OnPiece, OnPieceIn, OnPieceOut, Outcome::Ready);
+answers!(Refuse, RefusalIn, RefusalOut, Outcome::Ready);
+answers!(Project, ProjectIn, ProjectOut, Outcome::Ready);
+answers!(Served, ServeIn, ServeOut, Outcome::Ready);
+answers!(Hydrated, GenIn, OutHead, Outcome::Failed);
+
+/// A plane naming no `serve`, `hydrate` or `start`: the arm's defaults.
+mod defaulted {
+    use super::*;
+    crate::export_plugin! {
+        plane: Echo,
+        statement: crate::abi::sdk::door::statement("plane-arm-defaults", "0", 1),
+        kind_ops: { arrive: Arrive, on_piece: OnPiece, refusal: Refuse, project: Project },
+    }
+}
+
+/// A plane naming `serve` and `hydrate`: its own, and `start`'s default.
+mod named {
+    use super::*;
+    crate::export_plugin! {
+        plane: Echo,
+        statement: crate::abi::sdk::door::statement("plane-arm-named", "0", 1),
+        kind_ops: {
+            arrive: Arrive, on_piece: OnPiece, refusal: Refuse, serve: Served,
+            hydrate: Hydrated, project: Project,
+        },
+    }
+}
+
+fn arm_table(door: crate::abi::mechanism::door::DoorFn) -> &'static Ops {
+    // SAFETY: the macro's `'static` door and its plane table.
+    unsafe { &*door().ops.cast::<Ops>() }
+}
+
+fn gen_op(op: Option<Op>, index: u32) -> Outcome {
+    let input = GenIn {
+        head: in_head::<GenIn>(index),
+        ..zeroed()
+    };
+    let mut out = out_head::<OutHead>();
+    call(op, ptr::null_mut(), &input, &mut out)
+}
+
+fn serve_op(op: Option<Op>) -> Outcome {
+    let input = ServeIn {
+        head: in_head::<ServeIn>(crate::abi::plane::slot::SERVE),
+        ..zeroed()
+    };
+    let mut out = ServeOut {
+        head: out_head::<ServeOut>(),
+        ..zeroed()
+    };
+    call(op, ptr::null_mut(), &input, &mut out)
+}
+
+#[test]
+fn the_plane_arm_defaults_hydrate_and_start_to_ready_and_serve_to_refused() {
+    use crate::abi::plane::slot::{HYDRATE, START};
+    let t = arm_table(defaulted::door);
+    assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Ready);
+    assert_eq!(gen_op(t.start, START), Outcome::Ready);
+    assert_eq!(serve_op(t.serve), Outcome::Refused);
+    assert!(t.catalog.is_none(), "an unnamed catalog stays absent");
+    assert!(t.head.cancel.is_some(), "cancel is the plane's own");
+}
+
+#[test]
+fn the_plane_arm_keeps_the_ops_a_plane_names() {
+    use crate::abi::plane::slot::{HYDRATE, START};
+    let t = arm_table(named::door);
+    assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Failed);
+    assert_eq!(gen_op(t.start, START), Outcome::Ready);
+    assert_eq!(serve_op(t.serve), Outcome::Ready);
+}

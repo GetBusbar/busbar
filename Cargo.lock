@@ -283,6 +283,7 @@ dependencies = [
  "hyper-util",
  "idna_adapter",
  "metrics",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "socket2",
@@ -389,6 +390,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-testkit",
  "bytes",
  "futures",
  "http",
@@ -483,6 +485,7 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-breaker",
 ]
 
 [[package]]
@@ -500,6 +503,14 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "serde",
+]
+
+[[package]]
+name = "busbar-kernel-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-kernel",
 ]
 
 [[package]]

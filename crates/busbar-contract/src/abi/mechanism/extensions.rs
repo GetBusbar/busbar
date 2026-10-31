@@ -108,6 +108,58 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
 /// Statement bytes (Part 2 #2 rule (1)).
 pub const EXT_DECLARES: &str = "declares";
 
+/// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead
+/// ruling item 7a). Its value is a JSON list of `.`-separated settings paths (`*` = any key or index,
+/// as in [`crate::secret_fields`]): at such a path a secret reference (`{env:}`, `{file:}`,
+/// `{module:}`) is resolved IN PLACE to its string, and a literal passes as written. The value is
+/// never a secret: it is never lent, and no literal is refused there. A path the Statement's
+/// `secret_refs` also names is a contradiction, refused at load. It rides the extensions blob, not
+/// a `repr(C)` field, so the Statement's layout and its ABI version are unchanged; it is rendered
+/// and signed with the rest of the blob.
+pub const EXT_REFERENCE_FIELDS: &str = "reference_fields";
+
+/// The reference-capable paths a Statement's extensions state under [`EXT_REFERENCE_FIELDS`];
+/// empty when they state none.
+///
+/// # Errors
+///
+/// The value is not a JSON list of non-empty strings.
+pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
+    let Some(value) = get(extensions, EXT_REFERENCE_FIELDS) else {
+        return Ok(Vec::new());
+    };
+    let paths: Vec<String> = serde_json::from_slice(value).map_err(|_| {
+        format!("extensions.{EXT_REFERENCE_FIELDS} is not a JSON list of settings paths")
+    })?;
+    if paths.iter().any(String::is_empty) {
+        return Err(format!(
+            "extensions.{EXT_REFERENCE_FIELDS} names an empty settings path"
+        ));
+    }
+    Ok(paths)
+}
+
+/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its
+/// value is the JSON `true` when the door takes each `traces` line's full span record as its
+/// reserved `span` member (everything the previous release's exporter sent for a span: attributes,
+/// events, status), whatever `fields:` selected; `false`, or no entry, takes none. It rides the
+/// extensions blob, not a `repr(C)` field, so the Statement's layout and its ABI version are
+/// unchanged; it is rendered and signed with the rest of the blob.
+pub const EXT_SPAN_RECORDS: &str = "span_records";
+
+/// Whether a Statement's extensions state the door takes full span records
+/// ([`EXT_SPAN_RECORDS`]); `false` when they state nothing.
+///
+/// # Errors
+///
+/// The value is not a JSON boolean.
+pub fn span_records(extensions: &[u8]) -> Result<bool, String> {
+    get(extensions, EXT_SPAN_RECORDS).map_or(Ok(false), |value| {
+        serde_json::from_slice(value)
+            .map_err(|_| format!("extensions.{EXT_SPAN_RECORDS} is not a JSON boolean"))
+    })
+}
+
 /// The length of the bytes [`encode`] writes for `entries`: what [`concat`] is sized by.
 #[must_use]
 pub const fn entries_len(entries: &[(&str, &[u8])]) -> usize {

@@ -99,3 +99,52 @@ fn a_duplicate_key_is_refused_by_the_writer() {
     let built = super::concat::<{ 2 * (2 + 2 + 4 + 1) }>(distinct);
     assert_eq!(built.as_slice(), encode(distinct).as_slice());
 }
+
+/// THE REFERENCE-CAPABLE FIELDS a Statement states under `reference_fields` (lead ruling item 7a):
+/// a JSON array of `.`-separated settings paths; absent states none; anything else is malformed.
+#[test]
+fn reference_fields_read_from_the_statement_extensions() {
+    use super::{reference_fields, EXT_DECLARES, EXT_REFERENCE_FIELDS};
+    assert_eq!(EXT_REFERENCE_FIELDS, "reference_fields");
+    let blob = encode(&[
+        (EXT_DECLARES, b"{}"),
+        (EXT_REFERENCE_FIELDS, br#"["url","sinks.*.to"]"#),
+    ]);
+    assert_eq!(
+        reference_fields(&blob),
+        Ok(vec!["url".to_string(), "sinks.*.to".to_string()])
+    );
+    assert_eq!(
+        reference_fields(&encode(&[(EXT_DECLARES, b"{}")])),
+        Ok(Vec::new())
+    );
+    assert_eq!(reference_fields(&[]), Ok(Vec::new()));
+    for bad in [
+        &br#"{"url":1}"#[..],
+        br#"["url", 2]"#,
+        br#"[""]"#,
+        b"not json",
+    ] {
+        assert!(
+            reference_fields(&encode(&[(EXT_REFERENCE_FIELDS, bad)])).is_err(),
+            "{}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+}
+
+/// THE FULL SPAN RECORDS a door states under `span_records` (status row 173): a JSON boolean;
+/// absent takes none; anything else is malformed.
+#[test]
+fn span_records_read_from_the_statement_extensions() {
+    use super::{span_records, EXT_DECLARES, EXT_SPAN_RECORDS};
+    assert_eq!(EXT_SPAN_RECORDS, "span_records");
+    let stated = |v: &[u8]| span_records(&encode(&[(EXT_DECLARES, b"{}"), (EXT_SPAN_RECORDS, v)]));
+    assert_eq!(stated(b"true"), Ok(true));
+    assert_eq!(stated(b"false"), Ok(false));
+    assert_eq!(span_records(&encode(&[(EXT_DECLARES, b"{}")])), Ok(false));
+    assert_eq!(span_records(&[]), Ok(false));
+    for bad in [&b"1"[..], br#""true""#, b"not json"] {
+        assert!(stated(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+    }
+}

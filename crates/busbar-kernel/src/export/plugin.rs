@@ -49,14 +49,60 @@ pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
 /// configuration time, as a built-in's is — and the sink's own VALIDATION of the instance's
 /// `settings` (K9a S2), rendered under the instance, so a plugin sink's settings errors surface at
 /// the same moment and in the same words a built-in's do.
+///
+/// The sink validates its settings with each reference at a declared path resolved
+/// ([`sink_settings`]); one that does not resolve is the instance's problem, in place of the
+/// sink's verdict on a value it was never handed.
 pub(crate) fn probe(
     name: &str,
     module: &str,
-    cfg: &Value,
+    settings: &serde_json::Map<String, Value>,
 ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
-    let (streams, problems) = axis()?.probe(module, name, cfg)?;
+    let axis = axis()?;
+    let (streams, problems) = match sink_settings(axis, module, settings) {
+        Ok(cfg) => axis.probe(module, name, &cfg)?,
+        Err(e) => {
+            let (streams, _) = axis.probe(module, name, &Value::Object(settings.clone()))?;
+            (streams, vec![format!("export.{name}.settings: {e}")])
+        }
+    };
     let streams = streams.map(|b| streams_of(&b));
     Some((streams, problems))
+}
+
+/// `settings` as the sink is handed them: each secret reference (`{env:}`, `{file:}`, `{module:}`)
+/// at a path `module`'s Statement declares, secret (`secret_refs`) or reference-capable (its
+/// extensions' `reference_fields`, lead ruling item 7a), RESOLVED IN PLACE to its string, as 1.5.5
+/// resolved an exporter's `url` (the export host lends nothing, so a sink reads the value itself at
+/// probe, check and open alike). A literal is handed as written. Resolved through the built-in
+/// sources (`env`, `file`) at config time, fail-closed: an unresolvable reference is the `Err`,
+/// naming the field, never a dangling reference handed to the sink. A reference at a path the
+/// module did NOT declare leaves the settings as written: that is the undeclared-reference
+/// refusal's to word (`config_validate`), not this.
+///
+/// The configuration keeps the reference; only the returned value carries what it resolved to, and
+/// only for the one call it is handed to.
+pub(crate) fn sink_settings(
+    axis: &dyn ExportAxis,
+    module: &str,
+    settings: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let declared = [axis.secret_refs(module), axis.reference_fields(module)].concat();
+    let tree = Value::Object(settings.clone());
+    if declared.is_empty()
+        || busbar_contract::secret_fields::undeclared_reference(&tree, &declared).is_some()
+    {
+        return Ok(tree);
+    }
+    crate::config::secret::resolve_settings(
+        settings,
+        &[],
+        &declared,
+        module,
+        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .map(|resolved| resolved.as_value().clone())
 }
 
 /// Stream bytes as the vocabulary's streams (a byte outside it was refused at load).
@@ -86,13 +132,25 @@ pub(crate) fn one_instance(module: &str) -> bool {
 /// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
 /// the configuration is resolved, for a `one_instance` module configured more than once: the
 /// plugin words its own refusal.
+///
+/// Each instance is handed as its sink reads it ([`sink_settings`]); one whose declared reference
+/// does not resolve is already refused by [`probe`] and is left out.
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
     axis()
         .and_then(|axis| {
+            let instances: Vec<(String, Value)> = instances
+                .iter()
+                .filter_map(|(name, settings)| match settings {
+                    Value::Object(map) => sink_settings(axis, module, map)
+                        .ok()
+                        .map(|v| (name.clone(), v)),
+                    other => Some((name.clone(), other.clone())),
+                })
+                .collect();
             axis.check(
                 module,
                 busbar_contract::abi::export::CHECK_PHASE_LIMITS,
-                instances,
+                &instances,
             )
         })
         .unwrap_or_default()
@@ -116,11 +174,17 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
             continue;
         }
         modules.push(module);
+        // Each instance as its sink is handed it ([`sink_settings`]); one whose declared reference
+        // does not resolve was already refused when the configuration was resolved ([`probe`]).
         let instances: Vec<(String, Value)> = cfg
             .plugins
             .iter()
             .filter(|q| q.def.module.trim() == module)
-            .map(|q| (q.name.clone(), Value::Object(q.def.settings.clone())))
+            .filter_map(|q| {
+                sink_settings(axis, module, &q.def.settings)
+                    .ok()
+                    .map(|v| (q.name.clone(), v))
+            })
             .collect();
         errors.extend(axis.check(module, phase, &instances).unwrap_or_default());
     }
@@ -139,6 +203,9 @@ pub(super) struct PluginSink {
     pub(super) span_record: bool,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
+    /// THE NODE'S AMENDMENT JOURNAL every hand-off to this sink is recorded on, as an access: the
+    /// one the node's first generation holds ([`record_reads_on`]).
+    reads: OnceLock<Arc<crate::audit::amend::NodeAmendments>>,
 }
 
 /// A started sink's admission: whether it takes deliveries this run, and its in-flight gate.
@@ -188,7 +255,14 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     let (mut errors, mut opened) = (Vec::new(), Vec::new());
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
-        let settings = serde_json::Value::Object(def.settings.clone());
+        // Each declared reference resolved in place, fail-closed ([`sink_settings`]).
+        let settings = match sink_settings(axis, module, &def.settings) {
+            Ok(settings) => settings,
+            Err(e) => {
+                errors.push(format!("export.{name}.settings: {e}"));
+                continue;
+            }
+        };
         let opened_sink = axis.open(module, &format!("export.{name}"), &settings);
         let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
             continue;
@@ -213,6 +287,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             scrape: p.scrape,
             projection,
             admission: OnceLock::new(),
+            reads: OnceLock::new(),
         });
     }
     if !errors.is_empty() {
@@ -222,6 +297,15 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     // What a span CALLSITE's interest is depends on which sinks exist (`super::traces::layer`).
     tracing::callsite::rebuild_interest_cache();
     Ok(())
+}
+
+/// RECORD EVERY HAND-OFF TO THE OPENED SINKS ON `amendments`, the node's amendment journal: set
+/// once, by the node's first generation (the sinks are opened before it is built, and live as long
+/// as the process does). A second call leaves each sink on the journal it was first given.
+pub(crate) fn record_reads_on(amendments: &Arc<crate::audit::amend::NodeAmendments>) {
+    for s in sinks() {
+        let _ = s.reads.set(Arc::clone(amendments));
+    }
 }
 
 /// Hand the request-log line to every opened sink subscribed to `logs`, built to that sink's own
@@ -254,8 +338,9 @@ pub(super) fn deliver_to(
 /// at a default that would then hold for the life of the process. A sink at its in-flight bound, or
 /// whose queue refuses it, sheds it (counted on its gate and on its declared shed counter); a sink
 /// that errors is logged. Neither reaches the caller. The access amendment records what the sink
-/// QUEUED: a shed line never reached it, so it is never audited as read. `f` is told whether the
-/// sink takes full span records ([`PluginSink::span_record`]).
+/// QUEUED, on the node's journal the sink was given ([`record_reads_on`]): a shed line never
+/// reached it, so it is never audited as read. `f` is told whether the sink takes full span
+/// records ([`PluginSink::span_record`]).
 fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
@@ -276,7 +361,11 @@ fn deliver_one(
     let payload = f(s.projection, s.span_record);
     let line = serde_json::to_vec(&*payload).unwrap_or_default();
     match s.sink.deliver(stream as u8, line, Box::new(permit)) {
-        Delivered::Queued => crate::audit::amend::export_read(&s.module, op, &payload),
+        Delivered::Queued => {
+            if let Some(amendments) = s.reads.get() {
+                crate::audit::amend::export_read(amendments, &s.module, op, &payload);
+            }
+        }
         Delivered::Shed => s.sink.shed(),
     }
 }
