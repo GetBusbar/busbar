@@ -305,3 +305,111 @@ fn a_refusal_naming_an_unavailable_credential_reads_as_its_own_failure() {
         Poll::Ready(Err(ConnFailure::Refused(REFUSED_TEXT.to_string())))
     );
 }
+
+static REQUEST_SECURITY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static SEALED_REQUESTS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+
+extern "C" fn request_security(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+    use crate::abi::host::conn::connector::{FactsIn, StreamFacts};
+    let security = REQUEST_SECURITY.load(std::sync::atomic::Ordering::SeqCst);
+    if security == 2 {
+        return RawOutcome::of(Outcome::Pending);
+    }
+    // SAFETY: the connector lends FactsIn and its writable facts slot for this call.
+    unsafe {
+        let input = &*input.cast::<FactsIn>();
+        (*input.facts).size = std::mem::size_of::<StreamFacts>() as u32;
+        (*input.facts).secure = security;
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+extern "C" fn sealed_request(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    use crate::abi::host::conn::connector::RequestIn;
+    // SAFETY: the connector lends RequestIn, its bytes, and the writable reply for this call.
+    unsafe {
+        let input = &*input.cast::<RequestIn>();
+        SEALED_REQUESTS
+            .lock()
+            .unwrap()
+            .push(std::slice::from_raw_parts(input.buf, input.len).to_vec());
+        (*out).value = input.len as u64;
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
+    use crate::abi::host::conn::connector::REQUEST_BODY;
+    use crate::abi::sdk::cred::{Cred, SealedWrite, NOT_SECURE};
+    use std::sync::atomic::Ordering;
+
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    SEALED_REQUESTS.lock().unwrap().clear();
+    let slots = ConnectorSlots {
+        facts: Some(request_security),
+        write_request: Some(sealed_request),
+        ..SLOTS
+    };
+    let h = host(&slots);
+    let body = RequestPiece {
+        kind: REQUEST_BODY,
+        ..RequestPiece::ZERO
+    };
+    let required = Cred::captured(zeroize::Zeroizing::new(b"CANARY-request-body".to_vec()))
+        .secure_for("https://token.example/");
+    let refused = Poll::Ready(Err(ConnFailure::Refused(NOT_SECURE.into())));
+
+    REQUEST_SECURITY.store(0, Ordering::SeqCst);
+    let mut clear = SealedWrite::message(required.field());
+    assert_eq!(clear.request(&mut h.connector(TICKET), 7, &body), refused);
+    assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
+    REQUEST_SECURITY.store(1, Ordering::SeqCst);
+    assert_eq!(
+        clear.request(&mut h.connector(TICKET), 7, &body),
+        refused,
+        "a refused write stays refused after re-entry"
+    );
+    assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
+
+    let mut waiting = SealedWrite::message(required.field());
+    REQUEST_SECURITY.store(2, Ordering::SeqCst);
+    assert_eq!(
+        waiting.request(&mut h.connector(TICKET), 7, &body),
+        Poll::Pending
+    );
+    assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
+    REQUEST_SECURITY.store(1, Ordering::SeqCst);
+    assert_eq!(
+        waiting.request(&mut h.connector(TICKET), 7, &body),
+        Poll::Ready(Ok(required.len()))
+    );
+    assert_eq!(
+        *SEALED_REQUESTS.lock().unwrap(),
+        vec![b"CANARY-request-body".to_vec()]
+    );
+
+    SEALED_REQUESTS.lock().unwrap().clear();
+    let no_facts = ConnectorSlots {
+        facts: None,
+        ..slots
+    };
+    let missing = host(&no_facts);
+    let mut required_write = SealedWrite::message(required.field());
+    assert_eq!(
+        required_write.request(&mut missing.connector(TICKET), 7, &body),
+        refused
+    );
+    assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
+    let free = Cred::captured(zeroize::Zeroizing::new(b"allowed-in-clear".to_vec()));
+    assert_eq!(
+        SealedWrite::message(free.field()).request(&mut missing.connector(TICKET), 7, &body),
+        Poll::Ready(Ok(free.len()))
+    );
+    assert_eq!(
+        *SEALED_REQUESTS.lock().unwrap(),
+        vec![b"allowed-in-clear".to_vec()]
+    );
+}
