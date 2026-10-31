@@ -1802,6 +1802,8 @@ fn split_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Zeroing>) {
 /// What a store's `open` is lent, held until its crossing returns (even past a watchdog fault):
 /// the settings, the secrets (zeroed when this drops) and the `BLOB_SECRET` list over them.
 struct OpenLent {
+    // settings-leak-lint: allow — NON-PROJECTION engine type: OPEN's settings bytes,
+    // held for the crossing's lifetime; never exposed through an admin read.
     settings: Vec<u8>,
     #[allow(dead_code)] // held: `blobs` points into it
     secrets: Vec<Zeroing>,

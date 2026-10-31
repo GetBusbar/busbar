@@ -6464,8 +6464,10 @@ async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
         crate::governance::WINDOW_DAY,
         now - 40 * crate::governance::SECS_PER_DAY,
     );
-    let mut one = UsageLedger::default();
-    one.requests = 1;
+    let one = UsageLedger {
+        requests: 1,
+        ..UsageLedger::default()
+    };
     for w in [old, 0, live] {
         records.put_usage("vk_horizon", w, &one).expect("put");
     }

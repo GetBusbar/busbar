@@ -20,7 +20,8 @@ use crate::store_v3::wrap::{Hooks, Wrapped};
 use crate::store_v3::LoadedStore;
 
 /// What the store's `open` was handed: its settings and its secrets.
-static SEEN: Mutex<Vec<(Vec<u8>, Vec<Vec<u8>>)>> = Mutex::new(Vec::new());
+type OpenSeen = (Vec<u8>, Vec<Vec<u8>>);
+static SEEN: Mutex<Vec<OpenSeen>> = Mutex::new(Vec::new());
 
 /// A store that keeps what its `open` read.
 struct Keeps;
