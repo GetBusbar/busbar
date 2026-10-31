@@ -313,14 +313,15 @@ pub trait DeclaredConns: Conns {
     /// sources, details. `target` is what the need's `target_from` resolved to in the instance's
     /// settings (`None`: it resolved to nothing, or the need has no `target_from`); a need declared
     /// with a target dials that target only. `trust` is the PEM the need's `trust_from` resolved
-    /// to (`None`: it resolved to nothing, or the need has no `trust_from`): an operator CA the
+    /// to (`None`: it resolved to nothing, or the need has no `trust_from`; an absent trust anchor is
+    /// optional and the need's connections trust the public roots alone): an operator CA the
     /// host adds on top of the public roots for the need's connections. Declaring the same need
     /// again replaces its record. The answer is kept: [`DeclaredConns::declared`] reads it back.
     ///
     /// # Errors
     ///
     /// [`ConnError::Refused`] when the host will not carry the need as declared, for a need whose
-    /// `target_from` or `trust_from` resolved to nothing, and for a `trust` that does not parse.
+    /// `target_from` resolved to nothing, and for a `trust` that does not parse.
     fn declare(
         &self,
         owner: InstanceId,

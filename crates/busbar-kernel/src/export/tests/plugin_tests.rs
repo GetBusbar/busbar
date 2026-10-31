@@ -169,7 +169,7 @@ impl ExportCalls for AnsweringSink {
     }
 }
 
-/// An opened (not yet started) sink over `double`.
+/// An opened (not yet started) sink over `double`, recording its reads on a journal of its own.
 fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
     PluginSink {
         name: module.to_string(),
@@ -179,6 +179,7 @@ fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
         projection: Projection::for_test(&[ExportStream::Logs], &[]),
         span_record: false,
         admission: OnceLock::new(),
+        reads: OnceLock::from(Arc::new(crate::audit::amend::NodeAmendments::new())),
     }
 }
 
@@ -190,9 +191,12 @@ fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<Answeri
     })
 }
 
-/// The export access amendments sealed under `op` (each test uses its own label).
-fn reads_under(op: &str) -> usize {
-    crate::audit::amend::node_recent()
+/// The export access amendments `s` sealed on its journal under `op` (each test uses its own label).
+fn reads_under(s: &PluginSink, op: &str) -> usize {
+    s.reads
+        .get()
+        .map(|journal| journal.recent())
+        .unwrap_or_default()
         .into_iter()
         .filter(|a| {
             matches!(&a.body, crate::audit::amend::AmendBody::Access(x) if x.op_class.as_str() == op)
@@ -214,7 +218,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-36-shed"),
+        reads_under(&s, "q128b-u31-36-shed"),
         0,
         "a shed line is no read"
     );
@@ -225,7 +229,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-36-queued"),
+        reads_under(&s, "q128b-u31-36-queued"),
         1,
         "a queued line is one read"
     );
@@ -242,7 +246,7 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     let s = opened("q128b-u31-37", Arc::clone(&paused));
     deliver_one(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-37-early"),
+        reads_under(&s, "q128b-u31-37-early"),
         0,
         "nothing is fed before start"
     );
@@ -250,7 +254,7 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-37-late"),
+        reads_under(&s, "q128b-u31-37-late"),
         0,
         "the sink stated live: false, and that holds"
     );

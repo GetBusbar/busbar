@@ -81,6 +81,8 @@ pub use store_identity::node_id;
 // Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
 #[cfg(any(test, feature = "root-admin"))]
 pub use store_identity::walk_stored_chains;
+// Every other node's chain, read by the boot's rate-card migration (`root::card_history`).
+pub use store_identity::stored_chains;
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
@@ -561,17 +563,20 @@ fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
 /// ([`journal_body`]), so the journal can answer for it after the cache has let
 /// it go. Content is not in it for the same reason it is not in the record: the journal is a
 /// financial record exempt from erasure, so anything put in it can never be taken out.
-#[must_use]
-pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
+///
+/// # Errors
+///
+/// A text field does not fit the body's length prefix: refused whole, never cut.
+pub fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
     journal_body(record)
 }
 
 /// The journal entry a sealed audit record goes on the chain as: its whole body, stamped with its
 /// own two clocks and the epochs it ran under.
-fn audit_entry(record: &AuditRecord) -> Entry {
-    Entry::new(RecordClass::Transaction, audit_body(record))
+fn audit_entry(record: &AuditRecord) -> Result<Entry, busbar_kernel_audit::FieldTooLong> {
+    Ok(Entry::new(RecordClass::Transaction, audit_body(record)?)
         .at(record.wall, record.mono)
-        .under(record.controls.lease_epoch, record.controls.policy_epoch)
+        .under(record.controls.lease_epoch, record.controls.policy_epoch))
 }
 
 /// Read one journal record back as the sealed audit record it keeps, if it keeps one. A usage
@@ -796,12 +801,7 @@ fn build_inner(
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
         let refused = cards
             .rebuild_from_chain(&mut durability, records)
-            .map_err(|lost| {
-                OpenError::Io(std::io::Error::other(format!(
-                    "the journal could not make the boot's rate card durable at step {}",
-                    lost.step().as_str()
-                )))
-            })?;
+            .map_err(|refused| OpenError::Io(std::io::Error::other(refused.to_string())))?;
         // A signed rate correction the dated history's rebuild refused: its base is not on the
         // rebuilt history, so it is reported rather than rebuilt over a card nobody signed (#79).
         findings.extend(refused.into_iter().map(|refused| refused.to_string()));

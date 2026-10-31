@@ -821,6 +821,18 @@ impl FakeHost {
         self
     }
 
+    /// Serve the connector services a framed exchange crosses with the scripted far end
+    /// ([`super::far::Far`], which the test holds for its scope).
+    #[must_use]
+    pub fn far(mut self) -> Self {
+        self.conns.establish = Some(super::far::establish);
+        self.conns.write_request = Some(super::far::write_request);
+        self.conns.read_reply = Some(super::far::read_reply);
+        self.conns.close = Some(super::far::close);
+        self.link();
+        self
+    }
+
     /// The context every host call is made with.
     #[must_use]
     pub fn ctx(mut self, ctx: HostCtx) -> Self {

@@ -117,6 +117,8 @@ struct State {
     /// The last piece handed to the leases did not end its frame.
     mid_frame: bool,
     retired: bool,
+    /// Its carrier was told its supervision key is retired ([`Member::end_retired`]).
+    key_retired: bool,
     next_lease: u64,
     leases: HashMap<u64, Inbox>,
 }
@@ -229,6 +231,7 @@ impl Member {
                 generation: 0,
                 mid_frame: false,
                 retired: false,
+                key_retired: false,
                 next_lease: 1,
                 leases: HashMap::new(),
             }),
@@ -523,10 +526,10 @@ impl Member {
         {
             self.fan.wake_all();
         }
-        if st.retired && st.leases.is_empty() {
-            if let Some(live) = st.live.take() {
-                live.conn.close();
-            }
+        let ending = st.retired && st.leases.is_empty();
+        drop(st);
+        if ending {
+            self.end_retired();
         }
     }
 
@@ -535,10 +538,27 @@ impl Member {
     pub(crate) fn retire(&self) {
         let mut st = self.lock();
         st.retired = true;
-        if st.leases.is_empty() {
-            if let Some(live) = st.live.take() {
-                live.conn.close();
-            }
+        let ending = st.leases.is_empty();
+        drop(st);
+        if ending {
+            self.end_retired();
+        }
+    }
+
+    /// A RETIRED MEMBER WITH NO LEASE ENDS, once: its program is shut, then its carrier is told
+    /// its supervision key is retired (`abi::transport::DEST_RETIRED`), so a supervising carrier
+    /// forgets it. Both cross the carrier with no host lock held.
+    fn end_retired(&self) {
+        let (live, signal) = {
+            let mut st = self.lock();
+            let signal = !std::mem::replace(&mut st.key_retired, true);
+            (st.live.take(), signal)
+        };
+        if let Some(live) = live {
+            live.conn.close();
+        }
+        if signal {
+            crate::carrier::Carried::retire_key(&self.via.door, &self.via.io, self.supervision_key);
         }
     }
 }

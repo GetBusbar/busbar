@@ -85,6 +85,9 @@ pub struct Called<O: Reply> {
     pub error: Option<String>,
     /// The `out`'s own fields, copied.
     pub owned: O::Owned,
+    /// What the reply's envelope carried (its metrics and diagnostics), copied before the
+    /// envelope's pointers were cleared.
+    pub envelope: EnvelopeCopy,
     /// The instance an `open` through [`call_in`] or [`call_hosted_in`] answered READY with,
     /// until [`Called::take_instance`] takes it.
     instance: Option<Instance<'static>>,
@@ -277,6 +280,7 @@ fn run_op<I: AbiIn, O: Reply>(
     );
     let outcome = raw.outcome();
     let error = optional_text(out.head().error, "head.error");
+    let envelope = envelope(&out.head().envelope);
     let owned = out.take(outcome, Token(()));
     let opened = out.opened(Token(()));
     out.clear(Token(()));
@@ -293,11 +297,76 @@ fn run_op<I: AbiIn, O: Reply>(
         out,
         error,
         owned,
+        envelope,
         instance,
     }
 }
 
 // ── the reviewed copies ──────────────────────────────────────────────────────────────────────────
+
+/// One metric a reply's envelope reported, copied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricCopy {
+    /// Its index into the Statement's families.
+    pub family_idx: u32,
+    /// `METRIC_ADD` | `METRIC_SET` | `METRIC_OBSERVE`.
+    pub kind: u8,
+    /// Its value.
+    pub value: f64,
+    /// Its label values, in the family's key order.
+    pub label_vals: Vec<String>,
+}
+
+/// One diagnostic a reply's envelope reported, copied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagCopy {
+    /// Its index into the Statement's diagnostic ids, or `DIAG_LOG` / `DIAG_LOG_DROPPED`.
+    pub id_idx: u32,
+    /// Its severity.
+    pub severity: u8,
+    /// Its text.
+    pub text: String,
+}
+
+/// A reply's envelope, copied: every metric and diagnostic, in order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EnvelopeCopy {
+    /// The metrics.
+    pub metrics: Vec<MetricCopy>,
+    /// The diagnostics.
+    pub diags: Vec<DiagCopy>,
+}
+
+/// The envelope `e` names, judged (NULL with a count, an over-long list or text panics, naming the
+/// field) and copied.
+fn envelope(e: &busbar_contract::abi::mechanism::call::Envelope) -> EnvelopeCopy {
+    EnvelopeCopy {
+        metrics: list(e.metrics, e.metrics_len, "head.envelope.metrics")
+            .iter()
+            .map(|m| MetricCopy {
+                family_idx: m.family_idx,
+                kind: m.kind,
+                value: m.value,
+                label_vals: list(
+                    m.label_vals,
+                    m.label_vals_len,
+                    "head.envelope.metrics.label_vals",
+                )
+                .iter()
+                .map(|v| text(*v, "head.envelope.metrics.label_vals"))
+                .collect(),
+            })
+            .collect(),
+        diags: list(e.diags, e.diags_len, "head.envelope.diags")
+            .iter()
+            .map(|d| DiagCopy {
+                id_idx: d.id_idx,
+                severity: d.severity,
+                text: text(d.text, "head.envelope.diags.text"),
+            })
+            .collect(),
+    }
+}
 
 /// Secret material, copied into memory wiped on drop; never printed.
 pub struct SecretCopy(Zeroizing<Vec<u8>>);
