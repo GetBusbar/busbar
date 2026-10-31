@@ -130,6 +130,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   1.6.0 Changed: a first-party plugin signed by a retired busbar release key is refused (`retired_key`) even under `plugins.trust.allow_unsigned`, with a message naming the key and saying allow_unsigned does not admit it; an unsigned plugin under `allow_unsigned` still loads as unverified.
   A retired key is a revocation, not a missing signature; naming the key under
   `plugins.trust.publishers` remains the one explicit opt-in (owner-signed 2026-10-30).
+- **A virtual key whose stored `expires_at` has passed is refused.**
+  1.6.0 Changed: a request whose key row carries an `expires_at` at or before now is refused with the same `401` as an expired token, and the refusal is audited like every other credential refusal; the admin views still show the stored `expires_at`.
+  1.5.5 stored the field but enforced only the signed token's own `exp`, so a key row expired out of
+  band (a restored backup, a hand-edited or migrated store) kept admitting (owner-signed 2026-10-30).
 - **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
   fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).

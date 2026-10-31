@@ -232,6 +232,13 @@ impl GovState {
         }
 
         match self.lookup_by_sub(&claims.sub) {
+            Some(key) if key_row_expired(&key, now) => {
+                tracing::debug!(
+                    sub = %claims.sub,
+                    "signed-token rejected: the key row's expires_at has passed"
+                );
+                None
+            }
             Some(key)
                 if key.enabled
                     && generation_matches(&key.generation_hash, claims.generation.as_deref()) =>
@@ -2458,3 +2465,9 @@ fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<Mod
 
 #[path = "money_view.rs"]
 pub(super) mod money_view;
+
+/// Whether `key`'s stored `expires_at` has passed as of `now` (owner-signed 2026-10-30, SEC-VKEY):
+/// `expires_at == now` is already expired, as a token's `exp == now` is.
+pub(crate) fn key_row_expired(key: &VirtualKey, now: u64) -> bool {
+    key.expires_at.is_some_and(|exp| exp <= now)
+}
