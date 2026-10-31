@@ -1162,14 +1162,16 @@ impl Instance {
         ticket: Ticket,
         class: DeadlineClass,
         unit: Option<u64>,
+        framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Outcome {
         let mut frame = (self.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
         let crossed = self.watched(slot::CANCEL, || {
-            // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
-            crate::ffi_thread::on_plugin_thread(|| unsafe {
-                self.cross(slot::CANCEL, input, out, out_size)
+            crate::ffi_thread::on_plugin_thread(|| {
+                let _framing = super::framing_context::enter(framing);
+                // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+                unsafe { self.cross(slot::CANCEL, input, out, out_size) }
             })
         });
         crossed.map_or(Outcome::Fault, |c| c.outcome)

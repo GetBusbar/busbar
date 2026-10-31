@@ -1710,10 +1710,12 @@ impl Orphan {
                     cur.meta.in_size as usize,
                 )
             });
-            let outcome = cur
-                .meta
-                .instance
-                .cancel_abandoned(self.ticket, cur.meta.class, unit);
+            let outcome = cur.meta.instance.cancel_abandoned(
+                self.ticket,
+                cur.meta.class,
+                unit,
+                cur.meta.framing.clone(),
+            );
             if outcome != Outcome::Ready {
                 tracing::warn!(
                     plugin = %cur.meta.instance.name(),

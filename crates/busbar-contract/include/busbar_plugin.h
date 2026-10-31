@@ -490,6 +490,8 @@ extern "C" {
 #define BB_TRANSPORT_FINGERPRINT_BYTES UINT64_C(32) /* The length of [`RendezvousTerms::peer_fingerprint`]: a SHA-256 digest. */
 #define BB_TRANSPORT_SEPARATOR ": " /* Between a field's name and its value. */
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
+#define BB_TRANSPORT_EXT_GUEST_OPEN "guest.open" /* A framer reply asks the host to open this stream before route matching or auth. */
+#define BB_TRANSPORT_EXT_GUEST_POLICY "guest.policy" /* The following call lends the selected generation's policy to the requesting operation. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
 #define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x715dbad81f3872c0) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_TRANSPORT_SLOT_LISTEN UINT32_C(9) /* Carrier: bind a listener. */
