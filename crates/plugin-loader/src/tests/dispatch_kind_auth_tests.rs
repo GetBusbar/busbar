@@ -878,7 +878,7 @@ fn the_carriers_are_the_statements_carrier_marks() {
 #[test]
 fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
     use busbar_contract::abi::auth::{
-        AuthTail, AUTH_TAIL_FROZEN, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE,
+        AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE, TAIL_FROZEN,
     };
     use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -930,12 +930,12 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
         "the operator fact on a plugin that does not verify"
     );
     assert_eq!(
-        bind(AUTH_TAIL_FROZEN, CAP_INBOUND, 0, "admin"),
+        bind(TAIL_FROZEN, CAP_INBOUND, 0, "admin"),
         Ok(Some(None)),
         "a frozen-size tail loads; its appended principal is never read"
     );
     assert!(
-        bind(AUTH_TAIL_FROZEN - 8, CAP_INBOUND, 0, "").is_err(),
+        bind(TAIL_FROZEN - 8, CAP_INBOUND, 0, "").is_err(),
         "below the frozen size"
     );
 }

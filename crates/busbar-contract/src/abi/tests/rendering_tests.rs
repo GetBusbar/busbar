@@ -430,7 +430,7 @@ fn a_tail_renders_by_the_growth_rule() {
     // A plugin built when the auth tail froze states its frozen size: the fields appended after it
     // render absent, whatever bytes follow in its memory.
     let mut old = auth_tail();
-    old.head.size = crate::abi::auth::AUTH_TAIL_FROZEN as u32;
+    old.head.size = crate::abi::auth::TAIL_FROZEN as u32;
     let b = with_tail(KindCode::Auth, &old).expect("renders");
     let t = read_auth_tail(&read(&b).expect("reads back").kind_tail).expect("reads back");
     assert_eq!(t.operator_principal, "");

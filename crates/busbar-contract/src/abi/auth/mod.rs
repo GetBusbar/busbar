@@ -386,7 +386,7 @@ pub struct AuthTail {
     /// How many.
     pub styles_len: usize,
     /// With [`FACT_OPERATOR`]: the principal id the operator credential identifies; empty
-    /// otherwise. APPENDED after the tail froze at [`AUTH_TAIL_FROZEN`] bytes: a tail of that size
+    /// otherwise. APPENDED after the tail froze at [`TAIL_FROZEN`] bytes: a tail of that size
     /// reads it empty.
     pub operator_principal: AbiStr,
     /// With [`FACT_READS_CREDENTIALS`]: the credential kinds `verify` reads through
@@ -445,7 +445,7 @@ impl AuthTail {
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
 /// smallest auth tail a host reads (THE KIND TAIL GROWTH RULE, `mechanism::door::tail_read_len`).
-pub const AUTH_TAIL_FROZEN: usize = 40;
+pub const TAIL_FROZEN: usize = 40;
 
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned,
 /// nothing kept.
