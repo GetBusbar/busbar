@@ -20,7 +20,7 @@ use busbar_test_kit::root_door_fixtures::scoped_mux;
 
 use crate::root::doors::{bind_on, Dispatched};
 use crate::root::inbound;
-use crate::root::listener_framed::{self, FramerFor, DATA_SCHEME};
+use crate::root::listener::framed::{self as listener_framed, FramerFor, DATA_SCHEME};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 
 struct Provider {
